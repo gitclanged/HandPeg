@@ -1,0 +1,80 @@
+<Window x:Class="HandPegApp.SplashWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HandPeg" Width="780" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterScreen">
+    <StackPanel Margin="20">
+        <TextBlock Text="HandPeg" FontSize="26" FontWeight="SemiBold" />
+        <TextBlock Text="Drop a video to get started, pick up where you left off, or open a video with one of your presets."
+                   Foreground="{DynamicResource MutedTextBrush}" Margin="0,2,0,14" TextWrapping="Wrap" />
+
+        <!-- The drop zone: a video dropped (or chosen with a click) here opens as it would in the main window -->
+        <Border x:Name="DropZone" Height="190" CornerRadius="10" Background="{DynamicResource InsetBrush}" Cursor="Hand"
+                AllowDrop="True" DragEnter="DropTarget_DragEnter" DragLeave="DropTarget_DragLeave" DragOver="DropTarget_DragOver" Drop="DropZone_Drop"
+                MouseLeftButtonUp="DropZone_MouseLeftButtonUp" AutomationProperties.Name="Drop Video Here">
+            <Grid>
+                <Rectangle Margin="8" RadiusX="8" RadiusY="8" Stroke="{DynamicResource MutedTextBrush}" StrokeThickness="2" StrokeDashArray="6 5"
+                           IsHitTestVisible="False" />
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
+                    <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="46" HorizontalAlignment="Center"
+                               Foreground="{DynamicResource MutedTextBrush}" />
+                    <TextBlock Text="Drop Video Here" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,10,0,0" />
+                    <TextBlock Text="or click to browse" HorizontalAlignment="Center" Margin="0,4,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Button Content="New Blank Project" Padding="16,9" Click="NewBlank_Click"
+                    ToolTip="Open HandPeg with nothing loaded." />
+            <Button Grid.Column="1" x:Name="RecentButton" Content="Load Recent Project" Padding="16,9" Margin="8,0,0,0" Click="LoadRecent_Click"
+                    ToolTip="Open the project chosen in the list beside this button: its video, cuts and settings." />
+            <ComboBox Grid.Column="2" x:Name="RecentBox" Margin="8,0,0,0" VerticalAlignment="Stretch" AutomationProperties.Name="Recent Projects"
+                      ToolTip="Your saved projects, most recently saved first.">
+                <ComboBox.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock TextTrimming="CharacterEllipsis">
+                            <Run Text="{Binding Name, Mode=OneWay}" /><Run Text="   " /><Run Text="{Binding SavedText, Mode=OneWay}" Foreground="{DynamicResource MutedTextBrush}" />
+                        </TextBlock>
+                    </DataTemplate>
+                </ComboBox.ItemTemplate>
+            </ComboBox>
+        </Grid>
+
+        <!-- The first few presets, as targets: a video dropped on one opens with that preset -->
+        <StackPanel x:Name="PresetPanel" Margin="0,18,0,0">
+            <TextBlock Text="Open with a preset" FontWeight="SemiBold" FontSize="14" />
+            <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,2,0,8"
+                       Text="Drop a video on a preset, or click one to choose a video. You are asked which of the preset's settings to bring in." />
+            <ItemsControl x:Name="PresetList" Focusable="False">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <UniformGrid Rows="1" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Button Height="74" Margin="0,0,6,0" Padding="8,4" AllowDrop="True" Click="Preset_Click"
+                                DragEnter="DropTarget_DragEnter" DragLeave="DropTarget_DragLeave" DragOver="DropTarget_DragOver" Drop="Preset_Drop"
+                                AutomationProperties.Name="{Binding Name}" ToolTip="{Binding Name}">
+                            <StackPanel>
+                                <TextBlock Text="&#xE8B2;" FontFamily="Segoe MDL2 Assets" FontSize="18" HorizontalAlignment="Center"
+                                           Foreground="{DynamicResource MutedTextBrush}" />
+                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" TextAlignment="Center" Margin="0,6,0,0" />
+                            </StackPanel>
+                        </Button>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" Margin="0,16,0,0" TextWrapping="Wrap"
+                   Text="How many presets are shown here, and whether this window opens at all, is set under Settings, Tools, Interface." />
+    </StackPanel>
+</Window>

@@ -40,9 +40,6 @@ public sealed partial class OverlayRegion : ObservableObject
 
     public bool IsCaptions => Kind == ElementKind.Captions;
 
-    /// <summary>Corners, feathering and shadow shape a picture; the caption box has only its opacity.</summary>
-    public bool HasShapeStyle => !IsCaptions;
-
     /// <summary>The caption box is part of the captions: it comes and goes with them, and is not removed by hand.</summary>
     public bool IsRemovable => !IsCaptions;
 
@@ -83,10 +80,24 @@ public sealed partial class OverlayRegion : ObservableObject
     private double _sizeWidth = 0.44;
 
     /// <summary>Height as a fraction of the output frame's height. Only used while the aspect ratio is unlocked.</summary>
-    [ObservableProperty] private double _sizeHeight;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SizeHeightPercent))]
+    private double _sizeHeight;
 
     /// <summary>While locked, the element keeps the shape of its source rectangle; unlocked, it can be stretched.</summary>
-    [ObservableProperty] private bool _lockAspectRatio = true;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsFreeHeight))]
+    private bool _lockAspectRatio = true;
+
+    /// <summary>The height is set on its own: an unlocked element, and always the caption box.</summary>
+    public bool IsFreeHeight => !LockAspectRatio;
+
+    /// <summary>The height as a whole percentage of the frame height, for typing.</summary>
+    public int SizeHeightPercent
+    {
+        get => (int)Math.Round(SizeHeight * 100);
+        set => SizeHeight = Math.Clamp(value, 1, 200) / 100.0;
+    }
 
     // Style: rounded corners, soft edges, transparency and a drop shadow, so the element sits on the
     // picture instead of being pasted on it.

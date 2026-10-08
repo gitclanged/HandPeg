@@ -66,6 +66,9 @@ public sealed partial class AudioTrack : ObservableObject
     /// <summary>A picture of the whole track's sound, drawn in the background after a load.</summary>
     [ObservableProperty] private System.Windows.Media.ImageSource? _waveform;
 
+    /// <summary>The player is playing this track instead of the first one. Set by the view model.</summary>
+    [ObservableProperty] private bool _isSolo;
+
     /// <summary>The colour the waveform is drawn in, so that tracks can be told apart in the master view.</summary>
     public string WaveformColor { get; init; } = "#4FC3F7";
 

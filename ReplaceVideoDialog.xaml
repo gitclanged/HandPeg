@@ -1,0 +1,33 @@
+<Window x:Class="HandPegApp.ReplaceVideoDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Load New Video" Width="540" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <StackPanel Margin="16">
+        <TextBlock Text="A video is already open." FontWeight="SemiBold" FontSize="14" />
+        <TextBlock x:Name="IntroText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,12" />
+
+        <!-- The name the current video, cuts and settings are saved under, when they are kept -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Save current as project:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <TextBox Grid.Column="1" x:Name="NameBox" VerticalContentAlignment="Center" TextChanged="NameBox_TextChanged"
+                     AutomationProperties.Name="Project Name"
+                     ToolTip="The name the current video, its cuts and all its settings are saved under. It can be opened again with the Project button." />
+        </Grid>
+        <TextBlock x:Name="NoteText" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,6,0,0" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="SaveButton" Content="Save Project &amp; Load" MinWidth="150" IsDefault="True" Click="Save_Click"
+                    ToolTip="Save the current video, cuts and settings as a project, then load the new video." />
+            <Button Content="Load &amp; Discard" MinWidth="120" Margin="6,0,0,0" Click="Discard_Click"
+                    ToolTip="Load the new video without saving. Cuts and settings that were not saved or queued are lost." />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True"
+                    ToolTip="Keep the current video; the new one is not loaded." />
+        </StackPanel>
+    </StackPanel>
+</Window>

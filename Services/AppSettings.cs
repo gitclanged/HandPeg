@@ -146,6 +146,31 @@ public sealed class AppSettings
     /// <summary>How tall each track's row is in the Audio tab, 1 to 5: taller rows show more of the waveform.</summary>
     public int AudioTrackHeight { get; set; } = 2;
 
+    /// <summary>
+    /// Draws a strip of pictures from the video along the timeline, behind the waveform. Null until it has been decided once:
+    /// it then starts out on in Editor Mode and off in Encoder Mode.
+    /// </summary>
+    public bool? ShowTimelineThumbnails { get; set; }
+
+    // ----- Launch -----
+
+    /// <summary>How many presets the launch window offers as buttons, 1 to 5. 0 switches the launch window off.</summary>
+    public int SplashPresetCount { get; set; } = 3;
+
+    /// <summary>
+    /// Which parts of a preset to apply when a video is dropped on its button in the launch window, by preset
+    /// name: kept for the presets where "Always use these settings for this preset" was ticked.
+    /// </summary>
+    public Dictionary<string, Models.PresetParts> PresetImportChoices { get; set; } = [];
+
+    // ----- Dead air -----
+
+    /// <summary>Remove Dead Air: anything quieter than this, in decibels, counts as silence.</summary>
+    public double DeadAirThresholdDb { get; set; } = -35;
+
+    /// <summary>Remove Dead Air: a silence has to last this long, in seconds, to be cut.</summary>
+    public double DeadAirMinSeconds { get; set; } = 1;
+
     // ----- First run, appearance and mode -----
 
     /// <summary>False until the first-run window has been completed once.</summary>
@@ -194,6 +219,7 @@ public sealed class AppSettings
         StartWithChapterMarkers = true;
         StartWithChaptersAtCuts = editor;
         AutoOpenLayoutPane = editor;
+        ShowTimelineThumbnails = editor;
 
         if (editor)
         {
@@ -293,6 +319,7 @@ public sealed class AppSettings
     {
         var copy = (AppSettings)MemberwiseClone();
         copy.SmartRules = SmartRules.Select(r => new SmartRule { Type = r.Type, Path = r.Path, Preset = r.Preset }).ToList();
+        copy.PresetImportChoices = new(PresetImportChoices);
         return copy;
     }
 
@@ -326,6 +353,9 @@ public sealed class AppSettings
                 var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
                 foreach (var rule in settings.SmartRules)
                     rule.Normalize();
+
+                // Settings saved before the option existed: on where the mode would have switched it on.
+                settings.ShowTimelineThumbnails ??= settings.UiMode == EditorMode;
                 return settings;
             }
         }
@@ -334,7 +364,7 @@ public sealed class AppSettings
             // An unreadable settings file must not stop the app from starting; defaults apply.
         }
 
-        return new AppSettings();
+        return new AppSettings { ShowTimelineThumbnails = false };
     }
 
     // Paths are often pasted with the quotes Explorer's "Copy as path" adds.

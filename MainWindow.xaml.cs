@@ -24,10 +24,14 @@ namespace HandPegApp;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new();
-    private readonly LibVLC _libVlc;
+    // One LibVLC for as long as it behaves; Reload Player replaces it. See ReloadPlayer_Click.
+    private LibVLC _libVlc;
 
     // Replaced with a fresh one for every source that is loaded; see PlayMedia.
     private MediaPlayer _mediaPlayer;
+
+    // Set by Reload Player: the new player comes up paused, as the old one was.
+    private bool _pauseWhenStarted;
 
     private QueueWindow? _queueWindow;
     private bool _isScrubbing;
@@ -99,6 +103,30 @@ public partial class MainWindow : Window
         PreviewKeyDown += MainWindow_PreviewKeyDown;
         Closed += MainWindow_Closed;
         Loaded += (_, _) => _ = CheckForHandPegUpdateAsync();
+        Loaded += (_, _) => OpenLaunchRequest();
+    }
+
+    /// <summary>What was chosen in the launch window, if it was shown: a video, a video with a preset, or a project.</summary>
+    private void OpenLaunchRequest()
+    {
+        if (App.LaunchRequest is not { } request)
+            return;
+
+        App.LaunchRequest = null;
+        switch (request.Kind)
+        {
+            case LaunchKind.Video when request.PresetName is { } preset:
+                _ = _viewModel.LoadFileWithPresetAsync(request.Path, preset, request.Parts);
+                break;
+
+            case LaunchKind.Video:
+                _viewModel.LoadFile(request.Path);
+                break;
+
+            case LaunchKind.Project:
+                _ = _viewModel.LoadProjectAsync(request.Path);
+                break;
+        }
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -133,6 +161,16 @@ public partial class MainWindow : Window
             // The audio output only exists once playback has started, so volume and speed are (re)applied here.
             player.Volume = _viewModel.Volume;
             player.SetRate(_viewModel.PlaybackRate);
+
+            // And so is the choice of track, which a new player does not know about.
+            if (_viewModel.SoloTrack is not null)
+                ApplySoloTrack();
+
+            if (_pauseWhenStarted)
+            {
+                _pauseWhenStarted = false;
+                player.SetPause(true);
+            }
         });
         player.Paused += (_, _) => OnUi(() => _viewModel.IsPlaying = false);
         player.Stopped += (_, _) => OnUi(() => _viewModel.IsPlaying = false);
@@ -242,6 +280,23 @@ public partial class MainWindow : Window
     private void ManualCut_Click(object sender, RoutedEventArgs e) =>
         new ManualCutWindow(_viewModel) { Owner = this }.ShowDialog();
 
+    /// <summary>Remove Dead Air: first how quiet counts as silence, then the search.</summary>
+    private void RemoveDeadAir_Click(object sender, RoutedEventArgs e)
+    {
+        if (new DeadAirDialog { Owner = this }.ShowDialog() == true && _viewModel.RemoveDeadAirCommand.CanExecute(null))
+            _viewModel.RemoveDeadAirCommand.Execute(null);
+    }
+
+    /// <summary>The Video Combinator: two videos joined into one, saved to a file or sent straight to the editor.</summary>
+    private void OpenCombinator_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new CombinatorDialog { Owner = this };
+        if (dialog.ShowDialog() == true && dialog.SendToEditorPath is { } combined)
+            LoadDroppedFile(combined);
+    }
+
+    private void DropHint_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => BrowseSource_Click(sender, e);
+
     // ----- Drag and drop -----
 
     private void Window_DragOver(object sender, DragEventArgs e)
@@ -274,11 +329,18 @@ public partial class MainWindow : Window
 
         if (_viewModel.HasSource)
         {
-            var answer = MessageBox.Show(this,
-                "A video is already open. Load this new video and discard current unqueued settings?",
-                "HandPeg", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
-            if (answer != MessageBoxResult.Yes)
+            // Save what is open as a project first, load over it, or leave things as they are.
+            var dialog = new ReplaceVideoDialog(_viewModel.SourcePath, file) { Owner = this };
+            dialog.ShowDialog();
+            if (dialog.Choice == ReplaceVideoChoice.Cancel)
                 return;
+
+            // A project that could not be saved must not be followed by losing what it was meant to keep.
+            if (dialog.Choice == ReplaceVideoChoice.SaveAndLoad
+                && !_viewModel.SaveProject(dialog.ProjectName).StartsWith("Project saved", StringComparison.Ordinal))
+            {
+                return;
+            }
         }
 
         _viewModel.LoadFile(file);
@@ -326,6 +388,7 @@ public partial class MainWindow : Window
         var retired = _mediaPlayer;
         retired.Stop();
 
+        _pauseWhenStarted = false;
         _mediaPlayer = CreatePlayer();
         VideoView.MediaPlayer = _mediaPlayer;
         StartPlayback(path, attemptsLeft: 20);
@@ -334,11 +397,60 @@ public partial class MainWindow : Window
         Task.Run(retired.Dispose);
     }
 
+    private bool _reloadingPlayer;
+
+    /// <summary>
+    /// Reload Player: for when LibVLC has locked up and the timeline no longer responds. The player and the
+    /// LibVLC instance under it are replaced with new ones, and the video is opened again where it was.
+    /// The old pair is stopped and released away from the UI thread, and is not waited for beyond a moment:
+    /// a player that is truly stuck would otherwise take the window down with it.
+    /// </summary>
+    private async void ReloadPlayer_Click(object sender, RoutedEventArgs e)
+    {
+        var path = _viewModel.LocalMediaPath;
+        if (_reloadingPlayer || !_viewModel.HasSource || !File.Exists(path))
+        {
+            if (!_reloadingPlayer)
+                _viewModel.StatusText = "There is no video loaded to reload.";
+            return;
+        }
+
+        _reloadingPlayer = true;
+        var (resumeAt, wasPlaying) = ((long)_viewModel.PositionMs, _viewModel.IsPlaying);
+        _viewModel.StatusText = "Reloading the player...";
+
+        // The new pair first: from here on, events from the old player are ignored (see CreatePlayer).
+        var (retiredPlayer, retiredVlc) = (_mediaPlayer, _libVlc);
+        _libVlc = new LibVLC();
+        _mediaPlayer = CreatePlayer();
+        _isScrubbing = false;
+
+        // The old player is stopped while it still owns the video surface (see PlayMedia), but off this thread.
+        var stopping = Task.Run(retiredPlayer.Stop);
+        var stopped = await Task.WhenAny(stopping, Task.Delay(2500)) == stopping;
+        _ = stopping.ContinueWith(_ =>
+        {
+            retiredPlayer.Dispose();
+            retiredVlc.Dispose();
+        }, TaskScheduler.Default);
+
+        _viewModel.IsPlaying = false;
+        _pauseWhenStarted = !wasPlaying;
+        VideoView.MediaPlayer = _mediaPlayer;
+        StartPlayback(path, attemptsLeft: 20, startMs: resumeAt);
+
+        _viewModel.StatusText = stopped
+            ? $"Player reloaded at {_viewModel.PositionText}."
+            : $"Player reloaded at {_viewModel.PositionText}. The old player did not answer and was left behind.";
+        _reloadingPlayer = false;
+    }
+
     /// <summary>
     /// Starts playing only once the player has the window's video surface. Without one, LibVLC would
     /// create its own top-level Direct3D window; so if the surface is not attached yet, this waits for it.
     /// </summary>
-    private void StartPlayback(string path, int attemptsLeft)
+    /// <param name="startMs">Where to start playing from, for a reload; 0 for the beginning.</param>
+    private void StartPlayback(string path, int attemptsLeft, long startMs = 0)
     {
         var player = _mediaPlayer;
         if (player.Hwnd == IntPtr.Zero)
@@ -360,14 +472,72 @@ public partial class MainWindow : Window
             Dispatcher.BeginInvoke(() =>
             {
                 if (ReferenceEquals(player, _mediaPlayer))
-                    StartPlayback(path, attemptsLeft - 1);
+                    StartPlayback(path, attemptsLeft - 1, startMs);
             }, System.Windows.Threading.DispatcherPriority.Loaded);
             return;
         }
 
         // The player keeps its own reference to the media, so this one can go as soon as playback has started.
         using var media = new Media(_libVlc, path, FromType.FromPath);
+        if (startMs > 0)
+            media.AddOption(string.Create(System.Globalization.CultureInfo.InvariantCulture, $":start-time={startMs / 1000.0:0.###}"));
         player.Play(media);
+    }
+
+    // ----- One audio track on its own -----
+
+    /// <summary>
+    /// Has the player play the track chosen on the Audio tab, or the first one when none is. LibVLC numbers
+    /// the tracks its own way; they are listed in the order of the file, after an entry for "no audio".
+    /// </summary>
+    private void ApplySoloTrack()
+    {
+        var tracks = _mediaPlayer.AudioTrackDescription.Where(t => t.Id >= 0).Select(t => t.Id).ToList();
+        var index = _viewModel.SoloTrack?.Index ?? 0;
+        if (index < tracks.Count && _mediaPlayer.AudioTrack != tracks[index])
+            _mediaPlayer.SetAudioTrack(tracks[index]);
+    }
+
+    private void OnSoloTrackChanged()
+    {
+        if (_mediaPlayer.Media is null)
+            return;
+
+        ApplySoloTrack();
+
+        // The button is a play button: choosing a track starts it, and letting go of it pauses.
+        if (_viewModel.SoloTrack is not null && !_mediaPlayer.IsPlaying)
+            PlayPause_Click(this, new RoutedEventArgs());
+        else if (_viewModel.SoloTrack is null && _mediaPlayer.IsPlaying)
+            _mediaPlayer.SetPause(true);
+    }
+
+    // ----- Seeking from a waveform -----
+    // A track's waveform on the Audio tab covers the whole video from edge to edge, so a point on it is a time.
+
+    private void Waveform_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement waveform || _viewModel.DurationMs <= 0 || !waveform.CaptureMouse())
+            return;
+
+        // Handled, so the list the track's row is in does not take the mouse for itself and end the drag.
+        e.Handled = true;
+        SeekToWaveformPoint(waveform, e);
+    }
+
+    private void Waveform_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (sender is FrameworkElement { IsMouseCaptured: true } waveform)
+            SeekToWaveformPoint(waveform, e);
+    }
+
+    private void Waveform_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => (sender as UIElement)?.ReleaseMouseCapture();
+
+    private void SeekToWaveformPoint(FrameworkElement waveform, MouseEventArgs e)
+    {
+        // Setting the position moves the timeline, which seeks the player.
+        if (waveform.ActualWidth > 0)
+            _viewModel.PositionMs = Math.Clamp(e.GetPosition(waveform).X / waveform.ActualWidth, 0, 1) * _viewModel.DurationMs;
     }
 
     // ----- Playback / scrubbing -----
@@ -470,8 +640,17 @@ public partial class MainWindow : Window
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(MainViewModel.DurationMs) or nameof(MainViewModel.PendingStartMs))
+        if (e.PropertyName is nameof(MainViewModel.DurationMs) or nameof(MainViewModel.PendingStartMs) or nameof(MainViewModel.PlayOnlySegments))
             RedrawSegments();
+
+        if (e.PropertyName == nameof(MainViewModel.SoloTrack))
+            OnSoloTrackChanged();
+
+        if (e.PropertyName == nameof(MainViewModel.HasSource))
+            DropHint.Visibility = _viewModel.HasSource ? Visibility.Collapsed : Visibility.Visible;
+
+        if (e.PropertyName is nameof(MainViewModel.ShowTimelineThumbnails) or nameof(MainViewModel.DurationMs))
+            RebuildFilmstrip();
 
         if (e.PropertyName == nameof(MainViewModel.Volume))
             _mediaPlayer.Volume = _viewModel.Volume;
@@ -531,14 +710,42 @@ public partial class MainWindow : Window
 
     private void SegmentCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => RedrawSegments();
 
+    // What playback skips, and the stretch a right-drag is marking.
+    private static readonly Brush BlackoutBrush = Frozen(Color.FromArgb(0xB0, 0x2A, 0x16, 0x16));
+    private static readonly Brush RangeDragBrush = Frozen(Color.FromArgb(0x70, 0xFF, 0x8C, 0x00));
+
+    private static Brush Frozen(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+
     private void RedrawSegments()
     {
         SegmentCanvas.Children.Clear();
+        ShadeCanvas.Children.Clear();
 
         var duration = _viewModel.DurationMs;
         var width = SegmentCanvas.ActualWidth;
         if (duration <= 0 || width <= 0)
             return;
+
+        // The blackouts: everything outside the cut segments, shaded while playback is set to skip it.
+        if (_viewModel.PlayOnlySegments && _viewModel.Segments.Count > 0)
+        {
+            var reached = 0.0;
+            foreach (var segment in _viewModel.Segments.OrderBy(s => s.Start))
+            {
+                AddShade(reached, segment.Start.TotalMilliseconds, BlackoutBrush);
+                reached = Math.Max(reached, segment.End.TotalMilliseconds);
+            }
+
+            AddShade(reached, duration, BlackoutBrush);
+        }
+
+        if (_rangeDragStartMs is { } dragStart)
+            AddShade(Math.Min(dragStart, _rangeDragEndMs), Math.Max(dragStart, _rangeDragEndMs), RangeDragBrush);
 
         foreach (var segment in _viewModel.Segments)
         {
@@ -550,6 +757,93 @@ public partial class MainWindow : Window
 
         if (_viewModel.PendingStartMs is { } pendingStart)
             AddStripMark(pendingStart / duration * width, 2, Brushes.OrangeRed);
+    }
+
+    /// <summary>Shades the timeline between two times, given in milliseconds.</summary>
+    private void AddShade(double fromMs, double toMs, Brush fill)
+    {
+        var (duration, width) = (_viewModel.DurationMs, ShadeCanvas.ActualWidth);
+        if (toMs <= fromMs || duration <= 0 || width <= 0)
+            return;
+
+        var shade = new System.Windows.Shapes.Rectangle
+        {
+            Width = Math.Max((toMs - fromMs) / duration * width, 1),
+            Height = ShadeCanvas.ActualHeight,
+            Fill = fill,
+        };
+        Canvas.SetLeft(shade, fromMs / duration * width);
+        ShadeCanvas.Children.Add(shade);
+    }
+
+    // ----- Marking a segment by dragging with the right button -----
+
+    private double? _rangeDragStartMs;
+    private double _rangeDragEndMs;
+
+    /// <summary>The time, in milliseconds, at a horizontal position on the timeline.</summary>
+    private double TimelineMsAt(double x)
+    {
+        // The track is shorter than the slider by half a thumb at each end.
+        const double inset = 5.5;
+        var track = TimelineSlider.ActualWidth - 2 * inset;
+        return track > 0 ? Math.Clamp((x - inset) / track, 0, 1) * _viewModel.DurationMs : 0;
+    }
+
+    /// <summary>The same pull towards keyframes that the thumb feels while it is dragged, when that is switched on.</summary>
+    private double PullToKeyframe(double positionMs)
+    {
+        var settings = AppSettings.Current;
+        if (!settings.SnapTimelineToKeyframes || TimelineSlider.ActualWidth <= 0 || _viewModel.GetNearestKeyframeMs(positionMs) is not { } keyframe)
+            return positionMs;
+
+        const double pixelsPerStep = 4;
+        var reach = Math.Clamp(settings.TimelineMagnetism, 1, 5) * pixelsPerStep / TimelineSlider.ActualWidth * _viewModel.DurationMs;
+        return Math.Abs(keyframe - positionMs) <= reach ? keyframe : positionMs;
+    }
+
+    private void TimelineSlider_RightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_viewModel.DurationMs <= 0 || !TimelineSlider.CaptureMouse())
+            return;
+
+        _rangeDragStartMs = _rangeDragEndMs = PullToKeyframe(TimelineMsAt(e.GetPosition(TimelineSlider).X));
+        PreviewPopup.IsOpen = false;
+        e.Handled = true;
+        RedrawSegments();
+    }
+
+    private void TimelineSlider_RightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_rangeDragStartMs is not { } start)
+            return;
+
+        var end = _rangeDragEndMs;
+        _rangeDragStartMs = null;
+        TimelineSlider.ReleaseMouseCapture();
+        e.Handled = true;
+        RedrawSegments();
+
+        // A right-click without a drag marks nothing.
+        var pixels = Math.Abs(end - start) / _viewModel.DurationMs * TimelineSlider.ActualWidth;
+        if (pixels < 3)
+        {
+            _viewModel.StatusText = "Drag along the timeline with the right mouse button to mark a cut segment.";
+            return;
+        }
+
+        // The same way in as a typed cut, so Snap cuts to keyframes applies to it in the same way.
+        if (_viewModel.AddManualSegment(Math.Min(start, end) / 1000, Math.Max(start, end) / 1000) is { } problem)
+            _viewModel.StatusText = problem;
+    }
+
+    private void TimelineSlider_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (_rangeDragStartMs is null)
+            return;
+
+        _rangeDragStartMs = null;
+        RedrawSegments();
     }
 
     private void AddStripMark(double left, double width, Brush fill)
@@ -1240,12 +1534,64 @@ public partial class MainWindow : Window
         {
             // A sheet that cannot be read just means no previews.
         }
+
+        RebuildFilmstrip();
+    }
+
+    // ----- Timeline thumbnails -----
+
+    private void FilmstripList_SizeChanged(object sender, SizeChangedEventArgs e) => RebuildFilmstrip();
+
+    /// <summary>
+    /// Fills the strip behind the timeline's waveform with pictures cut from the thumbnail sheet: as many as fit at their
+    /// own shape, each showing the moment at the middle of the stretch of timeline it lies over.
+    /// </summary>
+    private void RebuildFilmstrip()
+    {
+        var (interval, duration) = (_viewModel.SpriteIntervalSeconds, _viewModel.DurationMs / 1000);
+        if (!_viewModel.ShowTimelineThumbnails || _spriteSheet is not { } sheet || interval <= 0 || duration <= 0)
+        {
+            FilmstripList.ItemsSource = null;
+            FilmstripList.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        const int grid = FfmpegRunner.SpriteGridSize;
+        var (cellWidth, cellHeight) = (sheet.PixelWidth / grid, sheet.PixelHeight / grid);
+        if (cellWidth <= 0 || cellHeight <= 0)
+            return;
+
+        FilmstripList.Visibility = Visibility.Visible;
+        var stripWidth = FilmstripList.ActualWidth > 0 ? FilmstripList.ActualWidth : TimelineSlider.ActualWidth;
+        var last = Math.Max(Math.Min(grid * grid, (int)Math.Ceiling(duration / interval)) - 1, 0);
+        var stripHeight = FilmstripList.ActualHeight > 0 ? FilmstripList.ActualHeight : Math.Max(_viewModel.TimelineAreaHeight - 6, 8);
+        var count = Math.Clamp((int)Math.Round(stripWidth / (stripHeight * cellWidth / cellHeight)), 1, 80);
+
+        var pictures = new List<ImageSource>(count);
+        for (var i = 0; i < count; i++)
+        {
+            var index = Math.Clamp((int)((i + 0.5) / count * duration / interval), 0, last);
+            var picture = new CroppedBitmap(sheet, new Int32Rect(index % grid * cellWidth, index / grid * cellHeight, cellWidth, cellHeight));
+            picture.Freeze();
+            pictures.Add(picture);
+        }
+
+        FilmstripList.ItemsSource = pictures;
     }
 
     private void TimelineSlider_MouseMove(object sender, MouseEventArgs e)
     {
+        // A right-drag in progress: the stretch being marked follows the pointer.
+        if (_rangeDragStartMs is { } dragStart)
+        {
+            _rangeDragEndMs = PullToKeyframe(TimelineMsAt(e.GetPosition(TimelineSlider).X));
+            _viewModel.StatusText = $"New segment: {TimeDisplay.Format(Math.Min(dragStart, _rangeDragEndMs) / 1000)} to {TimeDisplay.Format(Math.Max(dragStart, _rangeDragEndMs) / 1000)}";
+            RedrawSegments();
+            return;
+        }
+
         var interval = _viewModel.SpriteIntervalSeconds;
-        if (_spriteSheet is null || interval <= 0 || _viewModel.DurationMs <= 0 || TimelineSlider.ActualWidth <= 0)
+        if (_spriteSheet is null || !_viewModel.ShowHoverPreviews || interval <= 0 || _viewModel.DurationMs <= 0 || TimelineSlider.ActualWidth <= 0)
         {
             PreviewPopup.IsOpen = false;
             return;

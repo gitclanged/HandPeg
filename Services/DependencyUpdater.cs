@@ -60,6 +60,14 @@ public static class DependencyUpdater
         "ggml-tiny.bin", "ggml-base.bin", "ggml-small.bin", "ggml-medium.bin",
     ];
 
+    /// <summary>
+    /// The voice activity detection model whisper.cpp uses to skip silence (Silero VAD, under 1 MB). Kept with
+    /// the speech models; without it auto-captions still work, but may put words into quiet stretches.
+    /// </summary>
+    public const string VadModel = "ggml-silero-v5.1.2.bin";
+
+    private const string VadModelUrl = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/" + VadModel;
+
     private static readonly HttpClient Http = CreateClient(followRedirects: true);
 
     // For asking where a download redirects to, and what the answer says about the file, without fetching it.
@@ -118,6 +126,8 @@ public static class DependencyUpdater
     public static string WhisperModelPath => GetWhisperModelPath(AppSettings.Current.WhisperModel);
 
     public static string GetWhisperModelPath(string model) => Path.Combine(ModelsFolder, Path.GetFileName(model));
+
+    public static string VadModelPath => GetWhisperModelPath(VadModel);
 
     private static string OrDefault(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
@@ -503,6 +513,9 @@ public static class DependencyUpdater
     /// <summary>Roughly what a model weighs, for showing before it is downloaded.</summary>
     public static long ApproximateModelBytes(string model)
     {
+        if (model == VadModel)
+            return 885098;
+
         var megabytes = model switch
         {
             _ when model.Contains("tiny", StringComparison.Ordinal) => 75,
@@ -520,10 +533,10 @@ public static class DependencyUpdater
     /// </summary>
     public static async Task InstallModelAsync(string model, IProgress<InstallProgress> progress, CancellationToken cancellationToken)
     {
-        if (!WhisperModels.Contains(model))
+        if (!WhisperModels.Contains(model) && model != VadModel)
             throw new InvalidOperationException($"Unknown model: {model}");
 
-        var url = AppSettings.WhisperModelBaseUrl + model;
+        var url = model == VadModel ? VadModelUrl : AppSettings.WhisperModelBaseUrl + model;
         var staging = Path.Combine(StagingRoot, $"model_{Guid.NewGuid():N}");
         var download = Path.Combine(staging, model);
         try
@@ -535,7 +548,7 @@ public static class DependencyUpdater
 
             Directory.CreateDirectory(ModelsFolder);
             File.Move(download, GetWhisperModelPath(model), overwrite: true);
-            AppLog.Write($"Installed the speech model {model} ({(expected is null ? "no checksum published" : "SHA-256 verified")}).");
+            AppLog.Write($"Installed the model {model} ({(expected is null ? "no checksum published" : "SHA-256 verified")}).");
         }
         finally
         {

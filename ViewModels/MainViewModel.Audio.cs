@@ -112,6 +112,25 @@ public partial class MainViewModel
         }
     }
 
+    // ----- Listening to one track -----
+
+    /// <summary>
+    /// The audio track the player plays instead of the first one, or null. The player plays one track at a
+    /// time, so this is how a track is heard on its own; it changes nothing about the encode.
+    /// </summary>
+    [ObservableProperty] private AudioTrack? _soloTrack;
+
+    [RelayCommand]
+    private void ToggleSolo(AudioTrack? track) => SoloTrack = track is null || ReferenceEquals(SoloTrack, track) ? null : track;
+
+    partial void OnSoloTrackChanged(AudioTrack? value)
+    {
+        foreach (var track in AudioTracks)
+            track.IsSolo = ReferenceEquals(track, value);
+        if (value is not null)
+            StatusText = $"Playing {value.Title} on its own. Press its button again to go back to the first track.";
+    }
+
     // ----- The elements list -----
 
     /// <summary>
@@ -296,9 +315,113 @@ public partial class MainViewModel
     [RelayCommand]
     private void RemoveVoiceover()
     {
+        // A recording is the session's own and goes with it; a file brought in from elsewhere is the user's and stays.
+        var recorded = VoiceoverPath.Equals(RecordingPath, StringComparison.OrdinalIgnoreCase);
+
         (VoiceoverPath, VoiceoverWaveform, VoiceoverDuration) = ("", null, 0);
         (VoiceoverTrimStart, VoiceoverTrimEnd, VoiceoverStartSeconds, CaptionUseVoiceover) = (0, 0, 0, false);
         VoiceoverStatus = "The voiceover was removed.";
+
+        try
+        {
+            if (recorded)
+                File.Delete(RecordingPath);
+            File.Delete(Path.Combine(VoiceoverFolder, "voiceover_trimmed.wav"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Still open somewhere; it is in the session folder and goes when the application closes.
+        }
+    }
+
+    /// <summary>Do-Over: throws away the take being recorded, or the one just made, so the next Record starts afresh.</summary>
+    [RelayCommand]
+    private async Task DiscardVoiceoverAsync()
+    {
+        await _recorder.DiscardAsync();
+        (IsRecording, IsRecordingPaused) = (false, false);
+        RemoveVoiceover();
+        VoiceoverStatus = "The take was thrown away. Press Record to start again.";
+    }
+
+    // ----- The voiceover against the timeline -----
+
+    /// <summary>Length of the finished video in seconds: the kept segments end to end, or the whole source.</summary>
+    public double OutputDurationSeconds => GetOutputDuration();
+
+    /// <summary>Where one kept segment ends and the next begins in the finished video, each as a fraction (0 to 1) of its length.</summary>
+    public List<double> GetCutSplitFractions()
+    {
+        var segments = GetMergedSegments();
+        var total = segments.Sum(s => s.Duration.TotalSeconds);
+        var splits = new List<double>();
+        if (total <= 0)
+            return splits;
+
+        var reached = 0.0;
+        foreach (var segment in segments.SkipLast(1))
+        {
+            reached += segment.Duration.TotalSeconds;
+            splits.Add(reached / total);
+        }
+
+        return splits;
+    }
+
+    /// <summary>The part of the voiceover's waveform that is kept by its trim, for the Master Mix View.</summary>
+    [ObservableProperty] private ImageSource? _voiceoverMixWaveform;
+
+    /// <summary>Where the voiceover begins and how long it is in the Master Mix View, as fractions (0 to 1) of the source's length.</summary>
+    [ObservableProperty] private double _voiceoverMixStart;
+
+    [ObservableProperty] private double _voiceoverMixWidth;
+
+    /// <summary>
+    /// Places the voiceover in the Master Mix View. The tracks there are drawn along the source, while the
+    /// voiceover is timed against the finished video; so its start and end are taken back through the cuts
+    /// to the moments of the source that are on screen when it starts and ends.
+    /// </summary>
+    private void UpdateVoiceoverMix()
+    {
+        var total = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        if (!HasVoiceover || VoiceoverDuration <= 0 || total <= 0 || VoiceoverWaveform is not System.Windows.Media.Imaging.BitmapSource picture)
+        {
+            (VoiceoverMixWaveform, VoiceoverMixStart, VoiceoverMixWidth) = (null, 0, 0);
+            return;
+        }
+
+        var from = Math.Clamp(VoiceoverTrimStart / VoiceoverDuration, 0, 1);
+        var to = Math.Clamp(VoiceoverTrimEnd / VoiceoverDuration, 0, 1);
+        if (to - from < 0.001)
+            (from, to) = (0, 1);
+
+        var left = Math.Min((int)(from * picture.PixelWidth), picture.PixelWidth - 1);
+        var width = Math.Clamp((int)((to - from) * picture.PixelWidth), 1, picture.PixelWidth - left);
+        var kept = new System.Windows.Media.Imaging.CroppedBitmap(picture, new System.Windows.Int32Rect(left, 0, width, picture.PixelHeight));
+        kept.Freeze();
+
+        var start = OutputToSourceSeconds(VoiceoverStartSeconds);
+        var end = Math.Max(OutputToSourceSeconds(VoiceoverStartSeconds + (to - from) * VoiceoverDuration), start);
+        VoiceoverMixWaveform = kept;
+        VoiceoverMixStart = Math.Clamp(start / total, 0, 1);
+        VoiceoverMixWidth = Math.Clamp((end - start) / total, 0, 1 - VoiceoverMixStart);
+    }
+
+    /// <summary>The moment of the source that is on screen at a time in the finished video.</summary>
+    private double OutputToSourceSeconds(double seconds)
+    {
+        var segments = GetMergedSegments();
+        if (segments.Count == 0)
+            return seconds;
+
+        foreach (var segment in segments)
+        {
+            if (seconds <= segment.Duration.TotalSeconds)
+                return segment.Start.TotalSeconds + Math.Max(seconds, 0);
+            seconds -= segment.Duration.TotalSeconds;
+        }
+
+        return segments[^1].End.TotalSeconds;
     }
     /// <summary>Takes a wave file as the session's voiceover: measures it, draws it, and opens the trim to its whole length.</summary>
     private async Task LoadVoiceoverAsync(string path, string verb)

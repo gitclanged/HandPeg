@@ -11,10 +11,6 @@ namespace HandPegApp.ViewModels;
 // Creator tools: playback helpers, the Frame & Layer Engine, pro filters, target size and dead-air removal.
 public partial class MainViewModel
 {
-    // What counts as dead air: quieter than this, for at least this long.
-    private const double SilenceNoiseDb = -35;
-    private const double SilenceMinSeconds = 1;
-
     // Kept stretches shorter than this are not worth a cut of their own.
     private const double ShortestKeptSeconds = 0.25;
 
@@ -582,15 +578,19 @@ public partial class MainViewModel
 
         var settings = AppSettings.Current;
         var duration = _mediaInfo?.DurationSeconds ?? 0;
-        if (!settings.GenerateHoverPreviews || duration <= 0 || _mediaInfo?.Video is null)
+        if (!(settings.GenerateHoverPreviews || ShowTimelineThumbnails) || duration <= 0 || _mediaInfo?.Video is null)
             return;
 
         var cancellation = _spriteCancellation = new CancellationTokenSource();
 
         // One sheet holds a fixed number of thumbnails; for a long video they are spread further apart
-        // so that the sheet still covers all of it.
+        // so that the sheet still covers all of it. The strip behind the timeline is cut from the same
+        // sheet, and wants enough pictures to fill its length even for a short video.
         var capacity = FfmpegRunner.SpriteGridSize * FfmpegRunner.SpriteGridSize;
-        var interval = Math.Max(Math.Max(settings.ThumbnailIntervalSeconds, 1), duration / capacity);
+        var wanted = Math.Max(settings.ThumbnailIntervalSeconds, 1.0);
+        if (ShowTimelineThumbnails)
+            wanted = Math.Min(wanted, Math.Max(duration / FilmstripPictures, 0.2));
+        var interval = Math.Max(wanted, duration / capacity);
 
         var imagePath = Path.Combine(SpriteFolder, $"{Guid.NewGuid():N}.jpg");
         try
@@ -616,6 +616,15 @@ public partial class MainViewModel
             cancellation.Dispose();
         }
     }
+
+    /// <summary>How many pictures the strip along the timeline is given to choose from, at least.</summary>
+    private const int FilmstripPictures = 40;
+
+    /// <summary>Whether a strip of pictures from the video is drawn along the timeline, behind the waveform.</summary>
+    public bool ShowTimelineThumbnails => AppSettings.Current.ShowTimelineThumbnails == true;
+
+    /// <summary>Whether a picture of the video follows the pointer along the timeline.</summary>
+    public bool ShowHoverPreviews => AppSettings.Current.GenerateHoverPreviews;
 
     private static void DeleteSpriteFiles()
     {
@@ -839,6 +848,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(TimelineAreaHeight));
         OnPropertyChanged(nameof(AudioTrackRowHeight));
         OnPropertyChanged(nameof(ShowWaveforms));
+        OnPropertyChanged(nameof(ShowTimelineThumbnails));
         OnPropertyChanged(nameof(CaptionHint));
         foreach (var segment in Segments)
             segment.RefreshDisplay();
@@ -848,6 +858,7 @@ public partial class MainViewModel
 
     /// <summary>
     /// Finds the silent stretches of the first audio track and replaces the cut list with everything in between.
+    /// What counts as silence (how quiet, for how long) is in the settings, set from the Remove Dead Air dialog.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
     private Task RemoveDeadAirAsync() => RunOperationAsync(async cancellationToken =>
@@ -861,10 +872,11 @@ public partial class MainViewModel
         StatusText = "Listening for silence...";
 
         var duration = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
-        var silences = await FfmpegRunner.DetectSilenceAsync(
-            LocalMediaPath, SilenceNoiseDb, SilenceMinSeconds, duration, cancellationToken);
+        var noiseDb = Math.Clamp(AppSettings.Current.DeadAirThresholdDb, -80, -10);
+        var minimumSeconds = Math.Clamp(AppSettings.Current.DeadAirMinSeconds, 0.2, 30);
+        var silences = await FfmpegRunner.DetectSilenceAsync(LocalMediaPath, noiseDb, minimumSeconds, duration, cancellationToken);
         if (silences.Count == 0)
-            return "No silence found: the cut list was left as it is.";
+            return $"Nothing quieter than {noiseDb:0} dB for {minimumSeconds:0.#} s was found: the cut list was left as it is.";
 
         // Keep what lies between the silences.
         var kept = new List<CutSegment>();
@@ -891,7 +903,7 @@ public partial class MainViewModel
             SnapSegmentsToKeyframes();
 
         var removed = silences.Sum(s => s.End - s.Start);
-        return $"Removed {silences.Count} silent stretch{(silences.Count == 1 ? "" : "es")} ({removed:0.#} s): {Segments.Count} segment{(Segments.Count == 1 ? "" : "s")} kept.";
+        return $"Removed {silences.Count} silent stretch{(silences.Count == 1 ? "" : "es")} below {noiseDb:0} dB ({removed:0.#} s): {Segments.Count} segment{(Segments.Count == 1 ? "" : "s")} kept.";
     });
 
     // ----- Chapters at cut points -----

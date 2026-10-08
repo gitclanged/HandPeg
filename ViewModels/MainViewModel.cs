@@ -56,6 +56,8 @@ public partial class MainViewModel : ObservableObject
         nameof(ShowCommandPreviewTab), nameof(ShowAdvancedFiltersTab),
         nameof(DrawTargetElement), nameof(IsArrangeActive), nameof(SpriteSheetPath),
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
+        nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloTrack),
+        nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth),
     ];
 
 
@@ -122,6 +124,20 @@ public partial class MainViewModel : ObservableObject
         UiElements.CollectionChanged += (_, _) => GenerateCommand();
         Segments.CollectionChanged += (_, _) => GenerateCommand();
         GenerateCommand();
+
+        // The voiceover's place in the Master Mix View follows the voiceover, its trim and the cuts.
+        if (!_isBackgroundWorker)
+        {
+            Segments.CollectionChanged += (_, _) => UpdateVoiceoverMix();
+            PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName is nameof(DurationMs) or nameof(VoiceoverWaveform) or nameof(VoiceoverPath)
+                    or nameof(VoiceoverTrimStart) or nameof(VoiceoverTrimEnd) or nameof(VoiceoverStartSeconds))
+                {
+                    UpdateVoiceoverMix();
+                }
+            };
+        }
     }
 
     private readonly string _workFolder = SessionPaths.Root;
@@ -343,7 +359,9 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _destinationPath = "";
 
     /// <summary>The file FFmpeg reads: the source itself, or the yt-dlp download for a URL.</summary>
-    [ObservableProperty] private string _localMediaPath = "";
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSource))]
+    private string _localMediaPath = "";
 
     // ----- Status bar -----
 
@@ -826,6 +844,39 @@ public partial class MainViewModel : ObservableObject
         SourcePath = path;
         LoadSourceCommand.Execute(null);
     }
+
+    /// <summary>
+    /// Loads a file and applies a preset to it, or only the chosen parts of one: what dropping a video on a
+    /// preset in the launch window does. The smart rules do not apply; the preset was chosen by hand.
+    /// </summary>
+    public Task LoadFileWithPresetAsync(string path, string presetName, PresetParts parts) => RunOperationAsync(async cancellationToken =>
+    {
+        SourcePath = path;
+        EditingJob = null;
+        var (loaded, message) = await LoadMediaAsync(path, knownLocalPath: null, applyAutomation: false, cancellationToken);
+        if (!loaded)
+            return message;
+
+        if (Presets.FirstOrDefault(p => p.Name.Equals(presetName, StringComparison.OrdinalIgnoreCase)) is not { } preset)
+            return $"{message}. The preset \"{presetName}\" no longer exists.";
+
+        if (parts == PresetParts.All)
+        {
+            // Selecting it applies it; when it is already selected, apply it again.
+            if (ReferenceEquals(SelectedPreset, preset))
+                ApplyPreset(preset);
+            else
+                SelectedPreset = preset;
+            return $"{message}. Preset \"{preset.Name}\" applied.";
+        }
+
+        // Everything as it is now, with the chosen parts replaced by the preset's.
+        var merged = CaptureSettings(preset.Name);
+        merged.TakeFrom(preset, parts);
+        SelectedPreset = null;
+        ApplyPreset(merged);
+        return $"{message}. Preset \"{preset.Name}\" applied in part ({parts}).";
+    });
 
     /// <summary>
     /// Makes a source the current one: downloads it if it is a URL, inspects it and starts playback.

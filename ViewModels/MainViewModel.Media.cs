@@ -67,6 +67,7 @@ public partial class MainViewModel
             track.PropertyChanged -= OnTrackChanged;
         foreach (var track in SubtitleTracks)
             track.PropertyChanged -= OnTrackChanged;
+        SoloTrack = null;
         AudioTracks.Clear();
         SubtitleTracks.Clear();
 
@@ -104,8 +105,8 @@ public partial class MainViewModel
         if (e.PropertyName == nameof(AudioTrack.Action) && sender is AudioTrack && HasSource && !_isBackgroundWorker)
             _ = RefreshTimelineWaveformAsync(LocalMediaPath);
 
-        // A picture arriving is not a change of settings.
-        if (e.PropertyName != nameof(AudioTrack.Waveform))
+        // A picture arriving is not a change of settings, and nor is which track the player plays.
+        if (e.PropertyName is not (nameof(AudioTrack.Waveform) or nameof(AudioTrack.IsSolo)))
             GenerateCommand();
     }
 

@@ -2,6 +2,20 @@ using System.Text.Json.Serialization;
 
 namespace HandPegApp.Models;
 
+/// <summary>The groups of settings a preset is made of, for applying some of it and leaving the rest as it is.</summary>
+[Flags]
+public enum PresetParts
+{
+    None = 0,
+    Size = 1,
+    Video = 2,
+    Audio = 4,
+    Filters = 8,
+    Layout = 16,
+    Captions = 32,
+    All = Size | Video | Audio | Filters | Layout | Captions,
+}
+
 /// <summary>
 /// A named snapshot of the Dimensions, Filters, Video and Audio tabs.
 /// Nothing about the source or its cut points is stored.
@@ -151,4 +165,52 @@ public sealed class EncodingPreset
     public string? Container { get; set; }
 
     public override string ToString() => Name;
+
+    /// <summary>Takes the chosen groups of settings from another preset, leaving the others as they are here.</summary>
+    public void TakeFrom(EncodingPreset other, PresetParts parts)
+    {
+        if (parts.HasFlag(PresetParts.Size))
+        {
+            (OutputWidth, OutputHeight, KeepAspectRatio) = (other.OutputWidth, other.OutputHeight, other.KeepAspectRatio);
+            (CropPercent, CropTop, CropBottom, CropLeft, CropRight) = (other.CropPercent, other.CropTop, other.CropBottom, other.CropLeft, other.CropRight);
+            (PixelAspectRatio, CustomPixelAspectRatio) = (other.PixelAspectRatio, other.CustomPixelAspectRatio);
+            UseVerticalResolution = other.UseVerticalResolution ?? other.FrameEngine;
+        }
+
+        if (parts.HasFlag(PresetParts.Video))
+        {
+            (VideoEncoder, EncoderPreset, Tune, Profile, Level) = (other.VideoEncoder, other.EncoderPreset, other.Tune, other.Profile, other.Level);
+            (RateControl, Quality, TargetBitrate, TargetFileSize) = (other.RateControl, other.Quality, other.TargetBitrate, other.TargetFileSize);
+            (Framerate, CustomFramerate, Colorspace) = (other.Framerate, other.CustomFramerate, other.Colorspace);
+            (HardwareDecoding, ExtraVideoArguments, Container) = (other.HardwareDecoding, other.ExtraVideoArguments, other.Container);
+        }
+
+        if (parts.HasFlag(PresetParts.Audio))
+        {
+            (AudioEncoder, AudioBitrate, AudioTracks) = (other.AudioEncoder, other.AudioBitrate, other.AudioTracks);
+            (MergeAudioTracks, NormalizeAudio, DuckAudio) = (other.MergeAudioTracks, other.NormalizeAudio, other.DuckAudio);
+        }
+
+        if (parts.HasFlag(PresetParts.Filters))
+        {
+            (Deinterlace, Denoise, LutPath, FadeIn, FadeOut) = (other.Deinterlace, other.Denoise, other.LutPath, other.FadeIn, other.FadeOut);
+            (ColorContrast, ColorBrightness, ColorSaturation, ColorGamma, ColorHue) =
+                (other.ColorContrast, other.ColorBrightness, other.ColorSaturation, other.ColorGamma, other.ColorHue);
+            (ColorRed, ColorGreen, ColorBlue, SharpenStrength) = (other.ColorRed, other.ColorGreen, other.ColorBlue, other.SharpenStrength);
+        }
+
+        if (parts.HasFlag(PresetParts.Layout))
+        {
+            (FrameEngine, CenterZoom, CenterOffsetX, CenterOffsetY) = (other.FrameEngine, other.CenterZoom, other.CenterOffsetX, other.CenterOffsetY);
+            (BlurRadius, BlurPasses, BackgroundDim) = (other.BlurRadius, other.BlurPasses, other.BackgroundDim);
+            (UiElements, LayoutSourceAspectRatio) = (other.UiElements, other.LayoutSourceAspectRatio);
+            (WatermarkPath, WatermarkOpacity, WatermarkPosition) = (other.WatermarkPath, other.WatermarkOpacity, other.WatermarkPosition);
+        }
+
+        if (parts.HasFlag(PresetParts.Captions))
+        {
+            (AutoCaptions, CaptionStyle, CaptionLayer) = (other.AutoCaptions, other.CaptionStyle, other.CaptionLayer);
+            (WhisperPrompt, WhisperLanguage, WhisperTranslate) = (other.WhisperPrompt, other.WhisperLanguage, other.WhisperTranslate);
+        }
+    }
 }

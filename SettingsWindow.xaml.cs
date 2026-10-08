@@ -38,6 +38,7 @@ public partial class SettingsWindow : Window
         // Two-way choices stored as a flag each.
 
         TimeFormatBox.SelectedIndex = _settings.ShowTimesAsFrames ? 1 : 0;
+        SplashBox.SelectedIndex = Math.Clamp(_settings.SplashPresetCount, 0, 5);
 
         // A model saved under a name that is no longer offered still shows, so it is not silently replaced.
         var models = DependencyUpdater.WhisperModels.ToList();
@@ -263,6 +264,10 @@ public partial class SettingsWindow : Window
 
 
         _settings.ShowTimesAsFrames = TimeFormatBox.SelectedIndex == 1;
+        _settings.SplashPresetCount = Math.Max(SplashBox.SelectedIndex, 0);
+
+        // Answers to "Always use these settings for this preset" are given in the launch window; take them as they are now.
+        _settings.PresetImportChoices = AppSettings.Current.PresetImportChoices;
 
         // The smart rules and the default preset are edited on the main window's Automation tab, and saved
         // there as they change. This copy was made when the window opened; take theirs as they are now.

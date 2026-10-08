@@ -1,0 +1,32 @@
+<Window x:Class="HandPegApp.PresetPartsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Open with Preset" Width="480" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <StackPanel Margin="16">
+        <TextBlock x:Name="PresetText" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+        <TextBlock x:Name="IntroText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,10" />
+
+        <CheckBox x:Name="SizeBox" Content="Resolution &amp; Cropping"
+                  ToolTip="Output width and height, the crop, the pixel aspect ratio and Use Vertical Resolution." />
+        <CheckBox x:Name="VideoBox" Content="Video Encoding"
+                  ToolTip="Encoder, its preset, tune, profile and level, quality or bitrate, frame rate, colorspace and extra options." />
+        <CheckBox x:Name="AudioBox" Content="Audio"
+                  ToolTip="Codec and bitrate, merging, normalizing and ducking, and what was set track by track." />
+        <CheckBox x:Name="FiltersBox" Content="Filters &amp; Color"
+                  ToolTip="Deinterlace, denoise, fades, the LUT, color correction and sharpening." />
+        <CheckBox x:Name="LayoutBox" Content="Layout &amp; Elements"
+                  ToolTip="The Frame &amp; Layer Engine: the center video, the blurred background, and the elements and images placed on the frame." />
+        <CheckBox x:Name="CaptionsBox" Content="Subtitles &amp; Auto-Captions"
+                  ToolTip="Whether auto-captions are on, their style, where the caption box sits, and the whisper language and prompt." />
+
+        <CheckBox x:Name="AlwaysBox" Content="Always use these settings for this preset" Margin="0,14,0,0"
+                  ToolTip="Remembers the boxes ticked above for this preset, so dropping a video on it opens the video at once. Hold Shift while dropping to be asked again." />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Open" MinWidth="88" IsDefault="True" Click="Confirm_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

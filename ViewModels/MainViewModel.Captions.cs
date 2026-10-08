@@ -94,6 +94,11 @@ public partial class MainViewModel
         CaptionLayer.SizeWidth = state is { SizeWidth: > 0 } ? state.SizeWidth : DefaultCaptionWidth;
         CaptionLayer.SizeHeight = state is { SizeHeight: > 0 } ? state.SizeHeight : DefaultCaptionHeight;
         CaptionLayer.Opacity = Math.Clamp(state?.Opacity ?? 100, 0, 100);
+
+        // The same style a picture has: corners, soft edges and a drop shadow.
+        (CaptionLayer.CornerRadius, CaptionLayer.Feather) = (Math.Clamp(state?.CornerRadius ?? 0, 0, 50), state?.Feather ?? false);
+        (CaptionLayer.FeatherRadius, CaptionLayer.Shadow) = (state?.FeatherRadius ?? 12, state?.Shadow ?? false);
+        (CaptionLayer.ShadowOpacity, CaptionLayer.ShadowOffset) = (state?.ShadowOpacity ?? 0.5, state?.ShadowOffset ?? 10);
     }
 
     [RelayCommand]
@@ -169,6 +174,8 @@ public partial class MainViewModel
                 return $"The speech model {AppSettings.Current.WhisperModel} is not downloaded yet: see Settings (Tools).";
             if (VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput)
                 return "Captions are drawn into the picture, so they need a video encoder other than Copy (Video tab).";
+            if (!File.Exists(DependencyUpdater.VadModelPath))
+                return "The words are transcribed when you press Start Encode or Render Preview. Silence detection (VAD) is not installed, so quiet stretches may get words that were never said: see Settings (Tools).";
             return "The words are transcribed when you press Start Encode or Render Preview.";
         }
     }
@@ -192,7 +199,8 @@ public partial class MainViewModel
     /// <summary>
     /// The step that puts the captions on the picture as its top layer. They are drawn on a transparent
     /// canvas the size of the caption box, which is then laid over the frame where the box sits; that is
-    /// what lets the captions be placed, sized and made translucent like any other layer.
+    /// what lets the captions be placed, sized and styled like any other layer: translucent, with rounded
+    /// or soft edges (the same mask a picture gets) and a drop shadow (the words' own outline, in black).
     /// </summary>
     private string BuildCaptionOverlay(string assPath)
     {
@@ -200,10 +208,21 @@ public partial class MainViewModel
         var (x, y, width, height) = GetCaptionRect(frameWidth, frameHeight);
         var rate = GetTargetFramerate() ?? Number(SourceFrameRate);
         var opacity = Math.Clamp(CaptionLayer.Opacity, 0, 100) / 100.0;
-        var fade = opacity < 1 ? $",colorchannelmixer=aa={Number(opacity)}" : "";
 
-        return $"null[cap_base];color=c=black@0:s={width}x{height}:r={rate},format=rgba,{BuildCaptionFilter(assPath)}:alpha=1{fade}[cap_layer];"
-               + $"[cap_base][cap_layer]overlay={x}:{y}:shortest=1";
+        var layer = $"color=c=black@0:s={width}x{height}:r={rate},format=rgba,{BuildCaptionFilter(assPath)}:alpha=1";
+        if (BuildElementMask(CaptionLayer, width, height) is { } mask)
+            layer += $",format=gbrap,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{mask}{(opacity < 1 ? "*" + Number(opacity) : "")}'";
+        else if (opacity < 1)
+            layer += $",colorchannelmixer=aa={Number(opacity)}";
+
+        if (!CaptionLayer.Shadow)
+            return $"null[cap_base];{layer}[cap_layer];[cap_base][cap_layer]overlay={x}:{y}:shortest=1";
+
+        var offset = Math.Clamp(CaptionLayer.ShadowOffset, 0, 200);
+        return $"null[cap_base];{layer},split[cap_layer][cap_shadow_in];"
+               + $"[cap_shadow_in]format=rgba,colorchannelmixer=rr=0:gg=0:bb=0:aa={Number(Math.Clamp(CaptionLayer.ShadowOpacity, 0, 1))},boxblur=2:1[cap_shadow];"
+               + $"[cap_base][cap_shadow]overlay={x + offset}:{y + offset}:shortest=1[cap_shaded];"
+               + $"[cap_shaded][cap_layer]overlay={x}:{y}:shortest=1";
     }
 
     private bool CommandUsesCaptions(string command) =>
@@ -272,7 +291,14 @@ public partial class MainViewModel
         }
 
         var (language, prompt, translate) = (WhisperLanguage, WhisperPrompt.Trim(), WhisperTranslate);
-        var key = $"{audioPath}|{trackIndex}|{File.GetLastWriteTimeUtc(audioPath).Ticks}|{modelPath}|{language}|{translate}|{prompt}|"
+
+        // Voice activity detection: whisper is only handed the stretches with speech in them, so it has no
+        // silence to make words up for. Used whenever its model is there and this whisper.exe knows the option.
+        var vadModel = File.Exists(DependencyUpdater.VadModelPath) && await CaptionGenerator.SupportsVadAsync(cancellationToken)
+            ? DependencyUpdater.VadModelPath
+            : null;
+
+        var key = $"{audioPath}|{trackIndex}|{File.GetLastWriteTimeUtc(audioPath).Ticks}|{modelPath}|{language}|{translate}|{prompt}|{vadModel is not null}|"
                   + string.Join(",", ranges.Select(r => $"{r.Start:0.###}-{r.End:0.###}"));
         if (!_captionWords.TryGetValue(key, out var words))
         {
@@ -285,9 +311,9 @@ public partial class MainViewModel
                 await FfmpegRunner.RunAsync(
                     CaptionGenerator.BuildExtractCommand(audioPath, trackIndex, ranges, wavPath), new Progress<FfmpegProgress>(), cancellationToken);
 
-                StatusText = $"Captions: transcribing with {Path.GetFileName(modelPath)}...";
+                StatusText = $"Captions: transcribing with {Path.GetFileName(modelPath)}{(vadModel is null ? "" : ", skipping silence")}...";
                 words = await Task.Run(
-                    () => CaptionGenerator.TranscribeAsync(wavPath, modelPath, language, prompt, translate, cancellationToken), cancellationToken);
+                    () => CaptionGenerator.TranscribeAsync(wavPath, modelPath, language, prompt, translate, vadModel, cancellationToken), cancellationToken);
             }
             finally
             {

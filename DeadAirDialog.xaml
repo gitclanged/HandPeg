@@ -1,0 +1,52 @@
+<Window x:Class="HandPegApp.DeadAirDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:HandPegApp"
+        Title="Remove Dead Air" Width="500" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <StackPanel Margin="16">
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
+                   Text="Finds the silent stretches of the first audio track and replaces the cut list with everything in between. A microphone is never perfectly quiet, so set the threshold just above its background noise: raise it (towards -20 dB) if silences are being missed, lower it (towards -60 dB) if quiet speech is being cut." />
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+            </Grid.RowDefinitions>
+            <TextBlock Text="Silence Threshold:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Column="1" x:Name="ThresholdSlider" Minimum="-60" Maximum="-20" TickFrequency="1" IsSnapToTickEnabled="True"
+                    VerticalAlignment="Center" AutomationProperties.Name="Silence Threshold" local:NumericInput.Default="-35"
+                    ToolTip="Anything quieter than this counts as silence. -35 dB suits a clean recording; a noisy microphone needs a higher value." />
+            <TextBox Grid.Column="2" Style="{StaticResource ValueBox}" Width="48"
+                     Text="{Binding Value, ElementName=ThresholdSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Silence Threshold Value"
+                     local:NumericInput.Default="-35" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0"
+                     local:NumericInput.Minimum="-60" local:NumericInput.Maximum="-20" />
+            <TextBlock Grid.Column="3" Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+
+            <TextBlock Grid.Row="1" Text="Shortest Silence:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" x:Name="DurationSlider" Minimum="0.2" Maximum="5" TickFrequency="0.1" IsSnapToTickEnabled="True"
+                    VerticalAlignment="Center" AutomationProperties.Name="Shortest Silence" local:NumericInput.Default="1"
+                    ToolTip="A pause shorter than this is left in: breaths and the gaps between sentences." />
+            <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="48"
+                     Text="{Binding Value, ElementName=DurationSlider, StringFormat={}{0:0.0}}" AutomationProperties.Name="Shortest Silence Value"
+                     local:NumericInput.Default="1" local:NumericInput.DragStep="0.02" local:NumericInput.Decimals="1"
+                     local:NumericInput.Minimum="0.2" local:NumericInput.Maximum="5" />
+            <TextBlock Grid.Row="1" Grid.Column="3" Text="s" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+        </Grid>
+
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,10,0,0"
+                   Text="With Play only cut segments ticked, what was removed is shaded on the timeline. Both values are remembered." />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Remove Dead Air" MinWidth="130" IsDefault="True" Click="Confirm_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

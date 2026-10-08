@@ -98,6 +98,18 @@
                     </Grid>
 
                     <TextBlock Text="Interface" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,4">
+                        <TextBlock Text="Show Splash Screen on Launch:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="SplashBox" MinWidth="170" Margin="0" AutomationProperties.Name="Show Splash Screen on Launch"
+                                  ToolTip="The launch window opens before the main window: a place to drop a video, a way back into a recent project, and this many of your presets (the first ones in the list) to drop a video on. Disabled goes straight to the main window.">
+                            <ComboBoxItem Content="Disabled" />
+                            <ComboBoxItem Content="Show 1 Preset" />
+                            <ComboBoxItem Content="Show 2 Presets" />
+                            <ComboBoxItem Content="Show 3 Presets" />
+                            <ComboBoxItem Content="Show 4 Presets" />
+                            <ComboBoxItem Content="Show 5 Presets" />
+                        </ComboBox>
+                    </StackPanel>
                     <CheckBox Content="Show Command Preview Tab" IsChecked="{Binding ShowCommandPreviewTab}"
                               ToolTip="Adds a tab showing the FFmpeg command that will run, which can also be edited by hand." />
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,4">
@@ -115,13 +127,7 @@
                     <CheckBox Content="Show waveforms" IsChecked="{Binding ShowTimelineWaveform}"
                               ToolTip="After each load, draws the mix of the active audio tracks behind the timeline, and each track's own waveform in the Audio tab. Applies to the next video you load." />
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
-                        <TextBlock Text="Timeline Height:" Style="{StaticResource FieldLabel}" />
-                        <Slider Width="150" Minimum="1" Maximum="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
-                                Value="{Binding TimelineHeight}" AutomationProperties.Name="Timeline Height" local:NumericInput.Default="3"
-                                ToolTip="1 is a slim bar; 5 leaves room for a readable waveform." />
-                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding TimelineHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Timeline Height Value"
-                                 local:NumericInput.Default="3" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="5" />
-                        <TextBlock Text="Audio Track Height:" Style="{StaticResource FieldLabel}" Margin="32,0,12,0" />
+                        <TextBlock Text="Audio Track Height:" Style="{StaticResource FieldLabel}" />
                         <Slider Width="150" Minimum="1" Maximum="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
                                 Value="{Binding AudioTrackHeight}" AutomationProperties.Name="Audio Track Height" local:NumericInput.Default="2"
                                 ToolTip="How tall each track's row is in the Audio tab. Taller rows show more of the waveform." />
@@ -187,10 +193,25 @@
             </TabItem>
 
             <TabItem Header="Timeline">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
                 <StackPanel>
-                    <TextBlock Text="Playback controls" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="Timeline" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="A transport row centred under the player: previous keyframe, back one frame, play/pause, forward one frame, next keyframe, with a playback speed selector (0.25x to 2x) beside it." />
+                               Text="How tall the timeline is, and whether a strip of pictures from the video is drawn along it, behind the waveform. The pictures are made in the background after each load, from the same sheet as the hover previews below." />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                        <TextBlock Text="Timeline Height:" Style="{StaticResource FieldLabel}" />
+                        <Slider Width="150" Minimum="1" Maximum="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding TimelineHeight}" AutomationProperties.Name="Timeline Height" local:NumericInput.Default="3"
+                                ToolTip="1 is a slim bar; 5 leaves room for a readable waveform." />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding TimelineHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Timeline Height Value"
+                                 local:NumericInput.Default="3" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="5" />
+                    </StackPanel>
+                    <CheckBox Content="Show Timeline Thumbnails" IsChecked="{Binding ShowTimelineThumbnails}"
+                              ToolTip="Draws a strip of pictures from the video along the timeline, behind the waveform. On by default in Editor Mode. Applies to the next video you load." />
+
+                    <TextBlock Text="Playback controls" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="A transport row centred under the player: reload player, previous keyframe, back one frame, play/pause, forward one frame, next keyframe and render preview, with a playback speed selector (0.25x to 2x) beside it." />
                     <CheckBox Content="Show advanced playback controls" IsChecked="{Binding ShowAdvancedPlayback}" />
 
                     <TextBlock Text="Time format" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
@@ -237,6 +258,7 @@
                                  local:NumericInput.Default="1" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="5" />
                     </WrapPanel>
                 </StackPanel>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem Header="Downloads">

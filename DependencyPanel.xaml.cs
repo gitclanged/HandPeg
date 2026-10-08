@@ -57,9 +57,11 @@ public partial class DependencyPanel : UserControl
 
         foreach (var tool in DependencyUpdater.Tools)
             _tools.Add(new DependencyRow { Id = tool, Name = DependencyUpdater.DisplayName(tool) });
-        foreach (var model in DependencyUpdater.WhisperModels)
+        // The silence detection model is tiny and makes captions better, so it starts out ticked.
+        foreach (var model in DependencyUpdater.WhisperModels.Append(DependencyUpdater.VadModel))
         {
-            var row = new DependencyRow { Id = model, Name = model, IsModel = true };
+            var isVad = model == DependencyUpdater.VadModel;
+            var row = new DependencyRow { Id = model, Name = isVad ? "Silence detection (VAD)" : model, IsModel = true, IsSelected = isVad };
             row.PropertyChanged += (_, e) =>
             {
                 if (e.PropertyName == nameof(DependencyRow.IsSelected))
@@ -117,7 +119,7 @@ public partial class DependencyPanel : UserControl
     /// <summary>The model the caption settings name: ticked by default when it has not been downloaded yet.</summary>
     public void PreferModel(string model)
     {
-        foreach (var row in _models)
+        foreach (var row in _models.Where(m => m.Id != DependencyUpdater.VadModel))
             row.IsSelected = row.CanSelect && row.Id == model;
         UpdateSummary();
     }
@@ -148,9 +150,11 @@ public partial class DependencyPanel : UserControl
             if (file.Exists)
                 row.IsSelected = false;
             row.Status = file.Exists ? $"Installed ({Megabytes(file.Length)})" : $"{Megabytes(DependencyUpdater.ApproximateModelBytes(row.Id))} download";
+            if (row.Id == DependencyUpdater.VadModel)
+                row.Status = file.Exists ? "Installed" : "Under 1 MB";
         }
 
-        if (!_models.Any(m => m.IsSelected) && _models.FirstOrDefault(m => m.Id == AppSettings.Current.WhisperModel) is { CanSelect: true } preferred)
+        if (!_models.Any(m => m.IsSelected && m.Id != DependencyUpdater.VadModel) && _models.FirstOrDefault(m => m.Id == AppSettings.Current.WhisperModel) is { CanSelect: true } preferred)
             preferred.IsSelected = true;
         UpdateSummary();
         UpdateButtons();

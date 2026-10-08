@@ -50,11 +50,21 @@
                     ToolTip="Stop: finishes the recording and makes it the voiceover.">
                 <Rectangle Width="15" Height="15" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
             </Button>
+            <Button x:Name="DoOverButton" Content="Do-Over" Padding="12,5" Margin="0,0,0,0" VerticalAlignment="Center" Click="DoOver_Click"
+                    ToolTip="Throw away this take (the recording in progress, or the one just made) and start again from nothing." />
             <Button Content="Import Audio File..." Padding="12,5" Margin="16,0,0,0" VerticalAlignment="Center" Click="Import_Click"
                     ToolTip="Use an existing audio file as the voiceover instead of recording one." />
             <Button Content="Remove Voiceover" Padding="12,5" Margin="6,0,0,0" VerticalAlignment="Center" Command="{Binding RemoveVoiceoverCommand}"
                     IsEnabled="{Binding HasVoiceover}" />
         </StackPanel>
+
+        <!-- How long the finished video is, and how far into it the recording has got -->
+        <TextBlock x:Name="DurationText" Text="Total Cut Segment Duration: 0s" Margin="0,14,0,4" AutomationProperties.AutomationId="Total Cut Segment Duration" />
+        <Border Height="22" Background="{DynamicResource InsetBrush}" CornerRadius="3" ClipToBounds="True"
+                ToolTip="The length of the finished video. The small marks are where one cut segment ends and the next begins; the line moves along while you record.">
+            <Canvas x:Name="RecordBar" SizeChanged="RecordBar_SizeChanged" AutomationProperties.Name="Recording Timeline" />
+        </Border>
+        <TextBlock x:Name="RecordTimeText" Foreground="{DynamicResource MutedTextBrush}" Margin="0,4,0,0" AutomationProperties.AutomationId="Recording Time" />
 
         <TextBlock Text="{Binding VoiceoverStatus}" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,10,0,0"
                    AutomationProperties.Name="Voiceover Status" />

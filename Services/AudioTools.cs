@@ -67,8 +67,8 @@ public sealed partial class VoiceRecorder
     [GeneratedRegex("\"([^\"]+)\"\\s+\\(audio\\)")]
     private static partial Regex AudioDeviceRegex();
 
-    // How long FFmpeg is given to open the device before the recording counts as started.
-    private static readonly TimeSpan StartupGrace = TimeSpan.FromMilliseconds(900);
+    /// <summary>How long FFmpeg is given to open the device before the recording counts as started.</summary>
+    public static readonly TimeSpan StartupGrace = TimeSpan.FromMilliseconds(900);
 
     private readonly List<string> _parts = [];
     private readonly System.Text.StringBuilder _errors = new();
@@ -197,6 +197,26 @@ public sealed partial class VoiceRecorder
             ProcessPipes.Untrack(process.Id);
             process.Dispose();
         }
+    }
+
+    /// <summary>Ends the recording and throws away everything recorded so far.</summary>
+    public async Task DiscardAsync()
+    {
+        await PauseAsync();
+
+        foreach (var part in _parts)
+        {
+            try
+            {
+                File.Delete(part);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Left in the session folder, which goes when the application closes.
+            }
+        }
+
+        _parts.Clear();
     }
 
     /// <summary>
