@@ -1,0 +1,100 @@
+<Window x:Class="HandPegApp.CaptionStyleDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:HandPegApp"
+        Title="Caption Style Settings" Width="540" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <!-- Edits a copy of the style; nothing changes unless OK is pressed. -->
+    <StackPanel Margin="16">
+        <!-- A sample line drawn in the style as it is being edited -->
+        <local:CaptionPreview x:Name="Preview" Height="110" Margin="0,0,0,6" AutomationProperties.Name="Caption Preview" />
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
+                   Text="A preview of the style, at the moment one word is being spoken. Sizes are for a frame 1080 pixels on its shorter side and scale with the output and with the caption box." />
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+            </Grid.RowDefinitions>
+            <Grid.Resources>
+                <Style x:Key="Label" TargetType="TextBlock">
+                    <Setter Property="VerticalAlignment" Value="Center" />
+                    <Setter Property="Margin" Value="0,0,14,0" />
+                </Style>
+                <!-- A button filled with the colour it chooses; pressing it opens the Windows colour picker -->
+                <Style x:Key="ColorButton" TargetType="Button">
+                    <Setter Property="Width" Value="150" />
+                    <Setter Property="Height" Value="26" />
+                    <Setter Property="HorizontalAlignment" Value="Left" />
+                    <Setter Property="FontFamily" Value="Consolas" />
+                    <Setter Property="Cursor" Value="Hand" />
+                    <Setter Property="ToolTip" Value="Click to pick a color." />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="Button">
+                                <Border Background="{TemplateBinding Background}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="3">
+                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </Grid.Resources>
+
+            <TextBlock Text="Font Name:" Style="{StaticResource Label}" />
+            <ComboBox Grid.Column="1" Grid.ColumnSpan="2" x:Name="FontBox" Margin="0,3" HorizontalAlignment="Stretch" SelectedItem="{Binding FontName}"
+                      AutomationProperties.Name="Font Name" ToolTip="A font installed on this computer." />
+
+            <TextBlock Grid.Row="1" Text="Font Size:" Style="{StaticResource Label}" />
+            <TextBox Grid.Row="1" Grid.Column="1" Width="90" HorizontalAlignment="Left" Margin="0,3" Padding="6,2" VerticalContentAlignment="Center"
+                     Text="{Binding FontSize, UpdateSourceTrigger=PropertyChanged}"
+                     AutomationProperties.Name="Font Size" local:NumericInput.Default="72" local:NumericInput.DragStep="0.5"
+                     local:NumericInput.Minimum="8" local:NumericInput.Maximum="400" />
+
+            <TextBlock Grid.Row="2" Text="Primary Color:" Style="{StaticResource Label}" />
+            <Button Grid.Row="2" Grid.Column="1" x:Name="PrimaryButton" Style="{StaticResource ColorButton}" Click="PickColor_Click" Tag="Primary"
+                    AutomationProperties.Name="Primary Color" />
+
+            <TextBlock Grid.Row="3" Text="Highlight Color:" Style="{StaticResource Label}" />
+            <Button Grid.Row="3" Grid.Column="1" x:Name="HighlightButton" Style="{StaticResource ColorButton}" Click="PickColor_Click" Tag="Highlight"
+                    AutomationProperties.Name="Highlight Color" />
+
+            <TextBlock Grid.Row="4" Text="Outline Color:" Style="{StaticResource Label}" />
+            <Button Grid.Row="4" Grid.Column="1" x:Name="OutlineButton" Style="{StaticResource ColorButton}" Click="PickColor_Click" Tag="Outline"
+                    AutomationProperties.Name="Outline Color" />
+
+            <TextBlock Grid.Row="5" Text="Outline Thickness:" Style="{StaticResource Label}" />
+            <Slider Grid.Row="5" Grid.Column="1" x:Name="OutlineSlider" Minimum="0" Maximum="20" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                    Value="{Binding OutlineThickness}" AutomationProperties.Name="Outline Thickness" local:NumericInput.Default="5" />
+            <StackPanel Grid.Row="5" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=OutlineSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Outline Thickness Value" local:NumericInput.Default="5" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="20" /></StackPanel>
+
+            <TextBlock Grid.Row="6" Text="Max Words per Line:" Style="{StaticResource Label}" />
+            <Slider Grid.Row="6" Grid.Column="1" x:Name="WordsSlider" Minimum="2" Maximum="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                    Value="{Binding MaxWordsPerLine}" AutomationProperties.Name="Max Words per Line" local:NumericInput.Default="3"
+                    ToolTip="How many words are on screen at once. A pause in the speech or the end of a sentence also starts a new caption." />
+            <StackPanel Grid.Row="6" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=WordsSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Max Words per Line Value" local:NumericInput.Default="3" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="2" local:NumericInput.Maximum="5" /></StackPanel>
+
+            <TextBlock Grid.Row="7" Text="Animation Style:" Style="{StaticResource Label}" />
+            <ComboBox Grid.Row="7" Grid.Column="1" Grid.ColumnSpan="2" x:Name="AnimationBox" Margin="0,3" HorizontalAlignment="Stretch" SelectedItem="{Binding Animation}"
+                      AutomationProperties.Name="Animation Style"
+                      ToolTip="Karaoke Sweep: the highlight color sweeps across each word as it is spoken. TikTok Pop: the word being spoken turns the highlight color and grows." />
+        </Grid>
+
+        <TextBlock x:Name="ErrorText" Foreground="{DynamicResource WarningTextBrush}" Margin="0,10,0,0" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="OK" MinWidth="88" IsDefault="True" Click="Ok_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

@@ -1,0 +1,26 @@
+<Window x:Class="HandPegApp.LayoutImportDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Import Project Settings" Width="480" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <StackPanel Margin="16">
+        <TextBlock x:Name="FileText" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+        <TextBlock x:Name="IntroText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,10" />
+
+        <!-- A part the file does not have is shown unticked and greyed out -->
+        <CheckBox x:Name="LayoutBox" Content="Layout / Elements" />
+        <TextBlock x:Name="LayoutText" Foreground="{DynamicResource MutedTextBrush}" Margin="26,0,0,6" TextWrapping="Wrap" />
+        <CheckBox x:Name="ColorBox" Content="Color Filters" />
+        <TextBlock x:Name="ColorText" Foreground="{DynamicResource MutedTextBrush}" Margin="26,0,0,6" TextWrapping="Wrap" />
+        <CheckBox x:Name="BlurBox" Content="Blur Settings" />
+        <TextBlock x:Name="BlurText" Foreground="{DynamicResource MutedTextBrush}" Margin="26,0,0,6" TextWrapping="Wrap" />
+        <CheckBox x:Name="SubtitleBox" Content="Subtitle Settings" />
+        <TextBlock x:Name="SubtitleText" Foreground="{DynamicResource MutedTextBrush}" Margin="26,0,0,0" TextWrapping="Wrap" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="ConfirmButton" Content="Import" MinWidth="88" IsDefault="True" Click="Confirm_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

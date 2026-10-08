@@ -1,0 +1,64 @@
+<Window x:Class="HandPegApp.ProjectManagerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Handpeg Projects" Width="780" Height="500" MinWidth="560" MinHeight="320"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <DockPanel Margin="12">
+        <!-- Save the current session -->
+        <Border DockPanel.Dock="Top" Style="{StaticResource Panel}" Margin="0,0,0,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Project name:" VerticalAlignment="Center" Margin="0,0,12,0" />
+                <TextBox Grid.Column="1" x:Name="NameBox" VerticalContentAlignment="Center"
+                         ToolTip="Saving under the name of an existing project replaces it." />
+                <Button Grid.Column="2" Content="Save Project" Margin="6,0,0,0" Click="Save_Click"
+                        ToolTip="Save the loaded source, its cut segments and all settings." />
+            </Grid>
+        </Border>
+
+        <Grid DockPanel.Dock="Bottom" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Button Content="Open Directory" Click="OpenDirectory_Click"
+                    ToolTip="Opens the projects folder in File Explorer." />
+            <Button Grid.Column="1" x:Name="DeleteButton" Content="Delete Project" Margin="6,0,0,0" IsEnabled="False" Click="Delete_Click"
+                    ToolTip="Deletes the selected project file. The video it refers to is not touched." />
+            <TextBlock Grid.Column="2" x:Name="MessageText" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis" Margin="12,0" />
+            <Button Grid.Column="3" x:Name="LoadButton" Content="Load Project" IsEnabled="False" Click="Load_Click" />
+            <Button Grid.Column="4" Content="Close" Margin="6,0,0,0" MinWidth="80" IsCancel="True" />
+        </Grid>
+
+        <TextBlock DockPanel.Dock="Top" Text="Recent Projects" FontWeight="SemiBold" Margin="2,0,0,6" />
+        <ListBox x:Name="ProjectList" SelectionChanged="ProjectList_SelectionChanged" MouseDoubleClick="ProjectList_MouseDoubleClick">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Grid Margin="0,3">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="{Binding SourceName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding SourcePath}" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="16,0,0,0">
+                            <TextBlock Text="{Binding Name}" HorizontalAlignment="Right" />
+                            <TextBlock Text="{Binding SavedText}" Foreground="{DynamicResource MutedTextBrush}" HorizontalAlignment="Right" />
+                        </StackPanel>
+                    </Grid>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </DockPanel>
+</Window>

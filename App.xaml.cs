@@ -1,0 +1,56 @@
+using System.Diagnostics;
+using System.IO;
+using System.Windows;
+
+namespace HandPegApp;
+
+/// <summary>
+/// Interaction logic for App.xaml
+/// </summary>
+public partial class App : Application
+{
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        // Velopack's bootstrap comes before anything else: when the installer or updater starts the
+        // application to finish an install, update or uninstall, this handles that and exits.
+        Velopack.VelopackApp.Build().Run();
+
+        LogBindingErrors();
+
+        // Before any window is made, so that the first thing drawn already has the theme and the Windows accent colour.
+        Services.ThemeManager.Follow(this);
+
+        // A first start, or one whose settings never went through the first-run window: ask for the theme and
+        // the mode before the main window (named as StartupUri) is created with them.
+        if (!Services.AppSettings.Current.FirstRunComplete)
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            new FirstRunWindow().ShowDialog();
+            ShutdownMode = ShutdownMode.OnMainWindowClose;
+        }
+
+        base.OnStartup(e);
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        Services.Notifier.Dispose();
+        base.OnExit(e);
+    }
+
+    /// <summary>
+    /// Debug builds write XAML binding errors to %TEMP%\Handpeg\binding-errors.log. They are otherwise
+    /// only visible in a debugger's output window, where a mistyped property name is easy to miss.
+    /// </summary>
+    [Conditional("DEBUG")]
+    private static void LogBindingErrors()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "Handpeg");
+        Directory.CreateDirectory(folder);
+
+        var log = new StreamWriter(Path.Combine(folder, "binding-errors.log"), append: false) { AutoFlush = true };
+        PresentationTraceSources.Refresh();
+        PresentationTraceSources.DataBindingSource.Listeners.Add(new TextWriterTraceListener(log));
+        PresentationTraceSources.DataBindingSource.Switch.Level = SourceLevels.Error;
+    }
+}

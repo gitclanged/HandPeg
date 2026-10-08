@@ -1,0 +1,223 @@
+<Window x:Class="HandPegApp.TrackAudioFiltersDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:HandPegApp"
+        Title="Audio Filters" Width="600" SizeToContent="Height" MaxHeight="900" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+    </Window.Resources>
+    <!-- Edits a copy of the track's filters; nothing changes unless OK is pressed. -->
+    <DockPanel Margin="16">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Reset All" Margin="0,0,24,0" Click="Reset_Click" ToolTip="Switches every filter off and puts every value back." />
+            <Button Content="OK" MinWidth="88" IsDefault="True" Click="Ok_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel>
+            <TextBlock x:Name="TrackText" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+            <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,2,0,8"
+                       Text="Processing for this track only, applied when the track is re-encoded. The filters that are ticked run in a fixed order: cleaning, dynamics, tone, effects, then the track's gain, and the limiter last." />
+
+            <CheckBox Content="High-pass Filter" IsChecked="{Binding HighPass}" ToolTip="Removes rumble below a frequency: desk bumps, plosives, hum." />
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Cutoff" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="HighPassSlider" Minimum="20" Maximum="400" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding HighPassHz}" AutomationProperties.Name="Cutoff" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=HighPassSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Cutoff Value" local:NumericInput.DragStep="1.52" local:NumericInput.Decimals="0" local:NumericInput.Minimum="20" local:NumericInput.Maximum="400" /><TextBlock Text="Hz" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+            <CheckBox Content="Noise Gate" IsChecked="{Binding NoiseGate}" ToolTip="Silences the track whenever it is quieter than the threshold: breathing and room noise between words." />
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Threshold" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="GateSlider" Minimum="-80" Maximum="0" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding GateThreshold}" AutomationProperties.Name="Threshold" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=GateSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Threshold Value" local:NumericInput.DragStep="0.32" local:NumericInput.Decimals="0" local:NumericInput.Minimum="-80" local:NumericInput.Maximum="0" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+            <CheckBox Content="De-Noise" IsChecked="{Binding DeNoise}" ToolTip="Reduces steady background noise such as hiss or a fan." />
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Strength" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="DeNoiseSlider" Minimum="1" Maximum="40" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding DeNoiseStrength}" AutomationProperties.Name="Strength" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=DeNoiseSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Strength Value" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="1" local:NumericInput.Maximum="40" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+            <CheckBox Content="Compressor" IsChecked="{Binding Compressor}" ToolTip="Evens out loud and quiet: everything above the threshold is turned down by the ratio." />
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Threshold" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="CompressorThresholdSlider" Minimum="-60" Maximum="0" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding CompressorThreshold}" AutomationProperties.Name="Threshold" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=CompressorThresholdSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Threshold Value" local:NumericInput.DragStep="0.24" local:NumericInput.Decimals="0" local:NumericInput.Minimum="-60" local:NumericInput.Maximum="0" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Ratio" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="CompressorRatioSlider" Minimum="1" Maximum="20" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding CompressorRatio}" AutomationProperties.Name="Ratio" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=CompressorRatioSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Ratio Value" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="20" /><TextBlock Text=":1" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+            <CheckBox Content="Bass / Treble" IsChecked="{Binding BassTreble}" ToolTip="Lifts or lowers the low and the high end." />
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Bass" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="BassSlider" Minimum="-12" Maximum="12" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding BassGain}" AutomationProperties.Name="Bass" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=BassSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Bass Value" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Treble" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="TrebleSlider" Minimum="-12" Maximum="12" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding TrebleGain}" AutomationProperties.Name="Treble" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=TrebleSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Treble Value" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+
+            <CheckBox x:Name="AdvancedBox" Content="Show Advanced Filters" IsChecked="{Binding ShowAdvanced}" Margin="0,14,0,6" FontWeight="SemiBold" />
+            <StackPanel Visibility="{Binding IsChecked, ElementName=AdvancedBox, Converter={StaticResource BoolToVisibility}}">
+                <CheckBox Content="Hard Limiter" IsChecked="{Binding Limiter}" ToolTip="Nothing gets louder than the ceiling. Runs last, after the gain, so it also catches a gain set too high." />
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Ceiling" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="LimiterSlider" Minimum="-12" Maximum="0" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding LimiterCeiling}" AutomationProperties.Name="Ceiling" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=LimiterSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Ceiling Value" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="0" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+                <CheckBox Content="10-Band Equalizer" IsChecked="{Binding Equalizer}" ToolTip="Ten bands an octave apart, each from -12 to +12 dB." />
+                <StackPanel Orientation="Horizontal" Margin="26,2,0,6">
+                    <StackPanel Width="42">
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider0" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                                Value="{Binding EqualizerGains[0]}" AutomationProperties.Name="EQ 31" local:NumericInput.Default="0" ToolTip="31 Hz. Double-click to reset." />
+                        <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider0, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
+                        <TextBlock Text="31" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <StackPanel Width="42">
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider1" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                                Value="{Binding EqualizerGains[1]}" AutomationProperties.Name="EQ 62" local:NumericInput.Default="0" ToolTip="62 Hz. Double-click to reset." />
+                        <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider1, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
+                        <TextBlock Text="62" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <StackPanel Width="42">
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider2" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                                Value="{Binding EqualizerGains[2]}" AutomationProperties.Name="EQ 125" local:NumericInput.Default="0" ToolTip="125 Hz. Double-click to reset." />
+                        <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider2, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
+                        <TextBlock Text="125" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <StackPanel Width="42">
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider3" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                                Value="{Binding EqualizerGains[3]}" AutomationProperties.Name="EQ 250" local:NumericInput.Default="0" ToolTip="250 Hz. Double-click to reset." />
+                        <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider3, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
+                        <TextBlock Text="250" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <StackPanel Width="42">
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider4" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                                Value="{Binding EqualizerGains[4]}" AutomationProperties.Name="EQ 500" local:NumericInput.Default="0" ToolTip="500 Hz. Double-click to reset." />
+                        <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider4, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
+                        <TextBlock Text="500" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <StackPanel Width="42">
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider5" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                                Value="{Binding EqualizerGains[5]}" AutomationProperties.Name="EQ 1k" local:NumericInput.Default="0" ToolTip="1k Hz. Double-click to reset." />
+                        <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider5, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
+                        <TextBlock Text="1k" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <StackPanel Width="42">
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider6" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                                Value="{Binding EqualizerGains[6]}" AutomationProperties.Name="EQ 2k" local:NumericInput.Default="0" ToolTip="2k Hz. Double-click to reset." />
+                        <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider6, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
+                        <TextBlock Text="2k" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <StackPanel Width="42">
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider7" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                                Value="{Binding EqualizerGains[7]}" AutomationProperties.Name="EQ 4k" local:NumericInput.Default="0" ToolTip="4k Hz. Double-click to reset." />
+                        <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider7, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
+                        <TextBlock Text="4k" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <StackPanel Width="42">
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider8" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                                Value="{Binding EqualizerGains[8]}" AutomationProperties.Name="EQ 8k" local:NumericInput.Default="0" ToolTip="8k Hz. Double-click to reset." />
+                        <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider8, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
+                        <TextBlock Text="8k" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <StackPanel Width="42">
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider9" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                                Value="{Binding EqualizerGains[9]}" AutomationProperties.Name="EQ 16k" local:NumericInput.Default="0" ToolTip="16k Hz. Double-click to reset." />
+                        <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider9, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
+                        <TextBlock Text="16k" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                </StackPanel>
+                <CheckBox Content="Pitch / Tempo Shift" IsChecked="{Binding PitchTempo}" ToolTip="Changes the pitch without the speed, the speed without the pitch, or both. A tempo other than 1 makes the track longer or shorter than the picture." />
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Pitch" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="PitchSlider" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding PitchSemitones}" AutomationProperties.Name="Pitch" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=PitchSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Pitch Value" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" /><TextBlock Text="semitones" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Tempo" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="TempoSlider" Minimum="0.5" Maximum="2" TickFrequency="0.05" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding Tempo}" AutomationProperties.Name="Tempo" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=TempoSlider, StringFormat={}{0:0.00}}" AutomationProperties.Name="Tempo Value" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.5" local:NumericInput.Maximum="2" /><TextBlock Text="x" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+                <CheckBox Content="Stereo Widener" IsChecked="{Binding StereoWidener}" ToolTip="Makes the difference between left and right larger. 1 leaves the stereo image as it is; needs a stereo track." />
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Width" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="WidthSlider" Minimum="0" Maximum="4" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                        Value="{Binding StereoWidth}" AutomationProperties.Name="Width" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=WidthSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Width Value" local:NumericInput.DragStep="0.02" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="4" /></StackPanel>
+            </Grid>
+            </StackPanel>
+        </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

@@ -1,0 +1,81 @@
+<Window x:Class="HandPegApp.QueueWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Handpeg Queue" Width="980" Height="460" MinWidth="720" MinHeight="300"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+    </Window.Resources>
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
+            <Button Content="Start Queue" Command="{Binding StartQueueCommand}" />
+            <Button Content="Pause Queue" Margin="6,0,0,0" Command="{Binding PauseQueueCommand}"
+                    ToolTip="Lets the current job finish, then stops. Start Queue carries on from there." />
+            <Button Content="Clear Completed" Margin="6,0,0,0" Command="{Binding ClearCompletedCommand}" />
+        </StackPanel>
+
+        <TextBlock DockPanel.Dock="Bottom" Text="{Binding StatusText}" Foreground="{DynamicResource MutedTextBrush}"
+                   Margin="2,10,0,0" TextTrimming="CharacterEllipsis" />
+
+        <!-- Column headers; the widths match the row template below. -->
+        <Grid DockPanel.Dock="Top" Margin="11,0,11,4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="56" />
+                <ColumnDefinition Width="200" />
+                <ColumnDefinition Width="148" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Source" Foreground="{DynamicResource MutedTextBrush}" />
+            <TextBlock Grid.Column="1" Text="Target" Foreground="{DynamicResource MutedTextBrush}" />
+            <TextBlock Grid.Column="2" Text="Cuts" Foreground="{DynamicResource MutedTextBrush}" />
+            <TextBlock Grid.Column="3" Text="Status" Foreground="{DynamicResource MutedTextBrush}" />
+        </Grid>
+
+        <ListBox ItemsSource="{Binding Queue}">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Grid Margin="0,2" ToolTip="{Binding Command}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="56" />
+                            <ColumnDefinition Width="200" />
+                            <ColumnDefinition Width="64" />
+                            <ColumnDefinition Width="84" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding Source}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0" />
+                        <TextBlock Grid.Column="1" Text="{Binding Target}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0" />
+                        <TextBlock Grid.Column="2" Text="{Binding SegmentCount}" VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="3" VerticalAlignment="Center" Margin="0,0,10,0">
+                            <TextBlock x:Name="status" Text="{Binding Status}" ToolTip="{Binding Detail}" />
+                            <ProgressBar x:Name="progress" Height="6" Margin="0,3,0,0" Minimum="0" Maximum="100"
+                                         Value="{Binding Progress}" Visibility="Collapsed" />
+                        </StackPanel>
+                        <!-- Pending jobs only: loads the job back into the main window -->
+                        <Button Grid.Column="4" Content="Edit" Padding="10,2" Margin="0,0,6,0"
+                                Visibility="{Binding IsPending, Converter={StaticResource BoolToVisibility}}"
+                                Command="{Binding DataContext.EditQueueJobCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                CommandParameter="{Binding}"
+                                ToolTip="Load this job's source, cuts and settings into the main window. Update Queued Job then saves the changes." />
+                        <Button Grid.Column="5" Content="Remove" Padding="10,2" IsEnabled="{Binding CanRemove}"
+                                Command="{Binding DataContext.RemoveQueueJobCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                CommandParameter="{Binding}" />
+                    </Grid>
+                    <DataTemplate.Triggers>
+                        <DataTrigger Binding="{Binding Status}" Value="Encoding">
+                            <Setter TargetName="progress" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Status}" Value="Complete">
+                            <Setter TargetName="status" Property="Foreground" Value="#6CCB5F" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Status}" Value="Failed">
+                            <Setter TargetName="status" Property="Foreground" Value="#FF6B6B" />
+                        </DataTrigger>
+                    </DataTemplate.Triggers>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </DockPanel>
+</Window>

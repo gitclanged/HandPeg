@@ -1,0 +1,52 @@
+<Window x:Class="HandPegApp.FramePreviewDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:HandPegApp"
+        Title="Live Frame Preview" Width="1220" Height="740" MinWidth="860" MinHeight="520"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <!-- The controls are bound to the main window's settings: they are the same values as on the Advanced tab. -->
+    <Grid Margin="14">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="322" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- The frame -->
+        <Border Background="Black" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
+            <Image x:Name="FrameImage" Stretch="Uniform" />
+        </Border>
+
+        <!-- Where in the video the frame is taken from -->
+        <Grid Grid.Row="1" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Slider x:Name="PositionSlider" Minimum="0" VerticalAlignment="Center" IsMoveToPointEnabled="True"
+                    SmallChange="1000" LargeChange="5000" AutomationProperties.Name="Frame Position"
+                    ValueChanged="PositionSlider_ValueChanged" />
+            <TextBlock Grid.Column="1" x:Name="PositionText" FontFamily="Consolas" VerticalAlignment="Center" Margin="12,0,0,0" />
+        </Grid>
+
+        <!-- Colour grading, sharpening and the scope -->
+        <DockPanel Grid.Column="1" Grid.RowSpan="2" Margin="16,0,0,0">
+            <Button DockPanel.Dock="Bottom" Content="Close" MinWidth="88" HorizontalAlignment="Right" IsCancel="True" IsDefault="True" />
+            <TextBlock DockPanel.Dock="Bottom" x:Name="StatusText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"
+                       Margin="0,0,0,12" MinHeight="34" />
+            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,4,0,8">
+                <CheckBox x:Name="HistogramBox" Content="Show Histogram" Margin="0" Checked="HistogramBox_Changed" Unchecked="HistogramBox_Changed"
+                          ToolTip="Draws a histogram of the graded frame in its bottom-right corner. Only in this preview, never in the encoded video." />
+                <Button Content="Reset" Margin="20,0,0,0" Padding="12,4" Command="{Binding ResetColorCommand}"
+                        ToolTip="Puts every control back where it changes nothing." />
+            </StackPanel>
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <local:ColorControls />
+            </ScrollViewer>
+        </DockPanel>
+    </Grid>
+</Window>

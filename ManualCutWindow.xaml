@@ -1,0 +1,75 @@
+<Window x:Class="HandPegApp.ManualCutWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Manual Cut Entry" Width="470" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Resources>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="0,0,12,0" />
+        </Style>
+        <!-- A keyframe suggestion: reads as a link, fills its field when clicked. -->
+        <Style x:Key="Suggestion" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource AccentHoverBrush}" />
+            <Setter Property="FontFamily" Value="Consolas" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Margin" Value="10,0,0,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <TextBlock x:Name="text" Text="{TemplateBinding Content}" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="text" Property="TextDecorations" Value="Underline" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <StackPanel Margin="16">
+        <TextBlock x:Name="FormatText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12" />
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Text="Start:" Style="{StaticResource FieldLabel}" />
+            <TextBox Grid.Column="1" x:Name="StartBox" Width="150" HorizontalAlignment="Left" FontFamily="Consolas" FontSize="14"
+                     TextChanged="StartBox_TextChanged" />
+            <StackPanel Grid.Row="1" Grid.Column="1" x:Name="StartSuggestions" Orientation="Horizontal" Margin="0,4,0,12">
+                <TextBlock Text="Keyframes:" Foreground="{DynamicResource MutedTextBrush}" />
+                <Button x:Name="StartFloor" Style="{StaticResource Suggestion}" Click="StartSuggestion_Click" ToolTip="The keyframe before: used on Save" />
+                <Button x:Name="StartCeiling" Style="{StaticResource Suggestion}" Click="StartSuggestion_Click" ToolTip="The keyframe after" />
+            </StackPanel>
+
+            <TextBlock Grid.Row="2" Text="Stop:" Style="{StaticResource FieldLabel}" />
+            <TextBox Grid.Row="2" Grid.Column="1" x:Name="StopBox" Width="150" HorizontalAlignment="Left" FontFamily="Consolas" FontSize="14"
+                     TextChanged="StopBox_TextChanged" />
+            <StackPanel Grid.Row="3" Grid.Column="1" x:Name="StopSuggestions" Orientation="Horizontal" Margin="0,4,0,12">
+                <TextBlock Text="Keyframes:" Foreground="{DynamicResource MutedTextBrush}" />
+                <Button x:Name="StopFloor" Style="{StaticResource Suggestion}" Click="StopSuggestion_Click" ToolTip="The keyframe before" />
+                <Button x:Name="StopCeiling" Style="{StaticResource Suggestion}" Click="StopSuggestion_Click" ToolTip="The keyframe after: used on Save" />
+            </StackPanel>
+        </Grid>
+
+        <TextBlock x:Name="SnapText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" />
+        <TextBlock x:Name="ErrorText" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,6,0,0" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Save" MinWidth="88" IsDefault="True" Click="Save_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>
