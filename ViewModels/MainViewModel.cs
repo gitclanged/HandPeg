@@ -58,7 +58,7 @@ public partial class MainViewModel : ObservableObject
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
     ];
 
-    private readonly DependencyUpdater _dependencyUpdater = new();
+
     private readonly CancellationTokenSource _shutdown = new();
 
     private CancellationTokenSource? _operationCancellation;
@@ -353,7 +353,7 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(LoadSourceCommand))]
-    [NotifyCanExecuteChangedFor(nameof(InstallDependenciesCommand))]
+
     [NotifyCanExecuteChangedFor(nameof(StartEncodeCommand))]
     [NotifyCanExecuteChangedFor(nameof(CancelCommand))]
     [NotifyCanExecuteChangedFor(nameof(StartQueueCommand))]
@@ -724,17 +724,17 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(IsBusy))]
     private void Cancel() => _operationCancellation?.Cancel();
 
-    [RelayCommand(CanExecute = nameof(CanStartOperation))]
-    private Task InstallDependenciesAsync() => RunOperationAsync(async cancellationToken =>
+    /// <summary>Tools were installed or replaced from the dependency list (in the settings, or the first-run window).</summary>
+    public void OnDependenciesChanged()
     {
-        IsProgressIndeterminate = true;
-        var outcome = await _dependencyUpdater.InstallOrUpdateAsync(new Progress<string>(ReportStatus), cancellationToken);
-
         // A new FFmpeg build may support different hardware encoders.
         _ = ProbeHardwareEncodersAsync();
         _ = CheckDependencyUpdatesAsync();
-        return outcome;
-    });
+        OnPropertyChanged(nameof(CaptionHint));
+
+        if (DependencyUpdater.GetMissing().Count == 0 && StatusText.StartsWith("Missing ", StringComparison.Ordinal))
+            StatusText = "Dependencies installed.";
+    }
 
     /// <summary>True when yt-dlp or FFmpeg is missing or has a newer release. Shown as a badge on the gear button.</summary>
     [ObservableProperty] private bool _isDependencyUpdateAvailable;
@@ -872,7 +872,7 @@ public partial class MainViewModel : ObservableObject
 
         // Every new source gets its own default name, so one encode never lands on top of the previous one.
         DestinationPath = Path.Combine(
-            GetDefaultOutputFolder(localPath), $"{Path.GetFileNameWithoutExtension(localPath)}_handpeg.{Container}");
+            GetDefaultOutputFolder(localPath), $"{Path.GetFileNameWithoutExtension(localPath)}_HandPeg.{Container}");
 
         var message = $"Loaded {localPath}";
         if (applyAutomation && AppSettings.Current.FindPresetFor(localPath, source) is { } presetName)
@@ -922,6 +922,10 @@ public partial class MainViewModel : ObservableObject
         string[] systemRoots =
         [
             Path.GetTempPath(),
+
+            // HandPeg's own working folders: a video downloaded into the cache is not saved back into it.
+            AppPaths.Temp,
+            AppPaths.DataRoot,
             Environment.GetFolderPath(Environment.SpecialFolder.Windows),
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),

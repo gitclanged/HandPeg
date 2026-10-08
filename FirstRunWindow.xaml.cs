@@ -19,11 +19,17 @@ public partial class FirstRunWindow : Window
     public FirstRunWindow()
     {
         InitializeComponent();
+        MaxHeight = SystemParameters.WorkArea.Height;
 
         ThemeBox.ItemsSource = ThemeManager.Themes;
         ThemeBox.SelectedItem = ThemeManager.Themes.Contains(_originalTheme) ? _originalTheme : ThemeManager.FollowSystem;
         FallbackBox.IsChecked = AppSettings.Current.AutoFallbackToSoftware;
         (AppSettings.Current.UiMode == AppSettings.EditorMode ? EditorCard : EncoderCard).IsChecked = true;
+
+        Dependencies.UseExistingFfmpegRequested += UseExistingFfmpeg;
+
+        // Closing the window stops an install, so Start waits for it (or for Cancel).
+        Dependencies.RunningChanged += () => StartButton.IsEnabled = !Dependencies.IsRunning;
 
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
         Closed += (_, _) =>
@@ -46,6 +52,48 @@ public partial class FirstRunWindow : Window
         }
     }
 
+    /// <summary>
+    /// Whether an encode, a preview or a transcription is running behind this window. Only possible when it
+    /// was opened again from the settings; nothing is installed while it is.
+    /// </summary>
+    public bool AppIsBusy
+    {
+        get => Dependencies.AppIsBusy;
+        set => Dependencies.AppIsBusy = value;
+    }
+
+    /// <summary>Raised when tools were installed or replaced from this window.</summary>
+    public event Action? DependenciesChanged
+    {
+        add => Dependencies.Changed += value;
+        remove => Dependencies.Changed -= value;
+    }
+
+    /// <summary>
+    /// For when the download cannot be made, or is not wanted: an ffmpeg.exe already on the machine. Saved at
+    /// once, so it holds even if this window is then closed without pressing Start.
+    /// </summary>
+    private void UseExistingFfmpeg()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Select your ffmpeg.exe", Filter = "ffmpeg.exe|ffmpeg.exe|Programs|*.exe" };
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        var settings = AppSettings.Current.Clone();
+        settings.FfmpegPath = dialog.FileName;
+        try
+        {
+            settings.SaveAsCurrent();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"The path could not be saved.\n\n{ex.Message}", "HandPeg", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        _ = Dependencies.RefreshAsync();
+    }
+
     private void Start_Click(object sender, RoutedEventArgs e)
     {
         var settings = AppSettings.Current.Clone();
@@ -63,7 +111,7 @@ public partial class FirstRunWindow : Window
             // The folder cannot be written to: the choices still hold for this session, and the window
             // will come back next time.
             MessageBox.Show(this, $"The settings could not be saved, so this window will be shown again next time.\n\n{ex.Message}",
-                "Handpeg", MessageBoxButton.OK, MessageBoxImage.Warning);
+                "HandPeg", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
         _confirmed = true;

@@ -1,7 +1,8 @@
 <Window x:Class="HandPegApp.FirstRunWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Welcome to Handpeg" Width="760" SizeToContent="Height" ResizeMode="NoResize"
+        xmlns:local="clr-namespace:HandPegApp"
+        Title="Welcome to HandPeg" Width="820" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
@@ -40,8 +41,10 @@
         </Style>
     </Window.Resources>
 
+    <!-- Scrolls on a screen too short for all of it; the window is never taller than the work area. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
     <StackPanel Margin="24">
-        <TextBlock Text="Welcome to Handpeg" FontSize="22" FontWeight="SemiBold" />
+        <TextBlock Text="Welcome to HandPeg" FontSize="22" FontWeight="SemiBold" />
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,18"
                    Text="Two choices before you start. Both can be changed later in Settings, one option at a time." />
 
@@ -55,7 +58,7 @@
         </StackPanel>
 
         <!-- The core choice -->
-        <TextBlock Text="How will you use Handpeg?" FontWeight="SemiBold" Margin="0,0,0,8" />
+        <TextBlock Text="How will you use HandPeg?" FontWeight="SemiBold" Margin="0,0,0,8" />
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
@@ -82,8 +85,15 @@
             </RadioButton>
         </Grid>
 
+        <!-- The tools: nothing ships with HandPeg, so this is where they are fetched -->
+        <TextBlock Text="Dependencies" FontWeight="SemiBold" Margin="0,20,0,2" />
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
+                   Text="HandPeg drives these tools and downloads them on request. FFmpeg is needed for everything; yt-dlp for loading a web address; whisper.cpp and a speech model for auto-captions. This can also be done later, in Settings." />
+        <local:DependencyPanel x:Name="Dependencies" OffersExistingFfmpeg="True" />
+
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0">
-            <Button Content="Start Handpeg" MinWidth="140" Padding="18,8" IsDefault="True" Click="Start_Click" />
+            <Button x:Name="StartButton" Content="Start HandPeg" MinWidth="140" Padding="18,8" IsDefault="True" Click="Start_Click" />
         </StackPanel>
     </StackPanel>
+    </ScrollViewer>
 </Window>

@@ -4,14 +4,14 @@ using HandPegApp.Models;
 
 namespace HandPegApp.Services;
 
-/// <summary>Reads and writes presets.json next to the application.</summary>
+/// <summary>Reads and writes presets.json in the settings folder (see <see cref="AppPaths"/>).</summary>
 public static class PresetStore
 {
     private const string TikTokPresetName = "TikTok 60fps Strict";
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    public static string FilePath { get; } = Path.Combine(AppContext.BaseDirectory, "presets.json");
+    public static string FilePath => AppPaths.PresetsFile;
 
     /// <summary>The saved presets. The first launch creates the file with the built-in ones.</summary>
     public static List<EncodingPreset> Load()
@@ -52,15 +52,18 @@ public static class PresetStore
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // Read-only install folder: the presets still work for this session.
+                // The settings folder cannot be written to: the presets still work for this session.
             }
         }
 
         return presets;
     }
 
-    public static void Save(IEnumerable<EncodingPreset> presets) =>
+    public static void Save(IEnumerable<EncodingPreset> presets)
+    {
+        Directory.CreateDirectory(AppPaths.Settings);
         File.WriteAllText(FilePath, JsonSerializer.Serialize(presets, JsonOptions));
+    }
 
     private static List<EncodingPreset> CreateDefaults() =>
     [

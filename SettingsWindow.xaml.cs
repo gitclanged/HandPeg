@@ -22,12 +22,17 @@ public partial class SettingsWindow : Window
         _viewModel = viewModel;
         DataContext = _settings;
 
-        // The dependency section runs commands on the main view model and shows its progress.
-        DependenciesPanel.DataContext = viewModel;
+        // Nothing is installed while an encode, a preview or a transcription is using the tools.
+        Dependencies.AppIsBusy = viewModel.IsBusy;
+        Dependencies.Changed += () =>
+        {
+            viewModel.OnDependenciesChanged();
+            UpdateWhisperStatus();
+        };
 
         YtDlpDefaultText.Text = $"Default: {AppSettings.DefaultYtDlpReleaseUrl}";
         FfmpegDefaultText.Text = $"Default: {AppSettings.DefaultFfmpegReleaseUrl}";
-        HandpegUpdateText.Text = $"Updates itself from {AppSettings.HandpegRepositoryUrl} when it was installed with its installer.";
+        HandPegUpdateText.Text = $"Updates itself from {AppSettings.HandPegRepositoryUrl} when it was installed with its installer.";
         WhisperDefaultText.Text = $"Default: {AppSettings.DefaultWhisperReleaseUrl}";
 
         // Two-way choices stored as a flag each.
@@ -60,7 +65,10 @@ public partial class SettingsWindow : Window
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(MainViewModel.IsBusy))
+        {
+            Dependencies.AppIsBusy = _viewModel.IsBusy;
             UpdateWhisperStatus();
+        }
     }
 
     private void Browse_Click(object sender, RoutedEventArgs e)
@@ -79,7 +87,9 @@ public partial class SettingsWindow : Window
     /// </summary>
     private void RunFirstRun_Click(object sender, RoutedEventArgs e)
     {
-        new FirstRunWindow { Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner }.ShowDialog();
+        var firstRun = new FirstRunWindow { Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner, AppIsBusy = _viewModel.IsBusy };
+        firstRun.DependenciesChanged += _viewModel.OnDependenciesChanged;
+        firstRun.ShowDialog();
         _viewModel.OnSettingsSaved();
         DialogResult = false;
     }
@@ -89,24 +99,26 @@ public partial class SettingsWindow : Window
     private void WhisperModelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (WhisperModelBox.SelectedItem is string model)
+        {
             _settings.WhisperModel = model;
+
+            // The list above offers to download the model chosen here.
+            if (IsLoaded)
+                Dependencies.PreferModel(model);
+        }
+
         UpdateWhisperStatus();
     }
 
     // After the binding has put the new text into the settings.
     private void WhisperPathBox_TextChanged(object sender, TextChangedEventArgs e) => Dispatcher.BeginInvoke(UpdateWhisperStatus);
 
-    private void DownloadModel_Click(object sender, RoutedEventArgs e)
-    {
-        if (WhisperModelBox.SelectedItem is string model && _viewModel.DownloadWhisperModelCommand.CanExecute(model))
-            _viewModel.DownloadWhisperModelCommand.Execute(model);
-    }
 
     /// <summary>Says what is installed: the program, and the model selected in the box.</summary>
     private void UpdateWhisperStatus()
     {
         // Raised once while the window is still being built.
-        if (WhisperStatusText is null || DownloadModelButton is null)
+        if (WhisperStatusText is null)
             return;
 
         // The box may hold a path not saved yet; what counts for the status is what is typed there now.
@@ -121,22 +133,38 @@ public partial class SettingsWindow : Window
             : "model not downloaded";
 
         WhisperStatusText.Text = $"{program}; {modelState}";
-        DownloadModelButton.IsEnabled = !_viewModel.IsBusy && model.Length > 0;
     }
 
     // ----- Backup & Export -----
 
     private const string BackupFileFilter = "Text file (JSON)|*.txt;*.json|All files|*.*";
 
+    /// <summary>
+    /// Where the export and import dialogs open: the HandPeg folder in Documents, above Projects and Layouts.
+    /// Not Projects itself: an export saved there would be listed as a project.
+    /// </summary>
+    private static string BackupFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.UserRoot);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        return AppPaths.UserRoot;
+    }
+
     private void ExportSettings_Click(object sender, RoutedEventArgs e) =>
-        Export("Export Settings & Presets", $"Handpeg settings {DateTime.Now:yyyy-MM-dd}.txt", path =>
+        Export("Export Settings & Presets", $"HandPeg settings {DateTime.Now:yyyy-MM-dd}.txt", path =>
         {
             BackupExporter.ExportSettingsAndPresets(path);
             return $"Settings and presets exported to {path}";
         });
 
     private void ExportProjects_Click(object sender, RoutedEventArgs e) =>
-        Export("Export All Projects", $"Handpeg projects {DateTime.Now:yyyy-MM-dd}.txt", path =>
+        Export("Export All Projects", $"HandPeg projects {DateTime.Now:yyyy-MM-dd}.txt", path =>
         {
             var (exported, skipped) = BackupExporter.ExportProjects(path);
             return $"{exported} project{(exported == 1 ? "" : "s")} exported to {path}"
@@ -146,7 +174,7 @@ public partial class SettingsWindow : Window
     /// <summary>Asks where to save, runs the export and reports how it went.</summary>
     private void Export(string title, string fileName, Func<string, string> export)
     {
-        var dialog = new SaveFileDialog { Title = title, Filter = "Text file (JSON)|*.txt|All files|*.*", FileName = fileName, DefaultExt = "txt" };
+        var dialog = new SaveFileDialog { Title = title, Filter = "Text file (JSON)|*.txt|All files|*.*", FileName = fileName, DefaultExt = "txt", InitialDirectory = BackupFolder() };
         if (dialog.ShowDialog(this) != true)
             return;
 
@@ -168,7 +196,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        var dialog = new OpenFileDialog { Title = "Import Settings & Presets", Filter = BackupFileFilter };
+        var dialog = new OpenFileDialog { Title = "Import Settings & Presets", Filter = BackupFileFilter, InitialDirectory = BackupFolder() };
         if (dialog.ShowDialog(this) != true)
             return;
 
@@ -192,8 +220,8 @@ public partial class SettingsWindow : Window
 
         MessageBox.Show(this,
             $"The settings and {presets} preset{(presets == 1 ? "" : "s")} were imported. The files they replaced are kept as "
-            + "appsettings.json.bak and presets.json.bak.\n\nRestart Handpeg to apply all the changes. This window will now close.",
-            "Handpeg", MessageBoxButton.OK, MessageBoxImage.Information);
+            + "appsettings.json.bak and presets.json.bak.\n\nRestart HandPeg to apply all the changes. This window will now close.",
+            "HandPeg", MessageBoxButton.OK, MessageBoxImage.Information);
 
         // Closed without its Save: this window still holds the settings from before the import.
         DialogResult = false;
@@ -201,7 +229,7 @@ public partial class SettingsWindow : Window
 
     private void ImportProjects_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Title = "Import Projects", Filter = "Project files|*.txt|All files|*.*", Multiselect = true };
+        var dialog = new OpenFileDialog { Title = "Import Projects", Filter = "Project files|*.txt|All files|*.*", Multiselect = true, InitialDirectory = BackupFolder() };
         if (dialog.ShowDialog(this) != true)
             return;
 

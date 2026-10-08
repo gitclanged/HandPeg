@@ -21,7 +21,7 @@ public partial class MainViewModel
     {
         var input = string.IsNullOrWhiteSpace(LocalMediaPath) ? "<source>" : LocalMediaPath;
         var output = string.IsNullOrWhiteSpace(DestinationPath)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), $"handpeg_output.{Container}")
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), $"HandPeg_output.{Container}")
             : DestinationPath.Trim().Trim('"');
         var segments = GetMergedSegments();
         var duration = GetOutputDuration();

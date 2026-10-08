@@ -164,7 +164,7 @@ public partial class MainViewModel
             if (!File.Exists(DependencyUpdater.WhisperPath))
                 return DependencyUpdater.IsWhisperOverridden
                     ? $"The whisper.exe set in Settings (Tools) was not found: {DependencyUpdater.WhisperPath}"
-                    : "whisper.cpp is not installed yet: use Install/Update Dependencies in Settings (Tools).";
+                    : "whisper.cpp is not installed yet: use Install / Update All Dependencies in Settings (Tools).";
             if (!File.Exists(DependencyUpdater.WhisperModelPath))
                 return $"The speech model {AppSettings.Current.WhisperModel} is not downloaded yet: see Settings (Tools).";
             if (VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput)
@@ -240,7 +240,7 @@ public partial class MainViewModel
         List<(double Start, double End)> ranges, string assPath, double timeOffset, CancellationToken cancellationToken)
     {
         if (!File.Exists(DependencyUpdater.WhisperPath))
-            return "Auto-captions need whisper.cpp: use Install/Update Dependencies in Settings (Tools), or set the path to your own whisper.exe there.";
+            return "Auto-captions need whisper.cpp: use Install / Update All Dependencies in Settings (Tools), or set the path to your own whisper.exe there.";
 
         var modelPath = DependencyUpdater.WhisperModelPath;
         if (!File.Exists(modelPath))
@@ -310,7 +310,7 @@ public partial class MainViewModel
 
     // ----- whisper.cpp model -----
 
-    /// <summary>Downloads a speech model into the tools folder.</summary>
+    /// <summary>Downloads a speech model into the models folder.</summary>
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
     private Task DownloadWhisperModelAsync(string? model) => RunOperationAsync(async cancellationToken =>
     {

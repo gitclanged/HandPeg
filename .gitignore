@@ -426,3 +426,9 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+# Velopack: the published build and the packed release (installer, portable archive, update packages)
+publish/
+Releases/
+bin/
+obj/

@@ -14,13 +14,13 @@ public sealed record ProjectEntry(string FilePath, string Name, string SourceNam
 }
 
 /// <summary>
-/// Project files live in a "projects" folder next to the application: JSON inside, .txt outside.
+/// Project files live in the Projects folder (see <see cref="AppPaths"/>): JSON inside, .txt outside.
 /// </summary>
 public static class ProjectStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    public static string Folder { get; } = Path.Combine(AppContext.BaseDirectory, "projects");
+    public static string Folder => AppPaths.Projects;
 
     /// <summary>Raised when projects were added to the folder from outside the project manager, so an open list can refresh.</summary>
     public static event Action? Changed;

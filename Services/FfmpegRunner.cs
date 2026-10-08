@@ -24,7 +24,7 @@ public static partial class FfmpegRunner
 
     /// <summary>
     /// Runs an FFmpeg command line exactly as written. A bare "ffmpeg" resolves to the
-    /// local copy in the bin folder when there is one, otherwise to whatever is on PATH.
+    /// local copy in the deps folder when there is one, otherwise to whatever is on PATH.
     /// </summary>
     public static async Task RunAsync(string commandLine, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
     {

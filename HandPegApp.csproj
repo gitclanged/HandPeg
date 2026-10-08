@@ -7,6 +7,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
 
+    <!-- The program is HandPeg.exe; the project, its folder and the namespace keep their working name. -->
+    <AssemblyName>HandPeg</AssemblyName>
+    <RootNamespace>HandPegApp</RootNamespace>
+    <Product>HandPeg</Product>
+    <AssemblyTitle>HandPeg</AssemblyTitle>
+    <Version>1.0.0</Version>
+
+    <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
+    <StartupObject>HandPegApp.Program</StartupObject>
+
     <!-- Windows Forms is referenced for two things WPF lacks: the system colour picker and tray notifications. -->
     <UseWindowsForms>true</UseWindowsForms>
 
@@ -20,6 +30,19 @@
   <ItemGroup>
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <!-- Built as a Page instead of the application definition: that keeps InitializeComponent and drops the generated Main. -->
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
+  </ItemGroup>
+
+  <!-- Published and packed output, when it is made inside the project folder. -->
+  <ItemGroup>
+    <Compile Remove="publish\**;Releases\**" />
+    <None Remove="publish\**;Releases\**" />
+    <Page Remove="publish\**;Releases\**" />
   </ItemGroup>
 
   <ItemGroup>

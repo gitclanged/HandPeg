@@ -35,38 +35,35 @@ public partial class MainWindow : Window
     private bool _updatingFromPlayer;
 
     /// <summary>
-    /// Looks for a newer Handpeg release with Velopack, downloads it, and offers to restart into it.
-    /// Only an installed copy can update itself; a copy run from a build folder skips the check. A failed
-    /// check (offline, no releases yet) is silent: it must never get in the way of starting the application.
+    /// Looks for a newer HandPeg release in the background and, once it has been downloaded, offers it in the
+    /// status bar. Nothing waits on this, and a failed check (offline, no releases yet) only goes to the log.
     /// </summary>
-    private async Task CheckForHandpegUpdateAsync()
+    private async Task CheckForHandPegUpdateAsync()
     {
-        try
-        {
-            var manager = new Velopack.UpdateManager(new Velopack.Sources.GithubSource(AppSettings.HandpegRepositoryUrl, null, false));
-            if (!manager.IsInstalled)
-                return;
+        if (await AppUpdater.CheckAndDownloadAsync() is not { } version)
+            return;
 
-            var update = await manager.CheckForUpdatesAsync();
-            if (update is null)
-                return;
-
-            await manager.DownloadUpdatesAsync(update);
-
-            var answer = MessageBox.Show(this,
-                $"Handpeg {update.TargetFullRelease.Version} has been downloaded. Restart now to apply the update?\n\n"
-                + "If you choose No, it is applied the next time Handpeg starts.",
-                "Handpeg", MessageBoxButton.YesNo, MessageBoxImage.Information);
-            if (answer == MessageBoxResult.Yes && !_viewModel.IsBusy)
-                manager.ApplyUpdatesAndRestart(update);
-            else if (answer == MessageBoxResult.Yes)
-                _viewModel.StatusText = "The update will be applied when Handpeg next starts: an operation is still running.";
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            // Not worth a message: the application works without the update.
-        }
+        UpdateNoticeText.Text = $"HandPeg {version} is ready.";
+        UpdateNotice.Visibility = Visibility.Visible;
     }
+
+    private void RestartToUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel.IsBusy)
+        {
+            _viewModel.StatusText = "An operation is still running. The update will go in when HandPeg is closed.";
+            return;
+        }
+
+        // The updater waits for this process to end, so the window closes the way it always does.
+        if (AppUpdater.BeginRestartIntoUpdate())
+            Close();
+        else
+            _viewModel.StatusText = "The update could not be started. It will be tried again when HandPeg is closed.";
+    }
+
+    // Left for later: the update goes in when the application closes.
+    private void DismissUpdateNotice_Click(object sender, RoutedEventArgs e) => UpdateNotice.Visibility = Visibility.Collapsed;
 
     public MainWindow()
     {
@@ -101,7 +98,7 @@ public partial class MainWindow : Window
 
         PreviewKeyDown += MainWindow_PreviewKeyDown;
         Closed += MainWindow_Closed;
-        Loaded += async (_, _) => await CheckForHandpegUpdateAsync();
+        Loaded += (_, _) => _ = CheckForHandPegUpdateAsync();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -279,7 +276,7 @@ public partial class MainWindow : Window
         {
             var answer = MessageBox.Show(this,
                 "A video is already open. Load this new video and discard current unqueued settings?",
-                "Handpeg", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+                "HandPeg", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
             if (answer != MessageBoxResult.Yes)
                 return;
         }
@@ -1161,7 +1158,22 @@ public partial class MainWindow : Window
 
     // ----- Layout files -----
 
-    private const string LayoutFileFilter = "Handpeg project settings (*.json)|*.json|All files|*.*";
+    private const string LayoutFileFilter = "HandPeg project settings (*.json)|*.json|All files|*.*";
+
+    /// <summary>Where layout files are kept unless the user picks somewhere else. Made on first use, so the dialog can open in it.</summary>
+    private static string LayoutsFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.Layouts);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The dialog then opens wherever Windows last had it.
+        }
+
+        return AppPaths.Layouts;
+    }
 
     private void ExportLayout_Click(object sender, RoutedEventArgs e)
     {
@@ -1172,7 +1184,8 @@ public partial class MainWindow : Window
 
         var dialog = new SaveFileDialog
         {
-            Title = "Export Project Settings", Filter = LayoutFileFilter, FileName = "Handpeg project settings.json", DefaultExt = "json",
+            Title = "Export Project Settings", Filter = LayoutFileFilter, FileName = "HandPeg project settings.json", DefaultExt = "json",
+            InitialDirectory = LayoutsFolder(),
         };
         if (dialog.ShowDialog(this) == true)
             _viewModel.ExportLayout(dialog.FileName, choice.ImportLayout, choice.ImportColor, choice.ImportBlur, choice.ImportSubtitles);
@@ -1180,7 +1193,7 @@ public partial class MainWindow : Window
 
     private void ImportLayout_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Title = "Import Project Settings", Filter = LayoutFileFilter };
+        var dialog = new OpenFileDialog { Title = "Import Project Settings", Filter = LayoutFileFilter, InitialDirectory = LayoutsFolder() };
         if (dialog.ShowDialog(this) != true || _viewModel.ReadLayout(dialog.FileName) is not { } layout)
             return;
 

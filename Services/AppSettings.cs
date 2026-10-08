@@ -32,15 +32,15 @@ public sealed class SmartRule
 }
 
 /// <summary>
-/// User overrides stored in appsettings.json next to the application. A blank value means "use the default".
+/// User overrides stored in appsettings.json in the settings folder (see <see cref="AppPaths"/>). A blank value means "use the default".
 /// </summary>
 public sealed class AppSettings
 {
     public const string DefaultYtDlpReleaseUrl = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
     public const string DefaultFfmpegReleaseUrl = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest";
 
-    /// <summary>Where Handpeg's own releases are published. The updater (Velopack) reads them from here.</summary>
-    public const string HandpegRepositoryUrl = "https://github.com/gitclanged/HandPeg";
+    /// <summary>Where HandPeg's own releases are published. The updater (Velopack) reads them from here.</summary>
+    public const string HandPegRepositoryUrl = "https://github.com/gitclanged/HandPeg";
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -53,7 +53,7 @@ public sealed class AppSettings
     /// <summary>Where the speech models are downloaded from: this address followed by the model's file name.</summary>
     public const string WhisperModelBaseUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
-    public static string FilePath { get; } = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+    public static string FilePath => AppPaths.SettingsFile;
 
     /// <summary>The settings in effect. Replaced as a whole when the user saves the settings window.</summary>
     public static AppSettings Current { get; private set; } = Load();
@@ -70,7 +70,7 @@ public sealed class AppSettings
 
     public string WhisperReleaseUrl { get; set; } = "";
 
-    /// <summary>File name of the speech model auto-captions use, in the tools folder.</summary>
+    /// <summary>File name of the speech model auto-captions use, in the models folder.</summary>
     public string WhisperModel { get; set; } = "ggml-base.en.bin";
 
     /// <summary>Preset applied to a newly loaded video when no smart rule matches. Blank for none.</summary>
@@ -309,6 +309,7 @@ public sealed class AppSettings
         WhisperReleaseUrl = WhisperReleaseUrl.Trim();
         SmartRules = SmartRules.Where(r => !string.IsNullOrWhiteSpace(r.Path) && !string.IsNullOrWhiteSpace(r.Preset)).ToList();
 
+        Directory.CreateDirectory(AppPaths.Settings);
         File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions));
         Current = this;
     }

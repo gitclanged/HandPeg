@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:HandPegApp"
-        Title="Handpeg Settings" Width="820" Height="780" ResizeMode="NoResize"
+        Title="HandPeg Settings" Width="820" Height="780" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <Window.Resources>
@@ -36,50 +36,32 @@
 
         <TabControl>
             <TabItem Header="Tools">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
                 <StackPanel>
                     <!-- Installing and updating the tools -->
-                    <StackPanel x:Name="DependenciesPanel">
+                    <StackPanel>
                         <TextBlock Text="Dependencies" Style="{StaticResource SectionTitle}" />
                         <TextBlock Style="{StaticResource Hint}"
-                                   Text="Downloads yt-dlp, ffmpeg, ffprobe and whisper.cpp into the app's bin folder, or replaces them with the latest release. Nothing ships with Handpeg itself. Uses the update URLs as last saved." />
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-                            <Button Content="Install/Update Dependencies" Command="{Binding InstallDependenciesCommand}" />
-                            <Button Grid.Column="1" Content="Stop" Margin="6,0,0,0" Command="{Binding CancelCommand}"
-                                    ToolTip="Stop the download that is running." />
-                            <TextBlock Grid.Column="2" Text="{Binding DependencyStatusText}" VerticalAlignment="Center" Margin="14,0,0,0"
-                                       TextTrimming="CharacterEllipsis" />
-                            <TextBlock Grid.Row="1" Grid.ColumnSpan="3" Text="{Binding StatusText}" Foreground="{DynamicResource MutedTextBrush}"
-                                       Margin="0,8,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusText}" />
-                        </Grid>
+                                   Text="Everything HandPeg downloads, and what is installed. Nothing ships with HandPeg itself. One button installs what is missing and replaces what has a newer release, using the update URLs as last saved; a tool with a path of your own under Tool paths is left alone." />
+                        <local:DependencyPanel x:Name="Dependencies" />
                     </StackPanel>
 
-                    <!-- whisper.cpp: the program comes with Install/Update; the speech model is chosen and fetched here -->
+                    <!-- whisper.cpp: the program and the models come with the list above; the model auto-captions use is chosen here -->
                     <TextBlock Text="Auto-captions (whisper.cpp)" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Auto-captions transcribe speech with whisper.cpp, installed as whisper.exe by the button above. It also needs a speech model: larger ones are more accurate and slower. The .en models understand English only." />
+                               Text="Auto-captions transcribe speech with whisper.cpp, installed by the button above. It also needs a speech model: larger ones are more accurate and slower. The .en models understand English only. Choosing one here ticks it in the list above when it has not been downloaded yet." />
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="Speech model:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="WhisperModelBox" MinWidth="200" Margin="0" SelectionChanged="WhisperModelBox_SelectionChanged"
-                                  AutomationProperties.Name="Speech Model" />
-                        <Button x:Name="DownloadModelButton" Content="Download Model" Margin="6,0,0,0" Click="DownloadModel_Click"
-                                ToolTip="Downloads the selected model into the bin folder. The model in this box is the one auto-captions use once you press Save." />
+                                  AutomationProperties.Name="Speech Model" ToolTip="The model auto-captions use once you press Save." />
+
                         <TextBlock x:Name="WhisperStatusText" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
 
                     <!-- Binary paths -->
                     <TextBlock Text="Tool paths" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Leave a field blank to use the copy in the app's bin folder. A path set here is used as is, and is never replaced by Install/Update Dependencies." />
+                               Text="Leave a field blank to use the copy HandPeg downloads. A path set here is used as is, and is never replaced by Install / Update All Dependencies." />
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -111,7 +93,7 @@
                         <TextBlock Grid.Row="3" Text="whisper.exe:" Style="{StaticResource FieldLabel}" />
                         <TextBox Grid.Row="3" Grid.Column="1" x:Name="WhisperPathBox" Margin="0,4" AutomationProperties.Name="whisper.exe Path" TextChanged="WhisperPathBox_TextChanged"
                                  Text="{Binding WhisperPath, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="Your own whisper.cpp program (whisper-cli.exe, or a GPU build), for auto-captions. When blank, the one Install/Update Dependencies downloads is used." />
+                                 ToolTip="Your own whisper.cpp program (whisper-cli.exe, or a GPU build), for auto-captions. When blank, the one HandPeg downloads is used." />
                         <Button Grid.Row="3" Grid.Column="2" Content="Browse..." Margin="6,4,0,4" Tag="{Binding ElementName=WhisperPathBox}" Click="Browse_Click" />
                     </Grid>
 
@@ -193,8 +175,8 @@
                         <TextBox Grid.Row="2" Grid.Column="1" Margin="0,4" Text="{Binding FfmpegReleaseUrl, UpdateSourceTrigger=PropertyChanged}" />
                         <TextBlock Grid.Row="3" Grid.Column="1" x:Name="FfmpegDefaultText" Style="{StaticResource Hint}" />
 
-                        <TextBlock Grid.Row="4" Text="Handpeg itself:" Style="{StaticResource FieldLabel}" />
-                        <TextBlock Grid.Row="4" Grid.Column="1" x:Name="HandpegUpdateText" Style="{StaticResource Hint}" Margin="0,8,0,8" />
+                        <TextBlock Grid.Row="4" Text="HandPeg itself:" Style="{StaticResource FieldLabel}" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" x:Name="HandPegUpdateText" Style="{StaticResource Hint}" Margin="0,8,0,8" />
 
                         <TextBlock Grid.Row="6" Text="whisper.cpp releases:" Style="{StaticResource FieldLabel}" />
                         <TextBox Grid.Row="6" Grid.Column="1" Margin="0,4" Text="{Binding WhisperReleaseUrl, UpdateSourceTrigger=PropertyChanged}"
@@ -270,7 +252,7 @@
 
                     <TextBlock Text="Download cache" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Downloaded videos are kept in the temp folder so that loading the same URL again, with the same options, is instant. Only the most recently used ones are kept; older ones are deleted when Handpeg starts and closes." />
+                               Text="Downloaded videos are kept in the cache folder so that loading the same URL again, with the same options, is instant. Only the most recently used ones are kept; older ones are deleted when HandPeg starts and closes." />
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="Download Cache Size (Files):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="70" Text="{Binding DownloadCacheSize, UpdateSourceTrigger=PropertyChanged}"
@@ -295,7 +277,7 @@
                 <StackPanel>
                     <TextBlock Text="Settings and presets" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Export writes appsettings.json and presets.json into one .txt file (JSON inside), as they were last saved. Import replaces both with the ones in such a file, keeping the files it replaces beside them as .bak." />
+                               Text="Export writes appsettings.json and presets.json into one .txt file (JSON inside), as they were last saved. Import replaces both with the ones in such a file, keeping the files it replaces beside them in the settings folder as .bak." />
                     <StackPanel Orientation="Horizontal">
                         <Button Content="Export Settings &amp; Presets" Click="ExportSettings_Click" />
                         <Button Content="Import Settings &amp; Presets" Margin="6,0,0,0" Click="ImportSettings_Click" />
@@ -303,7 +285,7 @@
 
                     <TextBlock Text="Projects" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Export writes every project in the projects folder into one file, one entry per project. Import copies project files into that folder; several can be chosen at once, an exported bundle is unpacked, and nothing already there is replaced." />
+                               Text="Export writes every project in the Projects folder into one file, one entry per project. Import copies project files into that folder; several can be chosen at once, an exported bundle is unpacked, and nothing already there is replaced." />
                     <StackPanel Orientation="Horizontal">
                         <Button Content="Export All Projects" Click="ExportProjects_Click" />
                         <Button Content="Import Projects" Margin="6,0,0,0" Click="ImportProjects_Click" />

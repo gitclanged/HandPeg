@@ -3,7 +3,7 @@ using System.IO;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Where this run of the application keeps its temporary files: one folder, %TEMP%\Handpeg\session_[id],
+/// Where this run of the application keeps its temporary files: one folder, session_[id] in the temp folder,
 /// removed as a whole when the application closes. (Downloads are not in it: they are a cache meant to
 /// outlive the session.)
 /// </summary>
@@ -11,7 +11,7 @@ public static class SessionPaths
 {
     private const string SessionPrefix = "session_";
 
-    private static readonly string TempRoot = Path.Combine(Path.GetTempPath(), "Handpeg");
+    private static readonly string TempRoot = AppPaths.Temp;
 
     public static string Root { get; } = Path.Combine(TempRoot, SessionPrefix + Guid.NewGuid().ToString("N"));
 
@@ -44,10 +44,10 @@ public static class SessionPaths
                     DeleteFolder(folder.FullName);
             }
 
-            // What versions before the session folder kept directly in the temp root.
+            // What earlier versions kept directly in the temp root.
             foreach (var name in new[] { "queue", "sprites", "preview" })
                 DeleteFolder(Path.Combine(TempRoot, name));
-            foreach (var name in new[] { "cuts.txt", "chapters.txt" })
+            foreach (var name in new[] { "cuts.txt", "chapters.txt", "binding-errors.log" })
                 File.Delete(Path.Combine(TempRoot, name));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

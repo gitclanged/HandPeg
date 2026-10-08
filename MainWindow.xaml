@@ -8,7 +8,7 @@
         xmlns:local="clr-namespace:HandPegApp"
         mc:Ignorable="d"
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel}"
-        Title="Handpeg" Height="1030" Width="1280" MinHeight="800" MinWidth="1100"
+        Title="HandPeg" Height="1030" Width="1280" MinHeight="800" MinWidth="1100"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterScreen"
         AllowDrop="True" DragOver="Window_DragOver" Drop="Window_Drop">
@@ -1330,12 +1330,21 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <TextBlock Text="{Binding StatusText}" ToolTip="{Binding StatusText}" Foreground="{DynamicResource MutedTextBrush}"
                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-            <ProgressBar Grid.Column="1" Width="240" Height="14" Margin="10,0,0,0" Minimum="0" Maximum="100"
+            <!-- A newer HandPeg has been downloaded. Ignoring this is fine: it is put in when the application closes. -->
+            <StackPanel Grid.Column="1" x:Name="UpdateNotice" Orientation="Horizontal" Margin="10,0,0,0" Visibility="Collapsed">
+                <TextBlock x:Name="UpdateNoticeText" VerticalAlignment="Center" />
+                <Button Content="Restart to update" Margin="8,0,0,0" Padding="12,3" Click="RestartToUpdate_Click"
+                        ToolTip="Closes HandPeg, puts the new version in and starts it again. Without this, the update goes in the next time HandPeg is closed." />
+                <Button Content="Later" Margin="6,0,0,0" Padding="10,3" Click="DismissUpdateNotice_Click"
+                        ToolTip="Hide this. The update goes in when HandPeg is closed." />
+            </StackPanel>
+            <ProgressBar Grid.Column="2" Width="240" Height="14" Margin="10,0,0,0" Minimum="0" Maximum="100"
                          Value="{Binding ProgressValue}" IsIndeterminate="{Binding IsProgressIndeterminate}" />
-            <Button Grid.Column="2" Content="Cancel" Margin="8,0,0,0" Padding="12,3" Command="{Binding CancelCommand}" />
+            <Button Grid.Column="3" Content="Cancel" Margin="8,0,0,0" Padding="12,3" Command="{Binding CancelCommand}" />
         </Grid>
     </Grid>
 </Window>

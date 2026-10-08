@@ -21,7 +21,7 @@ public static class BackupImporter
         if (ParseObject(File.ReadAllText(path)) is not { } root
             || root["AppSettings"] is not JsonObject settings || root["Presets"] is not JsonArray presets)
         {
-            throw new InvalidDataException("This is not a Handpeg settings export: it has no AppSettings and Presets sections.");
+            throw new InvalidDataException("This is not a HandPeg settings export: it has no AppSettings and Presets sections.");
         }
 
         // Read both the way the application will at its next start, so a file it could not start with is refused here.
@@ -30,6 +30,7 @@ public static class BackupImporter
 
         var newSettings = AppSettings.FilePath + ".new";
         var newPresets = PresetStore.FilePath + ".new";
+        Directory.CreateDirectory(AppPaths.Settings);
         File.WriteAllText(newSettings, settings.ToJsonString(JsonOptions));
         File.WriteAllText(newPresets, presets.ToJsonString(JsonOptions));
 

@@ -81,7 +81,7 @@ public partial class ProjectManagerWindow : Window
 
         var answer = MessageBox.Show(this,
             $"Delete the project \"{entry.Name}\"?\n\nThe project file is removed from disk. The video it refers to is not touched.",
-            "Handpeg", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+            "HandPeg", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes)
             return;
 

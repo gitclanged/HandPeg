@@ -11,10 +11,6 @@ public partial class App : Application
 {
     protected override void OnStartup(StartupEventArgs e)
     {
-        // Velopack's bootstrap comes before anything else: when the installer or updater starts the
-        // application to finish an install, update or uninstall, this handles that and exits.
-        Velopack.VelopackApp.Build().Run();
-
         LogBindingErrors();
 
         // Before any window is made, so that the first thing drawn already has the theme and the Windows accent colour.
@@ -35,17 +31,20 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         Services.Notifier.Dispose();
+
+        // An update that was downloaded but not restarted into goes in once this process has gone.
+        Services.AppUpdater.ApplyOnExit();
         base.OnExit(e);
     }
 
     /// <summary>
-    /// Debug builds write XAML binding errors to %TEMP%\Handpeg\binding-errors.log. They are otherwise
+    /// Debug builds write XAML binding errors to binding-errors.log in the logs folder. They are otherwise
     /// only visible in a debugger's output window, where a mistyped property name is easy to miss.
     /// </summary>
     [Conditional("DEBUG")]
     private static void LogBindingErrors()
     {
-        var folder = Path.Combine(Path.GetTempPath(), "Handpeg");
+        var folder = Services.AppPaths.Logs;
         Directory.CreateDirectory(folder);
 
         var log = new StreamWriter(Path.Combine(folder, "binding-errors.log"), append: false) { AutoFlush = true };

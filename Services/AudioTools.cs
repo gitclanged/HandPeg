@@ -250,7 +250,7 @@ public static class Notifier
             _icon ??= new System.Windows.Forms.NotifyIcon
             {
                 Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? "") ?? System.Drawing.SystemIcons.Application,
-                Text = "Handpeg",
+                Text = "HandPeg",
             };
 
             // Only in the notification area while there is something to say.

@@ -9,7 +9,7 @@ public static class YtDlpDownloader
     private const string RequestFileName = "request.txt";
 
     /// <summary>Downloads land in their own folder each, so the result is easy to find afterwards.</summary>
-    public static string DownloadRoot { get; } = Path.Combine(Path.GetTempPath(), "Handpeg", "downloads");
+    public static string DownloadRoot => AppPaths.Downloads;
 
     /// <summary>Maps a resolution label such as "1080p" or "Best" to a yt-dlp format selector.</summary>
     public static string BuildFormat(string resolution) =>
