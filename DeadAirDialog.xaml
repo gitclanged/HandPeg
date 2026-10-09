@@ -21,7 +21,7 @@
                 <RowDefinition Height="34" />
             </Grid.RowDefinitions>
             <TextBlock Text="Silence Threshold:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Column="1" x:Name="ThresholdSlider" Minimum="-60" Maximum="-20" TickFrequency="1" IsSnapToTickEnabled="True"
+            <Slider Grid.Column="1" x:Name="ThresholdSlider" Minimum="-60" Maximum="-20"
                     VerticalAlignment="Center" AutomationProperties.Name="Silence Threshold" local:NumericInput.Default="-35"
                     ToolTip="Anything quieter than this counts as silence. -35 dB suits a clean recording; a noisy microphone needs a higher value." />
             <TextBox Grid.Column="2" Style="{StaticResource ValueBox}" Width="48"
@@ -31,7 +31,7 @@
             <TextBlock Grid.Column="3" Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
 
             <TextBlock Grid.Row="1" Text="Shortest Silence:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" x:Name="DurationSlider" Minimum="0.2" Maximum="5" TickFrequency="0.1" IsSnapToTickEnabled="True"
+            <Slider Grid.Row="1" Grid.Column="1" x:Name="DurationSlider" Minimum="0.2" Maximum="5"
                     VerticalAlignment="Center" AutomationProperties.Name="Shortest Silence" local:NumericInput.Default="1"
                     ToolTip="A pause shorter than this is left in: breaths and the gaps between sentences." />
             <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="48"

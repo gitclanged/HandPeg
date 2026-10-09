@@ -30,11 +30,74 @@ public partial class MainViewModel
     /// <summary>Whether waveforms are drawn at all: the timeline's and the Audio tab's go on and off together.</summary>
     public bool ShowWaveforms => AppSettings.Current.ShowTimelineWaveform;
 
-    /// <summary>Height in pixels of the timeline (waveform, keyframe lines, playhead) for the Timeline Height setting, 1 to 5.</summary>
-    public double TimelineAreaHeight => 8 + 16 * Math.Clamp(AppSettings.Current.TimelineHeight, 1, 5);
+    // The three height sliders: the master timeline's beside the volume, and the track heights in the bottom
+    // bars of the Layers and Audio tabs. Each runs 1 to 50 and is remembered.
 
-    /// <summary>Height in pixels of one track's row in the Audio tab for the Audio Track Height setting, 1 to 5.</summary>
-    public double AudioTrackRowHeight => ShowWaveforms ? 46 + 18 * Math.Clamp(AppSettings.Current.AudioTrackHeight, 1, 5) : 64;
+    /// <summary>How tall the master timeline is, 1 to 50.</summary>
+    public double MasterTimelineHeight
+    {
+        get => Math.Clamp(AppSettings.Current.MasterTimelineHeight is > 0 and var set ? set : 4 * AppSettings.Current.TimelineHeight - 3, 1, 50);
+        set => SetHeight(s => s.MasterTimelineHeight, (s, v) => s.MasterTimelineHeight = v, value, nameof(MasterTimelineHeight), nameof(TimelineAreaHeight));
+    }
+
+    /// <summary>How tall each track's time bar is on the Layers tab, 1 to 50.</summary>
+    public double LayerTrackHeight
+    {
+        get => Math.Clamp(AppSettings.Current.LayerHeight, 1, 50);
+        set => SetHeight(s => s.LayerHeight, (s, v) => s.LayerHeight = v, value, nameof(LayerTrackHeight), nameof(LayerBarHeight));
+    }
+
+    /// <summary>How tall each sound's row is on the Audio tab, 1 to 50.</summary>
+    public double AudioTrackHeight
+    {
+        get => Math.Clamp(AppSettings.Current.AudioHeight, 1, 50);
+        set => SetHeight(s => s.AudioHeight, (s, v) => s.AudioHeight = v, value, nameof(AudioTrackHeight), nameof(AudioTrackRowHeight));
+    }
+
+    private void SetHeight(Func<AppSettings, int> get, Action<AppSettings, int> set, double value, string name, string pixels)
+    {
+        var steps = (int)Math.Round(Math.Clamp(value, 1, 50));
+        if (get(AppSettings.Current) == steps)
+            return;
+
+        set(AppSettings.Current, steps);
+        OnPropertyChanged(name);
+        OnPropertyChanged(pixels);
+        SaveSettingsSoon();
+    }
+
+    private CancellationTokenSource? _settingsSave;
+
+    /// <summary>
+    /// Writes the settings to disk once they have stopped changing. A slider reports every step of a drag;
+    /// the file is written once, half a second after the last of them.
+    /// </summary>
+    private async void SaveSettingsSoon()
+    {
+        if (_isBackgroundWorker)
+            return;
+
+        _settingsSave?.Cancel();
+        var wait = _settingsSave = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(500, wait.Token);
+            AppSettings.Current.SaveAsCurrent();
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException)
+        {
+            // Superseded by a later change, or the file could not be written: the choice holds for this session.
+        }
+    }
+
+    /// <summary>Height in pixels of the timeline (waveform, I-frame lines, playhead): 24 at its slimmest, 220 at its tallest.</summary>
+    public double TimelineAreaHeight => 20 + 4 * MasterTimelineHeight;
+
+    /// <summary>Height in pixels of a track's time bar on the Layers tab: 26 at the default of 25.</summary>
+    public double LayerBarHeight => Math.Round(14 + 0.48 * LayerTrackHeight);
+
+    /// <summary>Height in pixels of one sound's row in the Audio tab: 100 at the default of 25.</summary>
+    public double AudioTrackRowHeight => ShowWaveforms ? Math.Round(46 + 2.16 * AudioTrackHeight) : 64;
 
     /// <summary>Draws the timeline's waveform and one for every audio track, in the background, after a load.</summary>
     private async Task GenerateWaveformsAsync(string mediaPath)
@@ -157,6 +220,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(HasAudioClips));
         RefreshAudioRows();
         RefreshAnyKeys();
+        OnPropertyChanged(nameof(ActiveKeyLayer));
     }
 
     /// <summary>

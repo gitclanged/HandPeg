@@ -56,6 +56,7 @@ public partial class SettingsWindow : Window
         if (!models.Contains(_settings.WhisperModel) && !string.IsNullOrWhiteSpace(_settings.WhisperModel))
             models.Add(_settings.WhisperModel);
         ThemeBox.ItemsSource = ThemeManager.Themes;
+        ResetBox.ItemsSource = AppSettings.ResetTargets;
         if (!ThemeManager.Themes.Contains(_settings.Theme))
             _settings.Theme = ThemeManager.FollowSystem;
         ThemeBox.SelectedItem = _settings.Theme;

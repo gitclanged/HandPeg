@@ -86,7 +86,7 @@ public partial class MainViewModel
             args.Add($"-i {Quote(voiceover)}");
         }
 
-        var burnFilters = copyVideo ? [] : BuildSubtitleBurnFilters(input);
+        var burnFilters = copyVideo || IsMainSpliced ? [] : BuildSubtitleBurnFilters(input);
         var framerate = copyVideo ? null : GetTargetFramerate();
 
         // Applied once to the finished picture: the fades, and for GIF the palette (which has to come last).
@@ -110,7 +110,6 @@ public partial class MainViewModel
         var preparedAudio = new Dictionary<int, string[]>();
         if (!cutWithDemuxer)
         {
-            var mainTiming = BuildMainAudioTiming();
 
             // Auto-duck. The voices are mixed into one signal, and each ducked sound gets a copy of it to be
             // pressed down by. A copy that nothing listened to would be an error, so they are counted first.
@@ -121,7 +120,7 @@ public partial class MainViewModel
             {
                 var voices = new List<string>();
                 foreach (var track in tracks.Where(t => t.IsVoice && !ReferenceEquals(t, _silentBase)))
-                    voices.Add($"[0:a:{track.Index}]{string.Join(",", track.BuildEditChain().Concat(mainTiming).DefaultIfEmpty("anull"))}");
+                    voices.Add(PlaceMainAudio(graph, $"[0:a:{track.Index}]", track.BuildEditChain(), track.Stream.Channels == 1, $"dvsrc{track.Index}") + "anull");
                 voices.AddRange(layerAudio.Where(l => l.IsVoice).Select(BuildLayerAudio));
 
                 // The voiceover is timed against the finished video, which is the sequence only while nothing is cut out of it.
@@ -157,17 +156,10 @@ public partial class MainViewModel
             {
                 var track = tracks[k];
                 var silent = ReferenceEquals(track, _silentBase);
-                var edits = silent ? [] : track.BuildEditChain().Concat(mainTiming).ToList();
-
-                // A mono track that now begins with silence is made two-channel. FFmpeg's AAC encoder has been
-                // seen to stop dead on exactly that (one channel, digital silence first, 192k or more); the
-                // same sound on two channels goes through.
-                if (track.Stream.Channels == 1 && edits.Any(e => e.StartsWith("adelay", StringComparison.Ordinal)))
-                    edits.Add("aformat=channel_layouts=stereo");
-
+                var edits = silent ? [] : track.BuildEditChain();
                 var mixedIn = k == 0 ? layerAudio : [];
                 var duck = keys.Count > 0 && IsDucked(track);
-                if (edits.Count == 0 && mixedIn.Count == 0 && !duck && !silent)
+                if (edits.Count == 0 && mixedIn.Count == 0 && !duck && !silent && IsMainWholeSequence)
                     continue;
 
                 var label = $"[0:a:{track.Index}]";
@@ -177,10 +169,9 @@ public partial class MainViewModel
                     graph.Add($"anullsrc=r=48000:cl=stereo:d={Number(Math.Max(SequenceSeconds, 0.1))}[asilent]");
                     label = "[asilent]";
                 }
-                else if (edits.Count > 0)
+                else
                 {
-                    graph.Add($"{label}{string.Join(",", edits)}[aedit{track.Index}]");
-                    label = $"[aedit{track.Index}]";
+                    label = PlaceMainAudio(graph, label, edits, track.Stream.Channels == 1, $"aedit{track.Index}");
                 }
 
                 if (duck)
@@ -409,7 +400,7 @@ public partial class MainViewModel
         {
             // The player's clock is the sequence's, so the whole of it is composed as one stretch from 0.
             var chain = BuildVideoFilters(labelSuffix: "", 0, SequenceSeconds);
-            var (burn, shift) = (BuildSubtitleBurnFilters(LocalMediaPath), MainShift);
+            var (burn, shift) = (IsMainSpliced ? [] : BuildSubtitleBurnFilters(LocalMediaPath), MainShift);
             if (burn.Count > 0 && Math.Abs(shift) > 0.001)
             {
                 chain.Add($"setpts=PTS{Signed(-shift)}/TB");
@@ -460,7 +451,7 @@ public partial class MainViewModel
     /// <param name="captionsPath">An auto-caption file made for these stretches, or null.</param>
     private string BuildPreviewCommand(string outputPath, List<(double Start, double End)> ranges, int percent, string? captionsPath)
     {
-        var burnFilters = BuildSubtitleBurnFilters(LocalMediaPath);
+        var burnFilters = IsMainSpliced ? [] : BuildSubtitleBurnFilters(LocalMediaPath);
 
         // What is done once, to the finished picture. Fades are left out: they are placed by the length of
         // the whole output, which a few seconds do not have.
@@ -509,15 +500,14 @@ public partial class MainViewModel
         // With the engine every stretch of the sequence is composed on its own, as the export composes a cut
         // segment. The file is opened once per stretch, wound forward to the first frame that stretch shows
         // of it, which is where its frames then count from.
-        var (mainStart, mainEnd) = GetMainSpan();
         var shift = MainShift;
         var inputs = new List<string>();
         var graph = new List<string>();
         for (var i = 0; i < ranges.Count; i++)
         {
             var (from, to) = ranges[i];
-            var (seenFrom, seenTo) = (Math.Max(from, mainStart), Math.Min(to, mainEnd));
-            var origin = Math.Max(Math.Min(seenFrom, mainEnd) - shift, 0);
+            var seen = GetSeenMain(from, to);
+            var origin = seen.Count > 0 ? Math.Max(seen.Min(p => p.Source), 0) : 0;
             inputs.Add($"{hardware}-ss {Number(origin)} -i {Quote(LocalMediaPath)}");
 
             List<string> chain;
@@ -543,10 +533,20 @@ public partial class MainViewModel
                 continue;
 
             // The main video's first track for as long as it is there in this stretch, and silence around it.
-            var lead = (int)Math.Round((seenFrom - from) * 1000);
-            graph.Add(seenTo - seenFrom > 0.001
-                ? $"[{i}:a:0]atrim=end={Number(seenTo - seenFrom)},asetpts=PTS-STARTPTS{(lead > 0 ? $",adelay={lead}:all=1" : "")},apad=whole_dur={Number(to - from)}[pa{i}]"
-                : $"anullsrc=r=48000:cl=stereo:d={Number(to - from)}[pa{i}]");
+            if (seen.Count == 0)
+            {
+                graph.Add($"anullsrc=r=48000:cl=stereo:d={Number(to - from)}[pa{i}]");
+                continue;
+            }
+
+            for (var j = 0; j < seen.Count; j++)
+            {
+                var (start, lead) = (seen[j].Source - origin, (int)Math.Round((seen[j].From - from) * 1000));
+                graph.Add($"[{i}:a:0]atrim=start={Number(start)}:end={Number(start + seen[j].To - seen[j].From)},asetpts=PTS-STARTPTS{(lead > 0 ? $",adelay={lead}:all=1" : "")},aformat=channel_layouts=stereo[pa{i}_{j}]");
+            }
+
+            var mixed = seen.Count == 1 ? $"[pa{i}_0]" : $"{string.Concat(seen.Select((_, j) => $"[pa{i}_{j}]"))}amix=inputs={seen.Count}:normalize=0:dropout_transition=0,asetpts=N/SR/TB,";
+            graph.Add($"{mixed}apad=whole_dur={Number(to - from)}[pa{i}]");
         }
 
         if (ranges.Count > 1)
@@ -613,19 +613,53 @@ public partial class MainViewModel
     /// file that is used, and held back until the main video comes in. Empty while the main video is the
     /// whole sequence.
     /// </summary>
-    private List<string> BuildMainAudioTiming()
+    /// <param name="label">Where the track's sound comes from.</param>
+    /// <param name="edits">What was done to the track itself (silenced parts, a slip), applied before it is placed.</param>
+    /// <param name="mono">
+    /// Whether the track has one channel. One that comes out beginning with silence is made two-channel:
+    /// FFmpeg's AAC encoder has been seen to stop dead on exactly that (one channel, digital silence first,
+    /// 192k or more), and the same sound on two channels goes through.
+    /// </param>
+    /// <param name="tag">The label the placed sound gets, when anything had to be done to it.</param>
+    /// <returns>The label to carry on from.</returns>
+    private string PlaceMainAudio(List<string> graph, string label, List<string> edits, bool mono, string tag)
     {
-        var steps = new List<string>();
-        if (IsMainWholeSequence)
-            return steps;
+        var clips = IsMainWholeSequence ? [] : GetMainClips();
+        if (clips.Count <= 1)
+        {
+            var steps = new List<string>(edits);
+            if (clips.Count == 1)
+            {
+                var clip = clips[0];
+                if (clip.Offset > 0.001 || clip.End - clip.Start < MainMediaSeconds - clip.Offset - 0.02)
+                    steps.Add($"atrim={(clip.Offset > 0.001 ? $"start={Number(clip.Offset)}:" : "")}end={Number(clip.Offset + clip.End - clip.Start)},asetpts=PTS-STARTPTS");
+                if (clip.Start > 0.001)
+                    steps.Add($"adelay={(int)Math.Round(clip.Start * 1000)}:all=1");
+            }
 
-        var (start, end) = GetMainSpan();
-        var offset = _mainVideoRow.MediaOffset;
-        if (offset > 0.001 || _mainVideoRow.Duration > 0.001)
-            steps.Add($"atrim={(offset > 0.001 ? $"start={Number(offset)}:" : "")}end={Number(offset + end - start)},asetpts=PTS-STARTPTS");
-        if (start > 0.001)
-            steps.Add($"adelay={(int)Math.Round(start * 1000)}:all=1");
-        return steps;
+            if (mono && steps.Any(e => e.StartsWith("adelay", StringComparison.Ordinal)))
+                steps.Add("aformat=channel_layouts=stereo");
+            if (steps.Count == 0)
+                return label;
+
+            graph.Add($"{label}{string.Join(",", steps)}[{tag}]");
+            return $"[{tag}]";
+        }
+
+        // Several clips: the track is copied once for each, every copy cut to its clip and held back to where
+        // the clip is, and the copies are laid over each other. Sound, unlike pictures, is cheap to read through.
+        graph.Add($"{label}{(edits.Count > 0 ? string.Join(",", edits) + "," : "")}asplit={clips.Count}{string.Concat(clips.Select((_, j) => $"[{tag}_c{j}]"))}");
+        for (var j = 0; j < clips.Count; j++)
+        {
+            var clip = clips[j];
+            graph.Add($"[{tag}_c{j}]atrim=start={Number(clip.Offset)}:end={Number(clip.Offset + clip.End - clip.Start)},asetpts=PTS-STARTPTS"
+                      + (clip.Start > 0.001 ? $",adelay={(int)Math.Round(clip.Start * 1000)}:all=1" : "") + (mono ? ",aformat=channel_layouts=stereo" : "") + $"[{tag}_p{j}]");
+        }
+
+        // The mix is given a clock of its own, counted from its samples: what it inherits from clips taken out of
+        // order is not one an encoder can follow, and the track came out empty.
+        graph.Add($"{string.Concat(clips.Select((_, j) => $"[{tag}_p{j}]"))}amix=inputs={clips.Count}:normalize=0:dropout_transition=0,asetpts=N/SR/TB[{tag}]");
+        return $"[{tag}]";
     }
 
     /// <summary>The voiceover's own steps: cut to its trim handles, moved to where it starts, set to its gain.</summary>
@@ -889,6 +923,18 @@ public partial class MainViewModel
             crop = $"crop=trunc(iw*{Fraction(1 - left - right)}/2)*2:trunc(ih*{Fraction(1 - top - bottom)}/2)*2:trunc(iw*{Fraction(left)}):trunc(ih*{Fraction(top)})";
         }
 
+        // A main video in several clips has no one time of its own left once it is composed. Its burned-in
+        // subtitles are drawn on its own frames first, in the file's time (which a preview's input has been
+        // wound forward in). Not for Live Preview, whose frames already come in the sequence's time.
+        if (FrameEngine && IsMainSpliced && !_buildingLiveGraph && BuildSubtitleBurnFilters(LocalMediaPath) is { Count: > 0 } early)
+        {
+            if (_inputOrigin > 0.001)
+                filters.Add($"setpts=PTS{Signed(_inputOrigin)}/TB");
+            filters.AddRange(early);
+            if (_inputOrigin > 0.001)
+                filters.Add($"setpts=PTS{Signed(-_inputOrigin)}/TB");
+        }
+
         if (FrameEngine)
         {
             filters.Add(BuildFrameEngine(crop, labelSuffix, from, to));
@@ -988,11 +1034,17 @@ public partial class MainViewModel
 
         // How much of this stretch the main video is there for. A file whose length is not known is taken to
         // be all of it, and lends the canvas its clock as it does for Live Preview.
-        var (mainStart, mainEnd) = GetMainSpan();
-        var (seenFrom, seenTo) = (Math.Max(from, mainStart), Math.Min(to, mainEnd));
+        var seen = GetSeenMain(from, to);
         var known = to - from > 0.001 && MainMediaSeconds > 0;
-        var mainSeen = !known || seenTo - seenFrom > 0.001;
-        var throughout = !known || (seenFrom - from < 0.001 && to - seenTo < 0.001);
+        var mainSeen = !known || seen.Count > 0;
+        var throughout = !known;
+        if (known && seen.Count > 0 && seen[0].From - from < 0.001 && to - seen[^1].To < 0.001)
+        {
+            throughout = true;
+            for (var i = 1; i < seen.Count && throughout; i++)
+                throughout = seen[i].From - seen[i - 1].To < 0.001;
+        }
+
         var clockFromInput = live || !known;
 
         // The stack, bottom first, without the layers that have nothing to show.
@@ -1023,17 +1075,8 @@ public partial class MainViewModel
 
         // The main video, cut to what this stretch shows of it and set down where it comes in. Left as it is
         // when it is the whole sequence and all of it is wanted.
-        if (!clockFromInput && mainSeen && !(IsMainWholeSequence && from < 0.001 && to >= SequenceSeconds - 0.001 && _inputOrigin == 0))
-        {
-            var (cutFrom, cutTo, lead) = (seenFrom - MainShift - _inputOrigin, seenTo - MainShift - _inputOrigin, seenFrom - from);
-            graph.Append("trim=");
-            if (cutFrom > 0.001)
-                graph.Append("start=").Append(Number(cutFrom)).Append(':');
-            graph.Append("end=").Append(Number(cutTo)).Append(",setpts=PTS-STARTPTS");
-            if (lead > 0.001)
-                graph.Append('+').Append(Number(lead)).Append("/TB");
-            graph.Append(',');
-        }
+        if (!clockFromInput && seen.Count > 0 && !(IsMainWholeSequence && from < 0.001 && to >= SequenceSeconds - 0.001 && _inputOrigin == 0))
+            AppendMainClips(graph, seen, from, s);
 
         // Nothing of it wanted at all: one frame is read and dropped, and the file is left alone.
         graph.Append(branches.Count switch
@@ -1053,7 +1096,8 @@ public partial class MainViewModel
         // What comes from the main video is there only while the main video is. Composed on the canvas, its
         // frames run out and the canvas carries on; on the player's clock it is switched off outside its stretch.
         var mainEnding = clockFromInput ? "" : ":eof_action=pass";
-        var mainGate = clockFromInput && !throughout ? $"gte(t,{Number(seenFrom - from)})*lt(t,{Number(seenTo - from)})" : null;
+        // Between two clips that do not meet there is nothing of it either, whichever clock it is on.
+        var mainGate = !throughout && (clockFromInput || seen.Count > 1) ? BuildMainGate(from, to) : null;
 
         if (blurred)
         {
@@ -1159,6 +1203,90 @@ public partial class MainViewModel
         }
 
         return graph.ToString();
+    }
+
+    /// <summary>The parts of the main video's clips that fall inside a stretch of the sequence, in order, each with the moment of the file it begins at.</summary>
+    private List<(double From, double To, double Source)> GetSeenMain(double from, double to)
+    {
+        var seen = new List<(double From, double To, double Source)>();
+        foreach (var clip in GetMainClips())
+        {
+            var (a, b) = (Math.Max(from, clip.Start), Math.Min(to, clip.End));
+            if (b - a > 0.001)
+                seen.Add((a, b, clip.Offset + a - clip.Start));
+        }
+
+        return seen;
+    }
+
+    /// <summary>
+    /// Makes the main video's frames a picture in the sequence's time: every clip cut out of the file and set
+    /// down at the moment it comes in. One clip is a trim. Several clips that take the file in the order it
+    /// runs are one pass over it: the frames of every clip are let through and the rest dropped (select), and
+    /// each frame is then moved to where its clip puts it (setpts, by which clip its own time falls in).
+    /// Nothing is held in memory for that. Clips that take the file out of order (the end of it placed before
+    /// the beginning) cannot be had in one pass: each is cut on a copy of its own and the copies are woven
+    /// together by time, which holds frames back for as long as the order is wrong.
+    /// </summary>
+    private void AppendMainClips(StringBuilder graph, List<(double From, double To, double Source)> seen, double from, string s)
+    {
+        var origin = _inputOrigin;
+        if (seen.Count == 1)
+        {
+            var (cutFrom, lead) = (seen[0].Source - origin, seen[0].From - from);
+            graph.Append("trim=");
+            if (cutFrom > 0.001)
+                graph.Append("start=").Append(Number(cutFrom)).Append(':');
+            graph.Append("end=").Append(Number(cutFrom + seen[0].To - seen[0].From)).Append(",setpts=PTS-STARTPTS");
+            if (lead > 0.001)
+                graph.Append('+').Append(Number(lead)).Append("/TB");
+            graph.Append(',');
+            return;
+        }
+
+        var inOrder = true;
+        for (var i = 1; i < seen.Count && inOrder; i++)
+            inOrder = seen[i].Source >= seen[i - 1].Source + (seen[i - 1].To - seen[i - 1].From) - 0.001;
+
+        if (inOrder)
+        {
+            graph.Append("select='");
+            for (var i = 0; i < seen.Count; i++)
+            {
+                var start = seen[i].Source - origin;
+                graph.Append(i > 0 ? "+" : "").Append("gte(t,").Append(Number(start)).Append(")*lt(t,").Append(Number(start + seen[i].To - seen[i].From)).Append(')');
+            }
+
+            // How far each clip's frames are moved: to where the clip is on this stretch, from where they are in the file.
+            graph.Append("',setpts='PTS+(");
+            var before = 0.0;
+            for (var i = 0; i < seen.Count; i++)
+            {
+                var shift = seen[i].From - from - (seen[i].Source - origin);
+                if (i == 0)
+                    graph.Append(Number(shift));
+                else if (Math.Abs(shift - before) >= 0.0005)
+                    graph.Append(Signed(shift - before)).Append("*gte(T,").Append(Number(seen[i].Source - origin)).Append(')');
+                before = shift;
+            }
+
+            graph.Append(")/TB',");
+            return;
+        }
+
+        graph.Append("split=").Append(seen.Count);
+        for (var i = 0; i < seen.Count; i++)
+            graph.Append($"[mcut{i}{s}]");
+        for (var i = 0; i < seen.Count; i++)
+        {
+            var start = seen[i].Source - origin;
+            graph.Append($";[mcut{i}{s}]trim=start={Number(start)}:end={Number(start + seen[i].To - seen[i].From)},setpts=PTS-STARTPTS{Signed(seen[i].From - from)}/TB[mset{i}{s}]");
+        }
+
+        graph.Append(';');
+        for (var i = 0; i < seen.Count; i++)
+            graph.Append($"[mset{i}{s}]");
+        graph.Append("interleave=n=").Append(seen.Count).Append(',');
     }
 
     /// <summary>

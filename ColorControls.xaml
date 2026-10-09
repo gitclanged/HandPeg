@@ -39,35 +39,35 @@
             </Grid.RowDefinitions>
             <TextBlock Grid.ColumnSpan="3" Text="Color Correction" FontWeight="SemiBold" Margin="0,0,0,4" />
             <TextBlock Grid.Row="1" Text="Contrast:" Style="{StaticResource ColorLabel}" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="2" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="2" VerticalAlignment="Center"
                     Value="{Binding ColorContrast}" AutomationProperties.Name="Contrast" local:NumericInput.Default="1"
                     ToolTip="1 leaves the contrast as it is. Double-click to reset." />
             <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ColorValue}" Text="{Binding ColorContrast, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Contrast Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005"
                      local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="2" />
             <TextBlock Grid.Row="2" Text="Brightness:" Style="{StaticResource ColorLabel}" />
-            <Slider Grid.Row="2" Grid.Column="1" Minimum="-1" Maximum="1" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="-1" Maximum="1" VerticalAlignment="Center"
                     Value="{Binding ColorBrightness}" AutomationProperties.Name="Brightness" local:NumericInput.Default="0"
                     ToolTip="0 leaves the brightness as it is. Double-click to reset." />
             <TextBox Grid.Row="2" Grid.Column="2" Style="{StaticResource ColorValue}" Text="{Binding ColorBrightness, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Brightness Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.005"
                      local:NumericInput.Decimals="2" local:NumericInput.Minimum="-1" local:NumericInput.Maximum="1" />
             <TextBlock Grid.Row="3" Text="Saturation:" Style="{StaticResource ColorLabel}" />
-            <Slider Grid.Row="3" Grid.Column="1" Minimum="0" Maximum="3" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="3" Grid.Column="1" Minimum="0" Maximum="3" VerticalAlignment="Center"
                     Value="{Binding ColorSaturation}" AutomationProperties.Name="Saturation" local:NumericInput.Default="1"
                     ToolTip="1 leaves the colours as they are; 0 is black and white. Double-click to reset." />
             <TextBox Grid.Row="3" Grid.Column="2" Style="{StaticResource ColorValue}" Text="{Binding ColorSaturation, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Saturation Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005"
                      local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="3" />
             <TextBlock Grid.Row="4" Text="Gamma:" Style="{StaticResource ColorLabel}" />
-            <Slider Grid.Row="4" Grid.Column="1" Minimum="0.1" Maximum="3" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="4" Grid.Column="1" Minimum="0.1" Maximum="3" VerticalAlignment="Center"
                     Value="{Binding ColorGamma}" AutomationProperties.Name="Gamma" local:NumericInput.Default="1"
                     ToolTip="1 leaves the midtones as they are; higher lifts them. Double-click to reset." />
             <TextBox Grid.Row="4" Grid.Column="2" Style="{StaticResource ColorValue}" Text="{Binding ColorGamma, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Gamma Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005"
                      local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="3" />
             <TextBlock Grid.Row="5" Text="Hue:" Style="{StaticResource ColorLabel}" />
-            <Slider Grid.Row="5" Grid.Column="1" Minimum="-180" Maximum="180" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="5" Grid.Column="1" Minimum="-180" Maximum="180" VerticalAlignment="Center"
                     Value="{Binding ColorHue}" AutomationProperties.Name="Hue" local:NumericInput.Default="0"
                     ToolTip="Turns every colour around the colour wheel, in degrees. Double-click to reset." />
             <TextBox Grid.Row="5" Grid.Column="2" Style="{StaticResource ColorValue}" Text="{Binding ColorHue, StringFormat={}{0:0}}"
@@ -92,28 +92,28 @@
             <TextBlock Grid.ColumnSpan="3" Text="RGB Balance" FontWeight="SemiBold" Margin="0,0,0,4" />
             <TextBlock Grid.Row="4" Grid.ColumnSpan="3" Text="Sharpening" FontWeight="SemiBold" Margin="0,2,0,2" />
             <TextBlock Grid.Row="1" Text="Red:" Style="{StaticResource ColorLabel}" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="-1" Maximum="1" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="-1" Maximum="1" VerticalAlignment="Center"
                     Value="{Binding ColorRed}" AutomationProperties.Name="Red" local:NumericInput.Default="0"
                     ToolTip="Lifts the red in the picture, or below 0 lowers it. Double-click to reset." />
             <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ColorValue}" Text="{Binding ColorRed, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Red Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.005"
                      local:NumericInput.Decimals="2" local:NumericInput.Minimum="-1" local:NumericInput.Maximum="1" />
             <TextBlock Grid.Row="2" Text="Green:" Style="{StaticResource ColorLabel}" />
-            <Slider Grid.Row="2" Grid.Column="1" Minimum="-1" Maximum="1" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="-1" Maximum="1" VerticalAlignment="Center"
                     Value="{Binding ColorGreen}" AutomationProperties.Name="Green" local:NumericInput.Default="0"
                     ToolTip="Lifts the green in the picture, or below 0 lowers it. Double-click to reset." />
             <TextBox Grid.Row="2" Grid.Column="2" Style="{StaticResource ColorValue}" Text="{Binding ColorGreen, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Green Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.005"
                      local:NumericInput.Decimals="2" local:NumericInput.Minimum="-1" local:NumericInput.Maximum="1" />
             <TextBlock Grid.Row="3" Text="Blue:" Style="{StaticResource ColorLabel}" />
-            <Slider Grid.Row="3" Grid.Column="1" Minimum="-1" Maximum="1" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="3" Grid.Column="1" Minimum="-1" Maximum="1" VerticalAlignment="Center"
                     Value="{Binding ColorBlue}" AutomationProperties.Name="Blue" local:NumericInput.Default="0"
                     ToolTip="Lifts the blue in the picture, or below 0 lowers it. Double-click to reset." />
             <TextBox Grid.Row="3" Grid.Column="2" Style="{StaticResource ColorValue}" Text="{Binding ColorBlue, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Blue Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.005"
                      local:NumericInput.Decimals="2" local:NumericInput.Minimum="-1" local:NumericInput.Maximum="1" />
             <TextBlock Grid.Row="5" Text="Strength:" Style="{StaticResource ColorLabel}" />
-            <Slider Grid.Row="5" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="5" Grid.Column="1" Minimum="0" Maximum="1" VerticalAlignment="Center"
                     Value="{Binding SharpenStrength}" AutomationProperties.Name="Sharpening Strength" local:NumericInput.Default="0"
                     ToolTip="Contrast adaptive sharpening (cas). 0 is off. Double-click to reset." />
             <TextBox Grid.Row="5" Grid.Column="2" Style="{StaticResource ColorValue}" Text="{Binding SharpenStrength, StringFormat={}{0:0.00}}"

@@ -279,8 +279,142 @@ public partial class MainViewModel
     }
 
     /// <summary>Takes over the chosen parts of a layout file. Parts the file does not have are skipped.</summary>
+    // The style preset in use: the last one applied. A double-click on a slider goes back to its values.
+    private StylePreset? _activeStyle;
+
+    /// <summary>The style presets in the Styles folder, by name, newest first.</summary>
+    public System.Collections.ObjectModel.ObservableCollection<string> StylePresets { get; } = [];
+
+    /// <summary>The style preset chosen from the list. Choosing one applies all of it.</summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private string? _selectedStylePreset;
+
+    private bool _listingStyles;
+
+    /// <summary>The name a style preset is saved under, as typed in its dialog.</summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private string _styleName = "";
+
+    /// <summary>
+    /// Saves the layers, color, blur and subtitle settings as they are now as a style preset of the list: a
+    /// .hpstyle file in the Styles folder, under the name typed. An existing one of that name is replaced.
+    /// </summary>
+    public void SaveStyle()
+    {
+        var name = string.Concat(StyleName.Trim().Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+        if (name.Length == 0)
+        {
+            StatusText = "Type a name for the style preset first.";
+            return;
+        }
+
+        Directory.CreateDirectory(AppPaths.Styles);
+        ExportStyle(Path.Combine(AppPaths.Styles, name + ".hpstyle"), layout: true, color: true, blur: true, subtitles: true);
+
+        // It is now the style in use, and shown as chosen without being applied over itself.
+        _activeStyle = CaptureStyle();
+        RefreshStylePresets();
+        _listingStyles = true;
+        SelectedStylePreset = StylePresets.Contains(name) ? name : null;
+        _listingStyles = false;
+    }
+
+    /// <summary>Reads the Styles folder again: called as the list is opened, so that it shows what is there now.</summary>
+    public void RefreshStylePresets()
+    {
+        var chosen = SelectedStylePreset;
+        _listingStyles = true;
+        try
+        {
+            StylePresets.Clear();
+            if (Directory.Exists(AppPaths.Styles))
+            {
+                foreach (var file in new DirectoryInfo(AppPaths.Styles).EnumerateFiles("*.hpstyle").OrderByDescending(f => f.LastWriteTime))
+                    StylePresets.Add(Path.GetFileNameWithoutExtension(file.Name));
+            }
+
+            SelectedStylePreset = chosen is not null && StylePresets.Contains(chosen) ? chosen : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+        finally
+        {
+            _listingStyles = false;
+        }
+    }
+
+    partial void OnSelectedStylePresetChanged(string? value)
+    {
+        if (_listingStyles || value is null || ReadStyle(Path.Combine(AppPaths.Styles, value + ".hpstyle")) is not { } style)
+            return;
+
+        // A style is layers: the Layer Engine is what shows them.
+        FrameEngine = true;
+        ApplyStyle(style, layout: true, color: true, blur: true, subtitles: true);
+    }
+
+    /// <summary>
+    /// What a double-click puts a slider or a number box back to: the value the style preset in use has for
+    /// it, when the settings ask for that and the style has one. Null leaves it to the built-in default.
+    /// </summary>
+    /// <param name="source">What the control is bound to: this view model, or a layer.</param>
+    /// <param name="property">The property it is bound to.</param>
+    public double? GetResetValue(object? source, string? property)
+    {
+        if (_activeStyle is not { } style || property is null || AppSettings.Current.DoubleClickResetsTo != AppSettings.ResetToStyle)
+            return null;
+
+        if (ReferenceEquals(source, this))
+        {
+            return property switch
+            {
+                nameof(CenterZoom) => style.Layout?.CenterZoom,
+                nameof(CenterOffsetX) => style.Layout?.CenterOffsetX,
+                nameof(CenterOffsetY) => style.Layout?.CenterOffsetY,
+                nameof(BlurRadius) => style.Blur?.Radius,
+                nameof(BlurPasses) => style.Blur?.Passes,
+                nameof(BackgroundDim) => style.Blur?.Dim,
+                nameof(ColorContrast) => style.Color?.Contrast,
+                nameof(ColorBrightness) => style.Color?.Brightness,
+                nameof(ColorSaturation) => style.Color?.Saturation,
+                nameof(ColorGamma) => style.Color?.Gamma,
+                nameof(ColorHue) => style.Color?.Hue,
+                nameof(ColorRed) => style.Color?.Red,
+                nameof(ColorGreen) => style.Color?.Green,
+                nameof(ColorBlue) => style.Color?.Blue,
+                nameof(SharpenStrength) => style.Color?.Sharpen,
+                _ => null,
+            };
+        }
+
+        if (source is not Layer layer)
+            return null;
+
+        // The layer as the style has it: the main video, the caption box, or the layer of the same name and kind.
+        var saved = layer.IsMainVideo ? style.Layout?.MainLayer
+            : layer.IsCaptions ? style.Subtitles?.Layer
+            : style.Layout?.Layers.FirstOrDefault(l => l.Kind == layer.Kind && l.Name == layer.Name);
+        if (saved is null)
+            return null;
+
+        return property switch
+        {
+            nameof(Layer.PositionXPercent) => layer.IsMainVideo ? null : saved.PositionX * 100,
+            nameof(Layer.PositionYPercent) => layer.IsMainVideo ? null : saved.PositionY * 100,
+            nameof(Layer.SizePercent) => layer.IsMainVideo ? style.Layout?.CenterZoom * 100 : saved.SizeWidth * 100,
+            nameof(Layer.SizeHeightPercent) => saved.SizeHeight * 100,
+            nameof(Layer.PositionX) or nameof(Layer.PositionY) or nameof(Layer.SizeWidth) when layer.IsMainVideo => null,
+            _ => typeof(LayerState).GetProperty(property)?.GetValue(saved) switch
+            {
+                double number => number,
+                int number => number,
+                _ => null,
+            },
+        };
+    }
+
     public void ApplyStyle(StylePreset preset, bool layout, bool color, bool blur, bool subtitles)
     {
+        _activeStyle = preset;
         var applied = new List<string>();
 
         if (layout && preset.Layout is { } layers)

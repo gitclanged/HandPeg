@@ -93,7 +93,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Gain (dB):" VerticalAlignment="Center" Margin="0,0,12,0" />
-                <Slider Grid.Column="1" Minimum="-24" Maximum="24" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" Minimum="-24" Maximum="24" VerticalAlignment="Center"
                         Value="{Binding VoiceoverGainDb}" AutomationProperties.Name="Voiceover Gain" local:NumericInput.Default="0" />
                 <TextBox Grid.Column="2" Style="{StaticResource ValueBox}" Width="48" Text="{Binding VoiceoverGainDb, StringFormat={}{0:0}}"
                          AutomationProperties.Name="Voiceover Gain Value"

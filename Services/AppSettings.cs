@@ -54,16 +54,20 @@ public sealed class ModeProfile
     public int PreviewResolutionPercent { get; set; }
     public bool AutoOpenLayoutPane { get; set; }
     public bool ShowAutoCaptions { get; set; }
-    public bool ShowKeyframes { get; set; }
-    public bool SnapTimelineToKeyframes { get; set; }
+    public bool ShowIFrames { get; set; }
+    public bool SnapTimelineToIFrames { get; set; }
     public bool AutoToggleTimelineSnap { get; set; }
     public bool SaveTargetSizeInPresets { get; set; }
     public bool LivePreview { get; set; }
     public bool StartWithPlayOnlySegments { get; set; }
-    public bool StartWithSnapToKeyframes { get; set; }
+    public bool StartWithSnapToIFrames { get; set; }
     public bool StartWithChapterMarkers { get; set; }
     public bool StartWithChaptersAtCuts { get; set; }
     public bool StartWithFrameEngine { get; set; }
+    public int MasterTimelineHeight { get; set; }
+    public bool ShowCutSegmentsPane { get; set; }
+    public bool ShowKeyframesPane { get; set; }
+    public bool ShowClipKeyframes { get; set; }
 }
 
 /// <summary>
@@ -125,15 +129,15 @@ public sealed class AppSettings
     /// <summary>True shows times as HH:MM:SS:FF (frames); false as HH:MM:SS.mmm (milliseconds).</summary>
     public bool ShowTimesAsFrames { get; set; }
 
-    public bool SnapTimelineToKeyframes { get; set; }
+    public bool SnapTimelineToIFrames { get; set; }
 
-    /// <summary>Whether the keyframe lines are drawn on the timeline: the "Show keyframes" box of the main window.</summary>
-    public bool ShowKeyframes { get; set; } = true;
+    /// <summary>Whether the I-frame lines are drawn on the timeline: the "Show I-frames" box of the main window.</summary>
+    public bool ShowIFrames { get; set; } = true;
 
-    /// <summary>When on, ticking or clearing "Show keyframes" switches <see cref="SnapTimelineToKeyframes"/> with it.</summary>
+    /// <summary>When on, ticking or clearing "Show I-frames" switches <see cref="SnapTimelineToIFrames"/> with it.</summary>
     public bool AutoToggleTimelineSnap { get; set; }
 
-    /// <summary>How far the timeline thumb is pulled towards a keyframe while dragging: 1 (weak) to 5 (strong).</summary>
+    /// <summary>How far the timeline thumb is pulled towards an I-frame while dragging: 1 (weak) to 5 (strong).</summary>
     public int TimelineMagnetism { get; set; } = 3;
 
     /// <summary>Builds a sheet of thumbnails after each load, shown when the pointer is over the timeline.</summary>
@@ -285,9 +289,41 @@ public sealed class AppSettings
     // What a freshly started window begins with. Unlike the settings above these are only starting points:
     // the boxes they stand for are on the main window and can be changed there for the session.
     public bool StartWithPlayOnlySegments { get; set; }
-    public bool StartWithSnapToKeyframes { get; set; } = true;
+    public bool StartWithSnapToIFrames { get; set; } = true;
     public bool StartWithChapterMarkers { get; set; } = true;
     public bool StartWithChaptersAtCuts { get; set; }
+
+    /// <summary>
+    /// How tall the master timeline is, 1 (a slim bar) to 50: the slider beside the volume. 0 in settings from
+    /// before the slider, which take it from the old five-step <see cref="TimelineHeight"/>.
+    /// </summary>
+    public int MasterTimelineHeight { get; set; }
+
+    /// <summary>How tall each track's time bar is on the Layers tab, 1 to 50.</summary>
+    public int LayerHeight { get; set; } = 25;
+
+    /// <summary>How tall each sound's row is on the Audio tab, 1 to 50: taller rows show more of the waveform.</summary>
+    public int AudioHeight { get; set; } = 25;
+
+    /// <summary>The panes and what each mode starts with were given their defaults once, for settings from before there were any.</summary>
+    public int ViewDefaultsVersion { get; set; }
+
+    public const string ResetToStyle = "Active Style Preset";
+    public const string ResetToSystem = "System Default";
+
+    public static IReadOnlyList<string> ResetTargets { get; } = [ResetToStyle, ResetToSystem];
+
+    /// <summary>What a double-click on a slider or a number box puts it back to: the value of the style preset in use, or the built-in default.</summary>
+    public string DoubleClickResetsTo { get; set; } = ResetToStyle;
+
+    /// <summary>The Cut Segments pane beside the player. Encoder Mode starts with it; Editor Mode has the Keyframes pane there instead.</summary>
+    public bool ShowCutSegmentsPane { get; set; } = true;
+
+    /// <summary>The Keyframes pane beside the player: the selected clip's keyframes on a timeline of their own.</summary>
+    public bool ShowKeyframesPane { get; set; }
+
+    /// <summary>Whether clips on the timeline show a diamond at each of their keyframes.</summary>
+    public bool ShowClipKeyframes { get; set; } = true;
 
     /// <summary>A new window starts with the Frame &amp; Layer Engine switched on.</summary>
     public bool StartWithFrameEngine { get; set; }
@@ -322,13 +358,14 @@ public sealed class AppSettings
         UiMode = editor ? EditorMode : EncoderMode;
 
         TimelineHeight = editor ? 5 : 1;
+        MasterTimelineHeight = editor ? 17 : 1;
         PresetBarLocation = editor ? PresetBarInSummary : PresetBarAtTop;
         ShowAdvancedFiltersTab = editor;
         ShowTimelineWaveform = editor;
         ShowAdvancedPlayback = editor;
         StartWithPlayOnlySegments = editor;
-        StartWithSnapToKeyframes = true;
-        SnapTimelineToKeyframes = editor;
+        StartWithSnapToIFrames = true;
+        SnapTimelineToIFrames = editor;
         AutoToggleTimelineSnap = editor;
         GenerateHoverPreviews = editor;
         SaveTargetSizeInPresets = editor;
@@ -338,6 +375,7 @@ public sealed class AppSettings
         AutoOpenLayoutPane = editor;
         ShowTimelineThumbnails = editor;
         StartWithFrameEngine = editor;
+        (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (!editor, editor, true);
         if (!editor)
             (DefaultVideoEncoder, DefaultAudioEncoder, DefaultAudioBitrate) = ("", "", "");
 
@@ -480,6 +518,20 @@ public sealed class AppSettings
 
                 // Settings saved before the option existed: on where the mode would have switched it on.
                 settings.ShowTimelineThumbnails ??= settings.UiMode == EditorMode;
+
+                // Settings from before the panes and the timeline's slider: each mode gets what it would have started with.
+                if (settings.ViewDefaultsVersion < 1)
+                {
+                    settings.ViewDefaultsVersion = 1;
+                    var editor = settings.UiMode == EditorMode;
+                    (settings.ShowCutSegmentsPane, settings.ShowKeyframesPane, settings.ShowClipKeyframes) = (!editor, editor, true);
+                    settings.MasterTimelineHeight = Math.Clamp(4 * settings.TimelineHeight - 3, 1, 50);
+                    foreach (var (mode, profile) in settings.ModeProfiles)
+                    {
+                        (profile.ShowCutSegmentsPane, profile.ShowKeyframesPane, profile.ShowClipKeyframes) = (mode != EditorMode, mode == EditorMode, true);
+                        profile.MasterTimelineHeight = Math.Clamp(4 * profile.TimelineHeight - 3, 1, 50);
+                    }
+                }
 
                 // Starting in a set mode, whatever was in use when HandPeg was last closed.
                 if (settings.DefaultMode is EncoderMode or EditorMode)

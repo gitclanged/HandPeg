@@ -120,7 +120,7 @@ public sealed partial class Layer : ObservableObject
     public static bool IsClipProperty(string? name) => name is nameof(StartTime) or nameof(Duration) or nameof(MediaOffset) or nameof(IsHidden)
         or nameof(AudioOffset) or nameof(Name) or nameof(TrackId) or nameof(PositionXPercent) or nameof(PositionYPercent) or nameof(SizePercent)
         or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges) or KeysChanged
-        or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration);
+        or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(IsAnimated) or nameof(IsDeleted) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration);
 
     // When the layer is on screen, in seconds of the source's own time.
 
@@ -135,6 +135,9 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>Kept in the list but left out of the picture, and (for a video layer) out of the sound.</summary>
     [ObservableProperty] private bool _isHidden;
+
+    /// <summary>In the recycle bin: taken off the timeline, and kept so that it can be put back.</summary>
+    [ObservableProperty] private bool _isDeleted;
 
     /// <summary>A video layer whose file has sound, which goes into the output with it.</summary>
     [ObservableProperty] private bool _hasAudio;
@@ -357,6 +360,82 @@ public sealed partial class Layer : ObservableObject
         return true;
     }
 
+    // A keyframe pins everything at once: the clip's place, its size and its turn.
+
+    /// <summary>Whether the clip has a keyframe at a moment.</summary>
+    public bool HasKeyAt(double time)
+    {
+        foreach (var keys in _keys)
+        {
+            foreach (var key in keys)
+            {
+                if (Math.Abs(key.Time - time) <= KeyTolerance)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The moment of the keyframe nearest a moment, or null when the clip has none.</summary>
+    public double? GetNearestKeyTime(double time)
+    {
+        double? nearest = null;
+        foreach (var keys in _keys)
+        {
+            foreach (var key in keys)
+            {
+                if (nearest is null || Math.Abs(key.Time - time) < Math.Abs(nearest.Value - time))
+                    nearest = key.Time;
+            }
+        }
+
+        return nearest;
+    }
+
+    /// <summary>Sets a keyframe at a moment that holds the clip as it is now: where it is, how large, how far turned. Announced once.</summary>
+    public void SetMasterKey(double time)
+    {
+        foreach (var property in Enum.GetValues<KeyProperty>())
+        {
+            if (property == KeyProperty.Rotation && !HasFilters)
+                continue;
+
+            var (list, value) = (_keys[(int)property], GetValue(property));
+            var at = list.FindIndex(k => Math.Abs(k.Time - time) <= KeyTolerance);
+            if (at >= 0)
+            {
+                list[at] = list[at] with { Value = value };
+            }
+            else
+            {
+                at = list.FindIndex(k => k.Time > time);
+                list.Insert(at < 0 ? list.Count : at, new Keyframe(Math.Round(time, 3), value));
+            }
+        }
+
+        NotifyAllKeys();
+    }
+
+    /// <summary>Takes away the keyframe at a moment. False when there is none there.</summary>
+    public bool RemoveMasterKey(double time)
+    {
+        var removed = 0;
+        foreach (var keys in _keys)
+            removed += keys.RemoveAll(k => Math.Abs(k.Time - time) <= KeyTolerance);
+        if (removed == 0)
+            return false;
+
+        NotifyAllKeys();
+        return true;
+    }
+
+    private void NotifyAllKeys()
+    {
+        OnPropertyChanged(nameof(IsAnimated));
+        OnPropertyChanged(KeysChanged);
+    }
+
     /// <summary>The keyframe nearest a moment, or null when the property has none.</summary>
     public Keyframe? GetNearestKey(KeyProperty property, double time) => _keys[(int)property].MinBy(k => Math.Abs(k.Time - time));
 
@@ -402,6 +481,7 @@ public sealed partial class Layer : ObservableObject
             KeyProperty.Scale => nameof(AnimatesScale),
             _ => nameof(AnimatesRotation),
         });
+        OnPropertyChanged(nameof(IsAnimated));
         OnPropertyChanged(KeysChanged);
     }
 
@@ -527,7 +607,7 @@ public sealed partial class Layer : ObservableObject
         set => SizeWidth = Math.Clamp(value, 1, 400) / 100.0;
     }
 
-    public bool IsUsable => !IsHidden && !IsAudio && SizeWidth > 0 && (IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
+    public bool IsUsable => !IsHidden && !IsDeleted && !IsAudio && SizeWidth > 0 && (IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
 
     /// <summary>The source rectangle in pixels of a source of the given size.</summary>
     public (int X, int Y, int Width, int Height) GetSourceRect(int sourceWidth, int sourceHeight) =>
@@ -606,6 +686,7 @@ public sealed partial class Layer : ObservableObject
         Duration = Duration,
         MediaOffset = MediaOffset,
         IsHidden = IsHidden,
+        IsDeleted = IsDeleted,
         HasAudio = HasAudio,
         AudioOffset = AudioOffset,
         TrackId = TrackId,
@@ -770,6 +851,7 @@ public sealed class LayerState
     public double Duration { get; set; }
     public double MediaOffset { get; set; }
     public bool IsHidden { get; set; }
+    public bool IsDeleted { get; set; }
     public bool HasAudio { get; set; }
     public double AudioOffset { get; set; }
 

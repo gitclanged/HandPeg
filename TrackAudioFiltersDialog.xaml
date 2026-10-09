@@ -29,7 +29,7 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Cutoff" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="HighPassSlider" Minimum="20" Maximum="400" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="HighPassSlider" Minimum="20" Maximum="400" VerticalAlignment="Center"
                         Value="{Binding HighPassHz}" AutomationProperties.Name="Cutoff" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=HighPassSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Cutoff Value" local:NumericInput.DragStep="1.52" local:NumericInput.Decimals="0" local:NumericInput.Minimum="20" local:NumericInput.Maximum="400" /><TextBlock Text="Hz" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
@@ -41,7 +41,7 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Threshold" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="GateSlider" Minimum="-80" Maximum="0" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="GateSlider" Minimum="-80" Maximum="0" VerticalAlignment="Center"
                         Value="{Binding GateThreshold}" AutomationProperties.Name="Threshold" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=GateSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Threshold Value" local:NumericInput.DragStep="0.32" local:NumericInput.Decimals="0" local:NumericInput.Minimum="-80" local:NumericInput.Maximum="0" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
@@ -53,7 +53,7 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Strength" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="DeNoiseSlider" Minimum="1" Maximum="40" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="DeNoiseSlider" Minimum="1" Maximum="40" VerticalAlignment="Center"
                         Value="{Binding DeNoiseStrength}" AutomationProperties.Name="Strength" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=DeNoiseSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Strength Value" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="1" local:NumericInput.Maximum="40" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
@@ -65,7 +65,7 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Threshold" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="CompressorThresholdSlider" Minimum="-60" Maximum="0" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="CompressorThresholdSlider" Minimum="-60" Maximum="0" VerticalAlignment="Center"
                         Value="{Binding CompressorThreshold}" AutomationProperties.Name="Threshold" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=CompressorThresholdSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Threshold Value" local:NumericInput.DragStep="0.24" local:NumericInput.Decimals="0" local:NumericInput.Minimum="-60" local:NumericInput.Maximum="0" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
@@ -76,7 +76,7 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Ratio" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="CompressorRatioSlider" Minimum="1" Maximum="20" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="CompressorRatioSlider" Minimum="1" Maximum="20" VerticalAlignment="Center"
                         Value="{Binding CompressorRatio}" AutomationProperties.Name="Ratio" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=CompressorRatioSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Ratio Value" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="20" /><TextBlock Text=":1" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
@@ -88,7 +88,7 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Bass" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="BassSlider" Minimum="-12" Maximum="12" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="BassSlider" Minimum="-12" Maximum="12" VerticalAlignment="Center"
                         Value="{Binding BassGain}" AutomationProperties.Name="Bass" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=BassSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Bass Value" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
@@ -99,7 +99,7 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Treble" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="TrebleSlider" Minimum="-12" Maximum="12" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="TrebleSlider" Minimum="-12" Maximum="12" VerticalAlignment="Center"
                         Value="{Binding TrebleGain}" AutomationProperties.Name="Treble" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=TrebleSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Treble Value" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
@@ -114,68 +114,68 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Ceiling" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="LimiterSlider" Minimum="-12" Maximum="0" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="LimiterSlider" Minimum="-12" Maximum="0" VerticalAlignment="Center"
                         Value="{Binding LimiterCeiling}" AutomationProperties.Name="Ceiling" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=LimiterSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Ceiling Value" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="0" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
                 <CheckBox Content="10-Band Equalizer" IsChecked="{Binding Equalizer}" ToolTip="Ten bands an octave apart, each from -12 to +12 dB." />
                 <StackPanel Orientation="Horizontal" Margin="26,2,0,6">
                     <StackPanel Width="42">
-                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider0" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider0" Minimum="-12" Maximum="12" HorizontalAlignment="Center"
                                 Value="{Binding EqualizerGains[0]}" AutomationProperties.Name="EQ 31" local:NumericInput.Default="0" ToolTip="31 Hz. Double-click to reset." />
                         <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider0, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
                         <TextBlock Text="31" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <StackPanel Width="42">
-                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider1" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider1" Minimum="-12" Maximum="12" HorizontalAlignment="Center"
                                 Value="{Binding EqualizerGains[1]}" AutomationProperties.Name="EQ 62" local:NumericInput.Default="0" ToolTip="62 Hz. Double-click to reset." />
                         <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider1, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
                         <TextBlock Text="62" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <StackPanel Width="42">
-                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider2" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider2" Minimum="-12" Maximum="12" HorizontalAlignment="Center"
                                 Value="{Binding EqualizerGains[2]}" AutomationProperties.Name="EQ 125" local:NumericInput.Default="0" ToolTip="125 Hz. Double-click to reset." />
                         <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider2, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
                         <TextBlock Text="125" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <StackPanel Width="42">
-                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider3" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider3" Minimum="-12" Maximum="12" HorizontalAlignment="Center"
                                 Value="{Binding EqualizerGains[3]}" AutomationProperties.Name="EQ 250" local:NumericInput.Default="0" ToolTip="250 Hz. Double-click to reset." />
                         <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider3, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
                         <TextBlock Text="250" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <StackPanel Width="42">
-                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider4" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider4" Minimum="-12" Maximum="12" HorizontalAlignment="Center"
                                 Value="{Binding EqualizerGains[4]}" AutomationProperties.Name="EQ 500" local:NumericInput.Default="0" ToolTip="500 Hz. Double-click to reset." />
                         <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider4, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
                         <TextBlock Text="500" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <StackPanel Width="42">
-                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider5" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider5" Minimum="-12" Maximum="12" HorizontalAlignment="Center"
                                 Value="{Binding EqualizerGains[5]}" AutomationProperties.Name="EQ 1k" local:NumericInput.Default="0" ToolTip="1k Hz. Double-click to reset." />
                         <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider5, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
                         <TextBlock Text="1k" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <StackPanel Width="42">
-                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider6" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider6" Minimum="-12" Maximum="12" HorizontalAlignment="Center"
                                 Value="{Binding EqualizerGains[6]}" AutomationProperties.Name="EQ 2k" local:NumericInput.Default="0" ToolTip="2k Hz. Double-click to reset." />
                         <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider6, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
                         <TextBlock Text="2k" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <StackPanel Width="42">
-                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider7" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider7" Minimum="-12" Maximum="12" HorizontalAlignment="Center"
                                 Value="{Binding EqualizerGains[7]}" AutomationProperties.Name="EQ 4k" local:NumericInput.Default="0" ToolTip="4k Hz. Double-click to reset." />
                         <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider7, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
                         <TextBlock Text="4k" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <StackPanel Width="42">
-                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider8" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider8" Minimum="-12" Maximum="12" HorizontalAlignment="Center"
                                 Value="{Binding EqualizerGains[8]}" AutomationProperties.Name="EQ 8k" local:NumericInput.Default="0" ToolTip="8k Hz. Double-click to reset." />
                         <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider8, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
                         <TextBlock Text="8k" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <StackPanel Width="42">
-                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider9" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" HorizontalAlignment="Center"
+                        <Slider Orientation="Vertical" Height="96" x:Name="EqSlider9" Minimum="-12" Maximum="12" HorizontalAlignment="Center"
                                 Value="{Binding EqualizerGains[9]}" AutomationProperties.Name="EQ 16k" local:NumericInput.Default="0" ToolTip="16k Hz. Double-click to reset." />
                         <TextBox Style="{StaticResource ValueBox}" Width="34" Margin="1,2" Padding="2,1" FontSize="11" HorizontalContentAlignment="Center" Text="{Binding Value, ElementName=EqSlider9, StringFormat={}{0:0}}" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" />
                         <TextBlock Text="16k" HorizontalAlignment="Center" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
@@ -189,7 +189,7 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Pitch" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="PitchSlider" Minimum="-12" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="PitchSlider" Minimum="-12" Maximum="12" VerticalAlignment="Center"
                         Value="{Binding PitchSemitones}" AutomationProperties.Name="Pitch" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=PitchSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Pitch Value" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="12" /><TextBlock Text="semitones" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
@@ -200,7 +200,7 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Tempo" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="TempoSlider" Minimum="0.5" Maximum="2" TickFrequency="0.05" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="TempoSlider" Minimum="0.5" Maximum="2" VerticalAlignment="Center"
                         Value="{Binding Tempo}" AutomationProperties.Name="Tempo" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=TempoSlider, StringFormat={}{0:0.00}}" AutomationProperties.Name="Tempo Value" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.5" local:NumericInput.Maximum="2" /><TextBlock Text="x" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
@@ -212,7 +212,7 @@
                     <ColumnDefinition Width="136" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Width" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                <Slider Grid.Column="1" x:Name="WidthSlider" Minimum="0" Maximum="4" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Column="1" x:Name="WidthSlider" Minimum="0" Maximum="4" VerticalAlignment="Center"
                         Value="{Binding StereoWidth}" AutomationProperties.Name="Width" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=WidthSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Width Value" local:NumericInput.DragStep="0.02" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="4" /></StackPanel>
             </Grid>

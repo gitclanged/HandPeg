@@ -14,8 +14,8 @@ public partial class MainViewModel
     // Kept stretches shorter than this are not worth a cut of their own.
     private const double ShortestKeptSeconds = 0.25;
 
-    // More keyframe lines than this would be closer together than a pixel on any screen.
-    private const int MaxKeyframeMarks = 1500;
+    // More I-frame lines than this would be closer together than a pixel on any screen.
+    private const int MaxIFrameMarks = 1500;
 
     // ----- Frame size -----
     // The frame is whatever Resolution & Cropping (Video tab) describes, in any shape: the Frame & Layer Engine composes
@@ -388,7 +388,7 @@ public partial class MainViewModel
     public bool IsEncoderMode => !IsEditorMode;
 
     /// <summary>
-    /// Whether the timeline's checkboxes (snapping, play only cut segments, keyframes) and the cut buttons sit
+    /// Whether the timeline's checkboxes (snapping, play only cut segments, I-frames) and the cut buttons sit
     /// under the timeline. In Editor Mode they are up in the transport row instead, while there is one.
     /// </summary>
     public bool ShowTimelineOptionsBelow => IsEncoderMode || !ShowAdvancedPlayback;
@@ -549,6 +549,9 @@ public partial class MainViewModel
         if (CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
         FrameEngine = true;
+
+        // The main video in front of the pieces cut from it: it is what is being watched.
+        MainVideoIndex = Layers.Count(l => !l.IsAudio);
         StatusText = vertical
             ? $"Added {game.Pieces.Count} layers for {game.Name}, laid out above and below the video. Check each against your video: right-click a layer and choose Redraw / Modify Mask to correct it."
             : $"Added {game.Pieces.Count} layers for {game.Name}. They sit where the HUD is by default: check each against your video and correct it with Draw Target.";
@@ -566,6 +569,10 @@ public partial class MainViewModel
         {
             if (VideoEncoder.Family != EncoderFamily.Copy || IsAnimatedOutput)
                 return "";
+
+            // Copy takes the file as it is: a main video that was moved, trimmed or split is none of those in the output.
+            if (!IsMainWholeSequence)
+                return "Stream Copy selected: the main video has been moved, trimmed or split on the timeline, and -c copy ignores all of that. Choose an encoder on the Video tab.";
 
             var skipped = Layers.Any(e => e.IsUsable) || AutoCaptions || HasCrop || Deinterlace || Denoise || FadeIn || FadeOut
                           || !string.IsNullOrWhiteSpace(LutPath) || BuildColorFilters().Count > 0
@@ -775,20 +782,20 @@ public partial class MainViewModel
         return property;
     }
 
-    // ----- Timeline keyframe lines -----
+    // ----- Timeline I-frame lines -----
 
-    /// <summary>Whether the keyframe lines are drawn on the timeline. Remembered between sessions.</summary>
-    [ObservableProperty] private bool _showKeyframes = AppSettings.Current.ShowKeyframes;
+    /// <summary>Whether the I-frame lines are drawn on the timeline. Remembered between sessions.</summary>
+    [ObservableProperty] private bool _showIFrames = AppSettings.Current.ShowIFrames;
 
-    partial void OnShowKeyframesChanged(bool value)
+    partial void OnShowIFramesChanged(bool value)
     {
         var settings = AppSettings.Current;
-        settings.ShowKeyframes = value;
+        settings.ShowIFrames = value;
 
-        // Optionally the pull of the timeline thumb towards keyframes goes on and off with the lines.
+        // Optionally the pull of the timeline thumb towards I-frames goes on and off with the lines.
         // Snapping of the cut points is a separate matter and is not touched.
         if (settings.AutoToggleTimelineSnap)
-            settings.SnapTimelineToKeyframes = value;
+            settings.SnapTimelineToIFrames = value;
 
         try
         {
@@ -800,7 +807,7 @@ public partial class MainViewModel
         }
 
         if (settings.AutoToggleTimelineSnap)
-            StatusText = value ? "Keyframes shown; the timeline snaps to them." : "Keyframes hidden; timeline snapping is off.";
+            StatusText = value ? "I-frames shown; the timeline snaps to them." : "I-frames hidden; timeline snapping is off.";
     }
 
     // ----- Taskbar progress -----
@@ -1181,7 +1188,7 @@ public partial class MainViewModel
     public float PlaybackRate =>
         float.TryParse(PlaybackSpeed.TrimEnd('x'), NumberStyles.Float, CultureInfo.InvariantCulture, out var rate) ? rate : 1;
 
-    /// <summary>The full transport row under the player: keyframe jumps, frame steps, play/pause, speed.</summary>
+    /// <summary>The full transport row under the player: I-frame jumps, frame steps, play/pause, speed.</summary>
     public bool ShowAdvancedPlayback => AppSettings.Current.ShowAdvancedPlayback;
 
     /// <summary>Just the play button beside the timeline.</summary>
@@ -1191,31 +1198,31 @@ public partial class MainViewModel
     [ObservableProperty] private bool _isPlaying;
 
     /// <summary>
-    /// Moves the playhead onto the keyframe before (-1) or after (+1) where it is, using the same keyframe
-    /// index that cut points snap to. Returns false when there is no such keyframe.
+    /// Moves the playhead onto the I-frame before (-1) or after (+1) where it is, using the same I-frame
+    /// index that cut points snap to. Returns false when there is no such I-frame.
     /// </summary>
-    public bool SeekToKeyframe(int direction)
+    public bool SeekToIFrame(int direction)
     {
-        if (Keyframes.Count == 0)
+        if (IFrames.Count == 0)
         {
-            StatusText = "No keyframe index for this video (yet).";
+            StatusText = "No I-frame index for this video (yet).";
             return false;
         }
 
-        // A millisecond of slack either way: the playhead sitting on a keyframe counts as being on it,
+        // A millisecond of slack either way: the playhead sitting on an I-frame counts as being on it,
         // so the jump goes to the one beyond.
         var seconds = PositionMs / 1000;
         var index = direction < 0
-            ? Keyframes.FindLastIndex(k => k < seconds - 0.001)
-            : Keyframes.FindIndex(k => k > seconds + 0.001);
+            ? IFrames.FindLastIndex(k => k < seconds - 0.001)
+            : IFrames.FindIndex(k => k > seconds + 0.001);
         if (index < 0)
         {
-            StatusText = direction < 0 ? "Already at the first keyframe." : "Already past the last keyframe.";
+            StatusText = direction < 0 ? "Already at the first I-frame." : "Already past the last I-frame.";
             return false;
         }
 
-        PositionMs = Keyframes[index] * 1000;
-        StatusText = $"Keyframe {index + 1} of {Keyframes.Count} at {TimeDisplay.Format(Keyframes[index])}";
+        PositionMs = IFrames[index] * 1000;
+        StatusText = $"I-frame {index + 1} of {IFrames.Count} at {TimeDisplay.Format(IFrames[index])}";
         return true;
     }
 
@@ -1226,28 +1233,28 @@ public partial class MainViewModel
             PositionMs = Math.Clamp(PositionMs + frames * 1000 / SourceFrameRate, 0, DurationMs);
     }
 
-    /// <summary>Where the keyframes fall along the timeline, each as a fraction (0 to 1) of its length.</summary>
-    public ObservableCollection<double> KeyframeMarks { get; } = [];
+    /// <summary>Where the I-frames fall along the timeline, each as a fraction (0 to 1) of its length.</summary>
+    public ObservableCollection<double> IFrameMarks { get; } = [];
 
-    private void UpdateKeyframeMarks()
+    private void UpdateIFrameMarks()
     {
-        KeyframeMarks.Clear();
+        IFrameMarks.Clear();
 
         var duration = SequenceSeconds;
-        if (duration <= 0 || Keyframes.Count == 0)
+        if (duration <= 0 || IFrames.Count == 0)
             return;
 
-        var step = Math.Max(1, (int)Math.Ceiling(Keyframes.Count / (double)MaxKeyframeMarks));
-        for (var i = 0; i < Keyframes.Count; i += step)
-            KeyframeMarks.Add(Math.Clamp(Keyframes[i] / duration, 0, 1));
+        var step = Math.Max(1, (int)Math.Ceiling(IFrames.Count / (double)MaxIFrameMarks));
+        for (var i = 0; i < IFrames.Count; i += step)
+            IFrameMarks.Add(Math.Clamp(IFrames[i] / duration, 0, 1));
     }
 
-    /// <summary>The keyframe nearest a time, in milliseconds, or null without a keyframe index.</summary>
-    public double? GetNearestKeyframeMs(double positionMs)
+    /// <summary>The I-frame nearest a time, in milliseconds, or null without an I-frame index.</summary>
+    public double? GetNearestIFrameMs(double positionMs)
     {
         var seconds = positionMs / 1000;
-        var floor = GetKeyframeFloor(seconds, 0);
-        var ceiling = GetKeyframeCeiling(seconds, 0);
+        var floor = GetIFrameFloor(seconds, 0);
+        var ceiling = GetIFrameCeiling(seconds, 0);
         var nearest = floor is null ? ceiling
             : ceiling is null ? floor
             : seconds - floor.Value <= ceiling.Value - seconds ? floor : ceiling;
@@ -1318,6 +1325,9 @@ public partial class MainViewModel
 
         // The main video, listening to the selected audio track, or the first one.
         var listenTo = target is AudioTrack chosen && AudioTracks.Contains(chosen) ? chosen.Index : 0;
+        if (IsMainSpliced)
+            return "The main video has been split into clips: Remove Dead Air works on it while it is one clip (right-click its row: Back to the Start of the Timeline, Whole).";
+
         // Heard in the file's own time, and put on the timeline where the main video is.
         var (mainFrom, duration) = GetMainSpan();
         var shift = MainShift;
@@ -1352,9 +1362,9 @@ public partial class MainViewModel
         foreach (var segment in kept.OrderBy(s => s.Start))
             Segments.Add(segment);
 
-        // Snapping grows segments onto keyframes; marked silences are left exactly where they were heard.
-        if (SnapToKeyframes && mode != DeadAirMode.SplitAndMark)
-            SnapSegmentsToKeyframes();
+        // Snapping grows segments onto I-frames; marked silences are left exactly where they were heard.
+        if (SnapToIFrames && mode != DeadAirMode.SplitAndMark)
+            SnapSegmentsToIFrames();
 
         var removed = silences.Sum(s => s.End - s.Start);
         var count = $"{silences.Count} silent stretch{(silences.Count == 1 ? "" : "es")} below {noiseDb:0} dB ({removed:0.#} s)";

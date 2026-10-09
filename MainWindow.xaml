@@ -17,7 +17,27 @@
         <TaskbarItemInfo />
     </Window.TaskbarItemInfo>
     <Window.Resources>
+        <!-- A deleted clip in the recycle bin: a picture of it, what it was and when it was on, and the way back. -->
+        <DataTemplate x:Key="BinItemTemplate">
+            <Grid Margin="0,3" Width="380">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="72" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Border Background="{DynamicResource InsetBrush}" CornerRadius="3" Height="34" ClipToBounds="True">
+                    <Image Source="{Binding Preview}" Stretch="UniformToFill" />
+                </Border>
+                <StackPanel Grid.Column="1" Margin="10,0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding TimeText}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                </StackPanel>
+                <Button Grid.Column="2" Content="Restore" Padding="10,3" VerticalAlignment="Center" Click="RestoreDeleted_Click"
+                        ToolTip="Puts this clip back on the timeline where it was." />
+            </Grid>
+        </DataTemplate>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+        <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
         <local:FractionToOffsetConverter x:Key="FractionToOffset" />
         <local:DecibelToScaleConverter x:Key="DecibelToScale" />
 
@@ -35,7 +55,7 @@
         </Style>
 
         <!--
-            The timeline's scrubber: no track of its own (the waveform, keyframe lines and segment bar behind it
+            The timeline's scrubber: no track of its own (the waveform, I-frame lines and segment bar behind it
             are the track), and a playhead that is an arrow pointing down with a line dropping to the bar.
             The thumb is 11 wide, which the code that places the hover preview and the segment marks relies on.
         -->
@@ -256,7 +276,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" MinWidth="520" />
                 <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="400" MinWidth="200" />
+                <ColumnDefinition x:Name="SideColumn" Width="400" MinWidth="200" />
             </Grid.ColumnDefinitions>
 
             <!--
@@ -341,14 +361,14 @@
 
             <!--
                 Advanced transport, centred under the player when switched on in Settings:
-                previous keyframe, back one frame, play/pause, forward one frame, next keyframe.
+                previous I-frame, back one frame, play/pause, forward one frame, next I-frame.
             -->
             <Grid Grid.Row="1" Margin="0,8,0,0" Visibility="{Binding ShowAdvancedPlayback, Converter={StaticResource BoolToVisibility}}">
                 <!-- The buttons sit in the middle while there is room; in a narrow player they give way to the volume -->
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" MinWidth="170" />
+                    <ColumnDefinition Width="*" MinWidth="260" />
                 </Grid.ColumnDefinitions>
                 <!--
                     Editor Mode: the timeline's three checkboxes, here beside the transport instead of under the timeline.
@@ -357,27 +377,31 @@
                 <Grid x:Name="TimelineOptionsHost" ClipToBounds="True" Margin="0,0,10,0" SizeChanged="TimelineOptionsHost_SizeChanged"
                       Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel x:Name="TimelineOptionsInline" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
-                        <CheckBox Content="Snap cuts to keyframes" IsChecked="{Binding SnapToKeyframes}" Margin="0"
-                                  ToolTip="Cut points move onto keyframes, which is what a stream copy needs for the output to match the times listed. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
+                        <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="0"
+                                  ToolTip="Cut points move onto I-frames, which is what a stream copy needs for the output to match the times listed. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
                         <CheckBox Content="Play only cut segments" IsChecked="{Binding PlayOnlySegments}" Margin="14,0,0,0"
                                   ToolTip="Playback jumps over everything outside the cut segments, so what plays is what the encode will keep. While on, what is skipped is shaded on the timeline." />
-                        <CheckBox Content="Show keyframes" IsChecked="{Binding ShowKeyframes}" Margin="14,0,0,0"
-                                  ToolTip="Draws a thin line on the timeline at every keyframe. Settings (Timeline) can tie timeline snapping to this box." />
+                        <CheckBox Content="Edit layout" IsChecked="{Binding IsArrangeActive}" IsEnabled="{Binding CanEditLayout}" Margin="14,0,0,0"
+                                  ToolTip="Opens the layout pane beside the player: the output frame with the main video, the layers and the caption box. Drag to move, drag a corner handle to resize, double-click to center." />
+                        <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="14,0,0,0"
+                                  ToolTip="Draws a thin line on the timeline at every I-frame. Settings (Timeline) can tie timeline snapping to this box." />
                     </StackPanel>
                     <ToggleButton x:Name="TimelineOptionsButton" Content="&#xE70E;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="11,7" HorizontalAlignment="Left"
                                   Visibility="Collapsed" AutomationProperties.Name="Timeline Options"
-                                  ToolTip="Timeline options: snap cuts to keyframes, play only cut segments, show keyframes." />
+                                  ToolTip="Timeline options: snap cuts to I-frames, play only cut segments, show I-frames." />
                     <Popup x:Name="TimelineOptionsPopup" PlacementTarget="{Binding ElementName=TimelineOptionsButton}" Placement="Top" VerticalOffset="-4" StaysOpen="False"
                            AllowsTransparency="True" IsOpen="{Binding IsChecked, ElementName=TimelineOptionsButton, Mode=TwoWay}"
                            Opened="TimelineOptionsPopup_Opened" Closed="TimelineOptionsPopup_Closed">
                         <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
                             <StackPanel TextElement.Foreground="{DynamicResource TextBrush}">
-                        <CheckBox Content="Snap cuts to keyframes" IsChecked="{Binding SnapToKeyframes}" Margin="0,2"
-                                  ToolTip="Cut points move onto keyframes, which is what a stream copy needs for the output to match the times listed. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
+                        <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="0,2"
+                                  ToolTip="Cut points move onto I-frames, which is what a stream copy needs for the output to match the times listed. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
                         <CheckBox Content="Play only cut segments" IsChecked="{Binding PlayOnlySegments}" Margin="0,2"
                                   ToolTip="Playback jumps over everything outside the cut segments, so what plays is what the encode will keep. While on, what is skipped is shaded on the timeline." />
-                        <CheckBox Content="Show keyframes" IsChecked="{Binding ShowKeyframes}" Margin="0,2"
-                                  ToolTip="Draws a thin line on the timeline at every keyframe. Settings (Timeline) can tie timeline snapping to this box." />
+                        <CheckBox Content="Edit layout" IsChecked="{Binding IsArrangeActive}" IsEnabled="{Binding CanEditLayout}" Margin="0,2"
+                                  ToolTip="Opens the layout pane beside the player: the output frame with the main video, the layers and the caption box." />
+                        <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="0,2"
+                                  ToolTip="Draws a thin line on the timeline at every I-frame. Settings (Timeline) can tie timeline snapping to this box." />
                             </StackPanel>
                         </Border>
                     </Popup>
@@ -388,47 +412,47 @@
                               ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is." />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Margin="3,0,14,0" Click="ReloadPlayer_Click"
                             ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
-                    <Button Style="{StaticResource TransportButton}" Content="&#xE892;" Click="PreviousKeyframe_Click"
-                            ToolTip="Previous Keyframe" AutomationProperties.Name="Previous Keyframe" />
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE892;" Click="PreviousIFrame_Click"
+                            ToolTip="Previous I-Frame" AutomationProperties.Name="Previous I-Frame" />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE76B;" Click="StepBack_Click"
                             ToolTip="Step Back One Frame (Left)" AutomationProperties.Name="Step Back One Frame" />
                     <Button Style="{StaticResource PlayPauseButton}" Padding="20,7" Margin="3,0" Click="PlayPause_Click" />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE76C;" Click="StepForward_Click"
                             ToolTip="Step Forward One Frame (Right)" AutomationProperties.Name="Step Forward One Frame" />
-                    <Button Style="{StaticResource TransportButton}" Content="&#xE893;" Click="NextKeyframe_Click"
-                            ToolTip="Next Keyframe" AutomationProperties.Name="Next Keyframe" />
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE893;" Click="NextIFrame_Click"
+                            ToolTip="Next I-Frame" AutomationProperties.Name="Next I-Frame" />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
                             AutomationProperties.Name="Render Preview"
                             ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
-                    <!-- Auto-keyframing: what moving a layer does to its keyframes. Lit while either mode is on. -->
-                    <ToggleButton x:Name="AutoKeyButton" Content="&#xE916;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0"
-                                  Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Auto-Keyframing"
-                                  ToolTip="Auto-keyframing: what dragging a layer in the layout pane (or changing its size, place or rotation) does to its keyframes at the playhead.">
-                        <ToggleButton.Style>
-                            <Style TargetType="ToggleButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsAutoKeying}" Value="True">
-                                        <Setter Property="Foreground" Value="Gold" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </ToggleButton.Style>
-                    </ToggleButton>
-                    <Popup x:Name="AutoKeyPopup" PlacementTarget="{Binding ElementName=AutoKeyButton}" Placement="Top" VerticalOffset="-4" StaysOpen="False"
-                           AllowsTransparency="True" IsOpen="{Binding IsChecked, ElementName=AutoKeyButton, Mode=TwoWay}"
-                           Opened="AutoKeyPopup_Opened" Closed="AutoKeyPopup_Closed">
+                    <!-- Views: which panes are open beside the player, and whether clips show their keyframes. -->
+                    <ToggleButton x:Name="ViewsButton" Content="&#xE8A9;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0"
+                                  AutomationProperties.Name="Views and Panes"
+                                  ToolTip="Views / Panes: show or hide the Cut Segments and Keyframes panes beside the player, and the keyframe diamonds on the timeline's clips." />
+                    <Popup x:Name="ViewsPopup" PlacementTarget="{Binding ElementName=ViewsButton}" Placement="Top" VerticalOffset="-4" StaysOpen="False"
+                           AllowsTransparency="True" IsOpen="{Binding IsChecked, ElementName=ViewsButton, Mode=TwoWay}"
+                           Opened="ViewsPopup_Opened" Closed="ViewsPopup_Closed">
                         <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
                             <StackPanel TextElement.Foreground="{DynamicResource TextBrush}">
-                                <CheckBox Content="Generate new keyframe on move" IsChecked="{Binding AutoKeyGenerate}" Margin="0,2"
-                                          ToolTip="Moving, resizing or turning a layer sets a keyframe at the playhead, starting a motion where there was none." />
-                                <CheckBox Content="Snap to nearest keyframe on move" IsChecked="{Binding AutoKeySnap}" Margin="0,2"
-                                          ToolTip="Moving a layer changes its keyframe nearest the playhead, and makes no new ones. With neither box ticked, a layer that is moved takes its whole motion with it." />
+                                <TextBlock Text="Panes" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                <CheckBox Content="Cut Segments" IsChecked="{Binding ShowCutSegmentsPane}" Margin="0,2"
+                                          ToolTip="The list of cut segments beside the player." />
+                                <CheckBox Content="Keyframes" IsChecked="{Binding ShowKeyframesPane}" Margin="0,2"
+                                          ToolTip="The selected clip's keyframes on a timeline of their own, with the keyframe controls and its place, size and rotation at the playhead." />
+                                <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,8,0,4" />
+                                <CheckBox Content="Keyframe diamonds on clips" IsChecked="{Binding ShowClipKeyframes}" Margin="0,2"
+                                          ToolTip="Draws a diamond on a clip's block at each of its keyframes." />
                             </StackPanel>
                         </Border>
                     </Popup>
                 </StackPanel>
                 <!-- Volume and speed, beside the transport buttons -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <!-- How tall the master timeline is -->
+                    <TextBlock Text="&#xE1D8;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center"
+                               Foreground="{DynamicResource MutedTextBrush}" ToolTip="Timeline height" />
+                    <Slider Width="64" Margin="6,0,12,0" VerticalAlignment="Center" Minimum="1" Maximum="50" SmallChange="1" LargeChange="5"
+                            IsMoveToPointEnabled="True" Value="{Binding MasterTimelineHeight}" AutomationProperties.Name="Timeline Height"
+                            ToolTip="Timeline height: how tall the master timeline is, from a slim bar to room for a readable waveform. Double-click to reset." />
                     <TextBlock Text="&#xE767;" FontFamily="Segoe MDL2 Assets" FontSize="15" VerticalAlignment="Center"
                                Foreground="{DynamicResource MutedTextBrush}" ToolTip="Volume" />
                     <Slider Width="64" Margin="6,0,8,0" VerticalAlignment="Center" Minimum="0" Maximum="100"
@@ -441,13 +465,72 @@
             </Grid>
 
             <!-- Drag to change the width of the cut list -->
-            <GridSplitter Grid.Column="1" Grid.RowSpan="2" Width="2" Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Stretch"
+            <GridSplitter Grid.Column="1" Grid.RowSpan="2" x:Name="SideSplitter" Width="2" Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Stretch"
                           ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" KeyboardIncrement="24"
                           Style="{StaticResource QuietSplitter}" Cursor="SizeWE"
-                          ToolTip="Drag to resize the cut list" AutomationProperties.Name="Resize cut list" />
+                          ToolTip="Drag to resize the side panes" AutomationProperties.Name="Resize side panes" />
+
+            <!--
+                The side panes, shown and hidden from the Views menu of the transport row: the Keyframes pane, and
+                under it the Cut Segments pane. With neither open the column closes and the player has the width.
+            -->
+            <Grid Grid.Column="2" Grid.RowSpan="2" x:Name="SidePanes">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- Keyframes: the selected clip's keyframes on a timeline of their own, and the clip as it is at the playhead. -->
+            <Border x:Name="KeyframesPane" Style="{StaticResource Panel}" Margin="0,0,0,8"
+                    Visibility="{Binding ShowKeyframesPane, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel>
+                    <DockPanel Margin="0,0,0,6">
+                        <TextBlock Text="Keyframes" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding ActiveKeyLayer.Name}" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis"
+                                   ToolTip="The clip whose keyframes are shown: the one last selected on the Layers tab, or the main video." />
+                    </DockPanel>
+                    <!-- The same span as the master timeline: a diamond at each keyframe, the clip's stretch shaded, the playhead. Drawn from code. -->
+                    <Canvas x:Name="KeyTimeline" Height="34" Background="{DynamicResource InsetBrush}" ClipToBounds="True" Cursor="Hand"
+                            SizeChanged="KeyTimeline_SizeChanged" MouseLeftButtonDown="KeyTimeline_MouseLeftButtonDown" MouseMove="KeyTimeline_MouseMove" MouseLeftButtonUp="KeyTimeline_MouseLeftButtonUp"
+                            AutomationProperties.Name="Keyframe Timeline" ToolTip="The selected clip's keyframes. Click or drag to move the playhead; click a diamond to go to that keyframe." />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
+                        <Button Content="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,0,4,0" Click="PreviousKeyframe_Click"
+                                AutomationProperties.Name="Previous Keyframe" ToolTip="Previous Keyframe: moves the playhead to the keyframe before it." />
+                        <Button Content="&#x2666;" FontSize="14" Padding="14,3" Margin="0,0,4,0" Click="ToggleKeyframe_Click" Foreground="Gold"
+                                AutomationProperties.Name="Add or Remove Keyframe" ToolTip="Add / Remove Keyframe: sets a keyframe at the playhead holding the clip's place, size and rotation as they are there; on a keyframe, removes it." />
+                        <Button Content="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,0,10,0" Click="NextKeyframe_Click"
+                                AutomationProperties.Name="Next Keyframe" ToolTip="Next Keyframe: moves the playhead to the keyframe after it." />
+                        <Button Content="Clear" Padding="10,4" Click="ClearKeyframes_Click" AutomationProperties.Name="Clear Keyframes"
+                                ToolTip="Removes every keyframe of this clip: it stays as it is at the playhead." />
+                    </StackPanel>
+                    <WrapPanel Margin="0,8,0,0">
+                        <CheckBox Content="Enable keyframes" IsChecked="{Binding KeyframesEnabled}" Margin="0,2,14,2"
+                                  ToolTip="On: moving, resizing or turning a clip (in the layout pane, or with the numbers) writes a keyframe. Off: a clip with keyframes takes its whole motion with it when it is moved." />
+                        <RadioButton Content="Create new on move" GroupName="KeyframeModePane" IsChecked="{Binding KeyframesCreate}" Margin="0,2,14,2" IsEnabled="{Binding KeyframesEnabled}"
+                                     ToolTip="A move sets a new keyframe at the playhead." />
+                        <RadioButton Content="Snap to nearest" GroupName="KeyframeModePane" IsChecked="{Binding KeyframesSnap}" Margin="0,2" IsEnabled="{Binding KeyframesEnabled}"
+                                     ToolTip="A move changes the keyframe nearest the playhead, and makes no new ones." />
+                    </WrapPanel>
+                    <!-- The clip as it is at the playhead: between two keyframes these run from one to the other as the playhead moves. -->
+                    <WrapPanel Margin="0,6,0,0" ToolTip="The clip at the playhead. Between keyframes the numbers follow the motion; changing one moves the clip (and, with keyframes enabled, writes a keyframe).">
+                        <TextBlock Text="X %" VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.PositionXPercent, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe X"
+                                 local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+                        <TextBlock Text="Y %" VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.PositionYPercent, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe Y"
+                                 local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+                        <TextBlock Text="Scale %" VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.SizePercent}" AutomationProperties.Name="Keyframe Scale"
+                                 local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="400" />
+                        <TextBlock Text="Rot &#176;" VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,0,2" Text="{Binding ActiveKeyLayer.Rotation, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe Rotation"
+                                 local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-360" local:NumericInput.Maximum="360" />
+                    </WrapPanel>
+                </StackPanel>
+            </Border>
 
             <!-- Cut segments: selecting one seeks the player to its start. -->
-            <Border Grid.Column="2" Grid.RowSpan="2" Style="{StaticResource Panel}">
+            <Border Grid.Row="1" Style="{StaticResource Panel}" Visibility="{Binding ShowCutSegmentsPane, Converter={StaticResource BoolToVisibility}}">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top" Text="Cut Segments" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <ListBox ItemsSource="{Binding Segments}" SelectedItem="{Binding SelectedSegment}"
@@ -481,7 +564,7 @@
                                     <DataTrigger Binding="{Binding IsSkipped}" Value="True">
                                         <Setter TargetName="segmentText" Property="Opacity" Value="0.45" />
                                     </DataTrigger>
-                                    <!-- Flashes when snapping to keyframes has changed this segment's times. -->
+                                    <!-- Flashes when snapping to I-frames has changed this segment's times. -->
                                     <DataTrigger Binding="{Binding IsFlashing}" Value="True">
                                         <Setter TargetName="row" Property="Background" Value="{DynamicResource AccentBrush}" />
                                     </DataTrigger>
@@ -491,6 +574,7 @@
                     </ListBox>
                 </DockPanel>
             </Border>
+            </Grid>
 
             <!-- Timeline and cut controls -->
             <Border Grid.Row="2" Grid.ColumnSpan="3" Style="{StaticResource Panel}" Margin="0,10,0,0">
@@ -531,7 +615,7 @@
                                    MouseLeftButtonUp="PositionText_MouseLeftButtonUp" />
                         <!--
                             The timeline, as tall as the Timeline Height setting makes it. From the back: the bar of
-                            kept segments along the bottom, the keyframe lines running down to it, the waveform of
+                            kept segments along the bottom, the I-frame lines running down to it, the waveform of
                             the mixed audio, and on top the playhead. The side margins line everything up with
                             the travel of the playhead, which stops half its width short of each end.
                         -->
@@ -561,9 +645,9 @@
                             <Border Height="6" Margin="5,0" VerticalAlignment="Bottom" Background="{DynamicResource ControlBorderBrush}">
                                 <Canvas x:Name="SegmentCanvas" ClipToBounds="True" SizeChanged="SegmentCanvas_SizeChanged" />
                             </Border>
-                            <!-- A line at every keyframe. Each item is a fraction of the timeline, turned into an offset here. -->
-                            <ItemsControl x:Name="KeyframeMarkList" Margin="5,0" ItemsSource="{Binding KeyframeMarks}" IsHitTestVisible="False" Focusable="False"
-                                          Visibility="{Binding ShowKeyframes, Converter={StaticResource BoolToVisibility}}">
+                            <!-- A line at every I-frame. Each item is a fraction of the timeline, turned into an offset here. -->
+                            <ItemsControl x:Name="IFrameMarkList" Margin="5,0" ItemsSource="{Binding IFrameMarks}" IsHitTestVisible="False" Focusable="False"
+                                          Visibility="{Binding ShowIFrames, Converter={StaticResource BoolToVisibility}}">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <Canvas ClipToBounds="True" />
@@ -575,7 +659,7 @@
                                             <Setter.Value>
                                                 <MultiBinding Converter="{StaticResource FractionToOffset}">
                                                     <Binding />
-                                                    <Binding Path="ActualWidth" ElementName="KeyframeMarkList" />
+                                                    <Binding Path="ActualWidth" ElementName="IFrameMarkList" />
                                                 </MultiBinding>
                                             </Setter.Value>
                                         </Setter>
@@ -583,7 +667,7 @@
                                 </ItemsControl.ItemContainerStyle>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Rectangle Width="1" Height="{Binding ActualHeight, ElementName=KeyframeMarkList}"
+                                        <Rectangle Width="1" Height="{Binding ActualHeight, ElementName=IFrameMarkList}"
                                                    Fill="{DynamicResource MutedTextBrush}" Opacity="0.55" />
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
@@ -635,12 +719,12 @@
                                 Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}"
                                 ToolTip="Find the silent stretches of the first audio track and replace the cut list with everything in between. Opens a small dialog to set how quiet counts as silence." />
                         <TextBlock Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="12,0,0,0" />
-                        <CheckBox Content="Snap cuts to keyframes" IsChecked="{Binding SnapToKeyframes}" Margin="24,0,0,0"
-                                  ToolTip="Cut points move onto keyframes, which is what a stream copy needs for the output to match the times listed. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
+                        <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="24,0,0,0"
+                                  ToolTip="Cut points move onto I-frames, which is what a stream copy needs for the output to match the times listed. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
                         <CheckBox Content="Play only cut segments" IsChecked="{Binding PlayOnlySegments}" Margin="16,0,0,0"
                                   ToolTip="Playback jumps over everything outside the cut segments, so what plays is what the encode will keep. While on, what is skipped is shaded on the timeline." />
-                        <CheckBox Content="Show keyframes" IsChecked="{Binding ShowKeyframes}" Margin="16,0,0,0"
-                                  ToolTip="Draws a thin line on the timeline at every keyframe. Settings (Timeline) can tie timeline snapping to this box." />
+                        <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="16,0,0,0"
+                                  ToolTip="Draws a thin line on the timeline at every I-frame. Settings (Timeline) can tie timeline snapping to this box." />
                     </StackPanel>
                 </StackPanel>
             </Border>
@@ -660,8 +744,11 @@
         <TabControl x:Name="SettingsTabs" Padding="16,8">
             <TabItem Header="Summary">
                 <DockPanel>
-                <ContentControl DockPanel.Dock="Top" Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0,0,0,10"
-                                Visibility="{Binding ShowPresetBarInSummary, Converter={StaticResource BoolToVisibility}}" />
+                <!-- Encoder Mode: the preset bar, here or above the tabs as the settings have it -->
+                <Border DockPanel.Dock="Top" Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}">
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0,0,0,10"
+                                    Visibility="{Binding ShowPresetBarInSummary, Converter={StaticResource BoolToVisibility}}" />
+                </Border>
                 <Grid Grid.IsSharedSizeScope="True">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -683,8 +770,8 @@
                         </DataTemplate>
                     </Grid.Resources>
 
-                    <!-- Left: output format -->
-                    <Grid VerticalAlignment="Top">
+                    <!-- Left, in Encoder Mode: the output format, and the style presets as two buttons -->
+                    <Grid VerticalAlignment="Top" Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="200" />
@@ -723,6 +810,86 @@
                             </StackPanel>
                         </StackPanel>
                     </Grid>
+
+                    <!--
+                        Left, in Editor Mode: what the output is, and under it the three things that can be swapped whole, each in
+                        a block of its own: the encoding preset, the style preset and the project. A block is a
+                        list to choose from, and under the list what can be done with it.
+                    -->
+                    <StackPanel VerticalAlignment="Top" Width="300" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel.Resources>
+                            <Style x:Key="SummaryBlock" TargetType="Border">
+                                <Setter Property="Background" Value="{DynamicResource ControlBrush}" />
+                                <Setter Property="CornerRadius" Value="6" />
+                                <Setter Property="Padding" Value="12,9,12,10" />
+                                <Setter Property="Margin" Value="0,0,0,8" />
+                            </Style>
+                        </StackPanel.Resources>
+
+                        <Border Style="{StaticResource SummaryBlock}">
+                            <StackPanel>
+                                <TextBlock Text="Output" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                <!-- The format stays available during a stream copy: only the container changes. -->
+                                <DockPanel>
+                                    <TextBlock Text="Format:" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                    <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding Containers}" SelectedItem="{Binding Container}" AutomationProperties.Name="Format" />
+                                </DockPanel>
+                                <CheckBox Content="Web Optimized" IsChecked="{Binding WebOptimized}" Margin="0,6,0,0"
+                                          ToolTip="Puts the index at the front of an .mp4, .mov or .m4v file, so that it starts playing in a browser before it has downloaded." />
+                                <CheckBox Content="Vertical Video" IsChecked="{Binding UseVerticalResolution}" Margin="0,2,0,0"
+                                          ToolTip="One click from a wide video to a tall one: the frame is turned on its side, the picture sits across its middle, and a blurred copy of it fills the rest. Zoom and place it on the Layers tab." />
+                                <!-- Copy passes the picture through: said here, in yellow, when that leaves layers or filters out -->
+                                <TextBlock Text="{Binding CopyBypassWarning}" Foreground="{DynamicResource WarningTextBrush}" FontWeight="SemiBold" TextWrapping="Wrap"
+                                           AutomationProperties.AutomationId="Copy Warning">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Margin" Value="0,8,0,0" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding CopyBypassWarning}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Encoding presets: size, filters, video and audio settings -->
+                        <Border Style="{StaticResource SummaryBlock}">
+                            <StackPanel>
+                                <TextBlock Text="Encoding Preset" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding Presets}" SelectedItem="{Binding SelectedPreset}" AutomationProperties.Name="Encoding Presets"
+                                          ToolTip="Applies the preset's size, filters, layout, video, audio and caption settings." />
+                                <Button Content="Import / Export / Save..." Padding="12,4" Margin="0,6,0,0" HorizontalAlignment="Left" Click="ManagePresets_Click"
+                                        AutomationProperties.Name="Manage Encoding Presets"
+                                        ToolTip="Opens the encoding preset dialog: save the settings as they are now to the list under a name, bring a preset in from a file, or save one to a file." />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Style presets: the Frame & Layer Engine's layers, with the color, blur and subtitle settings that go with them -->
+                        <Border Style="{StaticResource SummaryBlock}">
+                            <StackPanel>
+                                <TextBlock Text="Style Preset" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding StylePresets}" SelectedItem="{Binding SelectedStylePreset}" DropDownOpened="StylePresets_DropDownOpened"
+                                          AutomationProperties.Name="Style Presets"
+                                          ToolTip="The style presets in the Styles folder. Choosing one applies all of it: layers with their masks, color, blur and subtitle settings. A double-click on a slider goes back to its values." />
+                                <Button Content="Import / Export / Save..." Padding="12,4" Margin="0,6,0,0" HorizontalAlignment="Left" Click="ManageStyles_Click"
+                                        AutomationProperties.Name="Manage Style Presets"
+                                        ToolTip="Opens the style preset dialog: load a .hpstyle file (you choose which of its parts to take), or save the layers, color, blur and subtitle settings as one." />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- The project that is open, and the way to another -->
+                        <Border Style="{StaticResource SummaryBlock}">
+                            <StackPanel>
+                                <TextBlock Text="Swap Project" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding RecentProjects}" SelectedItem="{Binding SelectedProject}" DropDownOpened="RecentProjects_DropDownOpened"
+                                          SelectionChanged="RecentProjects_SelectionChanged" AutomationProperties.Name="Swap Project"
+                                          ToolTip="The saved projects, the most recently saved first. Choosing one opens it in place of what is open now, without restarting." />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
 
                     <!-- Right: what the source is, and what the output will be -->
                     <Border Grid.Column="2" Background="{DynamicResource ControlBrush}" CornerRadius="6" Padding="14,10">
@@ -882,7 +1049,7 @@
                     <StackPanel Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="4" Orientation="Horizontal" IsEnabled="{Binding HasRateControl}">
                         <StackPanel Orientation="Horizontal" Margin="0,4"
                                     Visibility="{Binding IsConstantQuality, Converter={StaticResource BoolToVisibility}}">
-                            <Slider Width="240" Minimum="0" Maximum="51" TickFrequency="1" IsSnapToTickEnabled="True"
+                            <Slider Width="240" Minimum="0" Maximum="51"
                                     VerticalAlignment="Center" Value="{Binding Crf}" AutomationProperties.Name="Constant Quality" local:NumericInput.Default="22" />
                             <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding Crf, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Constant Quality Value"
                                      local:NumericInput.Default="22" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="51" />
@@ -978,7 +1145,7 @@
                             Everything below the layers in one panel: what adds a layer, and the editing tools.
                             On one row when the window is wide enough; wrapping when it is not.
                         -->
-                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0" x:Name="LayerAddBar">
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0" x:Name="LayerAddBar" SizeChanged="LayerAddBar_SizeChanged">
                             <Button Content="Add Layer" Padding="12,5" Margin="0,2,0,2" Command="{Binding AddLayerCommand}"
                                     ToolTip="Lift a piece of the source video (a minimap, an ammo counter) onto the frame as a layer. Mark it with Draw Target." />
                             <Button Content="Add Image" Padding="12,5" Margin="6,0,0,0" Click="AddImage_Click"
@@ -987,8 +1154,6 @@
                                     ToolTip="Takes a game's HUD apart into layers (killfeed, health, radar, abilities), each cut out with its own mask, so each can be moved on its own. For Overwatch 2, Counter-Strike 2, Apex Legends and Marvel Rivals." />
                             <Button Content="Add Video" Padding="12,5" Margin="6,0,0,0" Click="AddVideo_Click"
                                     ToolTip="Place a video from a file on the picture as a layer: it plays alongside the main video and starts again when it runs out. Its sound is not used." />
-                            <ToggleButton Content="Edit Layout" Padding="12,5" Margin="6,0,0,0" IsChecked="{Binding IsArrangeActive}" IsEnabled="{Binding CanEditLayout}"
-                                          ToolTip="Opens the layout pane beside the player: the output frame with the main video, the layers and the caption box. Drag to move, drag a corner handle to resize, double-click to center." />
                             <!-- The editing tools, as icons: each works on whatever block is selected on a time bar -->
                             <Button Content="[" FontFamily="Consolas" FontWeight="Bold" FontSize="14" Padding="11,5" Margin="18,0,4,0" Command="{Binding AddStartPointCommand}"
                                     AutomationProperties.Name="Add Start Point" ToolTip="Add Start Point (I): a new cut segment of the main video begins at the playhead." />
@@ -1014,6 +1179,68 @@
                                           AutomationProperties.Name="Link Audio and Video" ToolTip="Link Audio and Video: linked, sound follows its picture and is cut with it. Unlinked, an audio block can be dragged on its own; linking again offers to snap it back." />
                             <CheckBox Content="Show linked audio" IsChecked="{Binding ShowLinkedAudio}" Margin="10,0,0,0" VerticalAlignment="Center"
                                       ToolTip="Draws the waveform of the sound that belongs to a picture over its block: the main video's own audio over its segments, and a video layer's over its clips. While audio and video are unlinked, a video layer's sound has a bar of its own instead, so that it can be dragged." />
+                            <!-- The recycle bin: deleted clips wait here, and are put back from here. -->
+                            <ToggleButton x:Name="LayersBinButton" Padding="10,6" Margin="10,0,4,0" AutomationProperties.Name="Recycle Bin"
+                                          ToolTip="Recycle Bin: the clips that were deleted from the timeline. Nothing of them is rendered; any of them can be put back where it was.">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding RecycleBinText}" Margin="5,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </ToggleButton>
+                            <Popup PlacementTarget="{Binding ElementName=LayersBinButton}" Placement="Top" VerticalOffset="-4" StaysOpen="False" AllowsTransparency="True"
+                                   IsOpen="{Binding IsChecked, ElementName=LayersBinButton, Mode=TwoWay}" Opened="BinPopup_Opened" Closed="BinPopup_Closed" Tag="{Binding ElementName=LayersBinButton}">
+                                <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
+                                    <StackPanel TextElement.Foreground="{DynamicResource TextBrush}">
+                                        <DockPanel Margin="0,0,0,6">
+                                            <Button DockPanel.Dock="Right" Content="Empty" Padding="10,3" Click="EmptyBin_Click" IsEnabled="{Binding HasDeleted}"
+                                                    ToolTip="Throws away everything in the bin. (Ctrl+Z still brings it back.)" />
+                                            <TextBlock Text="Recycle Bin" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                        </DockPanel>
+                                        <TextBlock Text="Nothing has been deleted." Foreground="{DynamicResource MutedTextBrush}" Width="380"
+                                                   Visibility="{Binding HasDeleted, Converter={StaticResource InverseBoolToVisibility}}" />
+                                        <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl ItemsSource="{Binding RecycleBin}" ItemTemplate="{StaticResource BinItemTemplate}" Focusable="False" />
+                                        </ScrollViewer>
+                                    </StackPanel>
+                                </Border>
+                            </Popup>
+                            <!--
+                                The keyframe controls, for the clip that is selected: as icons while the bar has room for
+                                them, and behind one button, with their names written out, while it has not.
+                            -->
+                            <StackPanel x:Name="KeyBarInline" Orientation="Horizontal" Margin="10,0,0,0">
+                                <Button Content="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,6" Margin="0,0,4,0" Click="PreviousKeyframe_Click"
+                                        AutomationProperties.Name="Previous Keyframe (Bar)" ToolTip="Previous Keyframe of the selected clip." />
+                                <Button Content="&#x2666;" FontSize="14" Padding="12,4" Margin="0,0,4,0" Click="ToggleKeyframe_Click" Foreground="Gold"
+                                        AutomationProperties.Name="Add or Remove Keyframe (Bar)" ToolTip="Add / Remove Keyframe: sets a keyframe for the selected clip at the playhead, or removes the one that is there." />
+                                <Button Content="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,6" Margin="0,0,4,0" Click="NextKeyframe_Click"
+                                        AutomationProperties.Name="Next Keyframe (Bar)" ToolTip="Next Keyframe of the selected clip." />
+                                <ToggleButton Content="&#xE7C8;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" IsChecked="{Binding KeyframesEnabled}"
+                                              AutomationProperties.Name="Enable Keyframes (Bar)" ToolTip="Enable Keyframes: while on, moving, resizing or turning a clip writes a keyframe." />
+                                <ToggleButton Content="&#xE840;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" IsChecked="{Binding KeyframesSnap}" IsEnabled="{Binding KeyframesEnabled}"
+                                              AutomationProperties.Name="Snap to Nearest Keyframe (Bar)" ToolTip="Snap to Nearest: a move changes the keyframe nearest the playhead. Off, it sets a new keyframe at the playhead." />
+                            </StackPanel>
+                            <ToggleButton x:Name="KeyBarButton" Content="&#xE70E;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="11,7" Margin="10,0,0,0" Visibility="Collapsed"
+                                          AutomationProperties.Name="Keyframe Controls" ToolTip="Keyframe controls for the selected clip." />
+                            <Popup x:Name="KeyBarPopup" PlacementTarget="{Binding ElementName=KeyBarButton}" Placement="Top" VerticalOffset="-4" StaysOpen="False" AllowsTransparency="True"
+                                   IsOpen="{Binding IsChecked, ElementName=KeyBarButton, Mode=TwoWay}" Opened="BinPopup_Opened" Closed="BinPopup_Closed" Tag="{Binding ElementName=KeyBarButton}">
+                                <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
+                                    <StackPanel TextElement.Foreground="{DynamicResource TextBrush}">
+                                        <Button Content="Previous Keyframe" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left" Click="PreviousKeyframe_Click" />
+                                        <Button Content="Add / Remove Keyframe" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left" Click="ToggleKeyframe_Click" />
+                                        <Button Content="Next Keyframe" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left" Click="NextKeyframe_Click" />
+                                        <CheckBox Content="Enable keyframes" IsChecked="{Binding KeyframesEnabled}" Margin="0,6,0,2" />
+                                        <RadioButton Content="Create new on move" GroupName="KeyframeModeBar" IsChecked="{Binding KeyframesCreate}" Margin="0,2" IsEnabled="{Binding KeyframesEnabled}" />
+                                        <RadioButton Content="Snap to nearest" GroupName="KeyframeModeBar" IsChecked="{Binding KeyframesSnap}" Margin="0,2" IsEnabled="{Binding KeyframesEnabled}" />
+                                    </StackPanel>
+                                </Border>
+                            </Popup>
+                            <!-- How tall each track's time bar is -->
+                            <StackPanel Orientation="Horizontal" Margin="14,0,0,0" ToolTip="Layer height: how tall each track's time bar is.">
+                                <TextBlock Text="&#xE1D8;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                                <Slider Width="70" Margin="6,0,0,0" VerticalAlignment="Center" Minimum="1" Maximum="50" SmallChange="1" LargeChange="5" IsMoveToPointEnabled="True"
+                                        Value="{Binding LayerTrackHeight}" AutomationProperties.Name="Layer Height" local:NumericInput.Default="25" />
+                            </StackPanel>
                             <TextBlock Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="14,0,18,0" />
                         </WrapPanel>
 
@@ -1024,18 +1251,6 @@
                         -->
                         <ListBox ItemsSource="{Binding LayerRows}" x:Name="LayersList"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="Layers">
-                            <ListBox.Resources>
-                                <!-- The diamond beside a property: sets or removes its keyframe at the playhead. Gold while the property is animated. -->
-                                <Style x:Key="KeyDiamond" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-                                    <Setter Property="Content" Value="&#x2666;" />
-                                    <Setter Property="Padding" Value="6,1" />
-                                    <Setter Property="Margin" Value="3,0,0,0" />
-                                    <Setter Property="FontSize" Value="12" />
-                                    <Setter Property="VerticalAlignment" Value="Center" />
-                                    <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
-                                    <Setter Property="ToolTip" Value="Keyframe: sets a keyframe for this property at the playhead, or removes the one that is there. With two or more, the layer moves between them. Gold while the property is animated." />
-                                </Style>
-                            </ListBox.Resources>
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <!-- Line 1: what the layer is and its look; line 2: its size and where it sits on the frame -->
@@ -1067,7 +1282,7 @@
                                             <!-- The background: its blur, here where it is in the stack -->
                                             <StackPanel Grid.Column="2" Orientation="Horizontal" Visibility="{Binding IsBackground, Converter={StaticResource BoolToVisibility}}">
                                                 <TextBlock Text="Blur Radius:" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                                <Slider Width="150" Minimum="5" Maximum="50" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                                <Slider Width="150" Minimum="5" Maximum="50" VerticalAlignment="Center"
                                                         Value="{Binding DataContext.BlurRadius, RelativeSource={RelativeSource AncestorType=ListBox}}"
                                                         AutomationProperties.Name="Background Blur Radius" local:NumericInput.Default="20"
                                                         ToolTip="How far the blur of the background reaches, in pixels. Larger is softer. The background shows wherever the main video does not cover the frame." />
@@ -1098,7 +1313,7 @@
                                             right edge to change how long it stays; a click on the bar moves the playhead there.
                                             A video layer's block is drawn with frames from its file. Drawn from code.
                                         -->
-                                        <Canvas Height="26" Margin="66,4,0,1" Background="{DynamicResource InsetBrush}" ClipToBounds="True" Cursor="Hand"
+                                        <Canvas Height="{Binding DataContext.LayerBarHeight, RelativeSource={RelativeSource AncestorType=ListBox}}" Margin="66,4,0,1" Background="{DynamicResource InsetBrush}" ClipToBounds="True" Cursor="Hand"
                                                 Loaded="ClipTrack_Loaded" Unloaded="ClipTrack_Unloaded" SizeChanged="ClipTrack_Changed" DataContextChanged="ClipTrack_DataContextChanged"
                                                 MouseLeftButtonDown="ClipTrack_MouseLeftButtonDown" AutomationProperties.Name="Layer Timeline" />
                                         <!-- A video layer's own sound, on a bar of its own while audio and video are unlinked; linked, it is drawn on the block above -->
@@ -1124,17 +1339,6 @@
                                                          Text="{Binding SizePercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Layer Size"
                                                          local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="400"
                                                          ToolTip="Width of the layer as a percentage of the frame's width. The layer grows and shrinks about its middle. Drag sideways to adjust, or click to type." />
-                                                <Button Click="KeyToggle_Click" Tag="Scale" AutomationProperties.Name="Size Keyframe">
-                                                    <Button.Style>
-                                                        <Style TargetType="Button" BasedOn="{StaticResource KeyDiamond}">
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding AnimatesScale}" Value="True">
-                                                                    <Setter Property="Foreground" Value="Gold" />
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Button.Style>
-                                                </Button>
                                                 <!-- A layer that is not held to its shape (and so always the caption box) has a height of its own -->
                                                 <StackPanel Orientation="Horizontal" Visibility="{Binding IsFreeHeight, Converter={StaticResource BoolToVisibility}}">
                                                     <TextBlock Text="H %" VerticalAlignment="Center" Margin="8,0,6,0" />
@@ -1155,17 +1359,6 @@
                                                 <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding PositionXPercent, StringFormat={}{0:0.#}}"
                                                          AutomationProperties.Name="Layer X Value"
                                                          local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
-                                                <Button Click="KeyToggle_Click" Tag="X" AutomationProperties.Name="X Keyframe">
-                                                    <Button.Style>
-                                                        <Style TargetType="Button" BasedOn="{StaticResource KeyDiamond}">
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding AnimatesX}" Value="True">
-                                                                    <Setter Property="Foreground" Value="Gold" />
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Button.Style>
-                                                </Button>
                                             </StackPanel>
                                             <TextBlock Grid.Column="6" Text="Y %" VerticalAlignment="Center" Margin="12,0,6,0" />
                                             <Slider Grid.Column="7" Minimum="-1" Maximum="1" SmallChange="0.005" LargeChange="0.05" VerticalAlignment="Center"
@@ -1175,17 +1368,6 @@
                                                 <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding PositionYPercent, StringFormat={}{0:0.#}}"
                                                          AutomationProperties.Name="Layer Y Value"
                                                          local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
-                                                <Button Click="KeyToggle_Click" Tag="Y" AutomationProperties.Name="Y Keyframe">
-                                                    <Button.Style>
-                                                        <Style TargetType="Button" BasedOn="{StaticResource KeyDiamond}">
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding AnimatesY}" Value="True">
-                                                                    <Setter Property="Foreground" Value="Gold" />
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Button.Style>
-                                                </Button>
                                             </StackPanel>
                                             <!-- Every picture but the caption box can be turned -->
                                             <StackPanel Grid.Column="9" Orientation="Horizontal" Visibility="{Binding HasFilters, Converter={StaticResource BoolToVisibility}}">
@@ -1194,17 +1376,6 @@
                                                          AutomationProperties.Name="Layer Rotation"
                                                          local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-360" local:NumericInput.Maximum="360"
                                                          ToolTip="Degrees the layer is turned clockwise about its middle." />
-                                                <Button Click="KeyToggle_Click" Tag="Rotation" AutomationProperties.Name="Rotation Keyframe">
-                                                    <Button.Style>
-                                                        <Style TargetType="Button" BasedOn="{StaticResource KeyDiamond}">
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding AnimatesRotation}" Value="True">
-                                                                    <Setter Property="Foreground" Value="Gold" />
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Button.Style>
-                                                </Button>
                                             </StackPanel>
                                         </Grid>
                                     </StackPanel>
@@ -1274,7 +1445,7 @@
                             <CheckBox Content="Mix into output" IsChecked="{Binding MixVoiceover}" Margin="0,0,14,0"
                                       ToolTip="Adds the voiceover to the encode as a second input, mixed into the first audio track. It is always mixed in when captions are made from it." />
                             <TextBlock Text="Gain (dB):" VerticalAlignment="Center" Margin="0,0,8,0" />
-                            <Slider Width="130" Minimum="-24" Maximum="24" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                            <Slider Width="130" Minimum="-24" Maximum="24" VerticalAlignment="Center"
                                     Value="{Binding VoiceoverGainDb}" AutomationProperties.Name="Voiceover Gain" local:NumericInput.Default="0" />
                             <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding VoiceoverGainDb, StringFormat={}{0:0}}" AutomationProperties.Name="Voiceover Gain Value"
                                      local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="-24" local:NumericInput.Maximum="24" />
@@ -1303,6 +1474,36 @@
                             <Button Content="&#xE7A6;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="Redo_Click" AutomationProperties.Name="Redo Audio" ToolTip="Redo (Ctrl+Y)" />
                             <ToggleButton Content="&#xE71B;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="10,0,4,0" IsChecked="{Binding AudioLinked, Mode=OneWay}" Checked="LinkAudio_Click" Unchecked="LinkAudio_Click"
                                           AutomationProperties.Name="Link Audio and Video (Audio Tab)" ToolTip="Link Audio and Video: linked, sound follows its picture and is cut with it. Unlinked, an audio block can be dragged on its own; linking again offers to snap it back." />
+                            <!-- The recycle bin: deleted clips wait here, and are put back from here. -->
+                            <ToggleButton x:Name="AudioBinButton" Padding="10,6" Margin="10,0,4,0" AutomationProperties.Name="Recycle Bin"
+                                          ToolTip="Recycle Bin: the clips that were deleted from the timeline. Nothing of them is rendered; any of them can be put back where it was.">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding RecycleBinText}" Margin="5,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </ToggleButton>
+                            <Popup PlacementTarget="{Binding ElementName=AudioBinButton}" Placement="Top" VerticalOffset="-4" StaysOpen="False" AllowsTransparency="True"
+                                   IsOpen="{Binding IsChecked, ElementName=AudioBinButton, Mode=TwoWay}" Opened="BinPopup_Opened" Closed="BinPopup_Closed" Tag="{Binding ElementName=AudioBinButton}">
+                                <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
+                                    <StackPanel TextElement.Foreground="{DynamicResource TextBrush}">
+                                        <DockPanel Margin="0,0,0,6">
+                                            <Button DockPanel.Dock="Right" Content="Empty" Padding="10,3" Click="EmptyBin_Click" IsEnabled="{Binding HasDeleted}"
+                                                    ToolTip="Throws away everything in the bin. (Ctrl+Z still brings it back.)" />
+                                            <TextBlock Text="Recycle Bin" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                        </DockPanel>
+                                        <TextBlock Text="Nothing has been deleted." Foreground="{DynamicResource MutedTextBrush}" Width="380"
+                                                   Visibility="{Binding HasDeleted, Converter={StaticResource InverseBoolToVisibility}}" />
+                                        <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl ItemsSource="{Binding RecycleBin}" ItemTemplate="{StaticResource BinItemTemplate}" Focusable="False" />
+                                        </ScrollViewer>
+                                    </StackPanel>
+                                </Border>
+                            </Popup>
+                            <StackPanel Orientation="Horizontal" Margin="10,0,0,0" ToolTip="Track height: how tall each sound's row is.">
+                                <TextBlock Text="&#xE1D8;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                                <Slider Width="70" Margin="6,0,0,0" VerticalAlignment="Center" Minimum="1" Maximum="50" SmallChange="1" LargeChange="5" IsMoveToPointEnabled="True"
+                                        Value="{Binding AudioTrackHeight}" AutomationProperties.Name="Audio Track Height" local:NumericInput.Default="25" />
+                            </StackPanel>
                         </StackPanel>
                         <TextBlock Grid.Column="1" Text="Master Mix" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,12,0"
                                    Visibility="{Binding ShowWaveforms, Converter={StaticResource BoolToVisibility}}"
@@ -1398,7 +1599,7 @@
                                         </StackPanel>
                                         <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                                             <TextBlock Text="Gain (dB):" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                            <Slider Width="170" Minimum="-40" Maximum="24" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                            <Slider Width="170" Minimum="-40" Maximum="24" VerticalAlignment="Center"
                                                     Value="{Binding AudioGainDb}" AutomationProperties.Name="Added Audio Gain" local:NumericInput.Default="0" />
                                             <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding AudioGainDb, StringFormat={}{0:0}}" AutomationProperties.Name="Added Audio Gain Value"
                                                      local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="-40" local:NumericInput.Maximum="24" />
@@ -1475,7 +1676,7 @@
                                         <StackPanel Orientation="Horizontal" Margin="0,2,0,0" IsEnabled="{Binding IsReencoded}"
                                                     ToolTip="Gain and filters change the sound, so they apply to a track that is re-encoded, not to one that is copied.">
                                             <TextBlock Text="Gain (dB):" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                            <Slider Width="170" Minimum="-24" Maximum="24" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                            <Slider Width="170" Minimum="-24" Maximum="24" VerticalAlignment="Center"
                                                     Value="{Binding GainDb}" AutomationProperties.Name="Track Gain" local:NumericInput.Default="0" />
                                             <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding GainDb, StringFormat={}{0:0}}" AutomationProperties.Name="Track Gain Value"
                                                      local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="-24" local:NumericInput.Maximum="24" />
@@ -1719,8 +1920,22 @@
         </Grid>
         </DockPanel>
 
+        <!--
+            The bottom of the window: where the output goes, and the status bar under it. In Editor Mode, in a
+            window wide enough for both, the two are one row (see UpdateBottomBar).
+        -->
+        <Grid Grid.Row="4" Grid.RowSpan="2" x:Name="BottomBar">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="3*" />
+            <ColumnDefinition Width="2*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
         <!-- Destination -->
-        <Border Grid.Row="4" Style="{StaticResource Panel}" Margin="0,10,0,0">
+        <Border Grid.ColumnSpan="2" x:Name="DestinationBar" Style="{StaticResource Panel}" Margin="0,10,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -1747,7 +1962,7 @@
         </Border>
 
         <!-- Status bar -->
-        <Grid Grid.Row="5" Margin="2,10,0,0">
+        <Grid Grid.Row="1" Grid.ColumnSpan="2" x:Name="StatusBar" Margin="2,10,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
@@ -1765,13 +1980,14 @@
                         ToolTip="Hide this. The update goes in when HandPeg is closed." />
             </StackPanel>
             <StackPanel Grid.Column="2" Orientation="Horizontal">
-                <!-- How the keyframe index came out: shown for ten seconds, then cleared -->
-                <TextBlock Text="{Binding KeyframeStatusText}" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0,0,0"
-                           AutomationProperties.AutomationId="Keyframe Status" />
-                <ProgressBar Width="240" Height="14" Margin="10,0,0,0" Minimum="0" Maximum="100"
+                <!-- How the I-frame index came out: shown for ten seconds, then cleared -->
+                <TextBlock Text="{Binding IFrameStatusText}" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0,0,0"
+                           AutomationProperties.AutomationId="I-Frame Status" />
+                <ProgressBar x:Name="StatusProgress" Width="240" Height="14" Margin="10,0,0,0" Minimum="0" Maximum="100"
                              Value="{Binding ProgressValue}" IsIndeterminate="{Binding IsProgressIndeterminate}" />
             </StackPanel>
             <Button Grid.Column="3" Content="Cancel" Margin="8,0,0,0" Padding="12,3" Command="{Binding CancelCommand}" />
+        </Grid>
         </Grid>
     </Grid>
 </Window>

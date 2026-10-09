@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 using CliWrap;
 using CliWrap.Buffered;
@@ -87,8 +88,8 @@ public static partial class FfmpegRunner
 
     /// <summary>
     /// Writes one image holding a grid of thumbnails taken every <paramref name="intervalSeconds"/> seconds.
-    /// Only keyframes are decoded, which makes this quick even for long videos; each thumbnail is the
-    /// keyframe nearest its time.
+    /// Only I-frames are decoded, which makes this quick even for long videos; each thumbnail is the
+    /// I-frame nearest its time.
     /// </summary>
     public static async Task<bool> GenerateSpriteSheetAsync(
         string videoPath, string imagePath, double intervalSeconds, CancellationToken cancellationToken)
@@ -120,15 +121,26 @@ public static partial class FfmpegRunner
 
         Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
         count = Math.Clamp(count, 1, 25);
-        var filter = durationSeconds > 0.2
-            ? string.Create(CultureInfo.InvariantCulture, $"fps={count}/{durationSeconds:0.###},scale=-2:54,tile={count}x1")
-            : "scale=-2:54";
 
-        // Of a long video only the keyframes are read: it is the difference between a moment and a minute.
+        // One frame from each of as many moments, evenly spread: the file is opened once per frame, already
+        // wound forward to it, so that only that frame is decoded. Reading a long video from end to end for
+        // a dozen pictures is the difference between a moment and a minute.
         var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-y" };
-        if (durationSeconds > 90)
-            arguments.AddRange(["-skip_frame", "nokey"]);
-        arguments.AddRange(["-i", videoPath, "-an", "-sn", "-vf", filter, "-frames:v", "1", "-q:v", "4", imagePath]);
+        if (durationSeconds <= 0.2)
+            count = 1;
+        for (var i = 0; i < count; i++)
+        {
+            var at = durationSeconds > 0.2 ? durationSeconds * (i + 0.5) / count : 0;
+            arguments.AddRange(["-ss", at.ToString("0.###", CultureInfo.InvariantCulture), "-i", videoPath]);
+        }
+
+        var graph = new StringBuilder();
+        for (var i = 0; i < count; i++)
+            graph.Append(CultureInfo.InvariantCulture, $"[{i}:v:0]scale=-2:54,setsar=1[f{i}];");
+        for (var i = 0; i < count; i++)
+            graph.Append(CultureInfo.InvariantCulture, $"[f{i}]");
+        graph.Append(count > 1 ? string.Create(CultureInfo.InvariantCulture, $"hstack=inputs={count}") : "null");
+        arguments.AddRange(["-filter_complex", graph.ToString(), "-an", "-sn", "-frames:v", "1", "-q:v", "4", imagePath]);
 
         var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath).WithArguments(arguments).WithValidation(CommandResultValidation.None), cancellationToken);
         return result.ExitCode == 0 && File.Exists(imagePath);
@@ -184,10 +196,10 @@ public static partial class FfmpegRunner
     }
 
     /// <summary>
-    /// Timestamps, in seconds and ascending, of every keyframe in the first video stream.
+    /// Timestamps, in seconds and ascending, of every I-frame in the first video stream.
     /// Empty when ffprobe is unavailable or the file has no video.
     /// </summary>
-    public static async Task<List<double>> GetKeyframesAsync(string path, CancellationToken cancellationToken)
+    public static async Task<List<double>> GetIFramesAsync(string path, CancellationToken cancellationToken)
     {
         if (!File.Exists(DependencyUpdater.FfprobePath))
             return [];
@@ -198,16 +210,16 @@ public static partial class FfmpegRunner
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(cancellationToken);
 
-        var keyframes = new List<double>();
+        var iFrames = new List<double>();
         foreach (var line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             // Frames with side data get extra columns after the timestamp.
             if (double.TryParse(line.Split(',')[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
-                keyframes.Add(seconds);
+                iFrames.Add(seconds);
         }
 
-        keyframes.Sort();
-        return keyframes;
+        iFrames.Sort();
+        return iFrames;
     }
 
     private static TimeSpan? ParseTime(Match match)

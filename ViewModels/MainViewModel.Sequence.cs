@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Models;
+using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
@@ -11,8 +12,8 @@ public partial class MainViewModel
 {
     // ----- The sequence clock -----
     // The timeline is not the main video's any more. It is as long as whatever reaches furthest along it, and
-    // the main video sits on it where it was put: later than the start, trimmed at either end, or not there
-    // at all for a stretch. Everything on the timeline (cuts, layers, the playhead) is in the sequence's time.
+    // the main video is clips on it like any other: one to begin with, more once it has been split, each
+    // moved, trimmed and deleted on its own. Everything on the timeline is in the sequence's time.
 
     // The length of the main video's file as the player reported it, for a file that could not be inspected.
     private double _playerMediaSeconds;
@@ -20,24 +21,73 @@ public partial class MainViewModel
     /// <summary>How long the main video's file is, in seconds; 0 while that is not known.</summary>
     private double MainMediaSeconds => _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : _playerMediaSeconds;
 
-    /// <summary>What to add to a time in the main video's file to get the time it is on the sequence.</summary>
-    private double MainShift => FrameEngine ? _mainVideoRow.StartTime - _mainVideoRow.MediaOffset : 0;
+    // The main video's clips after its first. The first is the row itself (its StartTime, Duration and
+    // MediaOffset), which is also what its keyframes are counted from.
+    private readonly List<MainPiece> _mainPieces = [];
+
+    /// <summary>One clip of the main video on the sequence. Index 0 is the row's own clip; the others follow in the order they were made.</summary>
+    public readonly record struct MainClip(int Index, double Start, double End, double Offset);
+
+    // Worked out once for each state of the timeline, not once for each of the dozen things that ask.
+    private List<MainClip>? _mainClips;
+
+    private void InvalidateMainClips() => _mainClips = null;
 
     /// <summary>
-    /// When the main video is on the sequence, in seconds. Without the Layer Engine there is no sequence
-    /// to place it on: it is the whole timeline, from its first frame to its last.
+    /// The main video's clips in the order they come on the sequence. Where two were put over each other the
+    /// earlier one ends where the later begins. Without the Layer Engine there is no sequence to place them
+    /// on: the file is the whole timeline, from its first frame to its last.
     /// </summary>
-    public (double Start, double End) GetMainSpan()
+    public IReadOnlyList<MainClip> GetMainClips()
     {
+        if (_mainClips is { } known)
+            return known;
+
         var media = MainMediaSeconds;
+        var clips = new List<MainClip>(_mainPieces.Count + 1);
         if (!FrameEngine)
-            return (0, media);
+        {
+            clips.Add(new MainClip(0, 0, media, 0));
+            return _mainClips = clips;
+        }
+
+        void Add(int index, double start, double duration, double offset)
+        {
+            var left = Math.Max(media - offset, 0);
+            var length = duration > 0.001 ? (media > 0 ? Math.Min(duration, left) : duration) : left;
+            if (length > 0.001 || media <= 0)
+                clips.Add(new MainClip(index, start, start + length, offset));
+        }
 
         var main = _mainVideoRow;
-        var left = Math.Max(media - main.MediaOffset, 0);
-        var length = main.Duration > 0.001 ? (media > 0 ? Math.Min(main.Duration, left) : main.Duration) : left;
-        return (main.StartTime, main.StartTime + length);
+        Add(0, main.StartTime, main.Duration, main.MediaOffset);
+        for (var i = 0; i < _mainPieces.Count; i++)
+            Add(i + 1, _mainPieces[i].Start, _mainPieces[i].Duration, _mainPieces[i].Offset);
+
+        clips.Sort((a, b) => a.Start.CompareTo(b.Start));
+        for (var i = clips.Count - 2; i >= 0; i--)
+        {
+            if (clips[i].End > clips[i + 1].Start)
+                clips[i] = clips[i] with { End = Math.Max(clips[i + 1].Start, clips[i].Start) };
+            if (clips[i].End - clips[i].Start < 0.001 && media > 0)
+                clips.RemoveAt(i);
+        }
+
+        return _mainClips = clips;
     }
+
+    /// <summary>What to add to a time in the main video's file to get the time it is on the sequence, for its first clip.</summary>
+    private double MainShift => FrameEngine ? _mainVideoRow.StartTime - _mainVideoRow.MediaOffset : 0;
+
+    /// <summary>From where the main video first appears on the sequence to where it is last seen, in seconds.</summary>
+    public (double Start, double End) GetMainSpan()
+    {
+        var clips = GetMainClips();
+        return clips.Count == 0 ? (_mainVideoRow.StartTime, _mainVideoRow.StartTime) : (clips[0].Start, clips.Max(c => c.End));
+    }
+
+    /// <summary>Whether the main video has been cut into more than one clip.</summary>
+    private bool IsMainSpliced => FrameEngine && _mainPieces.Count > 0;
 
     /// <summary>Length of the sequence in seconds: to the end of whichever clip ends last.</summary>
     public double SequenceSeconds
@@ -66,6 +116,8 @@ public partial class MainViewModel
         {
             if (!FrameEngine)
                 return true;
+            if (_mainPieces.Count > 0)
+                return false;
 
             var (start, end) = GetMainSpan();
             var media = MainMediaSeconds;
@@ -85,92 +137,363 @@ public partial class MainViewModel
         GenerateCommand();
     }
 
-    // Where the main video was on the sequence when the keyframe index was last laid along it.
-    private double _keyframeShift;
-    private List<double> _sourceKeyframes = [];
+    // The I-frames of the main video's file, and how its clips lay when they were last put along the sequence.
+    private List<double> _sourceIFrames = [];
+    private int _iFrameLayout;
 
-    /// <summary>Takes the keyframe index of the main video's file, and lays it along the sequence.</summary>
-    private void SetSourceKeyframes(List<double> keyframes)
+    private int GetMainLayout()
     {
-        _sourceKeyframes = keyframes;
-        _keyframeShift = MainShift;
-        Keyframes = Math.Abs(_keyframeShift) < 0.0005 ? keyframes : keyframes.ConvertAll(k => k + _keyframeShift);
-        UpdateKeyframeMarks();
+        var hash = new HashCode();
+        foreach (var clip in GetMainClips())
+            hash.Add(clip);
+        return hash.ToHashCode();
+    }
+
+    /// <summary>Takes the I-frame index of the main video's file, and lays it along the sequence: each I-frame where the clip that shows it puts it.</summary>
+    private void SetSourceIFrames(List<double> iFrames)
+    {
+        _sourceIFrames = iFrames;
+        _iFrameLayout = GetMainLayout();
+        if (IsMainWholeSequence || iFrames.Count == 0)
+        {
+            IFrames = iFrames;
+        }
+        else
+        {
+            var placed = new List<double>(iFrames.Count);
+            foreach (var clip in GetMainClips())
+            {
+                var first = iFrames.BinarySearch(clip.Offset);
+                for (var i = first < 0 ? ~first : first; i < iFrames.Count && iFrames[i] < clip.Offset + clip.End - clip.Start; i++)
+                    placed.Add(iFrames[i] - clip.Offset + clip.Start);
+            }
+
+            IFrames = placed;
+        }
+
+        UpdateIFrameMarks();
     }
 
     /// <summary>Brings the length of the timeline, and what is drawn along it, up to date with the clips.</summary>
     private void RefreshSequence()
     {
+        InvalidateMainClips();
         var milliseconds = SequenceSeconds * 1000;
         if (milliseconds > 0 && Math.Abs(DurationMs - milliseconds) > 0.5)
         {
             DurationMs = milliseconds;
             if (PositionMs > milliseconds)
                 PositionMs = milliseconds;
-            UpdateKeyframeMarks();
+            UpdateIFrameMarks();
         }
 
-        if (Math.Abs(MainShift - _keyframeShift) > 0.0005)
-            SetSourceKeyframes(_sourceKeyframes);
+        if (GetMainLayout() != _iFrameLayout)
+            SetSourceIFrames(_sourceIFrames);
     }
 
-    // ----- The main video as a clip -----
+    // ----- The main video's clips -----
 
-    /// <summary>
-    /// Moves the main video along the sequence, and its cut segments with it: they mark stretches of its
-    /// picture, and stay on them.
-    /// </summary>
-    public void MoveMain(double bySeconds)
+    /// <summary>The clip of the main video that is on screen at a moment of the sequence, or null when none is.</summary>
+    public MainClip? GetMainClipAt(double seconds)
+    {
+        foreach (var clip in GetMainClips())
+        {
+            if (seconds >= clip.Start && seconds < clip.End)
+                return clip;
+        }
+
+        return null;
+    }
+
+    private void SetMainClip(int index, double start, double duration, double offset)
     {
         var main = _mainVideoRow;
-        bySeconds = Math.Max(bySeconds, -main.StartTime);
+        if (index == 0)
+        {
+            // Its keyframes are counted from where the row begins: they stay where they are on the sequence.
+            if (Math.Abs(start - main.StartTime) > 0.0005)
+                main.ShiftKeys(main.StartTime - start);
+            (main.StartTime, main.Duration, main.MediaOffset) = (start, duration, offset);
+        }
+        else
+        {
+            _mainPieces[index - 1] = new MainPiece(start, duration, offset);
+        }
+
+        InvalidateMainClips();
+    }
+
+    private MainClip? FindMainClip(int index)
+    {
+        foreach (var clip in GetMainClips())
+        {
+            if (clip.Index == index)
+                return clip;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The razor on the main video: the clip under the playhead becomes two clips that meet there, each of
+    /// which can then be moved, trimmed or deleted on its own.
+    /// </summary>
+    public bool SplitMain(double seconds)
+    {
+        if (GetMainClipAt(seconds) is not { } clip || seconds - clip.Start < 0.05 || clip.End - seconds < 0.05)
+        {
+            StatusText = "The playhead is not inside the main video: move it to where the video should be split.";
+            return false;
+        }
+
+        Checkpoint("split the main video");
+        using (DeferCommand())
+        {
+            _mainPieces.Add(new MainPiece(Math.Round(seconds, 3), Math.Round(clip.End - seconds, 3), Math.Round(clip.Offset + seconds - clip.Start, 3)));
+            SetMainClip(clip.Index, clip.Start, Math.Round(seconds - clip.Start, 3), clip.Offset);
+            GenerateCommand();
+        }
+
+        StatusText = $"{_mainVideoRow.Name} split at {TimeDisplay.Format(seconds)}: two clips, each of which can be moved, trimmed or deleted on its own.";
+        return true;
+    }
+
+    /// <summary>Moves one clip of the main video along the sequence.</summary>
+    public void MoveMain(int index, double bySeconds)
+    {
+        if (FindMainClip(index) is not { } clip)
+            return;
+
+        bySeconds = Math.Max(bySeconds, -clip.Start);
         if (Math.Abs(bySeconds) < 0.005)
             return;
 
         Checkpoint("move the main video");
         using (DeferCommand())
         {
-            main.StartTime = Math.Round(main.StartTime + bySeconds, 3);
-            var by = TimeSpan.FromSeconds(bySeconds);
-            for (var i = 0; i < Segments.Count; i++)
-                Segments[i] = new CutSegment(Segments[i].Start + by, Segments[i].End + by) { IsSkipped = Segments[i].IsSkipped };
-            PendingStartMs = null;
+            SetMainClip(index, Math.Round(clip.Start + bySeconds, 3), index == 0 ? _mainVideoRow.Duration : _mainPieces[index - 1].Duration, clip.Offset);
+            GenerateCommand();
         }
 
-        StatusText = $"The main video now starts at {TimeDisplay.Format(main.StartTime)} on the timeline.";
+        StatusText = $"That clip of {_mainVideoRow.Name} now starts at {TimeDisplay.Format(clip.Start + bySeconds)} on the timeline.";
     }
 
-    /// <summary>Sets how long the main video stays, from where it starts: dragging the right edge of its block.</summary>
-    public void SetMainLength(double seconds)
+    /// <summary>Sets how long one clip of the main video stays, from where it starts: dragging the right edge of its block.</summary>
+    public void SetMainLength(int index, double seconds)
     {
-        var main = _mainVideoRow;
-        var left = Math.Max(MainMediaSeconds - main.MediaOffset, 0);
-        Checkpoint("trim the main video");
+        if (FindMainClip(index) is not { } clip)
+            return;
 
-        // As long as what is left of the file, or longer, is simply "to its end".
-        main.Duration = left > 0 && seconds >= left - 0.02 ? 0 : Math.Round(Math.Max(seconds, 0.1), 3);
-        StatusText = $"The main video now ends at {TimeDisplay.Format(GetMainSpan().End)} on the timeline.";
+        var left = Math.Max(MainMediaSeconds - clip.Offset, 0);
+        Checkpoint("trim the main video");
+        using (DeferCommand())
+        {
+            // As long as what is left of the file, or longer, is simply "to its end".
+            SetMainClip(index, clip.Start, left > 0 && seconds >= left - 0.02 ? (index == 0 ? 0 : left) : Math.Round(Math.Max(seconds, 0.1), 3), clip.Offset);
+            GenerateCommand();
+        }
+
+        StatusText = $"That clip of {_mainVideoRow.Name} now ends at {TimeDisplay.Format(FindMainClip(index)?.End ?? 0)} on the timeline.";
     }
 
-    /// <summary>Puts the main video back where a newly opened one is: at the start of the timeline, whole.</summary>
+    /// <summary>Trims one clip of the main video to the playhead: its start (what came before goes) or its end.</summary>
+    public bool TrimMain(int index, bool start, double seconds)
+    {
+        if (FindMainClip(index) is not { } clip || seconds <= clip.Start + 0.05 || seconds >= clip.End - 0.05)
+        {
+            StatusText = "Put the playhead inside the clip of the main video to trim it there.";
+            return false;
+        }
+
+        Checkpoint("trim the main video");
+        using (DeferCommand())
+        {
+            if (start)
+                SetMainClip(index, Math.Round(seconds, 3), Math.Round(clip.End - seconds, 3), Math.Round(clip.Offset + seconds - clip.Start, 3));
+            else
+                SetMainClip(index, clip.Start, Math.Round(seconds - clip.Start, 3), clip.Offset);
+            GenerateCommand();
+        }
+
+        StatusText = $"That clip of {_mainVideoRow.Name} now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}.";
+        return true;
+    }
+
+    /// <summary>Puts the main video back as a newly opened one is: one clip, whole, at the start of the timeline.</summary>
     public void ResetMainTiming()
     {
         var main = _mainVideoRow;
-        if (main.StartTime < 0.001 && main.MediaOffset < 0.001 && main.Duration < 0.001)
+        if (_mainPieces.Count == 0 && main.StartTime < 0.001 && main.MediaOffset < 0.001 && main.Duration < 0.001)
             return;
 
         Checkpoint("reset the main video's timing");
-        var back = main.StartTime;
         using (DeferCommand())
         {
-            (main.MediaOffset, main.Duration) = (0, 0);
-            main.StartTime = 0;
-            var by = TimeSpan.FromSeconds(-back);
-            for (var i = 0; i < Segments.Count; i++)
-                Segments[i] = new CutSegment(Segments[i].Start + by < TimeSpan.Zero ? TimeSpan.Zero : Segments[i].Start + by, Segments[i].End + by) { IsSkipped = Segments[i].IsSkipped };
+            _mainPieces.Clear();
+            SetMainClip(0, 0, 0, 0);
+            GenerateCommand();
         }
 
-        StatusText = "The main video is whole again, at the start of the timeline.";
+        StatusText = $"{main.Name} is one clip again, whole, at the start of the timeline.";
+    }
+
+    // ----- The recycle bin -----
+    // A clip that is deleted is not thrown away. It is taken off the timeline (so nothing of it is rendered)
+    // and kept, as it was, in the bin; from there it can be put back where it came from.
+
+    /// <summary>The deleted clips, the latest first.</summary>
+    public System.Collections.ObjectModel.ObservableCollection<BinItem> RecycleBin { get; } = [];
+
+    public bool HasDeleted => RecycleBin.Count > 0;
+
+    /// <summary>What the trash can says beside it: how many clips are in the bin, or nothing.</summary>
+    public string RecycleBinText => RecycleBin.Count > 0 ? RecycleBin.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
+
+    private void AddToBin(DeletedClip clip, string name, double start, double end, System.Windows.Media.ImageSource? preview)
+    {
+        RecycleBin.Insert(0, new BinItem(clip, name, $"{TimeDisplay.Format(start)} to {TimeDisplay.Format(end)}", preview));
+        OnPropertyChanged(nameof(HasDeleted));
+        OnPropertyChanged(nameof(RecycleBinText));
+    }
+
+    private void SetBin(IEnumerable<DeletedClip>? clips)
+    {
+        RecycleBin.Clear();
+        foreach (var clip in clips ?? [])
+        {
+            if (clip.Layer is { } layer)
+            {
+                var end = layer.Duration > 0.001 ? layer.StartTime + layer.Duration : SequenceSeconds;
+                RecycleBin.Add(new BinItem(clip, layer.Name, $"{TimeDisplay.Format(layer.StartTime)} to {TimeDisplay.Format(end)}", GetLayerPicture(layer.ImagePath)));
+            }
+            else if (clip.Main is { } piece)
+            {
+                RecycleBin.Add(new BinItem(clip, _mainVideoRow.Name, $"{TimeDisplay.Format(piece.Start)} to {TimeDisplay.Format(piece.Start + piece.Duration)}", null));
+            }
+        }
+
+        OnPropertyChanged(nameof(HasDeleted));
+        OnPropertyChanged(nameof(RecycleBinText));
+    }
+
+    /// <summary>A picture already made of a layer's file this session: frames of its video, or failing that nothing.</summary>
+    private System.Windows.Media.ImageSource? GetLayerPicture(string path) => _layerFilmstrips.GetValueOrDefault(path);
+
+    /// <summary>Deletes a layer's clip: it leaves the timeline and waits in the recycle bin.</summary>
+    private void MoveToBin(Layer clip)
+    {
+        var index = Layers.IndexOf(clip);
+        if (index < 0)
+            return;
+
+        var state = clip.ToState();
+        state.IsDeleted = true;
+        var (start, end) = clip.GetSpan(SequenceSeconds);
+        var preview = clip.Filmstrip ?? clip.Waveform;
+        Detach(clip);
+        AddToBin(new DeletedClip(state, null, index), clip.Name, start, end, preview);
+    }
+
+    /// <summary>Deletes one clip of the main video. Its last clip cannot go: the main video is hidden instead.</summary>
+    public bool DeleteMainClip(int index)
+    {
+        if (FindMainClip(index) is not { } clip)
+            return false;
+
+        if (GetMainClips().Count < 2)
+        {
+            StatusText = $"That is all there is of {_mainVideoRow.Name}. To leave its picture out, hide it (right-click its row); to shorten it, trim it.";
+            return false;
+        }
+
+        Checkpoint("delete a clip of the main video");
+        using (DeferCommand())
+        {
+            var main = _mainVideoRow;
+            var deleted = new MainPiece(clip.Start, clip.End - clip.Start, clip.Offset);
+            if (index == 0)
+            {
+                // The row's own clip goes: the next clip along becomes the row's.
+                var next = _mainPieces.MinBy(p => p.Start)!;
+                _mainPieces.Remove(next);
+                SetMainClip(0, next.Start, next.Duration, next.Offset);
+            }
+            else
+            {
+                _mainPieces.RemoveAt(index - 1);
+            }
+
+            InvalidateMainClips();
+            AddToBin(new DeletedClip(null, deleted, 0), main.Name, clip.Start, clip.End, null);
+            GenerateCommand();
+        }
+
+        StatusText = $"Deleted a clip of {_mainVideoRow.Name}. It is in the recycle bin (the trash can), and Ctrl+Z brings it back.";
+        return true;
+    }
+
+    /// <summary>Puts a deleted clip back on the timeline where it was.</summary>
+    public void RestoreFromBin(BinItem item)
+    {
+        if (!RecycleBin.Contains(item))
+            return;
+
+        Checkpoint($"restore {item.Name}");
+        using (DeferCommand())
+        {
+            RecycleBin.Remove(item);
+            if (item.Clip.Layer is { } state)
+            {
+                state.IsDeleted = false;
+                var layer = Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
+                Hook(layer);
+                InsertLayer(item.Clip.Index, layer);
+                _ = LoadLayerPicturesAsync(layer);
+            }
+            else if (item.Clip.Main is { } piece)
+            {
+                _mainPieces.Add(piece);
+                InvalidateMainClips();
+            }
+
+            OnPropertyChanged(nameof(HasDeleted));
+            OnPropertyChanged(nameof(RecycleBinText));
+            GenerateCommand();
+        }
+
+        StatusText = $"{item.Name} is back on the timeline, {item.TimeText}.";
+    }
+
+    /// <summary>Empties the recycle bin: what was in it is gone for good (Ctrl+Z aside).</summary>
+    public void EmptyBin()
+    {
+        if (RecycleBin.Count == 0)
+            return;
+
+        Checkpoint("empty the recycle bin");
+        SetBin(null);
+        var released = ReleaseUnusedLayerPictures();
+        StatusText = released > 0
+            ? $"The recycle bin is empty. {released} file{(released == 1 ? " is" : "s are")} no longer on the timeline, and what was held of {(released == 1 ? "it" : "them")} in memory has been let go."
+            : "The recycle bin is empty.";
+    }
+
+    /// <summary>
+    /// Lets go of what is held in memory for files that no clip on the timeline uses any more: the strips of
+    /// frames and the waveforms drawn for their blocks. (Ctrl+Z can still bring such a clip back; its pictures
+    /// are then simply made again.) Returns how many files that was.
+    /// </summary>
+    private int ReleaseUnusedLayerPictures()
+    {
+        var used = new HashSet<string>(Layers.Select(l => l.ImagePath), StringComparer.OrdinalIgnoreCase);
+        var unused = _layerFilmstrips.Keys.Concat(_layerWaveforms.Keys).Where(path => !used.Contains(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        foreach (var path in unused)
+        {
+            _layerFilmstrips.Remove(path);
+            _layerWaveforms.Remove(path);
+        }
+
+        return unused.Count;
     }
 
     // The main video is placed about its middle (zoom and offsets), which is what keeps it centred when the
@@ -262,35 +585,69 @@ public partial class MainViewModel
     }
 
     // ----- Keyframes -----
+    // A keyframe is one thing: a moment at which a clip's place, size and turn are all pinned at once.
+    // Between two keyframes the clip moves in straight lines; before the first and after the last it holds.
+    // (The I-frames of the video's encoding are another matter altogether, and are called that.)
 
     /// <summary>
-    /// Auto-keyframing: moving, sizing or turning a layer sets a keyframe at the playhead, starting a motion
-    /// where there was none.
+    /// Whether moving, sizing or turning a clip writes keyframes. Off, a clip that has keyframes takes its
+    /// whole motion with it when it is moved, and one that has none is simply moved.
     /// </summary>
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(IsAutoKeying))] private bool _autoKeyGenerate;
+    [ObservableProperty] private bool _keyframesEnabled;
 
-    /// <summary>Moving a layer changes the keyframe nearest the playhead instead of making a new one.</summary>
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(IsAutoKeying))] private bool _autoKeySnap;
+    /// <summary>
+    /// What a move writes while keyframes are enabled: the keyframe nearest the playhead (true), or a new
+    /// one at the playhead (false).
+    /// </summary>
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(KeyframesCreate))] private bool _keyframesSnap;
 
-    /// <summary>Whether either of the two is on, for the stopwatch to show.</summary>
-    public bool IsAutoKeying => AutoKeyGenerate || AutoKeySnap;
-
-    partial void OnAutoKeyGenerateChanged(bool value)
+    /// <summary>The other of the two: a move sets a new keyframe at the playhead.</summary>
+    public bool KeyframesCreate
     {
-        if (value)
-            AutoKeySnap = false;
-        StatusText = value
-            ? "Auto-keyframing: moving, resizing or turning a layer now sets a keyframe at the playhead."
-            : "Auto-keyframing is off: a layer that is moved takes its whole motion with it.";
+        get => !KeyframesSnap;
+        set => KeyframesSnap = !value;
     }
 
-    partial void OnAutoKeySnapChanged(bool value)
+    partial void OnKeyframesEnabledChanged(bool value) =>
+        StatusText = value
+            ? $"Keyframes on: moving, resizing or turning a clip {(KeyframesSnap ? "changes its keyframe nearest the playhead" : "sets a keyframe at the playhead")}."
+            : "Keyframes off: a clip that is moved takes its whole motion with it.";
+
+    /// <summary>The clip whose keyframes the Keyframes pane shows and the keyframe buttons work on: the one last selected, or the main video.</summary>
+    [ObservableProperty] private Layer? _keyLayer;
+
+    /// <summary>The clip the keyframe controls work on.</summary>
+    public Layer ActiveKeyLayer => KeyLayer is { } layer && (layer.IsMainVideo || Layers.Contains(layer)) && layer.IsPicture ? layer : _mainVideoRow;
+
+    partial void OnKeyLayerChanged(Layer? value) => OnPropertyChanged(nameof(ActiveKeyLayer));
+
+    // Which panes are open beside the player, and whether clips show their keyframes: per mode, and remembered.
+
+    /// <summary>The Cut Segments pane beside the player.</summary>
+    [ObservableProperty] private bool _showCutSegmentsPane = AppSettings.Current.ShowCutSegmentsPane;
+
+    /// <summary>The Keyframes pane beside the player.</summary>
+    [ObservableProperty] private bool _showKeyframesPane = AppSettings.Current.ShowKeyframesPane;
+
+    /// <summary>Whether a clip's block on the timeline shows a diamond at each of its keyframes.</summary>
+    [ObservableProperty] private bool _showClipKeyframes = AppSettings.Current.ShowClipKeyframes;
+
+    partial void OnShowCutSegmentsPaneChanged(bool value) => SaveView(s => s.ShowCutSegmentsPane = value);
+    partial void OnShowKeyframesPaneChanged(bool value) => SaveView(s => s.ShowKeyframesPane = value);
+
+    partial void OnShowClipKeyframesChanged(bool value)
     {
-        if (value)
-        {
-            AutoKeyGenerate = false;
-            StatusText = "Snap to keyframe: moving a layer changes its keyframe nearest the playhead, and makes no new ones.";
-        }
+        SaveView(s => s.ShowClipKeyframes = value);
+        TimelineChanged?.Invoke();
+    }
+
+    private void SaveView(Action<AppSettings> set)
+    {
+        if (_isBackgroundWorker)
+            return;
+
+        set(AppSettings.Current);
+        SaveSettingsSoon();
     }
 
     private bool _applyingKeys;
@@ -309,8 +666,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Shows every animated layer as it is at the playhead: its row, and its box in the layout pane, follow
-    /// the motion. Nothing is changed by it, so nothing is rebuilt.
+    /// Shows every animated clip as it is at the playhead: its row, the Keyframes pane and its box in the
+    /// layout pane follow the motion. Nothing is changed by it, so nothing is rebuilt.
     /// </summary>
     private void ApplyKeyframes()
     {
@@ -348,28 +705,30 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A layer was moved, sized or turned by hand. What becomes of that depends on the stopwatch: a new
-    /// keyframe at the playhead, a new value for the nearest keyframe, or (with neither) the whole motion
-    /// moved by as much. A property with no keyframes is simply set, unless keyframes are being generated.
+    /// A clip was moved, sized or turned by hand. With keyframes enabled that is written into a keyframe: a
+    /// new one at the playhead holding the clip as it now is, or (snapping) the nearest one. Otherwise a clip
+    /// with keyframes takes its whole motion along by as much as it was moved.
     /// </summary>
     private void RecordKey(Layer layer, string? propertyName)
     {
-        if (_applyingKeys || _recordingKey || Layer.GetKeyProperty(propertyName) is not { } property)
+        if (_applyingKeys || _recordingKey || _commandDeferrals > 0 || Layer.GetKeyProperty(propertyName) is not { } property || !HasSource)
             return;
-        if (!layer.HasKeys(property) && !(AutoKeyGenerate && HasSource))
+
+        var writes = KeyframesEnabled && (layer.IsAnimated || !KeyframesSnap);
+        if (!writes && !layer.HasKeys(property))
             return;
 
         var time = Math.Max(PositionMs / 1000 - layer.StartTime, 0);
-        var value = layer.GetValue(property);
         _recordingKey = true;
         try
         {
-            if (AutoKeyGenerate)
-                layer.SetKey(property, time, value);
-            else if (AutoKeySnap && layer.GetNearestKey(property, time) is { } nearest)
-                layer.SetKey(property, nearest.Time, value);
+            using var once = DeferCommand();
+            if (!writes)
+                layer.OffsetKeys(property, layer.GetValue(property) - layer.Evaluate(property, time));
+            else if (KeyframesSnap && layer.GetNearestKeyTime(time) is { } nearest)
+                layer.SetKey(property, nearest, layer.GetValue(property));
             else
-                layer.OffsetKeys(property, value - layer.Evaluate(property, time));
+                layer.SetMasterKey(time);
         }
         finally
         {
@@ -377,41 +736,64 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>
-    /// The diamond beside a property: sets a keyframe at the playhead, with the value the property has there,
-    /// or takes away the one that is there. The first keyframe starts the property's motion; taking away the
-    /// last one ends it.
-    /// </summary>
-    public void ToggleKey(Layer layer, KeyProperty property)
+    /// <summary>Whether the clip has a keyframe at the playhead.</summary>
+    public bool HasKeyframeAtPlayhead(Layer layer) => layer.HasKeyAt(PositionMs / 1000 - layer.StartTime);
+
+    /// <summary>Sets a keyframe at the playhead, holding the clip's place, size and turn as they are there.</summary>
+    public void AddKeyframe(Layer layer)
     {
+        if (!HasSource)
+        {
+            StatusText = "Load a video first: a keyframe is set at the playhead.";
+            return;
+        }
+
         var time = Math.Max(PositionMs / 1000 - layer.StartTime, 0);
-        var what = property switch { KeyProperty.X => "X", KeyProperty.Y => "Y", KeyProperty.Scale => "size", _ => "rotation" };
-        Checkpoint($"keyframe the {what} of {layer.Name}");
+        Checkpoint($"set a keyframe for {layer.Name}");
+        var first = !layer.IsAnimated;
+        layer.SetMasterKey(time);
+        StatusText = first
+            ? $"{layer.Name} has its first keyframe, at {TimeDisplay.Format(PositionMs / 1000)}. Move the playhead, move the clip, and set another: it will travel between them."
+            : $"Keyframe set for {layer.Name} at {TimeDisplay.Format(PositionMs / 1000)}.";
+    }
 
-        if (layer.RemoveKey(property, time))
+    /// <summary>Takes away the clip's keyframe at the playhead.</summary>
+    public void RemoveKeyframe(Layer layer)
+    {
+        var time = PositionMs / 1000 - layer.StartTime;
+        if (!layer.HasKeyAt(time))
         {
-            StatusText = layer.HasKeys(property)
-                ? $"Removed the {what} keyframe of {layer.Name} at {TimeDisplay.Format(PositionMs / 1000)}."
-                : $"The {what} of {layer.Name} is no longer animated.";
-        }
-        else
-        {
-            var first = !layer.HasKeys(property);
-            layer.SetKey(property, time, layer.Evaluate(property, time));
-
-            // A size that changes is held about the layer's middle by its corner moving with it.
-            if (property == KeyProperty.Scale)
-            {
-                foreach (var corner in new[] { KeyProperty.X, KeyProperty.Y })
-                    layer.SetKey(corner, time, layer.Evaluate(corner, time));
-            }
-
-            StatusText = first
-                ? $"The {what} of {layer.Name} has its first keyframe, at {TimeDisplay.Format(PositionMs / 1000)}. Move the playhead and set another (or switch on the stopwatch and just move the layer) to make it move."
-                : $"Set a {what} keyframe for {layer.Name} at {TimeDisplay.Format(PositionMs / 1000)}.";
+            StatusText = $"{layer.Name} has no keyframe at the playhead. Step onto one with the previous and next keyframe buttons.";
+            return;
         }
 
+        Checkpoint($"remove a keyframe of {layer.Name}");
+        layer.RemoveMasterKey(time);
+        StatusText = layer.IsAnimated ? $"Removed the keyframe of {layer.Name} at {TimeDisplay.Format(PositionMs / 1000)}." : $"{layer.Name} has no keyframes left: it stays as it is now.";
         ApplyKeyframes();
+    }
+
+    /// <summary>Moves the playhead onto the clip's keyframe before (-1) or after (+1) it.</summary>
+    public bool GoToKeyframe(Layer layer, int direction)
+    {
+        var time = PositionMs / 1000 - layer.StartTime;
+        double? target = null;
+        foreach (var key in layer.KeyTimes)
+        {
+            if (direction < 0 && key < time - Layer.KeyTolerance)
+                target = key;
+            else if (direction > 0 && key > time + Layer.KeyTolerance && target is null)
+                target = key;
+        }
+
+        if (target is not { } found)
+        {
+            StatusText = !layer.IsAnimated ? $"{layer.Name} has no keyframes." : direction < 0 ? "That is its first keyframe." : "That is its last keyframe.";
+            return false;
+        }
+
+        PositionMs = Math.Clamp((found + layer.StartTime) * 1000, 0, Math.Max(DurationMs, 0));
+        return true;
     }
 
     /// <summary>Takes every keyframe off a clip: it stays as it is shown now.</summary>
@@ -422,7 +804,7 @@ public partial class MainViewModel
 
         Checkpoint($"clear the keyframes of {layer.Name}");
         layer.ClearKeys();
-        StatusText = $"{layer.Name} is no longer animated: it stays where it is now.";
+        StatusText = $"{layer.Name} has no keyframes any more: it stays where it is now.";
     }
 
     // ----- Motion as FFmpeg expressions -----
@@ -487,10 +869,48 @@ public partial class MainViewModel
     // ----- What the player plays -----
 
     /// <summary>
+    /// The stretches of a part of the sequence that the main video is there for, as a condition on t: for
+    /// switching on, between them, what comes from it. Clips that follow each other without a gap count as one stretch.
+    /// </summary>
+    /// <param name="from">Where the part begins: its clock starts there.</param>
+    private string BuildMainGate(double from, double to)
+    {
+        var gate = new StringBuilder();
+        var (start, end) = (double.NaN, double.NaN);
+        void Close()
+        {
+            if (double.IsNaN(start))
+                return;
+            if (gate.Length > 0)
+                gate.Append('+');
+            gate.Append("gte(t,").Append(Number(start - from)).Append(")*lt(t,").Append(Number(end - from)).Append(')');
+        }
+
+        foreach (var clip in GetMainClips())
+        {
+            var (a, b) = (Math.Max(clip.Start, from), Math.Min(clip.End, to));
+            if (b - a < 0.001)
+                continue;
+
+            if (!double.IsNaN(end) && a - end < 0.001)
+            {
+                end = b;
+                continue;
+            }
+
+            Close();
+            (start, end) = (a, b);
+        }
+
+        Close();
+        return gate.Length > 0 ? gate.ToString() : "0";
+    }
+
+    /// <summary>
     /// What the player opens: the main video's file while that is the whole sequence, and otherwise the
-    /// sequence written out for it (mpv's EDL), so that its clock is the sequence's. Before and after the main
-    /// video the clock still needs frames to run on; stretches of the same file stand in, and Live Preview
-    /// leaves the main video's picture out of them.
+    /// sequence written out for it (mpv's EDL), clip after clip, so that its clock is the sequence's. Where
+    /// no clip of the main video is, the clock still needs frames to run on; stretches of the same file stand
+    /// in, and Live Preview leaves the main video's picture out of them.
     /// </summary>
     public string PlayerSource
     {
@@ -500,35 +920,30 @@ public partial class MainViewModel
             if (!HasSource || IsMainWholeSequence)
                 return path;
 
-            var (start, end) = GetMainSpan();
             var media = MainMediaSeconds;
             var name = $"%{Encoding.UTF8.GetByteCount(path)}%{path}";
-            var parts = new List<string>();
-
+            var parts = new StringBuilder("edl://");
+            void Part(double start, double length) => parts.Append(parts.Length > 6 ? ";" : "").Append(name).Append(",start=").Append(Number(start)).Append(",length=").Append(Number(length));
             void StandIn(double seconds)
             {
                 for (; seconds > 0.001; seconds -= media)
-                    parts.Add($"{name},start=0,length={Number(Math.Min(seconds, media))}");
+                    Part(0, Math.Min(seconds, media));
             }
 
-            StandIn(start);
-            if (end - start > 0.001)
-                parts.Add($"{name},start={Number(_mainVideoRow.MediaOffset)},length={Number(end - start)}");
-            StandIn(SequenceSeconds - end);
-            return "edl://" + string.Join(";", parts);
+            var reached = 0.0;
+            foreach (var clip in GetMainClips())
+            {
+                StandIn(clip.Start - reached);
+                Part(clip.Offset, clip.End - clip.Start);
+                reached = clip.End;
+            }
+
+            StandIn(SequenceSeconds - reached);
+            return parts.ToString();
         }
     }
 
     /// <summary>The audio filter that goes with <see cref="PlayerSource"/>: silence where the main video is not there. Empty for none.</summary>
-    public string PlayerAudioFilter
-    {
-        get
-        {
-            if (!HasSource || IsMainWholeSequence)
-                return "";
-
-            var (start, end) = GetMainSpan();
-            return $"lavfi=[volume=0:enable='lt(t,{Number(start)})+gte(t,{Number(end)})']";
-        }
-    }
+    public string PlayerAudioFilter =>
+        !HasSource || IsMainWholeSequence ? "" : $"lavfi=[volume=0:enable='not({BuildMainGate(0, SequenceSeconds)})']";
 }

@@ -9,7 +9,7 @@ namespace HandPegApp.ViewModels;
 /// <summary>The timeline as Undo keeps it: the cuts, the layers and what was done to the audio. Nothing else, and no pictures.</summary>
 public sealed record TimelineSnapshot(
     List<SegmentState> Segments, List<LayerState> Layers, int MainVideoIndex, List<AudioEditState> Audio, bool AudioLinked,
-    LayerState? MainLayer = null, bool BackgroundHidden = false);
+    LayerState? MainLayer = null, bool BackgroundHidden = false, List<MainPiece>? MainPieces = null, List<DeletedClip>? Bin = null);
 
 /// <summary>What was done to one audio track on the timeline: how far it was slipped, and its pieces.</summary>
 public sealed record AudioEditState(int Index, double Offset, List<AudioPiece> Pieces);
@@ -44,7 +44,7 @@ public partial class MainViewModel
         Layers.Select(l => l.ToState()).ToList(),
         MainVideoIndex,
         AudioTracks.Select(t => new AudioEditState(t.Index, t.OffsetSeconds, [.. t.Pieces])).ToList(),
-        AudioLinked, _mainVideoRow.ToState(), _backgroundRow.IsHidden));
+        AudioLinked, _mainVideoRow.ToState(), _backgroundRow.IsHidden, [.. _mainPieces], RecycleBin.Select(i => i.Clip).ToList()));
 
     /// <summary>Call before changing the timeline: what it looks like now can then be brought back with Undo.</summary>
     /// <param name="what">The change about to be made, in a word or two, for the status bar.</param>
@@ -92,6 +92,10 @@ public partial class MainViewModel
         SetLayers(snapshot.Layers);
         _mainVideoRow.ApplyLook(snapshot.MainLayer);
         _mainVideoRow.ApplyTiming(snapshot.MainLayer);
+        _mainPieces.Clear();
+        _mainPieces.AddRange(snapshot.MainPieces ?? []);
+        InvalidateMainClips();
+        SetBin(snapshot.Bin);
         _backgroundRow.IsHidden = snapshot.BackgroundHidden;
         MainVideoIndex = Math.Clamp(snapshot.MainVideoIndex, 0, Layers.Count);
         foreach (var edit in snapshot.Audio)
@@ -114,8 +118,9 @@ public partial class MainViewModel
         switch (clip)
         {
             case Layer { IsRemovable: true } layer when Layers.Contains(layer):
-                RemoveLayerCommand.Execute(layer);
-                StatusText = $"Deleted {layer.Name}. Ctrl+Z brings it back.";
+                Checkpoint($"delete {layer.Name}");
+                MoveToBin(layer);
+                StatusText = $"Deleted {layer.Name}. It is in the recycle bin (the trash can), and Ctrl+Z brings it back.";
                 return true;
 
             case CutSegment segment when Segments.Contains(segment):
@@ -136,8 +141,13 @@ public partial class MainViewModel
         var total = SequenceSeconds;
         switch (clip)
         {
+            case Layer { IsMainVideo: true }:
+                if (GetMainClipAt(seconds) is { } under)
+                    return TrimMain(under.Index, start, seconds);
+                break;
+
             case Layer { HasTiming: true } layer:
-                var end = layer.IsMainVideo ? GetMainSpan().End : layer.GetSpan(total).End;
+                var end = layer.GetSpan(total).End;
                 if (seconds <= layer.StartTime + 0.05 || seconds >= end - 0.05)
                     break;
 
@@ -217,9 +227,9 @@ public partial class MainViewModel
         Checkpoint($"remove {layer.Name}");
         using var whole = DeferCommand();
         foreach (var clip in GetTrackClips(layer))
-            Detach(clip);
+            MoveToBin(clip);
 
-        StatusText = $"Removed {layer.Name}. Ctrl+Z brings it back.";
+        StatusText = $"Removed {layer.Name}. Its clips are in the recycle bin (the trash can), and Ctrl+Z brings them back.";
     }
 
     public void ToggleHidden(Layer layer)
@@ -396,8 +406,8 @@ public partial class MainViewModel
     /// <summary>The pictures a layer's block is drawn with: the waveform of its sound, and for a video a strip of its frames.</summary>
     private async Task LoadLayerPicturesAsync(Layer layer)
     {
-        await LoadLayerWaveformAsync(layer);
-        await LoadLayerFilmstripAsync(layer);
+        // Side by side: the frames do not wait for the waveform to be drawn.
+        await Task.WhenAll(LoadLayerWaveformAsync(layer), LoadLayerFilmstripAsync(layer));
     }
 
     /// <summary>
@@ -422,7 +432,8 @@ public partial class MainViewModel
                 layer.MediaDuration = info.DurationSeconds;
 
             var path = Path.Combine(SpriteFolder, $"layer_{Guid.NewGuid():N}.jpg");
-            if (!await FfmpegRunner.GenerateFilmstripAsync(layer.ImagePath, path, count, layer.MediaDuration, _shutdown.Token))
+            var (file, length) = (layer.ImagePath, layer.MediaDuration);
+            if (!await Task.Run(() => FfmpegRunner.GenerateFilmstripAsync(file, path, count, length, _shutdown.Token)))
                 return;
 
             // Read into memory, so that the file is not held open.

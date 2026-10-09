@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
 
@@ -63,33 +64,75 @@ public static class NumericInput
 
     // ----- Double-click reset -----
 
+    // Every slider and every number box in the application is put back by a double-click, with nothing to be
+    // set on the control for it. What it goes back to is looked for in three places: the style preset in use
+    // (when the settings say so, and it has a value for what the control is bound to), then the Default set
+    // on the control, then what a new object of the kind it is bound to starts out with.
+
+    /// <summary>Asks for the style preset's value for a property of an object; set by the main window. Null when there is none.</summary>
+    public static Func<object?, string?, double?>? ResetValue { get; set; }
+
+    private static bool _resetRegistered;
+    private static readonly Dictionary<Type, object?> FreshObjects = [];
+
+    /// <summary>Starts listening for double-clicks on sliders and number boxes, application-wide. Called once, at start-up.</summary>
+    public static void RegisterDoubleClickReset()
+    {
+        if (_resetRegistered)
+            return;
+
+        _resetRegistered = true;
+        EventManager.RegisterClassHandler(typeof(Slider), Control.PreviewMouseDoubleClickEvent, new MouseButtonEventHandler(Slider_DoubleClick));
+        EventManager.RegisterClassHandler(typeof(TextBox), Control.PreviewMouseDoubleClickEvent, new MouseButtonEventHandler(TextBox_DoubleClick));
+    }
+
     private static void OnDefaultChanged(DependencyObject element, DependencyPropertyChangedEventArgs e)
     {
-        switch (element)
-        {
-            case Slider slider:
-                slider.PreviewMouseDoubleClick -= Slider_DoubleClick;
-                if (e.NewValue is not null)
-                    slider.PreviewMouseDoubleClick += Slider_DoubleClick;
-                break;
+        if (element is TextBox box)
+            HookTextBox(box);
+    }
 
-            case TextBox box:
-                box.PreviewMouseDoubleClick -= TextBox_DoubleClick;
-                if (e.NewValue is not null)
-                    box.PreviewMouseDoubleClick += TextBox_DoubleClick;
-                HookTextBox(box);
-                break;
+    /// <summary>The value a control goes back to, or null when nothing says what that is.</summary>
+    private static double? FindReset(FrameworkElement control, DependencyProperty bound)
+    {
+        var binding = System.Windows.Data.BindingOperations.GetBindingExpression(control, bound);
+        var (source, property) = (binding?.ResolvedSource, binding?.ResolvedSourcePropertyName);
+        if (ResetValue?.Invoke(source, property) is { } styled)
+            return styled;
+        if (double.TryParse(GetDefault(control), NumberStyles.Float, CultureInfo.InvariantCulture, out var given))
+            return given;
+        if (source is null || property is null)
+            return null;
+
+        // What a new one of these starts with. Only for kinds that can simply be made; made once, and kept.
+        var type = source.GetType();
+        if (!FreshObjects.TryGetValue(type, out var fresh))
+        {
+            try
+            {
+                fresh = type.Namespace == "HandPegApp.Models" && type.GetConstructor(Type.EmptyTypes) is not null ? Activator.CreateInstance(type) : null;
+            }
+            catch (Exception ex) when (ex is MissingMethodException or System.Reflection.TargetInvocationException)
+            {
+                fresh = null;
+            }
+
+            FreshObjects[type] = fresh;
         }
+
+        return fresh is null ? null : type.GetProperty(property)?.GetValue(fresh) switch
+        {
+            double number => number,
+            int number => number,
+            _ => null,
+        };
     }
 
     private static void Slider_DoubleClick(object sender, MouseButtonEventArgs e)
     {
-        var slider = (Slider)sender;
-        if (e.ChangedButton != MouseButton.Left
-            || !double.TryParse(GetDefault(slider), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
-        {
+        // Not the timeline: a double-click there is two clicks on a moment, not a wish to go back to the start.
+        if (sender is not Slider slider || e.ChangedButton != MouseButton.Left || slider.Name == "TimelineSlider" || FindReset(slider, RangeBase.ValueProperty) is not { } value)
             return;
-        }
 
         slider.Value = Math.Clamp(value, slider.Minimum, slider.Maximum);
         e.Handled = true;
@@ -97,12 +140,13 @@ public static class NumericInput
 
     private static void TextBox_DoubleClick(object sender, MouseButtonEventArgs e)
     {
-        var box = (TextBox)sender;
-        if (e.ChangedButton != MouseButton.Left || GetDefault(box) is not { } value)
+        // Only the boxes that hold a number (the ones that are dragged to adjust); in any other a double-click selects a word.
+        if (sender is not TextBox box || e.ChangedButton != MouseButton.Left || !(bool)box.GetValue(IsHookedProperty) || FindReset(box, TextBox.TextProperty) is not { } value)
             return;
 
+        var decimals = (int)box.GetValue(DecimalsProperty);
         EndDrag(box);
-        SetText(box, value);
+        SetText(box, value.ToString(decimals > 0 ? "0." + new string('#', decimals) : "0", CultureInfo.InvariantCulture));
         e.Handled = true;
     }
 

@@ -12,7 +12,7 @@ namespace HandPegApp.Services;
 public static class StyleLibrary
 {
     // Raised when the built-in styles change, so that the new ones are written out.
-    private const int Version = 1;
+    private const int Version = 2;
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -35,9 +35,7 @@ public static class StyleLibrary
             {
                 var path = Path.Combine(AppPaths.Styles, FileNameFor(game));
                 stamp = stamp.AddMinutes(1);
-                if (File.Exists(path))
-                    continue;
-
+                // A built-in style that has changed replaces the one written before it.
                 File.WriteAllText(path, JsonSerializer.Serialize(Build(game), JsonOptions));
                 File.SetLastWriteTime(path, stamp);
             }
@@ -73,7 +71,7 @@ public static class StyleLibrary
 
         return new StylePreset
         {
-            Layout = new LayoutSection { CenterZoom = 1, SourceAspectRatio = 1.7778, Vertical = true, MainVideoIndex = 0, Layers = layers },
+            Layout = new LayoutSection { CenterZoom = 1, SourceAspectRatio = 1.7778, Vertical = true, MainVideoIndex = layers.Count, Layers = layers },
             Masks = masks.Count > 0 ? masks : null,
         };
     }

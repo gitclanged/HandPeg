@@ -48,6 +48,11 @@ public partial class FirstRunWindow : Window
         // Closing the window stops an install, so Start waits for it (or for Cancel).
         Dependencies.RunningChanged += () => StartButton.IsEnabled = !Dependencies.IsRunning;
 
+        // Here the list is two cards and one progress bar; the rows behind them are not shown.
+        Dependencies.IsUnified = true;
+        Dependencies.Refreshed += ApplyTier;
+        ApplyTier();
+
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
         Closed += (_, _) =>
         {
@@ -70,7 +75,32 @@ public partial class FirstRunWindow : Window
     private string _wantedEncoder;
     private bool _fillingEncoders;
 
-    private void Mode_Checked(object sender, RoutedEventArgs e) => UpdateEncoderPanel();
+    private void Mode_Checked(object sender, RoutedEventArgs e)
+    {
+        UpdateEncoderPanel();
+
+        // The mode suggests how much to fetch; either tier can still be picked for either mode.
+        if (EditorTier is not null && MinimalTier is not null)
+            (EditorCard.IsChecked == true ? EditorTier : MinimalTier).IsChecked = true;
+    }
+
+    // The speech models the Editor tier fetches; the second is the one captions are then set to use.
+    private const string TierBaseModel = "ggml-base.en.bin";
+    private const string TierDefaultModel = "ggml-medium.en.bin";
+
+    private void Tier_Checked(object sender, RoutedEventArgs e) => ApplyTier();
+
+    /// <summary>Tells the dependency list what the chosen tier is made of.</summary>
+    private void ApplyTier()
+    {
+        if (Dependencies is null || EditorTier is null)
+            return;
+
+        if (EditorTier.IsChecked == true)
+            Dependencies.SelectPayloads(DependencyUpdater.Tools, [TierBaseModel, TierDefaultModel, DependencyUpdater.VadModel]);
+        else
+            Dependencies.SelectPayloads([DependencyUpdater.Ffmpeg, DependencyUpdater.Mpv, DependencyUpdater.YtDlp], []);
+    }
 
     private void UpdateEncoderPanel()
     {
@@ -199,6 +229,10 @@ public partial class FirstRunWindow : Window
             (settings.DefaultAudioEncoder, settings.DefaultAudioBitrate) = (AudioEncoderBox.SelectedItem as string ?? "aac", AudioBitrateBox.SelectedItem as string ?? "192k");
         settings.DefaultMode = settings.UiMode;
         settings.FirstRunComplete = true;
+
+        // The Editor tier's larger model is the one captions use, once it is there.
+        if (EditorTier.IsChecked == true && File.Exists(DependencyUpdater.GetWhisperModelPath(TierDefaultModel)))
+            settings.WhisperModel = TierDefaultModel;
 
         try
         {

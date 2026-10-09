@@ -27,49 +27,49 @@
                 <RowDefinition Height="32" />
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Text="Contrast:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="2" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="2" VerticalAlignment="Center"
                     Value="{Binding FilterContrast}" AutomationProperties.Name="Layer Contrast" local:NumericInput.Default="1"
                     ToolTip="1 leaves the contrast as it is." />
             <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterContrast, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Layer Contrast Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
                      local:NumericInput.Minimum="0" local:NumericInput.Maximum="2" />
             <TextBlock Grid.Row="1" Text="Brightness:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="-1" Maximum="1" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="-1" Maximum="1" VerticalAlignment="Center"
                     Value="{Binding FilterBrightness}" AutomationProperties.Name="Layer Brightness" local:NumericInput.Default="0"
                     ToolTip="0 leaves the brightness as it is." />
             <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterBrightness, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Layer Brightness Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
                      local:NumericInput.Minimum="-1" local:NumericInput.Maximum="1" />
             <TextBlock Grid.Row="2" Text="Saturation:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="3" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="3" VerticalAlignment="Center"
                     Value="{Binding FilterSaturation}" AutomationProperties.Name="Layer Saturation" local:NumericInput.Default="1"
                     ToolTip="1 leaves the colors as they are; 0 is black and white." />
             <TextBox Grid.Row="2" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterSaturation, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Layer Saturation Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
                      local:NumericInput.Minimum="0" local:NumericInput.Maximum="3" />
             <TextBlock Grid.Row="3" Text="Gamma:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="3" Grid.Column="1" Minimum="0.1" Maximum="3" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="3" Grid.Column="1" Minimum="0.1" Maximum="3" VerticalAlignment="Center"
                     Value="{Binding FilterGamma}" AutomationProperties.Name="Layer Gamma" local:NumericInput.Default="1"
                     ToolTip="1 leaves the midtones as they are; higher lifts them." />
             <TextBox Grid.Row="3" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterGamma, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Layer Gamma Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
                      local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="3" />
             <TextBlock Grid.Row="4" Text="Hue:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="4" Grid.Column="1" Minimum="-180" Maximum="180" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="4" Grid.Column="1" Minimum="-180" Maximum="180" VerticalAlignment="Center"
                     Value="{Binding FilterHue}" AutomationProperties.Name="Layer Hue" local:NumericInput.Default="0"
                     ToolTip="Turns every color round the color wheel, in degrees." />
             <TextBox Grid.Row="4" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterHue, StringFormat={}{0:0}}"
                      AutomationProperties.Name="Layer Hue Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="0"
                      local:NumericInput.Minimum="-180" local:NumericInput.Maximum="180" />
             <TextBlock Grid.Row="5" Text="Sharpen:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="5" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="5" Grid.Column="1" Minimum="0" Maximum="1" VerticalAlignment="Center"
                     Value="{Binding FilterSharpen}" AutomationProperties.Name="Layer Sharpen" local:NumericInput.Default="0"
                     ToolTip="Contrast-adaptive sharpening of this layer alone." />
             <TextBox Grid.Row="5" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterSharpen, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Layer Sharpen Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
                      local:NumericInput.Minimum="0" local:NumericInput.Maximum="1" />
             <TextBlock Grid.Row="6" Text="Blur:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="6" Grid.Column="1" Minimum="0" Maximum="50" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="6" Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center"
                     Value="{Binding FilterBlur}" AutomationProperties.Name="Layer Blur" local:NumericInput.Default="0"
                     ToolTip="Blurs this layer alone: how far, in pixels of a frame 1080 wide." />
             <TextBox Grid.Row="6" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterBlur, StringFormat={}{0:0.0}}"
@@ -101,21 +101,21 @@
                 <RowDefinition Height="32" />
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Text="X %:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="0" Grid.Column="1" Minimum="-200" Maximum="200" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="-200" Maximum="200" VerticalAlignment="Center"
                     Value="{Binding PositionXPercent}" AutomationProperties.Name="Transform X" local:NumericInput.Default="0"
                     ToolTip="Where the left edge of the layer is, as a percentage of the frame's width. Below 0 and above 100 the layer lies partly or wholly outside the frame, where it is simply cut off." />
             <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding PositionXPercent, StringFormat={}{0:0.#}}"
                      AutomationProperties.Name="Transform X Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1"
                      local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
             <TextBlock Grid.Row="1" Text="Y %:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="-200" Maximum="200" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="-200" Maximum="200" VerticalAlignment="Center"
                     Value="{Binding PositionYPercent}" AutomationProperties.Name="Transform Y" local:NumericInput.Default="0"
                     ToolTip="Where the top edge of the layer is, as a percentage of the frame's height. It may lie outside the frame." />
             <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding PositionYPercent, StringFormat={}{0:0.#}}"
                      AutomationProperties.Name="Transform Y Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1"
                      local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
             <TextBlock Grid.Row="2" Text="Scale %:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="2" Grid.Column="1" Minimum="1" Maximum="400" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="1" Maximum="400" VerticalAlignment="Center"
                     Value="{Binding SizePercent}" AutomationProperties.Name="Transform Scale" local:NumericInput.Default="40"
                     ToolTip="The width of the layer as a percentage of the frame's width. It grows and shrinks about its middle." />
             <TextBox Grid.Row="2" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding SizePercent, StringFormat={}{0:0}}"
@@ -136,21 +136,21 @@
                 <RowDefinition Height="32" />
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Text="Zoom:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="0" Grid.Column="1" Minimum="0.1" Maximum="4" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="0.1" Maximum="4" VerticalAlignment="Center"
                     Value="{Binding CenterZoom}" AutomationProperties.Name="Main Zoom" local:NumericInput.Default="1"
                     ToolTip="1 fills the width of the frame. It grows and shrinks about its middle, and may be larger than the frame." />
             <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CenterZoom, StringFormat={}{0:0.00}}"
                      AutomationProperties.Name="Main Zoom Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
                      local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="4" />
             <TextBlock Grid.Row="1" Text="X Offset %:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="-100" Maximum="100" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="-100" Maximum="100" VerticalAlignment="Center"
                     Value="{Binding CenterOffsetX}" AutomationProperties.Name="Main X Offset" local:NumericInput.Default="0"
                     ToolTip="Moves the main video left (negative) or right, as a percentage of the frame's width. It may lie partly or wholly outside the frame." />
             <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CenterOffsetX, StringFormat={}{0:0.#}}"
                      AutomationProperties.Name="Main X Offset Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1"
                      local:NumericInput.Minimum="-100" local:NumericInput.Maximum="100" />
             <TextBlock Grid.Row="2" Text="Y Offset %:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="2" Grid.Column="1" Minimum="-100" Maximum="100" TickFrequency="0.5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="-100" Maximum="100" VerticalAlignment="Center"
                     Value="{Binding CenterOffsetY}" AutomationProperties.Name="Main Y Offset" local:NumericInput.Default="0"
                     ToolTip="Moves the main video up (negative) or down, as a percentage of the frame's height." />
             <TextBox Grid.Row="2" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CenterOffsetY, StringFormat={}{0:0.#}}"
@@ -168,7 +168,7 @@
                 <RowDefinition Height="32" />
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Text="Rotation:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="0" Grid.Column="1" Minimum="-180" Maximum="180" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="-180" Maximum="180" VerticalAlignment="Center"
                     Value="{Binding Rotation}" AutomationProperties.Name="Layer Rotation" local:NumericInput.Default="0"
                     ToolTip="Turns the picture about its middle, in degrees clockwise." />
             <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding Rotation, StringFormat={}{0:0.#}}"
@@ -210,14 +210,14 @@
                 <RowDefinition Height="32" />
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Text="Corner Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="50" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center"
                     Value="{Binding CornerRadius}" AutomationProperties.Name="Mask Corner Radius" local:NumericInput.Default="0"
                     ToolTip="Rounds the corners, as a percentage of the layer's shorter side." />
             <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CornerRadius, StringFormat={}{0:0}}"
                      AutomationProperties.Name="Mask Corner Radius Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0"
                      local:NumericInput.Minimum="0" local:NumericInput.Maximum="50" />
             <TextBlock Grid.Row="1" Text="Soft Edge:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="1" Maximum="80" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="1" Maximum="80" VerticalAlignment="Center"
                     Value="{Binding FeatherRadius}" AutomationProperties.Name="Mask Soft Edge" local:NumericInput.Default="12"
                     ToolTip="How wide the soft edge is, in pixels, while Soft Edges is ticked." />
             <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FeatherRadius, StringFormat={}{0:0}}"

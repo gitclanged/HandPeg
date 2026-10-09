@@ -68,7 +68,7 @@ public sealed class ProjectSequence
     /// <summary>The kept stretches of the timeline, each as [start, end] in milliseconds; a third number of 1 marks one that is skipped.</summary>
     public List<double[]> Cuts { get; set; } = [];
 
-    public bool SnapToKeyframes { get; set; }
+    public bool SnapToIFrames { get; set; }
     public bool AudioLinked { get; set; } = true;
 
     /// <summary>The main video: the one clip of its track, and how that track looks.</summary>
@@ -86,6 +86,9 @@ public sealed class ProjectSequence
     public List<AudioTrackState> Audio { get; set; } = [];
 
     public List<SubtitleTrackState> Subtitles { get; set; } = [];
+
+    /// <summary>The recycle bin: clips deleted from the timeline, as they were.</summary>
+    public List<DeletedClip> Deleted { get; set; } = [];
 
     public string CaptionAudioPath { get; set; } = "";
     public bool CaptionUseExternalAudio { get; set; }
@@ -313,9 +316,14 @@ public static class ProjectStore
             Sequence = new ProjectSequence
             {
                 Cuts = state.Segments.Select(s => s.Skipped ? new[] { s.StartMs, s.EndMs, 1 } : [s.StartMs, s.EndMs]).ToList(),
-                SnapToKeyframes = state.SnapToKeyframes,
+                SnapToIFrames = state.SnapToIFrames,
                 AudioLinked = state.AudioLinked,
-                Main = new ProjectTrack { Look = ToLook(main), Clips = { ToClip(main, main.Name) } },
+                Main = new ProjectTrack
+                {
+                    Look = ToLook(main),
+                    Clips = [ToClip(main, main.Name), .. state.MainPieces.Select(p => new ProjectClip { Start = p.Start, Duration = p.Duration, Offset = p.Offset })],
+                },
+                Deleted = state.Deleted,
                 MainIndex = settings.MainVideoIndex,
                 BackgroundHidden = settings.BackgroundHidden,
                 Tracks = tracks,
@@ -354,8 +362,10 @@ public static class ProjectStore
             TargetFileSize = file.Output.TargetFileSize,
             ManualCommand = file.Output.ManualCommand,
             Segments = sequence.Cuts.Where(c => c.Length >= 2).Select(c => new SegmentState(c[0], c[1], c.Length > 2 && c[2] != 0)).ToList(),
-            SnapToKeyframes = sequence.SnapToKeyframes,
+            SnapToIFrames = sequence.SnapToIFrames,
             AudioLinked = sequence.AudioLinked,
+            MainPieces = sequence.Main.Clips.Skip(1).Select(c => new MainPiece(c.Start, c.Duration, c.Offset)).ToList(),
+            Deleted = sequence.Deleted,
             Settings = settings,
             AudioTracks = sequence.Audio,
             SubtitleTracks = sequence.Subtitles,

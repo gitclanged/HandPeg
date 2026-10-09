@@ -25,13 +25,13 @@
                 <RowDefinition Height="32" />
             </Grid.RowDefinitions>
             <TextBlock Text="Corner Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Column="1" Minimum="0" Maximum="50" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center"
                     Value="{Binding CornerRadius}" AutomationProperties.Name="Corner Radius" local:NumericInput.Default="0"
                     ToolTip="Rounds the corners, as a percentage of the layer's shorter side: 0 is square, 50 turns the short sides into half-circles." />
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding CornerRadius, StringFormat={}{0:0}}" AutomationProperties.Name="Corner Radius Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="50" /><TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
 
             <TextBlock Grid.Row="1" Text="Opacity:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="100" VerticalAlignment="Center"
                     Value="{Binding Opacity}" AutomationProperties.Name="Layer Opacity" local:NumericInput.Default="100"
                     ToolTip="100 is solid. Lower lets the picture underneath show through, as a watermark does." />
             <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Opacity, StringFormat={}{0:0}}" AutomationProperties.Name="Layer Opacity Value" local:NumericInput.Default="100" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" /><TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
@@ -48,7 +48,7 @@
                 <ColumnDefinition Width="80" />
             </Grid.ColumnDefinitions>
             <TextBlock Text="Feather Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Column="1" Minimum="1" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Column="1" Minimum="1" Maximum="100" VerticalAlignment="Center"
                     Value="{Binding FeatherRadius}" AutomationProperties.Name="Feather Radius" local:NumericInput.Default="12"
                     ToolTip="Width of the fade, in output pixels. It is held to less than half the layer's size." />
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding FeatherRadius, StringFormat={}{0:0}}" AutomationProperties.Name="Feather Radius Value" local:NumericInput.Default="12" local:NumericInput.DragStep="0.396" local:NumericInput.Decimals="0" local:NumericInput.Minimum="1" local:NumericInput.Maximum="100" /><TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
@@ -67,12 +67,12 @@
                 <RowDefinition Height="32" />
             </Grid.RowDefinitions>
             <TextBlock Text="Shadow Opacity:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Column="1" Minimum="0" Maximum="1" VerticalAlignment="Center"
                     Value="{Binding ShadowOpacity}" AutomationProperties.Name="Shadow Opacity" local:NumericInput.Default="0.5" />
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowOpacity, StringFormat={}{0:0.00}}" AutomationProperties.Name="Shadow Opacity Value" local:NumericInput.Default="0.5" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="1" /></StackPanel>
 
             <TextBlock Grid.Row="1" Text="Offset Distance:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="60" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="60" VerticalAlignment="Center"
                     Value="{Binding ShadowOffset}" AutomationProperties.Name="Shadow Offset" local:NumericInput.Default="10" />
             <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowOffset, StringFormat={}{0:0}}" AutomationProperties.Name="Shadow Offset Value" local:NumericInput.Default="10" local:NumericInput.DragStep="0.24" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="60" /><TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
         </Grid>
@@ -118,13 +118,13 @@
                 </StackPanel>
 
                 <TextBlock Grid.Row="1" Text="Similarity:" VerticalAlignment="Center" Margin="0,0,12,0" />
-                <Slider Grid.Row="1" Grid.Column="1" Minimum="0.01" Maximum="1" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Row="1" Grid.Column="1" Minimum="0.01" Maximum="1" VerticalAlignment="Center"
                         Value="{Binding ChromaSimilarity}" AutomationProperties.Name="Chroma Similarity" local:NumericInput.Default="0.15"
                         ToolTip="How close to the key color a pixel has to be to go. Raise it until the screen is gone; too high starts eating the subject." />
                 <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ChromaSimilarity, StringFormat={}{0:0.00}}" AutomationProperties.Name="Chroma Similarity Value" local:NumericInput.Default="0.15" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.01" local:NumericInput.Maximum="1" /></StackPanel>
 
                 <TextBlock Grid.Row="2" Text="Blend:" VerticalAlignment="Center" Margin="0,0,12,0" />
-                <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.01" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="1" VerticalAlignment="Center"
                         Value="{Binding ChromaBlend}" AutomationProperties.Name="Chroma Blend" local:NumericInput.Default="0.05"
                         ToolTip="How gradually pixels near the limit fade out. 0 is a hard edge; a little softens the outline of hair and motion blur." />
                 <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ChromaBlend, StringFormat={}{0:0.00}}" AutomationProperties.Name="Chroma Blend Value" local:NumericInput.Default="0.05" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="1" /></StackPanel>

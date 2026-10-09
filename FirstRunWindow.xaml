@@ -84,9 +84,40 @@
                     <TextBlock Style="{StaticResource CardText}"
                                Text="The tools for cutting, captioning and laying out a video. A tall timeline with the waveform, the full transport row, and the preset bar in the Summary tab." />
                     <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0"
-                               Text="Timeline height 5  ·  advanced filters  ·  waveform  ·  keyframe and frame stepping  ·  play only cut segments  ·  snapping  ·  hover previews every second  ·  8 s previews at 50%  ·  auto-captions  ·  chapters at cuts  ·  layout pane  ·  Frame &amp; Layer Engine on  ·  timeline thumbnails" />
+                               Text="Timeline height 5  ·  advanced filters  ·  waveform  ·  I-frame and frame stepping  ·  play only cut segments  ·  snapping  ·  hover previews every second  ·  8 s previews at 50%  ·  auto-captions  ·  chapters at cuts  ·  layout pane  ·  Frame &amp; Layer Engine on  ·  timeline thumbnails" />
                 </StackPanel>
             </RadioButton>
+        </Grid>
+
+        <!-- The tools: nothing ships with HandPeg, so this is where they are fetched. Two sizes of it. -->
+        <TextBlock Text="Dependencies" FontWeight="SemiBold" Margin="0,20,0,2" />
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
+                   Text="HandPeg drives these tools and downloads them on request, checked against the checksums their makers publish. Choose how much to fetch now; anything left out can be installed later from Settings." />
+        <!-- Side by side, as the two modes are -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <RadioButton x:Name="MinimalTier" GroupName="Tier" Style="{StaticResource ModeCard}" IsChecked="True" AutomationProperties.Name="Minimal Dependencies"
+                     Checked="Tier_Checked">
+            <StackPanel>
+                <TextBlock Text="Minimal Dependencies" Style="{StaticResource CardTitle}" />
+                <TextBlock Style="{StaticResource CardText}"
+                           Text="FFmpeg and ffprobe for everything, libmpv for the video player, yt-dlp for loading a web address. All that converting, cutting and laying out a video needs." />
+                <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0" Text="About 120 MB" />
+            </StackPanel>
+        </RadioButton>
+            <RadioButton Grid.Column="2" x:Name="EditorTier" GroupName="Tier" Style="{StaticResource ModeCard}" AutomationProperties.Name="Editor Dependencies"
+                     Checked="Tier_Checked">
+            <StackPanel>
+                <TextBlock Text="Editor Dependencies" Style="{StaticResource CardTitle}" />
+                <TextBlock Style="{StaticResource CardText}"
+                           Text="The minimal set, and what auto-captions need: whisper.cpp, silence detection (Silero VAD) and two speech models, Base and Medium. Medium becomes the model captions use." />
+                <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0" Text="About 1.6 GB" />
+            </StackPanel>
+        </RadioButton>
         </Grid>
 
         <!-- Editor Mode only: the encoder a new window starts with -->
@@ -109,10 +140,6 @@
                        Text="Warning: The Frame and Layer Engine features will be unavailable during 'Copy' exports unless the encoder is changed in the project settings." />
         </StackPanel>
 
-        <!-- The tools: nothing ships with HandPeg, so this is where they are fetched -->
-        <TextBlock Text="Dependencies" FontWeight="SemiBold" Margin="0,20,0,2" />
-        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
-                   Text="HandPeg drives these tools and downloads them on request. FFmpeg is needed for everything; the video player (libmpv) for watching and cutting; yt-dlp for loading a web address; whisper.cpp and a speech model for auto-captions. This can also be done later, in Settings." />
         <local:DependencyPanel x:Name="Dependencies" OffersExistingFfmpeg="True" />
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0">

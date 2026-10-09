@@ -21,7 +21,7 @@ public sealed class ProjectState
 
     // Cuts
     public List<SegmentState> Segments { get; set; } = [];
-    public bool SnapToKeyframes { get; set; }
+    public bool SnapToIFrames { get; set; }
 
     // Settings
     public string Container { get; set; } = "mp4";
@@ -49,6 +49,12 @@ public sealed class ProjectState
 
     /// <summary>Which of the video's audio tracks captions listen to.</summary>
     public int CaptionAudioTrackIndex { get; set; }
+
+    /// <summary>The clips of the main video after its first: what splitting it has made.</summary>
+    public List<MainPiece> MainPieces { get; set; } = [];
+
+    /// <summary>The recycle bin: clips deleted from the timeline, kept so that they can be put back.</summary>
+    public List<DeletedClip> Deleted { get; set; } = [];
 
     /// <summary>Whether sound follows its picture on the timeline, or has been unlinked from it.</summary>
     public bool AudioLinked { get; set; } = true;

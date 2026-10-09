@@ -205,7 +205,7 @@ public sealed class MpvPlayer
     public void SetPause(bool paused) => SetProperty("pause", paused ? "yes" : "no");
 
     /// <summary>
-    /// Goes to a position: to that very frame, or, much faster, to the keyframe nearest it, which is what
+    /// Goes to a position: to that very frame, or, much faster, to the I-frame nearest it, which is what
     /// keeps up with a timeline thumb while it is being dragged.
     /// </summary>
     public void Seek(long positionMs, bool exact)

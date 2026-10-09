@@ -28,7 +28,7 @@
         </ItemsControl>
 
         <!-- The speech models: large, and only needed for auto-captions, so each is a choice -->
-        <TextBlock Text="Speech models for auto-captions (optional)" FontWeight="SemiBold" Margin="0,10,0,2" />
+        <TextBlock x:Name="ModelsTitle" Text="Speech models for auto-captions (optional)" FontWeight="SemiBold" Margin="0,10,0,2" />
         <ItemsControl x:Name="ModelList" Focusable="False">
             <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>

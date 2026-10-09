@@ -27,7 +27,7 @@ public sealed class CaptionStyle
     /// <summary>Words shown at a time: 2 to 5.</summary>
     public int MaxWordsPerLine { get; set; } = 3;
 
-    public string Animation { get; set; } = KaraokeSweep;
+    public string Animation { get; set; } = TikTokPop;
 
     public CaptionStyle Clone() => (CaptionStyle)MemberwiseClone();
 }

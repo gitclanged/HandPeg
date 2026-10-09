@@ -20,7 +20,7 @@ public partial class ManualCutWindow : Window
         InitializeComponent();
         _viewModel = viewModel;
         _frameRate = viewModel.SourceFrameRate;
-        _snap = viewModel.SnapToKeyframes && viewModel.Keyframes.Count > 0;
+        _snap = viewModel.SnapToIFrames && viewModel.IFrames.Count > 0;
 
         // The dialog follows the time format chosen in the settings.
         FormatText.Text = TimeDisplay.UseFrames
@@ -29,9 +29,9 @@ public partial class ManualCutWindow : Window
             : "Enter times as HH:MM:SS.mmm, for example 00:01:30.500. Frame timecodes (HH:MM:SS:FF) can be switched on in Settings, under Timeline.";
 
         SnapText.Text = _snap
-            ? "Snap cuts to keyframes is on. Click a keyframe to use it; otherwise Save moves the start back to the keyframe before it and the stop on to the keyframe after it."
-            : viewModel.SnapToKeyframes
-                ? "Snap cuts to keyframes is on, but this video has no keyframe index yet: the times are used as typed."
+            ? "Snap cuts to I-frames is on. Click an I-frame to use it; otherwise Save moves the start back to the I-frame before it and the stop on to the I-frame after it."
+            : viewModel.SnapToIFrames
+                ? "Snap cuts to I-frames is on, but this video has no I-frame index yet: the times are used as typed."
                 : "";
 
         // Start from what is already on screen: the pending start point if there is one, and the playhead.
@@ -49,7 +49,7 @@ public partial class ManualCutWindow : Window
     private void StopBox_TextChanged(object sender, TextChangedEventArgs e) =>
         UpdateSuggestions(StopBox, StopSuggestions, StopFloor, StopCeiling);
 
-    /// <summary>Shows the keyframes either side of the time being typed.</summary>
+    /// <summary>Shows the I-frames either side of the time being typed.</summary>
     private void UpdateSuggestions(TextBox box, Panel panel, Button floorLink, Button ceilingLink)
     {
         // Text is set while the window is still being built.
@@ -61,10 +61,10 @@ public partial class ManualCutWindow : Window
         if (_snap && TimeDisplay.TryParse(box.Text, out var seconds, out _))
         {
             var tolerance = 0.5 / _frameRate;
-            floor = _viewModel.GetKeyframeFloor(seconds, tolerance);
-            ceiling = _viewModel.GetKeyframeCeiling(seconds, tolerance);
+            floor = _viewModel.GetIFrameFloor(seconds, tolerance);
+            ceiling = _viewModel.GetIFrameCeiling(seconds, tolerance);
 
-            // The time is itself a keyframe: one suggestion says it all.
+            // The time is itself an I-frame: one suggestion says it all.
             if (floor is not null && ceiling is not null && Math.Abs(floor.Value - ceiling.Value) < tolerance)
                 ceiling = null;
         }
@@ -74,10 +74,10 @@ public partial class ManualCutWindow : Window
         panel.Visibility = floor is null && ceiling is null ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    private void SetSuggestion(Button link, double? keyframe)
+    private void SetSuggestion(Button link, double? iFrame)
     {
-        link.Visibility = keyframe is null ? Visibility.Collapsed : Visibility.Visible;
-        link.Content = keyframe is { } seconds ? TimeDisplay.Format(seconds) : "";
+        link.Visibility = iFrame is null ? Visibility.Collapsed : Visibility.Visible;
+        link.Content = iFrame is { } seconds ? TimeDisplay.Format(seconds) : "";
     }
 
     private void StartSuggestion_Click(object sender, RoutedEventArgs e) => StartBox.Text = (string)((Button)sender).Content;

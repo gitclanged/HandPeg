@@ -34,7 +34,7 @@ public partial class MainViewModel : ObservableObject
         nameof(CommandPreview), nameof(IsCommandManuallyEdited), nameof(StatusText), nameof(SourcePath), nameof(DownloadResolution),
         nameof(PositionMs), nameof(PositionText), nameof(DurationMs), nameof(DurationText), nameof(TimelineMaximum),
         nameof(PendingStartMs), nameof(PendingStartText), nameof(SelectedSegment),
-        nameof(KeyframeStatusText), nameof(Volume), nameof(EditingJob), nameof(IsEditingQueuedJob),
+        nameof(IFrameStatusText), nameof(Volume), nameof(EditingJob), nameof(IsEditingQueuedJob),
         nameof(SourceWidth), nameof(SourceHeight), nameof(SourceSizeText), nameof(IsCustomPixelAspectRatio),
         nameof(HardwareEncoderStatusText), nameof(AreSoftwareEncoderOptionsEnabled), nameof(IsVideoReencoded),
         nameof(IsAudioReencoded), nameof(IsCustomFramerate), nameof(IsConstantQuality), nameof(IsBitrateMode),
@@ -43,7 +43,7 @@ public partial class MainViewModel : ObservableObject
         nameof(QueueButtonText), nameof(IsQueuePauseRequested),
         nameof(IsDependencyUpdateAvailable), nameof(DependencyStatusText),
         nameof(IsInteractiveCropActive), nameof(TargetSizeHint), nameof(PlaybackSpeed), nameof(CanSetPixelAspect), nameof(HasEncoderPresets),
-        nameof(FrameWidth), nameof(FrameHeight), nameof(ShowKeyframes),
+        nameof(FrameWidth), nameof(FrameHeight), nameof(ShowIFrames),
         nameof(CaptionAudioPath), nameof(ShowAutoCaptions), nameof(ShowStandardSubtitles), nameof(CaptionHint), nameof(CaptionStyleSummary),
         nameof(DefaultPresetChoice),
         nameof(TimelineWaveform), nameof(SelectedMicrophone), nameof(IsRecording), nameof(IsRecordingPaused), nameof(VoiceoverStatus),
@@ -59,14 +59,17 @@ public partial class MainViewModel : ObservableObject
         nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloTrack),
         nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
         nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips), nameof(IsEncoderMode),
-        nameof(AutoKeyGenerate), nameof(AutoKeySnap), nameof(IsAutoKeying),
+        nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer),
+        nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName),
+        nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
+        nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
     ];
 
 
     private readonly CancellationTokenSource _shutdown = new();
 
     private CancellationTokenSource? _operationCancellation;
-    private CancellationTokenSource? _keyframeScanCancellation;
+    private CancellationTokenSource? _iFrameScanCancellation;
     private bool _acceptProgressReports;
     private bool _writingGeneratedCommand;
     private bool _syncingDimensions;
@@ -111,7 +114,7 @@ public partial class MainViewModel : ObservableObject
         // Set as fields: nothing is listening yet, and nothing should react as if the user had changed them.
         var settings = AppSettings.Current;
 #pragma warning disable MVVMTK0034
-        (_snapToKeyframes, _playOnlySegments) = (settings.StartWithSnapToKeyframes, settings.StartWithPlayOnlySegments);
+        (_snapToIFrames, _playOnlySegments) = (settings.StartWithSnapToIFrames, settings.StartWithPlayOnlySegments);
         (_chapterMarkers, _chaptersAtCuts) = (settings.StartWithChapterMarkers, settings.StartWithChaptersAtCuts);
         // In Editor Mode the Layer Engine is simply how the picture is composed; there is nothing to switch on.
         _frameEngine = settings.StartWithFrameEngine || settings.UiMode == AppSettings.EditorMode;
@@ -149,6 +152,7 @@ public partial class MainViewModel : ObservableObject
         Layers.CollectionChanged += (_, _) => GenerateCommand();
         Segments.CollectionChanged += (_, _) => GenerateCommand();
         GenerateCommand();
+        OpenLayoutPaneIfWanted();
 
         // The voiceover's place in the Master Mix View follows the voiceover, its trim and the cuts.
         if (!_isBackgroundWorker)
@@ -182,7 +186,7 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Asked before an encode replaces an existing file. Returning false aborts the encode.</summary>
     public Func<string, OverwriteDecision>? AskOverwrite { get; set; }
 
-    /// <summary>The concat list used for keyframe-snapped cuts.</summary>
+    /// <summary>The concat list used for I-frame-snapped cuts.</summary>
     public string CutsFilePath => Path.Combine(_workFolder, "cuts.txt");
 
     // ----- Option lists -----
@@ -442,22 +446,22 @@ public partial class MainViewModel : ObservableObject
     private double? _pendingStartMs;
 
     // On by default, together with the Copy encoders: a fresh launch is set up for lossless cutting.
-    [ObservableProperty] private bool _snapToKeyframes = true;
+    [ObservableProperty] private bool _snapToIFrames = true;
 
     // Snapping only concerns where the cut points sit. Which encoders are used is a separate choice.
-    partial void OnSnapToKeyframesChanged(bool value)
+    partial void OnSnapToIFramesChanged(bool value)
     {
         if (value)
-            SnapSegmentsToKeyframes();
+            SnapSegmentsToIFrames();
     }
 
     /// <summary>
-    /// Moves existing segments onto keyframes, growing them rather than shrinking: the start goes back
-    /// to the keyframe at or before it, the end forward to the keyframe at or after it.
+    /// Moves existing segments onto I-frames, growing them rather than shrinking: the start goes back
+    /// to the I-frame at or before it, the end forward to the I-frame at or after it.
     /// </summary>
-    private void SnapSegmentsToKeyframes()
+    private void SnapSegmentsToIFrames()
     {
-        if (Keyframes.Count == 0)
+        if (IFrames.Count == 0)
             return;
 
         var adjusted = 0;
@@ -467,12 +471,12 @@ public partial class MainViewModel : ObservableObject
             var start = segment.Start.TotalSeconds;
             var end = segment.End.TotalSeconds;
 
-            // Segment times are whole milliseconds, so allow for that when matching keyframes.
+            // Segment times are whole milliseconds, so allow for that when matching I-frames.
             const double tolerance = 0.0005;
-            var floor = Keyframes.FindLastIndex(k => k <= start + tolerance);
-            var ceiling = Keyframes.FindIndex(k => k >= end - tolerance);
-            var snappedStart = floor >= 0 ? Keyframes[floor] : start;
-            var snappedEnd = ceiling >= 0 ? Keyframes[ceiling] : end;
+            var floor = IFrames.FindLastIndex(k => k <= start + tolerance);
+            var ceiling = IFrames.FindIndex(k => k >= end - tolerance);
+            var snappedStart = floor >= 0 ? IFrames[floor] : start;
+            var snappedEnd = ceiling >= 0 ? IFrames[ceiling] : end;
 
             if (Math.Abs(snappedStart - start) <= tolerance && Math.Abs(snappedEnd - end) <= tolerance)
                 continue;
@@ -484,7 +488,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         if (adjusted > 0)
-            StatusText = adjusted == 1 ? "1 segment was moved onto keyframes." : $"{adjusted} segments were moved onto keyframes.";
+            StatusText = adjusted == 1 ? "1 segment was moved onto I-frames." : $"{adjusted} segments were moved onto I-frames.";
     }
 
     private static async Task FlashAsync(CutSegment segment)
@@ -494,24 +498,24 @@ public partial class MainViewModel : ObservableObject
         segment.IsFlashing = false;
     }
 
-    /// <summary>Keyframe timestamps of the loaded source in seconds, ascending. Filled in the background after a load.</summary>
-    public List<double> Keyframes { get; private set; } = [];
+    /// <summary>I-frame timestamps of the loaded source in seconds, ascending. Filled in the background after a load.</summary>
+    public List<double> IFrames { get; private set; } = [];
 
     /// <summary>Shown in the status bar. What the indexing came to is cleared again after ten seconds.</summary>
-    [ObservableProperty] private string _keyframeStatusText = "";
+    [ObservableProperty] private string _iFrameStatusText = "";
 
-    private int _keyframeStatusVersion;
+    private int _iFrameStatusVersion;
 
-    async partial void OnKeyframeStatusTextChanged(string value)
+    async partial void OnIFrameStatusTextChanged(string value)
     {
-        // "Indexing keyframes..." stays for as long as that takes; only its outcome is passing news.
-        var version = ++_keyframeStatusVersion;
+        // "Indexing I-frames..." stays for as long as that takes; only its outcome is passing news.
+        var version = ++_iFrameStatusVersion;
         if (value.Length == 0 || value.StartsWith("Indexing", StringComparison.Ordinal))
             return;
 
         await Task.Delay(TimeSpan.FromSeconds(10));
-        if (version == _keyframeStatusVersion)
-            KeyframeStatusText = "";
+        if (version == _iFrameStatusVersion)
+            IFrameStatusText = "";
     }
 
     [ObservableProperty] private CutSegment? _selectedSegment;
@@ -733,7 +737,7 @@ public partial class MainViewModel : ObservableObject
         var stop = GetCutPositionMs();
         if (stop <= start)
         {
-            StatusText = "The nearest keyframe is not after the start point. Scrub further forward.";
+            StatusText = "The nearest I-frame is not after the start point. Scrub further forward.";
             return;
         }
 
@@ -754,27 +758,27 @@ public partial class MainViewModel : ObservableObject
     private bool CanAddStopPoint() => PendingStartMs is { } start && PositionMs > start;
 
     /// <summary>
-    /// The playback position to cut at: as is, or moved to the nearest keyframe when snapping.
+    /// The playback position to cut at: as is, or moved to the nearest I-frame when snapping.
     /// </summary>
     private double GetCutPositionMs()
     {
-        if (!SnapToKeyframes || Keyframes.Count == 0)
+        if (!SnapToIFrames || IFrames.Count == 0)
             return PositionMs;
 
         var seconds = PositionMs / 1000;
-        var next = Keyframes.BinarySearch(seconds);
+        var next = IFrames.BinarySearch(seconds);
         if (next >= 0)
             return PositionMs;
 
         next = ~next;
         if (next == 0)
-            return Keyframes[0] * 1000;
-        if (next == Keyframes.Count)
-            return Keyframes[^1] * 1000;
+            return IFrames[0] * 1000;
+        if (next == IFrames.Count)
+            return IFrames[^1] * 1000;
 
         var previous = next - 1;
-        var nearest = seconds - Keyframes[previous] <= Keyframes[next] - seconds ? previous : next;
-        return Keyframes[nearest] * 1000;
+        var nearest = seconds - IFrames[previous] <= IFrames[next] - seconds ? previous : next;
+        return IFrames[nearest] * 1000;
     }
 
     /// <summary>Moves playback to the start of a segment so the cut can be checked.</summary>
@@ -961,7 +965,8 @@ public partial class MainViewModel : ObservableObject
 
         OnSettingsSaved();
         (FrameEngine, PlayOnlySegments, ShowAutoCaptions) = (IsEditorMode || Layers.Count > 0, settings.StartWithPlayOnlySegments, settings.ShowAutoCaptions);
-        (ShowKeyframes, LivePreview) = (settings.ShowKeyframes, settings.LivePreview);
+        (ShowIFrames, LivePreview) = (settings.ShowIFrames, settings.LivePreview);
+        (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (settings.ShowCutSegmentsPane, settings.ShowKeyframesPane, settings.ShowClipKeyframes);
         OnPropertyChanged(nameof(ModeButtonText));
         StatusText = $"{settings.UiMode}: {(IsEditorMode ? "the tools for cutting, layering and captioning." : "the lean front end for converting and trimming.")}";
     }
@@ -1039,11 +1044,11 @@ public partial class MainViewModel : ObservableObject
         if (GetLayoutAspectWarning() is { } warning)
             message += $". {warning}";
 
-        // Playback, the keyframe index and hover previews are for the window; a background instance needs none of them.
+        // Playback, the I-frame index and hover previews are for the window; a background instance needs none of them.
         if (!_isBackgroundWorker)
         {
             MediaLoaded?.Invoke(localPath);
-            _ = ScanKeyframesAsync(localPath);
+            _ = ScanIFramesAsync(localPath);
             _ = GenerateSpriteSheetAsync(localPath);
             _ = GenerateWaveformsAsync(localPath);
         }
@@ -1097,43 +1102,43 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>Indexes the source's keyframes without holding up playback or other operations.</summary>
-    private async Task ScanKeyframesAsync(string path)
+    /// <summary>Indexes the source's I-frames without holding up playback or other operations.</summary>
+    private async Task ScanIFramesAsync(string path)
     {
-        _keyframeScanCancellation?.Cancel();
-        var cancellation = _keyframeScanCancellation = new CancellationTokenSource();
+        _iFrameScanCancellation?.Cancel();
+        var cancellation = _iFrameScanCancellation = new CancellationTokenSource();
 
-        SetSourceKeyframes([]);
-        KeyframeStatusText = "Indexing keyframes...";
+        SetSourceIFrames([]);
+        IFrameStatusText = "Indexing I-frames...";
         try
         {
-            // On the thread pool: ffprobe prints a line per keyframe, and reading thousands of them
+            // On the thread pool: ffprobe prints a line per I-frame, and reading thousands of them
             // should not happen on the UI thread.
-            var keyframes = await Task.Run(() => FfmpegRunner.GetKeyframesAsync(path, cancellation.Token), cancellation.Token);
+            var iFrames = await Task.Run(() => FfmpegRunner.GetIFramesAsync(path, cancellation.Token), cancellation.Token);
             if (cancellation.IsCancellationRequested)
                 return;
 
-            SetSourceKeyframes(keyframes);
-            KeyframeStatusText = keyframes.Count > 0
-                ? $"{keyframes.Count} keyframes indexed"
-                : "No keyframe index: cut points will not snap";
+            SetSourceIFrames(iFrames);
+            IFrameStatusText = iFrames.Count > 0
+                ? $"{iFrames.Count} I-frames indexed"
+                : "No I-frame index: cut points will not snap";
 
             // The box may have been ticked while the index was still being built.
-            if (SnapToKeyframes)
-                SnapSegmentsToKeyframes();
+            if (SnapToIFrames)
+                SnapSegmentsToIFrames();
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception ex)
         {
-            KeyframeStatusText = $"Keyframe indexing failed: {ex.Message}";
+            IFrameStatusText = $"I-frame indexing failed: {ex.Message}";
         }
         finally
         {
             // Released here, once nothing uses its token any more, rather than by whoever cancels it.
-            if (ReferenceEquals(_keyframeScanCancellation, cancellation))
-                _keyframeScanCancellation = null;
+            if (ReferenceEquals(_iFrameScanCancellation, cancellation))
+                _iFrameScanCancellation = null;
             cancellation.Dispose();
         }
     }
@@ -1172,7 +1177,7 @@ public partial class MainViewModel : ObservableObject
     public void Shutdown()
     {
         _operationCancellation?.Cancel();
-        _keyframeScanCancellation?.Cancel();
+        _iFrameScanCancellation?.Cancel();
         _shutdown.Cancel();
         _spriteCancellation?.Cancel();
         _waveformCancellation?.Cancel();
@@ -1362,6 +1367,9 @@ public partial class MainViewModel : ObservableObject
 
         // A new main video starts where any does: at the beginning of the timeline, whole, and keeping still.
         _playerMediaSeconds = 0;
+        _mainPieces.Clear();
+        SetBin(null);
+        InvalidateMainClips();
         _mainVideoRow.ApplyTiming(null);
         _mainVideoRow.MediaDuration = 0;
     }
@@ -1501,7 +1509,7 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>
     /// Writes the concat list: the source named once per segment with its in and out points.
-    /// Copied video can only start on a keyframe, so a cut begins at the keyframe at or before its in point.
+    /// Copied video can only start on an I-frame, so a cut begins at the I-frame at or before its in point.
     /// </summary>
     private string _writtenCuts = "";
 

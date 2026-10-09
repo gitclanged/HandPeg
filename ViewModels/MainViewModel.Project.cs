@@ -98,7 +98,7 @@ public partial class MainViewModel
         DownloadResolution = DownloadResolution,
         DownloadSubtitles = DownloadSubtitles,
         Segments = Segments.Select(s => new SegmentState(s.Start.TotalMilliseconds, s.End.TotalMilliseconds, s.IsSkipped)).ToList(),
-        SnapToKeyframes = SnapToKeyframes,
+        SnapToIFrames = SnapToIFrames,
         Container = Container,
         WebOptimized = WebOptimized,
         ChapterMarkers = ChapterMarkers,
@@ -111,6 +111,8 @@ public partial class MainViewModel
         CaptionUseExternalAudio = CaptionUseExternalAudio,
         CaptionAudioTrackIndex = CaptionAudioTrack?.Index ?? 0,
         AudioLinked = AudioLinked,
+        MainPieces = [.. _mainPieces],
+        Deleted = RecycleBin.Select(i => i.Clip).ToList(),
         ManualCommand = IsCommandManuallyEdited ? CommandPreview : null,
     };
 
@@ -128,7 +130,7 @@ public partial class MainViewModel
         if (!loaded)
             return message;
 
-        SnapToKeyframes = state.SnapToKeyframes;
+        SnapToIFrames = state.SnapToIFrames;
         if (Containers.Contains(state.Container))
             Container = state.Container;
         WebOptimized = state.WebOptimized;
@@ -140,6 +142,10 @@ public partial class MainViewModel
 
         // What a preset leaves alone, being about one video and not a look: where the main video sits in time, and how it moves.
         _mainVideoRow.ApplyTiming(state.Settings.MainLayer);
+        _mainPieces.Clear();
+        _mainPieces.AddRange(state.MainPieces ?? []);
+        InvalidateMainClips();
+        SetBin(state.Deleted);
         AudioLinked = state.AudioLinked;
         TargetFileSize = state.TargetFileSize;
         CaptionAudioPath = state.CaptionAudioPath ?? "";
@@ -173,7 +179,88 @@ public partial class MainViewModel
         return GetLayoutAspectWarning() is { } warning ? $"{doneMessage}. {warning}" : doneMessage;
     });
 
+    // ----- Encoding presets as files -----
+
+    private static readonly System.Text.Json.JsonSerializerOptions PresetFileOptions = new() { WriteIndented = true };
+
+    /// <summary>Writes the settings as they are now to a file, as one encoding preset that can be imported elsewhere.</summary>
+    public void ExportPreset(string path)
+    {
+        try
+        {
+            var name = PresetName.Trim().Length > 0 ? PresetName.Trim() : Path.GetFileNameWithoutExtension(path);
+            File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(CaptureSettings(name), PresetFileOptions));
+            StatusText = $"Exported the encoding preset \"{name}\" to {path}";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            StatusText = $"Could not write {path}: {ex.Message}";
+        }
+    }
+
+    /// <summary>Takes an encoding preset from a file into the list (replacing one of the same name), and applies it.</summary>
+    public void ImportPreset(string path)
+    {
+        try
+        {
+            if (System.Text.Json.JsonSerializer.Deserialize<EncodingPreset>(File.ReadAllText(path)) is not { } preset || string.IsNullOrWhiteSpace(preset.VideoEncoder))
+            {
+                StatusText = $"Not an encoding preset: {path}";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(preset.Name))
+                preset.Name = Path.GetFileNameWithoutExtension(path);
+            var existing = Presets.ToList().FindIndex(p => p.Name.Equals(preset.Name, StringComparison.OrdinalIgnoreCase));
+            if (existing >= 0)
+                Presets[existing] = preset;
+            else
+                Presets.Add(preset);
+            PresetStore.Save(Presets);
+            SelectedPreset = preset;
+            StatusText = $"Imported the encoding preset \"{preset.Name}\".";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            StatusText = $"Could not read the preset: {ex.Message}";
+        }
+    }
+
     // ----- Projects -----
+
+    /// <summary>The saved projects by name, the most recently saved first: the Swap Project list.</summary>
+    public System.Collections.ObjectModel.ObservableCollection<string> RecentProjects { get; } = [];
+
+    /// <summary>The project that is open, when it is one of the saved ones.</summary>
+    [ObservableProperty] private string? _selectedProject;
+
+    /// <summary>Set while the list is refilled or follows a load: the choice changing then is not the user choosing.</summary>
+    public bool IsListingProjects { get; private set; }
+
+    /// <summary>Reads the Projects folder again (names only: no project is opened for it), as the list is opened.</summary>
+    public void RefreshRecentProjects(string? current = null)
+    {
+        current ??= SelectedProject;
+        IsListingProjects = true;
+        try
+        {
+            RecentProjects.Clear();
+            if (Directory.Exists(ProjectStore.Folder))
+            {
+                foreach (var file in new DirectoryInfo(ProjectStore.Folder).EnumerateFiles("*" + ProjectStore.Extension).OrderByDescending(f => f.LastWriteTime).Take(25))
+                    RecentProjects.Add(Path.GetFileNameWithoutExtension(file.Name));
+            }
+
+            SelectedProject = current is not null && RecentProjects.Contains(current) ? current : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+        finally
+        {
+            IsListingProjects = false;
+        }
+    }
 
     /// <summary>Saves the current state as a project and returns a line for the status bar.</summary>
     public string SaveProject(string name)
@@ -182,6 +269,7 @@ public partial class MainViewModel
         {
             var path = ProjectStore.Save(CaptureState(name.Trim()));
             MarkSaved();
+            RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
             return StatusText = $"Project saved: {Path.GetFileNameWithoutExtension(path)}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -210,37 +298,38 @@ public partial class MainViewModel
             return QueueProjectInBackgroundAsync(state, name);
 
         EditingJob = null;
+        RefreshRecentProjects(name);
         return RestoreStateAsync(state, $"Project loaded: {name}");
     }
 
     // ----- Manual cut entry -----
 
-    /// <summary>The keyframe at or before a time, or null when there is none (or no keyframe index).</summary>
-    public double? GetKeyframeFloor(double seconds, double tolerance)
+    /// <summary>The I-frame at or before a time, or null when there is none (or no I-frame index).</summary>
+    public double? GetIFrameFloor(double seconds, double tolerance)
     {
-        var index = Keyframes.FindLastIndex(k => k <= seconds + tolerance);
-        return index >= 0 ? Keyframes[index] : null;
+        var index = IFrames.FindLastIndex(k => k <= seconds + tolerance);
+        return index >= 0 ? IFrames[index] : null;
     }
 
-    /// <summary>The keyframe at or after a time, or null when there is none (or no keyframe index).</summary>
-    public double? GetKeyframeCeiling(double seconds, double tolerance)
+    /// <summary>The I-frame at or after a time, or null when there is none (or no I-frame index).</summary>
+    public double? GetIFrameCeiling(double seconds, double tolerance)
     {
-        var index = Keyframes.FindIndex(k => k >= seconds - tolerance);
-        return index >= 0 ? Keyframes[index] : null;
+        var index = IFrames.FindIndex(k => k >= seconds - tolerance);
+        return index >= 0 ? IFrames[index] : null;
     }
 
     /// <summary>
-    /// Adds a segment typed in by hand. With snapping on it grows to the surrounding keyframes, the same
+    /// Adds a segment typed in by hand. With snapping on it grows to the surrounding I-frames, the same
     /// "prefer longer" rule used when the checkbox is ticked. Returns an error message, or null on success.
     /// </summary>
     public string? AddManualSegment(double startSeconds, double stopSeconds)
     {
-        if (SnapToKeyframes && Keyframes.Count > 0)
+        if (SnapToIFrames && IFrames.Count > 0)
         {
-            // Half a frame of slack: a timecode cannot name a keyframe's timestamp more exactly than that.
+            // Half a frame of slack: a timecode cannot name an I-frame's timestamp more exactly than that.
             var tolerance = 0.5 / SourceFrameRate;
-            startSeconds = GetKeyframeFloor(startSeconds, tolerance) ?? startSeconds;
-            stopSeconds = GetKeyframeCeiling(stopSeconds, tolerance) ?? stopSeconds;
+            startSeconds = GetIFrameFloor(startSeconds, tolerance) ?? startSeconds;
+            stopSeconds = GetIFrameCeiling(stopSeconds, tolerance) ?? stopSeconds;
         }
 
         var duration = SequenceSeconds;

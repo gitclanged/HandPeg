@@ -75,12 +75,12 @@
                     AutomationProperties.Name="Outline Color" />
 
             <TextBlock Grid.Row="5" Text="Outline Thickness:" Style="{StaticResource Label}" />
-            <Slider Grid.Row="5" Grid.Column="1" x:Name="OutlineSlider" Minimum="0" Maximum="20" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="5" Grid.Column="1" x:Name="OutlineSlider" Minimum="0" Maximum="20" VerticalAlignment="Center"
                     Value="{Binding OutlineThickness}" AutomationProperties.Name="Outline Thickness" local:NumericInput.Default="5" />
             <StackPanel Grid.Row="5" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=OutlineSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Outline Thickness Value" local:NumericInput.Default="5" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="20" /></StackPanel>
 
             <TextBlock Grid.Row="6" Text="Max Words per Line:" Style="{StaticResource Label}" />
-            <Slider Grid.Row="6" Grid.Column="1" x:Name="WordsSlider" Minimum="2" Maximum="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+            <Slider Grid.Row="6" Grid.Column="1" x:Name="WordsSlider" Minimum="2" Maximum="5" VerticalAlignment="Center"
                     Value="{Binding MaxWordsPerLine}" AutomationProperties.Name="Max Words per Line" local:NumericInput.Default="3"
                     ToolTip="How many words are on screen at once. A pause in the speech or the end of a sentence also starts a new caption." />
             <StackPanel Grid.Row="6" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=WordsSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Max Words per Line Value" local:NumericInput.Default="3" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="2" local:NumericInput.Maximum="5" /></StackPanel>
