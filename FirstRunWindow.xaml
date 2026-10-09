@@ -53,6 +53,8 @@
             <TextBlock Text="Theme:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <ComboBox x:Name="ThemeBox" MinWidth="170" Margin="0" SelectionChanged="ThemeBox_SelectionChanged" AutomationProperties.Name="Theme"
                       ToolTip="Dark, light, or whichever Windows is set to. The window changes at once so you can see it." />
+            <CheckBox x:Name="PromptBox" Content="Prompt to save before closing" Margin="32,0,0,0"
+                      ToolTip="Asks whether to save the project when HandPeg is closed with changes that were not saved." />
             <CheckBox x:Name="FallbackBox" Content="Allow software encoding fallback" Margin="32,0,0,0"
                       ToolTip="If an encode fails on a hardware encoder (NVENC, QuickSync, AMF), try once more with the matching software encoder." />
         </StackPanel>
@@ -65,7 +67,8 @@
                 <ColumnDefinition Width="16" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
-            <RadioButton x:Name="EncoderCard" GroupName="Mode" Style="{StaticResource ModeCard}" IsChecked="True" AutomationProperties.Name="Encoder Mode">
+            <RadioButton x:Name="EncoderCard" GroupName="Mode" Style="{StaticResource ModeCard}" IsChecked="True" AutomationProperties.Name="Encoder Mode"
+                         Checked="Mode_Checked">
                 <StackPanel>
                     <TextBlock Text="Encoder Mode" Style="{StaticResource CardTitle}" />
                     <TextBlock Style="{StaticResource CardText}"
@@ -74,21 +77,69 @@
                                Text="Timeline height 1  ·  presets above the tabs  ·  no waveforms, hover previews or advanced tabs" />
                 </StackPanel>
             </RadioButton>
-            <RadioButton Grid.Column="2" x:Name="EditorCard" GroupName="Mode" Style="{StaticResource ModeCard}" AutomationProperties.Name="Editor Mode">
+            <RadioButton Grid.Column="2" x:Name="EditorCard" GroupName="Mode" Style="{StaticResource ModeCard}" AutomationProperties.Name="Editor Mode"
+                         Checked="Mode_Checked">
                 <StackPanel>
                     <TextBlock Text="Editor Mode" Style="{StaticResource CardTitle}" />
                     <TextBlock Style="{StaticResource CardText}"
                                Text="The tools for cutting, captioning and laying out a video. A tall timeline with the waveform, the full transport row, and the preset bar in the Summary tab." />
                     <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0"
-                               Text="Timeline height 5  ·  advanced filters  ·  waveform  ·  keyframe and frame stepping  ·  play only cut segments  ·  snapping  ·  hover previews every second  ·  8 s previews at 50%  ·  auto-captions  ·  chapters at cuts  ·  layout pane" />
+                               Text="Timeline height 5  ·  advanced filters  ·  waveform  ·  I-frame and frame stepping  ·  play only cut segments  ·  snapping  ·  hover previews every second  ·  8 s previews at 50%  ·  auto-captions  ·  chapters at cuts  ·  layout pane  ·  Frame &amp; Layer Engine on  ·  timeline thumbnails" />
                 </StackPanel>
             </RadioButton>
         </Grid>
 
-        <!-- The tools: nothing ships with HandPeg, so this is where they are fetched -->
+        <!-- The tools: nothing ships with HandPeg, so this is where they are fetched. Two sizes of it. -->
         <TextBlock Text="Dependencies" FontWeight="SemiBold" Margin="0,20,0,2" />
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
-                   Text="HandPeg drives these tools and downloads them on request. FFmpeg is needed for everything; yt-dlp for loading a web address; whisper.cpp and a speech model for auto-captions. This can also be done later, in Settings." />
+                   Text="HandPeg drives these tools and downloads them on request, checked against the checksums their makers publish. Choose how much to fetch now; anything left out can be installed later from Settings." />
+        <!-- Side by side, as the two modes are -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <RadioButton x:Name="MinimalTier" GroupName="Tier" Style="{StaticResource ModeCard}" IsChecked="True" AutomationProperties.Name="Minimal Dependencies"
+                     Checked="Tier_Checked">
+            <StackPanel>
+                <TextBlock Text="Minimal Dependencies" Style="{StaticResource CardTitle}" />
+                <TextBlock Style="{StaticResource CardText}"
+                           Text="FFmpeg and ffprobe for everything, libmpv for the video player, yt-dlp for loading a web address. All that converting, cutting and laying out a video needs." />
+                <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0" Text="About 120 MB" />
+            </StackPanel>
+        </RadioButton>
+            <RadioButton Grid.Column="2" x:Name="EditorTier" GroupName="Tier" Style="{StaticResource ModeCard}" AutomationProperties.Name="Editor Dependencies"
+                     Checked="Tier_Checked">
+            <StackPanel>
+                <TextBlock Text="Editor Dependencies" Style="{StaticResource CardTitle}" />
+                <TextBlock Style="{StaticResource CardText}"
+                           Text="The minimal set, and what auto-captions need: whisper.cpp, silence detection (Silero VAD) and two speech models, Base and Medium. Medium becomes the model captions use." />
+                <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0" Text="About 1.6 GB" />
+            </StackPanel>
+        </RadioButton>
+        </Grid>
+
+        <!-- Editor Mode only: the encoder a new window starts with -->
+        <StackPanel x:Name="EncoderPanel" Margin="0,18,0,0" Visibility="Collapsed">
+            <TextBlock Text="Default Video Encoder" FontWeight="SemiBold" Margin="0,0,0,2" />
+            <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
+                       Text="Editor Mode starts with the Frame &amp; Layer Engine switched on, which needs the video to be encoded. This is the encoder HandPeg starts with; hardware encoders found on this machine are listed first, the best one already chosen." />
+            <StackPanel Orientation="Horizontal">
+                <ComboBox x:Name="EncoderBox" MinWidth="300" Margin="0" SelectionChanged="EncoderBox_SelectionChanged" AutomationProperties.Name="Default Video Encoder"
+                          ToolTip="The video encoder selected when HandPeg starts. It can be changed for any video on the Video tab." />
+                <TextBlock x:Name="EncoderStatusText" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <TextBlock Text="Default Audio Encoder:" VerticalAlignment="Center" Margin="0,0,12,0" />
+                <ComboBox x:Name="AudioEncoderBox" MinWidth="170" Margin="0" AutomationProperties.Name="Default Audio Encoder"
+                          ToolTip="The audio codec HandPeg starts with. Editing sound (moving it, silencing part of it, mixing in a layer or a voiceover) needs it encoded, so Copy is not offered here; it can still be chosen for any video on the Audio tab." />
+                <ComboBox x:Name="AudioBitrateBox" MinWidth="90" Margin="8,0,0,0" AutomationProperties.Name="Default Audio Bitrate" ToolTip="The bitrate that goes with it." />
+            </StackPanel>
+            <TextBlock x:Name="CopyWarningText" Visibility="Collapsed" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0"
+                       Text="Warning: The Frame and Layer Engine features will be unavailable during 'Copy' exports unless the encoder is changed in the project settings." />
+        </StackPanel>
+
         <local:DependencyPanel x:Name="Dependencies" OffersExistingFfmpeg="True" />
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0">

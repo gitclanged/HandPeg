@@ -107,7 +107,7 @@ public partial class MainViewModel
         var filterOption = filters.Count > 0 ? $" -vf \"{string.Join(",", filters)}\"" : "";
         var time = Math.Max(seconds, 0).ToString("0.###", CultureInfo.InvariantCulture);
 
-        return $"{ffmpeg} -hide_banner{(HardwareDecoding ? " -hwaccel auto" : "")} -ss {time} -i {Quote(LocalMediaPath)} -frames:v 1{filterOption} -q:v 3 -y {Quote(outputPath)}";
+        return $"{ffmpeg} -hide_banner{(HardwareDecoding ? " " + GpuAdapters.DecodeArguments.TrimEnd() : "")} -ss {time} -i {Quote(LocalMediaPath)} -frames:v 1{filterOption} -q:v 3 -y {Quote(outputPath)}";
     }
 
     // ----- Layout files -----
@@ -115,7 +115,7 @@ public partial class MainViewModel
     private static readonly JsonSerializerOptions LayoutJsonOptions = new() { WriteIndented = true };
 
     /// <summary>The engine's layers, the grading and the background blur as they are now.</summary>
-    private LayoutPreset CaptureLayout() => new()
+    private StylePreset CaptureLayout() => new()
     {
         Layout = new LayoutSection
         {
@@ -123,7 +123,11 @@ public partial class MainViewModel
             CenterOffsetX = CenterOffsetX,
             CenterOffsetY = CenterOffsetY,
             SourceAspectRatio = GetLayoutSourceAspect(),
-            Elements = UiElements.Select(e => e.ToState()).ToList(),
+            Vertical = UseVerticalResolution,
+            MainVideoIndex = MainVideoIndex,
+            MainLayer = _mainVideoRow.ToState(),
+            BackgroundHidden = _backgroundRow.IsHidden,
+            Layers = Layers.Select(e => e.ToState()).ToList(),
         },
         Color = new ColorSection
         {
@@ -150,10 +154,10 @@ public partial class MainViewModel
     };
 
     /// <summary>The project settings as they are now, for the export dialog to describe and choose from.</summary>
-    public LayoutPreset CaptureProjectSettings() => CaptureLayout();
+    public StylePreset CaptureStyle() => CaptureLayout();
 
     /// <summary>Writes the chosen parts of the project settings to a file. Returns a line for the status bar.</summary>
-    public string ExportLayout(string path, bool layout, bool color, bool blur, bool subtitles)
+    public string ExportStyle(string path, bool layout, bool color, bool blur, bool subtitles)
     {
         var settings = CaptureLayout();
         if (!layout)
@@ -165,15 +169,18 @@ public partial class MainViewModel
         if (!subtitles)
             settings.Subtitles = null;
 
-        var parts = new[] { layout ? "layout" : null, color ? "color filters" : null, blur ? "blur settings" : null, subtitles ? "subtitle settings" : null }
+        var parts = new[] { layout ? "layers" : null, color ? "color filters" : null, blur ? "blur settings" : null, subtitles ? "subtitle settings" : null }
             .Where(p => p is not null).ToList();
         if (parts.Count == 0)
             return StatusText = "Nothing was chosen to export.";
 
+        if (settings.Layout is not null)
+            EmbedMasks(settings);
+
         try
         {
             File.WriteAllText(path, JsonSerializer.Serialize(settings, LayoutJsonOptions));
-            return StatusText = $"Project settings exported ({string.Join(", ", parts)}) to {path}";
+            return StatusText = $"Style preset exported ({string.Join(", ", parts)}{(settings.Masks is { Count: > 0 } m ? $", {m.Count} mask{(m.Count == 1 ? "" : "s")} inside" : "")}) to {path}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -181,12 +188,81 @@ public partial class MainViewModel
         }
     }
 
+    /// <summary>The style as it is now, with the mask pictures of its layers inside it: what Export writes, whole.</summary>
+    public StylePreset CaptureStyleWithMasks()
+    {
+        var style = CaptureLayout();
+        EmbedMasks(style);
+        return style;
+    }
+
+    /// <summary>
+    /// Puts the mask pictures the layers use into the style itself, as Base64, and has the layers name them
+    /// by file name alone: the file then needs nothing beside it.
+    /// </summary>
+    private static void EmbedMasks(StylePreset style)
+    {
+        foreach (var layer in StyleLayers(style))
+        {
+            var path = layer.MaskPath.Trim().Trim('"');
+            if (!layer.CustomMask || path.Length == 0 || !File.Exists(path))
+                continue;
+
+            try
+            {
+                var name = Path.GetFileName(path);
+                (style.Masks ??= [])[name] = Convert.ToBase64String(File.ReadAllBytes(path));
+                layer.MaskPath = name;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Left as a path: the style still works on this machine.
+            }
+        }
+    }
+
+    /// <summary>Everything in a style that can carry a mask: its layers, the main video, and the caption box.</summary>
+    private static IEnumerable<LayerState> StyleLayers(StylePreset style)
+    {
+        foreach (var layer in style.Layout?.Layers ?? [])
+            yield return layer;
+        if (style.Layout?.MainLayer is { } main)
+            yield return main;
+        if (style.Subtitles?.Layer is { } captions)
+            yield return captions;
+    }
+
+    /// <summary>Writes the masks a style carries into the masks folder, and points its layers at them there.</summary>
+    private void ExtractMasks(StylePreset style)
+    {
+        if (style.Masks is not { Count: > 0 } masks)
+            return;
+
+        foreach (var layer in StyleLayers(style))
+        {
+            if (!masks.TryGetValue(layer.MaskPath, out var encoded))
+                continue;
+
+            try
+            {
+                Directory.CreateDirectory(AppPaths.Masks);
+                var path = Path.Combine(AppPaths.Masks, Path.GetFileName(layer.MaskPath));
+                File.WriteAllBytes(path, Convert.FromBase64String(encoded));
+                layer.MaskPath = path;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException)
+            {
+                StatusText = $"The mask {layer.MaskPath} could not be unpacked: {ex.Message}";
+            }
+        }
+    }
+
     /// <summary>Reads a layout file, or returns null with the reason in the status bar.</summary>
-    public LayoutPreset? ReadLayout(string path)
+    public StylePreset? ReadStyle(string path)
     {
         try
         {
-            var layout = JsonSerializer.Deserialize<LayoutPreset>(File.ReadAllText(path));
+            var layout = JsonSerializer.Deserialize<StylePreset>(File.ReadAllText(path));
             if (layout is { Layout: null, Color: null, Blur: null, Subtitles: null } or null)
             {
                 StatusText = "That file holds no layout, color, blur or subtitle settings.";
@@ -203,8 +279,142 @@ public partial class MainViewModel
     }
 
     /// <summary>Takes over the chosen parts of a layout file. Parts the file does not have are skipped.</summary>
-    public void ApplyLayout(LayoutPreset preset, bool layout, bool color, bool blur, bool subtitles)
+    // The style preset in use: the last one applied. A double-click on a slider goes back to its values.
+    private StylePreset? _activeStyle;
+
+    /// <summary>The style presets in the Styles folder, by name, newest first.</summary>
+    public System.Collections.ObjectModel.ObservableCollection<string> StylePresets { get; } = [];
+
+    /// <summary>The style preset chosen from the list. Choosing one applies all of it.</summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private string? _selectedStylePreset;
+
+    private bool _listingStyles;
+
+    /// <summary>The name a style preset is saved under, as typed in its dialog.</summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private string _styleName = "";
+
+    /// <summary>
+    /// Saves the layers, color, blur and subtitle settings as they are now as a style preset of the list: a
+    /// .hpstyle file in the Styles folder, under the name typed. An existing one of that name is replaced.
+    /// </summary>
+    public void SaveStyle()
     {
+        var name = string.Concat(StyleName.Trim().Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+        if (name.Length == 0)
+        {
+            StatusText = "Type a name for the style preset first.";
+            return;
+        }
+
+        Directory.CreateDirectory(AppPaths.Styles);
+        ExportStyle(Path.Combine(AppPaths.Styles, name + ".hpstyle"), layout: true, color: true, blur: true, subtitles: true);
+
+        // It is now the style in use, and shown as chosen without being applied over itself.
+        _activeStyle = CaptureStyle();
+        RefreshStylePresets();
+        _listingStyles = true;
+        SelectedStylePreset = StylePresets.Contains(name) ? name : null;
+        _listingStyles = false;
+    }
+
+    /// <summary>Reads the Styles folder again: called as the list is opened, so that it shows what is there now.</summary>
+    public void RefreshStylePresets()
+    {
+        var chosen = SelectedStylePreset;
+        _listingStyles = true;
+        try
+        {
+            StylePresets.Clear();
+            if (Directory.Exists(AppPaths.Styles))
+            {
+                foreach (var file in new DirectoryInfo(AppPaths.Styles).EnumerateFiles("*.hpstyle").OrderByDescending(f => f.LastWriteTime))
+                    StylePresets.Add(Path.GetFileNameWithoutExtension(file.Name));
+            }
+
+            SelectedStylePreset = chosen is not null && StylePresets.Contains(chosen) ? chosen : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+        finally
+        {
+            _listingStyles = false;
+        }
+    }
+
+    partial void OnSelectedStylePresetChanged(string? value)
+    {
+        if (_listingStyles || value is null || ReadStyle(Path.Combine(AppPaths.Styles, value + ".hpstyle")) is not { } style)
+            return;
+
+        // A style is layers: the Layer Engine is what shows them.
+        FrameEngine = true;
+        ApplyStyle(style, layout: true, color: true, blur: true, subtitles: true);
+    }
+
+    /// <summary>
+    /// What a double-click puts a slider or a number box back to: the value the style preset in use has for
+    /// it, when the settings ask for that and the style has one. Null leaves it to the built-in default.
+    /// </summary>
+    /// <param name="source">What the control is bound to: this view model, or a layer.</param>
+    /// <param name="property">The property it is bound to.</param>
+    public double? GetResetValue(object? source, string? property)
+    {
+        if (_activeStyle is not { } style || property is null || AppSettings.Current.DoubleClickResetsTo != AppSettings.ResetToStyle)
+            return null;
+
+        if (ReferenceEquals(source, this))
+        {
+            return property switch
+            {
+                nameof(CenterZoom) => style.Layout?.CenterZoom,
+                nameof(CenterOffsetX) => style.Layout?.CenterOffsetX,
+                nameof(CenterOffsetY) => style.Layout?.CenterOffsetY,
+                nameof(BlurRadius) => style.Blur?.Radius,
+                nameof(BlurPasses) => style.Blur?.Passes,
+                nameof(BackgroundDim) => style.Blur?.Dim,
+                nameof(ColorContrast) => style.Color?.Contrast,
+                nameof(ColorBrightness) => style.Color?.Brightness,
+                nameof(ColorSaturation) => style.Color?.Saturation,
+                nameof(ColorGamma) => style.Color?.Gamma,
+                nameof(ColorHue) => style.Color?.Hue,
+                nameof(ColorRed) => style.Color?.Red,
+                nameof(ColorGreen) => style.Color?.Green,
+                nameof(ColorBlue) => style.Color?.Blue,
+                nameof(SharpenStrength) => style.Color?.Sharpen,
+                _ => null,
+            };
+        }
+
+        if (source is not Layer layer)
+            return null;
+
+        // The layer as the style has it: the main video, the caption box, or the layer of the same name and kind.
+        var saved = layer.IsMainVideo ? style.Layout?.MainLayer
+            : layer.IsCaptions ? style.Subtitles?.Layer
+            : style.Layout?.Layers.FirstOrDefault(l => l.Kind == layer.Kind && l.Name == layer.Name);
+        if (saved is null)
+            return null;
+
+        return property switch
+        {
+            nameof(Layer.PositionXPercent) => layer.IsMainVideo ? null : saved.PositionX * 100,
+            nameof(Layer.PositionYPercent) => layer.IsMainVideo ? null : saved.PositionY * 100,
+            nameof(Layer.SizePercent) => layer.IsMainVideo ? style.Layout?.CenterZoom * 100 : saved.SizeWidth * 100,
+            nameof(Layer.SizeHeightPercent) => saved.SizeHeight * 100,
+            nameof(Layer.PositionX) or nameof(Layer.PositionY) or nameof(Layer.SizeWidth) when layer.IsMainVideo => null,
+            _ => typeof(LayerState).GetProperty(property)?.GetValue(saved) switch
+            {
+                double number => number,
+                int number => number,
+                _ => null,
+            },
+        };
+    }
+
+    public void ApplyStyle(StylePreset preset, bool layout, bool color, bool blur, bool subtitles)
+    {
+        _activeStyle = preset;
         var applied = new List<string>();
 
         if (layout && preset.Layout is { } layers)
@@ -212,12 +422,21 @@ public partial class MainViewModel
             CenterZoom = layers.CenterZoom is > 0 and var zoom ? Math.Clamp(zoom, SmallestCenterZoom, LargestCenterZoom) : 1;
             CenterOffsetX = Math.Clamp(layers.CenterOffsetX, -100, 100);
             CenterOffsetY = Math.Clamp(layers.CenterOffsetY, -100, 100);
-            SetUiElements(layers.Elements ?? []);
+            // The shape of the frame first: the layers are placed by fractions of it.
+            if (layers.Vertical is { } vertical && vertical != UseVerticalResolution)
+                UseVerticalResolution = vertical;
+
+            ExtractMasks(preset);
+            SetLayers(layers.Layers ?? []);
+            _mainVideoRow.ApplyLook(layers.MainLayer);
+            _backgroundRow.IsHidden = layers.BackgroundHidden;
+            if (layers.MainVideoIndex is { } under)
+                MainVideoIndex = Math.Clamp(under, 0, Layers.Count);
             _layoutSourceAspect = layers.SourceAspectRatio;
 
             // A layout is only seen through the engine.
             FrameEngine = true;
-            applied.Add($"layout with {UiElements.Count} element{(UiElements.Count == 1 ? "" : "s")}");
+            applied.Add($"layout with {Layers.Count} layer{(Layers.Count == 1 ? "" : "s")}");
         }
 
         if (color && preset.Color is { } grade)
@@ -253,21 +472,21 @@ public partial class MainViewModel
             applied.Add("subtitle settings");
         }
 
-        StatusText = applied.Count > 0 ? $"Imported {string.Join(", ", applied)}." : "Nothing was imported.";
+        Log(applied.Count > 0 ? $"Applied style preset: {string.Join(", ", applied)}" : "Nothing was imported");
         if (GetLayoutAspectWarning() is { } warning)
             StatusText += " " + warning;
     }
 
     // ----- The shape of video a layout was made on -----
 
-    // Width over height of the video the current elements were marked on; 0 when not known.
+    // Width over height of the video the current layers were marked on; 0 when not known.
     private double _layoutSourceAspect;
 
     private double CurrentSourceAspect => SourceWidth > 0 && SourceHeight > 0 ? (double)SourceWidth / SourceHeight : 0;
 
-    /// <summary>What a saved layout records: the shape its elements were marked on, or failing that the loaded video's.</summary>
+    /// <summary>What a saved layout records: the shape its layers were marked on, or failing that the loaded video's.</summary>
     private double GetLayoutSourceAspect() =>
-        Math.Round(_layoutSourceAspect > 0 && UiElements.Any(e => e.IsVideo) ? _layoutSourceAspect : CurrentSourceAspect, 4);
+        Math.Round(_layoutSourceAspect > 0 && Layers.Any(e => e.IsVideo) ? _layoutSourceAspect : CurrentSourceAspect, 4);
 
     /// <summary>
     /// The warning for a layout made on a video of another shape than the one loaded; null when they agree,
@@ -277,8 +496,8 @@ public partial class MainViewModel
     {
         var current = CurrentSourceAspect;
         var differs = _layoutSourceAspect > 0 && current > 0 && Math.Abs(_layoutSourceAspect - current) / current > 0.01;
-        return differs && UiElements.Any(e => e.IsVideo)
-            ? "Layout aspect ratio mismatch: UI element crops may require manual adjustment."
+        return differs && Layers.Any(e => e.IsVideo)
+            ? "Layout aspect ratio mismatch: UI layer crops may require manual adjustment."
             : null;
     }
 }

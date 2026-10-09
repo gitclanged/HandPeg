@@ -23,18 +23,13 @@ public partial class MainViewModel : ObservableObject
     private const string ConstantBitrate = "Constant Bitrate (CBR)";
     private const string TonemapToSdr = "HDR to SDR (Tonemap)";
 
-    // Converts HDR (PQ or HLG, BT.2020) to SDR BT.709: linearize, map the primaries, compress
-    // the highlights with the Hable curve, then go back to 8-bit 4:2:0 for the encoder.
-    private const string TonemapFilters =
-        "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
-
     // Properties that have no influence on the generated FFmpeg command.
     private static readonly HashSet<string> NonCommandProperties =
     [
         nameof(CommandPreview), nameof(IsCommandManuallyEdited), nameof(StatusText), nameof(SourcePath), nameof(DownloadResolution),
         nameof(PositionMs), nameof(PositionText), nameof(DurationMs), nameof(DurationText), nameof(TimelineMaximum),
         nameof(PendingStartMs), nameof(PendingStartText), nameof(SelectedSegment),
-        nameof(KeyframeStatusText), nameof(Volume), nameof(EditingJob), nameof(IsEditingQueuedJob),
+        nameof(IFrameStatusText), nameof(Volume), nameof(EditingJob), nameof(IsEditingQueuedJob),
         nameof(SourceWidth), nameof(SourceHeight), nameof(SourceSizeText), nameof(IsCustomPixelAspectRatio),
         nameof(HardwareEncoderStatusText), nameof(AreSoftwareEncoderOptionsEnabled), nameof(IsVideoReencoded),
         nameof(IsAudioReencoded), nameof(IsCustomFramerate), nameof(IsConstantQuality), nameof(IsBitrateMode),
@@ -43,7 +38,7 @@ public partial class MainViewModel : ObservableObject
         nameof(QueueButtonText), nameof(IsQueuePauseRequested),
         nameof(IsDependencyUpdateAvailable), nameof(DependencyStatusText),
         nameof(IsInteractiveCropActive), nameof(TargetSizeHint), nameof(PlaybackSpeed), nameof(CanSetPixelAspect), nameof(HasEncoderPresets),
-        nameof(FrameWidth), nameof(FrameHeight), nameof(ShowKeyframes),
+        nameof(FrameWidth), nameof(FrameHeight), nameof(ShowIFrames),
         nameof(CaptionAudioPath), nameof(ShowAutoCaptions), nameof(ShowStandardSubtitles), nameof(CaptionHint), nameof(CaptionStyleSummary),
         nameof(DefaultPresetChoice),
         nameof(TimelineWaveform), nameof(SelectedMicrophone), nameof(IsRecording), nameof(IsRecordingPaused), nameof(VoiceoverStatus),
@@ -54,15 +49,23 @@ public partial class MainViewModel : ObservableObject
         nameof(CaptionUseExternalAudio), nameof(CaptionUseVideoAudio), nameof(CaptionAudioTrack), nameof(IsPlaying),
         nameof(ShowAdvancedPlayback), nameof(ShowSimplePlayback),
         nameof(ShowCommandPreviewTab), nameof(ShowAdvancedFiltersTab),
-        nameof(DrawTargetElement), nameof(IsArrangeActive), nameof(SpriteSheetPath),
+        nameof(DrawTargetLayer), nameof(IsArrangeActive), nameof(SpriteSheetPath),
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
+        nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloTrack),
+        nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
+        nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips), nameof(IsEncoderMode),
+        nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer),
+        nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName),
+        nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
+        nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
+        nameof(RecentActions), nameof(HideDroppedTracks), nameof(HasSelectedKeyframe), nameof(SelectedKeyEasing), nameof(PreviewSubtitles),
     ];
 
 
     private readonly CancellationTokenSource _shutdown = new();
 
     private CancellationTokenSource? _operationCancellation;
-    private CancellationTokenSource? _keyframeScanCancellation;
+    private CancellationTokenSource? _iFrameScanCancellation;
     private bool _acceptProgressReports;
     private bool _writingGeneratedCommand;
     private bool _syncingDimensions;
@@ -107,32 +110,89 @@ public partial class MainViewModel : ObservableObject
         // Set as fields: nothing is listening yet, and nothing should react as if the user had changed them.
         var settings = AppSettings.Current;
 #pragma warning disable MVVMTK0034
-        (_snapToKeyframes, _playOnlySegments) = (settings.StartWithSnapToKeyframes, settings.StartWithPlayOnlySegments);
+        (_snapToIFrames, _playOnlySegments) = (settings.StartWithSnapToIFrames, settings.StartWithPlayOnlySegments);
+
+        // Editor Mode mixes the tracks it is given into one, which is what an edit is exported as.
+        _mergeAudioTracks = settings.UiMode == AppSettings.EditorMode;
         (_chapterMarkers, _chaptersAtCuts) = (settings.StartWithChapterMarkers, settings.StartWithChaptersAtCuts);
+        // In Editor Mode the Layer Engine is simply how the picture is composed; there is nothing to switch on.
+        _frameEngine = settings.StartWithFrameEngine || settings.UiMode == AppSettings.EditorMode;
+
+        // The encoder chosen in the first-run window. A hardware one is only in the list once the probe
+        // has found it, so until then it waits; see ProbeHardwareEncodersAsync.
+        if (settings.DefaultVideoEncoder.Length > 0)
+        {
+            if (VideoEncoders.FirstOrDefault(e => e.Name == settings.DefaultVideoEncoder) is { } chosen)
+                _videoEncoder = chosen;
+            else
+                _pendingDefaultEncoder = settings.DefaultVideoEncoder;
+        }
+
+        // And the audio settings chosen there, so that sound is encoded rather than copied from the start.
+        if (AudioEncoders.Contains(settings.DefaultAudioEncoder))
+            _audioEncoder = settings.DefaultAudioEncoder;
+        if (AudioBitrates.Contains(settings.DefaultAudioBitrate))
+            _audioBitrate = settings.DefaultAudioBitrate;
 #pragma warning restore MVVMTK0034
+
+        UpdateEncoderPresets();
 
         InitializeQueue();
         ApplyDisplaySettings();
-        UiElements.CollectionChanged += (_, _) => RefreshElementRows();
-        RefreshElementRows();
+        Layers.CollectionChanged += (_, _) => RefreshLayerRows();
+        RefreshLayerRows();
         LoadAutomation();
         Presets.CollectionChanged += (_, _) => RefreshPresetNames();
         AudioTracks.CollectionChanged += (_, _) => KeepCaptionTrackValid();
         CaptionLayer.PropertyChanged += (_, _) => GenerateCommand();
-        UiElements.CollectionChanged += (_, _) => GenerateCommand();
+
+        // The caption file is written for the box as large as it is: a preview of it follows the box being resized.
+        CaptionLayer.PropertyChanged += (_, e) =>
+        {
+            if (PreviewSubtitles && e.PropertyName is nameof(Layer.SizeWidth) or nameof(Layer.SizeHeight))
+                RefreshLiveCaptionsSoon();
+        };
+        _mainVideoRow.PropertyChanged += OnMainRowChanged;
+        AudioTracks.CollectionChanged += (_, _) => RefreshAudioRows();
+        _backgroundRow.PropertyChanged += (_, _) => GenerateCommand();
+        Layers.CollectionChanged += (_, _) => GenerateCommand();
         Segments.CollectionChanged += (_, _) => GenerateCommand();
         GenerateCommand();
+        OpenLayoutPaneIfWanted();
+
+        // The voiceover's place in the Master Mix View follows the voiceover, its trim and the cuts.
+        if (!_isBackgroundWorker)
+        {
+            Segments.CollectionChanged += (_, _) => UpdateVoiceoverMix();
+            PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName is nameof(DurationMs) or nameof(VoiceoverWaveform) or nameof(VoiceoverPath)
+                    or nameof(VoiceoverTrimStart) or nameof(VoiceoverTrimEnd) or nameof(VoiceoverStartSeconds))
+                {
+                    UpdateVoiceoverMix();
+                }
+            };
+        }
     }
 
     private readonly string _workFolder = SessionPaths.Root;
 
+    // The default encoder from the settings, while it is a hardware one the probe has not reported on yet.
+    private string? _pendingDefaultEncoder;
+
     /// <summary>Raised with a local file path when a source is ready to be played.</summary>
     public event Action<string>? MediaLoaded;
+
+    /// <summary>Asks the user to confirm something (title, message, what the confirming button says). Returning false calls it off.</summary>
+    /// <summary>A question with two ways of going ahead: 1 for the first, 2 for the second, 0 for neither.</summary>
+    public Func<string, string, string, string, int>? Choose { get; set; }
+
+    public Func<string, string, string, bool>? Confirm { get; set; }
 
     /// <summary>Asked before an encode replaces an existing file. Returning false aborts the encode.</summary>
     public Func<string, OverwriteDecision>? AskOverwrite { get; set; }
 
-    /// <summary>The concat list used for keyframe-snapped cuts.</summary>
+    /// <summary>The concat list used for I-frame-snapped cuts.</summary>
     public string CutsFilePath => Path.Combine(_workFolder, "cuts.txt");
 
     // ----- Option lists -----
@@ -201,7 +261,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         SelectedPreset = preset;
-        StatusText = $"Saved preset \"{name}\".";
+        Log($"Saved preset \"{name}\"");
     }
 
     /// <summary>Reads presets.json again: for when it was replaced from outside, by an import.</summary>
@@ -215,7 +275,9 @@ public partial class MainViewModel : ObservableObject
 
     private void ApplyPreset(EncodingPreset preset)
     {
-        FrameEngine = preset.FrameEngine;
+        // Some sixty settings change here; the command is built once, when they have all been set.
+        using var whole = DeferCommand();
+        FrameEngine = preset.FrameEngine || IsEditorMode;
 
         // Width and height are set as stored, without one recalculating the other on the way.
         _syncingDimensions = true;
@@ -246,7 +308,10 @@ public partial class MainViewModel : ObservableObject
         BlurRadius = Math.Clamp(preset.BlurRadius, 5, 50);
         BlurPasses = Math.Clamp(preset.BlurPasses, 1, 5);
         BackgroundDim = Math.Clamp(preset.BackgroundDim, -0.5, 0);
-        SetUiElements(preset.UiElements ?? []);
+        SetLayers(preset.Layers ?? []);
+        _mainVideoRow.ApplyLook(preset.MainLayer);
+        _backgroundRow.IsHidden = preset.BackgroundHidden;
+        MainVideoIndex = Math.Clamp(preset.MainVideoIndex, 0, Layers.Count);
         _layoutSourceAspect = preset.LayoutSourceAspectRatio;
         AddLegacyWatermark(preset);
 
@@ -296,7 +361,8 @@ public partial class MainViewModel : ObservableObject
         AudioBitrate = Pick(AudioBitrates, preset.AudioBitrate, "160k");
         MergeAudioTracks = preset.MergeAudioTracks;
         NormalizeAudio = preset.NormalizeAudio;
-        DuckAudio = preset.DuckAudio;
+        DuckAudio = false;
+        DuckAmountDb = Math.Clamp(preset.DuckAmountDb, -40, -1);
 
         // A preset only speaks for the target size when it was saved with one.
         if (!string.IsNullOrWhiteSpace(preset.TargetFileSize))
@@ -310,9 +376,24 @@ public partial class MainViewModel : ObservableObject
         if (preset.Container is { } container && Containers.Contains(container))
             Container = container;
 
-        StatusText = encoderFound
-            ? $"Applied preset \"{preset.Name}\"."
-            : $"Applied preset \"{preset.Name}\", but {preset.VideoEncoder} is not available here: kept {VideoEncoder.DisplayName}.";
+        ApplyLegacyDuck(preset.DuckAudio);
+        Log(encoderFound
+            ? $"Applied preset \"{preset.Name}\""
+            : $"Applied preset \"{preset.Name}\", but {preset.VideoEncoder} is not available here: kept {VideoEncoder.DisplayName}");
+    }
+
+    // A preset from before ducking was set track by track: "duck the game audio to the mic" was one box
+    // for the first two tracks. It is carried over as what it meant, once there are two tracks to carry it to.
+    private bool _legacyDuckPending;
+
+    private void ApplyLegacyDuck(bool? asked = null)
+    {
+        _legacyDuckPending = asked ?? _legacyDuckPending;
+        if (!_legacyDuckPending || AudioTracks.Count < 2)
+            return;
+
+        _legacyDuckPending = false;
+        (AudioTracks[0].AutoDuck, AudioTracks[1].IsVoice) = (true, true);
     }
 
     /// <summary>Puts back per-track choices for the tracks that exist; states for missing tracks are ignored.</summary>
@@ -328,8 +409,10 @@ public partial class MainViewModel : ObservableObject
             track.Bitrate = Pick(AudioTrack.AllBitrates, saved.Bitrate, track.Bitrate);
             if (!string.IsNullOrWhiteSpace(saved.Title))
                 track.Title = saved.Title;
-            track.GainDb = Math.Clamp(saved.GainDb, -30, 30);
+            track.GainDb = Math.Clamp(saved.GainDb, -40, 30);
             track.Filters = saved.Filters?.Clone() ?? new TrackAudioFilters();
+            track.SetEdits(saved.Offset, saved.Pieces);
+            (track.AutoDuck, track.IsVoice) = (saved.AutoDuck, saved.IsVoice);
         }
     }
 
@@ -343,11 +426,38 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _destinationPath = "";
 
     /// <summary>The file FFmpeg reads: the source itself, or the yt-dlp download for a URL.</summary>
-    [ObservableProperty] private string _localMediaPath = "";
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSource))]
+    private string _localMediaPath = "";
 
     // ----- Status bar -----
 
     [ObservableProperty] private string _statusText = "Ready";
+
+    // The action log: what was just done, said in a few words in the status bar and flashed there, so that
+    // every edit answers at once. The last few stay readable in the status bar's tooltip.
+
+    /// <summary>Raised when something that was done has been written to the status bar.</summary>
+    public event Action? ActionLogged;
+
+    private readonly List<string> _recentActions = [];
+
+    /// <summary>The last actions, the latest first, a line each with the time it was done.</summary>
+    public string RecentActions => _recentActions.Count > 0 ? string.Join(Environment.NewLine, _recentActions) : "Nothing has been done yet.";
+
+    /// <summary>Says what was just done: in the status bar, flashed, and kept among the recent actions.</summary>
+    public void Log(string action)
+    {
+        StatusText = action;
+        if (_isBackgroundWorker)
+            return;
+
+        _recentActions.Insert(0, $"{DateTime.Now:HH:mm:ss}  {action}");
+        if (_recentActions.Count > 12)
+            _recentActions.RemoveAt(12);
+        OnPropertyChanged(nameof(RecentActions));
+        ActionLogged?.Invoke();
+    }
     [ObservableProperty] private double _progressValue;
     [ObservableProperty] private bool _isProgressIndeterminate;
 
@@ -382,22 +492,22 @@ public partial class MainViewModel : ObservableObject
     private double? _pendingStartMs;
 
     // On by default, together with the Copy encoders: a fresh launch is set up for lossless cutting.
-    [ObservableProperty] private bool _snapToKeyframes = true;
+    [ObservableProperty] private bool _snapToIFrames = true;
 
     // Snapping only concerns where the cut points sit. Which encoders are used is a separate choice.
-    partial void OnSnapToKeyframesChanged(bool value)
+    partial void OnSnapToIFramesChanged(bool value)
     {
         if (value)
-            SnapSegmentsToKeyframes();
+            SnapSegmentsToIFrames();
     }
 
     /// <summary>
-    /// Moves existing segments onto keyframes, growing them rather than shrinking: the start goes back
-    /// to the keyframe at or before it, the end forward to the keyframe at or after it.
+    /// Moves existing segments onto I-frames, growing them rather than shrinking: the start goes back
+    /// to the I-frame at or before it, the end forward to the I-frame at or after it.
     /// </summary>
-    private void SnapSegmentsToKeyframes()
+    private void SnapSegmentsToIFrames()
     {
-        if (Keyframes.Count == 0)
+        if (IFrames.Count == 0)
             return;
 
         var adjusted = 0;
@@ -407,24 +517,24 @@ public partial class MainViewModel : ObservableObject
             var start = segment.Start.TotalSeconds;
             var end = segment.End.TotalSeconds;
 
-            // Segment times are whole milliseconds, so allow for that when matching keyframes.
+            // Segment times are whole milliseconds, so allow for that when matching I-frames.
             const double tolerance = 0.0005;
-            var floor = Keyframes.FindLastIndex(k => k <= start + tolerance);
-            var ceiling = Keyframes.FindIndex(k => k >= end - tolerance);
-            var snappedStart = floor >= 0 ? Keyframes[floor] : start;
-            var snappedEnd = ceiling >= 0 ? Keyframes[ceiling] : end;
+            var floor = IFrames.FindLastIndex(k => k <= start + tolerance);
+            var ceiling = IFrames.FindIndex(k => k >= end - tolerance);
+            var snappedStart = floor >= 0 ? IFrames[floor] : start;
+            var snappedEnd = ceiling >= 0 ? IFrames[ceiling] : end;
 
             if (Math.Abs(snappedStart - start) <= tolerance && Math.Abs(snappedEnd - end) <= tolerance)
                 continue;
 
-            var snapped = new CutSegment(TimeSpan.FromSeconds(snappedStart), TimeSpan.FromSeconds(snappedEnd));
+            var snapped = new CutSegment(TimeSpan.FromSeconds(snappedStart), TimeSpan.FromSeconds(snappedEnd)) { IsSkipped = segment.IsSkipped };
             Segments[i] = snapped;
             _ = FlashAsync(snapped);
             adjusted++;
         }
 
         if (adjusted > 0)
-            StatusText = adjusted == 1 ? "1 segment was moved onto keyframes." : $"{adjusted} segments were moved onto keyframes.";
+            StatusText = adjusted == 1 ? "1 segment was moved onto I-frames." : $"{adjusted} segments were moved onto I-frames.";
     }
 
     private static async Task FlashAsync(CutSegment segment)
@@ -434,10 +544,25 @@ public partial class MainViewModel : ObservableObject
         segment.IsFlashing = false;
     }
 
-    /// <summary>Keyframe timestamps of the loaded source in seconds, ascending. Filled in the background after a load.</summary>
-    public List<double> Keyframes { get; private set; } = [];
+    /// <summary>I-frame timestamps of the loaded source in seconds, ascending. Filled in the background after a load.</summary>
+    public List<double> IFrames { get; private set; } = [];
 
-    [ObservableProperty] private string _keyframeStatusText = "";
+    /// <summary>Shown in the status bar. What the indexing came to is cleared again after ten seconds.</summary>
+    [ObservableProperty] private string _iFrameStatusText = "";
+
+    private int _iFrameStatusVersion;
+
+    async partial void OnIFrameStatusTextChanged(string value)
+    {
+        // "Indexing I-frames..." stays for as long as that takes; only its outcome is passing news.
+        var version = ++_iFrameStatusVersion;
+        if (value.Length == 0 || value.StartsWith("Indexing", StringComparison.Ordinal))
+            return;
+
+        await Task.Delay(TimeSpan.FromSeconds(10));
+        if (version == _iFrameStatusVersion)
+            IFrameStatusText = "";
+    }
 
     [ObservableProperty] private CutSegment? _selectedSegment;
 
@@ -456,7 +581,7 @@ public partial class MainViewModel : ObservableObject
     // ----- Summary -----
 
     [ObservableProperty] private string _container = "mp4";
-    [ObservableProperty] private bool _webOptimized;
+    [ObservableProperty] private bool _webOptimized = true;
 
     // ----- Dimensions -----
 
@@ -658,11 +783,12 @@ public partial class MainViewModel : ObservableObject
         var stop = GetCutPositionMs();
         if (stop <= start)
         {
-            StatusText = "The nearest keyframe is not after the start point. Scrub further forward.";
+            StatusText = "The nearest I-frame is not after the start point. Scrub further forward.";
             return;
         }
 
         var segment = new CutSegment(TimeSpan.FromMilliseconds(start), TimeSpan.FromMilliseconds(stop));
+        Checkpoint("add a segment");
 
         // Keep the list ordered by start time.
         var index = 0;
@@ -672,33 +798,33 @@ public partial class MainViewModel : ObservableObject
 
         PendingStartMs = null;
         PositionMs = stop;
-        StatusText = $"Added segment {segment.Display}";
+        Log($"Added segment {segment.Display}");
     }
 
     private bool CanAddStopPoint() => PendingStartMs is { } start && PositionMs > start;
 
     /// <summary>
-    /// The playback position to cut at: as is, or moved to the nearest keyframe when snapping.
+    /// The playback position to cut at: as is, or moved to the nearest I-frame when snapping.
     /// </summary>
     private double GetCutPositionMs()
     {
-        if (!SnapToKeyframes || Keyframes.Count == 0)
+        if (!SnapToIFrames || IFrames.Count == 0)
             return PositionMs;
 
         var seconds = PositionMs / 1000;
-        var next = Keyframes.BinarySearch(seconds);
+        var next = IFrames.BinarySearch(seconds);
         if (next >= 0)
             return PositionMs;
 
         next = ~next;
         if (next == 0)
-            return Keyframes[0] * 1000;
-        if (next == Keyframes.Count)
-            return Keyframes[^1] * 1000;
+            return IFrames[0] * 1000;
+        if (next == IFrames.Count)
+            return IFrames[^1] * 1000;
 
         var previous = next - 1;
-        var nearest = seconds - Keyframes[previous] <= Keyframes[next] - seconds ? previous : next;
-        return Keyframes[nearest] * 1000;
+        var nearest = seconds - IFrames[previous] <= IFrames[next] - seconds ? previous : next;
+        return IFrames[nearest] * 1000;
     }
 
     /// <summary>Moves playback to the start of a segment so the cut can be checked.</summary>
@@ -714,7 +840,10 @@ public partial class MainViewModel : ObservableObject
     private void RemoveSegment(CutSegment? segment)
     {
         if (segment is not null)
+        {
+            Checkpoint("remove a segment");
             Segments.Remove(segment);
+        }
     }
 
     // ----- Long-running operations -----
@@ -773,9 +902,10 @@ public partial class MainViewModel : ObservableObject
 
         HardwareEncoderStatusText = "Checking hardware encoders...";
         List<string> supported;
+        List<string> problems;
         try
         {
-            supported = await EncoderProber.ProbeAsync(_shutdown.Token);
+            (supported, problems) = await EncoderProber.ProbeAsync(_shutdown.Token);
         }
         catch (OperationCanceledException)
         {
@@ -791,8 +921,13 @@ public partial class MainViewModel : ObservableObject
         if (run != _hardwareProbeRun)
             return;
 
-        // Rebuild the hardware part of the list, keeping the selection where it still exists.
-        var selected = VideoEncoder.Name;
+        _ = ProbeOpenClBlurAsync();
+
+        // Rebuild the hardware part of the list, keeping the selection where it still exists. The first time
+        // round, a hardware encoder set as the default is selected, unless another was chosen in the meantime.
+        var untouched = VideoEncoder.Family is EncoderFamily.Copy || VideoEncoder == DefaultVideoEncoder;
+        var selected = _pendingDefaultEncoder is { } pending && untouched ? pending : VideoEncoder.Name;
+        _pendingDefaultEncoder = null;
         foreach (var stale in VideoEncoders.Where(e => e.IsHardware).ToList())
             VideoEncoders.Remove(stale);
         foreach (var name in supported)
@@ -805,6 +940,25 @@ public partial class MainViewModel : ObservableObject
             1 => "1 hardware encoder available",
             _ => $"{supported.Count} hardware encoders available",
         };
+
+        // An encoder FFmpeg has but could not start is worth a word: it is usually a driver that needs updating.
+        if (problems.Count > 0)
+            HardwareEncoderStatusText += $". Not usable: {string.Join("; ", problems)}";
+    }
+
+    /// <summary>Tests whether the graphics card can blur the background (OpenCL), and writes the command again when it can.</summary>
+    private async Task ProbeOpenClBlurAsync()
+    {
+        try
+        {
+            var before = EncoderProber.OpenClBlurAvailable;
+            if (await EncoderProber.ProbeOpenClBlurAsync(_shutdown.Token) != before)
+                GenerateCommand();
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Not known: the processor blurs, as it always could.
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
@@ -816,7 +970,14 @@ public partial class MainViewModel : ObservableObject
 
         // Loading something by hand ends the editing of a queued job.
         EditingJob = null;
-        var (_, message) = await LoadMediaAsync(source, knownLocalPath: null, applyAutomation: true, cancellationToken);
+        var (opened, message) = await LoadMediaAsync(source, knownLocalPath: null, applyAutomation: true, cancellationToken);
+
+        // Settings: every video starts as a vertical one.
+        if (opened && AppSettings.Current.DefaultVerticalVideo && !UseVerticalResolution)
+            UseVerticalResolution = true;
+        _undo.Clear();
+        _redo.Clear();
+        MarkSaved();
         return message;
     });
 
@@ -826,6 +987,63 @@ public partial class MainViewModel : ObservableObject
         SourcePath = path;
         LoadSourceCommand.Execute(null);
     }
+
+    /// <summary>
+    /// Loads a file and gives it a style preset: what dropping a video on a style in the launch window does.
+    /// </summary>
+    public Task LoadFileWithStyleAsync(string path, string stylePath) => RunOperationAsync(async cancellationToken =>
+    {
+        SourcePath = path;
+        EditingJob = null;
+        var (loaded, message) = await LoadMediaAsync(path, knownLocalPath: null, applyAutomation: true, cancellationToken);
+        if (!loaded)
+            return message;
+
+        if (ReadStyle(stylePath) is not { } style)
+            return $"{message}. {StatusText}";
+
+        // A style is layers: the Layer Engine is what shows them, whatever mode or preset was in effect.
+        FrameEngine = true;
+        ApplyStyle(style, layout: true, color: true, blur: true, subtitles: true);
+        MarkSaved();
+        return $"{message}. Style \"{Path.GetFileNameWithoutExtension(stylePath)}\" applied.";
+    });
+
+    /// <summary>
+    /// Switches between Encoder Mode and Editor Mode. Each mode keeps its own interface settings, which are
+    /// swapped here; what is loaded, cut and set for the encode stays as it is.
+    /// </summary>
+    public void ToggleMode()
+    {
+        var settings = AppSettings.Current;
+        settings.SwitchMode(IsEditorMode ? AppSettings.EncoderMode : AppSettings.EditorMode);
+        try
+        {
+            settings.SaveAsCurrent();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The switch still holds for this session.
+        }
+
+        OnSettingsSaved();
+        (FrameEngine, PlayOnlySegments, ShowAutoCaptions) = (IsEditorMode || Layers.Count > 0, settings.StartWithPlayOnlySegments, settings.ShowAutoCaptions);
+        (ShowIFrames, LivePreview) = (settings.ShowIFrames, settings.LivePreview);
+
+        // With nothing loaded yet the mode's own starting point applies: Editor Mode mixes the tracks into one.
+        if (!HasSource)
+            MergeAudioTracks = IsEditorMode;
+        (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (settings.ShowCutSegmentsPane, settings.ShowKeyframesPane, settings.ShowClipKeyframes);
+        OnPropertyChanged(nameof(ModeButtonText));
+
+        // The Layers tab draws the main video's clips with frames from it, which Encoder Mode has no use for.
+        if (IsEditorMode && HasSource && _mainVideoRow.Filmstrip is null)
+            _ = LoadMainFilmstripAsync(LocalMediaPath);
+        StatusText = $"{settings.UiMode}: {(IsEditorMode ? "the tools for cutting, layering and captioning." : "the lean front end for converting and trimming.")}";
+    }
+
+    /// <summary>What the mode button says: the mode in use.</summary>
+    public string ModeButtonText => IsEditorMode ? "Editor" : "Encoder";
 
     /// <summary>
     /// Makes a source the current one: downloads it if it is a URL, inspects it and starts playback.
@@ -893,16 +1111,18 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
-        // Elements marked on a video of another shape will not sit on the same things in this one.
+        // Layers marked on a video of another shape will not sit on the same things in this one.
         if (GetLayoutAspectWarning() is { } warning)
             message += $". {warning}";
 
-        // Playback, the keyframe index and hover previews are for the window; a background instance needs none of them.
+        // Playback, the I-frame index and hover previews are for the window; a background instance needs none of them.
         if (!_isBackgroundWorker)
         {
             MediaLoaded?.Invoke(localPath);
-            _ = ScanKeyframesAsync(localPath);
+            _ = ScanIFramesAsync(localPath);
             _ = GenerateSpriteSheetAsync(localPath);
+            _mainVideoRow.Filmstrip = null;
+            _ = LoadMainFilmstripAsync(localPath);
             _ = GenerateWaveformsAsync(localPath);
         }
         return (true, message);
@@ -955,45 +1175,43 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>Indexes the source's keyframes without holding up playback or other operations.</summary>
-    private async Task ScanKeyframesAsync(string path)
+    /// <summary>Indexes the source's I-frames without holding up playback or other operations.</summary>
+    private async Task ScanIFramesAsync(string path)
     {
-        _keyframeScanCancellation?.Cancel();
-        var cancellation = _keyframeScanCancellation = new CancellationTokenSource();
+        _iFrameScanCancellation?.Cancel();
+        var cancellation = _iFrameScanCancellation = new CancellationTokenSource();
 
-        Keyframes = [];
-        UpdateKeyframeMarks();
-        KeyframeStatusText = "Indexing keyframes...";
+        SetSourceIFrames([]);
+        IFrameStatusText = "Indexing I-frames...";
         try
         {
-            // On the thread pool: ffprobe prints a line per keyframe, and reading thousands of them
+            // On the thread pool: ffprobe prints a line per I-frame, and reading thousands of them
             // should not happen on the UI thread.
-            var keyframes = await Task.Run(() => FfmpegRunner.GetKeyframesAsync(path, cancellation.Token), cancellation.Token);
+            var iFrames = await Task.Run(() => FfmpegRunner.GetIFramesAsync(path, cancellation.Token), cancellation.Token);
             if (cancellation.IsCancellationRequested)
                 return;
 
-            Keyframes = keyframes;
-            UpdateKeyframeMarks();
-            KeyframeStatusText = keyframes.Count > 0
-                ? $"{keyframes.Count} keyframes indexed"
-                : "No keyframe index: cut points will not snap";
+            SetSourceIFrames(iFrames);
+            IFrameStatusText = iFrames.Count > 0
+                ? $"{iFrames.Count} I-frames indexed"
+                : "No I-frame index: cut points will not snap";
 
             // The box may have been ticked while the index was still being built.
-            if (SnapToKeyframes)
-                SnapSegmentsToKeyframes();
+            if (SnapToIFrames)
+                SnapSegmentsToIFrames();
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception ex)
         {
-            KeyframeStatusText = $"Keyframe indexing failed: {ex.Message}";
+            IFrameStatusText = $"I-frame indexing failed: {ex.Message}";
         }
         finally
         {
             // Released here, once nothing uses its token any more, rather than by whoever cancels it.
-            if (ReferenceEquals(_keyframeScanCancellation, cancellation))
-                _keyframeScanCancellation = null;
+            if (ReferenceEquals(_iFrameScanCancellation, cancellation))
+                _iFrameScanCancellation = null;
             cancellation.Dispose();
         }
     }
@@ -1015,6 +1233,8 @@ public partial class MainViewModel : ObservableObject
     public void OnSettingsSaved()
     {
         ApplyDisplaySettings();
+        if (IsEditorMode)
+            FrameEngine = true;
         LoadAutomation();
         GenerateCommand();
         _ = ProbeHardwareEncodersAsync();
@@ -1030,7 +1250,7 @@ public partial class MainViewModel : ObservableObject
     public void Shutdown()
     {
         _operationCancellation?.Cancel();
-        _keyframeScanCancellation?.Cancel();
+        _iFrameScanCancellation?.Cancel();
         _shutdown.Cancel();
         _spriteCancellation?.Cancel();
         _waveformCancellation?.Cancel();
@@ -1051,6 +1271,14 @@ public partial class MainViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(CommandPreview))
             return "There is no command to run.";
+
+        // Copy keeps the picture as it is: said once more before the time is spent, when there is work it would skip.
+        if (CopyBypassWarning.Length > 0 && !IsCommandManuallyEdited && Confirm is not null
+            && !Confirm("Stream Copy", $"{CopyBypassWarning}\n\nThe video is copied as it is: nothing set on the Layers and Filters tabs, and no crop or resize, reaches the output. To apply them, choose an encoder on the Video tab.", "Encode Anyway"))
+        {
+            return "Encode cancelled.";
+        }
+
         if (!ResolveOverwrite())
             return "Encode cancelled: the existing file was left untouched.";
 
@@ -1103,6 +1331,7 @@ public partial class MainViewModel : ObservableObject
             // The hardware encoder let us down: one more attempt on the software encoder for the same codec.
             HardwareFallback.TryRewrite(command, out var retry, out var hardware, out var software);
             StatusText = $"Warning: {hardware} failed. Retrying with {software}...";
+            Notifier.Show("Hardware encoder failed", $"{hardware} could not encode this video. HandPeg is trying again with {software}.");
 
             // Reflect the switch in the Video tab where that is possible; a hand-edited command is patched in place.
             if (!IsCommandManuallyEdited && VideoEncoders.FirstOrDefault(e => e.Name == software) is { } replacement)
@@ -1208,6 +1437,14 @@ public partial class MainViewModel : ObservableObject
         PendingStartMs = null;
         PositionMs = 0;
         DurationMs = 0;
+
+        // A new main video starts where any does: at the beginning of the timeline, whole, and keeping still.
+        _playerMediaSeconds = 0;
+        _mainPieces.Clear();
+        SetBin(null);
+        InvalidateMainClips();
+        _mainVideoRow.ApplyTiming(null);
+        _mainVideoRow.MediaDuration = 0;
     }
 
     // ----- Command generation -----
@@ -1244,11 +1481,53 @@ public partial class MainViewModel : ObservableObject
             GenerateCommand();
     }
 
+    // While a whole set of settings is being put in place (a preset, an undo step) the command is not built
+    // for each of them: it is built once, when the last deferral ends.
+    private int _commandDeferrals;
+    private bool _commandPending;
+
+    private CommandDeferral DeferCommand()
+    {
+        _commandDeferrals++;
+        return new CommandDeferral(this);
+    }
+
+    private readonly struct CommandDeferral(MainViewModel owner) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (--owner._commandDeferrals > 0 || !owner._commandPending)
+                return;
+
+            owner._commandPending = false;
+            owner.GenerateCommand();
+        }
+    }
+
     private void GenerateCommand()
     {
+        // A layer following its keyframes as the playhead moves changes nothing about the command.
+        if (_applyingKeys)
+            return;
+
+        if (_commandDeferrals > 0)
+        {
+            _commandPending = true;
+            return;
+        }
+
+        // The timeline is as long as its clips reach, and the main video's row shows where it sits.
+        RefreshSequence();
+        SyncMainRow();
+
         // The Properties tab follows the settings even while the command itself is frozen by a manual edit.
         UpdateProjectedOutput();
         OnPropertyChanged(nameof(CaptionHint));
+        OnPropertyChanged(nameof(CopyBypassWarning));
+
+        // So does Live Preview, which shows the settings, not the command.
+        if (!_isBackgroundWorker)
+            LiveFilterInvalidated?.Invoke();
 
         if (IsCommandManuallyEdited)
             return;
@@ -1268,7 +1547,7 @@ public partial class MainViewModel : ObservableObject
     private List<CutSegment> GetMergedSegments()
     {
         var merged = new List<CutSegment>();
-        foreach (var segment in Segments.OrderBy(s => s.Start))
+        foreach (var segment in Segments.Where(s => !s.IsSkipped).OrderBy(s => s.Start))
         {
             if (merged.Count > 0 && segment.Start <= merged[^1].End)
             {
@@ -1303,23 +1582,34 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>
     /// Writes the concat list: the source named once per segment with its in and out points.
-    /// Copied video can only start on a keyframe, so a cut begins at the keyframe at or before its in point.
+    /// Copied video can only start on an I-frame, so a cut begins at the I-frame at or before its in point.
     /// </summary>
+    private string _writtenCuts = "";
+
     private void WriteCutsFile(string input, List<CutSegment> segments)
     {
         var list = new StringBuilder("ffconcat version 1.0\n");
         var file = input.Replace('\\', '/').Replace("'", @"'\''");
+
+        // The cuts are times on the sequence; the list wants them as times in the file.
+        var shift = TimeSpan.FromSeconds(MainShift);
         foreach (var segment in segments)
         {
             list.Append($"file '{file}'\n");
-            list.Append($"inpoint {Seconds(segment.Start)}\n");
-            list.Append($"outpoint {Seconds(segment.End)}\n");
+            list.Append($"inpoint {Seconds(segment.Start - shift < TimeSpan.Zero ? TimeSpan.Zero : segment.Start - shift)}\n");
+            list.Append($"outpoint {Seconds(segment.End - shift)}\n");
         }
+
+        // The command is rebuilt for every setting that changes; the file is only written when the cuts have.
+        var text = list.ToString();
+        if (text == _writtenCuts && File.Exists(CutsFilePath))
+            return;
 
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(CutsFilePath)!);
-            File.WriteAllText(CutsFilePath, list.ToString());
+            File.WriteAllText(CutsFilePath, text);
+            _writtenCuts = text;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

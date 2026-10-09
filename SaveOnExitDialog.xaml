@@ -1,0 +1,28 @@
+<Window x:Class="HandPegApp.SaveOnExitDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HandPeg" Width="540" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <StackPanel Margin="16">
+        <TextBlock Text="You have unsaved changes. Save before closing?" FontWeight="SemiBold" FontSize="14" />
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,12"
+                   Text="The cuts, layers and settings of this video have changed since it was opened or last saved as a project. Saved as a project, they can be opened again with the Project button." />
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Save as project:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <TextBox Grid.Column="1" x:Name="NameBox" VerticalContentAlignment="Center" TextChanged="NameBox_TextChanged" AutomationProperties.Name="Project Name" />
+        </Grid>
+        <TextBlock x:Name="NoteText" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,6,0,0" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="SaveButton" Content="Save &amp; Close" MinWidth="120" IsDefault="True" Click="Save_Click" />
+            <Button Content="Close Without Saving" MinWidth="150" Margin="6,0,0,0" Click="Discard_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" ToolTip="Go back to HandPeg." />
+        </StackPanel>
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" Margin="0,12,0,0" TextWrapping="Wrap"
+                   Text="This question can be switched off in Settings, on the Behavior tab." />
+    </StackPanel>
+</Window>

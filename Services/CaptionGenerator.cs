@@ -2,7 +2,9 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CliWrap;
+using CliWrap.Buffered;
 using HandPegApp.Models;
 
 namespace HandPegApp.Services;
@@ -15,8 +17,17 @@ public sealed record CaptionWord(string Text, double Start, double End);
 /// file, have whisper.cpp find the words and their times, and write them as an animated ASS subtitle file
 /// for FFmpeg to draw.
 /// </summary>
-public static class CaptionGenerator
+public static partial class CaptionGenerator
 {
+    // With voice activity detection, whisper listens to the stretches of speech joined end to end, and says
+    // in its log where each of them was in the audio it was given:
+    //   whisper_vad: vad_segment_info: orig_start: 18.08, orig_end: 20.83, vad_start: 4.74, vad_end: 7.49
+    [GeneratedRegex(@"vad_segment_info: orig_start: ([\d.]+), orig_end: ([\d.]+), vad_start: ([\d.]+), vad_end: ([\d.]+)")]
+    private static partial Regex VadSegmentRegex();
+
+    /// <summary>One stretch of speech: where it is in the audio, and where it is on the clock whisper counts by when it skips silence.</summary>
+    private readonly record struct SpeechStretch(double OriginalStart, double OriginalEnd, double Start, double End);
+
     // A silence this long between two words starts a new caption, however few words the last one has.
     private const double PauseSeconds = 0.7;
 
@@ -58,26 +69,44 @@ public static class CaptionGenerator
     /// <param name="language">The spoken language as whisper names it (en, es...), or auto.</param>
     /// <param name="prompt">Words and names to expect; blank for none.</param>
     /// <param name="translate">Write English whatever is spoken.</param>
+    /// <param name="vadModelPath">
+    /// The voice activity detection model, or null to listen to everything. With it, whisper is given only
+    /// the stretches that have speech in them, which stops it writing words into the silences.
+    /// </param>
     public static async Task<List<CaptionWord>> TranscribeAsync(
-        string wavPath, string modelPath, string language, string prompt, bool translate, CancellationToken cancellationToken)
+        string wavPath, string modelPath, string language, string prompt, bool translate, string? vadModelPath, CancellationToken cancellationToken)
     {
-        // -ojf: output JSON, full. -of: where to write it (whisper adds .json). -np: no progress chatter.
-        var arguments = new List<string> { "-m", modelPath, "-f", wavPath, "-ojf", "-of", "", "-np" };
+        var useVad = !string.IsNullOrWhiteSpace(vadModelPath);
+
+        // -ojf: output JSON, full. -of: where to write it (whisper adds .json). -np: no progress chatter;
+        // left out with voice activity detection, whose log is what says where the speech was.
+        var arguments = new List<string> { "-m", modelPath, "-f", wavPath, "-ojf", "-of", "" };
+        if (!useVad)
+            arguments.Add("-np");
         if (!string.IsNullOrWhiteSpace(language))
             arguments.AddRange(["--language", language.Trim()]);
         if (!string.IsNullOrWhiteSpace(prompt))
             arguments.AddRange(["--prompt", prompt]);
         if (translate)
             arguments.Add("--translate");
+        if (useVad)
+            arguments.AddRange(["--vad", "--vad-model", vadModelPath!]);
 
         var outputBase = Path.Combine(Path.GetDirectoryName(wavPath)!, Path.GetFileNameWithoutExtension(wavPath));
         var jsonPath = outputBase + ".json";
         var lastLines = new Queue<string>();
+        var speech = new List<SpeechStretch>();
 
         void OnLine(string line)
         {
             if (string.IsNullOrWhiteSpace(line))
                 return;
+
+            if (useVad && VadSegmentRegex().Match(line) is { Success: true } stretch)
+            {
+                speech.Add(new SpeechStretch(Seconds(stretch.Groups[1]), Seconds(stretch.Groups[2]), Seconds(stretch.Groups[3]), Seconds(stretch.Groups[4])));
+                return;
+            }
 
             lastLines.Enqueue(line.Trim());
             if (lastLines.Count > 6)
@@ -98,11 +127,70 @@ public static class CaptionGenerator
             if (result.ExitCode != 0 || !File.Exists(jsonPath))
                 throw new InvalidOperationException($"whisper.exe exited with code {result.ExitCode}: {string.Join(" | ", lastLines.TakeLast(3))}");
 
-            return ParseWhisperJson(File.ReadAllText(jsonPath));
+            if (!useVad)
+                return ParseWhisperJson(File.ReadAllText(jsonPath));
+
+            // The word times are on the shortened clock; without knowing where the speech was they cannot
+            // be put back, and captions at the wrong moments are worse than captions in a silence.
+            if (speech.Count > 0)
+                return ParseWhisperJson(File.ReadAllText(jsonPath), time => ToOriginalTime(speech, time));
+
+            AppLog.Write("whisper.exe did not say where the speech was, so the audio was transcribed again without silence detection.");
         }
         finally
         {
             File.Delete(jsonPath);
+        }
+
+        return await TranscribeAsync(wavPath, modelPath, language, prompt, translate, vadModelPath: null, cancellationToken);
+    }
+
+    private static double Seconds(Group group) => double.Parse(group.Value, CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// A time on the clock whisper counts by when it skips silence, as a time in the audio it was given. A time
+    /// that falls between two stretches of speech (in the short gap whisper leaves there) is the start of the later one.
+    /// </summary>
+    private static double ToOriginalTime(List<SpeechStretch> speech, double time)
+    {
+        foreach (var stretch in speech)
+        {
+            if (time < stretch.Start)
+                return stretch.OriginalStart;
+            if (time <= stretch.End)
+                return stretch.OriginalStart + (time - stretch.Start);
+        }
+
+        return speech[^1].OriginalEnd;
+    }
+
+    // Whether the whisper.exe in use knows --vad, by the program asked: older builds do not.
+    private static (string Program, bool Supported)? _vadSupport;
+
+    /// <summary>Whether the whisper.exe in use can skip silence with a voice activity detection model. Asked of it once.</summary>
+    public static async Task<bool> SupportsVadAsync(CancellationToken cancellationToken)
+    {
+        var path = DependencyUpdater.WhisperPath;
+        if (!File.Exists(path))
+            return false;
+
+        var program = $"{path}|{File.GetLastWriteTimeUtc(path).Ticks}";
+        if (_vadSupport is { } known && known.Program == program)
+            return known.Supported;
+
+        try
+        {
+            var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(path)
+                .WithArguments(["--help"])
+                .WithWorkingDirectory(Path.GetDirectoryName(path) ?? DependencyUpdater.ToolFolder(DependencyUpdater.Whisper))
+                .WithValidation(CommandResultValidation.None), cancellationToken);
+            var supported = (result.StandardOutput + result.StandardError).Contains("--vad-model", StringComparison.Ordinal);
+            _vadSupport = (program, supported);
+            return supported;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
         }
     }
 
@@ -110,7 +198,8 @@ public static class CaptionGenerator
     /// Puts whisper's tokens back together into words. A token is a piece of a word; one that starts with a
     /// space starts a new word, and punctuation, having no space, stays on the word before it.
     /// </summary>
-    public static List<CaptionWord> ParseWhisperJson(string json)
+    /// <param name="mapTime">Turns whisper's token times into times in the audio, when the two differ; null when they are the same.</param>
+    public static List<CaptionWord> ParseWhisperJson(string json, Func<double, double>? mapTime = null)
     {
         var words = new List<CaptionWord>();
         using var document = JsonDocument.Parse(json);
@@ -149,6 +238,8 @@ public static class CaptionGenerator
 
                 var from = offsets.GetProperty("from").GetDouble() / 1000;
                 var to = offsets.GetProperty("to").GetDouble() / 1000;
+                if (mapTime is not null)
+                    (from, to) = (mapTime(from), mapTime(to));
 
                 if (piece.StartsWith(' ') || text.Length == 0)
                 {

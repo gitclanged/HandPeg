@@ -50,10 +50,9 @@ public static class MediaProbe
         if (!File.Exists(DependencyUpdater.FfprobePath))
             return null;
 
-        var result = await Cli.Wrap(DependencyUpdater.FfprobePath)
+        var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfprobePath)
             .WithArguments(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", path])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(cancellationToken);
+            .WithValidation(CommandResultValidation.None), cancellationToken);
         if (result.ExitCode != 0)
             return null;
 

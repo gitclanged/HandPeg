@@ -57,9 +57,11 @@ public partial class DependencyPanel : UserControl
 
         foreach (var tool in DependencyUpdater.Tools)
             _tools.Add(new DependencyRow { Id = tool, Name = DependencyUpdater.DisplayName(tool) });
-        foreach (var model in DependencyUpdater.WhisperModels)
+        // The silence detection model is tiny and makes captions better, so it starts out ticked.
+        foreach (var model in DependencyUpdater.WhisperModels.Append(DependencyUpdater.VadModel))
         {
-            var row = new DependencyRow { Id = model, Name = model, IsModel = true };
+            var isVad = model == DependencyUpdater.VadModel;
+            var row = new DependencyRow { Id = model, Name = isVad ? "Silence detection (VAD)" : model, IsModel = true, IsSelected = isVad };
             row.PropertyChanged += (_, e) =>
             {
                 if (e.PropertyName == nameof(DependencyRow.IsSelected))
@@ -114,10 +116,52 @@ public partial class DependencyPanel : UserControl
         }
     }
 
+    // ----- Tiers: a chosen set of payloads, installed behind one progress bar -----
+
+    /// <summary>Raised when the list has been read again from the disk and the network.</summary>
+    public event Action? Refreshed;
+
+    // The tools that are not part of the chosen set, and so are left alone.
+    private readonly HashSet<string> _excludedTools = [];
+
+    /// <summary>
+    /// Shows the panel as one progress bar and a line of text, without the row for each tool and model: for
+    /// the first-run window, where what is fetched is chosen as a tier.
+    /// </summary>
+    public bool IsUnified
+    {
+        get => ToolList.Visibility != Visibility.Visible;
+        set => ToolList.Visibility = ModelList.Visibility = ModelsTitle.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>Chooses what the Install button fetches: these tools and these models, and nothing else.</summary>
+    public void SelectPayloads(IEnumerable<string> tools, IEnumerable<string> models)
+    {
+        var (wantedTools, wantedModels) = (tools.ToHashSet(), models.ToHashSet());
+        _excludedTools.Clear();
+        _excludedTools.UnionWith(_tools.Select(t => t.Id).Where(id => !wantedTools.Contains(id)));
+        foreach (var row in _models)
+            row.IsSelected = row.CanSelect && wantedModels.Contains(row.Id);
+        UpdateSummary();
+    }
+
+    /// <summary>
+    /// The one progress bar: how much of everything being installed has arrived, counted in bytes across all
+    /// of it, so that a 1.4 GB model is not one step of five beside a 20 MB program.
+    /// </summary>
+    private sealed class OverallProgress(ProgressBar bar) : IProgress<double>
+    {
+        public void Report(double value) => bar.Value = Math.Clamp(value, 0, 1);
+    }
+
+    private IProgress<double> Overall => _overall ??= new OverallProgress(OverallBar);
+
+    private IProgress<double>? _overall;
+
     /// <summary>The model the caption settings name: ticked by default when it has not been downloaded yet.</summary>
     public void PreferModel(string model)
     {
-        foreach (var row in _models)
+        foreach (var row in _models.Where(m => m.Id != DependencyUpdater.VadModel))
             row.IsSelected = row.CanSelect && row.Id == model;
         UpdateSummary();
     }
@@ -148,9 +192,11 @@ public partial class DependencyPanel : UserControl
             if (file.Exists)
                 row.IsSelected = false;
             row.Status = file.Exists ? $"Installed ({Megabytes(file.Length)})" : $"{Megabytes(DependencyUpdater.ApproximateModelBytes(row.Id))} download";
+            if (row.Id == DependencyUpdater.VadModel)
+                row.Status = file.Exists ? "Installed" : "Under 1 MB";
         }
 
-        if (!_models.Any(m => m.IsSelected) && _models.FirstOrDefault(m => m.Id == AppSettings.Current.WhisperModel) is { CanSelect: true } preferred)
+        if (!_models.Any(m => m.IsSelected && m.Id != DependencyUpdater.VadModel) && _models.FirstOrDefault(m => m.Id == AppSettings.Current.WhisperModel) is { CanSelect: true } preferred)
             preferred.IsSelected = true;
         UpdateSummary();
         UpdateButtons();
@@ -197,6 +243,8 @@ public partial class DependencyPanel : UserControl
                         + (OffersExistingFfmpeg ? ", and an FFmpeg you already have can be used instead." : "."), isProblem: true);
             InstallButton.Content = "Retry";
         }
+
+        Refreshed?.Invoke();
     }
 
     private static string Describe(DependencyRow row, string version)
@@ -282,7 +330,7 @@ public partial class DependencyPanel : UserControl
             // What there is to do. A tool is asked about again here, so that a check that failed when the
             // list was filled (no connection at the time) is simply made again.
             var work = new List<DependencyRow>();
-            foreach (var row in _tools.Where(r => DependencyUpdater.GetLocalState(r.Id) != DependencyState.CustomPath))
+            foreach (var row in _tools.Where(r => !_excludedTools.Contains(r.Id) && DependencyUpdater.GetLocalState(r.Id) != DependencyState.CustomPath))
             {
                 try
                 {
@@ -299,16 +347,22 @@ public partial class DependencyPanel : UserControl
 
             work.AddRange(_models.Where(m => m.IsSelected && m.CanSelect));
 
+            // How much each payload weighs, so that the one bar counts bytes and not payloads.
+            var sizes = work.Select(r => (double)Math.Max(r.IsModel ? DependencyUpdater.ApproximateModelBytes(r.Id) : r.Latest?.Size ?? 0, 1048576)).ToList();
+            var (total, arrived) = (sizes.Sum(), 0.0);
+
             for (var index = 0; index < work.Count; index++)
             {
                 var row = work[index];
-                var done = index;
+                var (size, before) = (sizes[index], arrived);
                 var progress = new Progress<InstallProgress>(p =>
                 {
                     row.IsIndeterminate = p.Fraction < 0;
                     row.Progress = Math.Max(0, p.Fraction);
                     row.Status = p.Text;
-                    OverallBar.Value = (done + Math.Clamp(p.Fraction, 0, 1)) / work.Count;
+                    Overall.Report((before + Math.Clamp(p.Fraction, 0, 1) * size) / total);
+                    if (IsUnified)
+                        ShowMessage($"{row.Name}: {p.Text}", isProblem: false);
                 });
 
                 (row.IsActive, row.IsIndeterminate, row.Progress) = (true, true, 0);
@@ -333,7 +387,8 @@ public partial class DependencyPanel : UserControl
                     row.IsActive = false;
                 }
 
-                OverallBar.Value = (index + 1.0) / work.Count;
+                arrived += size;
+                Overall.Report(arrived / total);
             }
         }
         catch (OperationCanceledException)

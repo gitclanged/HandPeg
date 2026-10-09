@@ -1,0 +1,29 @@
+<Window x:Class="HandPegApp.HudMasksDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HUD Masks" Width="560" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <StackPanel Margin="16">
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,10"
+                   Text="Takes a game's HUD apart into layers: each piece (the killfeed, the health bar, the radar) is cut out of the video with its own mask and becomes a layer of its own, so it can be moved and resized by itself. Made for arranging a 16:9 recording into a vertical frame." />
+        <ListBox x:Name="GameList" Height="150" SelectionChanged="GameList_SelectionChanged" AutomationProperties.Name="Games">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel Margin="0,2">
+                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding Summary}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+        <TextBlock Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,10,0,0"
+                   Text="The positions are starting points for a 16:9 recording with the game's default HUD. HUD scale, settings and game updates move things: check each layer against your video, and use its Draw Target button to mark it exactly." />
+        <CheckBox x:Name="VerticalBox" Content="Lay out for vertical video" Margin="0,12,0,0"
+                  ToolTip="Makes the frame tall, with the video across its middle and the pieces of the HUD enlarged above and below it. Cleared, each piece is laid back where it was cut from. The same layouts are among the style presets, where they can be dropped on from the launch window." />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="AddButton" Content="Add Layers" MinWidth="110" IsDefault="True" IsEnabled="False" Click="Add_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

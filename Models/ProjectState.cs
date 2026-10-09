@@ -21,7 +21,7 @@ public sealed class ProjectState
 
     // Cuts
     public List<SegmentState> Segments { get; set; } = [];
-    public bool SnapToKeyframes { get; set; }
+    public bool SnapToIFrames { get; set; }
 
     // Settings
     public string Container { get; set; } = "mp4";
@@ -50,13 +50,23 @@ public sealed class ProjectState
     /// <summary>Which of the video's audio tracks captions listen to.</summary>
     public int CaptionAudioTrackIndex { get; set; }
 
+    /// <summary>The clips of the main video after its first: what splitting it has made.</summary>
+    public List<MainPiece> MainPieces { get; set; } = [];
+
+    /// <summary>The recycle bin: clips deleted from the timeline, kept so that they can be put back.</summary>
+    public List<DeletedClip> Deleted { get; set; } = [];
+
+    /// <summary>Whether sound follows its picture on the timeline, or has been unlinked from it.</summary>
+    public bool AudioLinked { get; set; } = true;
+
     /// <summary>The command text when it had been edited by hand; null when it was the generated one.</summary>
     public string? ManualCommand { get; set; }
 }
 
-public sealed record SegmentState(double StartMs, double EndMs);
+public sealed record SegmentState(double StartMs, double EndMs, bool Skipped = false);
 
 public sealed record AudioTrackState(
-    int Index, string Action, string Codec, string Bitrate, string? Title = null, double GainDb = 0, TrackAudioFilters? Filters = null);
+    int Index, string Action, string Codec, string Bitrate, string? Title = null, double GainDb = 0, TrackAudioFilters? Filters = null,
+    double Offset = 0, List<AudioPiece>? Pieces = null, bool AutoDuck = false, bool IsVoice = false);
 
 public sealed record SubtitleTrackState(int Index, string Action);

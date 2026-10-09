@@ -9,11 +9,17 @@ namespace HandPegApp;
 /// </summary>
 public partial class TrackAudioFiltersDialog : Window
 {
-    public TrackAudioFiltersDialog(AudioTrack track)
+    public TrackAudioFiltersDialog(AudioTrack track) : this($"{track.SourceFileName}   {track.Description}", track.Filters)
+    {
+    }
+
+    /// <param name="heading">Which sound the filters are for.</param>
+    /// <param name="filters">Its filters as they are; a copy is edited.</param>
+    public TrackAudioFiltersDialog(string heading, TrackAudioFilters filters)
     {
         InitializeComponent();
-        TrackText.Text = $"{track.Title}   {track.Description}";
-        DataContext = Filters = track.Filters.Clone();
+        TrackText.Text = heading;
+        DataContext = Filters = filters.Clone();
     }
 
     /// <summary>The filters as edited. Only meaningful once the dialog has been confirmed.</summary>

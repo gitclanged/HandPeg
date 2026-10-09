@@ -7,7 +7,6 @@ namespace HandPegApp.Services;
 /// <summary>Reads and writes presets.json in the settings folder (see <see cref="AppPaths"/>).</summary>
 public static class PresetStore
 {
-    private const string TikTokPresetName = "TikTok 60fps Strict";
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -35,15 +34,7 @@ public static class PresetStore
         var missing = CreateDefaults()
             .Where(builtIn => !presets.Any(p => p.Name.Equals(builtIn.Name, StringComparison.OrdinalIgnoreCase)))
             .ToList();
-        // The vertical framer used to be fixed at 1080 x 1920. Now that its size can be set, the TikTok
-        // preset has to name that size itself, or a smaller source would give a smaller frame.
-        var tikTok = presets.FirstOrDefault(p =>
-            p.Name == TikTokPresetName && p.FrameEngine
-            && string.IsNullOrWhiteSpace(p.OutputWidth) && string.IsNullOrWhiteSpace(p.OutputHeight));
-        if (tikTok is not null)
-            (tikTok.OutputWidth, tikTok.OutputHeight) = ("1080", "1920");
-
-        if (missing.Count > 0 || tikTok is not null)
+        if (missing.Count > 0)
         {
             presets.AddRange(missing);
             try
@@ -65,81 +56,78 @@ public static class PresetStore
         File.WriteAllText(FilePath, JsonSerializer.Serialize(presets, JsonOptions));
     }
 
+    /// <summary>
+    /// The presets HandPeg comes with: a dozen starting points, from no encoding at all to delivery formats
+    /// for the places videos go, to editing proxies. All use software encoders, which every machine has; a
+    /// hardware encoder is one click away on the Video tab.
+    /// </summary>
     private static List<EncodingPreset> CreateDefaults() =>
     [
+        // No encoding: the streams are copied as they are. For cutting, joining and changing the container.
+        new() { Name = "Remux / Cut Only", VideoEncoder = "copy", AudioEncoder = "Copy (Stream Copy)" },
+
+        // What YouTube asks for: H.264 High, 4:2:0, a closed GOP of half a second's frames or so, AAC at 48 kHz.
         new()
         {
-            Name = "Software HQ 1080p60",
-            OutputHeight = "1080",
-            VideoEncoder = "libx264",
-            EncoderPreset = "slow",
-            Profile = "high",
-            Quality = 18,
-            Framerate = "60",
-            AudioBitrate = "192k",
+            Name = "YouTube 4K", OutputHeight = "2160", VideoEncoder = "libx264", EncoderPreset = "slow", Profile = "high",
+            Quality = 17, ExtraVideoArguments = "-pix_fmt yuv420p -bf 2 -g 30", AudioEncoder = "aac", AudioBitrate = "320k", Container = "mp4",
         },
         new()
         {
-            Name = "AMF Hardware 1440p",
-            OutputHeight = "1440",
-            VideoEncoder = "hevc_amf",
-            Quality = 22,
-            AudioBitrate = "192k",
-        },
-        new()
-        {
-            Name = "QuickSync AV1",
-            VideoEncoder = "av1_qsv",
-            Quality = 26,
-            AudioEncoder = "libopus",
-            AudioBitrate = "128k",
+            Name = "YouTube 1080p", OutputHeight = "1080", VideoEncoder = "libx264", EncoderPreset = "slow", Profile = "high",
+            Quality = 18, ExtraVideoArguments = "-pix_fmt yuv420p -bf 2 -g 30", AudioEncoder = "aac", AudioBitrate = "256k", Container = "mp4",
         },
 
-        // Vertical 1080x1920 at 60 fps, kept inside what the upload pipelines accept without re-processing.
+        // Vertical 1080 x 1920 at 60 fps, kept inside what the upload pipelines accept without re-processing.
         new()
         {
-            Name = TikTokPresetName,
-            FrameEngine = true,
-            UseVerticalResolution = true,
-            OutputWidth = "1080",
-            OutputHeight = "1920",
-            VideoEncoder = "libx264",
-            Profile = "high",
-            Level = "4.2",
-            RateControl = "Average Bitrate (ABR)",
-            TargetBitrate = "15000",
-            Framerate = "60",
-            ExtraVideoArguments = "-pix_fmt yuv420p",
-            AudioEncoder = "aac",
-            AudioBitrate = "192k",
-            Container = "mp4",
+            Name = "TikTok (Vertical)", FrameEngine = true, UseVerticalResolution = true, OutputWidth = "1080", OutputHeight = "1920",
+            VideoEncoder = "libx264", Profile = "high", Level = "4.2", RateControl = "Average Bitrate (ABR)", TargetBitrate = "15000",
+            Framerate = "60", ExtraVideoArguments = "-pix_fmt yuv420p", AudioEncoder = "aac", AudioBitrate = "192k", Container = "mp4",
+        },
+
+        // Quick and small, to look at or to send for a check: not for keeping.
+        new()
+        {
+            Name = "Fast Proxy", OutputHeight = "720", VideoEncoder = "libx264", EncoderPreset = "ultrafast", Quality = 28,
+            ExtraVideoArguments = "-pix_fmt yuv420p", AudioEncoder = "aac", AudioBitrate = "128k", Container = "mp4",
+        },
+
+        // Under Discord's free upload limit: the bitrate is worked out from the length of the video to land on 8 MB.
+        new()
+        {
+            Name = "Discord (8MB)", OutputHeight = "720", VideoEncoder = "libx264", EncoderPreset = "slow", RateControl = "Average Bitrate (ABR)",
+            TargetFileSize = "7.8", Framerate = "30", ExtraVideoArguments = "-pix_fmt yuv420p", AudioEncoder = "aac", AudioBitrate = "96k", Container = "mp4",
+        },
+
+        new()
+        {
+            Name = "High Quality H.264", VideoEncoder = "libx264", EncoderPreset = "slow", Profile = "high", Quality = 18,
+            AudioEncoder = "aac", AudioBitrate = "192k",
+        },
+        new()
+        {
+            Name = "Archive H.265", VideoEncoder = "libx265", EncoderPreset = "slow", Quality = 20, AudioEncoder = "aac", AudioBitrate = "192k",
+        },
+        new()
+        {
+            Name = "Small File 720p", OutputHeight = "720", VideoEncoder = "libx265", EncoderPreset = "medium", Quality = 26,
+            AudioEncoder = "libopus", AudioBitrate = "96k", Container = "mkv",
         },
 
         // Editing proxies: light to decode, so an NLE timeline scrubs smoothly.
         new()
         {
-            Name = "Apple ProRes 422 Proxy",
-            VideoEncoder = "prores_ks",
-            ExtraVideoArguments = "-profile:v 0",
-            AudioEncoder = "pcm_s16le",
-            Container = "mov",
+            Name = "Apple ProRes 422 Proxy", VideoEncoder = "prores_ks", ExtraVideoArguments = "-profile:v 0", AudioEncoder = "pcm_s16le", Container = "mov",
         },
         new()
         {
-            Name = "DNxHR LB (Low Bandwidth)",
-            VideoEncoder = "dnxhd",
-            ExtraVideoArguments = "-profile:v dnxhr_lb",
-            AudioEncoder = "pcm_s16le",
-            Container = "mov",
+            Name = "DNxHR LB (Low Bandwidth)", VideoEncoder = "dnxhd", ExtraVideoArguments = "-profile:v dnxhr_lb", AudioEncoder = "pcm_s16le", Container = "mov",
         },
         new()
         {
-            Name = "H.264 ALL-I Intra-Frame",
-            VideoEncoder = "libx264",
-            Tune = "fastdecode",
-            Quality = 18,
-            ExtraVideoArguments = "-g 1 -keyint_min 1",
-            AudioEncoder = "Copy (Stream Copy)",
+            Name = "H.264 ALL-I Intra-Frame", VideoEncoder = "libx264", Tune = "fastdecode", Quality = 18,
+            ExtraVideoArguments = "-g 1 -keyint_min 1", AudioEncoder = "Copy (Stream Copy)",
         },
     ];
 }

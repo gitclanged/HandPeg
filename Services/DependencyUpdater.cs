@@ -37,14 +37,25 @@ public sealed record RemoteAsset(string Name, string DownloadUrl, string Stamp, 
 /// the published SHA-256 where there is one, unpacked and run once; only then is the tool's folder swapped
 /// for the new one. A download that fails, is cancelled or does not check out leaves what was there untouched.
 /// </summary>
-public static class DependencyUpdater
+public static partial class DependencyUpdater
 {
     public const string Ffmpeg = "ffmpeg";
     public const string YtDlp = "yt-dlp";
     public const string Whisper = "whisper";
 
+    /// <summary>libmpv: the video player.</summary>
+    public const string Mpv = "mpv";
+
     /// <summary>The tools, in the order they are listed and installed.</summary>
-    public static IReadOnlyList<string> Tools { get; } = [Ffmpeg, YtDlp, Whisper];
+    public static IReadOnlyList<string> Tools { get; } = [Ffmpeg, Mpv, YtDlp, Whisper];
+
+    // The library alone, from the builds the mpv project points Windows users to. Its name carries the date
+    // and the commit, so it is recognised by its shape; the "v3" builds need a newer processor and are passed over.
+    private const string MpvReleaseUrl = "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest";
+    private const string MpvLibraryName = "libmpv-2.dll";
+
+    [GeneratedRegex(@"^mpv-dev-x86_64-\d{8}-git-[0-9a-f]+\.7z$")]
+    private static partial Regex MpvAssetRegex();
 
     private const string YtDlpAssetName = "yt-dlp.exe";
     private const string FfmpegAssetName = "ffmpeg-master-latest-win64-gpl.zip";
@@ -59,6 +70,14 @@ public static class DependencyUpdater
         "ggml-tiny.en.bin", "ggml-base.en.bin", "ggml-small.en.bin", "ggml-medium.en.bin",
         "ggml-tiny.bin", "ggml-base.bin", "ggml-small.bin", "ggml-medium.bin",
     ];
+
+    /// <summary>
+    /// The voice activity detection model whisper.cpp uses to skip silence (Silero VAD, under 1 MB). Kept with
+    /// the speech models; without it auto-captions still work, but may put words into quiet stretches.
+    /// </summary>
+    public const string VadModel = "ggml-silero-v5.1.2.bin";
+
+    private const string VadModelUrl = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/" + VadModel;
 
     private static readonly HttpClient Http = CreateClient(followRedirects: true);
 
@@ -119,6 +138,11 @@ public static class DependencyUpdater
 
     public static string GetWhisperModelPath(string model) => Path.Combine(ModelsFolder, Path.GetFileName(model));
 
+    public static string VadModelPath => GetWhisperModelPath(VadModel);
+
+    /// <summary>The libmpv library the player loads.</summary>
+    public static string MpvPath => Path.Combine(ToolFolder(Mpv), MpvLibraryName);
+
     private static string OrDefault(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
     /// <summary>
@@ -144,6 +168,7 @@ public static class DependencyUpdater
     {
         Ffmpeg => "FFmpeg and ffprobe",
         YtDlp => "yt-dlp",
+        Mpv => "Video player (libmpv)",
         _ => "whisper.cpp",
     };
 
@@ -152,6 +177,7 @@ public static class DependencyUpdater
     {
         Ffmpeg => AppSettings.Current.FfmpegPath,
         YtDlp => AppSettings.Current.YtDlpPath,
+        Mpv => "",
         _ => AppSettings.Current.WhisperPath,
     }).Trim();
 
@@ -159,6 +185,7 @@ public static class DependencyUpdater
     {
         Ffmpeg => [LocalFfmpegPath, LocalFfprobePath],
         YtDlp => [LocalYtDlpPath],
+        Mpv => [MpvPath],
         _ => [LocalWhisperPath],
     };
 
@@ -225,11 +252,10 @@ public static class DependencyUpdater
         BufferedCommandResult result;
         try
         {
-            result = await Cli.Wrap(Path.Combine(folder, program))
+            result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(Path.Combine(folder, program))
                 .WithArguments(argument)
                 .WithWorkingDirectory(folder)
-                .WithValidation(CommandResultValidation.None)
-                .ExecuteBufferedAsync(timeout.Token);
+                .WithValidation(CommandResultValidation.None), timeout.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -288,20 +314,23 @@ public static class DependencyUpdater
     {
         Ffmpeg => OrDefault(AppSettings.Current.FfmpegReleaseUrl, AppSettings.DefaultFfmpegReleaseUrl),
         YtDlp => OrDefault(AppSettings.Current.YtDlpReleaseUrl, AppSettings.DefaultYtDlpReleaseUrl),
+        Mpv => MpvReleaseUrl,
         _ => OrDefault(AppSettings.Current.WhisperReleaseUrl, AppSettings.DefaultWhisperReleaseUrl),
     };
 
-    private static string AssetName(string tool) => tool switch
+    /// <summary>Whether a file attached to a release is the one this tool is installed from.</summary>
+    private static bool IsAssetFor(string tool, string? name) => name is not null && tool switch
     {
-        Ffmpeg => FfmpegAssetName,
-        YtDlp => YtDlpAssetName,
-        _ => WhisperAssetName,
+        Ffmpeg => name == FfmpegAssetName,
+        YtDlp => name == YtDlpAssetName,
+        Mpv => MpvAssetRegex().IsMatch(name),
+        _ => name == WhisperAssetName,
     };
 
     /// <summary>Asks GitHub for the newest build of a tool. Throws when it cannot be reached or has none.</summary>
     public static async Task<RemoteAsset> GetLatestAsync(string tool, CancellationToken cancellationToken)
     {
-        var (releaseUrl, assetName) = (ReleaseUrl(tool), AssetName(tool));
+        var releaseUrl = ReleaseUrl(tool);
         lock (Answers)
         {
             if (Answers.TryGetValue(releaseUrl, out var kept) && DateTime.UtcNow - kept.At < AnswerLifetime)
@@ -326,7 +355,8 @@ public static class DependencyUpdater
             var assets = release.GetProperty("assets").EnumerateArray().ToList();
             foreach (var asset in assets)
             {
-                if (asset.GetProperty("name").GetString() != assetName)
+                var assetName = asset.GetProperty("name").GetString();
+                if (!IsAssetFor(tool, assetName))
                     continue;
 
                 // Rolling releases keep the same tag, so the asset timestamp is part of the version stamp.
@@ -342,14 +372,14 @@ public static class DependencyUpdater
                 var sums = assets.FirstOrDefault(a => SumsAssetNames.Contains(a.GetProperty("name").GetString()));
                 var sumsUrl = sums.ValueKind == JsonValueKind.Object ? sums.GetProperty("browser_download_url").GetString() : null;
 
-                var found = new RemoteAsset(assetName, url, $"{tag}|{updatedAt}", tag, size, sha256, sumsUrl);
+                var found = new RemoteAsset(assetName!, url, $"{tag}|{updatedAt}", tag, size, sha256, sumsUrl);
                 lock (Answers)
                     Answers[releaseUrl] = (DateTime.UtcNow, found);
                 return found;
             }
         }
 
-        throw new InvalidOperationException($"No release at {releaseUrl} has an asset named {assetName}.");
+        throw new InvalidOperationException($"No release at {releaseUrl} has the download for {DisplayName(tool)}.");
     }
 
     /// <summary>
@@ -362,7 +392,7 @@ public static class DependencyUpdater
     {
         try
         {
-            foreach (var tool in new[] { YtDlp, Ffmpeg })
+            foreach (var tool in new[] { YtDlp, Ffmpeg, Mpv })
             {
                 switch (GetLocalState(tool))
                 {
@@ -412,11 +442,17 @@ public static class DependencyUpdater
             // The stamp travels with the files, so the two can never disagree about what is installed.
             File.WriteAllText(StampPath(fresh, tool), asset.Stamp);
 
+            // A library is not something to run: it is looked at instead, and its release date is its version.
             progress.Report(new InstallProgress(1, $"Testing {name}..."));
-            File.WriteAllText(VersionPath(fresh), await ProbeVersionAsync(tool, fresh, cancellationToken));
+            if (tool == Mpv && !IsProgramForThisMachine(Path.Combine(fresh, MpvLibraryName)))
+                throw new InvalidOperationException($"{MpvLibraryName} is not a 64-bit Windows library.");
+            File.WriteAllText(VersionPath(fresh), tool == Mpv ? asset.Tag : await ProbeVersionAsync(tool, fresh, cancellationToken));
 
             cancellationToken.ThrowIfCancellationRequested();
-            Swap(fresh, ToolFolder(tool), parked, name);
+            if (tool == Mpv)
+                SwapLibrary(fresh, ToolFolder(tool));
+            else
+                Swap(fresh, ToolFolder(tool), parked, name);
             AppLog.Write($"Installed {name} {asset.Tag} ({(expected is null ? "no checksum published" : "SHA-256 verified")}).");
         }
         finally
@@ -454,12 +490,53 @@ public static class DependencyUpdater
         }
     }
 
+    /// <summary>
+    /// The player's library is in use for as long as HandPeg runs, so its folder cannot be set aside like a
+    /// tool's. Windows does let a library in use be renamed: the old one steps aside under another name,
+    /// the new one takes its place, and is the one loaded the next time HandPeg starts. What stepped aside
+    /// before is cleared away first, now that nothing uses it any more.
+    /// </summary>
+    private static void SwapLibrary(string fresh, string live)
+    {
+        Directory.CreateDirectory(live);
+        foreach (var stale in Directory.EnumerateFiles(live, "*.old"))
+        {
+            try
+            {
+                File.Delete(stale);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Still the one in use, from an update earlier in this same session.
+            }
+        }
+
+        var library = Path.Combine(live, MpvLibraryName);
+        if (File.Exists(library))
+            File.Move(library, Path.Combine(live, $"{MpvLibraryName}.{Guid.NewGuid():N}.old"));
+        foreach (var file in Directory.EnumerateFiles(fresh))
+            File.Move(file, Path.Combine(live, Path.GetFileName(file)), overwrite: true);
+    }
+
     private static void Unpack(string tool, string download, string folder, CancellationToken cancellationToken)
     {
         if (tool == YtDlp)
         {
             // Not an archive: the download is the program.
             File.Move(download, Path.Combine(folder, "yt-dlp.exe"));
+            return;
+        }
+
+        if (tool == Mpv)
+        {
+            // A 7z archive holding the library and the headers for programmers; only the library is wanted.
+            using var packed = SharpCompress.Archives.SevenZip.SevenZipArchive.OpenArchive(download);
+            var library = packed.Entries.FirstOrDefault(e => !e.IsDirectory && Path.GetFileName(e.Key ?? "").Equals(MpvLibraryName, StringComparison.OrdinalIgnoreCase))
+                          ?? throw new InvalidDataException($"The libmpv archive did not contain {MpvLibraryName}.");
+            cancellationToken.ThrowIfCancellationRequested();
+            using var source = library.OpenEntryStream();
+            using var target = File.Create(Path.Combine(folder, MpvLibraryName));
+            source.CopyTo(target);
             return;
         }
 
@@ -503,6 +580,9 @@ public static class DependencyUpdater
     /// <summary>Roughly what a model weighs, for showing before it is downloaded.</summary>
     public static long ApproximateModelBytes(string model)
     {
+        if (model == VadModel)
+            return 885098;
+
         var megabytes = model switch
         {
             _ when model.Contains("tiny", StringComparison.Ordinal) => 75,
@@ -520,10 +600,10 @@ public static class DependencyUpdater
     /// </summary>
     public static async Task InstallModelAsync(string model, IProgress<InstallProgress> progress, CancellationToken cancellationToken)
     {
-        if (!WhisperModels.Contains(model))
+        if (!WhisperModels.Contains(model) && model != VadModel)
             throw new InvalidOperationException($"Unknown model: {model}");
 
-        var url = AppSettings.WhisperModelBaseUrl + model;
+        var url = model == VadModel ? VadModelUrl : AppSettings.WhisperModelBaseUrl + model;
         var staging = Path.Combine(StagingRoot, $"model_{Guid.NewGuid():N}");
         var download = Path.Combine(staging, model);
         try
@@ -535,7 +615,7 @@ public static class DependencyUpdater
 
             Directory.CreateDirectory(ModelsFolder);
             File.Move(download, GetWhisperModelPath(model), overwrite: true);
-            AppLog.Write($"Installed the speech model {model} ({(expected is null ? "no checksum published" : "SHA-256 verified")}).");
+            AppLog.Write($"Installed the model {model} ({(expected is null ? "no checksum published" : "SHA-256 verified")}).");
         }
         finally
         {

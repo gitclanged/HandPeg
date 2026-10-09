@@ -1,0 +1,143 @@
+<Window x:Class="HandPegApp.LayerPropertiesDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:HandPegApp"
+        Title="{Binding Name, StringFormat=Layer Properties: {0}}" Width="500" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+    </Window.Resources>
+    <!-- Bound straight to the layer: every change shows in the command at once. -->
+    <StackPanel Margin="16">
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
+                   Text="How the layer sits on the picture. Live Preview shows the result as you change it." />
+
+        <!-- Shape and transparency: always available -->
+        <Grid Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="80" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition x:Name="CornerRow" Height="32" />
+                <RowDefinition Height="32" />
+            </Grid.RowDefinitions>
+            <TextBlock Text="Corner Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center"
+                    Value="{Binding CornerRadius}" AutomationProperties.Name="Corner Radius" local:NumericInput.Default="0"
+                    ToolTip="Rounds the corners, as a percentage of the layer's shorter side: 0 is square, 50 turns the short sides into half-circles." />
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding CornerRadius, StringFormat={}{0:0}}" AutomationProperties.Name="Corner Radius Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="50" /><TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+
+            <TextBlock Grid.Row="1" Text="Opacity:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="100" VerticalAlignment="Center"
+                    Value="{Binding Opacity}" AutomationProperties.Name="Layer Opacity" local:NumericInput.Default="100"
+                    ToolTip="100 is solid. Lower lets the picture underneath show through, as a watermark does." />
+            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Opacity, StringFormat={}{0:0}}" AutomationProperties.Name="Layer Opacity Value" local:NumericInput.Default="100" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" /><TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+        </Grid>
+
+        <!-- Shaping a picture: not for the caption box, which has only its opacity -->
+        <StackPanel x:Name="ShapePanel">
+        <CheckBox Content="Feather / Blurred Edges" IsChecked="{Binding Feather}"
+                  ToolTip="Fades the layer out towards its edges instead of ending in a hard line." />
+        <Grid IsEnabled="{Binding Feather}" Margin="26,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="80" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Feather Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Column="1" Minimum="1" Maximum="100" VerticalAlignment="Center"
+                    Value="{Binding FeatherRadius}" AutomationProperties.Name="Feather Radius" local:NumericInput.Default="12"
+                    ToolTip="Width of the fade, in output pixels. It is held to less than half the layer's size." />
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding FeatherRadius, StringFormat={}{0:0}}" AutomationProperties.Name="Feather Radius Value" local:NumericInput.Default="12" local:NumericInput.DragStep="0.396" local:NumericInput.Decimals="0" local:NumericInput.Minimum="1" local:NumericInput.Maximum="100" /><TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+        </Grid>
+
+        <CheckBox Content="Drop Shadow" IsChecked="{Binding Shadow}"
+                  ToolTip="Lays a dark copy of the layer's outline underneath it, offset down and to the right." />
+        <Grid IsEnabled="{Binding Shadow}" Margin="26,0,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="80" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+            </Grid.RowDefinitions>
+            <TextBlock Text="Shadow Opacity:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Column="1" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                    Value="{Binding ShadowOpacity}" AutomationProperties.Name="Shadow Opacity" local:NumericInput.Default="0.5" />
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowOpacity, StringFormat={}{0:0.00}}" AutomationProperties.Name="Shadow Opacity Value" local:NumericInput.Default="0.5" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="1" /></StackPanel>
+
+            <TextBlock Grid.Row="1" Text="Offset Distance:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="60" VerticalAlignment="Center"
+                    Value="{Binding ShadowOffset}" AutomationProperties.Name="Shadow Offset" local:NumericInput.Default="10" />
+            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowOffset, StringFormat={}{0:0}}" AutomationProperties.Name="Shadow Offset Value" local:NumericInput.Default="10" local:NumericInput.DragStep="0.24" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="60" /><TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+        </Grid>
+
+        </StackPanel>
+
+        <!-- For the layers added by hand: when the layer is on screen -->
+        <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="{Binding HasTiming, Converter={StaticResource BoolToVisibility}}">
+            <TextBlock Text="Appears at (s):" VerticalAlignment="Center" Margin="0,0,8,0" />
+            <TextBox Style="{StaticResource ValueBox}" Width="62" Text="{Binding StartTime, StringFormat={}{0:0.00}}" AutomationProperties.Name="Layer Start"
+                     local:NumericInput.Default="0" local:NumericInput.DragStep="0.05" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="86400"
+                     ToolTip="When the layer appears, in seconds from the start of the video. It can also be dragged on the layer's time bar on the Layers tab." />
+            <TextBlock Text="Stays for (s):" VerticalAlignment="Center" Margin="20,0,8,0" />
+            <TextBox Style="{StaticResource ValueBox}" Width="62" Text="{Binding Duration, StringFormat={}{0:0.00}}" AutomationProperties.Name="Layer Duration"
+                     local:NumericInput.Default="0" local:NumericInput.DragStep="0.05" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="86400"
+                     ToolTip="How long the layer stays on screen. 0 keeps it until the end of the video." />
+            <TextBlock Text="0 = to the end" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+        </StackPanel>
+
+        <!-- For the pictures and videos added by hand: making part of the layer see-through -->
+        <StackPanel Visibility="{Binding HasMask, Converter={StaticResource BoolToVisibility}}" Margin="0,12,0,0">
+            <CheckBox Content="Chroma Key" IsChecked="{Binding ChromaKey}" Visibility="{Binding HasKeying, Converter={StaticResource BoolToVisibility}}"
+                      ToolTip="Makes one color of the layer transparent: the green or blue of a screen behind a presenter, or of a game overlay recorded on a plain background." />
+            <Grid Margin="26,0,0,10" Visibility="{Binding ChromaKey, Converter={StaticResource BoolToVisibility}}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="80" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="34" />
+                    <RowDefinition Height="32" />
+                    <RowDefinition Height="32" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="Key Color:" VerticalAlignment="Center" Margin="0,0,12,0" />
+                <StackPanel Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="34" Height="22" CornerRadius="3" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1"
+                            Background="{Binding ChromaColor}" />
+                    <TextBox Width="90" Margin="8,0,0,0" FontFamily="Consolas" VerticalContentAlignment="Center"
+                             Text="{Binding ChromaColor, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Key Color"
+                             ToolTip="The color to remove, as #RRGGBB. #00FF00 is a pure green screen, #0000FF a pure blue one; a real screen is rarely pure, so pick its actual color." />
+                    <Button Content="Pick..." Padding="12,3" Margin="6,0,0,0" Click="PickKeyColor_Click" ToolTip="Choose the color with the Windows color picker." />
+                </StackPanel>
+
+                <TextBlock Grid.Row="1" Text="Similarity:" VerticalAlignment="Center" Margin="0,0,12,0" />
+                <Slider Grid.Row="1" Grid.Column="1" Minimum="0.01" Maximum="1" VerticalAlignment="Center"
+                        Value="{Binding ChromaSimilarity}" AutomationProperties.Name="Chroma Similarity" local:NumericInput.Default="0.15"
+                        ToolTip="How close to the key color a pixel has to be to go. Raise it until the screen is gone; too high starts eating the subject." />
+                <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ChromaSimilarity, StringFormat={}{0:0.00}}" AutomationProperties.Name="Chroma Similarity Value" local:NumericInput.Default="0.15" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.01" local:NumericInput.Maximum="1" /></StackPanel>
+
+                <TextBlock Grid.Row="2" Text="Blend:" VerticalAlignment="Center" Margin="0,0,12,0" />
+                <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                        Value="{Binding ChromaBlend}" AutomationProperties.Name="Chroma Blend" local:NumericInput.Default="0.05"
+                        ToolTip="How gradually pixels near the limit fade out. 0 is a hard edge; a little softens the outline of hair and motion blur." />
+                <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ChromaBlend, StringFormat={}{0:0.00}}" AutomationProperties.Name="Chroma Blend Value" local:NumericInput.Default="0.05" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="1" /></StackPanel>
+            </Grid>
+
+            <CheckBox Content="Custom Mask" IsChecked="{Binding CustomMask}"
+                      ToolTip="Cuts the layer to a shape of your own: a black-and-white picture stretched over the layer, which shows where the picture is white and is see-through where it is black. Greys are in between. For a HUD of any outline." />
+            <DockPanel Margin="26,2,0,0" Visibility="{Binding CustomMask, Converter={StaticResource BoolToVisibility}}">
+                <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Click="BrowseMask_Click" />
+                <TextBox Text="{Binding MaskPath, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center" AutomationProperties.Name="Mask File"
+                         ToolTip="A .png or .jpg in black and white. It is stretched to the size of the layer." />
+            </DockPanel>
+        </StackPanel>
+        <Button Content="Close" MinWidth="88" HorizontalAlignment="Right" Margin="0,16,0,0" IsDefault="True" IsCancel="True" />
+    </StackPanel>
+</Window>

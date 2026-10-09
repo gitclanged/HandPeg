@@ -49,7 +49,8 @@ internal static class ProcessPipes
     /// </summary>
     public static async Task<CommandResult> RunAsync(Command command, CancellationToken cancellationToken)
     {
-        var execution = command.ExecuteAsync(cancellationToken);
+        // Disposed when this method is left, whichever way: nothing of the run outlives it.
+        using var execution = command.ExecuteAsync(cancellationToken);
         var processId = execution.ProcessId;
         RunningProcesses[processId] = 0;
 
@@ -63,6 +64,16 @@ internal static class ProcessPipes
         {
             RunningProcesses.TryRemove(processId, out _);
         }
+    }
+
+    /// <summary>
+    /// Runs a tool to its end and returns what it wrote, with the run disposed of as soon as it is over.
+    /// Every short run whose output is read (ffprobe, the encoder tests) goes through here.
+    /// </summary>
+    public static async Task<CliWrap.Buffered.BufferedCommandResult> RunBufferedAsync(Command command, CancellationToken cancellationToken, Encoding? encoding = null)
+    {
+        using var execution = CliWrap.Buffered.BufferedCommandExtensions.ExecuteBufferedAsync(command, encoding ?? Console.OutputEncoding, cancellationToken);
+        return await execution;
     }
 
     /// <summary>Adds a process started some other way to those that are stopped when the application closes.</summary>

@@ -61,22 +61,36 @@ public partial class MainViewModel
     private void SetMediaInfo(MediaInfo? info)
     {
         _mediaInfo = info;
+
+        // The main video is a clip like the others, and is called what its file is.
+        _mainVideoRow.MediaDuration = Math.Max(info?.DurationSeconds ?? 0, 0);
+        _mainVideoRow.Name = HasSource ? System.IO.Path.GetFileName(LocalMediaPath) : "Main Video";
         (SourceWidth, SourceHeight, IsSourceHdr) = (info?.Video?.Width ?? 0, info?.Video?.Height ?? 0, info?.Video?.IsHdr ?? false);
 
         foreach (var track in AudioTracks)
             track.PropertyChanged -= OnTrackChanged;
         foreach (var track in SubtitleTracks)
             track.PropertyChanged -= OnTrackChanged;
+        SoloTrack = null;
         AudioTracks.Clear();
         SubtitleTracks.Clear();
 
         foreach (var stream in info?.Audio ?? [])
         {
-            var track = new AudioTrack(stream) { WaveformColor = WaveformPalette[AudioTracks.Count % WaveformPalette.Length] };
+            var track = new AudioTrack(stream)
+            {
+                WaveformColor = WaveformPalette[AudioTracks.Count % WaveformPalette.Length],
+                SourceFileName = HasSource ? System.IO.Path.GetFileName(LocalMediaPath) : "",
+            };
             ApplyAudioDefaults(track);
             track.PropertyChanged += OnTrackChanged;
             AudioTracks.Add(track);
         }
+
+        ApplyLegacyDuck();
+
+        // A caption preview is of the video it was made for.
+        PreviewSubtitles = false;
 
         foreach (var stream in info?.Subtitles ?? [])
         {
@@ -104,8 +118,29 @@ public partial class MainViewModel
         if (e.PropertyName == nameof(AudioTrack.Action) && sender is AudioTrack && HasSource && !_isBackgroundWorker)
             _ = RefreshTimelineWaveformAsync(LocalMediaPath);
 
-        // A picture arriving is not a change of settings.
-        if (e.PropertyName != nameof(AudioTrack.Waveform))
+        // Dropped, or taken back, while dropped tracks are hidden: its row goes, or comes back.
+        if (e.PropertyName == nameof(AudioTrack.Action) && HideDroppedTracks)
+            RefreshAudioRows();
+
+        // Set back to a copy while it is ducked: a copied track cannot be turned down, so the ducking goes.
+        if (e.PropertyName == nameof(AudioTrack.Action) && sender is AudioTrack { AutoDuck: true, IsPassthrough: true } copied)
+        {
+            copied.AutoDuck = false;
+            StatusText = $"{copied.Title} is copied as it is, so Auto-Duck was switched off for it: a ducked track has to be re-encoded.";
+        }
+
+        // A sound that is ducked is changed, and sound that is changed cannot be copied.
+        if (e.PropertyName == nameof(AudioTrack.AutoDuck) && sender is AudioTrack { AutoDuck: true, IsPassthrough: true } ducked)
+        {
+            ducked.Action = AudioTrack.Reencode;
+            if (AudioEncoder != CopyOption)
+                ducked.Codec = AudioEncoder;
+        }
+
+        // (The command is what the time bars listen to as well: a slipped or split track redraws through it.)
+        // A picture arriving is not a change of settings, and nor is which track the player plays.
+        if (e.PropertyName is not (nameof(AudioTrack.Waveform) or nameof(AudioTrack.IsSolo) or nameof(AudioTrack.TrackWaveform)
+            or nameof(AudioTrack.Description) or nameof(AudioTrack.SourceFileName) or nameof(AudioTrack.HasOwnFormat)))
             GenerateCommand();
     }
 
@@ -328,7 +363,7 @@ public partial class MainViewModel
         if (segments.Count > 0)
             return segments.Sum(s => s.Duration.TotalSeconds);
 
-        return _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        return SequenceSeconds;
     }
 
     /// <summary>Size of the loaded file, in the same MB/GB form as the estimate it sits beside.</summary>

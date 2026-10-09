@@ -13,7 +13,15 @@ public sealed partial class CutSegment(TimeSpan start, TimeSpan end) : Observabl
     public TimeSpan Duration => End - Start;
 
     public string Display =>
-        $"{FormatTime(Start)}  →  {FormatTime(End)}    ({Duration.TotalSeconds:0.###} s)";
+        $"{FormatTime(Start)}  →  {FormatTime(End)}    ({Duration.TotalSeconds:0.###} s){(IsSkipped ? "  skipped" : "")}";
+
+    /// <summary>
+    /// Still on the timeline, but left out of the output and jumped over in playback: what Remove Dead Air's
+    /// Split &amp; Mark does to a silent stretch. Taking the mark off brings the stretch back.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Display))]
+    private bool _isSkipped;
 
     /// <summary>Briefly true after the segment's times were adjusted automatically, so the list can highlight it.</summary>
     [ObservableProperty] private bool _isFlashing;

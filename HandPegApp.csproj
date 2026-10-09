@@ -12,7 +12,7 @@
     <RootNamespace>HandPegApp</RootNamespace>
     <Product>HandPeg</Product>
     <AssemblyTitle>HandPeg</AssemblyTitle>
-    <Version>1.0.0</Version>
+    <Version>2.1.0</Version>
 
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>
@@ -20,10 +20,23 @@
     <!-- Windows Forms is referenced for two things WPF lacks: the system colour picker and tray notifications. -->
     <UseWindowsForms>true</UseWindowsForms>
 
-    <!-- 64-bit Intel/AMD only: the player library then ships once instead of three times (x64, x86, ARM64). -->
+    <!-- 64-bit Intel/AMD only: that is what the tools and the player library HandPeg downloads are built for. -->
     <PlatformTarget>x64</PlatformTarget>
-    <VlcWindowsX86Enabled>false</VlcWindowsX86Enabled>
-    <VlcWindowsArm64Enabled>false</VlcWindowsArm64Enabled>
+  </PropertyGroup>
+
+  <!--
+      Start-up and memory. A published build is compiled to machine code ahead of time (one composite image,
+      so the framework's code and HandPeg's are optimized together), and the JIT that remains uses what it
+      learns while running. The heap is the workstation one, which does not grow with the number of cores,
+      and it is allowed to shrink again when the work is done (DATAS).
+  -->
+  <PropertyGroup>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRunComposite>true</PublishReadyToRunComposite>
+    <TieredPGO>true</TieredPGO>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <GarbageCollectionAdaptationMode>1</GarbageCollectionAdaptationMode>
   </PropertyGroup>
 
   <!-- Its namespaces are not imported everywhere: half their type names collide with WPF's. -->
@@ -48,9 +61,8 @@
   <ItemGroup>
     <PackageReference Include="CliWrap" Version="3.10.5" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-    <PackageReference Include="LibVLCSharp.WPF" Version="3.10.1" />
+    <PackageReference Include="SharpCompress" Version="0.50.4" />
     <PackageReference Include="Velopack" Version="1.2.161" />
-    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.24" />
   </ItemGroup>
 
 </Project>

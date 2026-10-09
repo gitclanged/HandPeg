@@ -9,7 +9,7 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Margin" Value="0,0,12,0" />
         </Style>
-        <!-- A keyframe suggestion: reads as a link, fills its field when clicked. -->
+        <!-- An I-frame suggestion: reads as a link, fills its field when clicked. -->
         <Style x:Key="Suggestion" TargetType="Button">
             <Setter Property="Foreground" Value="{DynamicResource AccentHoverBrush}" />
             <Setter Property="FontFamily" Value="Consolas" />
@@ -49,18 +49,18 @@
             <TextBox Grid.Column="1" x:Name="StartBox" Width="150" HorizontalAlignment="Left" FontFamily="Consolas" FontSize="14"
                      TextChanged="StartBox_TextChanged" />
             <StackPanel Grid.Row="1" Grid.Column="1" x:Name="StartSuggestions" Orientation="Horizontal" Margin="0,4,0,12">
-                <TextBlock Text="Keyframes:" Foreground="{DynamicResource MutedTextBrush}" />
-                <Button x:Name="StartFloor" Style="{StaticResource Suggestion}" Click="StartSuggestion_Click" ToolTip="The keyframe before: used on Save" />
-                <Button x:Name="StartCeiling" Style="{StaticResource Suggestion}" Click="StartSuggestion_Click" ToolTip="The keyframe after" />
+                <TextBlock Text="I-frames:" Foreground="{DynamicResource MutedTextBrush}" />
+                <Button x:Name="StartFloor" Style="{StaticResource Suggestion}" Click="StartSuggestion_Click" ToolTip="The I-frame before: used on Save" />
+                <Button x:Name="StartCeiling" Style="{StaticResource Suggestion}" Click="StartSuggestion_Click" ToolTip="The I-frame after" />
             </StackPanel>
 
             <TextBlock Grid.Row="2" Text="Stop:" Style="{StaticResource FieldLabel}" />
             <TextBox Grid.Row="2" Grid.Column="1" x:Name="StopBox" Width="150" HorizontalAlignment="Left" FontFamily="Consolas" FontSize="14"
                      TextChanged="StopBox_TextChanged" />
             <StackPanel Grid.Row="3" Grid.Column="1" x:Name="StopSuggestions" Orientation="Horizontal" Margin="0,4,0,12">
-                <TextBlock Text="Keyframes:" Foreground="{DynamicResource MutedTextBrush}" />
-                <Button x:Name="StopFloor" Style="{StaticResource Suggestion}" Click="StopSuggestion_Click" ToolTip="The keyframe before" />
-                <Button x:Name="StopCeiling" Style="{StaticResource Suggestion}" Click="StopSuggestion_Click" ToolTip="The keyframe after: used on Save" />
+                <TextBlock Text="I-frames:" Foreground="{DynamicResource MutedTextBrush}" />
+                <Button x:Name="StopFloor" Style="{StaticResource Suggestion}" Click="StopSuggestion_Click" ToolTip="The I-frame before" />
+                <Button x:Name="StopCeiling" Style="{StaticResource Suggestion}" Click="StopSuggestion_Click" ToolTip="The I-frame after: used on Save" />
             </StackPanel>
         </Grid>
 

@@ -67,8 +67,8 @@ public sealed partial class VoiceRecorder
     [GeneratedRegex("\"([^\"]+)\"\\s+\\(audio\\)")]
     private static partial Regex AudioDeviceRegex();
 
-    // How long FFmpeg is given to open the device before the recording counts as started.
-    private static readonly TimeSpan StartupGrace = TimeSpan.FromMilliseconds(900);
+    /// <summary>How long FFmpeg is given to open the device before the recording counts as started.</summary>
+    public static readonly TimeSpan StartupGrace = TimeSpan.FromMilliseconds(900);
 
     private readonly List<string> _parts = [];
     private readonly System.Text.StringBuilder _errors = new();
@@ -89,10 +89,9 @@ public sealed partial class VoiceRecorder
 
         // Listing devices is not an error to FFmpeg, but opening the "dummy" input afterwards is: the
         // exit code says nothing, the list is on stderr.
-        var result = await Cli.Wrap(DependencyUpdater.FfmpegPath)
+        var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
             .WithArguments(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(System.Text.Encoding.UTF8, cancellationToken);
+            .WithValidation(CommandResultValidation.None), cancellationToken, System.Text.Encoding.UTF8);
 
         return AudioDeviceRegex().Matches(result.StandardError).Select(m => m.Groups[1].Value).Distinct().ToList();
     }
@@ -197,6 +196,26 @@ public sealed partial class VoiceRecorder
             ProcessPipes.Untrack(process.Id);
             process.Dispose();
         }
+    }
+
+    /// <summary>Ends the recording and throws away everything recorded so far.</summary>
+    public async Task DiscardAsync()
+    {
+        await PauseAsync();
+
+        foreach (var part in _parts)
+        {
+            try
+            {
+                File.Delete(part);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Left in the session folder, which goes when the application closes.
+            }
+        }
+
+        _parts.Clear();
     }
 
     /// <summary>

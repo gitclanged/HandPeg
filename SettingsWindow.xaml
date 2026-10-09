@@ -34,7 +34,17 @@
             <Button Grid.Column="2" Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
         </Grid>
 
-        <TabControl>
+        <!-- Type here to find an option: what does not match is hidden, on every tab -->
+        <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
+            <TextBox x:Name="SearchBox" Padding="26,5,8,5" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged"
+                     AutomationProperties.Name="Search Settings" ToolTip="Type part of an option's name or description. Tabs with nothing that matches are hidden; clear the box to see everything again." />
+            <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13" Margin="9,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
+                       Foreground="{DynamicResource MutedTextBrush}" IsHitTestVisible="False" />
+            <TextBlock x:Name="SearchHint" Text="Search settings" Margin="29,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
+                       Foreground="{DynamicResource MutedTextBrush}" IsHitTestVisible="False" />
+        </Grid>
+
+        <TabControl x:Name="SettingsTabs">
             <TabItem Header="Tools">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
                 <StackPanel>
@@ -97,7 +107,68 @@
                         <Button Grid.Row="3" Grid.Column="2" Content="Browse..." Margin="6,4,0,4" Tag="{Binding ElementName=WhisperPathBox}" Click="Browse_Click" />
                     </Grid>
 
-                    <TextBlock Text="Interface" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
+                </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Interface">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                <StackPanel>
+                    <TextBlock Text="Mode" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Encoder Mode is the lean front end for converting and trimming; Editor Mode adds layers, captions and the full timeline. The button beside the gear switches between them. Each mode keeps its own copy of the layout options on this tab and on the Timeline tab: what you set here is set for the mode you are in now." />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <TextBlock Text="Default Mode on Launch:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DefaultModeBox" MinWidth="170" Margin="0" SelectedItem="{Binding DefaultMode}" AutomationProperties.Name="Default Mode on Launch"
+                                  ToolTip="The mode HandPeg starts in: Encoder Mode, Editor Mode, or whichever was in use when it was last closed." />
+                        <TextBlock x:Name="CurrentModeText" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+
+                    <TextBlock Text="This mode starts with" Style="{StaticResource SectionTitle}" Margin="0,18,0,2" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="What is ticked in the main window when HandPeg starts in this mode. Each can still be changed there for the session." />
+                    <WrapPanel>
+                        <CheckBox Content="Play only cut segments" IsChecked="{Binding StartWithPlayOnlySegments}" Margin="0,2,24,2" />
+                        <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding StartWithSnapToIFrames}" Margin="0,2,24,2" />
+                        <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="0,2,24,2" />
+                        <CheckBox Content="Create chapter markers" IsChecked="{Binding StartWithChapterMarkers}" Margin="0,2,24,2" />
+                        <CheckBox Content="Chapters at cut points" IsChecked="{Binding StartWithChaptersAtCuts}" Margin="0,2,24,2" />
+                        <CheckBox Content="Auto-captions controls on the Subtitles tab" IsChecked="{Binding ShowAutoCaptions}" Margin="0,2,24,2" />
+                        <CheckBox Content="Open the layout pane by itself" IsChecked="{Binding AutoOpenLayoutPane}" Margin="0,2,24,2"
+                                  ToolTip="Opens the Layout Pane beside the player as soon as there is a layout to edit." />
+                        <CheckBox Content="Live Preview" IsChecked="{Binding LivePreview}" Margin="0,2,24,2" />
+                    </WrapPanel>
+
+                    <TextBlock Text="Launch window" Style="{StaticResource SectionTitle}" Margin="0,18,0,2" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Opens over the main window when HandPeg starts in Editor Mode: a place to drop a video, a way back into a recent project, and style presets to drop a video on. It is not shown in Encoder Mode." />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <TextBlock Text="Show Splash Screen on Launch:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="SplashBox" MinWidth="170" Margin="0" AutomationProperties.Name="Show Splash Screen on Launch"
+                                  ToolTip="How many style presets the launch window offers as buttons. Disabled goes straight to the main window.">
+                            <ComboBoxItem Content="Disabled" />
+                            <ComboBoxItem Content="Show 1 Style" />
+                            <ComboBoxItem Content="Show 2 Styles" />
+                            <ComboBoxItem Content="Show 3 Styles" />
+                            <ComboBoxItem Content="Show 4 Styles" />
+                            <ComboBoxItem Content="Show 5 Styles" />
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel>
+                        <TextBlock Text="Style presets shown as buttons (click to pick; none picked shows the most recent):" Margin="0,2,0,4" />
+                        <ListBox x:Name="SplashStyleList" SelectionMode="Multiple" Height="92" DisplayMemberPath="Name" AutomationProperties.Name="Launch Window Styles"
+                                 ToolTip="The style presets in the Styles folder. The ones selected here are the buttons of the launch window, up to the number set above." />
+                    </StackPanel>
+
+                    <TextBlock Text="Appearance and layout" Style="{StaticResource SectionTitle}" />
+                    <CheckBox Content="Use GPU acceleration in the video player" IsChecked="{Binding PlayerHardwareAcceleration}"
+                              ToolTip="The graphics card decodes the video as well as drawing it (Direct3D 11), which keeps high-resolution and high-frame-rate footage smooth and the processor free. With Live Preview on, the card still decodes and each frame is handed to the filters. Turn this off if the picture is green, garbled or stutters: the processor then decodes. Applied when you press Save." />
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,4">
+                        <TextBlock Text="Hardware Decode Adapter:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DecodeAdapterBox" MinWidth="300" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Index"
+                                  SelectedValue="{Binding HardwareDecodeAdapter}" AutomationProperties.Name="Hardware Decode Adapter"
+                                  ToolTip="Which graphics card decodes the video for an encode, when Enable Hardware Decoding is ticked on the Video tab. Automatic leaves it to FFmpeg (-hwaccel auto). Choosing a card names it to FFmpeg (-hwaccel d3d11va -hwaccel_device and its number), so that a second card can take the decoding while the first one encodes or runs a game." />
+                    </StackPanel>
                     <CheckBox Content="Show Command Preview Tab" IsChecked="{Binding ShowCommandPreviewTab}"
                               ToolTip="Adds a tab showing the FFmpeg command that will run, which can also be edited by hand." />
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,4">
@@ -112,25 +183,14 @@
                         <Button Content="Run First-Run Setup Again..." Margin="24,0,0,0" Click="RunFirstRun_Click"
                                 ToolTip="Opens the welcome window to choose the theme and Encoder or Editor Mode again. Closes this window without saving its other changes." />
                     </StackPanel>
-                    <CheckBox Content="Show waveforms" IsChecked="{Binding ShowTimelineWaveform}"
-                              ToolTip="After each load, draws the mix of the active audio tracks behind the timeline, and each track's own waveform in the Audio tab. Applies to the next video you load." />
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
-                        <TextBlock Text="Timeline Height:" Style="{StaticResource FieldLabel}" />
-                        <Slider Width="150" Minimum="1" Maximum="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
-                                Value="{Binding TimelineHeight}" AutomationProperties.Name="Timeline Height" local:NumericInput.Default="3"
-                                ToolTip="1 is a slim bar; 5 leaves room for a readable waveform." />
-                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding TimelineHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Timeline Height Value"
-                                 local:NumericInput.Default="3" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="5" />
-                        <TextBlock Text="Audio Track Height:" Style="{StaticResource FieldLabel}" Margin="32,0,12,0" />
-                        <Slider Width="150" Minimum="1" Maximum="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
-                                Value="{Binding AudioTrackHeight}" AutomationProperties.Name="Audio Track Height" local:NumericInput.Default="2"
-                                ToolTip="How tall each track's row is in the Audio tab. Taller rows show more of the waveform." />
-                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding AudioTrackHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Audio Track Height Value"
-                                 local:NumericInput.Default="2" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="5" />
+                        <TextBlock Text="Double-Click Resets To:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="ResetBox" MinWidth="190" Margin="0" SelectedItem="{Binding DoubleClickResetsTo}" AutomationProperties.Name="Double-Click Resets To"
+                                  ToolTip="Double-clicking a slider or a number box puts it back to a starting value: the one in the style preset that is in use (and the built-in default where the style has none, or none is in use), or always the built-in default." />
                     </StackPanel>
                     <CheckBox Content="Notify when an encode finishes" IsChecked="{Binding NotifyOnEncodeComplete}"
                               ToolTip="Sends a Windows notification when an encode, or the queue, has finished." />
-                    <CheckBox Content="Show Advanced Filters Tab" IsChecked="{Binding ShowAdvancedFiltersTab}"
+                    <CheckBox Content="Show color grading on the Filters tab" IsChecked="{Binding ShowAdvancedFiltersTab}"
                               ToolTip="Adds the Advanced tab: colour correction (contrast, brightness, saturation, gamma), sharpening, and a live preview of a single frame. Values already set there keep applying while the tab is hidden." />
 
                     <TextBlock Text="Render Preview" Style="{StaticResource SectionTitle}" Margin="0,16,0,2" />
@@ -187,10 +247,27 @@
             </TabItem>
 
             <TabItem Header="Timeline">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
                 <StackPanel>
-                    <TextBlock Text="Playback controls" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="Timeline" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="A transport row centred under the player: previous keyframe, back one frame, play/pause, forward one frame, next keyframe, with a playback speed selector (0.25x to 2x) beside it." />
+                               Text="Whether waveforms are drawn, and whether a strip of pictures from the video is drawn along the timeline behind them. (How tall the timeline is, is the slider beside the volume in the main window.) The pictures are made in the background after each load, from the same sheet as the hover previews below." />
+                    <CheckBox Content="Show waveforms" IsChecked="{Binding ShowTimelineWaveform}" Margin="0,0,0,4"
+                              ToolTip="After each load, draws the mix of the active audio tracks behind the timeline, and each track's own waveform in the Audio tab. Applies to the next video you load." />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="Video Layer Thumbnail Count:" Style="{StaticResource FieldLabel}" />
+                        <Slider Width="150" Minimum="1" Maximum="25" VerticalAlignment="Center"
+                                Value="{Binding LayerThumbnailCount}" AutomationProperties.Name="Video Layer Thumbnail Count" local:NumericInput.Default="8"
+                                ToolTip="How many frames are taken from a video layer's file for the strip of pictures its block on the Layers tab is drawn with. Applies to the video layers added from now on." />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding LayerThumbnailCount, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Video Layer Thumbnail Count Value"
+                                 local:NumericInput.Default="8" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="25" />
+                    </StackPanel>
+                    <CheckBox Content="Show Timeline Thumbnails" IsChecked="{Binding ShowTimelineThumbnails}"
+                              ToolTip="Draws a strip of pictures from the video along the timeline, behind the waveform. On by default in Editor Mode. Applies to the next video you load." />
+
+                    <TextBlock Text="Playback controls" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="A transport row centred under the player: reload player, previous I-frame, back one frame, play/pause, forward one frame, next I-frame and render preview, with a playback speed selector (0.25x to 2x) beside it." />
                     <CheckBox Content="Show advanced playback controls" IsChecked="{Binding ShowAdvancedPlayback}" />
 
                     <TextBlock Text="Time format" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
@@ -204,13 +281,13 @@
                         </ComboBox>
                     </StackPanel>
 
-                    <TextBlock Text="Keyframes" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
+                    <TextBlock Text="I-frames" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Keyframes are drawn as thin lines on the timeline. With snapping on, the thumb is pulled onto a keyframe when it is dragged close to one; magnetism sets how close." />
+                               Text="I-frames are drawn as thin lines on the timeline. With snapping on, the thumb is pulled onto an I-frame when it is dragged close to one; magnetism sets how close." />
                     <StackPanel Orientation="Horizontal">
-                        <CheckBox x:Name="SnapTimelineBox" Content="Snap timeline to keyframes" IsChecked="{Binding SnapTimelineToKeyframes}" />
+                        <CheckBox x:Name="SnapTimelineBox" Content="Snap timeline to I-frames" IsChecked="{Binding SnapTimelineToIFrames}" />
                         <TextBlock Text="Timeline Magnetism:" Style="{StaticResource FieldLabel}" Margin="28,0,8,0" />
-                        <Slider x:Name="MagnetismSlider" Width="160" Minimum="1" Maximum="5" TickFrequency="1" IsSnapToTickEnabled="True"
+                        <Slider x:Name="MagnetismSlider" Width="160" Minimum="1" Maximum="5"
                                 VerticalAlignment="Center" Value="{Binding TimelineMagnetism}"
                                 IsEnabled="{Binding IsChecked, ElementName=SnapTimelineBox}"
                                 AutomationProperties.Name="Timeline Magnetism" local:NumericInput.Default="3" />
@@ -218,8 +295,8 @@
                                  IsEnabled="{Binding IsChecked, ElementName=SnapTimelineBox}"
                                  local:NumericInput.Default="3" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="5" />
                     </StackPanel>
-                    <CheckBox Content="Auto-toggle timeline snapping with keyframe visibility" IsChecked="{Binding AutoToggleTimelineSnap}"
-                              ToolTip="When on, ticking or clearing Show keyframes in the main window switches Snap timeline to keyframes with it. Snap cuts to keyframes is not affected." />
+                    <CheckBox Content="Auto-toggle timeline snapping with I-frame visibility" IsChecked="{Binding AutoToggleTimelineSnap}"
+                              ToolTip="When on, ticking or clearing Show I-frames in the main window switches Snap timeline to I-frames with it. Snap cuts to I-frames is not affected." />
 
                     <TextBlock Text="Hover previews" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
@@ -230,13 +307,14 @@
                         <TextBox Width="70" Text="{Binding ThumbnailIntervalSeconds, UpdateSourceTrigger=PropertyChanged}"
                                  AutomationProperties.Name="Thumbnail Interval" local:NumericInput.Default="5" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="600" local:NumericInput.Decimals="0" />
                         <TextBlock Text="Hover Preview Scale:" Style="{StaticResource FieldLabel}" Margin="28,0,8,0" />
-                        <Slider x:Name="HoverScaleSlider" Width="110" Minimum="1" Maximum="5" TickFrequency="1" IsSnapToTickEnabled="True"
+                        <Slider x:Name="HoverScaleSlider" Width="110" Minimum="1" Maximum="5"
                                 VerticalAlignment="Center" Value="{Binding HoverPreviewScale}" AutomationProperties.Name="Hover Preview Scale" local:NumericInput.Default="1"
                                 ToolTip="How large the thumbnail is shown: 1 is as generated, 5 is four times that." />
                         <TextBox Style="{StaticResource ValueBox}" Text="{Binding HoverPreviewScale, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Hover Preview Scale Value"
                                  local:NumericInput.Default="1" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="5" />
                     </WrapPanel>
                 </StackPanel>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem Header="Downloads">
@@ -268,8 +346,64 @@
                                Text="Smart rules and the default preset are on the Automation tab of the main window." />
                     <CheckBox Content="Save the Target File Size with each preset" IsChecked="{Binding SaveTargetSizeInPresets}"
                               ToolTip="When on, Save Preset also stores the Target File Size set at the time, and applying that preset brings it back." />
-                    <CheckBox Content="Auto-fallback to Software Encoder on failure" IsChecked="{Binding AutoFallbackToSoftware}"
+                    <CheckBox Content="Default to Vertical Video" IsChecked="{Binding DefaultVerticalVideo}"
+                              ToolTip="Every video that is opened starts as a vertical one: a tall frame with the picture across its middle over a blurred copy of itself. The same as ticking Vertical Video on the Summary tab." />
+                    <CheckBox Content="Prompt to save before closing" IsChecked="{Binding PromptToSaveOnExit}"
+                              ToolTip="When HandPeg is closed while the open video has cuts, layers or settings that were not saved as a project, asks whether to save them first." />
+                    <CheckBox Content="Fall back to the software encoder when a hardware encode fails" IsChecked="{Binding AutoFallbackToSoftware}"
                               ToolTip="If an encode or queue job fails on a hardware encoder, it is tried once more with libx264 (or libx265 for HEVC, SVT-AV1 for AV1)." />
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Keyboard Shortcuts">
+                <StackPanel>
+                    <TextBlock Text="Keyboard shortcuts" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="The keys of the main window. They apply while no text box or drop-down has the focus: typing stays typing." />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="Space" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="Play / Pause" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="1" Text="Left / Right" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="Step back / forward one frame" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="2" Text="I" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="Add Start Point" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="3" Text="O" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Text="Add Stop Point" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="4" Text="S" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" Text="Split the selected block at the playhead (Editor Mode)" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="5" Text="Delete" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="5" Grid.Column="1" Text="Delete the selected layer or cut segment; silence the selected part of an audio track (Editor Mode)" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="6" Text="Ctrl+Z" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="6" Grid.Column="1" Text="Undo the last change to the cuts, layers or audio" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="7" Text="Ctrl+Y" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="7" Grid.Column="1" Text="Redo" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="8" Text="Right-drag on the timeline" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="8" Grid.Column="1" Text="Mark a new cut segment" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="9" Text="Right-click a layer" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="9" Grid.Column="1" Text="Its menu: properties, split, trim, hide, duplicate, delete" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="10" Text="Double-click a slider or number" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="10" Grid.Column="1" Text="Put it back to its default" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="11" Text="Enter in the source box" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="11" Grid.Column="1" Text="Load the path or URL" TextWrapping="Wrap" Margin="0,3" />
+                    </Grid>
                 </StackPanel>
             </TabItem>
 

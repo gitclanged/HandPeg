@@ -38,7 +38,7 @@ public sealed class EncodingPreset
     /// </summary>
     public bool? UseVerticalResolution { get; set; }
 
-    // Frame & Layer Engine: the video on a blurred copy of itself, with elements on top.
+    // Frame & Layer Engine: the video on a blurred copy of itself, with layers on top.
     // The names in the file are the ones it had as the "vertical framer", so older presets still load.
     [JsonPropertyName("VerticalFramer")]
     public bool FrameEngine { get; set; }
@@ -59,11 +59,20 @@ public sealed class EncodingPreset
     public int BlurPasses { get; set; } = 2;
     public double BackgroundDim { get; set; } = -0.15;
 
-    /// <summary>Pieces of the source and images placed on the frame, each with where it comes from and where it goes.</summary>
-    public List<OverlayRegionState> UiElements { get; set; } = [];
+    /// <summary>Pieces of the source and images placed on the frame, each with where it comes from and where it goes. In stacking order, bottom first.</summary>
+    public List<LayerState> Layers { get; set; } = [];
+
+    /// <summary>The look of the main video as a layer: its style, mask, filters and how it is turned.</summary>
+    public LayerState? MainLayer { get; set; }
+
+    /// <summary>Whether the blurred background is switched off, leaving the black canvas.</summary>
+    public bool BackgroundHidden { get; set; }
+
+    /// <summary>How many of those layers lie under the main video: 0 puts it beneath all of them, as it always was before layers could be reordered.</summary>
+    public int MainVideoIndex { get; set; }
 
     /// <summary>
-    /// Width divided by height of the video the elements were marked on; 0 when not recorded. Their source
+    /// Width divided by height of the video the layers were marked on; 0 when not recorded. Their source
     /// rectangles are fractions of the frame, so they fit any size of video, but only one shape.
     /// </summary>
     public double LayoutSourceAspectRatio { get; set; }
@@ -81,14 +90,14 @@ public sealed class EncodingPreset
     public bool WhisperTranslate { get; set; }
 
     /// <summary>Where the caption box sits on the frame, its size and opacity. Null in presets saved before it could be moved.</summary>
-    public OverlayRegionState? CaptionLayer { get; set; }
+    public LayerState? CaptionLayer { get; set; }
 
     // Filters
     public bool Deinterlace { get; set; }
     public bool Denoise { get; set; }
     public string LutPath { get; set; } = "";
 
-    // The watermark of earlier versions. Read so that it can be turned into an image element; never written.
+    // The watermark of earlier versions. Read so that it can be turned into an image layer; never written.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? WatermarkPath { get; set; }
 
@@ -135,6 +144,9 @@ public sealed class EncodingPreset
     public bool MergeAudioTracks { get; set; }
     public bool NormalizeAudio { get; set; }
     public bool DuckAudio { get; set; }
+
+    /// <summary>How far a track set to Auto-Duck is turned down while a voice speaks, in decibels (negative).</summary>
+    public double DuckAmountDb { get; set; } = -15;
 
     /// <summary>
     /// What was set track by track (action, codec, bitrate, title), by track number. Applied on top of the

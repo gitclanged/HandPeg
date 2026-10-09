@@ -1,0 +1,237 @@
+<Window x:Class="HandPegApp.LayerToolDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:HandPegApp"
+        Width="520" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <!-- One of three panels is shown. Bound straight to the layer: every change shows in the command, and in Live Preview, at once. -->
+    <StackPanel Margin="16">
+        <TextBlock x:Name="IntroText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12" />
+
+        <!-- Filters of the track's own -->
+        <StackPanel x:Name="FiltersPanel" Visibility="Collapsed">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Contrast:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="2" VerticalAlignment="Center"
+                    Value="{Binding FilterContrast}" AutomationProperties.Name="Layer Contrast" local:NumericInput.Default="1"
+                    ToolTip="1 leaves the contrast as it is." />
+            <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterContrast, StringFormat={}{0:0.00}}"
+                     AutomationProperties.Name="Layer Contrast Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
+                     local:NumericInput.Minimum="0" local:NumericInput.Maximum="2" />
+            <TextBlock Grid.Row="1" Text="Brightness:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="-1" Maximum="1" VerticalAlignment="Center"
+                    Value="{Binding FilterBrightness}" AutomationProperties.Name="Layer Brightness" local:NumericInput.Default="0"
+                    ToolTip="0 leaves the brightness as it is." />
+            <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterBrightness, StringFormat={}{0:0.00}}"
+                     AutomationProperties.Name="Layer Brightness Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
+                     local:NumericInput.Minimum="-1" local:NumericInput.Maximum="1" />
+            <TextBlock Grid.Row="2" Text="Saturation:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="3" VerticalAlignment="Center"
+                    Value="{Binding FilterSaturation}" AutomationProperties.Name="Layer Saturation" local:NumericInput.Default="1"
+                    ToolTip="1 leaves the colors as they are; 0 is black and white." />
+            <TextBox Grid.Row="2" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterSaturation, StringFormat={}{0:0.00}}"
+                     AutomationProperties.Name="Layer Saturation Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
+                     local:NumericInput.Minimum="0" local:NumericInput.Maximum="3" />
+            <TextBlock Grid.Row="3" Text="Gamma:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="3" Grid.Column="1" Minimum="0.1" Maximum="3" VerticalAlignment="Center"
+                    Value="{Binding FilterGamma}" AutomationProperties.Name="Layer Gamma" local:NumericInput.Default="1"
+                    ToolTip="1 leaves the midtones as they are; higher lifts them." />
+            <TextBox Grid.Row="3" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterGamma, StringFormat={}{0:0.00}}"
+                     AutomationProperties.Name="Layer Gamma Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
+                     local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="3" />
+            <TextBlock Grid.Row="4" Text="Hue:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="4" Grid.Column="1" Minimum="-180" Maximum="180" VerticalAlignment="Center"
+                    Value="{Binding FilterHue}" AutomationProperties.Name="Layer Hue" local:NumericInput.Default="0"
+                    ToolTip="Turns every color round the color wheel, in degrees." />
+            <TextBox Grid.Row="4" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterHue, StringFormat={}{0:0}}"
+                     AutomationProperties.Name="Layer Hue Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="0"
+                     local:NumericInput.Minimum="-180" local:NumericInput.Maximum="180" />
+            <TextBlock Grid.Row="5" Text="Sharpen:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="5" Grid.Column="1" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                    Value="{Binding FilterSharpen}" AutomationProperties.Name="Layer Sharpen" local:NumericInput.Default="0"
+                    ToolTip="Contrast-adaptive sharpening of this layer alone." />
+            <TextBox Grid.Row="5" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterSharpen, StringFormat={}{0:0.00}}"
+                     AutomationProperties.Name="Layer Sharpen Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
+                     local:NumericInput.Minimum="0" local:NumericInput.Maximum="1" />
+            <TextBlock Grid.Row="6" Text="Blur:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="6" Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center"
+                    Value="{Binding FilterBlur}" AutomationProperties.Name="Layer Blur" local:NumericInput.Default="0"
+                    ToolTip="Blurs this layer alone: how far, in pixels of a frame 1080 wide." />
+            <TextBox Grid.Row="6" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FilterBlur, StringFormat={}{0:0.0}}"
+                     AutomationProperties.Name="Layer Blur Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1"
+                     local:NumericInput.Minimum="0" local:NumericInput.Maximum="50" />
+        </Grid>
+            <CheckBox Content="Denoise" IsChecked="{Binding FilterDenoise}" Margin="0,8,0,0" ToolTip="Takes noise out of this layer alone (hqdn3d)." />
+            <TextBlock Text="LUT (.cube) for this layer:" Margin="0,10,0,4" />
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="Clear" Margin="6,0,0,0" Click="ClearLut_Click" />
+                <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Click="BrowseLut_Click" />
+                <TextBox Text="{Binding FilterLut, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center" AutomationProperties.Name="Layer LUT"
+                         ToolTip="A 3D LUT whose look is given to this layer only." />
+            </DockPanel>
+        </StackPanel>
+
+        <!-- Where it is, how large, and how it is turned -->
+        <StackPanel x:Name="TransformPanel" Visibility="Collapsed">
+            <StackPanel x:Name="PlacedPanel">
+            <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="X %:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="-200" Maximum="200" VerticalAlignment="Center"
+                    Value="{Binding PositionXPercent}" AutomationProperties.Name="Transform X" local:NumericInput.Default="0"
+                    ToolTip="Where the left edge of the layer is, as a percentage of the frame's width. Below 0 and above 100 the layer lies partly or wholly outside the frame, where it is simply cut off." />
+            <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding PositionXPercent, StringFormat={}{0:0.#}}"
+                     AutomationProperties.Name="Transform X Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1"
+                     local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+            <TextBlock Grid.Row="1" Text="Y %:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="-200" Maximum="200" VerticalAlignment="Center"
+                    Value="{Binding PositionYPercent}" AutomationProperties.Name="Transform Y" local:NumericInput.Default="0"
+                    ToolTip="Where the top edge of the layer is, as a percentage of the frame's height. It may lie outside the frame." />
+            <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding PositionYPercent, StringFormat={}{0:0.#}}"
+                     AutomationProperties.Name="Transform Y Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1"
+                     local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+            <TextBlock Grid.Row="2" Text="Scale %:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="1" Maximum="400" VerticalAlignment="Center"
+                    Value="{Binding SizePercent}" AutomationProperties.Name="Transform Scale" local:NumericInput.Default="40"
+                    ToolTip="The width of the layer as a percentage of the frame's width. It grows and shrinks about its middle." />
+            <TextBox Grid.Row="2" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding SizePercent, StringFormat={}{0:0}}"
+                     AutomationProperties.Name="Transform Scale Value" local:NumericInput.Default="40" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0"
+                     local:NumericInput.Minimum="1" local:NumericInput.Maximum="400" />
+            </Grid>
+            </StackPanel>
+            <StackPanel x:Name="MainPanel" Visibility="Collapsed">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Zoom:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="0.1" Maximum="4" VerticalAlignment="Center"
+                    Value="{Binding CenterZoom}" AutomationProperties.Name="Main Zoom" local:NumericInput.Default="1"
+                    ToolTip="1 fills the width of the frame. It grows and shrinks about its middle, and may be larger than the frame." />
+            <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CenterZoom, StringFormat={}{0:0.00}}"
+                     AutomationProperties.Name="Main Zoom Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
+                     local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="4" />
+            <TextBlock Grid.Row="1" Text="X Offset %:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="-100" Maximum="100" VerticalAlignment="Center"
+                    Value="{Binding CenterOffsetX}" AutomationProperties.Name="Main X Offset" local:NumericInput.Default="0"
+                    ToolTip="Moves the main video left (negative) or right, as a percentage of the frame's width. It may lie partly or wholly outside the frame." />
+            <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CenterOffsetX, StringFormat={}{0:0.#}}"
+                     AutomationProperties.Name="Main X Offset Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1"
+                     local:NumericInput.Minimum="-100" local:NumericInput.Maximum="100" />
+            <TextBlock Grid.Row="2" Text="Y Offset %:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="-100" Maximum="100" VerticalAlignment="Center"
+                    Value="{Binding CenterOffsetY}" AutomationProperties.Name="Main Y Offset" local:NumericInput.Default="0"
+                    ToolTip="Moves the main video up (negative) or down, as a percentage of the frame's height." />
+            <TextBox Grid.Row="2" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CenterOffsetY, StringFormat={}{0:0.#}}"
+                     AutomationProperties.Name="Main Y Offset Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1"
+                     local:NumericInput.Minimum="-100" local:NumericInput.Maximum="100" />
+        </Grid>
+            </StackPanel>
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Rotation:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="-180" Maximum="180" VerticalAlignment="Center"
+                    Value="{Binding Rotation}" AutomationProperties.Name="Layer Rotation" local:NumericInput.Default="0"
+                    ToolTip="Turns the picture about its middle, in degrees clockwise." />
+            <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding Rotation, StringFormat={}{0:0.#}}"
+                     AutomationProperties.Name="Layer Rotation Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="1"
+                     local:NumericInput.Minimum="-180" local:NumericInput.Maximum="180" />
+        </Grid>
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <CheckBox Content="Flip Horizontally" IsChecked="{Binding FlipHorizontal}" ToolTip="Mirrors the picture left to right." />
+                <CheckBox Content="Flip Vertically" IsChecked="{Binding FlipVertical}" Margin="24,0,0,0" ToolTip="Turns the picture upside down, as a mirror under it would." />
+                <Button Content="Center on Frame" Padding="12,4" Margin="24,0,0,0" Click="Center_Click" ToolTip="Puts the layer in the middle of the frame, at the size it has." />
+            </StackPanel>
+        </StackPanel>
+
+        <!-- The mask -->
+        <StackPanel x:Name="MaskPanel" Visibility="Collapsed">
+            <CheckBox Content="Use a mask" IsChecked="{Binding CustomMask}"
+                      ToolTip="Cuts the layer to a shape: a black-and-white picture stretched over the layer, which shows where the picture is white and is see-through where it is black." />
+            <DockPanel Margin="0,6,0,0">
+                <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Click="BrowseMask_Click" />
+                <TextBox Text="{Binding MaskPath, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center" AutomationProperties.Name="Track Mask File"
+                         ToolTip="A .png or .jpg in black and white. It is stretched to the size of the layer." />
+            </DockPanel>
+            <TextBlock Text="Ready-made shapes:" Margin="0,12,0,4" />
+            <StackPanel Orientation="Horizontal">
+                <Button Content="Soft Rectangle" Padding="12,4" Tag="Soft" Click="Shape_Click" ToolTip="A rectangle whose edges fade out all the way round." />
+                <Button Content="Ellipse" Padding="12,4" Margin="6,0,0,0" Tag="Ellipse" Click="Shape_Click" ToolTip="A circle or oval with a soft edge: a round radar, an ultimate meter." />
+                <Button Content="Slant" Padding="12,4" Margin="6,0,0,0" Tag="Slant" Click="Shape_Click" ToolTip="A bar leaning to the right, as slanted health bars do." />
+                <Button Content="No Mask" Padding="12,4" Margin="6,0,0,0" Click="NoMask_Click" ToolTip="Takes the mask off: the layer is its whole rectangle again." />
+            </StackPanel>
+            <TextBlock Text="The outline of the layer itself:" Margin="0,14,0,2" />
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Corner Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center"
+                    Value="{Binding CornerRadius}" AutomationProperties.Name="Mask Corner Radius" local:NumericInput.Default="0"
+                    ToolTip="Rounds the corners, as a percentage of the layer's shorter side." />
+            <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CornerRadius, StringFormat={}{0:0}}"
+                     AutomationProperties.Name="Mask Corner Radius Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0"
+                     local:NumericInput.Minimum="0" local:NumericInput.Maximum="50" />
+            <TextBlock Grid.Row="1" Text="Soft Edge:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="1" Maximum="80" VerticalAlignment="Center"
+                    Value="{Binding FeatherRadius}" AutomationProperties.Name="Mask Soft Edge" local:NumericInput.Default="12"
+                    ToolTip="How wide the soft edge is, in pixels, while Soft Edges is ticked." />
+            <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FeatherRadius, StringFormat={}{0:0}}"
+                     AutomationProperties.Name="Mask Soft Edge Value" local:NumericInput.Default="12" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0"
+                     local:NumericInput.Minimum="1" local:NumericInput.Maximum="80" />
+        </Grid>
+            <CheckBox Content="Soft Edges" IsChecked="{Binding Feather}" Margin="0,6,0,0" ToolTip="Lets the edges of the layer fade out over the width set above." />
+            <Button x:Name="RedrawButton" Content="Redraw Area on Video..." Padding="12,5" Margin="0,14,0,0" HorizontalAlignment="Left" Click="Redraw_Click"
+                    ToolTip="Closes this window and lets you drag a new rectangle on the video: what this layer cuts out of it. Use it when the game's HUD sits a little differently in your recording." />
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button Content="Reset" MinWidth="88" Click="Reset_Click" ToolTip="Puts what this window sets back to how a new layer has it." />
+            <Button Content="Close" MinWidth="88" Margin="6,0,0,0" IsDefault="True" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

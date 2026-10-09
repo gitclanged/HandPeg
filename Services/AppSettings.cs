@@ -32,6 +32,52 @@ public sealed class SmartRule
 }
 
 /// <summary>
+/// What the interface looks like and starts with in one mode. Encoder Mode and Editor Mode each keep their
+/// own: switching mode puts the other one's away and takes this one's out, so a change made in one mode
+/// (a taller timeline, the Command Preview tab) does not follow into the other. Every property here has a
+/// property of the same name in <see cref="AppSettings"/>, which holds the values of the mode in use.
+/// </summary>
+public sealed class ModeProfile
+{
+    public int TimelineHeight { get; set; }
+    public int AudioTrackHeight { get; set; }
+    public string PresetBarLocation { get; set; } = "";
+    public bool ShowAdvancedFiltersTab { get; set; }
+    public bool ShowTimelineWaveform { get; set; }
+    public bool ShowAdvancedPlayback { get; set; }
+    public bool ShowCommandPreviewTab { get; set; }
+    public bool GenerateHoverPreviews { get; set; }
+    public bool? ShowTimelineThumbnails { get; set; }
+    public int ThumbnailIntervalSeconds { get; set; }
+    public int HoverPreviewScale { get; set; }
+    public int PreviewDurationSeconds { get; set; }
+    public int PreviewResolutionPercent { get; set; }
+    public bool AutoOpenLayoutPane { get; set; }
+    public bool ShowAutoCaptions { get; set; }
+    public bool ShowIFrames { get; set; }
+    public bool SnapTimelineToIFrames { get; set; }
+    public bool AutoToggleTimelineSnap { get; set; }
+    public bool SaveTargetSizeInPresets { get; set; }
+    public bool LivePreview { get; set; }
+    public bool StartWithPlayOnlySegments { get; set; }
+    public bool StartWithSnapToIFrames { get; set; }
+    public bool StartWithChapterMarkers { get; set; }
+    public bool StartWithChaptersAtCuts { get; set; }
+    public bool StartWithFrameEngine { get; set; }
+    public int MasterTimelineHeight { get; set; }
+    public bool ShowCutSegmentsPane { get; set; }
+    public bool ShowKeyframesPane { get; set; }
+    public bool ShowClipKeyframes { get; set; }
+    public bool LayoutPaneOnLeft { get; set; }
+    public bool SidePanesOnLeft { get; set; }
+    public bool CutSegmentsOnTop { get; set; }
+    public bool TimelineOnTop { get; set; }
+    public double SidePanesWidth { get; set; }
+    public double LayoutPaneWidth { get; set; }
+    public double KeyframesPaneHeight { get; set; }
+}
+
+/// <summary>
 /// User overrides stored in appsettings.json in the settings folder (see <see cref="AppPaths"/>). A blank value means "use the default".
 /// </summary>
 public sealed class AppSettings
@@ -54,6 +100,9 @@ public sealed class AppSettings
     public const string WhisperModelBaseUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
     public static string FilePath => AppPaths.SettingsFile;
+
+    // Declared before Current: static fields are set in the order they are written, and loading the settings uses this.
+    private static readonly System.Reflection.PropertyInfo[] ProfileProperties = typeof(ModeProfile).GetProperties();
 
     /// <summary>The settings in effect. Replaced as a whole when the user saves the settings window.</summary>
     public static AppSettings Current { get; private set; } = Load();
@@ -90,15 +139,15 @@ public sealed class AppSettings
     /// <summary>True shows times as HH:MM:SS:FF (frames); false as HH:MM:SS.mmm (milliseconds).</summary>
     public bool ShowTimesAsFrames { get; set; }
 
-    public bool SnapTimelineToKeyframes { get; set; }
+    public bool SnapTimelineToIFrames { get; set; }
 
-    /// <summary>Whether the keyframe lines are drawn on the timeline: the "Show keyframes" box of the main window.</summary>
-    public bool ShowKeyframes { get; set; } = true;
+    /// <summary>Whether the I-frame lines are drawn on the timeline: the "Show I-frames" box of the main window.</summary>
+    public bool ShowIFrames { get; set; } = true;
 
-    /// <summary>When on, ticking or clearing "Show keyframes" switches <see cref="SnapTimelineToKeyframes"/> with it.</summary>
+    /// <summary>When on, ticking or clearing "Show I-frames" switches <see cref="SnapTimelineToIFrames"/> with it.</summary>
     public bool AutoToggleTimelineSnap { get; set; }
 
-    /// <summary>How far the timeline thumb is pulled towards a keyframe while dragging: 1 (weak) to 5 (strong).</summary>
+    /// <summary>How far the timeline thumb is pulled towards an I-frame while dragging: 1 (weak) to 5 (strong).</summary>
     public int TimelineMagnetism { get; set; } = 3;
 
     /// <summary>Builds a sheet of thumbnails after each load, shown when the pointer is over the timeline.</summary>
@@ -146,6 +195,52 @@ public sealed class AppSettings
     /// <summary>How tall each track's row is in the Audio tab, 1 to 5: taller rows show more of the waveform.</summary>
     public int AudioTrackHeight { get; set; } = 2;
 
+    /// <summary>
+    /// Draws a strip of pictures from the video along the timeline, behind the waveform. Null until it has been decided once:
+    /// it then starts out on in Editor Mode and off in Encoder Mode.
+    /// </summary>
+    public bool? ShowTimelineThumbnails { get; set; }
+
+    // ----- Launch -----
+
+    /// <summary>How many style presets the launch window offers as buttons, 1 to 5. 0 switches the launch window off. It is only shown in Editor Mode.</summary>
+    public int SplashPresetCount { get; set; } = 3;
+
+    /// <summary>How many frames are taken from a video layer's file for the strip its block on the timeline is drawn with: 1 to 25.</summary>
+    public int LayerThumbnailCount { get; set; } = 8;
+
+    /// <summary>Every video that is opened starts as a vertical one: a tall frame with the picture across its middle.</summary>
+    public bool DefaultVerticalVideo { get; set; }
+
+    /// <summary>Which of the style presets HandPeg comes with have been written to the Styles folder; they are written once.</summary>
+    public int BuiltInStylesVersion { get; set; }
+
+    /// <summary>
+    /// Live Preview: the player shows the picture with the export's filters applied as they are set.
+    /// Remembered from the box beside the playback controls.
+    /// </summary>
+    public bool LivePreview { get; set; }
+
+    /// <summary>
+    /// The graphics card decodes the video in the player, as well as drawing it. Off, the processor decodes:
+    /// for a driver that shows a green or garbled picture, or stutters.
+    /// </summary>
+    public bool PlayerHardwareAcceleration { get; set; } = true;
+
+    /// <summary>
+    /// Hardware Decode Adapter: which graphics card decodes for an encode, by its Direct3D number, so that the
+    /// work can be given to a second card. -1 leaves the choice to FFmpeg.
+    /// </summary>
+    public int HardwareDecodeAdapter { get; set; } = -1;
+
+    // ----- Dead air -----
+
+    /// <summary>Remove Dead Air: anything quieter than this, in decibels, counts as silence.</summary>
+    public double DeadAirThresholdDb { get; set; } = -35;
+
+    /// <summary>Remove Dead Air: a silence has to last this long, in seconds, to be cut.</summary>
+    public double DeadAirMinSeconds { get; set; } = 1;
+
     // ----- First run, appearance and mode -----
 
     /// <summary>False until the first-run window has been completed once.</summary>
@@ -157,15 +252,147 @@ public sealed class AppSettings
     public const string EncoderMode = "Encoder Mode";
     public const string EditorMode = "Editor Mode";
 
-    /// <summary>The mode last chosen in the first-run window. A record of the choice: the settings it set can be changed one by one.</summary>
+    public const string LastUsedMode = "Last Used";
+
+    public static IReadOnlyList<string> DefaultModes { get; } = [LastUsedMode, EncoderMode, EditorMode];
+
+    /// <summary>The mode in use. The interface settings in this object are that mode's; the other mode's wait in <see cref="ModeProfiles"/>.</summary>
     public string UiMode { get; set; } = EncoderMode;
+
+    /// <summary>The mode HandPeg starts in: one of the two, or whichever was in use when it was last closed.</summary>
+    public string DefaultMode { get; set; } = LastUsedMode;
+
+    /// <summary>The interface settings of each mode, by mode name. The mode in use is written here whenever the settings are saved.</summary>
+    public Dictionary<string, ModeProfile> ModeProfiles { get; set; } = [];
+
+    /// <summary>The interface settings as they are now, as a profile to put away.</summary>
+    private ModeProfile CaptureProfile()
+    {
+        var profile = new ModeProfile();
+        foreach (var property in ProfileProperties)
+            property.SetValue(profile, typeof(AppSettings).GetProperty(property.Name)!.GetValue(this));
+        return profile;
+    }
+
+    /// <summary>
+    /// Changes mode: the interface settings of the mode being left are put away, and those of the mode being
+    /// entered are taken out; a mode never used before starts from its defaults.
+    /// </summary>
+    public void SwitchMode(string mode)
+    {
+        mode = mode == EditorMode ? EditorMode : EncoderMode;
+        if (mode == UiMode)
+            return;
+
+        ModeProfiles[UiMode] = CaptureProfile();
+        if (ModeProfiles.TryGetValue(mode, out var profile))
+        {
+            foreach (var property in ProfileProperties)
+                typeof(AppSettings).GetProperty(property.Name)!.SetValue(this, property.GetValue(profile));
+            UiMode = mode;
+        }
+        else
+        {
+            ApplyMode(mode);
+        }
+    }
+
+    /// <summary>The style presets shown as buttons in the launch window, by file name. Empty for the most recent ones.</summary>
+    public List<string> SplashStylePresets { get; set; } = [];
 
     // What a freshly started window begins with. Unlike the settings above these are only starting points:
     // the boxes they stand for are on the main window and can be changed there for the session.
     public bool StartWithPlayOnlySegments { get; set; }
-    public bool StartWithSnapToKeyframes { get; set; } = true;
+    public bool StartWithSnapToIFrames { get; set; } = true;
     public bool StartWithChapterMarkers { get; set; } = true;
     public bool StartWithChaptersAtCuts { get; set; }
+
+    /// <summary>
+    /// How tall the master timeline is, 1 (a slim bar) to 50: the slider beside the volume. 0 in settings from
+    /// before the slider, which take it from the old five-step <see cref="TimelineHeight"/>.
+    /// </summary>
+    public int MasterTimelineHeight { get; set; }
+
+    /// <summary>How tall each track's time bar is on the Layers tab, 1 to 50.</summary>
+    public int LayerHeight { get; set; } = 25;
+
+    /// <summary>How tall each sound's row is on the Audio tab, 1 to 50: taller rows show more of the waveform.</summary>
+    public int AudioHeight { get; set; } = 25;
+
+    /// <summary>The panes and what each mode starts with were given their defaults once, for settings from before there were any.</summary>
+    public int ViewDefaultsVersion { get; set; }
+
+    public const string ResetToStyle = "Active Style Preset";
+    public const string ResetToSystem = "System Default";
+
+    public static IReadOnlyList<string> ResetTargets { get; } = [ResetToStyle, ResetToSystem];
+
+    /// <summary>What a double-click on a slider or a number box puts it back to: the value of the style preset in use, or the built-in default.</summary>
+    public string DoubleClickResetsTo { get; set; } = ResetToStyle;
+
+    /// <summary>The Cut Segments pane beside the player. Encoder Mode starts with it; Editor Mode has the Keyframes pane there instead.</summary>
+    public bool ShowCutSegmentsPane { get; set; } = true;
+
+    /// <summary>The Keyframes pane beside the player: the selected clip's keyframes on a timeline of their own.</summary>
+    public bool ShowKeyframesPane { get; set; }
+
+    /// <summary>Whether clips on the timeline show a diamond at each of their keyframes.</summary>
+    public bool ShowClipKeyframes { get; set; } = true;
+
+    // Where the panes are around the player, and how large: each mode keeps its own arrangement. False and 0
+    // are where a pane starts out, so settings from before the panes could be moved read as the usual layout.
+
+    /// <summary>The layout pane is to the left of the video instead of to its right.</summary>
+    public bool LayoutPaneOnLeft { get; set; }
+
+    /// <summary>The side panes (Keyframes, Cut Segments) are to the left of the player instead of to its right.</summary>
+    public bool SidePanesOnLeft { get; set; }
+
+    /// <summary>The Cut Segments pane is above the Keyframes pane instead of under it.</summary>
+    public bool CutSegmentsOnTop { get; set; }
+
+    /// <summary>The master timeline is above the player instead of under it.</summary>
+    public bool TimelineOnTop { get; set; }
+
+    /// <summary>How wide the side panes are, in pixels; 0 for the width they start with.</summary>
+    public double SidePanesWidth { get; set; }
+
+    /// <summary>How wide the layout pane is, in pixels; 0 for the width it starts with.</summary>
+    public double LayoutPaneWidth { get; set; }
+
+    /// <summary>How tall the Keyframes pane is, in pixels; 0 for as tall as what is in it.</summary>
+    public double KeyframesPaneHeight { get; set; }
+
+    /// <summary>How tall the master timeline starts out in a mode, 1 to 50.</summary>
+    public static int DefaultMasterTimelineHeight(string mode) => mode == EditorMode ? 17 : 1;
+
+    /// <summary>Reset Panes Layout: every pane back where the mode in use starts with it, at the size it starts with.</summary>
+    public void ResetPaneLayout()
+    {
+        (LayoutPaneOnLeft, SidePanesOnLeft, CutSegmentsOnTop, TimelineOnTop) = (false, false, false, false);
+        (SidePanesWidth, LayoutPaneWidth, KeyframesPaneHeight) = (0, 0, 0);
+        MasterTimelineHeight = DefaultMasterTimelineHeight(UiMode);
+    }
+
+    /// <summary>A new window starts with the Frame &amp; Layer Engine switched on.</summary>
+    public bool StartWithFrameEngine { get; set; }
+
+    /// <summary>
+    /// The video encoder a new window starts with, by its FFmpeg name (libx264, h264_nvenc...), as chosen in
+    /// the first-run window. Blank for the built-in default, Copy.
+    /// </summary>
+    public string DefaultVideoEncoder { get; set; } = "";
+
+    /// <summary>
+    /// The audio codec and bitrate a new window starts with, as chosen in the first-run window: so that sound
+    /// is encoded from the start, and nothing an edit does to it runs into a copied track. Blank for Copy.
+    /// </summary>
+    public string DefaultAudioEncoder { get; set; } = "";
+
+    public string DefaultAudioBitrate { get; set; } = "";
+
+    /// <summary>Asks whether to save the project when HandPeg is closed with changes that have not been saved.</summary>
+    public bool PromptToSaveOnExit { get; set; } = true;
 
     /// <summary>Opens the Edit Layout pane by itself as soon as there is a layout to edit.</summary>
     public bool AutoOpenLayoutPane { get; set; }
@@ -180,13 +407,14 @@ public sealed class AppSettings
         UiMode = editor ? EditorMode : EncoderMode;
 
         TimelineHeight = editor ? 5 : 1;
+        ResetPaneLayout();
         PresetBarLocation = editor ? PresetBarInSummary : PresetBarAtTop;
         ShowAdvancedFiltersTab = editor;
         ShowTimelineWaveform = editor;
         ShowAdvancedPlayback = editor;
         StartWithPlayOnlySegments = editor;
-        StartWithSnapToKeyframes = true;
-        SnapTimelineToKeyframes = editor;
+        StartWithSnapToIFrames = true;
+        SnapTimelineToIFrames = editor;
         AutoToggleTimelineSnap = editor;
         GenerateHoverPreviews = editor;
         SaveTargetSizeInPresets = editor;
@@ -194,6 +422,11 @@ public sealed class AppSettings
         StartWithChapterMarkers = true;
         StartWithChaptersAtCuts = editor;
         AutoOpenLayoutPane = editor;
+        ShowTimelineThumbnails = editor;
+        StartWithFrameEngine = editor;
+        (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (!editor, editor, true);
+        if (!editor)
+            (DefaultVideoEncoder, DefaultAudioEncoder, DefaultAudioBitrate) = ("", "", "");
 
         if (editor)
         {
@@ -218,7 +451,7 @@ public sealed class AppSettings
     public bool ShowAutoCaptions { get; set; }
 
     /// <summary>When an encode fails on a hardware encoder, try again once with the matching software encoder.</summary>
-    public bool AutoFallbackToSoftware { get; set; }
+    public bool AutoFallbackToSoftware { get; set; } = true;
 
     // SponsorBlock categories yt-dlp cuts out of a download
     public bool SponsorBlockSponsor { get; set; }
@@ -293,6 +526,8 @@ public sealed class AppSettings
     {
         var copy = (AppSettings)MemberwiseClone();
         copy.SmartRules = SmartRules.Select(r => new SmartRule { Type = r.Type, Path = r.Path, Preset = r.Preset }).ToList();
+        copy.ModeProfiles = new(ModeProfiles);
+        copy.SplashStylePresets = [.. SplashStylePresets];
         return copy;
     }
 
@@ -309,6 +544,9 @@ public sealed class AppSettings
         WhisperReleaseUrl = WhisperReleaseUrl.Trim();
         SmartRules = SmartRules.Where(r => !string.IsNullOrWhiteSpace(r.Path) && !string.IsNullOrWhiteSpace(r.Preset)).ToList();
 
+        // The mode in use keeps its interface settings in the profiles too, so the file always holds both modes whole.
+        ModeProfiles[UiMode] = CaptureProfile();
+
         Directory.CreateDirectory(AppPaths.Settings);
         File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions));
         Current = this;
@@ -324,8 +562,34 @@ public sealed class AppSettings
             if (File.Exists(FilePath))
             {
                 var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
+
+                // A file that spells these out as null, as one written by hand or by an older version might.
+                settings.SmartRules ??= [];
+                settings.ModeProfiles ??= [];
+
                 foreach (var rule in settings.SmartRules)
                     rule.Normalize();
+
+                // Settings saved before the option existed: on where the mode would have switched it on.
+                settings.ShowTimelineThumbnails ??= settings.UiMode == EditorMode;
+
+                // Settings from before the panes and the timeline's slider: each mode gets what it would have started with.
+                if (settings.ViewDefaultsVersion < 1)
+                {
+                    settings.ViewDefaultsVersion = 1;
+                    var editor = settings.UiMode == EditorMode;
+                    (settings.ShowCutSegmentsPane, settings.ShowKeyframesPane, settings.ShowClipKeyframes) = (!editor, editor, true);
+                    settings.MasterTimelineHeight = Math.Clamp(4 * settings.TimelineHeight - 3, 1, 50);
+                    foreach (var (mode, profile) in settings.ModeProfiles)
+                    {
+                        (profile.ShowCutSegmentsPane, profile.ShowKeyframesPane, profile.ShowClipKeyframes) = (mode != EditorMode, mode == EditorMode, true);
+                        profile.MasterTimelineHeight = Math.Clamp(4 * profile.TimelineHeight - 3, 1, 50);
+                    }
+                }
+
+                // Starting in a set mode, whatever was in use when HandPeg was last closed.
+                if (settings.DefaultMode is EncoderMode or EditorMode)
+                    settings.SwitchMode(settings.DefaultMode);
                 return settings;
             }
         }
@@ -334,7 +598,7 @@ public sealed class AppSettings
             // An unreadable settings file must not stop the app from starting; defaults apply.
         }
 
-        return new AppSettings();
+        return new AppSettings { ShowTimelineThumbnails = false };
     }
 
     // Paths are often pasted with the quotes Explorer's "Copy as path" adds.
