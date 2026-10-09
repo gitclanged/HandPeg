@@ -4,7 +4,9 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using CommunityToolkit.Mvvm.ComponentModel;
+using HandPegApp.Models;
 using HandPegApp.Services;
+using HandPegApp.ViewModels;
 using Microsoft.Win32;
 
 namespace HandPegApp;
@@ -37,10 +39,18 @@ public partial class CombinatorDialog : Window
     private readonly CancellationTokenSource _closing = new();
     private CancellationTokenSource? _runCancellation;
 
-    public CombinatorDialog()
+    /// <param name="viewModel">Where the encoding settings start from: the encoder, preset and quality the main window is set to.</param>
+    public CombinatorDialog(MainViewModel viewModel)
     {
         InitializeComponent();
         FileList.ItemsSource = _items;
+
+        var encoders = viewModel.VideoEncoders.Where(VideoCombinator.IsOffered).ToList();
+        _startingPreset = viewModel.EncoderPreset;
+        EncoderBox.ItemsSource = encoders;
+        EncoderBox.SelectedItem = encoders.FirstOrDefault(e => e == viewModel.VideoEncoder) ?? encoders.FirstOrDefault();
+        QualityBox.Text = Math.Clamp(viewModel.Crf, 0, 51).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
         ResolutionBox.ItemsSource = VideoCombinator.Resolutions;
         ResolutionBox.SelectedIndex = 0;
         TransitionBox.ItemsSource = VideoCombinator.Transitions;
@@ -53,6 +63,30 @@ public partial class CombinatorDialog : Window
     public string? SendToEditorPath { get; private set; }
 
     private bool IsRunning => _runCancellation is not null;
+
+    private bool IsFastCopy => FastCopyBox.IsChecked == true;
+
+    // The preset the main window had, offered again whenever the chosen encoder has a step of that name.
+    private readonly string _startingPreset;
+
+    private void FastCopy_Changed(object sender, RoutedEventArgs e) => Refresh();
+
+    private void EncoderBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (EncoderBox.SelectedItem is not EncoderOption encoder)
+            return;
+
+        var presets = VideoCombinator.PresetsFor(encoder);
+        var keep = PresetBox.SelectedItem as string ?? _startingPreset;
+        PresetBox.ItemsSource = presets;
+        PresetBox.SelectedItem = presets.Contains(keep) ? keep : presets.Contains("medium") ? "medium" : presets[presets.Count / 2];
+    }
+
+    private string CodecArguments =>
+        VideoCombinator.CodecArguments(
+            EncoderBox.SelectedItem as EncoderOption ?? EncoderOption.Software[0],
+            PresetBox.SelectedItem as string ?? "medium",
+            int.TryParse(QualityBox.Text, out var quality) ? quality : 18);
 
     private bool IsReady => _items.Count >= 2 && _items.All(i => i.IsUsable);
 
@@ -169,6 +203,10 @@ public partial class CombinatorDialog : Window
         for (var i = 0; i < _items.Count; i++)
             _items[i].Number = $"{i + 1}.";
 
+        // Stitching has no size to choose and no transitions; re-encoding has both, and an encoder.
+        ReencodePanel.IsEnabled = !IsFastCopy;
+        EncodingPanel.Visibility = IsFastCopy ? Visibility.Collapsed : Visibility.Visible;
+
         var selected = FileList.SelectedIndex;
         AddButton.IsEnabled = _items.Count < VideoCombinator.MaxInputs;
         RemoveButton.IsEnabled = selected >= 0;
@@ -193,6 +231,23 @@ public partial class CombinatorDialog : Window
         }
 
         var inputs = Inputs;
+        if (IsFastCopy)
+        {
+            // Files that differ cannot be stitched as they are. Said, and the box cleared, rather than making a file that will not play.
+            if (VideoCombinator.GetCopyProblem(inputs) is { } problem)
+            {
+                FastCopyBox.IsChecked = false;
+                ShowStatus($"Fast Stream Copy was switched off: {problem}. The videos will be re-encoded to match.", isProblem: true);
+                return;
+            }
+
+            var video = inputs[0].Info.Video!;
+            SummaryText.Text = $"Result: {inputs.Count} videos stitched as they are, {video.Width} x {video.Height}, "
+                               + $"{Models.TimeDisplay.Format(inputs.Sum(i => i.Info.DurationSeconds))} long, "
+                               + inputs[0].Info.Audio.Count switch { 0 => "no sound", 1 => "1 audio track", var count => $"{count} audio tracks" } + ". Nothing is re-encoded.";
+            return;
+        }
+
         var (width, height) = VideoCombinator.GetFrameSize(resolution, inputs);
         var tracks = VideoCombinator.GetAudioTrackCount(inputs);
         var note = transition != VideoCombinator.HardSplice && !VideoCombinator.UsesTransition(inputs, transition)
@@ -209,13 +264,15 @@ public partial class CombinatorDialog : Window
         if (!IsReady)
             return;
 
+        // Stitched files keep the kind of file they were; re-encoded ones are MP4.
         var first = _items[0].Path;
+        var extension = OutputExtension;
         var dialog = new SaveFileDialog
         {
             Title = "Save the combined video as",
-            Filter = "MP4|*.mp4",
-            DefaultExt = "mp4",
-            FileName = $"{Path.GetFileNameWithoutExtension(first)}_combined.mp4",
+            Filter = $"{extension.ToUpperInvariant()}|*.{extension}",
+            DefaultExt = extension,
+            FileName = $"{Path.GetFileNameWithoutExtension(first)}_combined.{extension}",
             InitialDirectory = Path.GetDirectoryName(first) ?? "",
         };
         if (dialog.ShowDialog(this) != true)
@@ -228,13 +285,16 @@ public partial class CombinatorDialog : Window
     private async void Send_Click(object sender, RoutedEventArgs e)
     {
         // In the session's folder: a working file, which goes when HandPeg closes.
-        var output = Path.Combine(SessionPaths.Root, "combined", $"combined_{DateTime.Now:yyyyMMdd_HHmmss}.mp4");
+        var output = Path.Combine(SessionPaths.Root, "combined", $"combined_{DateTime.Now:yyyyMMdd_HHmmss}.{OutputExtension}");
         if (!await RunAsync(output))
             return;
 
         SendToEditorPath = output;
         DialogResult = true;
     }
+
+    private string OutputExtension =>
+        IsFastCopy && _items.Count > 0 && Path.GetExtension(_items[0].Path).TrimStart('.').ToLowerInvariant() is { Length: > 0 } extension ? extension : "mp4";
 
     /// <summary>Runs the join. Returns whether the file was made; what went wrong otherwise is shown in the dialog.</summary>
     private async Task<bool> RunAsync(string outputPath)
@@ -254,7 +314,8 @@ public partial class CombinatorDialog : Window
         ShowStatus("Starting FFmpeg...", isProblem: false);
         Progress.IsIndeterminate = true;
 
-        var expected = TimeSpan.FromSeconds(Math.Max(VideoCombinator.GetOutputSeconds(inputs, transition), 0.1));
+        var fastCopy = IsFastCopy;
+        var expected = TimeSpan.FromSeconds(Math.Max(fastCopy ? inputs.Sum(i => i.Info.DurationSeconds) : VideoCombinator.GetOutputSeconds(inputs, transition), 0.1));
         var progress = new Progress<FfmpegProgress>(report =>
         {
             if (!ReferenceEquals(_runCancellation, cancellation) || report.Position is not { } position)
@@ -268,7 +329,10 @@ public partial class CombinatorDialog : Window
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
-            await FfmpegRunner.RunAsync(VideoCombinator.BuildCommand(inputs, resolution, transition, outputPath), progress, cancellation.Token);
+            var command = fastCopy
+                ? VideoCombinator.BuildCopyCommand(inputs, Path.Combine(SessionPaths.Root, "combined", $"list_{Guid.NewGuid():N}.txt"), outputPath)
+                : VideoCombinator.BuildCommand(inputs, resolution, transition, outputPath, CodecArguments);
+            await FfmpegRunner.RunAsync(command, progress, cancellation.Token);
             return true;
         }
         catch (OperationCanceledException)

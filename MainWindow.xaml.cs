@@ -76,6 +76,7 @@ public partial class MainWindow : Window
         _viewModel.MediaLoaded += PlayMedia;
         _viewModel.PreviewRendered += ShowPreview;
         _viewModel.AskOverwrite = AskOverwrite;
+        _viewModel.Confirm = (title, message, confirm) => new ConfirmDialog(title, message, confirm) { Owner = this }.ShowDialog() == true;
 
         // Elements added or removed while they are being arranged change what is on the canvas.
         _viewModel.UiElements.CollectionChanged += (_, _) => RedrawLayout();
@@ -142,6 +143,7 @@ public partial class MainWindow : Window
     {
         // Encodes, downloads and probes still running go first, children included, so nothing is left
         // behind in the background and nothing still holds a file in the session folder.
+        _windowClosing.Cancel();
         ProcessPipes.KillAll();
         _viewModel.Shutdown();
         _mpv?.Close();
@@ -244,7 +246,7 @@ public partial class MainWindow : Window
     /// <summary>The Video Combinator: two videos joined into one, saved to a file or sent straight to the editor.</summary>
     private void OpenCombinator_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new CombinatorDialog { Owner = this };
+        var dialog = new CombinatorDialog(_viewModel) { Owner = this };
         if (dialog.ShowDialog() == true && dialog.SendToEditorPath is { } combined)
             LoadDroppedFile(combined);
     }
@@ -370,11 +372,14 @@ public partial class MainWindow : Window
         if (surface == IntPtr.Zero)
             return;
 
+        // Not there yet: it is fetched by itself, with a notice in the empty player saying so.
         if (!MpvPlayer.IsInstalled)
         {
-            _viewModel.StatusText = "The video player (libmpv) is not installed yet: open Settings (the gear button) and press Install / Update All Dependencies.";
+            _ = FetchPlayerAsync();
             return;
         }
+
+        EngineNotice.Visibility = Visibility.Collapsed;
 
         _startingPlayer = true;
         try
@@ -429,6 +434,58 @@ public partial class MainWindow : Window
         {
             _startingPlayer = false;
         }
+    }
+
+    private readonly CancellationTokenSource _windowClosing = new();
+    private bool _fetchingPlayer;
+    private bool _playerFetchFailed;
+
+    /// <summary>
+    /// Downloads libmpv, the video engine, when it is missing: by itself, in the background, with a notice
+    /// over the empty player so that it is clear why there is no picture yet. Tried once per session; when
+    /// it fails the notice says so, and the dependency list in the settings is the way to try again.
+    /// </summary>
+    private async Task FetchPlayerAsync()
+    {
+        if (_fetchingPlayer || _playerFetchFailed)
+            return;
+
+        _fetchingPlayer = true;
+        (EngineNotice.Visibility, EngineProgress.Visibility, EngineProgress.IsIndeterminate) = (Visibility.Visible, Visibility.Visible, true);
+        EngineNoticeTitle.Text = "Downloading Video Engine...";
+        EngineNoticeText.Text = "The player (libmpv, about 31 MB) is fetched once. Everything else can be used meanwhile.";
+        try
+        {
+            var token = _windowClosing.Token;
+            var latest = await DependencyUpdater.GetLatestAsync(DependencyUpdater.Mpv, token);
+            var progress = new Progress<InstallProgress>(report =>
+            {
+                EngineProgress.IsIndeterminate = report.Fraction < 0;
+                EngineProgress.Value = Math.Clamp(report.Fraction, 0, 1);
+                EngineNoticeText.Text = report.Text;
+            });
+            await Task.Run(() => DependencyUpdater.InstallToolAsync(DependencyUpdater.Mpv, latest, progress, token), token);
+            _viewModel.OnDependenciesChanged();
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex))
+        {
+            AppLog.Write("The video engine could not be downloaded", ex);
+            _playerFetchFailed = true;
+            EngineProgress.Visibility = Visibility.Collapsed;
+            EngineNoticeTitle.Text = "Video Engine Not Installed";
+            EngineNoticeText.Text = $"It could not be downloaded ({ex.Message}). Check the connection, then open Settings (the gear button) and press Install / Update All Dependencies.";
+            return;
+        }
+        finally
+        {
+            _fetchingPlayer = false;
+        }
+
+        await EnsurePlayerAsync();
     }
 
     /// <summary>Plays a newly loaded source.</summary>
@@ -787,8 +844,8 @@ public partial class MainWindow : Window
             SettingsTabs.SelectedIndex = 0;
         }
 
-        if (e.PropertyName == nameof(MainViewModel.ShowAdvancedFiltersTab)
-            && !_viewModel.ShowAdvancedFiltersTab && ReferenceEquals(SettingsTabs.SelectedItem, AdvancedTab))
+        if (e.PropertyName == nameof(MainViewModel.IsEditorMode)
+            && !_viewModel.IsEditorMode && ReferenceEquals(SettingsTabs.SelectedItem, LayersTab))
         {
             SettingsTabs.SelectedIndex = 0;
         }
@@ -1014,6 +1071,17 @@ public partial class MainWindow : Window
     }
 
     private void ClearLut_Click(object sender, RoutedEventArgs e) => _viewModel.LutPath = "";
+
+    private async void AddVideo_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Select a video to place on the frame",
+            Filter = "Video files|*.mp4;*.mkv;*.mov;*.avi;*.webm;*.m4v;*.ts;*.m2ts;*.wmv;*.flv;*.mpg;*.mpeg;*.gif|All files|*.*",
+        };
+        if (dialog.ShowDialog(this) == true)
+            await _viewModel.AddVideoElementAsync(dialog.FileName);
+    }
 
     private void AddImage_Click(object sender, RoutedEventArgs e)
     {

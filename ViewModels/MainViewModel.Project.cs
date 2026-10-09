@@ -47,6 +47,7 @@ public partial class MainViewModel
         FrameEngine = FrameEngine,
         CenterZoom = CenterZoom,
         UiElements = UiElements.Select(e => e.ToState()).ToList(),
+        MainVideoIndex = MainVideoIndex,
         LayoutSourceAspectRatio = GetLayoutSourceAspect(),
         AutoCaptions = AutoCaptions,
         CaptionStyle = CaptionStyle.Clone(),

@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.IO;
+using HandPegApp.Models;
 
 namespace HandPegApp.Services;
 
@@ -62,7 +64,8 @@ public static class VideoCombinator
     /// pixel shape, frame rate, time base and sound format: the splice (concat) and the transitions (xfade,
     /// acrossfade) all refuse inputs that differ.
     /// </summary>
-    public static string BuildCommand(IReadOnlyList<CombinatorInput> inputs, string resolution, string transition, string outputPath)
+    /// <param name="codecArguments">How the picture is encoded, from <see cref="CodecArguments"/>.</param>
+    public static string BuildCommand(IReadOnlyList<CombinatorInput> inputs, string resolution, string transition, string outputPath, string codecArguments)
     {
         var (width, height) = GetFrameSize(resolution, inputs);
         var rate = Number(inputs[0].Info.Video?.FrameRate is > 0 and var fps ? Math.Min(fps, 120) : 30);
@@ -133,11 +136,87 @@ public static class VideoCombinator
                 args.Add($"-metadata:s:a:{t} title=\"{title.Replace('"', '\'')}\"");
         }
 
-        args.Add("-c:v libx264 -preset fast -crf 18");
+        args.Add(codecArguments);
         if (tracks > 0)
             args.Add("-c:a aac -b:a 192k");
         args.Add($"-movflags +faststart \"{outputPath}\"");
         return string.Join(" ", args);
+    }
+
+    // ----- Encoding, when the videos are re-encoded -----
+
+    /// <summary>Whether an encoder writes something an MP4 holds and any player reads: H.264 or H.265, in software or on the graphics card.</summary>
+    public static bool IsOffered(EncoderOption encoder) =>
+        encoder.Name is "libx264" or "libx265" || (encoder.IsHardware && (encoder.Name.StartsWith("h264_", StringComparison.Ordinal) || encoder.Name.StartsWith("hevc_", StringComparison.Ordinal)));
+
+    /// <summary>The speed and quality steps of an encoder, as it names them itself.</summary>
+    public static IReadOnlyList<string> PresetsFor(EncoderOption encoder) => encoder.Family switch
+    {
+        EncoderFamily.Qsv => ["veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
+        EncoderFamily.Amf => ["speed", "balanced", "quality"],
+        EncoderFamily.Nvenc => ["fast", "medium", "slow"],
+        _ => ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
+    };
+
+    /// <summary>The encoder options for a quality on the 0 to 51 scale (lower is better), each kind of encoder having its own way of taking one.</summary>
+    public static string CodecArguments(EncoderOption encoder, string preset, int quality)
+    {
+        quality = Math.Clamp(quality, 0, 51);
+        return encoder.Family switch
+        {
+            EncoderFamily.Nvenc => $"-c:v {encoder.Name} -preset {preset} -rc vbr -cq {quality} -b:v 0",
+            EncoderFamily.Qsv => $"-c:v {encoder.Name} -preset {preset} -q:v {quality}",
+            EncoderFamily.Amf => $"-c:v {encoder.Name} -quality {preset} -rc cqp -qp_i {quality} -qp_p {quality}",
+            _ => $"-c:v {encoder.Name} -preset {preset} -crf {quality}",
+        };
+    }
+
+    // ----- Fast stream copy -----
+
+    /// <summary>
+    /// Why the videos cannot simply be stitched together as they are, or null when they can. Stitching copies
+    /// the streams untouched, so every file has to be the same kind of thing: the same codecs, frame size and
+    /// frame rate, and the same audio tracks. Files from one recorder or one export usually are.
+    /// </summary>
+    public static string? GetCopyProblem(IReadOnlyList<CombinatorInput> inputs)
+    {
+        var first = inputs[0].Info;
+        for (var i = 1; i < inputs.Count; i++)
+        {
+            var (a, b, name) = (first.Video!, inputs[i].Info.Video!, Path.GetFileName(inputs[i].Path));
+            if (a.Codec != b.Codec)
+                return $"{name} is {b.Codec} video and the first video is {a.Codec}";
+            if (a.Width != b.Width || a.Height != b.Height)
+                return $"{name} is {b.Width} x {b.Height} and the first video is {a.Width} x {a.Height}";
+            if (Math.Abs(a.FrameRate - b.FrameRate) > 0.02)
+                return $"{name} is {b.FrameRate:0.##} fps and the first video is {a.FrameRate:0.##} fps";
+            if (first.Audio.Count != inputs[i].Info.Audio.Count)
+                return $"{name} has {inputs[i].Info.Audio.Count} audio track(s) and the first video has {first.Audio.Count}";
+
+            for (var t = 0; t < first.Audio.Count; t++)
+            {
+                var (x, y) = (first.Audio[t], inputs[i].Info.Audio[t]);
+                if (x.Codec != y.Codec || x.SampleRate != y.SampleRate || x.Channels != y.Channels)
+                    return $"audio track {t + 1} of {name} ({y.Codec}, {y.SampleRate} Hz, {y.Channels} ch) differs from the first video's ({x.Codec}, {x.SampleRate} Hz, {x.Channels} ch)";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The command that stitches the videos together without re-encoding: FFmpeg's concat demuxer reads them
+    /// one after another from a list, and every stream is copied as it is. Instant, and lossless.
+    /// </summary>
+    /// <param name="listPath">Where the list of files is written for FFmpeg to read.</param>
+    public static string BuildCopyCommand(IReadOnlyList<CombinatorInput> inputs, string listPath, string outputPath)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(listPath)!);
+        File.WriteAllLines(listPath, new[] { "ffconcat version 1.0" }.Concat(inputs.Select(i => $"file '{i.Path.Replace('\\', '/').Replace("'", @"'\''")}'")));
+
+        var ffmpeg = DependencyUpdater.IsFfmpegOverridden ? $"\"{DependencyUpdater.FfmpegPath}\"" : "ffmpeg";
+        var fastStart = Path.GetExtension(outputPath).ToLowerInvariant() is ".mp4" or ".mov" or ".m4v" ? " -movflags +faststart" : "";
+        return $"{ffmpeg} -hide_banner -y -f concat -safe 0 -i \"{listPath}\" -map 0:v:0 -map 0:a? -c copy{fastStart} \"{outputPath}\"";
     }
 
     private static string Number(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);

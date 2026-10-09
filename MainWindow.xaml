@@ -308,6 +308,15 @@
                                            HorizontalAlignment="Center" Margin="0,6,0,0" />
                             </StackPanel>
                         </Grid>
+                        <!-- Shown while the player itself is being downloaded, the first time: says what is going on in the empty space -->
+                        <Border x:Name="EngineNotice" Visibility="Collapsed" Background="#F0101010" IsHitTestVisible="False">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="460">
+                                <TextBlock x:Name="EngineNoticeTitle" Text="Downloading Video Engine..." FontSize="22" FontWeight="SemiBold" Foreground="#DDFFFFFF" HorizontalAlignment="Center" />
+                                <ProgressBar x:Name="EngineProgress" Height="8" Width="320" Margin="0,14,0,0" Minimum="0" Maximum="1" />
+                                <TextBlock x:Name="EngineNoticeText" FontSize="13" Foreground="#99FFFFFF" HorizontalAlignment="Center" TextAlignment="Center"
+                                           TextWrapping="Wrap" Margin="0,10,0,0" AutomationProperties.AutomationId="Engine Notice" />
+                            </StackPanel>
+                        </Border>
                         <AdornerDecorator ClipToBounds="True">
                             <Canvas x:Name="CropCanvas" Background="#01000000" Visibility="Collapsed" ClipToBounds="True" Cursor="Cross"
                                     MouseLeftButtonDown="CropCanvas_MouseLeftButtonDown" MouseMove="CropCanvas_MouseMove"
@@ -610,6 +619,11 @@
                         <ComboBox Grid.Column="1" ItemsSource="{Binding Containers}" SelectedItem="{Binding Container}" />
                         <CheckBox Grid.Row="1" Grid.Column="1" Content="Web Optimized" IsChecked="{Binding WebOptimized}" />
 
+                        <!-- Copy passes the picture through: said here, in yellow, when that leaves layers or filters out -->
+                        <TextBlock Grid.Row="3" Grid.ColumnSpan="2" Text="{Binding CopyBypassWarning}" Foreground="{DynamicResource WarningTextBrush}"
+                                   FontWeight="SemiBold" TextWrapping="Wrap" MaxWidth="330" HorizontalAlignment="Left" Margin="0,14,0,0"
+                                   AutomationProperties.AutomationId="Copy Warning" />
+
                         <!-- Layout files: the Frame & Layer Engine's layers, with the color and blur settings that go with them -->
                         <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Margin="0,14,0,0">
                             <TextBlock Text="Import/Export Project Settings" FontWeight="SemiBold" Margin="0,0,0,6" />
@@ -834,34 +848,56 @@
                 </Grid>
                 </ScrollViewer>
             </TabItem>
-
-            <TabItem Header="Filters">
-                <Grid IsEnabled="{Binding IsVideoReencoded}">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="28" />
-                        <ColumnDefinition Width="400" />
-                    </Grid.ColumnDefinitions>
-
-                    <!-- Left: the Frame & Layer Engine. The video on a blurred copy of itself, with elements on top. -->
-                    <DockPanel>
-                        <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,4">
-                            <CheckBox Content="Frame &amp; Layer Engine" IsChecked="{Binding FrameEngine}" Margin="0,6,12,6"
-                                      ToolTip="Composes the output in layers: a blurred, zoomed copy of the video fills the frame, the sharp video sits on it, and pieces of the video and images go on top. The frame is the size set under Resolution &amp; Cropping on the Video tab, in any shape." />
-                            <StackPanel Orientation="Horizontal" IsEnabled="{Binding FrameEngine}" Margin="0,2,0,2">
-                                <Button Content="Blur Settings" Padding="12,5" Click="BlurSettings_Click"
-                                        ToolTip="Radius, passes and dimming of the blurred background." />
-                                <Button Content="Add Element" Padding="12,5" Margin="6,0,0,0" Command="{Binding AddElementCommand}"
-                                        ToolTip="Lift a piece of the source video (a minimap, an ammo counter) onto the frame. Mark it with Draw Target." />
-                                <Button Content="Add Image" Padding="12,5" Margin="6,0,0,0" Click="AddImage_Click"
-                                        ToolTip="Place a .png or .jpg picture (a logo, a watermark) on the frame." />
-                            </StackPanel>
-                            <ToggleButton Content="Edit Layout" Padding="12,5" Margin="6,2,0,2" IsChecked="{Binding IsArrangeActive}" IsEnabled="{Binding CanEditLayout}"
-                                          ToolTip="Opens the layout pane beside the player: the output frame with the center video, the elements and the caption box. Drag to move, drag a corner handle to resize, double-click to center." />
+            <!-- Everything that is done to the picture as a whole: the standard filters, the look, and the color grading. -->
+            <TabItem Header="Filters" x:Name="AdvancedTab">
+                <DockPanel IsEnabled="{Binding IsVideoReencoded}">
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,4,0,0">
+                        <Button Content="Live Frame Preview" Click="LiveFramePreview_Click"
+                                ToolTip="Shows one frame of the video with these settings applied, updated as the controls move, with an optional histogram." />
+                        <Button Content="Reset Colors" Margin="6,0,0,0" Command="{Binding ResetColorCommand}" ToolTip="Puts every color control back where it changes nothing."
+                                Visibility="{Binding ShowAdvancedFiltersTab, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel>
+                            <WrapPanel>
+                                <CheckBox Content="Deinterlace (yadif)" IsChecked="{Binding Deinterlace}" Margin="0,4,24,4" />
+                                <CheckBox Content="Denoise (hqdn3d)" IsChecked="{Binding Denoise}" Margin="0,4,24,4" />
+                                <CheckBox Content="Audio/Video Fade In (1s)" IsChecked="{Binding FadeIn}" Margin="0,4,24,4"
+                                          ToolTip="Fades the picture and every encoded audio track in from black and silence." />
+                                <CheckBox Content="Audio/Video Fade Out (1s)" IsChecked="{Binding FadeOut}" Margin="0,4,24,4"
+                                          ToolTip="Fades the last second of the output to black and silence." />
+                            </WrapPanel>
+                            <DockPanel Margin="0,4,0,0" MaxWidth="760" HorizontalAlignment="Left" Width="760">
+                                <TextBlock DockPanel.Dock="Left" Text="LUT (.cube):" VerticalAlignment="Center" Margin="0,0,12,0" />
+                                <Button DockPanel.Dock="Right" Content="Clear" Margin="6,4,0,4" Click="ClearLut_Click" />
+                                <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,4,0,4" Click="BrowseLut_Click" />
+                                <TextBox Margin="0,4" Text="{Binding LutPath, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="A 3D lookup table applied to the colours (lut3d). Leave blank for none." />
+                            </DockPanel>
+                            <!-- Color grading and sharpening. Can be hidden in Settings; values set here keep applying while it is. -->
+                            <local:ColorControls Margin="0,10,0,0" Visibility="{Binding ShowAdvancedFiltersTab, Converter={StaticResource BoolToVisibility}}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </TabItem>
+            <!--
+                Editor Mode only. The picture as a stack of layers: the list sits flush against the top of the tab,
+                and what adds to it and places the main video is underneath.
+            -->
+            <TabItem Header="Layers" x:Name="LayersTab" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
+                    <DockPanel IsEnabled="{Binding IsVideoReencoded}">
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                            <Button Content="Add Element" Padding="12,5" Command="{Binding AddElementCommand}"
+                                    ToolTip="Lift a piece of the source video (a minimap, an ammo counter) onto the frame as a layer. Mark it with Draw Target." />
+                            <Button Content="Add Image" Padding="12,5" Margin="6,0,0,0" Click="AddImage_Click"
+                                    ToolTip="Place a .png or .jpg picture (a logo, a watermark, a frame) on the picture as a layer." />
+                            <Button Content="Add Video" Padding="12,5" Margin="6,0,0,0" Click="AddVideo_Click"
+                                    ToolTip="Place a video from a file on the picture as a layer: it plays alongside the main video and starts again when it runs out. Its sound is not used." />
+                            <ToggleButton Content="Edit Layout" Padding="12,5" Margin="6,0,0,0" IsChecked="{Binding IsArrangeActive}" IsEnabled="{Binding CanEditLayout}"
+                                          ToolTip="Opens the layout pane beside the player: the output frame with the main video, the layers and the caption box. Drag to move, drag a corner handle to resize, double-click to center." />
                         </WrapPanel>
-
                         <!-- The sharp centre video: the same numbers that dragging it in Arrange changes -->
-                        <WrapPanel DockPanel.Dock="Top" IsEnabled="{Binding FrameEngine}">
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,4,0,0">
                             <StackPanel Orientation="Horizontal" Margin="0,2,14,2">
                                 <TextBlock Text="Center Zoom:" Style="{StaticResource FieldLabel}" Margin="0,0,6,0" />
                                 <Slider Width="90" Minimum="0.1" Maximum="4" TickFrequency="0.05" IsSnapToTickEnabled="True" VerticalAlignment="Center"
@@ -890,8 +926,11 @@
                                     ToolTip="Back to the middle of the frame at full width." />
                         </WrapPanel>
 
-                        <!-- One row per layer: pieces of the video, images, and (while auto-captions are on) the caption box -->
-                        <ListBox Margin="0,6,0,0" ItemsSource="{Binding ElementRows}" IsEnabled="{Binding CanEditLayout}"
+                        <!--
+                            One row per layer, the front one first: the caption box (while auto-captions are on), the layers
+                            added by hand with the main video among them, and the blurred background at the bottom.
+                        -->
+                        <ListBox ItemsSource="{Binding ElementRows}"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="Elements">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
@@ -899,27 +938,58 @@
                                     <StackPanel ToolTip="X and Y place the layer's top-left corner, and Size sets its width, all as a share of the output frame, so the layout holds at any resolution. Edit Layout does the same by dragging.">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
+                                            <!-- Up is towards the front. The captions are always in front and the background always behind. -->
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,8,0" Width="58">
+                                                <Button Content="&#xE70E;" FontFamily="Segoe MDL2 Assets" FontSize="11" Padding="7,4" AutomationProperties.Name="Move Layer Up"
+                                                        Visibility="{Binding CanReorder, Converter={StaticResource BoolToVisibility}}"
+                                                        ToolTip="Move this layer up, towards the front: it is drawn over the layers below it."
+                                                        Command="{Binding DataContext.MoveLayerUpCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}" />
+                                                <Button Content="&#xE70D;" FontFamily="Segoe MDL2 Assets" FontSize="11" Padding="7,4" Margin="3,0,0,0" AutomationProperties.Name="Move Layer Down"
+                                                        Visibility="{Binding CanReorder, Converter={StaticResource BoolToVisibility}}"
+                                                        ToolTip="Move this layer down, towards the back: the layers above it are drawn over it."
+                                                        Command="{Binding DataContext.MoveLayerDownCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
+                                            <!-- The main video is placed with the Center controls under the list -->
+                                            <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}"
+                                                       Text="Placed with the Center controls below, or by dragging in Edit Layout"
+                                                       Visibility="{Binding IsMainVideo, Converter={StaticResource BoolToVisibility}}" />
+                                            <!-- The background: its blur, here where it is in the stack -->
+                                            <StackPanel Grid.Column="2" Orientation="Horizontal" Visibility="{Binding IsBackground, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="Blur Radius:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                                <Slider Width="150" Minimum="5" Maximum="50" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                                        Value="{Binding DataContext.BlurRadius, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                        AutomationProperties.Name="Background Blur Radius" local:NumericInput.Default="20"
+                                                        ToolTip="How far the blur of the background reaches, in pixels. Larger is softer. The background shows wherever the main video does not cover the frame." />
+                                                <TextBox Style="{StaticResource ValueBox}" Width="46"
+                                                         Text="{Binding DataContext.BlurRadius, RelativeSource={RelativeSource AncestorType=ListBox}, StringFormat={}{0:0}}"
+                                                         AutomationProperties.Name="Background Blur Radius Value"
+                                                         local:NumericInput.Default="20" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="5" local:NumericInput.Maximum="50" />
+                                                <Button Content="More..." Padding="10,2" Margin="8,0,0,0" Click="BlurSettings_Click"
+                                                        ToolTip="Blur passes and how much the background is darkened." />
+                                            </StackPanel>
                                             <!-- Only a piece of the video has a place in the source to mark -->
-                                            <Button Grid.Column="1" Content="Draw Target" Padding="10,2"
+                                            <Button Grid.Column="3" Content="Draw Target" Padding="10,2"
                                                     Visibility="{Binding IsVideo, Converter={StaticResource BoolToVisibility}}"
-                                                    ToolTip="Drag a rectangle on the video to mark what this element shows."
+                                                    ToolTip="Drag a rectangle on the video to mark what this layer shows."
                                                     Command="{Binding DataContext.DrawTargetCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
                                                     CommandParameter="{Binding}" />
-                                            <Button Grid.Column="2" Content="Style / Blending" Padding="10,2" Margin="6,0,0,0" Click="ElementStyle_Click"
-                                                    ToolTip="Opacity, rounded corners, soft edges and a drop shadow, for every layer including the subtitles. The captions' font and colors are under Caption Style Settings on the Subtitles tab." />
-                                            <!-- The caption box comes and goes with the captions -->
-                                            <Button Grid.Column="3" Content="Remove" Padding="10,2" Margin="6,0,0,0"
+                                            <Button Grid.Column="4" Content="Properties" Padding="10,2" Margin="6,0,0,0" Click="ElementStyle_Click"
+                                                    Visibility="{Binding HasPlacement, Converter={StaticResource BoolToVisibility}}"
+                                                    ToolTip="Opacity, rounded corners, soft edges and a drop shadow, for every layer including the subtitles; and for pictures and videos, a chroma key and a custom mask. The captions' font and colors are under Caption Style Settings on the Subtitles tab." />
+                                            <Button Grid.Column="5" Content="Remove" Padding="10,2" Margin="6,0,0,0"
                                                     Visibility="{Binding IsRemovable, Converter={StaticResource BoolToVisibility}}"
                                                     Command="{Binding DataContext.RemoveElementCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
                                                     CommandParameter="{Binding}" />
                                         </Grid>
-                                        <Grid Margin="0,3,0,2">
+                                        <Grid Margin="66,3,0,2" Visibility="{Binding HasPlacement, Converter={StaticResource BoolToVisibility}}">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
@@ -967,27 +1037,6 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
                     </DockPanel>
-                    <!-- Right: everything else that is done to the picture -->
-                    <StackPanel Grid.Column="2">
-                        <UniformGrid Columns="2">
-                            <CheckBox Content="Deinterlace (yadif)" IsChecked="{Binding Deinterlace}" />
-                            <CheckBox Content="Denoise (hqdn3d)" IsChecked="{Binding Denoise}" />
-                            <CheckBox Content="Audio/Video Fade In (1s)" IsChecked="{Binding FadeIn}"
-                                      ToolTip="Fades the picture and every encoded audio track in from black and silence." />
-                            <CheckBox Content="Audio/Video Fade Out (1s)" IsChecked="{Binding FadeOut}"
-                                      ToolTip="Fades the last second of the output to black and silence." />
-                        </UniformGrid>
-
-                        <!-- Colour look -->
-                        <TextBlock Text="LUT (.cube):" Margin="0,12,0,0" />
-                        <DockPanel>
-                            <Button DockPanel.Dock="Right" Content="Clear" Margin="6,4,0,4" Click="ClearLut_Click" />
-                            <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,4,0,4" Click="BrowseLut_Click" />
-                            <TextBox Margin="0,4" Text="{Binding LutPath, UpdateSourceTrigger=PropertyChanged}"
-                                     ToolTip="A 3D lookup table applied to the colours (lut3d). Leave blank for none." />
-                        </DockPanel>
-                    </StackPanel>
-                </Grid>
             </TabItem>
             <TabItem Header="Audio">
                 <DockPanel>
@@ -1386,20 +1435,6 @@
                             </DataGridComboBoxColumn>
                         </DataGrid.Columns>
                     </DataGrid>
-                </DockPanel>
-            </TabItem>
-            <!-- Can be hidden in Settings. Colour grading (eq, hue) and sharpening (cas). -->
-            <TabItem Header="Advanced" x:Name="AdvancedTab"
-                     Visibility="{Binding ShowAdvancedFiltersTab, Converter={StaticResource BoolToVisibility}}">
-                <DockPanel IsEnabled="{Binding IsVideoReencoded}">
-                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,4,0,0">
-                        <Button Content="Live Frame Preview" Click="LiveFramePreview_Click"
-                                ToolTip="Shows one frame of the video with these settings applied, updated as the controls move, with an optional histogram." />
-                        <Button Content="Reset" Margin="6,0,0,0" Command="{Binding ResetColorCommand}" ToolTip="Puts every control back where it changes nothing." />
-                    </StackPanel>
-                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                        <local:ColorControls />
-                    </ScrollViewer>
                 </DockPanel>
             </TabItem>
 

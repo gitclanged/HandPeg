@@ -294,6 +294,107 @@ public partial class MainViewModel
         return true;
     }
 
+    /// <summary>Adds a video from a file as a layer: it plays alongside the main video, and starts again when it runs out.</summary>
+    public async Task<bool> AddVideoElementAsync(string path)
+    {
+        var info = await MediaProbe.ProbeAsync(path, _shutdown.Token);
+        if (info?.Video is not { Width: > 0, Height: > 0 } video)
+        {
+            StatusText = $"Not a video that can be read: {path}";
+            return false;
+        }
+
+        var element = new OverlayRegion
+        {
+            Kind = ElementKind.VideoFile,
+            Name = Path.GetFileName(path),
+            ImagePath = path,
+            ImageWidth = video.Width,
+            ImageHeight = video.Height,
+            SizeWidth = 0.4,
+            PositionX = 0.05,
+            PositionY = NextElementY(),
+        };
+        AttachUiElement(element);
+        StatusText = $"Added {element.Name} as a video layer. Its sound is not used.";
+        return true;
+    }
+
+    // ----- Stacking order -----
+
+    /// <summary>Whether the tools of Editor Mode are in use: the Layers tab, and the Layer Engine composing every picture.</summary>
+    public bool IsEditorMode => AppSettings.Current.UiMode == AppSettings.EditorMode;
+
+    /// <summary>The main video's place in the stack: how many of the layers lie under it. 0 is beneath them all.</summary>
+    [ObservableProperty] private int _mainVideoIndex;
+
+    partial void OnMainVideoIndexChanged(int value) => RefreshElementRows();
+
+    // The two layers that are always there, as rows of the list.
+    private readonly OverlayRegion _mainVideoRow = new() { Kind = ElementKind.MainVideo, Name = "Main Video" };
+    private readonly OverlayRegion _backgroundRow = new() { Kind = ElementKind.Background, Name = "Background Blur" };
+
+    /// <summary>The layers that can be reordered, bottom first: the ones added by hand, with the main video among them.</summary>
+    private List<OverlayRegion> GetStack()
+    {
+        var stack = UiElements.ToList();
+        stack.Insert(Math.Clamp(MainVideoIndex, 0, stack.Count), _mainVideoRow);
+        return stack;
+    }
+
+    [RelayCommand]
+    private void MoveLayerUp(OverlayRegion? layer) => MoveLayer(layer, 1);
+
+    [RelayCommand]
+    private void MoveLayerDown(OverlayRegion? layer) => MoveLayer(layer, -1);
+
+    /// <summary>Moves a layer one place towards the front (+1) or the back (-1).</summary>
+    private void MoveLayer(OverlayRegion? layer, int by)
+    {
+        var stack = GetStack();
+        var from = layer is null ? -1 : stack.IndexOf(layer);
+        var to = from + by;
+        if (from < 0 || to < 0 || to >= stack.Count)
+            return;
+
+        (stack[from], stack[to]) = (stack[to], stack[from]);
+
+        // Written back as the two things it is kept as: the order of the layers, and where the main video is among them.
+        var main = stack.IndexOf(_mainVideoRow);
+        var elements = stack.Where(l => !ReferenceEquals(l, _mainVideoRow)).ToList();
+        for (var i = 0; i < elements.Count; i++)
+        {
+            var current = UiElements.IndexOf(elements[i]);
+            if (current != i)
+                UiElements.Move(current, i);
+        }
+
+        MainVideoIndex = main;
+        RefreshElementRows();
+        StatusText = $"{layer!.Name} moved {(by > 0 ? "up" : "down")}: it is now {(stack.IndexOf(layer) == stack.Count - 1 ? "the front layer" : stack.IndexOf(layer) == 0 ? "the back layer, just above the background" : $"layer {stack.IndexOf(layer) + 1} of {stack.Count} from the back")}.";
+    }
+
+    // ----- Stream copy -----
+
+    /// <summary>
+    /// Copy passes the picture through untouched. When there are layers or filters set that it will therefore
+    /// leave out, this says so; otherwise it is empty.
+    /// </summary>
+    public string CopyBypassWarning
+    {
+        get
+        {
+            if (VideoEncoder.Family != EncoderFamily.Copy || IsAnimatedOutput)
+                return "";
+
+            var skipped = UiElements.Any(e => e.IsUsable) || AutoCaptions || HasCrop || Deinterlace || Denoise || FadeIn || FadeOut
+                          || !string.IsNullOrWhiteSpace(LutPath) || BuildColorFilters().Count > 0
+                          || !string.IsNullOrWhiteSpace(OutputWidth) || !string.IsNullOrWhiteSpace(OutputHeight)
+                          || Math.Abs(CenterZoom - 1) > 0.001 || CenterOffsetX != 0 || CenterOffsetY != 0;
+            return skipped ? "Stream Copy selected: Layers and Filters will be bypassed." : "";
+        }
+    }
+
     // Stacked down the frame, so a new element does not land exactly on top of the last.
     private double NextElementY() => Math.Min(0.03 + UiElements.Count * 0.2, 0.8);
 
@@ -521,6 +622,31 @@ public partial class MainViewModel
         var seconds = Math.Clamp(settings.PreviewDurationSeconds, 1, 60);
         var start = (SelectedSegment ?? Segments.FirstOrDefault())?.Start.TotalSeconds ?? 0;
 
+        // With Play only cut segments on, the preview is of the trimmed timeline: the kept segments end to
+        // end, from the selected one on, for as long as a preview lasts. Otherwise it is one stretch of the source.
+        var ranges = new List<(double Start, double End)>();
+        if (PlayOnlySegments && Segments.Count > 0)
+        {
+            var left = (double)seconds;
+            foreach (var segment in GetMergedSegments().Where(s => s.End.TotalSeconds > start + 0.001))
+            {
+                var from = Math.Max(segment.Start.TotalSeconds, start);
+                var length = Math.Min(segment.End.TotalSeconds - from, left);
+                if (length < 0.05)
+                    continue;
+
+                ranges.Add((from, from + length));
+                left -= length;
+                if (left < 0.05)
+                    break;
+            }
+        }
+
+        // Burned-in subtitles are placed by the source's clock, which joined-up stretches do not keep.
+        if (ranges.Count < 2 || SubtitleTracks.Any(t => t.Action == SubtitleTrack.HardSub))
+            ranges = [ranges.Count > 0 ? (ranges[0].Start, ranges[0].Start + seconds) : (start, start + seconds)];
+        start = ranges[0].Start;
+
         Directory.CreateDirectory(PreviewFolder);
         var path = Path.Combine(PreviewFolder, $"preview_{Guid.NewGuid():N}.mp4");
 
@@ -531,15 +657,15 @@ public partial class MainViewModel
         {
             captionsPath = Path.Combine(PreviewFolder, "captions_preview.ass");
             var keepsSourceClock = SubtitleTracks.Any(t => t.Action == SubtitleTrack.HardSub);
-            if (await PrepareCaptionsAsync([(start, start + seconds)], captionsPath, keepsSourceClock ? start : 0, cancellationToken) is { } problem)
+            if (await PrepareCaptionsAsync(ranges, captionsPath, keepsSourceClock ? start : 0, cancellationToken) is { } problem)
                 return problem;
         }
 
-        var command = BuildPreviewCommand(path, start, seconds, settings.PreviewResolutionPercent, captionsPath);
+        var command = BuildPreviewCommand(path, ranges, settings.PreviewResolutionPercent, captionsPath);
 
         IsProgressIndeterminate = true;
         StatusText = "Rendering preview...";
-        var expected = TimeSpan.FromSeconds(seconds);
+        var expected = TimeSpan.FromSeconds(Math.Max(ranges.Sum(r => r.End - r.Start), 0.1));
         var progress = new Progress<FfmpegProgress>(report =>
         {
             if (_acceptProgressReports && report.Position is { } position)
@@ -551,7 +677,9 @@ public partial class MainViewModel
 
         await FfmpegRunner.RunAsync(command, progress, cancellationToken);
         PreviewRendered?.Invoke(path);
-        return $"Preview rendered: {seconds} s from {TimeDisplay.Format(start)} at {settings.PreviewResolutionPercent}% size.";
+        return ranges.Count > 1
+            ? $"Preview rendered: {ranges.Sum(r => r.End - r.Start):0.#} s across {ranges.Count} cut segments, from {TimeDisplay.Format(start)}, at {settings.PreviewResolutionPercent}% size."
+            : $"Preview rendered: {seconds} s from {TimeDisplay.Format(start)} at {settings.PreviewResolutionPercent}% size.";
     });
 
     // ----- Interface settings -----
@@ -843,6 +971,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowSimplePlayback));
         OnPropertyChanged(nameof(ShowCommandPreviewTab));
         OnPropertyChanged(nameof(ShowAdvancedFiltersTab));
+        OnPropertyChanged(nameof(IsEditorMode));
         OnPropertyChanged(nameof(ShowPresetBarAtTop));
         OnPropertyChanged(nameof(ShowPresetBarInSummary));
         OnPropertyChanged(nameof(TimelineAreaHeight));

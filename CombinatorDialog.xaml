@@ -6,7 +6,7 @@
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <StackPanel Margin="16">
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
-                   Text="Joins up to five videos into one, in the order listed. Each is scaled to fit the chosen frame, with black bars where its shape differs, and re-encoded as H.264 with AAC sound. Every audio track is kept: a video with fewer tracks than the others gets silence for the ones it lacks." />
+                   Text="Joins up to five videos into one, in the order listed. Fast Stream Copy stitches them as they are; without it, each is scaled to fit the chosen frame, with black bars where its shape differs, and re-encoded with AAC sound. Every audio track is kept either way." />
 
         <StackPanel x:Name="InputPanel">
             <Grid>
@@ -39,7 +39,10 @@
                 </StackPanel>
             </Grid>
 
-            <Grid Margin="0,10,0,0">
+            <CheckBox x:Name="FastCopyBox" Content="Fast Stream Copy (No Re-encoding)" IsChecked="True" Margin="0,10,0,0"
+                      Checked="FastCopy_Changed" Unchecked="FastCopy_Changed"
+                      ToolTip="Stitches the videos together exactly as they are: instant and lossless. It needs them to be the same kind of file (codec, frame size, frame rate, audio tracks), as recordings from one program are, and there are no transitions. Untick to re-encode them to one size, with a transition between each." />
+            <Grid x:Name="ReencodePanel" Margin="0,8,0,0" IsEnabled="False">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
@@ -55,6 +58,19 @@
                           SelectionChanged="Choice_SelectionChanged" AutomationProperties.Name="Transition Type"
                           ToolTip="Between each video and the next. Hard Splice: the next starts on the frame after the last ends. Crossfade: one fades into the other over one second, picture and every audio track. Dip to Black: fades to black and in again, over one second." />
             </Grid>
+
+            <!-- Only when re-encoding: how. Starts from what the main window is set to. -->
+            <StackPanel x:Name="EncodingPanel" Orientation="Horizontal" Margin="0,10,0,0" Visibility="Collapsed">
+                <TextBlock Text="Encoder:" VerticalAlignment="Center" Margin="0,0,12,0" />
+                <ComboBox x:Name="EncoderBox" MinWidth="250" Margin="0" SelectionChanged="EncoderBox_SelectionChanged" AutomationProperties.Name="Combinator Encoder"
+                          ToolTip="What the combined video is encoded with: H.264 or H.265, in software or on the graphics card where that works on this machine." />
+                <TextBlock Text="Preset:" VerticalAlignment="Center" Margin="18,0,12,0" />
+                <ComboBox x:Name="PresetBox" MinWidth="110" Margin="0" AutomationProperties.Name="Combinator Preset"
+                          ToolTip="Speed against quality, in the encoder's own steps." />
+                <TextBlock Text="Quality:" VerticalAlignment="Center" Margin="18,0,12,0" />
+                <TextBox x:Name="QualityBox" Width="54" VerticalContentAlignment="Center" AutomationProperties.Name="Combinator Quality"
+                         ToolTip="0 to 51: lower is better and larger. 18 is visually lossless for most footage; 23 is a good everyday value." />
+            </StackPanel>
         </StackPanel>
 
         <TextBlock x:Name="SummaryText" TextWrapping="Wrap" Margin="0,12,0,0" Foreground="{DynamicResource MutedTextBrush}" AutomationProperties.AutomationId="Combinator Summary" />

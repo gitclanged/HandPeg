@@ -108,7 +108,7 @@ public partial class MainViewModel
             for (var i = 0; i < segments.Count; i++)
             {
                 var range = $"start={Seconds(segments[i].Start)}:end={Seconds(segments[i].End)}";
-                var frameFilters = BuildVideoFilters(labelSuffix: i.ToString(CultureInfo.InvariantCulture));
+                var frameFilters = BuildVideoFilters(labelSuffix: i.ToString(CultureInfo.InvariantCulture), segments[i].Start.TotalSeconds);
 
                 // Burned-in subtitles are placed by timestamp, so they must be drawn before the timestamps are reset.
                 var chain = new List<string> { $"trim={range}" };
@@ -291,10 +291,12 @@ public partial class MainViewModel
     /// chain, layers and burned-in subtitles as the real command, then scaled down. Speed matters more
     /// than quality here, so it always uses the fastest software settings.
     /// </summary>
-    /// <param name="captionsPath">An auto-caption file made for this stretch of the video, or null.</param>
-    private string BuildPreviewCommand(string outputPath, double startSeconds, int durationSeconds, int percent, string? captionsPath)
+    /// <param name="ranges">The stretches of the source to show, joined end to end: one, or several cut segments.</param>
+    /// <param name="captionsPath">An auto-caption file made for these stretches, or null.</param>
+    private string BuildPreviewCommand(string outputPath, List<(double Start, double End)> ranges, int percent, string? captionsPath)
     {
-        var chain = BuildVideoFilters(labelSuffix: "");
+        var (startSeconds, durationSeconds) = (ranges[0].Start, ranges[0].End - ranges[0].Start);
+        var chain = BuildVideoFilters(labelSuffix: "", startSeconds);
         var burnFilters = BuildSubtitleBurnFilters(LocalMediaPath);
         chain.AddRange(burnFilters);
 
@@ -309,16 +311,28 @@ public partial class MainViewModel
         chain.Add($"scale=trunc(iw*{factor}/2)*2:trunc(ih*{factor}/2)*2");
         chain.Add("format=yuv420p");
 
+        var ffmpeg = DependencyUpdater.IsFfmpegOverridden ? Quote(DependencyUpdater.FfmpegPath) : "ffmpeg";
+        var hardware = HardwareDecoding ? "-hwaccel auto " : "";
+        const string encode = "-c:v libx264 -preset ultrafast -crf 24 -c:a aac -b:a 128k -movflags +faststart";
+
+        if (ranges.Count > 1)
+        {
+            // Each stretch is opened as an input of its own, already cut to length, and the stretches are
+            // joined before anything is done to the picture: what is filtered is the trimmed timeline.
+            var inputs = string.Join(" ", ranges.Select(r => $"{hardware}-ss {Number(r.Start)} -t {Number(r.End - r.Start)} -i {Quote(LocalMediaPath)}"));
+            var hasSound = _mediaInfo is not { Audio.Count: 0 };
+            var graph = $"{string.Concat(ranges.Select((_, i) => $"[{i}:v:0]"))}concat=n={ranges.Count}:v=1:a=0[joined];[joined]{string.Join(",", chain)}[v]";
+            if (hasSound)
+                graph += $";{string.Concat(ranges.Select((_, i) => $"[{i}:a:0]"))}concat=n={ranges.Count}:v=0:a=1[a]";
+
+            return $"{ffmpeg} -hide_banner -y {inputs} -filter_complex \"{graph}\" -map \"[v]\"{(hasSound ? " -map \"[a]\"" : "")} {encode} {Quote(outputPath)}";
+        }
+
         // Seeking before the input is fast. Burned-in subtitles need the original timestamps, though,
         // so with those the seek comes after the input: slower, but the text lands on the right frames.
-        var seek = $"-ss {Number(startSeconds)} -t {durationSeconds}";
-        var ffmpeg = DependencyUpdater.IsFfmpegOverridden ? Quote(DependencyUpdater.FfmpegPath) : "ffmpeg";
-        var input = burnFilters.Count > 0 ? $"-i {Quote(LocalMediaPath)} {seek}" : $"{seek} -i {Quote(LocalMediaPath)}";
-        if (HardwareDecoding)
-            input = "-hwaccel auto " + input;
-
-        return $"{ffmpeg} -hide_banner -y {input} -map 0:v:0 -map 0:a:0? -vf \"{string.Join(",", chain)}\" "
-               + $"-c:v libx264 -preset ultrafast -crf 24 -c:a aac -b:a 128k -movflags +faststart {Quote(outputPath)}";
+        var seek = $"-ss {Number(startSeconds)} -t {Number(durationSeconds)}";
+        var input = hardware + (burnFilters.Count > 0 ? $"-i {Quote(LocalMediaPath)} {seek}" : $"{seek} -i {Quote(LocalMediaPath)}");
+        return $"{ffmpeg} -hide_banner -y {input} -map 0:v:0 -map 0:a:0? -vf \"{string.Join(",", chain)}\" {encode} {Quote(outputPath)}";
     }
 
     // ----- Audio -----
@@ -537,7 +551,11 @@ public partial class MainViewModel
     /// Makes the labels inside a step unique. With filter-based cuts the chain is written once per segment
     /// into one graph, where two pieces may not share a label.
     /// </param>
-    private List<string> BuildVideoFilters(string labelSuffix)
+    /// <param name="startSeconds">
+    /// Where in the source this stretch of picture begins: a video layer is started that far in, so that it
+    /// runs alongside the main video as it does when nothing is cut.
+    /// </param>
+    private List<string> BuildVideoFilters(string labelSuffix, double startSeconds = 0)
     {
         var filters = new List<string>();
         if (Deinterlace)
@@ -563,7 +581,7 @@ public partial class MainViewModel
 
         if (FrameEngine)
         {
-            filters.Add(BuildFrameEngine(crop, labelSuffix));
+            filters.Add(BuildFrameEngine(crop, labelSuffix, startSeconds));
             if (Denoise)
                 filters.Add("hqdn3d");
             filters.Add("setsar=1");
@@ -604,29 +622,32 @@ public partial class MainViewModel
     /// <summary>
     /// Composes the output frame from layers. The source is split into independent branches, one per layer
     /// that shows it: the background is scaled to fill the frame, blurred and dimmed entirely on its own
-    /// branch; only then are the sharp video and the elements laid on top of it, one after another.
-    /// Nothing done to an upper layer can reach the background, because by then it is a finished picture.
-    /// The frame can be any size and shape: everything is placed from fractions of it.
+    /// branch; the layers are then laid on it one after another in their stacking order, the main video
+    /// being one of them. Nothing done to an upper layer can reach the ones below, because by then they are
+    /// a finished picture. The frame can be any size and shape: everything is placed from fractions of it.
     /// </summary>
-    private string BuildFrameEngine(string? centerCrop, string s)
+    private string BuildFrameEngine(string? centerCrop, string s, double startSeconds)
     {
         var (width, height) = (Sized(FrameWidth), Sized(FrameHeight));
-        var elements = UiElements.Where(e => e.IsUsable).ToList();
         var full = GetCenterRect();
         var center = (X: Placed(full.X), Y: Placed(full.Y), Width: Sized(full.Width), Height: Sized(full.Height));
 
-        // A sharp video that fills the whole frame hides the background completely, so none is made.
-        var needsBackground = center.X > 0 || center.Y > 0 || center.X + center.Width < width || center.Y + center.Height < height;
+        // The stack, bottom first, without the layers that have nothing to show yet.
+        var stack = GetStack().Where(l => l.IsMainVideo || l.IsUsable).ToList();
+        var mainAtBottom = stack[0].IsMainVideo;
 
-        // One copy of the frame for each layer that shows the video: background, centre, and video elements.
-        // Image elements bring their own picture and need no copy.
+        // A main video that fills the whole frame from the bottom of the stack hides the background completely, so none is made.
+        var needsBackground = !mainAtBottom || center.X > 0 || center.Y > 0 || center.X + center.Width < width || center.Y + center.Height < height;
+
+        // One copy of the frame for each layer that shows the video: background, main video, and the pieces cut
+        // from it. Layers from files bring their own picture and need no copy.
         var branches = new List<string>();
         if (needsBackground)
             branches.Add($"[bg_in{s}]");
         branches.Add($"[center_in{s}]");
-        for (var n = 1; n <= elements.Count; n++)
+        for (var n = 0; n < stack.Count; n++)
         {
-            if (elements[n - 1].IsVideo)
+            if (stack[n].IsVideo)
                 branches.Add($"[ui{n}_in{s}]");
         }
 
@@ -634,12 +655,11 @@ public partial class MainViewModel
         var isSplit = branches.Count > 1;
         var graph = new StringBuilder(isSplit ? $"split={branches.Count}{string.Concat(branches)};" : "");
 
-        // Centre. The Dimensions crop frames this layer only; the background uses the whole picture.
+        // The main video. The crop frames this layer only; the background uses the whole picture.
         var centerChain = $"{(centerCrop is null ? "" : centerCrop + ",")}scale={center.Width}:{center.Height}";
 
         if (needsBackground)
         {
-            // The blur radius cannot exceed half the smaller side of the colour planes, which are half size.
             if (_buildingLiveGraph)
             {
                 // Blurred small and scaled back up: the blur hides the difference, and it is a sixteenth of the work.
@@ -647,45 +667,56 @@ public partial class MainViewModel
                 var smallRadius = Math.Clamp((int)Math.Round(Math.Clamp(BlurRadius, 5, 50) * _liveScale / 4), 1, Math.Max(Math.Min(smallWidth, smallHeight) / 4 - 1, 1));
                 graph.Append($"[bg_in{s}]scale={smallWidth}:{smallHeight}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop={smallWidth}:{smallHeight},"
                              + $"boxblur={smallRadius}:{Math.Clamp(BlurPasses, 1, 5)},eq=brightness={Number(Math.Clamp(BackgroundDim, -0.5, 0))},"
-                             + $"scale={width}:{height}:flags=bilinear[bg_layer{s}]");
+                             + $"scale={width}:{height}:flags=bilinear");
             }
             else
             {
+                // The blur radius cannot exceed half the smaller side of the colour planes, which are half size.
                 var radius = Math.Min(Math.Clamp(BlurRadius, 5, 50), Math.Max(Math.Min(width, height) / 4 - 1, 1));
                 graph.Append($"[bg_in{s}]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
-                             + $"boxblur={radius}:{Math.Clamp(BlurPasses, 1, 5)},eq=brightness={Number(Math.Clamp(BackgroundDim, -0.5, 0))}[bg_layer{s}]");
+                             + $"boxblur={radius}:{Math.Clamp(BlurPasses, 1, 5)},eq=brightness={Number(Math.Clamp(BackgroundDim, -0.5, 0))}");
             }
-            graph.Append($";[center_in{s}]{centerChain}[center_layer{s}]");
-            graph.Append($";[bg_layer{s}][center_layer{s}]overlay={center.X}:{center.Y}");
         }
         else
         {
-            // What of the sharp video lies inside the frame is the base picture.
+            // What of the main video lies inside the frame is the base picture.
             graph.Append($"{(isSplit ? $"[center_in{s}]" : "")}{centerChain},crop={width}:{height}:{-center.X}:{-center.Y}");
         }
 
-        // Elements, each on the picture built so far. The running picture is labelled between steps;
+        // The layers, each on the picture built so far. The running picture is labelled between steps;
         // after the last one it is left open, so the rest of the chain continues from it.
-        for (var n = 1; n <= elements.Count; n++)
+        for (var n = 0; n < stack.Count; n++)
         {
-            var element = elements[n - 1];
-            var (x, y, elementWidth, elementHeight) = element.GetOutputRect(width, height, SourceWidth, SourceHeight);
-            graph.Append($"[stage{n}{s}];");
-            graph.Append(BuildElementLayer(element, $"ui{n}", s, elementWidth, elementHeight, _liveScale, _buildingLiveGraph));
-
-            if (element.Shadow)
+            var layer = stack[n];
+            if (layer.IsMainVideo)
             {
-                // The shadow is the element's own outline in black at reduced opacity, laid down first and offset.
-                var offset = Placed(Math.Clamp(element.ShadowOffset, 0, 200));
+                if (!needsBackground)
+                    continue;
+
+                graph.Append($"[stage{n}{s}];[center_in{s}]{centerChain}[center_layer{s}]");
+                graph.Append($";[stage{n}{s}][center_layer{s}]overlay={center.X}:{center.Y}");
+                continue;
+            }
+
+            var (x, y, layerWidth, layerHeight) = layer.GetOutputRect(width, height, SourceWidth, SourceHeight);
+            graph.Append($"[stage{n}{s}];");
+            graph.Append(BuildElementLayer(layer, $"ui{n}", s, layerWidth, layerHeight, startSeconds));
+
+            // A video from a file runs for as long as it is asked to; the picture under it decides when the output ends.
+            var ending = layer.IsVideoFile ? ":shortest=1" : "";
+            if (layer.Shadow)
+            {
+                // The shadow is the layer's own outline in black at reduced opacity, laid down first and offset.
+                var offset = Placed(Math.Clamp(layer.ShadowOffset, 0, 200));
                 graph.Append($";[ui{n}_layer{s}]split[ui{n}_top{s}][ui{n}_shadow_in{s}]");
-                graph.Append($";[ui{n}_shadow_in{s}]format=yuva420p,lutyuv=y=16:u=128:v=128:a=val*{Number(Math.Clamp(element.ShadowOpacity, 0, 1))},"
+                graph.Append($";[ui{n}_shadow_in{s}]format=yuva420p,lutyuv=y=16:u=128:v=128:a=val*{Number(Math.Clamp(layer.ShadowOpacity, 0, 1))},"
                              + $"boxblur=2:1:0:0:2:1[ui{n}_shadow{s}]");
-                graph.Append($";[stage{n}{s}][ui{n}_shadow{s}]overlay={x + offset}:{y + offset}[ui{n}_shaded{s}]");
-                graph.Append($";[ui{n}_shaded{s}][ui{n}_top{s}]overlay={x}:{y}");
+                graph.Append($";[stage{n}{s}][ui{n}_shadow{s}]overlay={x + offset}:{y + offset}{ending}[ui{n}_shaded{s}]");
+                graph.Append($";[ui{n}_shaded{s}][ui{n}_top{s}]overlay={x}:{y}{ending}");
             }
             else
             {
-                graph.Append($";[stage{n}{s}][ui{n}_layer{s}]overlay={x}:{y}");
+                graph.Append($";[stage{n}{s}][ui{n}_layer{s}]overlay={x}:{y}{ending}");
             }
         }
 
@@ -693,66 +724,80 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// One element as a finished layer, labelled [name_layer]: cut from the video or read from its image
-    /// file, scaled, then given its transparency. Rounded corners and soft edges are an alpha mask worked
-    /// out per pixel by geq; opacity scales whatever alpha results.
+    /// One layer as a finished picture with its transparency, labelled [name_layer]: cut from the main video,
+    /// or read from its image or video file, and scaled. What shows of it is then the product of everything
+    /// that makes parts of it transparent: its own transparency (a PNG's, or a color keyed out), a custom
+    /// mask from a file, and the rounded or feathered outline. Opacity scales whatever results.
     /// </summary>
-    /// <param name="pixelScale">What sizes given in output pixels (the feather) are multiplied by: less than 1 for Live Preview.</param>
-    /// <param name="reuseMask">
-    /// Live Preview: the outline of a piece of video is drawn once and held, instead of being worked out for
-    /// every frame as the export does. The outline does not change from frame to frame, so the picture is the same.
-    /// </param>
-    private static string BuildElementLayer(OverlayRegion element, string name, string s, int width, int height, double pixelScale = 1, bool reuseMask = false)
+    private string BuildElementLayer(OverlayRegion layer, string name, string s, int width, int height, double startSeconds)
     {
-        var mask = BuildElementMask(element, width, height, pixelScale);
-        var opacity = Math.Clamp(element.Opacity, 0, 100) / 100.0;
         var chain = new StringBuilder();
-
-        if (element.IsImage)
+        if (layer.IsVideoFile)
         {
-            // The picture is read by a source filter inside the graph, so no second -i is needed. It is a
-            // single frame, which the overlay repeats for as long as the video runs; its mask is therefore
-            // computed once. A picture may come with transparency of its own, which the mask multiplies
-            // rather than replaces.
-            chain.Append($"movie='{EscapeFilterPath(element.ImagePath)}',scale={width}:{height}");
-            if (mask is not null)
-                chain.Append($",format=gbrap,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{mask}{(opacity < 1 ? "*" + Number(opacity) : "")}'");
-            else
-                chain.Append(opacity < 1 ? $",format=rgba,colorchannelmixer=aa={Number(opacity)}" : ",format=rgba");
-
-            return chain.Append($"[{name}_layer{s}]").ToString();
+            // Read by a source filter inside the graph, so no second -i is needed. It repeats without end,
+            // is given an even clock, and is started as far in as the main video is.
+            chain.Append($"movie='{EscapeFilterPath(layer.ImagePath)}':loop=0,setpts=N/FRAME_RATE/TB");
+            if (startSeconds > 0.01)
+                chain.Append($",trim=start={Number(startSeconds)},setpts=PTS-STARTPTS");
+            chain.Append($",scale={width}:{height}");
+        }
+        else if (layer.IsImage)
+        {
+            // A single frame, which the overlay repeats for as long as the video runs.
+            chain.Append($"movie='{EscapeFilterPath(layer.ImagePath)}',scale={width}:{height}");
+        }
+        else
+        {
+            // Cut out of the source by fractions of the frame, so the same layer works at any source size.
+            chain.Append($"[{name}_in{s}]crop=trunc(iw*{Fraction(layer.SourceWidth)}/2)*2:trunc(ih*{Fraction(layer.SourceHeight)}/2)*2:"
+                         + $"iw*{Fraction(layer.SourceX)}:ih*{Fraction(layer.SourceY)},scale={width}:{height}");
         }
 
-        // Cut out of the source by fractions of the frame, so the same element works at any source size.
-        chain.Append($"[{name}_in{s}]crop=trunc(iw*{Fraction(element.SourceWidth)}/2)*2:trunc(ih*{Fraction(element.SourceHeight)}/2)*2:"
-                     + $"iw*{Fraction(element.SourceX)}:ih*{Fraction(element.SourceY)},scale={width}:{height}");
-
-        if (mask is not null && reuseMask)
+        if (layer.ChromaKey && layer.HasKeying)
         {
-            // One grey picture, white where the element is to show, made once and repeated for as long as the video runs.
-            chain.Append($",format=yuva420p[{name}_pic{s}]");
-            chain.Append($";color=c=black:s={width}x{height}:r=1,format=gray,geq=lum='255*{mask}',trim=end_frame=1,loop=loop=-1:size=1[{name}_mask{s}]");
-            chain.Append($";[{name}_pic{s}][{name}_mask{s}]alphamerge");
-        }
-        else if (mask is not null)
-        {
-            // A grey picture the size of the element, white where it is to show, merged in as its alpha channel.
-            // It is drawn from a copy of the element itself, so the two always arrive frame for frame.
-            chain.Append($",format=yuva420p,split[{name}_pic{s}][{name}_mask_in{s}]");
-            chain.Append($";[{name}_mask_in{s}]format=gray,geq=lum='255*{mask}'[{name}_mask{s}]");
-            chain.Append($";[{name}_pic{s}][{name}_mask{s}]alphamerge");
-        }
-        else if (opacity < 1)
-        {
-            chain.Append(",format=yuva420p");
+            chain.Append($",chromakey=0x{KeyColor(layer.ChromaColor)}:{Number(Math.Clamp(layer.ChromaSimilarity, 0.01, 1))}:{Number(Math.Clamp(layer.ChromaBlend, 0, 1))}");
         }
 
+        chain.Append(",format=yuva420p");
+
+        // The masks: grey pictures the size of the layer, white where it is to show. Each is a single picture
+        // made once and held, not worked out again for every frame.
+        var masks = new List<string>();
+        var sources = new StringBuilder();
+        if (layer.CustomMask && layer.HasKeying && File.Exists(layer.MaskPath.Trim().Trim('"')))
+        {
+            sources.Append($";movie='{EscapeFilterPath(layer.MaskPath)}',scale={width}:{height},format=gray,trim=end_frame=1,loop=loop=-1:size=1[{name}_cmask{s}]");
+            masks.Add($"[{name}_cmask{s}]");
+        }
+
+        if (BuildElementMask(layer, width, height, _liveScale) is { } shape)
+        {
+            sources.Append($";color=c=black:s={width}x{height}:r=1,format=gray,geq=lum='255*{shape}',trim=end_frame=1,loop=loop=-1:size=1[{name}_smask{s}]");
+            masks.Add($"[{name}_smask{s}]");
+        }
+
+        if (masks.Count > 0)
+        {
+            // The layer's own transparency is taken out, multiplied by each mask in turn, and put back.
+            chain.Append($",split[{name}_pic{s}][{name}_a_in{s}];[{name}_a_in{s}]alphaextract[{name}_a0{s}]");
+            chain.Append(sources);
+            for (var k = 0; k < masks.Count; k++)
+                chain.Append($";[{name}_a{k}{s}]{masks[k]}blend=all_mode=multiply:shortest=1[{name}_a{k + 1}{s}]");
+            chain.Append($";[{name}_pic{s}][{name}_a{masks.Count}{s}]alphamerge");
+        }
+
+        var opacity = Math.Clamp(layer.Opacity, 0, 100) / 100.0;
         if (opacity < 1)
             chain.Append($",lutyuv=a=val*{Number(opacity)}");
 
         return chain.Append($"[{name}_layer{s}]").ToString();
+    }
 
-        static string Fraction(double value) => Math.Clamp(value, 0, 1).ToString("0.#####", CultureInfo.InvariantCulture);
+    /// <summary>#RRGGBB as FFmpeg writes a color, RRGGBB; anything unreadable becomes green.</summary>
+    private static string KeyColor(string color)
+    {
+        var hex = (color ?? "").Trim().TrimStart('#');
+        return hex.Length == 6 && hex.All(Uri.IsHexDigit) ? hex.ToUpperInvariant() : "00FF00";
     }
 
     /// <summary>

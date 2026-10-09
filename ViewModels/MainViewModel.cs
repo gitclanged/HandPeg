@@ -58,6 +58,7 @@ public partial class MainViewModel : ObservableObject
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
         nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloTrack),
         nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
+        nameof(IsEditorMode), nameof(CopyBypassWarning),
     ];
 
 
@@ -111,7 +112,8 @@ public partial class MainViewModel : ObservableObject
 #pragma warning disable MVVMTK0034
         (_snapToKeyframes, _playOnlySegments) = (settings.StartWithSnapToKeyframes, settings.StartWithPlayOnlySegments);
         (_chapterMarkers, _chaptersAtCuts) = (settings.StartWithChapterMarkers, settings.StartWithChaptersAtCuts);
-        _frameEngine = settings.StartWithFrameEngine;
+        // In Editor Mode the Layer Engine is simply how the picture is composed; there is nothing to switch on.
+        _frameEngine = settings.StartWithFrameEngine || settings.UiMode == AppSettings.EditorMode;
 
         // The encoder chosen in the first-run window. A hardware one is only in the list once the probe
         // has found it, so until then it waits; see ProbeHardwareEncodersAsync.
@@ -160,6 +162,9 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>Raised with a local file path when a source is ready to be played.</summary>
     public event Action<string>? MediaLoaded;
+
+    /// <summary>Asks the user to confirm something (title, message, what the confirming button says). Returning false calls it off.</summary>
+    public Func<string, string, string, bool>? Confirm { get; set; }
 
     /// <summary>Asked before an encode replaces an existing file. Returning false aborts the encode.</summary>
     public Func<string, OverwriteDecision>? AskOverwrite { get; set; }
@@ -247,7 +252,7 @@ public partial class MainViewModel : ObservableObject
 
     private void ApplyPreset(EncodingPreset preset)
     {
-        FrameEngine = preset.FrameEngine;
+        FrameEngine = preset.FrameEngine || IsEditorMode;
 
         // Width and height are set as stored, without one recalculating the other on the way.
         _syncingDimensions = true;
@@ -279,6 +284,7 @@ public partial class MainViewModel : ObservableObject
         BlurPasses = Math.Clamp(preset.BlurPasses, 1, 5);
         BackgroundDim = Math.Clamp(preset.BackgroundDim, -0.5, 0);
         SetUiElements(preset.UiElements ?? []);
+        MainVideoIndex = Math.Clamp(preset.MainVideoIndex, 0, UiElements.Count);
         _layoutSourceAspect = preset.LayoutSourceAspectRatio;
         AddLegacyWatermark(preset);
 
@@ -1100,6 +1106,8 @@ public partial class MainViewModel : ObservableObject
     public void OnSettingsSaved()
     {
         ApplyDisplaySettings();
+        if (IsEditorMode)
+            FrameEngine = true;
         LoadAutomation();
         GenerateCommand();
         _ = ProbeHardwareEncodersAsync();
@@ -1136,6 +1144,14 @@ public partial class MainViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(CommandPreview))
             return "There is no command to run.";
+
+        // Copy keeps the picture as it is: said once more before the time is spent, when there is work it would skip.
+        if (CopyBypassWarning.Length > 0 && !IsCommandManuallyEdited && Confirm is not null
+            && !Confirm("Stream Copy", $"{CopyBypassWarning}\n\nThe video is copied as it is: nothing set on the Layers and Filters tabs, and no crop or resize, reaches the output. To apply them, choose an encoder on the Video tab.", "Encode Anyway"))
+        {
+            return "Encode cancelled.";
+        }
+
         if (!ResolveOverwrite())
             return "Encode cancelled: the existing file was left untouched.";
 
@@ -1334,6 +1350,7 @@ public partial class MainViewModel : ObservableObject
         // The Properties tab follows the settings even while the command itself is frozen by a manual edit.
         UpdateProjectedOutput();
         OnPropertyChanged(nameof(CaptionHint));
+        OnPropertyChanged(nameof(CopyBypassWarning));
 
         // So does Live Preview, which shows the settings, not the command.
         if (!_isBackgroundWorker)

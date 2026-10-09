@@ -141,11 +141,14 @@ public partial class MainViewModel
 
     private void RefreshElementRows()
     {
+        // As they are stacked, front first: the captions over everything, then the layers with the main video
+        // among them, and the blurred background behind it all.
         ElementRows.Clear();
-        foreach (var element in UiElements)
-            ElementRows.Add(element);
         if (AutoCaptions)
             ElementRows.Add(CaptionLayer);
+        foreach (var layer in Enumerable.Reverse(GetStack()))
+            ElementRows.Add(layer);
+        ElementRows.Add(_backgroundRow);
     }
 
     /// <summary>Opens the layout pane by itself when the settings ask for that (Editor Mode does).</summary>

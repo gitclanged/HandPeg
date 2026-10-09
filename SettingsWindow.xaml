@@ -138,7 +138,7 @@
                     </StackPanel>
                     <CheckBox Content="Notify when an encode finishes" IsChecked="{Binding NotifyOnEncodeComplete}"
                               ToolTip="Sends a Windows notification when an encode, or the queue, has finished." />
-                    <CheckBox Content="Show Advanced Filters Tab" IsChecked="{Binding ShowAdvancedFiltersTab}"
+                    <CheckBox Content="Show color grading on the Filters tab" IsChecked="{Binding ShowAdvancedFiltersTab}"
                               ToolTip="Adds the Advanced tab: colour correction (contrast, brightness, saturation, gamma), sharpening, and a live preview of a single frame. Values already set there keep applying while the tab is hidden." />
 
                     <TextBlock Text="Render Preview" Style="{StaticResource SectionTitle}" Margin="0,16,0,2" />

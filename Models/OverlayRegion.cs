@@ -13,6 +13,15 @@ public enum ElementKind
 
     /// <summary>The box the auto-captions are drawn in. There is one, and it is always the top layer.</summary>
     Captions,
+
+    /// <summary>A video from a file, played alongside the main one and repeated when it is shorter.</summary>
+    VideoFile,
+
+    /// <summary>The main video itself, as a place in the stacking order. There is one; it is placed with the Center controls.</summary>
+    MainVideo,
+
+    /// <summary>The blurred copy of the video that fills the frame behind everything. There is one, always at the bottom.</summary>
+    Background,
 }
 
 /// <summary>
@@ -38,10 +47,44 @@ public sealed partial class OverlayRegion : ObservableObject
 
     public bool IsImage => Kind == ElementKind.Image;
 
+    public bool IsVideoFile => Kind == ElementKind.VideoFile;
+
+    /// <summary>A picture or a video that comes from a file of its own, not from the main video.</summary>
+    public bool IsFile => IsImage || IsVideoFile;
+
     public bool IsCaptions => Kind == ElementKind.Captions;
 
-    /// <summary>The caption box is part of the captions: it comes and goes with them, and is not removed by hand.</summary>
-    public bool IsRemovable => !IsCaptions;
+    public bool IsMainVideo => Kind == ElementKind.MainVideo;
+
+    public bool IsBackground => Kind == ElementKind.Background;
+
+    /// <summary>Something added by hand, which can be removed again: the captions, the main video and the background cannot.</summary>
+    public bool IsRemovable => Kind is ElementKind.Video or ElementKind.Image or ElementKind.VideoFile;
+
+    /// <summary>Has a place and a size on the frame of its own, and a style: everything but the main video and the background.</summary>
+    public bool HasPlacement => !IsMainVideo && !IsBackground;
+
+    /// <summary>Can be moved up and down the stack: the captions stay on top and the background at the bottom.</summary>
+    public bool CanReorder => !IsCaptions && !IsBackground;
+
+    /// <summary>Can have a color keyed out of it or a mask laid on it: the pictures and videos added by hand.</summary>
+    public bool HasKeying => IsRemovable;
+
+    // Chroma key: one color of the layer (a green or blue screen) made transparent.
+    [ObservableProperty] private bool _chromaKey;
+
+    /// <summary>The color to remove, as #RRGGBB.</summary>
+    [ObservableProperty] private string _chromaColor = "#00FF00";
+
+    /// <summary>How close to that color a pixel has to be to go: 0.01 only the color itself, 1 everything.</summary>
+    [ObservableProperty] private double _chromaSimilarity = 0.15;
+
+    /// <summary>How gradually pixels near the limit fade out: 0 a hard edge.</summary>
+    [ObservableProperty] private double _chromaBlend = 0.05;
+
+    // Custom mask: a black-and-white picture, stretched over the layer; the layer shows where it is white.
+    [ObservableProperty] private bool _customMask;
+    [ObservableProperty] private string _maskPath = "";
 
     /// <summary>Only a piece of the video has a place in the source to be marked.</summary>
     public bool IsVideo => Kind == ElementKind.Video;
@@ -121,7 +164,7 @@ public sealed partial class OverlayRegion : ObservableObject
         set => SizeWidth = Math.Clamp(value, 1, 200) / 100.0;
     }
 
-    public bool IsUsable => SizeWidth > 0 && (IsImage ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
+    public bool IsUsable => SizeWidth > 0 && (IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
 
     /// <summary>The source rectangle in pixels of a source of the given size.</summary>
     public (int X, int Y, int Width, int Height) GetSourceRect(int sourceWidth, int sourceHeight) =>
@@ -146,7 +189,7 @@ public sealed partial class OverlayRegion : ObservableObject
     /// <summary>The height that keeps the element's own shape at a given width: the source rectangle's, or the picture's.</summary>
     private int GetProportionalHeight(int width, int sourceWidth, int sourceHeight)
     {
-        if (IsImage)
+        if (IsFile)
             return ImageWidth > 0 && ImageHeight > 0 ? Math.Max(Even((double)width * ImageHeight / ImageWidth), 2) : width;
 
         var (_, _, cutWidth, cutHeight) = GetSourceRect(sourceWidth > 0 ? sourceWidth : 1920, sourceHeight > 0 ? sourceHeight : 1080);
@@ -188,6 +231,12 @@ public sealed partial class OverlayRegion : ObservableObject
         Shadow = Shadow,
         ShadowOpacity = ShadowOpacity,
         ShadowOffset = ShadowOffset,
+        ChromaKey = ChromaKey,
+        ChromaColor = ChromaColor,
+        ChromaSimilarity = ChromaSimilarity,
+        ChromaBlend = ChromaBlend,
+        CustomMask = CustomMask,
+        MaskPath = MaskPath,
     };
 
     /// <summary>
@@ -211,6 +260,12 @@ public sealed partial class OverlayRegion : ObservableObject
             Shadow = state.Shadow,
             ShadowOpacity = state.ShadowOpacity,
             ShadowOffset = state.ShadowOffset,
+            ChromaKey = state.ChromaKey,
+            ChromaColor = string.IsNullOrWhiteSpace(state.ChromaColor) ? "#00FF00" : state.ChromaColor,
+            ChromaSimilarity = Math.Clamp(state.ChromaSimilarity, 0.01, 1),
+            ChromaBlend = Math.Clamp(state.ChromaBlend, 0, 1),
+            CustomMask = state.CustomMask,
+            MaskPath = state.MaskPath ?? "",
         };
 
         if (state.SourceWidth <= 0 && state.Width is > 0 && state.Height is > 0)
@@ -272,6 +327,13 @@ public sealed class OverlayRegionState
     public bool Shadow { get; set; }
     public double ShadowOpacity { get; set; } = 0.5;
     public int ShadowOffset { get; set; } = 10;
+
+    public bool ChromaKey { get; set; }
+    public string ChromaColor { get; set; } = "#00FF00";
+    public double ChromaSimilarity { get; set; } = 0.15;
+    public double ChromaBlend { get; set; } = 0.05;
+    public bool CustomMask { get; set; }
+    public string MaskPath { get; set; } = "";
 
     // Pixel values from presets saved by earlier versions. Read for conversion, never written.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

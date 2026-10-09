@@ -73,8 +73,11 @@ public sealed class EncodingPreset
     public int BlurPasses { get; set; } = 2;
     public double BackgroundDim { get; set; } = -0.15;
 
-    /// <summary>Pieces of the source and images placed on the frame, each with where it comes from and where it goes.</summary>
+    /// <summary>Pieces of the source and images placed on the frame, each with where it comes from and where it goes. In stacking order, bottom first.</summary>
     public List<OverlayRegionState> UiElements { get; set; } = [];
+
+    /// <summary>How many of those layers lie under the main video: 0 puts it beneath all of them, as it always was before layers could be reordered.</summary>
+    public int MainVideoIndex { get; set; }
 
     /// <summary>
     /// Width divided by height of the video the elements were marked on; 0 when not recorded. Their source
@@ -203,7 +206,7 @@ public sealed class EncodingPreset
         {
             (FrameEngine, CenterZoom, CenterOffsetX, CenterOffsetY) = (other.FrameEngine, other.CenterZoom, other.CenterOffsetX, other.CenterOffsetY);
             (BlurRadius, BlurPasses, BackgroundDim) = (other.BlurRadius, other.BlurPasses, other.BackgroundDim);
-            (UiElements, LayoutSourceAspectRatio) = (other.UiElements, other.LayoutSourceAspectRatio);
+            (UiElements, LayoutSourceAspectRatio, MainVideoIndex) = (other.UiElements, other.LayoutSourceAspectRatio, other.MainVideoIndex);
             (WatermarkPath, WatermarkOpacity, WatermarkPosition) = (other.WatermarkPath, other.WatermarkOpacity, other.WatermarkPosition);
         }
 
