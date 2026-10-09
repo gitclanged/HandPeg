@@ -46,6 +46,18 @@ public sealed class LayoutSection
     /// </summary>
     public double SourceAspectRatio { get; set; }
 
+    /// <summary>Whether the layout is for a frame turned on its side (tall from a wide video); null when the style leaves the frame as it is.</summary>
+    public bool? Vertical { get; set; }
+
+    /// <summary>How many of the layers lie under the main video; null in a style that does not say.</summary>
+    public int? MainVideoIndex { get; set; }
+
+    /// <summary>The look of the main video itself: its style, mask, filters and how it is turned.</summary>
+    public LayerState? MainLayer { get; set; }
+
+    /// <summary>Whether the blurred background is switched off, leaving the black canvas.</summary>
+    public bool BackgroundHidden { get; set; }
+
     public List<LayerState> Layers { get; set; } = [];
 }
 

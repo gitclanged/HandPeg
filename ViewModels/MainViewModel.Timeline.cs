@@ -8,7 +8,8 @@ namespace HandPegApp.ViewModels;
 
 /// <summary>The timeline as Undo keeps it: the cuts, the layers and what was done to the audio. Nothing else, and no pictures.</summary>
 public sealed record TimelineSnapshot(
-    List<SegmentState> Segments, List<LayerState> Layers, int MainVideoIndex, List<AudioEditState> Audio, bool AudioLinked);
+    List<SegmentState> Segments, List<LayerState> Layers, int MainVideoIndex, List<AudioEditState> Audio, bool AudioLinked,
+    LayerState? MainLayer = null, bool BackgroundHidden = false);
 
 /// <summary>What was done to one audio track on the timeline: how far it was slipped, and its pieces.</summary>
 public sealed record AudioEditState(int Index, double Offset, List<AudioPiece> Pieces);
@@ -43,7 +44,7 @@ public partial class MainViewModel
         Layers.Select(l => l.ToState()).ToList(),
         MainVideoIndex,
         AudioTracks.Select(t => new AudioEditState(t.Index, t.OffsetSeconds, [.. t.Pieces])).ToList(),
-        AudioLinked));
+        AudioLinked, _mainVideoRow.ToState(), _backgroundRow.IsHidden));
 
     /// <summary>Call before changing the timeline: what it looks like now can then be brought back with Undo.</summary>
     /// <param name="what">The change about to be made, in a word or two, for the status bar.</param>
@@ -87,6 +88,8 @@ public partial class MainViewModel
             Segments.Add(new CutSegment(TimeSpan.FromMilliseconds(segment.StartMs), TimeSpan.FromMilliseconds(segment.EndMs)) { IsSkipped = segment.Skipped });
 
         SetLayers(snapshot.Layers);
+        _mainVideoRow.ApplyLook(snapshot.MainLayer);
+        _backgroundRow.IsHidden = snapshot.BackgroundHidden;
         MainVideoIndex = Math.Clamp(snapshot.MainVideoIndex, 0, Layers.Count);
         foreach (var edit in snapshot.Audio)
         {
@@ -174,26 +177,60 @@ public partial class MainViewModel
             return;
 
         Checkpoint($"duplicate {layer.Name}");
-        var copy = Layer.FromState(layer.ToState(), SourceWidth, SourceHeight, FrameWidth, FrameHeight);
-        copy.Name = layer.Name + " copy";
-        (copy.PositionX, copy.PositionY) = (Math.Min(layer.PositionX + 0.03, 1), Math.Min(layer.PositionY + 0.03, 1));
-        copy.Waveform = layer.Waveform;
-        copy.PropertyChanged += OnLayerChanged;
-        Layers.Insert(Layers.IndexOf(layer) + 1, copy);
+        // The whole track: every clip on it, on a new track just above.
+        var clips = GetTrackClips(layer);
+        var track = Layers.Select(l => l.TrackId).DefaultIfEmpty().Max() + 1;
+        var at = Layers.IndexOf(clips[^1]) + 1;
+        foreach (var clip in clips)
+        {
+            var copy = Layer.FromState(clip.ToState(), SourceWidth, SourceHeight, FrameWidth, FrameHeight);
+            (copy.Name, copy.TrackId) = (clip.Name + " copy", track);
+            (copy.PositionX, copy.PositionY) = (clip.PositionX + 0.03, clip.PositionY + 0.03);
+            (copy.Waveform, copy.Filmstrip) = (clip.Waveform, clip.Filmstrip);
+            Hook(copy);
+            Layers.Insert(at++, copy);
+        }
+
         StatusText = $"Duplicated {layer.Name}.";
+    }
+
+    /// <summary>Removes a track: every clip on it.</summary>
+    public void RemoveTrack(Layer layer)
+    {
+        if (!layer.IsRemovable || !Layers.Contains(layer))
+            return;
+
+        Checkpoint($"remove {layer.Name}");
+        foreach (var clip in GetTrackClips(layer))
+        {
+            if (ReferenceEquals(DrawTargetLayer, clip))
+                DrawTargetLayer = null;
+            clip.PropertyChanged -= OnLayerChanged;
+            Layers.Remove(clip);
+        }
+
+        StatusText = $"Removed {layer.Name}. Ctrl+Z brings it back.";
     }
 
     public void ToggleHidden(Layer layer)
     {
         Checkpoint(layer.IsHidden ? $"show {layer.Name}" : $"hide {layer.Name}");
-        layer.IsHidden = !layer.IsHidden;
-        StatusText = layer.IsHidden ? $"{layer.Name} is hidden: it stays in the list but is left out of the picture." : $"{layer.Name} is shown again.";
+        var hide = !layer.IsHidden;
+        foreach (var clip in GetTrackClips(layer))
+            clip.IsHidden = hide;
+        if (layer.IsMainVideo || layer.IsBackground)
+            GenerateCommand();
+        RefreshLayerRows();
+        StatusText = !hide ? $"{layer.Name} is shown again."
+            : layer.IsBackground ? "The blurred background is hidden: the canvas behind the layers is black."
+            : layer.IsMainVideo ? "The main video's picture is hidden. Its sound, its length and its cuts stay as they are."
+            : $"{layer.Name} is hidden: it stays in the list but is left out of the picture.";
     }
 
     /// <summary>Has auto-captions listen to a video layer's own sound.</summary>
     public void UseLayerAudioForCaptions(Layer layer)
     {
-        if (!layer.IsVideoFile || !layer.HasAudio)
+        if (!layer.CarriesSound)
         {
             StatusText = $"{layer.Name} has no sound to make captions from.";
             return;
@@ -211,8 +248,8 @@ public partial class MainViewModel
     /// </summary>
     [ObservableProperty] private bool _audioLinked = true;
 
-    /// <summary>Whether the rows of video layers on the Layers tab show a second bar for the layer's own sound.</summary>
-    [ObservableProperty] private bool _showLayerAudio;
+    /// <summary>Whether the blocks of the Layers tab show the waveform of the sound that is linked to their picture, drawn over them.</summary>
+    [ObservableProperty] private bool _showLinkedAudio;
 
     /// <summary>
     /// Links or unlinks audio and video. Linking again after something was slipped asks first: linked means
@@ -314,13 +351,20 @@ public partial class MainViewModel
 
     /// <summary>The video layers whose own sound goes into the output: those that have any, and are not hidden.</summary>
     private List<Layer> GetLayerAudioSources() =>
-        Layers.Where(l => l.IsVideoFile && l.HasAudio && !l.IsHidden && File.Exists(l.ImagePath)).ToList();
+        Layers.Where(l => l.CarriesSound && !l.IsHidden && File.Exists(l.ImagePath)).ToList();
 
     /// <summary>Draws the waveform of a video layer's sound, for its block on the Layers tab. In the background; the layer works without it.</summary>
     private async Task LoadLayerWaveformAsync(Layer layer)
     {
-        if (_isBackgroundWorker || !layer.IsVideoFile || !layer.HasAudio || layer.Waveform is not null || !ShowWaveforms)
+        if (_isBackgroundWorker || !layer.CarriesSound || layer.Waveform is not null || !(ShowWaveforms || layer.IsAudio))
             return;
+
+        // Clips cut from one file show the same picture: it is made once.
+        if (Layers.FirstOrDefault(l => !ReferenceEquals(l, layer) && l.ImagePath == layer.ImagePath && l.Waveform is not null) is { } same)
+        {
+            layer.Waveform = same.Waveform;
+            return;
+        }
 
         try
         {
@@ -328,6 +372,54 @@ public partial class MainViewModel
                 layer.ImagePath, [0], Path.Combine(WaveformFolder, $"layer_{Guid.NewGuid():N}.png"), 1200, 60, "white", _shutdown.Token);
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+        }
+    }
+
+    /// <summary>The pictures a layer's block is drawn with: the waveform of its sound, and for a video a strip of its frames.</summary>
+    private async Task LoadLayerPicturesAsync(Layer layer)
+    {
+        await LoadLayerWaveformAsync(layer);
+        await LoadLayerFilmstripAsync(layer);
+    }
+
+    /// <summary>
+    /// Takes a strip of frames from a video layer's file, evenly spread over its length, for its block on the
+    /// Layers tab. In the background, once for each file; the layer works without it.
+    /// </summary>
+    private async Task LoadLayerFilmstripAsync(Layer layer)
+    {
+        var count = Math.Clamp(AppSettings.Current.LayerThumbnailCount, 1, 25);
+        if (_isBackgroundWorker || !layer.IsVideoFile || layer.Filmstrip is not null || !File.Exists(layer.ImagePath))
+            return;
+
+        if (Layers.FirstOrDefault(l => !ReferenceEquals(l, layer) && l.ImagePath == layer.ImagePath && l.Filmstrip is not null) is { } same)
+        {
+            layer.Filmstrip = same.Filmstrip;
+            return;
+        }
+
+        try
+        {
+            if (layer.MediaDuration <= 0 && await MediaProbe.ProbeAsync(layer.ImagePath, _shutdown.Token) is { DurationSeconds: > 0 } info)
+                layer.MediaDuration = info.DurationSeconds;
+
+            var path = Path.Combine(SpriteFolder, $"layer_{Guid.NewGuid():N}.jpg");
+            if (!await FfmpegRunner.GenerateFilmstripAsync(layer.ImagePath, path, count, layer.MediaDuration, _shutdown.Token))
+                return;
+
+            // Read into memory, so that the file is not held open.
+            var picture = new System.Windows.Media.Imaging.BitmapImage();
+            picture.BeginInit();
+            picture.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            picture.UriSource = new Uri(path);
+            picture.EndInit();
+            picture.Freeze();
+            foreach (var clip in Layers.Where(l => l.ImagePath == layer.ImagePath && l.IsVideoFile))
+                clip.Filmstrip = picture;
+            layer.Filmstrip = picture;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException or UriFormatException)
         {
         }
     }
@@ -385,8 +477,9 @@ public partial class MainViewModel
         {
             var part = Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
             (part.StartTime, part.Duration, part.MediaOffset) = (layer.StartTime + (start - from), end - start, start);
-            (part.IsHidden, part.Name, part.Waveform) = (silent, $"{state.Name} ({++number})", layer.Waveform);
-            part.PropertyChanged += OnLayerChanged;
+            (part.IsHidden, part.Name, part.Waveform, part.Filmstrip) = (silent, state.Name, layer.Waveform, layer.Filmstrip);
+            number++;
+            Hook(part);
             Layers.Insert(Math.Min(index++, Layers.Count), part);
         }
 

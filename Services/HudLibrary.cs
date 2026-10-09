@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using HandPegApp.Models;
 
 namespace HandPegApp.Services;
 
@@ -76,6 +77,78 @@ public static class HudLibrary
             new("Objective", 0.360, 0.020, 0.280, 0.095),
         ]),
     ];
+
+    /// <summary>
+    /// A game's HUD as layers: one per piece, each cut out of the video where that piece sits, with a mask for
+    /// the pieces that are not plain rectangles.
+    /// </summary>
+    /// <param name="vertical">
+    /// Lays the pieces out for a tall (9:16) frame with the video across its middle: what was in the top half of
+    /// the picture goes above the video, the rest below, enlarged to fill the width. Otherwise every piece is
+    /// laid back exactly where it was cut from.
+    /// </param>
+    public static List<LayerState> BuildLayers(HudGame game, bool vertical)
+    {
+        var states = game.Pieces.Select(piece =>
+        {
+            var state = new LayerState
+            {
+                Name = $"{game.Name}: {piece.Name}",
+                Kind = LayerKind.Video,
+                SourceX = piece.X, SourceY = piece.Y, SourceWidth = piece.Width, SourceHeight = piece.Height,
+                PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
+                CornerRadius = piece.Shape == HudShape.Panel ? 6 : 0,
+            };
+
+            try
+            {
+                if (EnsureMask(piece.Shape) is { } mask)
+                    (state.CustomMask, state.MaskPath) = (true, mask);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Without its mask the piece is a plain rectangle, which still works.
+            }
+
+            return state;
+        }).ToList();
+
+        if (vertical)
+            LayOutVertically(game, states);
+        return states;
+    }
+
+    /// <summary>
+    /// Places the pieces on a 9:16 frame around a 16:9 video that fills its width: one row above the video and
+    /// one below, each as large as the row's width and the room above or below allow, in the left-to-right
+    /// order the pieces have on screen.
+    /// </summary>
+    private static void LayOutVertically(HudGame game, List<LayerState> states)
+    {
+        // The share of the frame's height the video takes; a piece's height is its width times this, per unit of its own shape.
+        const double band = 81.0 / 256, gap = 0.02, margin = 0.03, largest = 3.2;
+        var room = (1 - band) / 2 - margin - 0.012;
+
+        foreach (var above in new[] { true, false })
+        {
+            var row = game.Pieces.Select((piece, index) => (Piece: piece, State: states[index]))
+                .Where(p => (p.Piece.Y + p.Piece.Height / 2 < 0.5) == above).OrderBy(p => p.Piece.X).ToList();
+            if (row.Count == 0)
+                continue;
+
+            var widths = row.Sum(p => p.Piece.Width);
+            var scale = Math.Min(Math.Min((1 - 2 * margin - gap * (row.Count - 1)) / widths, room / (band * row.Max(p => p.Piece.Height))), largest);
+            var x = (1 - (widths * scale + gap * (row.Count - 1))) / 2;
+            var top = above ? margin : 1 - margin - room;
+            foreach (var (piece, state) in row)
+            {
+                state.SizeWidth = Math.Round(piece.Width * scale, 4);
+                state.PositionX = Math.Round(x, 4);
+                state.PositionY = Math.Round(top + (room - piece.Height * scale * band) / 2, 4);
+                x += piece.Width * scale + gap;
+            }
+        }
+    }
 
     /// <summary>
     /// The mask picture for a shape: white where the layer shows, black where it does not, with a soft edge.

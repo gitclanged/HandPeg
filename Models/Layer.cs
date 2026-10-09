@@ -22,6 +22,9 @@ public enum LayerKind
 
     /// <summary>The blurred copy of the video that fills the frame behind everything. There is one, always at the bottom.</summary>
     Background,
+
+    /// <summary>A sound from a file, with no picture: it has a place in time and nothing else.</summary>
+    Audio,
 }
 
 /// <summary>
@@ -58,20 +61,46 @@ public sealed partial class Layer : ObservableObject
 
     public bool IsBackground => Kind == LayerKind.Background;
 
-    /// <summary>Something added by hand, which can be removed again: the captions, the main video and the background cannot.</summary>
-    public bool IsRemovable => Kind is LayerKind.Video or LayerKind.Image or LayerKind.VideoFile;
+    /// <summary>A sound with no picture.</summary>
+    public bool IsAudio => Kind == LayerKind.Audio;
 
-    /// <summary>Has a place and a size on the frame of its own, and a style: everything but the main video and the background.</summary>
-    public bool HasPlacement => !IsMainVideo && !IsBackground;
+    /// <summary>Has sound of its own that goes into the output: a video from a file that has any, or a sound file.</summary>
+    public bool CarriesSound => HasAudio && (IsVideoFile || IsAudio);
+
+    /// <summary>Something added by hand, which can be removed again: the captions, the main video and the background cannot.</summary>
+    public bool IsRemovable => Kind is LayerKind.Video or LayerKind.Image or LayerKind.VideoFile or LayerKind.Audio;
+
+    /// <summary>A picture on the frame: everything but the background, which is the frame, and a sound.</summary>
+    public bool IsPicture => !IsBackground && !IsAudio;
+
+    /// <summary>Placed with the sliders of its row: its top-left corner and its width. The main video is placed about its middle instead.</summary>
+    public bool HasPlacement => IsPicture && !IsMainVideo;
+
+    /// <summary>Has a look of its own: opacity, corners, soft edges, a shadow.</summary>
+    public bool HasStyle => IsPicture;
 
     /// <summary>Can be moved up and down the stack: the captions stay on top and the background at the bottom.</summary>
     public bool CanReorder => !IsCaptions && !IsBackground;
 
-    /// <summary>Can have a color keyed out of it: the pictures and videos added by hand.</summary>
-    public bool HasKeying => IsRemovable;
+    /// <summary>Can have a color keyed out of it: the main video, and the pictures and videos added by hand.</summary>
+    public bool HasKeying => IsPicture && !IsCaptions;
 
     /// <summary>Can have a mask of its own laid on it: those, and the caption box.</summary>
-    public bool HasMask => IsRemovable || IsCaptions;
+    public bool HasMask => IsPicture;
+
+    /// <summary>Can be given filters of its own, and be turned: every picture but the caption box.</summary>
+    public bool HasFilters => IsPicture && !IsCaptions;
+
+    // Tracks: a row of the timeline. A layer is one clip on its track; splitting it makes a second clip on the
+    // same track. What a track looks like (where it sits, its style, its filters) is the same for all its clips.
+
+    /// <summary>Which track the clip is on. Clips with the same number share a row.</summary>
+    [ObservableProperty] private int _trackId;
+
+    /// <summary>What belongs to one clip alone, and is not copied to the others on its track when it changes.</summary>
+    public static bool IsClipProperty(string? name) => name is nameof(StartTime) or nameof(Duration) or nameof(MediaOffset) or nameof(IsHidden)
+        or nameof(AudioOffset) or nameof(Name) or nameof(TrackId) or nameof(PositionXPercent) or nameof(PositionYPercent) or nameof(SizePercent)
+        or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges);
 
     // When the layer is on screen, in seconds of the source's own time.
 
@@ -96,8 +125,93 @@ public sealed partial class Layer : ObservableObject
     /// <summary>A picture of the layer's sound, drawn behind its block on the Layers tab. Not saved: it is made again from the file.</summary>
     [ObservableProperty] private System.Windows.Media.ImageSource? _waveform;
 
+    /// <summary>A strip of frames from a video layer's file, side by side, drawn in its block. Not saved.</summary>
+    [ObservableProperty] private System.Windows.Media.ImageSource? _filmstrip;
+
+    /// <summary>How long the layer's own video or sound is, in seconds; 0 when not known.</summary>
+    [ObservableProperty] private double _mediaDuration;
+
+    /// <summary>How much louder or quieter the layer's sound is made, in decibels.</summary>
+    [ObservableProperty] private double _audioGainDb;
+
+    // Turning and mirroring.
+
+    /// <summary>Degrees the picture is turned clockwise about its middle.</summary>
+    [ObservableProperty] private double _rotation;
+
+    [ObservableProperty] private bool _flipHorizontal;
+    [ObservableProperty] private bool _flipVertical;
+
+    // Filters of the layer's own, applied to its picture before it is laid on the frame.
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterContrast = 1;
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterBrightness;
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterSaturation = 1;
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterGamma = 1;
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterHue;
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterSharpen;
+
+    /// <summary>How far the picture is blurred, in pixels of a 1080-wide frame; 0 for not at all.</summary>
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterBlur;
+
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private bool _filterDenoise;
+
+    /// <summary>A .cube file whose look is given to this layer alone.</summary>
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private string _filterLut = "";
+
+    /// <summary>Whether any filter of the layer's own is set to something.</summary>
+    public bool HasFilterChanges => Math.Abs(FilterContrast - 1) >= 0.005 || Math.Abs(FilterBrightness) >= 0.005 || Math.Abs(FilterSaturation - 1) >= 0.005
+        || Math.Abs(FilterGamma - 1) >= 0.005 || Math.Abs(FilterHue) >= 0.05 || FilterSharpen >= 0.005 || FilterBlur >= 0.05 || FilterDenoise || FilterLut.Trim().Length > 0;
+
+    public void ResetFilters() =>
+        (FilterContrast, FilterBrightness, FilterSaturation, FilterGamma, FilterHue, FilterSharpen, FilterBlur, FilterDenoise, FilterLut) = (1, 0, 1, 1, 0, 0, 0, false, "");
+
+    public void ResetTransform() => (Rotation, FlipHorizontal, FlipVertical) = (0, false, false);
+
+    // Growing about the middle. A layer is kept by its top-left corner, but when its size is changed (by its
+    // slider, its number box, a dialog) it is its middle that stays where it is: the corner is moved to suit.
+
+    /// <summary>Switched on once the layer is in use; while it is being built, sizes and corners are simply taken as given.</summary>
+    public bool AnchorCenter { get; set; }
+
+    // The layer's height for each unit of its width, both as fractions of the frame; learnt whenever it is laid out.
+    private double _heightPerWidth;
+
+    partial void OnSizeWidthChanged(double oldValue, double newValue)
+    {
+        if (!AnchorCenter)
+            return;
+
+        PositionX -= (newValue - oldValue) / 2;
+        if (LockAspectRatio || SizeHeight <= 0)
+            PositionY -= (newValue - oldValue) * _heightPerWidth / 2;
+    }
+
+    partial void OnSizeHeightChanged(double oldValue, double newValue)
+    {
+        if (AnchorCenter && !LockAspectRatio && oldValue > 0)
+            PositionY -= (newValue - oldValue) / 2;
+    }
+
+    /// <summary>Changes the layer with its corner staying where it is: for a resize dragged by the opposite corner.</summary>
+    public void FromCorner(Action change)
+    {
+        var anchored = AnchorCenter;
+        AnchorCenter = false;
+        try
+        {
+            change();
+        }
+        finally
+        {
+            AnchorCenter = anchored;
+        }
+    }
+
     /// <summary>Can be given a time to appear and a time to go: the layers added by hand.</summary>
     public bool HasTiming => IsRemovable;
+
+    /// <summary>The seconds of the timeline the clip covers, on a video of the given length.</summary>
+    public (double Start, double End) GetSpan(double totalSeconds) => (StartTime, Duration > 0.001 ? StartTime + Duration : Math.Max(totalSeconds, StartTime));
 
     // Chroma key: one color of the layer (a green or blue screen) made transparent.
     [ObservableProperty] private bool _chromaKey;
@@ -133,17 +247,20 @@ public sealed partial class Layer : ObservableObject
     [NotifyPropertyChangedFor(nameof(PositionYPercent))]
     private double _positionY = 0.03;
 
+    // A layer may lie partly or wholly outside the frame: its corner can be anywhere from a frame to the left of it to a frame to the right.
+    public const double SmallestPosition = -200, LargestPosition = 200;
+
     /// <summary>The position as percentages of the frame, for the number boxes beside the X and Y sliders.</summary>
     public double PositionXPercent
     {
         get => Math.Round(PositionX * 100, 1);
-        set => PositionX = Math.Clamp(value, 0, 100) / 100;
+        set => PositionX = Math.Clamp(value, SmallestPosition, LargestPosition) / 100;
     }
 
     public double PositionYPercent
     {
         get => Math.Round(PositionY * 100, 1);
-        set => PositionY = Math.Clamp(value, 0, 100) / 100;
+        set => PositionY = Math.Clamp(value, SmallestPosition, LargestPosition) / 100;
     }
 
     /// <summary>Width as a fraction of the output frame's width.</summary>
@@ -168,7 +285,7 @@ public sealed partial class Layer : ObservableObject
     public int SizeHeightPercent
     {
         get => (int)Math.Round(SizeHeight * 100);
-        set => SizeHeight = Math.Clamp(value, 1, 200) / 100.0;
+        set => SizeHeight = Math.Clamp(value, 1, 400) / 100.0;
     }
 
     // Style: rounded corners, soft edges, transparency and a drop shadow, so the layer sits on the
@@ -190,10 +307,10 @@ public sealed partial class Layer : ObservableObject
     public int SizePercent
     {
         get => (int)Math.Round(SizeWidth * 100);
-        set => SizeWidth = Math.Clamp(value, 1, 200) / 100.0;
+        set => SizeWidth = Math.Clamp(value, 1, 400) / 100.0;
     }
 
-    public bool IsUsable => !IsHidden && SizeWidth > 0 && (IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
+    public bool IsUsable => !IsHidden && !IsAudio && SizeWidth > 0 && (IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
 
     /// <summary>The source rectangle in pixels of a source of the given size.</summary>
     public (int X, int Y, int Width, int Height) GetSourceRect(int sourceWidth, int sourceHeight) =>
@@ -211,6 +328,8 @@ public sealed partial class Layer : ObservableObject
         var height = LockAspectRatio || SizeHeight <= 0
             ? GetProportionalHeight(width, sourceWidth, sourceHeight)
             : Math.Max(Even(SizeHeight * frameHeight), 2);
+        if (frameWidth > 0 && frameHeight > 0)
+            _heightPerWidth = ((double)height / frameHeight) / ((double)width / frameWidth);
 
         return ((int)Math.Round(PositionX * frameWidth), (int)Math.Round(PositionY * frameHeight), width, height);
     }
@@ -232,7 +351,7 @@ public sealed partial class Layer : ObservableObject
             return;
 
         var width = Math.Max(Even(SizeWidth * frameWidth), 2);
-        SizeHeight = (double)GetProportionalHeight(width, sourceWidth, sourceHeight) / frameHeight;
+        FromCorner(() => SizeHeight = (double)GetProportionalHeight(width, sourceWidth, sourceHeight) / frameHeight);
     }
 
     private static int Even(double value) => (int)Math.Round(value / 2) * 2;
@@ -272,7 +391,37 @@ public sealed partial class Layer : ObservableObject
         IsHidden = IsHidden,
         HasAudio = HasAudio,
         AudioOffset = AudioOffset,
+        TrackId = TrackId,
+        MediaDuration = MediaDuration,
+        AudioGainDb = AudioGainDb,
+        Rotation = Rotation,
+        FlipHorizontal = FlipHorizontal,
+        FlipVertical = FlipVertical,
+        FilterContrast = FilterContrast,
+        FilterBrightness = FilterBrightness,
+        FilterSaturation = FilterSaturation,
+        FilterGamma = FilterGamma,
+        FilterHue = FilterHue,
+        FilterSharpen = FilterSharpen,
+        FilterBlur = FilterBlur,
+        FilterDenoise = FilterDenoise,
+        FilterLut = FilterLut,
     };
+
+    /// <summary>Takes the look of a saved layer (style, mask, key, filters, turning) and leaves place, size and timing as they are.</summary>
+    public void ApplyLook(LayerState? state)
+    {
+        state ??= new LayerState();
+        (CornerRadius, Opacity) = (Math.Clamp(state.CornerRadius, 0, 50), Math.Clamp(state.Opacity, 0, 100));
+        (Feather, FeatherRadius, Shadow, ShadowOpacity, ShadowOffset) = (state.Feather, state.FeatherRadius, state.Shadow, state.ShadowOpacity, state.ShadowOffset);
+        (ChromaKey, ChromaColor) = (state.ChromaKey, string.IsNullOrWhiteSpace(state.ChromaColor) ? "#00FF00" : state.ChromaColor);
+        (ChromaSimilarity, ChromaBlend) = (Math.Clamp(state.ChromaSimilarity, 0.01, 1), Math.Clamp(state.ChromaBlend, 0, 1));
+        (CustomMask, MaskPath, IsHidden) = (state.CustomMask, state.MaskPath ?? "", state.IsHidden);
+        (Rotation, FlipHorizontal, FlipVertical) = (Math.Clamp(state.Rotation, -360, 360), state.FlipHorizontal, state.FlipVertical);
+        (FilterContrast, FilterBrightness, FilterSaturation) = (Math.Clamp(state.FilterContrast, 0, 2), Math.Clamp(state.FilterBrightness, -1, 1), Math.Clamp(state.FilterSaturation, 0, 3));
+        (FilterGamma, FilterHue, FilterSharpen) = (Math.Clamp(state.FilterGamma, 0.1, 3), Math.Clamp(state.FilterHue, -180, 180), Math.Clamp(state.FilterSharpen, 0, 1));
+        (FilterBlur, FilterDenoise, FilterLut) = (Math.Clamp(state.FilterBlur, 0, 50), state.FilterDenoise, state.FilterLut ?? "");
+    }
 
     /// <summary>
     /// Rebuilds a layer from saved state. Presets saved before positions became fractions hold pixel
@@ -307,6 +456,21 @@ public sealed partial class Layer : ObservableObject
             IsHidden = state.IsHidden,
             HasAudio = state.HasAudio,
             AudioOffset = state.AudioOffset,
+            TrackId = state.TrackId,
+            MediaDuration = Math.Max(state.MediaDuration, 0),
+            AudioGainDb = Math.Clamp(state.AudioGainDb, -40, 24),
+            Rotation = Math.Clamp(state.Rotation, -360, 360),
+            FlipHorizontal = state.FlipHorizontal,
+            FlipVertical = state.FlipVertical,
+            FilterContrast = Math.Clamp(state.FilterContrast, 0, 2),
+            FilterBrightness = Math.Clamp(state.FilterBrightness, -1, 1),
+            FilterSaturation = Math.Clamp(state.FilterSaturation, 0, 3),
+            FilterGamma = Math.Clamp(state.FilterGamma, 0.1, 3),
+            FilterHue = Math.Clamp(state.FilterHue, -180, 180),
+            FilterSharpen = Math.Clamp(state.FilterSharpen, 0, 1),
+            FilterBlur = Math.Clamp(state.FilterBlur, 0, 50),
+            FilterDenoise = state.FilterDenoise,
+            FilterLut = state.FilterLut ?? "",
         };
 
         if (state.SourceWidth <= 0 && state.Width is > 0 && state.Height is > 0)
@@ -382,6 +546,22 @@ public sealed class LayerState
     public bool IsHidden { get; set; }
     public bool HasAudio { get; set; }
     public double AudioOffset { get; set; }
+
+    public int TrackId { get; set; }
+    public double MediaDuration { get; set; }
+    public double AudioGainDb { get; set; }
+    public double Rotation { get; set; }
+    public bool FlipHorizontal { get; set; }
+    public bool FlipVertical { get; set; }
+    public double FilterContrast { get; set; } = 1;
+    public double FilterBrightness { get; set; }
+    public double FilterSaturation { get; set; } = 1;
+    public double FilterGamma { get; set; } = 1;
+    public double FilterHue { get; set; }
+    public double FilterSharpen { get; set; }
+    public double FilterBlur { get; set; }
+    public bool FilterDenoise { get; set; }
+    public string FilterLut { get; set; } = "";
 
     // Pixel values from presets saved by earlier versions. Read for conversion, never written.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

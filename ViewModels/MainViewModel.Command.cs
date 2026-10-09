@@ -601,7 +601,9 @@ public partial class MainViewModel
             chain.Add(trim + ",asetpts=PTS-STARTPTS");
 
         chain.Add("aresample=48000");
-        var startsAt = Math.Max(layer.StartTime + (AudioLinked ? 0 : layer.AudioOffset), 0);
+        if (Math.Abs(layer.AudioGainDb) >= 0.05)
+            chain.Add($"volume={Number(Math.Clamp(layer.AudioGainDb, -40, 24))}dB");
+        var startsAt = Math.Max(layer.StartTime + (AudioLinked || layer.IsAudio ? 0 : layer.AudioOffset), 0);
         if (startsAt > 0.01)
             chain.Add($"adelay={(int)Math.Round(startsAt * 1000)}:all=1");
         return string.Join(",", chain);
@@ -692,45 +694,57 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Composes the output frame from layers. The source is split into independent branches, one per layer
-    /// that shows it: the background is scaled to fill the frame, blurred and dimmed entirely on its own
-    /// branch; the layers are then laid on it one after another in their stacking order, the main video
-    /// being one of them. Nothing done to an upper layer can reach the ones below, because by then they are
-    /// a finished picture. The frame can be any size and shape: everything is placed from fractions of it.
+    /// Composes the output frame as a sequence: a canvas the size of the project, and every track laid on it
+    /// in stacking order, the main video being one of them and built exactly as the others are. The canvas
+    /// is black, or the blurred copy of the video while the Background Blur row is shown. A layer may lie
+    /// partly or wholly outside the canvas: it is simply cut off at the edge, and the canvas keeps its size.
+    ///
+    /// The source is split into independent branches, one per layer that shows it; nothing done to an upper
+    /// layer can reach the ones below, because by then they are a finished picture. One shortcut is kept: a
+    /// main video that lies at the bottom, covers the whole canvas and lets nothing show through is itself
+    /// the base, since nothing under it could be seen.
     /// </summary>
     private string BuildFrameEngine(string? centerCrop, string s, double startSeconds)
     {
         var (width, height) = (Sized(FrameWidth), Sized(FrameHeight));
         var full = GetCenterRect();
         var center = (X: Placed(full.X), Y: Placed(full.Y), Width: Sized(full.Width), Height: Sized(full.Height));
+        var main = _mainVideoRow;
 
-        // The stack, bottom first, without the layers that have nothing to show yet.
-        var stack = GetStack().Where(l => l.IsMainVideo || l.IsUsable).ToList();
-        var mainAtBottom = stack[0].IsMainVideo;
+        // The stack, bottom first, without the layers that have nothing to show.
+        var stack = GetStack().Where(l => l.IsMainVideo ? !l.IsHidden : l.IsUsable).ToList();
 
-        // A main video that fills the whole frame from the bottom of the stack hides the background completely, so none is made.
-        var needsBackground = !mainAtBottom || center.X > 0 || center.Y > 0 || center.X + center.Width < width || center.Y + center.Height < height;
+        var covers = center.X <= 0 && center.Y <= 0 && center.X + center.Width >= width && center.Y + center.Height >= height;
+        var mainIsBase = stack.Count > 0 && stack[0].IsMainVideo && covers && IsOpaque(main);
+        var blurred = !mainIsBase && !_backgroundRow.IsHidden;
 
-        // One copy of the frame for each layer that shows the video: background, main video, and the pieces cut
-        // from it. Layers from files bring their own picture and need no copy.
+        // One copy of the frame for each thing that shows the video: the base, the main video, and the pieces
+        // cut from it. Layers from files bring their own picture and need no copy.
         var branches = new List<string>();
-        if (needsBackground)
-            branches.Add($"[bg_in{s}]");
-        branches.Add($"[center_in{s}]");
+        if (!mainIsBase)
+            branches.Add(blurred ? $"[bg_in{s}]" : $"[canvas_in{s}]");
+        if (stack.Any(l => l.IsMainVideo))
+            branches.Add($"[center_in{s}]");
         for (var n = 0; n < stack.Count; n++)
         {
             if (stack[n].IsVideo)
                 branches.Add($"[ui{n}_in{s}]");
         }
 
-        // A lone layer needs no copies: the chain simply runs on through it.
+        // A lone branch needs no copies: the chain simply runs on through it.
         var isSplit = branches.Count > 1;
         var graph = new StringBuilder(isSplit ? $"split={branches.Count}{string.Concat(branches)};" : "");
 
         // The main video. The crop frames this layer only; the background uses the whole picture.
         var centerChain = $"{(centerCrop is null ? "" : centerCrop + ",")}scale={center.Width}:{center.Height}";
 
-        if (needsBackground)
+        if (mainIsBase)
+        {
+            // What of the main video lies inside the canvas is the base picture.
+            var own = BuildLayerFilters(main, width);
+            graph.Append($"{(isSplit ? $"[center_in{s}]" : "")}{centerChain}{(own.Count > 0 ? "," + string.Join(",", own) : "")},crop={width}:{height}:{-center.X}:{-center.Y}");
+        }
+        else if (blurred)
         {
             if (_buildingLiveGraph)
             {
@@ -751,8 +765,10 @@ public partial class MainViewModel
         }
         else
         {
-            // What of the main video lies inside the frame is the base picture.
-            graph.Append($"{(isSplit ? $"[center_in{s}]" : "")}{centerChain},crop={width}:{height}:{-center.X}:{-center.Y}");
+            // The blank canvas: black, the size of the project. It is made from a corner of the video's own
+            // frames rather than by a source of its own, so that it keeps the video's clock: frame for
+            // frame, through seeking and through cut segments. Four pixels are blackened and stretched.
+            graph.Append($"{(isSplit ? $"[canvas_in{s}]" : "")}crop=2:2:0:0,format=yuv420p,lutyuv=y=16:u=128:v=128,scale={width}:{height}:flags=neighbor");
         }
 
         // The layers, each on the picture built so far. The running picture is labelled between steps;
@@ -760,19 +776,19 @@ public partial class MainViewModel
         for (var n = 0; n < stack.Count; n++)
         {
             var layer = stack[n];
-            if (layer.IsMainVideo)
-            {
-                if (!needsBackground)
-                    continue;
-
-                graph.Append($"[stage{n}{s}];[center_in{s}]{centerChain}[center_layer{s}]");
-                graph.Append($";[stage{n}{s}][center_layer{s}]overlay={center.X}:{center.Y}");
+            if (layer.IsMainVideo && mainIsBase)
                 continue;
-            }
 
-            var (x, y, layerWidth, layerHeight) = layer.GetOutputRect(width, height, SourceWidth, SourceHeight);
+            var name = layer.IsMainVideo ? "center" : $"ui{n}";
+            var (x, y, layerWidth, layerHeight) = layer.IsMainVideo
+                ? center
+                : layer.GetOutputRect(width, height, SourceWidth, SourceHeight);
             graph.Append($"[stage{n}{s}];");
-            graph.Append(BuildLayer(layer, $"ui{n}", s, layerWidth, layerHeight, startSeconds));
+            graph.Append(BuildLayer(layer, name, s, layerWidth, layerHeight, startSeconds, layer.IsMainVideo ? $"[center_in{s}]{centerChain}" : null));
+
+            // A turned picture is larger than the layer it was; it stays where its middle was.
+            var (turnedWidth, turnedHeight) = GetTurnedSize(layer, layerWidth, layerHeight);
+            (x, y) = (x - (turnedWidth - layerWidth) / 2, y - (turnedHeight - layerHeight) / 2);
 
             // A video from a file runs for as long as it is asked to; the picture under it decides when the output ends.
             var ending = layer.IsVideoFile ? ":shortest=1" : "";
@@ -785,35 +801,90 @@ public partial class MainViewModel
                 var until = layer.Duration > 0.001 ? Number(from + layer.Duration) : "1e9";
                 ending += $":enable='between(t,{Number(from)},{until})'";
             }
+
             if (layer.Shadow)
             {
                 // The shadow is the layer's own outline in black at reduced opacity, laid down first and offset.
                 var offset = Placed(Math.Clamp(layer.ShadowOffset, 0, 200));
-                graph.Append($";[ui{n}_layer{s}]split[ui{n}_top{s}][ui{n}_shadow_in{s}]");
-                graph.Append($";[ui{n}_shadow_in{s}]format=yuva420p,lutyuv=y=16:u=128:v=128:a=val*{Number(Math.Clamp(layer.ShadowOpacity, 0, 1))},"
-                             + $"boxblur=2:1:0:0:2:1[ui{n}_shadow{s}]");
-                graph.Append($";[stage{n}{s}][ui{n}_shadow{s}]overlay={x + offset}:{y + offset}{ending}[ui{n}_shaded{s}]");
-                graph.Append($";[ui{n}_shaded{s}][ui{n}_top{s}]overlay={x}:{y}{ending}");
+                graph.Append($";[{name}_layer{s}]split[{name}_top{s}][{name}_shadow_in{s}]");
+                graph.Append($";[{name}_shadow_in{s}]format=yuva420p,lutyuv=y=16:u=128:v=128:a=val*{Number(Math.Clamp(layer.ShadowOpacity, 0, 1))},"
+                             + $"boxblur=2:1:0:0:2:1[{name}_shadow{s}]");
+                graph.Append($";[stage{n}{s}][{name}_shadow{s}]overlay={x + offset}:{y + offset}{ending}[{name}_shaded{s}]");
+                graph.Append($";[{name}_shaded{s}][{name}_top{s}]overlay={x}:{y}{ending}");
             }
             else
             {
-                graph.Append($";[stage{n}{s}][ui{n}_layer{s}]overlay={x}:{y}{ending}");
+                graph.Append($";[stage{n}{s}][{name}_layer{s}]overlay={x}:{y}{ending}");
             }
         }
 
         return graph.ToString();
     }
 
+    /// <summary>Whether a layer hides everything under the rectangle it covers: solid, square-cornered, unturned, with nothing keyed or masked out.</summary>
+    private static bool IsOpaque(Layer layer) =>
+        layer.Opacity >= 100 && !layer.ChromaKey && !(layer.CustomMask && File.Exists(layer.MaskPath.Trim().Trim('"')))
+        && layer.CornerRadius == 0 && !layer.Feather && Math.Abs(layer.Rotation % 360) < 0.05;
+
+    /// <summary>The size of the picture once it has been turned: the box its corners then reach, in even pixels.</summary>
+    private static (int Width, int Height) GetTurnedSize(Layer layer, int width, int height)
+    {
+        if (!layer.HasFilters || Math.Abs(layer.Rotation % 360) < 0.05)
+            return (width, height);
+
+        var angle = layer.Rotation * Math.PI / 180;
+        var (cos, sin) = (Math.Abs(Math.Cos(angle)), Math.Abs(Math.Sin(angle)));
+        return ((int)Math.Ceiling((width * cos + height * sin) / 2) * 2, (int)Math.Ceiling((width * sin + height * cos) / 2) * 2);
+    }
+
+    /// <summary>The filters that are a layer's own: mirroring, its LUT, noise, colour, blur and sharpening, in that order.</summary>
+    /// <param name="frameWidth">The width of the frame being composed, which a blur given for a 1080-wide frame is scaled to.</param>
+    private static List<string> BuildLayerFilters(Layer layer, int frameWidth)
+    {
+        var filters = new List<string>();
+        if (!layer.HasFilters)
+            return filters;
+
+        if (layer.FlipHorizontal)
+            filters.Add("hflip");
+        if (layer.FlipVertical)
+            filters.Add("vflip");
+
+        var lut = layer.FilterLut.Trim().Trim('"');
+        if (lut.Length > 0 && File.Exists(lut))
+            filters.Add($"lut3d=file='{EscapeFilterPath(lut)}'");
+        if (layer.FilterDenoise)
+            filters.Add("hqdn3d");
+
+        var (contrast, brightness) = (Math.Clamp(layer.FilterContrast, 0, 2), Math.Clamp(layer.FilterBrightness, -1, 1));
+        var (saturation, gamma) = (Math.Clamp(layer.FilterSaturation, 0, 3), Math.Clamp(layer.FilterGamma, 0.1, 3));
+        if (Math.Abs(contrast - 1) >= 0.005 || Math.Abs(brightness) >= 0.005 || Math.Abs(saturation - 1) >= 0.005 || Math.Abs(gamma - 1) >= 0.005)
+            filters.Add($"eq=contrast={Number(contrast)}:brightness={Number(brightness)}:saturation={Number(saturation)}:gamma={Number(gamma)}");
+        if (Math.Abs(layer.FilterHue) >= 0.05)
+            filters.Add($"hue=h={Number(Math.Clamp(layer.FilterHue, -180, 180))}");
+        if (layer.FilterBlur >= 0.05)
+            filters.Add($"gblur=sigma={Number(Math.Max(Math.Clamp(layer.FilterBlur, 0, 50) * frameWidth / 1080.0 / 2, 0.2))}");
+        if (layer.FilterSharpen >= 0.005)
+            filters.Add($"cas=strength={Number(Math.Clamp(layer.FilterSharpen, 0, 1))}");
+        return filters;
+    }
+
     /// <summary>
-    /// One layer as a finished picture with its transparency, labelled [name_layer]: cut from the main video,
-    /// or read from its image or video file, and scaled. What shows of it is then the product of everything
-    /// that makes parts of it transparent: its own transparency (a PNG's, or a color keyed out), a custom
-    /// mask from a file, and the rounded or feathered outline. Opacity scales whatever results.
+    /// One layer as a finished picture with its transparency, labelled [name_layer]: cut from the main video
+    /// (or the main video itself), or read from its image or video file, and scaled. Its own filters are then
+    /// applied to it. What shows of it is the product of everything that makes parts of it transparent: its
+    /// own transparency (a PNG's, or a color keyed out), a custom mask from a file, and the rounded or
+    /// feathered outline. Opacity scales whatever results, and last of all the picture is turned.
     /// </summary>
-    private string BuildLayer(Layer layer, string name, string s, int width, int height, double startSeconds)
+    /// <param name="mainSource">For the main video: the chain that brings its picture, already scaled.</param>
+    private string BuildLayer(Layer layer, string name, string s, int width, int height, double startSeconds, string? mainSource = null)
     {
         var chain = new StringBuilder();
-        if (layer.IsVideoFile)
+        if (mainSource is not null)
+        {
+            chain.Append(mainSource);
+        }
+        else if (layer.IsVideoFile)
         {
             // Read by a source filter inside the graph, so no second -i is needed. It repeats without end,
             // is given an even clock, and is started as far in as the main video is.
@@ -837,6 +908,19 @@ public partial class MainViewModel
             // Cut out of the source by fractions of the frame, so the same layer works at any source size.
             chain.Append($"[{name}_in{s}]crop=trunc(iw*{Fraction(layer.SourceWidth)}/2)*2:trunc(ih*{Fraction(layer.SourceHeight)}/2)*2:"
                          + $"iw*{Fraction(layer.SourceX)}:ih*{Fraction(layer.SourceY)},scale={width}:{height}");
+        }
+
+        var own = BuildLayerFilters(layer, Sized(FrameWidth));
+        if (own.Count > 0 && layer.IsImage)
+        {
+            // The colour filters know nothing of transparency: a picture's own is set aside and put back after them.
+            chain.Append($",format=yuva420p,split[{name}_fc{s}][{name}_fa_in{s}];[{name}_fa_in{s}]alphaextract"
+                         + $"{string.Concat(own.Where(f => f is "hflip" or "vflip").Select(f => "," + f))}[{name}_fa{s}];"
+                         + $"[{name}_fc{s}]{string.Join(",", own)}[{name}_fd{s}];[{name}_fd{s}][{name}_fa{s}]alphamerge");
+        }
+        else if (own.Count > 0)
+        {
+            chain.Append("," + string.Join(",", own));
         }
 
         if (layer.ChromaKey && layer.HasKeying)
@@ -875,6 +959,11 @@ public partial class MainViewModel
         var opacity = Math.Clamp(layer.Opacity, 0, 100) / 100.0;
         if (opacity < 1)
             chain.Append($",lutyuv=a=val*{Number(opacity)}");
+
+        // Turned about its middle, into a box large enough for its corners; what the box adds is transparent.
+        var (turnedWidth, turnedHeight) = GetTurnedSize(layer, width, height);
+        if ((turnedWidth, turnedHeight) != (width, height) || (layer.HasFilters && Math.Abs(layer.Rotation % 360) >= 0.05))
+            chain.Append($",rotate={Number(layer.Rotation)}*PI/180:ow={turnedWidth}:oh={turnedHeight}:c=black@0");
 
         return chain.Append($"[{name}_layer{s}]").ToString();
     }

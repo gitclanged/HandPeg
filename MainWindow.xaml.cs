@@ -101,6 +101,8 @@ public partial class MainWindow : Window
         _viewModel.LiveFilterInvalidated += ScheduleClipRedraw;
         _viewModel.Segments.CollectionChanged += (_, _) => ScheduleClipRedraw();
         _viewModel.Layers.CollectionChanged += (_, _) => ScheduleClipRedraw();
+        _viewModel.TimelineChanged += ScheduleClipRedraw;
+        _viewModel.MainLayer.PropertyChanged += (_, _) => ScheduleClipRedraw();
         VideoView.SizeChanged += (_, _) => ScheduleLiveFilter();
         _liveFilterTimer.Tick += (_, _) => ApplyLiveFilter();
 
@@ -111,7 +113,11 @@ public partial class MainWindow : Window
         // Once the window has been drawn, so the launch window opens over the program rather than over nothing.
         // (ContentRendered is raised once, when the window has actually been drawn; waiting for the dispatcher
         // to fall idle instead could be put off indefinitely by a player that is busy.)
-        ContentRendered += (_, _) => ShowLaunchWindow();
+        ContentRendered += (_, _) =>
+        {
+            StyleLibrary.EnsureBuiltIns();
+            ShowLaunchWindow();
+        };
     }
 
     /// <summary>
@@ -325,7 +331,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void RemoveDeadAir_Click(object sender, RoutedEventArgs e) => RunDeadAir(_selectedClip switch
     {
-        Layer { IsVideoFile: true, HasAudio: true } layer => layer,
+        Layer { CarriesSound: true } layer => layer,
         LayerSound sound => sound.Layer,
         AudioClip audio => audio.Track,
         _ => null,
@@ -340,6 +346,38 @@ public partial class MainWindow : Window
     }
 
     private void DropHint_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => BrowseSource_Click(sender, e);
+
+    // ----- The timeline's checkboxes in the transport row -----
+
+    // The width the three checkboxes need side by side, measured while they are shown.
+    private double _timelineOptionsWidth;
+
+    /// <summary>
+    /// Shows the checkboxes beside the transport while the row has room for them, and one button that opens
+    /// them as a menu while it has not. They are never wrapped onto a second line.
+    /// </summary>
+    private void TimelineOptionsHost_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (TimelineOptionsInline.Visibility == Visibility.Visible && TimelineOptionsInline.ActualWidth > 0)
+            _timelineOptionsWidth = Math.Max(_timelineOptionsWidth, TimelineOptionsInline.ActualWidth);
+        if (_timelineOptionsWidth <= 0)
+        {
+            TimelineOptionsInline.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            _timelineOptionsWidth = TimelineOptionsInline.DesiredSize.Width;
+        }
+
+        var fits = TimelineOptionsHost.ActualWidth >= _timelineOptionsWidth + 4;
+        (TimelineOptionsInline.Visibility, TimelineOptionsButton.Visibility) = fits ? (Visibility.Visible, Visibility.Collapsed) : (Visibility.Hidden, Visibility.Visible);
+        if (fits)
+            TimelineOptionsButton.IsChecked = false;
+    }
+
+    // The button that opened the menu would, clicked again to close it, open it straight back up: the click
+    // that closes the menu from outside reaches the button as well. So it is deaf while the menu is open.
+    private void TimelineOptionsPopup_Opened(object? sender, EventArgs e) => TimelineOptionsButton.IsHitTestVisible = false;
+
+    private void TimelineOptionsPopup_Closed(object? sender, EventArgs e) =>
+        Dispatcher.BeginInvoke(() => TimelineOptionsButton.IsHitTestVisible = true, System.Windows.Threading.DispatcherPriority.Input);
 
     // ----- Drag and drop -----
 
@@ -369,8 +407,36 @@ public partial class MainWindow : Window
             }
         }
 
+        // Dropped on the Audio tab, with a video open: the files' sound goes onto the timeline, at the moment it was dropped on.
+        if (_viewModel.HasSource && AudioPanel.IsVisible)
+        {
+            var at = e.GetPosition(AudioPanel);
+            if (at.X >= 0 && at.Y >= 0 && at.X <= AudioPanel.ActualWidth && at.Y <= AudioPanel.ActualHeight)
+            {
+                var seconds = DropTime(e);
+                Dispatcher.BeginInvoke(() => _ = AddDroppedAudioAsync(files, seconds));
+                return;
+            }
+        }
+
         // The dialog must not open inside the drop itself: Explorer waits, frozen, until the drop handler returns.
         Dispatcher.BeginInvoke(() => LoadDroppedFile(file));
+    }
+
+    /// <summary>Adds the sound of dropped files to the timeline: audio files, or the audio of videos.</summary>
+    private async Task AddDroppedAudioAsync(string[] files, double seconds)
+    {
+        Activate();
+        var added = 0;
+        foreach (var file in files.Where(File.Exists))
+        {
+            if (await _viewModel.AddAudioLayerAsync(file, seconds))
+                added++;
+        }
+
+        if (added > 1)
+            _viewModel.StatusText = $"Added {added} audio clips. Each is mixed into the first audio track; drag a block to move it.";
+        ScheduleClipRedraw();
     }
 
     private static readonly string[] ImageExtensions = [".png", ".jpg", ".jpeg"];
@@ -922,7 +988,7 @@ public partial class MainWindow : Window
         if (e.PropertyName == nameof(MainViewModel.SoloTrack))
             OnSoloTrackChanged();
 
-        if (e.PropertyName is nameof(MainViewModel.DurationMs) or nameof(MainViewModel.IsEditorMode) or nameof(MainViewModel.ShowLayerAudio)
+        if (e.PropertyName is nameof(MainViewModel.DurationMs) or nameof(MainViewModel.IsEditorMode) or nameof(MainViewModel.ShowLinkedAudio)
             or nameof(MainViewModel.AudioLinked) or nameof(MainViewModel.TimelineWaveform))
         {
             ScheduleClipRedraw();
@@ -1217,24 +1283,30 @@ public partial class MainWindow : Window
 
     private void HudMasks_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new HudMasksDialog { Owner = this };
+        // Offered the way the frame is now: a tall frame gets the tall layout.
+        var dialog = new HudMasksDialog { Owner = this, Vertical = _viewModel.FrameHeight > _viewModel.FrameWidth };
         if (dialog.ShowDialog() == true && dialog.Game is { } game)
-            _viewModel.AddHudLayers(game);
+            _viewModel.AddHudLayers(game, dialog.Vertical);
     }
 
     // ----- Blocks in time -----
     // Every row of the Layers tab, and every track of the Audio tab, has a time bar as long as the video, with
-    // what it stands for as blocks: a layer from when it appears to when it goes; the main video's cut
-    // segments; a video layer's own sound; an audio track, whole or in the parts it was split into.
-    // Everything is placed by one sum: seconds / length * width. While a block is being dragged only that
-    // block is moved; what it stands for is changed when it is let go, which is also when everything else
-    // (the command, Live Preview, Undo) hears of it.
+    // what it stands for as blocks: a track's clips, each from when it appears to when it goes; the main
+    // video's cut segments; a video layer's own sound; an audio track, whole or in the parts it was split into;
+    // a sound added from a file. Everything is placed by one sum: seconds / length * width. While a block is
+    // being dragged only that block is moved; what it stands for is changed when it is let go, which is also
+    // when everything else (the command, Live Preview, Undo) hears of it.
+    //
+    // A bar is drawn once and left alone: as the video plays only its playhead line moves. The pictures in a
+    // block (frames of a video layer, a waveform) are brushes and crops of pictures already in memory.
 
     private static readonly Brush MainClipBrush = Frozen(Color.FromArgb(0xB0, 0x2F, 0x6F, 0xB5));
     private static readonly Brush LayerClipBrush = Frozen(Color.FromArgb(0xD0, 0x8E, 0x5A, 0xB8));
     private static readonly Brush AudioClipBrush = Frozen(Color.FromArgb(0x38, 0x4C, 0xAF, 0x50));
     private static readonly Brush LayerAudioBrush = Frozen(Color.FromArgb(0xD0, 0x3C, 0x9A, 0x5F));
+    private static readonly Brush SoundClipBrush = Frozen(Color.FromArgb(0xD0, 0x2B, 0x7A, 0x6B));
     private static readonly Brush OffClipBrush = Frozen(Color.FromArgb(0xC0, 0x55, 0x55, 0x55));
+    private static readonly Brush LabelShadeBrush = Frozen(Color.FromArgb(0x90, 0x00, 0x00, 0x00));
     private const double ClipEdge = 9;
 
     /// <summary>An audio track, or one of the parts it was split into, as something that can be selected.</summary>
@@ -1246,7 +1318,7 @@ public partial class MainWindow : Window
     // The bars that are on screen now (the lists make and drop rows as they scroll).
     private readonly List<Canvas> _clipTracks = [];
 
-    // What is selected: a Layer, a CutSegment, an AudioClip, a LayerSound; null with the flag set is the main video as a whole.
+    // What is selected: a Layer (one clip), a CutSegment, an AudioClip, a LayerSound; null with the flag set is the main video as a whole.
     private object? _selectedClip;
     private bool _mainClipSelected;
     private bool _clipRedrawQueued;
@@ -1301,7 +1373,9 @@ public partial class MainWindow : Window
         var show = seconds > 0 && track.DataContext switch
         {
             AudioTrack => true,
-            Layer layerOf when isSound => _viewModel.ShowLayerAudio && layerOf is { IsVideoFile: true, HasAudio: true },
+
+            // A video layer's sound has a bar of its own only while it is unlinked from its picture; linked, it is drawn on the picture's block.
+            Layer layerOf when isSound => !_viewModel.AudioLinked && layerOf is { IsVideoFile: true, HasAudio: true },
             Layer { IsMainVideo: true } or Layer { HasTiming: true } => true,
             _ => false,
         };
@@ -1311,6 +1385,7 @@ public partial class MainWindow : Window
 
         var (width, scale) = (track.ActualWidth, track.ActualWidth / seconds);
         var perPixel = seconds / width;
+        var height = Math.Max(track.ActualHeight - 2, 4);
         switch (track.DataContext)
         {
             // An audio track: one block, or its parts, moved along with the track when it has been slipped.
@@ -1330,45 +1405,56 @@ public partial class MainWindow : Window
                     waveform.Margin = new Thickness(audio.OffsetSeconds * scale, 0, -audio.OffsetSeconds * scale, 0);
                 break;
 
-            // A video layer's own sound: starts with the layer, or wherever it was slipped to.
+            // A video layer's own sound, unlinked: each clip's starts with the clip, or wherever it was slipped to.
             case Layer sound when isSound:
-                var soundEnd = sound.Duration > 0.001 ? sound.Duration : seconds - sound.StartTime;
-                var soundStart = sound.StartTime + (_viewModel.AudioLinked ? 0 : sound.AudioOffset);
-                AddClip(track, soundStart * scale, soundEnd * scale, "sound", sound.IsHidden ? OffClipBrush : LayerAudioBrush, new LayerSound(sound),
-                    canDrag: () => !_viewModel.AudioLinked, resizable: false, wave: sound.Waveform,
-                    commit: (left, _) =>
-                    {
-                        _viewModel.Checkpoint($"move the sound of {sound.Name}");
-                        sound.AudioOffset = Math.Round(left * perPixel - sound.StartTime, 2);
-                    },
-                    cannotDrag: "Audio and video are linked: the sound follows its layer. Unlink them (the chain button) to move it on its own.");
-                break;
-
-            // The main video: its cut segments, with the waveform of its sound behind them when asked for.
-            case Layer { IsMainVideo: true }:
-                var wave = _viewModel.ShowLayerAudio ? _viewModel.TimelineWaveform : null;
-                var segments = _viewModel.Segments.OrderBy(s => s.Start).ToList();
-                if (segments.Count == 0)
-                    AddClip(track, 0, width, "The whole video", MainClipBrush, null, wave: wave);
-                foreach (var segment in segments)
+                foreach (var clip in _viewModel.GetTrackClips(sound))
                 {
-                    AddClip(track, segment.Start.TotalSeconds * scale, segment.Duration.TotalSeconds * scale, segment.IsSkipped ? "skipped" : "",
-                        segment.IsSkipped ? OffClipBrush : MainClipBrush, segment);
+                    var (from, to) = clip.GetSpan(seconds);
+                    AddClip(track, (from + clip.AudioOffset) * scale, (to - from) * scale, "sound", clip.IsHidden ? OffClipBrush : LayerAudioBrush, new LayerSound(clip),
+                        canDrag: () => !_viewModel.AudioLinked, resizable: false, wave: MediaBrush(clip.Waveform, clip, scale, height),
+                        commit: (left, _) =>
+                        {
+                            _viewModel.Checkpoint($"move the sound of {clip.Name}");
+                            clip.AudioOffset = Math.Round(left * perPixel - clip.StartTime, 2);
+                        },
+                        cannotDrag: "Audio and video are linked: the sound follows its layer. Unlink them (the chain button) to move it on its own.");
                 }
 
                 break;
 
-            // A layer: from when it appears to when it goes.
+            // The main video: its cut segments, with the waveform of its sound over them when asked for.
+            case Layer { IsMainVideo: true } main:
+                var mainWave = _viewModel.ShowLinkedAudio && !main.IsHidden ? _viewModel.TimelineWaveform : null;
+                var segments = _viewModel.Segments.OrderBy(s => s.Start).ToList();
+                if (segments.Count == 0)
+                    AddClip(track, 0, width, main.IsHidden ? "The whole video (picture hidden)" : "The whole video", main.IsHidden ? OffClipBrush : MainClipBrush, null, wave: PartBrush(mainWave, 0, width, height));
+                foreach (var segment in segments)
+                {
+                    var left = segment.Start.TotalSeconds * scale;
+                    AddClip(track, left, segment.Duration.TotalSeconds * scale, segment.IsSkipped ? "skipped" : "",
+                        segment.IsSkipped || main.IsHidden ? OffClipBrush : MainClipBrush, segment, wave: segment.IsSkipped ? null : PartBrush(mainWave, left, width, height));
+                }
+
+                break;
+
+            // A track: its clips, each from when it appears to when it goes.
             case Layer layer:
-                var end = layer.Duration > 0.001 ? layer.StartTime + layer.Duration : seconds;
-                AddClip(track, layer.StartTime * scale, (end - layer.StartTime) * scale, layer.IsHidden ? "hidden" : "",
-                    layer.IsHidden ? OffClipBrush : LayerClipBrush, layer, canDrag: () => true, resizable: true,
-                    wave: layer.IsVideoFile ? layer.Waveform : null,
-                    commit: (left, blockWidth) =>
-                    {
-                        _viewModel.Checkpoint($"move {layer.Name}");
-                        (layer.StartTime, layer.Duration) = (Math.Round(left * perPixel, 2), Math.Round(blockWidth * perPixel, 2));
-                    });
+                foreach (var clip in _viewModel.GetTrackClips(layer))
+                {
+                    var (from, to) = clip.GetSpan(seconds);
+                    var blockWidth = (to - from) * scale;
+                    var showsSound = clip.IsAudio || (clip is { IsVideoFile: true, HasAudio: true } && _viewModel.ShowLinkedAudio && _viewModel.AudioLinked);
+                    AddClip(track, from * scale, blockWidth, clip.IsHidden ? "hidden" : clip.IsAudio ? clip.Name : "",
+                        clip.IsHidden ? OffClipBrush : clip.IsAudio ? SoundClipBrush : LayerClipBrush, clip, canDrag: () => true, resizable: true,
+                        frames: clip.IsHidden ? null : BuildFrames(clip, blockWidth, height, scale),
+                        wave: clip.IsHidden || !showsSound ? null : MediaBrush(clip.Waveform, clip, scale, height),
+                        commit: (left, nowWidth) =>
+                        {
+                            _viewModel.Checkpoint($"move {clip.Name}");
+                            (clip.StartTime, clip.Duration) = (Math.Round(left * perPixel, 2), Math.Round(nowWidth * perPixel, 2));
+                        });
+                }
+
                 break;
         }
 
@@ -1376,6 +1462,73 @@ public partial class MainWindow : Window
         var playhead = new System.Windows.Shapes.Rectangle { Width = 1.5, Height = Math.Max(track.ActualHeight, 4), Fill = Brushes.OrangeRed, IsHitTestVisible = false, Tag = "playhead" };
         Canvas.SetLeft(playhead, _viewModel.PositionMs / 1000 * scale);
         track.Children.Add(playhead);
+    }
+
+    /// <summary>
+    /// A picture of a clip's whole file (the waveform of its sound) as a brush for the clip's block: laid out
+    /// at the scale of the timeline and shifted, so that the block shows the part of the file the clip plays.
+    /// </summary>
+    private static Brush? MediaBrush(ImageSource? picture, Layer clip, double scale, double height)
+    {
+        if (picture is null)
+            return null;
+
+        return clip.MediaDuration > 0.05
+            ? PartBrush(picture, clip.MediaOffset * scale, clip.MediaDuration * scale, height)
+            : new ImageBrush(picture) { Stretch = Stretch.Fill };
+    }
+
+    /// <summary>A brush that shows one stretch of a long picture: the picture is <paramref name="span"/> pixels wide in all, and the block begins <paramref name="offset"/> pixels into it.</summary>
+    private static Brush? PartBrush(ImageSource? picture, double offset, double span, double height) =>
+        picture is null || span < 1 ? null : new ImageBrush(picture)
+        {
+            Stretch = Stretch.Fill, TileMode = TileMode.None, ViewportUnits = BrushMappingMode.Absolute, Viewport = new Rect(-offset, 0, span, height),
+        };
+
+    // The single frames of a filmstrip, cut from it once and kept for as long as the strip is.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<BitmapSource, CroppedBitmap?[]> StripFrames = [];
+
+    /// <summary>
+    /// The frames a video layer's block is drawn with: as many as fit side by side at their own shape, each the
+    /// frame of the layer's file that is on screen at that point of the block. The file's strip holds a fixed
+    /// number of frames, spread over its length; the nearest one is used, and a video that repeats starts again.
+    /// </summary>
+    private static Canvas? BuildFrames(Layer clip, double blockWidth, double height, double scale)
+    {
+        if (!clip.IsVideoFile || clip.Filmstrip is not BitmapSource strip || strip.PixelHeight <= 0 || blockWidth < 6)
+            return null;
+
+        var shape = clip is { ImageWidth: > 0, ImageHeight: > 0 } ? (double)clip.ImageWidth / clip.ImageHeight : 16.0 / 9;
+        var count = Math.Max((int)Math.Round(strip.PixelWidth / (strip.PixelHeight * shape)), 1);
+        var framePixels = strip.PixelWidth / count;
+        if (framePixels < 2)
+            return null;
+
+        var frames = StripFrames.GetValue(strip, _ => new CroppedBitmap?[count]);
+        if (frames.Length != count)
+            return null;
+
+        var slot = height * framePixels / strip.PixelHeight;
+        var canvas = new Canvas { IsHitTestVisible = false, ClipToBounds = true, Opacity = 0.9 };
+        for (var k = 0; k * slot < blockWidth && k < 80; k++)
+        {
+            // What the layer shows in the middle of this slot.
+            var into = clip.MediaOffset + (k + 0.5) * slot / scale;
+            var index = clip.MediaDuration > 0.05 ? Math.Clamp((int)(into % clip.MediaDuration / clip.MediaDuration * count), 0, count - 1) : 0;
+            var frame = frames[index] ??= Cut(strip, index * framePixels, framePixels);
+            var picture = new Image { Source = frame, Width = slot, Height = height, Stretch = Stretch.Fill };
+            Canvas.SetLeft(picture, k * slot);
+            canvas.Children.Add(picture);
+        }
+
+        return canvas;
+
+        static CroppedBitmap Cut(BitmapSource strip, int x, int width)
+        {
+            var frame = new CroppedBitmap(strip, new Int32Rect(x, 0, width, strip.PixelHeight));
+            frame.Freeze();
+            return frame;
+        }
     }
 
     /// <summary>Moves the playhead line of every bar; nothing else about them changes as the video plays.</summary>
@@ -1394,18 +1547,36 @@ public partial class MainWindow : Window
 
     private bool IsSelected(object? clip) => clip is null ? _mainClipSelected && _selectedClip is null : Equals(clip, _selectedClip);
 
+    private void SelectClip(object? clip, Border block)
+    {
+        (_selectedClip, _mainClipSelected) = (clip, clip is null);
+        foreach (var other in _clipTracks.SelectMany(t => t.Children.OfType<Border>()))
+            other.BorderBrush = ReferenceEquals(other, block) ? Brushes.White : Brushes.Transparent;
+    }
+
     /// <param name="canDrag">Whether the block can be moved right now; null for one that never can (a cut segment).</param>
     /// <param name="commit">What letting go of a moved block does, given its new left edge and width in pixels.</param>
-    /// <param name="wave">A picture of the block's sound, drawn inside it.</param>
+    /// <param name="frames">Frames of the block's video, drawn inside it.</param>
+    /// <param name="wave">A picture of the block's sound, drawn inside it over the frames.</param>
     private void AddClip(
         Canvas track, double left, double width, string name, Brush fill, object? clip,
-        Func<bool>? canDrag = null, bool resizable = false, Action<double, double>? commit = null, ImageSource? wave = null, string cannotDrag = "")
+        Func<bool>? canDrag = null, bool resizable = false, Action<double, double>? commit = null, UIElement? frames = null, Brush? wave = null, string cannotDrag = "")
     {
-        var label = new TextBlock { Text = name, Foreground = Brushes.White, FontSize = 10.5, Margin = new Thickness(5, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
         var content = new Grid { IsHitTestVisible = false };
+        if (frames is not null)
+            content.Children.Add(frames);
         if (wave is not null)
-            content.Children.Add(new Image { Source = wave, Stretch = Stretch.Fill, Opacity = 0.55 });
-        content.Children.Add(label);
+            content.Children.Add(new System.Windows.Shapes.Rectangle { Fill = wave, Opacity = frames is null ? 0.6 : 0.85 });
+        if (name.Length > 0)
+        {
+            // Over frames, the words get a shade of their own to be read against.
+            content.Children.Add(new Border
+            {
+                Background = frames is null ? null : LabelShadeBrush, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center,
+                CornerRadius = new CornerRadius(2), Margin = new Thickness(3, 0, 3, 0),
+                Child = new TextBlock { Text = name, Foreground = Brushes.White, FontSize = 10.5, Margin = new Thickness(2, 0, 2, 0), TextTrimming = TextTrimming.CharacterEllipsis },
+            });
+        }
 
         var block = new Border
         {
@@ -1417,16 +1588,17 @@ public partial class MainWindow : Window
             BorderThickness = new Thickness(1.5),
             Cursor = canDrag is null ? Cursors.Hand : Cursors.SizeAll,
             Child = content,
+            ClipToBounds = true,
             Tag = "clip",
         };
         Canvas.SetLeft(block, left);
         Canvas.SetTop(block, 1);
 
+        // A right-click selects the block as well, so that the menu that opens is about it.
+        block.MouseRightButtonDown += (_, _) => SelectClip(clip, block);
         block.MouseLeftButtonDown += (_, e) =>
         {
-            (_selectedClip, _mainClipSelected) = (clip, clip is null);
-            foreach (var other in _clipTracks.SelectMany(t => t.Children.OfType<Border>()))
-                other.BorderBrush = ReferenceEquals(other, block) ? Brushes.White : Brushes.Transparent;
+            SelectClip(clip, block);
 
             // On an audio track a click is also what moves the playhead, as it was before the track had blocks.
             if (clip is AudioClip && track.ActualWidth > 0)
@@ -1571,13 +1743,25 @@ public partial class MainWindow : Window
         ScheduleClipRedraw();
     }
 
-    // ----- Right-click on a layer -----
+    // ----- Right-click on a track -----
 
-    /// <summary>Fills a layer's menu as it opens, with what can be done to that layer as it is now.</summary>
+    /// <summary>
+    /// Fills a track's menu as it opens, with what can be done to it as it is now: to the track as a whole
+    /// (its filters, its place, its mask, its look), and to the clip that was clicked (split, trim, delete).
+    /// </summary>
     private void LayerRow_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: Layer layer, ContextMenu: { } menu } row)
             return;
+
+        // The clip the menu is about: the one selected on this track's bar, or the track's first.
+        var clips = _viewModel.GetTrackClips(layer);
+        var clip = _selectedClip switch
+        {
+            Layer selected when clips.Contains(selected) => selected,
+            LayerSound sound when clips.Contains(sound.Layer) => sound.Layer,
+            _ => layer,
+        };
 
         menu.Items.Clear();
         void Add(string header, Action action, bool enabled = true)
@@ -1591,54 +1775,98 @@ public partial class MainWindow : Window
             menu.Items.Add(item);
         }
 
+        void Separate()
+        {
+            if (menu.Items.Count > 0 && menu.Items[^1] is not Separator)
+                menu.Items.Add(new Separator());
+        }
+
         var at = _viewModel.PositionMs / 1000;
-        if (layer.HasPlacement)
+
+        // The track's own modifiers.
+        if (layer.HasFilters)
+            Add("Filters...", () => OpenLayerTool(layer, LayerTool.Filters));
+        if (layer.HasFilters)
+            Add("Position & Transform...", () => OpenLayerTool(layer, LayerTool.Transform));
+        if (layer.HasMask)
+            Add(layer is { IsVideo: true, CustomMask: true } ? "Redraw / Modify Mask..." : "Custom Mask...", () => OpenLayerTool(layer, LayerTool.Mask));
+        if (layer.HasStyle)
             Add("Properties...", () => new LayerPropertiesDialog { Owner = this, DataContext = layer }.ShowDialog());
         if (layer.IsBackground)
             Add("Blur Settings...", () => BlurSettings_Click(row, new RoutedEventArgs()));
+        if (layer.IsVideo)
+            Add("Draw Target", () => _viewModel.DrawTargetCommand.Execute(layer));
+
         if (layer.IsMainVideo)
         {
+            Separate();
             Add("Split at Playhead", () => _viewModel.SplitSegment(null, at));
             Add("Reset Position and Zoom", () => _viewModel.ResetCenterVideoCommand.Execute(null));
         }
 
         if (layer.HasTiming)
         {
-            menu.Items.Add(new Separator());
-            Add("Split at Playhead", () => _viewModel.SplitLayer(layer, at));
-            Add("Trim Start to Playhead", () => _viewModel.TrimClip(layer, start: true, at));
-            Add("Trim End to Playhead", () => _viewModel.TrimClip(layer, start: false, at));
-            Add("Show for the Whole Video", () =>
+            Separate();
+            Add("Split at Playhead", () => _viewModel.SplitLayer(clip, at));
+            Add("Trim Start to Playhead", () => _viewModel.TrimClip(clip, start: true, at));
+            Add("Trim End to Playhead", () => _viewModel.TrimClip(clip, start: false, at));
+            Add(clip.IsAudio ? "Play from Its Start to Its End" : "Show for the Whole Video", () =>
             {
-                _viewModel.Checkpoint($"show {layer.Name} throughout");
-                (layer.StartTime, layer.Duration, layer.MediaOffset) = (0, 0, 0);
-            }, layer.StartTime > 0.001 || layer.Duration > 0.001);
+                _viewModel.Checkpoint($"show {clip.Name} throughout");
+                (clip.StartTime, clip.Duration, clip.MediaOffset) = (0, 0, 0);
+            }, clip.StartTime > 0.001 || clip.Duration > 0.001);
         }
 
-        if (layer.CanReorder)
+        if (layer.CanReorder && !layer.IsAudio)
         {
-            menu.Items.Add(new Separator());
+            Separate();
             Add("Move Up (towards the front)", () => _viewModel.MoveLayerUpCommand.Execute(layer));
             Add("Move Down (towards the back)", () => _viewModel.MoveLayerDownCommand.Execute(layer));
         }
 
+        Separate();
+        if (layer.IsRemovable || layer.IsMainVideo || layer.IsBackground)
+            Add(layer.IsHidden ? "Show" : layer.IsAudio ? "Mute" : "Hide", () => _viewModel.ToggleHidden(layer));
         if (layer.IsRemovable)
         {
-            menu.Items.Add(new Separator());
-            Add(layer.IsHidden ? "Show" : "Hide", () => _viewModel.ToggleHidden(layer));
             Add("Duplicate", () => _viewModel.DuplicateLayer(layer));
-            if (layer.IsVideo)
-                Add("Draw Target", () => _viewModel.DrawTargetCommand.Execute(layer));
-            if (layer.IsVideoFile)
+            if (layer.CarriesSound)
             {
-                Add("Use Its Sound for Auto-Captions", () => _viewModel.UseLayerAudioForCaptions(layer), layer.HasAudio);
-                Add("Remove Dead Air...", () => RunDeadAir(layer), layer.HasAudio);
+                Add("Use Its Sound for Auto-Captions", () => _viewModel.UseLayerAudioForCaptions(layer));
+                Add("Remove Dead Air...", () => RunDeadAir(clip));
             }
 
-            Add("Delete", () => _viewModel.DeleteClip(layer));
+            Separate();
+            if (clips.Count > 1)
+                Add("Delete This Clip", () => _viewModel.DeleteClip(clip));
+            Add(clips.Count > 1 ? "Delete the Whole Track" : "Delete", () => _viewModel.RemoveTrack(layer));
         }
 
+        if (menu.Items.Count > 0 && menu.Items[^1] is Separator)
+            menu.Items.RemoveAt(menu.Items.Count - 1);
         e.Handled = menu.Items.Count == 0;
+    }
+
+    /// <summary>Opens one of a track's modifier dialogs. What it changes can be undone as one step.</summary>
+    private void OpenLayerTool(Layer layer, LayerTool tool)
+    {
+        _viewModel.Checkpoint(tool switch
+        {
+            LayerTool.Filters => $"change the filters of {layer.Name}",
+            LayerTool.Transform => $"move or turn {layer.Name}",
+            _ => $"change the mask of {layer.Name}",
+        });
+
+        var dialog = new LayerToolDialog(layer, _viewModel, tool) { Owner = this };
+        dialog.ShowDialog();
+        if (dialog.RedrawRequested)
+            _viewModel.DrawTargetCommand.Execute(layer);
+    }
+
+    private void RemoveTrack_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: Layer layer })
+            _viewModel.RemoveTrack(layer);
     }
 
     private void SegmentSkip_Click(object sender, RoutedEventArgs e)
@@ -1672,6 +1900,17 @@ public partial class MainWindow : Window
         };
         if (dialog.ShowDialog(this) == true)
             await _viewModel.AddVideoLayerAsync(dialog.FileName);
+    }
+
+    private async void AddAudio_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Select a sound to add to the timeline",
+            Filter = "Audio and video files|*.mp3;*.wav;*.m4a;*.flac;*.ogg;*.opus;*.aac;*.wma;*.mp4;*.mkv;*.mov;*.webm;*.avi|All files|*.*",
+        };
+        if (dialog.ShowDialog(this) == true)
+            await _viewModel.AddAudioLayerAsync(dialog.FileName, _viewModel.PositionMs / 1000);
     }
 
     private void AddImage_Click(object sender, RoutedEventArgs e)
@@ -1945,7 +2184,13 @@ public partial class MainWindow : Window
                 _viewModel.GetCenterRect,
                 _viewModel.MoveCenter,
                 (deltaX, _) => _viewModel.ResizeCenter(deltaX),
-                reset: () => _viewModel.ResetCenterVideoCommand.Execute(null));
+                reset: () => _viewModel.ResetCenterVideoCommand.Execute(null),
+                rotation: () => _viewModel.MainLayer.Rotation);
+
+            // Turned in its dialog, the box turns with it.
+            PropertyChangedEventHandler mainHandler = (_, _) => _placeCenter?.Invoke();
+            _viewModel.MainLayer.PropertyChanged += mainHandler;
+            _arrangeSubscriptions.Add((_viewModel.MainLayer, mainHandler));
         }
 
         // Last, so that it lies on top of everything, as the captions do in the output.
@@ -1976,7 +2221,8 @@ public partial class MainWindow : Window
             _arrangeSubscriptions.Add((captions, captionHandler));
         }
 
-        foreach (var element in _viewModel.FrameEngine ? _viewModel.Layers.ToList() : [])
+        // One box per track: its clips share a place, a size and a look.
+        foreach (var element in _viewModel.FrameEngine ? _viewModel.Layers.Where(l => !l.IsAudio).GroupBy(l => l.TrackId).Select(t => t.First()).ToList() : [])
         {
             var place = AddArrangeLayer(
                 element.Name, (Style)FindResource("LayerThumb"), element, frame, scale,
@@ -1984,24 +2230,30 @@ public partial class MainWindow : Window
                 (deltaX, deltaY) =>
                 {
                     // Output pixels to fractions of the frame. Setting them moves the sliders, and the box follows them.
-                    element.PositionX = Math.Clamp(element.PositionX + deltaX / frameWidth, 0, 1);
-                    element.PositionY = Math.Clamp(element.PositionY + deltaY / frameHeight, 0, 1);
+                    // A layer may be dragged off the frame: what is outside is cut off, and the frame stays as it is.
+                    element.PositionX = Math.Clamp(element.PositionX + deltaX / frameWidth, -2, 2);
+                    element.PositionY = Math.Clamp(element.PositionY + deltaY / frameHeight, -2, 2);
                 },
                 (deltaX, deltaY) =>
                 {
-                    element.SizeWidth = Math.Clamp(element.SizeWidth + deltaX / frameWidth, 0.02, 2);
+                    // Dragged by its corner, the opposite corner is what stays put.
+                    element.FromCorner(() =>
+                    {
+                        element.SizeWidth = Math.Clamp(element.SizeWidth + deltaX / frameWidth, 0.02, 4);
 
-                    // Locked, the height follows the width by itself; unlocked, it is dragged separately.
-                    if (!element.LockAspectRatio)
-                        element.SizeHeight = Math.Clamp(element.SizeHeight + deltaY / frameHeight, 0.01, 2);
+                        // Locked, the height follows the width by itself; unlocked, it is dragged separately.
+                        if (!element.LockAspectRatio)
+                            element.SizeHeight = Math.Clamp(element.SizeHeight + deltaY / frameHeight, 0.01, 4);
+                    });
                 },
                 reset: () =>
                 {
                     // A layer keeps its size; it goes to the middle of the frame.
                     var (_, _, width, height) = element.GetOutputRect(frameWidth, frameHeight, _viewModel.SourceWidth, _viewModel.SourceHeight);
-                    element.PositionX = Math.Clamp((frameWidth - width) / 2.0 / frameWidth, 0, 1);
-                    element.PositionY = Math.Clamp((frameHeight - height) / 2.0 / frameHeight, 0, 1);
-                });
+                    element.PositionX = (frameWidth - width) / 2.0 / frameWidth;
+                    element.PositionY = (frameHeight - height) / 2.0 / frameHeight;
+                },
+                rotation: () => element.Rotation);
 
             PropertyChangedEventHandler handler = (_, _) => place();
             element.PropertyChanged += handler;
@@ -2019,7 +2271,7 @@ public partial class MainWindow : Window
     /// <param name="reset">What a double-click does: puts the layer back in the middle of the frame.</param>
     private Action AddArrangeLayer(
         string name, Style style, object? dataContext, Rect frame, double scale,
-        Func<(int X, int Y, int Width, int Height)> getRect, Action<double, double> move, Action<double, double> resize, Action reset)
+        Func<(int X, int Y, int Width, int Height)> getRect, Action<double, double> move, Action<double, double> resize, Action reset, Func<double>? rotation = null)
     {
         var box = new Thumb
         {
@@ -2049,6 +2301,10 @@ public partial class MainWindow : Window
             box.Height = Math.Max(height * scale, 6);
             Canvas.SetLeft(box, frame.X + x * scale);
             Canvas.SetTop(box, frame.Y + y * scale);
+
+            // Shown turned as the layer is. (It is still dragged along the frame's own axes.)
+            var angle = rotation?.Invoke() ?? 0;
+            (box.RenderTransformOrigin, box.RenderTransform) = (new Point(0.5, 0.5), Math.Abs(angle % 360) < 0.05 ? Transform.Identity : new RotateTransform(angle));
         }
 
         _arrangeVisuals.Add(box);

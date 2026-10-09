@@ -143,13 +143,24 @@ public partial class MainViewModel
     {
         // As they are stacked, front first: the captions over everything, then the layers with the main video
         // among them, and the blurred background behind it all.
+        // A row is a track: its first clip stands for it, and the others are drawn on the same time bar.
         LayerRows.Clear();
         if (AutoCaptions)
             LayerRows.Add(CaptionLayer);
-        foreach (var layer in Enumerable.Reverse(GetStack()))
-            LayerRows.Add(layer);
+        foreach (var track in Enumerable.Reverse(GetStackTracks()))
+            LayerRows.Add(track[0]);
         LayerRows.Add(_backgroundRow);
+
+        AudioClipRows.Clear();
+        foreach (var track in Layers.Where(l => l.IsAudio).GroupBy(l => l.TrackId))
+            AudioClipRows.Add(track.First());
+        OnPropertyChanged(nameof(HasAudioClips));
     }
+
+    /// <summary>The sounds added to the timeline from files, one row per track, for the Audio tab.</summary>
+    public ObservableCollection<Layer> AudioClipRows { get; } = [];
+
+    public bool HasAudioClips => AudioClipRows.Count > 0;
 
     /// <summary>Opens the layout pane by itself when the settings ask for that (Editor Mode does).</summary>
     private void OpenLayoutPaneIfWanted()

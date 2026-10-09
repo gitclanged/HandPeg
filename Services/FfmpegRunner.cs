@@ -109,6 +109,31 @@ public static partial class FfmpegRunner
         return result.ExitCode == 0 && File.Exists(imagePath);
     }
 
+    /// <summary>
+    /// A strip of frames from a video, evenly spread over its length and set side by side in one picture:
+    /// what a video layer's block on the timeline is drawn with.
+    /// </summary>
+    public static async Task<bool> GenerateFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(DependencyUpdater.FfmpegPath))
+            return false;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
+        count = Math.Clamp(count, 1, 25);
+        var filter = durationSeconds > 0.2
+            ? string.Create(CultureInfo.InvariantCulture, $"fps={count}/{durationSeconds:0.###},scale=-2:54,tile={count}x1")
+            : "scale=-2:54";
+
+        // Of a long video only the keyframes are read: it is the difference between a moment and a minute.
+        var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-y" };
+        if (durationSeconds > 90)
+            arguments.AddRange(["-skip_frame", "nokey"]);
+        arguments.AddRange(["-i", videoPath, "-an", "-sn", "-vf", filter, "-frames:v", "1", "-q:v", "4", imagePath]);
+
+        var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath).WithArguments(arguments).WithValidation(CommandResultValidation.None), cancellationToken);
+        return result.ExitCode == 0 && File.Exists(imagePath);
+    }
+
     [GeneratedRegex(@"silence_start: (-?\d+(?:\.\d+)?)")]
     private static partial Regex SilenceStartRegex();
 

@@ -44,8 +44,12 @@ public partial class MainViewModel
 
             SetOutputSize(height, width);
 
+            // One click from wide to tall: the engine is what fits the picture into the new shape instead of stretching it.
             if (value && !FrameEngine)
-                StatusText = "Vertical resolution set. Without the Frame & Layer Engine (Filters tab) the picture is stretched to fit it.";
+            {
+                FrameEngine = true;
+                StatusText = "Vertical Video: the picture sits in the middle of a tall frame, over a blurred copy of itself. Zoom and place it on the Layers tab or with Edit Layout.";
+            }
         }
 
         OnPropertyChanged(nameof(FrameWidth));
@@ -323,6 +327,7 @@ public partial class MainViewModel
             PositionX = 0.05,
             PositionY = NextLayerY(),
             HasAudio = info.Audio.Count > 0,
+            MediaDuration = Math.Max(info.DurationSeconds, 0),
         };
         if (startSeconds > 0.01)
         {
@@ -333,10 +338,45 @@ public partial class MainViewModel
 
         Checkpoint("add a video layer");
         AttachLayer(element);
-        _ = LoadLayerWaveformAsync(element);
+        _ = LoadLayerPicturesAsync(element);
         StatusText = element.HasAudio
             ? $"Added {element.Name} as a video layer. Its sound is mixed into the first audio track."
             : $"Added {element.Name} as a video layer.";
+        return true;
+    }
+
+    /// <summary>
+    /// Adds the sound of a file (a song, a recording, or the sound of a video) to the timeline as a clip of its
+    /// own: it has no picture, starts where it is put, and is mixed into the first audio track of the output.
+    /// </summary>
+    public async Task<bool> AddAudioLayerAsync(string path, double startSeconds = 0)
+    {
+        var info = await MediaProbe.ProbeAsync(path, _shutdown.Token);
+        if (info is not { Audio.Count: > 0 })
+        {
+            StatusText = $"No sound that can be read in: {path}";
+            return false;
+        }
+
+        var element = new Layer
+        {
+            Kind = LayerKind.Audio,
+            Name = Path.GetFileName(path),
+            ImagePath = path,
+            HasAudio = true,
+            MediaDuration = Math.Max(info.DurationSeconds, 0),
+            StartTime = Math.Round(Math.Max(startSeconds, 0), 2),
+        };
+
+        // Its block is as long as the sound is, unless that runs past the end of the video.
+        if (element.MediaDuration > 0.05 && element.StartTime + element.MediaDuration < DurationMs / 1000)
+            element.Duration = Math.Round(element.MediaDuration, 2);
+        Checkpoint("add an audio clip");
+        AttachLayer(element);
+        _ = LoadLayerPicturesAsync(element);
+        StatusText = AudioTracks.Count == 0
+            ? $"Added {element.Name}. This video has no audio track of its own for it to be mixed into, so it will not be heard in the output."
+            : $"Added {element.Name} at {TimeDisplay.Format(element.StartTime)}. It is mixed into the first audio track; drag its block to move it.";
         return true;
     }
 
@@ -347,6 +387,15 @@ public partial class MainViewModel
 
     public bool IsEncoderMode => !IsEditorMode;
 
+    /// <summary>
+    /// Whether the timeline's checkboxes (snapping, play only cut segments, keyframes) and the cut buttons sit
+    /// under the timeline. In Editor Mode they are up in the transport row instead, while there is one.
+    /// </summary>
+    public bool ShowTimelineOptionsBelow => IsEncoderMode || !ShowAdvancedPlayback;
+
+    /// <summary>Raised when something about the layers has changed that their time bars may have to be drawn again for.</summary>
+    public event Action? TimelineChanged;
+
     /// <summary>The main video's place in the stack: how many of the layers lie under it. 0 is beneath them all.</summary>
     [ObservableProperty] private int _mainVideoIndex;
 
@@ -356,12 +405,27 @@ public partial class MainViewModel
     private readonly Layer _mainVideoRow = new() { Kind = LayerKind.MainVideo, Name = "Main Video" };
     private readonly Layer _backgroundRow = new() { Kind = LayerKind.Background, Name = "Background Blur" };
 
-    /// <summary>The layers that can be reordered, bottom first: the ones added by hand, with the main video among them.</summary>
+    /// <summary>The pictures that can be reordered, bottom first: the ones added by hand, with the main video among them. Sounds have no place in it.</summary>
     private List<Layer> GetStack()
     {
-        var stack = Layers.ToList();
+        var stack = Layers.Where(l => !l.IsAudio).ToList();
         stack.Insert(Math.Clamp(MainVideoIndex, 0, stack.Count), _mainVideoRow);
         return stack;
+    }
+
+    /// <summary>The stack as tracks, bottom first: the clips of one track lie together, and move together.</summary>
+    private List<List<Layer>> GetStackTracks()
+    {
+        var tracks = new List<List<Layer>>();
+        foreach (var layer in GetStack())
+        {
+            if (tracks.Count > 0 && !layer.IsMainVideo && tracks[^1][0] is { IsMainVideo: false } last && last.TrackId == layer.TrackId)
+                tracks[^1].Add(layer);
+            else
+                tracks.Add([layer]);
+        }
+
+        return tracks;
     }
 
     [RelayCommand]
@@ -370,17 +434,18 @@ public partial class MainViewModel
     [RelayCommand]
     private void MoveLayerDown(Layer? layer) => MoveLayer(layer, -1);
 
-    /// <summary>Moves a layer one place towards the front (+1) or the back (-1).</summary>
+    /// <summary>Moves a layer's track one place towards the front (+1) or the back (-1).</summary>
     private void MoveLayer(Layer? layer, int by)
     {
-        var stack = GetStack();
-        var from = layer is null ? -1 : stack.IndexOf(layer);
+        var tracks = GetStackTracks();
+        var from = layer is null ? -1 : tracks.FindIndex(t => t.Contains(layer));
         var to = from + by;
-        if (from < 0 || to < 0 || to >= stack.Count)
+        if (from < 0 || to < 0 || to >= tracks.Count)
             return;
 
         Checkpoint($"move {layer!.Name} {(by > 0 ? "up" : "down")}");
-        (stack[from], stack[to]) = (stack[to], stack[from]);
+        (tracks[from], tracks[to]) = (tracks[to], tracks[from]);
+        var stack = tracks.SelectMany(t => t).ToList();
 
         // Written back as the two things it is kept as: the order of the layers, and where the main video is among them.
         var main = stack.IndexOf(_mainVideoRow);
@@ -394,14 +459,14 @@ public partial class MainViewModel
 
         MainVideoIndex = main;
         RefreshLayerRows();
-        StatusText = $"{layer!.Name} moved {(by > 0 ? "up" : "down")}: it is now {(stack.IndexOf(layer) == stack.Count - 1 ? "the front layer" : stack.IndexOf(layer) == 0 ? "the back layer, just above the background" : $"layer {stack.IndexOf(layer) + 1} of {stack.Count} from the back")}.";
+        StatusText = $"{layer!.Name} moved {(by > 0 ? "up" : "down")}: it is now {(to == tracks.Count - 1 ? "the front layer" : to == 0 ? "the back layer, just above the background" : $"layer {to + 1} of {tracks.Count} from the back")}.";
     }
 
     // ----- Splitting: the razor -----
 
     /// <summary>
-    /// Cuts a layer in two at a time: the first part ends there and a second layer, the same in everything
-    /// else, begins there, just above it in the stack. The two are then independent of each other.
+    /// Cuts a clip in two at a time: the first part ends there and a second clip, the same in everything
+    /// else, begins there, on the same track. Each can then be moved in time, trimmed or deleted on its own.
     /// </summary>
     public bool SplitLayer(Layer layer, double seconds)
     {
@@ -415,18 +480,17 @@ public partial class MainViewModel
 
         Checkpoint($"split {layer.Name}");
         var second = Layer.FromState(layer.ToState(), SourceWidth, SourceHeight, FrameWidth, FrameHeight);
-        second.Waveform = layer.Waveform;
+        (second.Waveform, second.Filmstrip) = (layer.Waveform, layer.Filmstrip);
         (second.StartTime, second.Duration) = (seconds, end - seconds);
         second.MediaOffset = layer.MediaOffset + (seconds - layer.StartTime);
-        second.Name = layer.Name.EndsWith(" (2)", StringComparison.Ordinal) ? layer.Name : layer.Name + " (2)";
         layer.Duration = seconds - layer.StartTime;
 
         var index = Layers.IndexOf(layer);
-        second.PropertyChanged += OnLayerChanged;
+        Hook(second);
         Layers.Insert(index + 1, second);
-        if (MainVideoIndex > index)
+        if (!layer.IsAudio && MainVideoIndex > Layers.Take(index + 1).Count(l => !l.IsAudio) - 1)
             MainVideoIndex++;
-        StatusText = $"{layer.Name} split at {TimeDisplay.Format(seconds)}: the two parts can now be moved and changed separately.";
+        StatusText = $"{layer.Name} split at {TimeDisplay.Format(seconds)}: two clips on the same track, each of which can be moved, trimmed or deleted on its own.";
         return true;
     }
 
@@ -469,38 +533,25 @@ public partial class MainViewModel
     /// Takes a game's HUD apart: one layer per piece, each cut out of the video where that piece sits and laid
     /// back in the same place, with a mask for the pieces that are not rectangles. From there each can be moved.
     /// </summary>
-    public void AddHudLayers(HudGame game)
+    /// <param name="vertical">Lays the pieces out for a tall frame, above and below the video, and makes the frame tall; otherwise each piece is laid back where it was cut from.</param>
+    public void AddHudLayers(HudGame game, bool vertical = false)
     {
         Checkpoint($"add the {game.Name} HUD layers");
-        foreach (var piece in game.Pieces)
+        if (vertical && !UseVerticalResolution)
+            UseVerticalResolution = true;
+
+        foreach (var state in HudLibrary.BuildLayers(game, vertical))
         {
-            var layer = new Layer
-            {
-                Name = $"{game.Name}: {piece.Name}",
-                SourceX = piece.X, SourceY = piece.Y, SourceWidth = piece.Width, SourceHeight = piece.Height,
-                PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
-                CornerRadius = piece.Shape == HudShape.Panel ? 6 : 0,
-
-
-            };
-
-            try
-            {
-                if (HudLibrary.EnsureMask(piece.Shape) is { } mask)
-                    (layer.CustomMask, layer.MaskPath) = (true, mask);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Without its mask the piece is a plain rectangle, which still works.
-            }
-
-            AttachLayer(layer);
+            state.TrackId = 0;
+            AttachLayer(Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight));
         }
 
         if (CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
         FrameEngine = true;
-        StatusText = $"Added {game.Pieces.Count} layers for {game.Name}. They sit where the HUD is by default: check each against your video and correct it with Draw Target.";
+        StatusText = vertical
+            ? $"Added {game.Pieces.Count} layers for {game.Name}, laid out above and below the video. Check each against your video: right-click a layer and choose Redraw / Modify Mask to correct it."
+            : $"Added {game.Pieces.Count} layers for {game.Name}. They sit where the HUD is by default: check each against your video and correct it with Draw Target.";
     }
 
     // ----- Stream copy -----
@@ -540,11 +591,34 @@ public partial class MainViewModel
         Layers.Remove(element);
     }
 
+    /// <summary>Adds a layer to the list: a picture above the other pictures, a sound after everything.</summary>
     private void AttachLayer(Layer element)
     {
-        element.PropertyChanged += OnLayerChanged;
-        Layers.Add(element);
+        Hook(element);
+        var firstSound = element.IsAudio ? -1 : Layers.ToList().FindIndex(l => l.IsAudio);
+        if (firstSound >= 0)
+            Layers.Insert(firstSound, element);
+        else
+            Layers.Add(element);
     }
+
+    /// <summary>Takes a layer into use: its changes are listened to, it is given a track when it has none, and from now on it grows about its middle.</summary>
+    private void Hook(Layer element)
+    {
+        element.PropertyChanged += OnLayerChanged;
+        if (element.TrackId <= 0)
+            element.TrackId = Layers.Select(l => l.TrackId).DefaultIfEmpty().Max() + 1;
+        element.AnchorCenter = true;
+    }
+
+    /// <summary>The clips on the same track as a layer, in the order they are kept; the layer alone when it is not one of the list.</summary>
+    public List<Layer> GetTrackClips(Layer layer) =>
+        Layers.Contains(layer) ? Layers.Where(l => l.TrackId == layer.TrackId && l.IsAudio == layer.IsAudio).ToList() : [layer];
+
+    /// <summary>The main video as a layer: its look, its filters and how it is turned. Where it sits is the Center controls.</summary>
+    public Layer MainLayer => _mainVideoRow;
+
+    public Layer BackgroundLayer => _backgroundRow;
 
     private void SetLayers(IEnumerable<LayerState> states)
     {
@@ -555,8 +629,12 @@ public partial class MainViewModel
         foreach (var state in states)
         {
             var layer = Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
+
+            // Two layers that came with the same track number but are different things are not one track.
+            if (Layers.FirstOrDefault(l => l.TrackId == layer.TrackId) is { } other && (other.Kind != layer.Kind || other.ImagePath != layer.ImagePath))
+                layer.TrackId = 0;
             AttachLayer(layer);
-            _ = LoadLayerWaveformAsync(layer);
+            _ = LoadLayerPicturesAsync(layer);
         }
     }
 
@@ -611,7 +689,54 @@ public partial class MainViewModel
         if (e.PropertyName is nameof(Layer.SourceWidth) or nameof(Layer.SourceHeight) && CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
 
+        // A track is one thing with several clips on it: where it sits, how it looks and what filters it has
+        // are the track's, so a change to one clip is made to the others on its track as well.
+        if (_copyingToTrack)
+            return;
+
+        TimelineChanged?.Invoke();
+
+        if (sender is Layer changed && e.PropertyName is { } name && !Layer.IsClipProperty(name) && GetTrackProperty(name) is { } property)
+        {
+            var others = Layers.Where(l => !ReferenceEquals(l, changed) && l.TrackId == changed.TrackId && l.IsAudio == changed.IsAudio).ToList();
+            if (others.Count > 0)
+            {
+                _copyingToTrack = true;
+                try
+                {
+                    var value = property.GetValue(changed);
+                    foreach (var other in others)
+                        other.FromCorner(() => property.SetValue(other, value));
+                }
+                finally
+                {
+                    _copyingToTrack = false;
+                }
+            }
+        }
+
         GenerateCommand();
+    }
+
+    private bool _copyingToTrack;
+    private static readonly Dictionary<string, System.Reflection.PropertyInfo?> TrackProperties = [];
+
+    /// <summary>A property of a layer that can be set from outside, by name; null for one that cannot.</summary>
+    private static System.Reflection.PropertyInfo? GetTrackProperty(string name)
+    {
+        if (!TrackProperties.TryGetValue(name, out var property))
+        {
+            property = typeof(Layer).GetProperty(name);
+            if (property is not { CanRead: true, SetMethod.IsPublic: true }
+                || property.SetMethod.ReturnParameter.GetRequiredCustomModifiers().Contains(typeof(System.Runtime.CompilerServices.IsExternalInit)))
+            {
+                property = null;
+            }
+
+            TrackProperties[name] = property;
+        }
+
+        return property;
     }
 
     // ----- Timeline keyframe lines -----
@@ -1108,6 +1233,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowAdvancedFiltersTab));
         OnPropertyChanged(nameof(IsEditorMode));
         OnPropertyChanged(nameof(IsEncoderMode));
+        OnPropertyChanged(nameof(ShowTimelineOptionsBelow));
         OnPropertyChanged(nameof(ShowPresetBarAtTop));
         OnPropertyChanged(nameof(ShowPresetBarInSummary));
         OnPropertyChanged(nameof(TimelineAreaHeight));
@@ -1141,7 +1267,7 @@ public partial class MainViewModel
         var minimumSeconds = Math.Clamp(AppSettings.Current.DeadAirMinSeconds, 0.2, 30);
 
         // A video layer: its own sound is listened to, and the layer is what gets cut up.
-        if (target is Layer { IsVideoFile: true } layer && Layers.Contains(layer))
+        if (target is Layer { CarriesSound: true } layer && Layers.Contains(layer))
         {
             var info = await MediaProbe.ProbeAsync(layer.ImagePath, cancellationToken);
             if (info is not { DurationSeconds: > 0, Audio.Count: > 0 })

@@ -17,6 +17,13 @@ public partial class HudMasksDialog : Window
     /// <summary>The game that was chosen, once the dialog has been confirmed.</summary>
     public HudGame? Game => GameList.SelectedItem as HudGame;
 
+    /// <summary>Whether the pieces are to be laid out for a tall frame rather than back where they came from.</summary>
+    public bool Vertical
+    {
+        get => VerticalBox.IsChecked == true;
+        set => VerticalBox.IsChecked = value;
+    }
+
     private void GameList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         AddButton.IsEnabled = Game is not null;

@@ -47,6 +47,8 @@ public partial class MainViewModel
         FrameEngine = FrameEngine,
         CenterZoom = CenterZoom,
         Layers = Layers.Select(e => e.ToState()).ToList(),
+        MainLayer = _mainVideoRow.ToState(),
+        BackgroundHidden = _backgroundRow.IsHidden,
         MainVideoIndex = MainVideoIndex,
         LayoutSourceAspectRatio = GetLayoutSourceAspect(),
         AutoCaptions = AutoCaptions,

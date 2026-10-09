@@ -62,6 +62,12 @@ public sealed class EncodingPreset
     /// <summary>Pieces of the source and images placed on the frame, each with where it comes from and where it goes. In stacking order, bottom first.</summary>
     public List<LayerState> Layers { get; set; } = [];
 
+    /// <summary>The look of the main video as a layer: its style, mask, filters and how it is turned.</summary>
+    public LayerState? MainLayer { get; set; }
+
+    /// <summary>Whether the blurred background is switched off, leaving the black canvas.</summary>
+    public bool BackgroundHidden { get; set; }
+
     /// <summary>How many of those layers lie under the main video: 0 puts it beneath all of them, as it always was before layers could be reordered.</summary>
     public int MainVideoIndex { get; set; }
 

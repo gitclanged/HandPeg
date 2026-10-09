@@ -123,6 +123,10 @@ public partial class MainViewModel
             CenterOffsetX = CenterOffsetX,
             CenterOffsetY = CenterOffsetY,
             SourceAspectRatio = GetLayoutSourceAspect(),
+            Vertical = UseVerticalResolution,
+            MainVideoIndex = MainVideoIndex,
+            MainLayer = _mainVideoRow.ToState(),
+            BackgroundHidden = _backgroundRow.IsHidden,
             Layers = Layers.Select(e => e.ToState()).ToList(),
         },
         Color = new ColorSection
@@ -198,7 +202,7 @@ public partial class MainViewModel
     /// </summary>
     private static void EmbedMasks(StylePreset style)
     {
-        foreach (var layer in style.Layout?.Layers ?? [])
+        foreach (var layer in StyleLayers(style))
         {
             var path = layer.MaskPath.Trim().Trim('"');
             if (!layer.CustomMask || path.Length == 0 || !File.Exists(path))
@@ -217,13 +221,24 @@ public partial class MainViewModel
         }
     }
 
+    /// <summary>Everything in a style that can carry a mask: its layers, the main video, and the caption box.</summary>
+    private static IEnumerable<LayerState> StyleLayers(StylePreset style)
+    {
+        foreach (var layer in style.Layout?.Layers ?? [])
+            yield return layer;
+        if (style.Layout?.MainLayer is { } main)
+            yield return main;
+        if (style.Subtitles?.Layer is { } captions)
+            yield return captions;
+    }
+
     /// <summary>Writes the masks a style carries into the masks folder, and points its layers at them there.</summary>
     private void ExtractMasks(StylePreset style)
     {
         if (style.Masks is not { Count: > 0 } masks)
             return;
 
-        foreach (var layer in style.Layout?.Layers ?? [])
+        foreach (var layer in StyleLayers(style))
         {
             if (!masks.TryGetValue(layer.MaskPath, out var encoded))
                 continue;
@@ -273,8 +288,16 @@ public partial class MainViewModel
             CenterZoom = layers.CenterZoom is > 0 and var zoom ? Math.Clamp(zoom, SmallestCenterZoom, LargestCenterZoom) : 1;
             CenterOffsetX = Math.Clamp(layers.CenterOffsetX, -100, 100);
             CenterOffsetY = Math.Clamp(layers.CenterOffsetY, -100, 100);
+            // The shape of the frame first: the layers are placed by fractions of it.
+            if (layers.Vertical is { } vertical && vertical != UseVerticalResolution)
+                UseVerticalResolution = vertical;
+
             ExtractMasks(preset);
             SetLayers(layers.Layers ?? []);
+            _mainVideoRow.ApplyLook(layers.MainLayer);
+            _backgroundRow.IsHidden = layers.BackgroundHidden;
+            if (layers.MainVideoIndex is { } under)
+                MainVideoIndex = Math.Clamp(under, 0, Layers.Count);
             _layoutSourceAspect = layers.SourceAspectRatio;
 
             // A layout is only seen through the engine.

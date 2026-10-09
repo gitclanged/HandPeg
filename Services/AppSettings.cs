@@ -192,6 +192,15 @@ public sealed class AppSettings
     /// <summary>How many style presets the launch window offers as buttons, 1 to 5. 0 switches the launch window off. It is only shown in Editor Mode.</summary>
     public int SplashPresetCount { get; set; } = 3;
 
+    /// <summary>How many frames are taken from a video layer's file for the strip its block on the timeline is drawn with: 1 to 25.</summary>
+    public int LayerThumbnailCount { get; set; } = 8;
+
+    /// <summary>Every video that is opened starts as a vertical one: a tall frame with the picture across its middle.</summary>
+    public bool DefaultVerticalVideo { get; set; }
+
+    /// <summary>Which of the style presets HandPeg comes with have been written to the Styles folder; they are written once.</summary>
+    public int BuiltInStylesVersion { get; set; }
+
     /// <summary>
     /// Live Preview: the player shows the picture with the export's filters applied as they are set.
     /// Remembered from the box beside the playback controls.

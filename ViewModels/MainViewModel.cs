@@ -58,7 +58,7 @@ public partial class MainViewModel : ObservableObject
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
         nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloTrack),
         nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
-        nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText), nameof(ShowLayerAudio), nameof(IsEncoderMode),
+        nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips), nameof(IsEncoderMode),
     ];
 
 
@@ -142,6 +142,8 @@ public partial class MainViewModel : ObservableObject
         Presets.CollectionChanged += (_, _) => RefreshPresetNames();
         AudioTracks.CollectionChanged += (_, _) => KeepCaptionTrackValid();
         CaptionLayer.PropertyChanged += (_, _) => GenerateCommand();
+        _mainVideoRow.PropertyChanged += (_, _) => GenerateCommand();
+        _backgroundRow.PropertyChanged += (_, _) => GenerateCommand();
         Layers.CollectionChanged += (_, _) => GenerateCommand();
         Segments.CollectionChanged += (_, _) => GenerateCommand();
         GenerateCommand();
@@ -293,6 +295,8 @@ public partial class MainViewModel : ObservableObject
         BlurPasses = Math.Clamp(preset.BlurPasses, 1, 5);
         BackgroundDim = Math.Clamp(preset.BackgroundDim, -0.5, 0);
         SetLayers(preset.Layers ?? []);
+        _mainVideoRow.ApplyLook(preset.MainLayer);
+        _backgroundRow.IsHidden = preset.BackgroundHidden;
         MainVideoIndex = Math.Clamp(preset.MainVideoIndex, 0, Layers.Count);
         _layoutSourceAspect = preset.LayoutSourceAspectRatio;
         AddLegacyWatermark(preset);
@@ -521,7 +525,7 @@ public partial class MainViewModel : ObservableObject
     // ----- Summary -----
 
     [ObservableProperty] private string _container = "mp4";
-    [ObservableProperty] private bool _webOptimized;
+    [ObservableProperty] private bool _webOptimized = true;
 
     // ----- Dimensions -----
 
@@ -893,7 +897,11 @@ public partial class MainViewModel : ObservableObject
 
         // Loading something by hand ends the editing of a queued job.
         EditingJob = null;
-        var (_, message) = await LoadMediaAsync(source, knownLocalPath: null, applyAutomation: true, cancellationToken);
+        var (opened, message) = await LoadMediaAsync(source, knownLocalPath: null, applyAutomation: true, cancellationToken);
+
+        // Settings: every video starts as a vertical one.
+        if (opened && AppSettings.Current.DefaultVerticalVideo && !UseVerticalResolution)
+            UseVerticalResolution = true;
         _undo.Clear();
         _redo.Clear();
         MarkSaved();

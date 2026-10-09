@@ -259,6 +259,14 @@
                         <TextBox Style="{StaticResource ValueBox}" Text="{Binding TimelineHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Timeline Height Value"
                                  local:NumericInput.Default="3" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="5" />
                     </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="Video Layer Thumbnail Count:" Style="{StaticResource FieldLabel}" />
+                        <Slider Width="150" Minimum="1" Maximum="25" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding LayerThumbnailCount}" AutomationProperties.Name="Video Layer Thumbnail Count" local:NumericInput.Default="8"
+                                ToolTip="How many frames are taken from a video layer's file for the strip of pictures its block on the Layers tab is drawn with. Applies to the video layers added from now on." />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding LayerThumbnailCount, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Video Layer Thumbnail Count Value"
+                                 local:NumericInput.Default="8" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="25" />
+                    </StackPanel>
                     <CheckBox Content="Show Timeline Thumbnails" IsChecked="{Binding ShowTimelineThumbnails}"
                               ToolTip="Draws a strip of pictures from the video along the timeline, behind the waveform. On by default in Editor Mode. Applies to the next video you load." />
 
@@ -343,6 +351,8 @@
                                Text="Smart rules and the default preset are on the Automation tab of the main window." />
                     <CheckBox Content="Save the Target File Size with each preset" IsChecked="{Binding SaveTargetSizeInPresets}"
                               ToolTip="When on, Save Preset also stores the Target File Size set at the time, and applying that preset brings it back." />
+                    <CheckBox Content="Default to Vertical Video" IsChecked="{Binding DefaultVerticalVideo}"
+                              ToolTip="Every video that is opened starts as a vertical one: a tall frame with the picture across its middle over a blurred copy of itself. The same as ticking Vertical Video on the Summary tab." />
                     <CheckBox Content="Prompt to save before closing" IsChecked="{Binding PromptToSaveOnExit}"
                               ToolTip="When HandPeg is closed while the open video has cuts, layers or settings that were not saved as a project, asks whether to save them first." />
                     <CheckBox Content="Fall back to the software encoder when a hardware encode fails" IsChecked="{Binding AutoFallbackToSoftware}"

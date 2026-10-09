@@ -19,6 +19,8 @@
         </ListBox>
         <TextBlock Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,10,0,0"
                    Text="The positions are starting points for a 16:9 recording with the game's default HUD. HUD scale, settings and game updates move things: check each layer against your video, and use its Draw Target button to mark it exactly." />
+        <CheckBox x:Name="VerticalBox" Content="Lay out for vertical video" Margin="0,12,0,0"
+                  ToolTip="Makes the frame tall, with the video across its middle and the pieces of the HUD enlarged above and below it. Cleared, each piece is laid back where it was cut from. The same layouts are among the style presets, where they can be dropped on from the launch window." />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button x:Name="AddButton" Content="Add Layers" MinWidth="110" IsDefault="True" IsEnabled="False" Click="Add_Click" />
             <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
