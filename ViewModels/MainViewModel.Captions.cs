@@ -206,11 +206,14 @@ public partial class MainViewModel
     {
         var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
         var (x, y, width, height) = GetCaptionRect(frameWidth, frameHeight);
+
+        // Live Preview draws everything smaller; the caption file is written for the box, whatever its size on the canvas.
+        (x, y, width, height) = (Placed(x), Placed(y), Sized(width), Sized(height));
         var rate = GetTargetFramerate() ?? Number(SourceFrameRate);
         var opacity = Math.Clamp(CaptionLayer.Opacity, 0, 100) / 100.0;
 
         var layer = $"color=c=black@0:s={width}x{height}:r={rate},format=rgba,{BuildCaptionFilter(assPath)}:alpha=1";
-        if (BuildElementMask(CaptionLayer, width, height) is { } mask)
+        if (BuildElementMask(CaptionLayer, width, height, _liveScale) is { } mask)
             layer += $",format=gbrap,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{mask}{(opacity < 1 ? "*" + Number(opacity) : "")}'";
         else if (opacity < 1)
             layer += $",colorchannelmixer=aa={Number(opacity)}";
@@ -218,7 +221,7 @@ public partial class MainViewModel
         if (!CaptionLayer.Shadow)
             return $"null[cap_base];{layer}[cap_layer];[cap_base][cap_layer]overlay={x}:{y}:shortest=1";
 
-        var offset = Math.Clamp(CaptionLayer.ShadowOffset, 0, 200);
+        var offset = Placed(Math.Clamp(CaptionLayer.ShadowOffset, 0, 200));
         return $"null[cap_base];{layer},split[cap_layer][cap_shadow_in];"
                + $"[cap_shadow_in]format=rgba,colorchannelmixer=rr=0:gg=0:bb=0:aa={Number(Math.Clamp(CaptionLayer.ShadowOpacity, 0, 1))},boxblur=2:1[cap_shadow];"
                + $"[cap_base][cap_shadow]overlay={x + offset}:{y + offset}:shortest=1[cap_shaded];"

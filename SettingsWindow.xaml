@@ -110,6 +110,8 @@
                             <ComboBoxItem Content="Show 5 Presets" />
                         </ComboBox>
                     </StackPanel>
+                    <CheckBox Content="Use GPU acceleration in the video player" IsChecked="{Binding PlayerHardwareAcceleration}"
+                              ToolTip="The graphics card decodes the video as well as drawing it (Direct3D 11), which keeps high-resolution and high-frame-rate footage smooth and the processor free. With Live Preview on, the card still decodes and each frame is handed to the filters. Turn this off if the picture is green, garbled or stutters: the processor then decodes. Applied when you press Save." />
                     <CheckBox Content="Show Command Preview Tab" IsChecked="{Binding ShowCommandPreviewTab}"
                               ToolTip="Adds a tab showing the FFmpeg command that will run, which can also be edited by hand." />
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,4">

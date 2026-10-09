@@ -3,7 +3,6 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
         xmlns:vm="clr-namespace:HandPegApp.ViewModels"
         xmlns:local="clr-namespace:HandPegApp"
         mc:Ignorable="d"
@@ -285,15 +284,15 @@
 
             <!-- Video player -->
             <Border Background="Black" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
-                <vlc:VideoView x:Name="VideoView" Background="Black" Loaded="VideoView_Loaded">
+                <local:VideoSurface x:Name="VideoView">
                     <!--
-                        Drawn in the transparent window LibVLCSharp keeps above the video, which is how WPF content
-                        can appear over the native video surface. Only present while Interactive Crop is on; its
-                        faint fill is what lets it receive the mouse (fully transparent pixels let clicks through).
+                        Drawn in the transparent window the surface keeps above the video, which is how WPF content
+                        can appear over the native video window. The crop canvas is only present while Interactive
+                        Crop is on; its faint fill is what lets it receive the mouse (fully transparent pixels let clicks through).
                     -->
                     <Grid>
                         <!--
-                            Shown while no video is loaded, and solid: an idle player does not paint its surface.
+                            Shown while no video is loaded, and solid, so it reads the same whatever is behind it.
                             This window lies over the player, so what is dropped on it is passed on to the main
                             window's own drop handling; a click opens Browse.
                         -->
@@ -317,7 +316,7 @@
                             </Canvas>
                         </AdornerDecorator>
                     </Grid>
-                </vlc:VideoView>
+                </local:VideoSurface>
             </Border>
 
             <!--
@@ -332,6 +331,9 @@
                     <ColumnDefinition Width="*" MinWidth="170" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <ToggleButton Content="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0" IsChecked="{Binding LivePreview}"
+                              AutomationProperties.Name="Enable Live Preview"
+                              ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is." />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Margin="3,0,14,0" Click="ReloadPlayer_Click"
                             ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE892;" Click="PreviousKeyframe_Click"
@@ -428,6 +430,9 @@
                         </StackPanel>
                         <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="10,0,0,0"
                                     Visibility="{Binding ShowSimplePlayback, Converter={StaticResource BoolToVisibility}}">
+                            <ToggleButton Content="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="9,6" Margin="3,0" IsChecked="{Binding LivePreview}"
+                                  AutomationProperties.Name="Enable Live Preview"
+                                  ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is." />
                             <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Padding="9,6" Click="ReloadPlayer_Click"
                                     ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
                             <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Padding="9,6" Command="{Binding RenderPreviewCommand}"
@@ -544,8 +549,6 @@
                                   ToolTip="Playback jumps over everything outside the cut segments, so what plays is what the encode will keep. While on, what is skipped is shaded on the timeline." />
                         <CheckBox Content="Show keyframes" IsChecked="{Binding ShowKeyframes}" Margin="16,0,0,0"
                                   ToolTip="Draws a thin line on the timeline at every keyframe. Settings (Timeline) can tie timeline snapping to this box." />
-                        <TextBlock Text="{Binding KeyframeStatusText}" Foreground="{DynamicResource MutedTextBrush}"
-                                   VerticalAlignment="Center" Margin="12,0,0,0" />
                     </StackPanel>
                 </StackPanel>
             </Border>
@@ -1455,7 +1458,7 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBlock Text="{Binding StatusText}" ToolTip="{Binding StatusText}" Foreground="{DynamicResource MutedTextBrush}"
+            <TextBlock Text="{Binding StatusText}" ToolTip="{Binding StatusText}" Foreground="{DynamicResource MutedTextBrush}" AutomationProperties.AutomationId="Status"
                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
             <!-- A newer HandPeg has been downloaded. Ignoring this is fine: it is put in when the application closes. -->
             <StackPanel Grid.Column="1" x:Name="UpdateNotice" Orientation="Horizontal" Margin="10,0,0,0" Visibility="Collapsed">
@@ -1465,8 +1468,13 @@
                 <Button Content="Later" Margin="6,0,0,0" Padding="10,3" Click="DismissUpdateNotice_Click"
                         ToolTip="Hide this. The update goes in when HandPeg is closed." />
             </StackPanel>
-            <ProgressBar Grid.Column="2" Width="240" Height="14" Margin="10,0,0,0" Minimum="0" Maximum="100"
-                         Value="{Binding ProgressValue}" IsIndeterminate="{Binding IsProgressIndeterminate}" />
+            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                <!-- How the keyframe index came out: shown for ten seconds, then cleared -->
+                <TextBlock Text="{Binding KeyframeStatusText}" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0,0,0"
+                           AutomationProperties.AutomationId="Keyframe Status" />
+                <ProgressBar Width="240" Height="14" Margin="10,0,0,0" Minimum="0" Maximum="100"
+                             Value="{Binding ProgressValue}" IsIndeterminate="{Binding IsProgressIndeterminate}" />
+            </StackPanel>
             <Button Grid.Column="3" Content="Cancel" Margin="8,0,0,0" Padding="12,3" Command="{Binding CancelCommand}" />
         </Grid>
     </Grid>

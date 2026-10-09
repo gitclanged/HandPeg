@@ -12,9 +12,7 @@ using System.Windows.Media.Imaging;
 using HandPegApp.Models;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
-using LibVLCSharp.Shared;
 using Microsoft.Win32;
-using MediaPlayer = LibVLCSharp.Shared.MediaPlayer;
 
 namespace HandPegApp;
 
@@ -24,15 +22,6 @@ namespace HandPegApp;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new();
-    // One LibVLC for as long as it behaves; Reload Player replaces it. See ReloadPlayer_Click.
-    private LibVLC _libVlc;
-
-    // Replaced with a fresh one for every source that is loaded; see PlayMedia.
-    private MediaPlayer _mediaPlayer;
-
-    // Set by Reload Player: the new player comes up paused, as the old one was.
-    private bool _pauseWhenStarted;
-
     private QueueWindow? _queueWindow;
     private bool _isScrubbing;
     private bool _applyingMagnet;
@@ -82,11 +71,6 @@ public partial class MainWindow : Window
         YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize);
         SessionPaths.DeleteAbandonedSessions();
 
-        // One LibVLC for the life of the application, as the library intends; players come and go on top of it.
-        Core.Initialize();
-        _libVlc = new LibVLC();
-        _mediaPlayer = CreatePlayer();
-
         _viewModel.Segments.CollectionChanged += (_, _) => RedrawSegments();
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         _viewModel.MediaLoaded += PlayMedia;
@@ -103,16 +87,33 @@ public partial class MainWindow : Window
         PreviewKeyDown += MainWindow_PreviewKeyDown;
         Closed += MainWindow_Closed;
         Loaded += (_, _) => _ = CheckForHandPegUpdateAsync();
-        Loaded += (_, _) => OpenLaunchRequest();
+
+        _viewModel.LiveFilterInvalidated += ScheduleLiveFilter;
+        VideoView.SizeChanged += (_, _) => ScheduleLiveFilter();
+        _liveFilterTimer.Tick += (_, _) => ApplyLiveFilter();
+
+        // The player starts once there is a surface for it to draw on, away from the UI thread.
+        VideoView.SurfaceReady += () => _ = EnsurePlayerAsync();
+        Loaded += (_, _) => _ = EnsurePlayerAsync();
+
+        // Once the window has been drawn, so the launch window opens over the program rather than over nothing.
+        Loaded += (_, _) => Dispatcher.BeginInvoke(ShowLaunchWindow, System.Windows.Threading.DispatcherPriority.ContextIdle);
     }
 
-    /// <summary>What was chosen in the launch window, if it was shown: a video, a video with a preset, or a project.</summary>
-    private void OpenLaunchRequest()
+    /// <summary>
+    /// Shows the launch window over this one, when it is switched on, and opens what was chosen in it:
+    /// a video, a video with a preset, or a project. Closing it without choosing is a blank project.
+    /// </summary>
+    private void ShowLaunchWindow()
     {
-        if (App.LaunchRequest is not { } request)
+        if (AppSettings.Current is not { FirstRunComplete: true, SplashPresetCount: > 0 })
             return;
 
-        App.LaunchRequest = null;
+        var splash = new SplashWindow { Owner = this };
+        splash.ShowDialog();
+        if (splash.Request is not { } request)
+            return;
+
         switch (request.Kind)
         {
             case LaunchKind.Video when request.PresetName is { } preset:
@@ -137,60 +138,13 @@ public partial class MainWindow : Window
         ThemeManager.ApplyTitleBar(this);
     }
 
-    /// <summary>
-    /// Makes a player wired to the window. LibVLC raises events on its own threads, so every handler
-    /// marshals with BeginInvoke (a blocking Invoke can deadlock against player calls made from the UI
-    /// thread) and ignores events from a player that has since been replaced.
-    /// </summary>
-    private MediaPlayer CreatePlayer()
-    {
-        var player = new MediaPlayer(_libVlc);
-
-        void OnUi(Action action) => Dispatcher.BeginInvoke(() =>
-        {
-            if (ReferenceEquals(player, _mediaPlayer))
-                action();
-        });
-
-        player.LengthChanged += (_, e) => OnUi(() => _viewModel.DurationMs = e.Length);
-        player.TimeChanged += (_, e) => OnUi(() => OnPlayerTimeChanged(e.Time));
-        player.Playing += (_, _) => OnUi(() =>
-        {
-            _viewModel.IsPlaying = true;
-
-            // The audio output only exists once playback has started, so volume and speed are (re)applied here.
-            player.Volume = _viewModel.Volume;
-            player.SetRate(_viewModel.PlaybackRate);
-
-            // And so is the choice of track, which a new player does not know about.
-            if (_viewModel.SoloTrack is not null)
-                ApplySoloTrack();
-
-            if (_pauseWhenStarted)
-            {
-                _pauseWhenStarted = false;
-                player.SetPause(true);
-            }
-        });
-        player.Paused += (_, _) => OnUi(() => _viewModel.IsPlaying = false);
-        player.Stopped += (_, _) => OnUi(() => _viewModel.IsPlaying = false);
-        player.EndReached += (_, _) => OnUi(() => _viewModel.IsPlaying = false);
-        player.EncounteredError += (_, _) => OnUi(() => _viewModel.StatusText = "The player could not open this source.");
-        return player;
-    }
-
-    private void VideoView_Loaded(object sender, RoutedEventArgs e) => VideoView.MediaPlayer = _mediaPlayer;
-
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
         // Encodes, downloads and probes still running go first, children included, so nothing is left
         // behind in the background and nothing still holds a file in the session folder.
         ProcessPipes.KillAll();
         _viewModel.Shutdown();
-        _mediaPlayer.Stop();
-        VideoView.Dispose();
-        _mediaPlayer.Dispose();
-        _libVlc.Dispose();
+        _mpv?.Close();
 
         // The most recent downloads stay, so the same URL loads without downloading again.
         YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize);
@@ -362,7 +316,13 @@ public partial class MainWindow : Window
     private void OpenSettings_Click(object sender, RoutedEventArgs e)
     {
         if (new SettingsWindow(_viewModel) { Owner = this }.ShowDialog() == true)
+        {
             _viewModel.OnSettingsSaved();
+            _mpv?.SetHardwareAcceleration(AppSettings.Current.PlayerHardwareAcceleration);
+        }
+
+        // The player may just have been installed from the dependency list.
+        _ = EnsurePlayerAsync();
     }
 
     private void SourceTextBox_KeyDown(object sender, KeyEventArgs e)
@@ -371,10 +331,107 @@ public partial class MainWindow : Window
             _viewModel.LoadSourceCommand.Execute(null);
     }
 
+    // ----- The player: libmpv -----
+    // mpv draws into the video surface, reports where it is as it plays, and can run an FFmpeg filter graph on
+    // the picture (its lavfi-complex property). That graph is Live Preview: with the box ticked it is the one
+    // the export would use for the picture, rebuilt whenever a setting changes; unticked, there is none and
+    // the source is shown as it is.
+
+    private MpvPlayer? _mpv;
+    private bool _startingPlayer;
+
+    // What to open once the player exists: a video loaded before it had started, or the one a reload is bringing back.
+    private (string Path, long StartMs, bool Paused)? _pendingMedia;
+
+    // The graph mpv is running, and one it refused: that one is not offered again until the settings change.
+    private string _liveGraph = "";
+    private string? _failedLiveGraph;
+
+    // Sliders report every step of a drag; the graph is rebuilt once they have been still for a moment.
+    private readonly System.Windows.Threading.DispatcherTimer _liveFilterTimer = new() { Interval = TimeSpan.FromMilliseconds(90) };
+
+    private bool PlayerIsPlaying => _mpv is { IsPlaying: true };
+
+    private void PlayerSetPause(bool paused) => _mpv?.SetPause(paused);
+
+    private void PlayerSeek(long positionMs, bool exact = true) => _mpv?.Seek(positionMs, exact);
+
     /// <summary>
-    /// Plays a newly loaded source on a fresh player. A player keeps decoder and output state for what it
-    /// has played, so reusing one across many files lets memory pile up; the old one is released instead.
+    /// Starts the player when there is none yet. Loading libmpv and starting it take a moment, and happen on
+    /// the thread pool: the window is never held up by them. Without libmpv (not downloaded yet) there is
+    /// simply no player; everything else works, and this is tried again when the dependencies change.
     /// </summary>
+    private async Task EnsurePlayerAsync()
+    {
+        if (_mpv is not null || _startingPlayer)
+            return;
+
+        var surface = VideoView.SurfaceHandle;
+        if (surface == IntPtr.Zero)
+            return;
+
+        if (!MpvPlayer.IsInstalled)
+        {
+            _viewModel.StatusText = "The video player (libmpv) is not installed yet: open Settings (the gear button) and press Install / Update All Dependencies.";
+            return;
+        }
+
+        _startingPlayer = true;
+        try
+        {
+            var acceleration = AppSettings.Current.PlayerHardwareAcceleration;
+            var player = await Task.Run(() => MpvPlayer.Create(surface, acceleration));
+
+            // mpv raises its events on a thread of its own; they are passed on only while this is still the player.
+            void OnUi(Action action) => Dispatcher.BeginInvoke(() =>
+            {
+                if (ReferenceEquals(player, _mpv))
+                    action();
+            });
+
+            player.TimeChanged += time => OnUi(() => OnPlayerTimeChanged(time));
+            player.DurationChanged += length => OnUi(() =>
+            {
+                if (length > 0)
+                    _viewModel.DurationMs = length;
+            });
+            player.StateChanged += () => OnUi(() => _viewModel.IsPlaying = player.IsPlaying);
+            player.FileLoaded += () => OnUi(() =>
+            {
+                // Opening a file takes the graph off; it is given again, for this file.
+                _liveGraph = "";
+                ApplyLiveFilter();
+                if (_viewModel.SoloTrack is not null)
+                    ApplySoloTrack();
+            });
+            player.ErrorLogged += text => OnUi(() => OnPlayerError(text));
+
+            _mpv = player;
+            (_liveGraph, _failedLiveGraph) = ("", null);
+            player.SetVolume(_viewModel.Volume);
+            player.SetSpeed(_viewModel.PlaybackRate);
+
+            // A video may have been loaded while the player was still starting.
+            if (_pendingMedia is null && _viewModel.HasSource && File.Exists(_viewModel.LocalMediaPath))
+                _pendingMedia = (_viewModel.LocalMediaPath, (long)_viewModel.PositionMs, true);
+            if (_pendingMedia is { } media)
+            {
+                _pendingMedia = null;
+                player.Open(media.Path, media.StartMs, media.Paused);
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppLog.Write("The player could not be started", ex);
+            _viewModel.StatusText = $"The video player could not be started: {ex.Message}";
+        }
+        finally
+        {
+            _startingPlayer = false;
+        }
+    }
+
+    /// <summary>Plays a newly loaded source.</summary>
     private void PlayMedia(string path)
     {
         if (!File.Exists(path))
@@ -383,27 +440,32 @@ public partial class MainWindow : Window
             return;
         }
 
-        // The old player is stopped while it still owns the video surface. Taking the surface away from
-        // a player that is still playing makes LibVLC open a window of its own to carry on in.
-        var retired = _mediaPlayer;
-        retired.Stop();
+        OpenInPlayer(path, 0, paused: false);
+    }
 
-        _pauseWhenStarted = false;
-        _mediaPlayer = CreatePlayer();
-        VideoView.MediaPlayer = _mediaPlayer;
-        StartPlayback(path, attemptsLeft: 20);
+    private void OpenInPlayer(string path, long startMs, bool paused)
+    {
+        if (_mpv is not { } player)
+        {
+            _pendingMedia = (path, startMs, paused);
+            _ = EnsurePlayerAsync();
+            return;
+        }
 
-        // Releasing the old player can wait on LibVLC's own threads, so it happens away from the UI thread.
-        Task.Run(retired.Dispose);
+        // The graph belongs to the file that was playing; the new one gets its own once it is open.
+        _liveFilterTimer.Stop();
+        (_liveGraph, _failedLiveGraph) = ("", null);
+        player.DropFilterGraph();
+        player.SetFiltering(false);
+        player.Open(path, startMs, paused);
     }
 
     private bool _reloadingPlayer;
 
     /// <summary>
-    /// Reload Player: for when LibVLC has locked up and the timeline no longer responds. The player and the
-    /// LibVLC instance under it are replaced with new ones, and the video is opened again where it was.
-    /// The old pair is stopped and released away from the UI thread, and is not waited for beyond a moment:
-    /// a player that is truly stuck would otherwise take the window down with it.
+    /// Reload Player: for when the player has locked up and the timeline no longer responds. The player is
+    /// replaced with a new one, and the video is opened again where it was. The old one is told to quit and
+    /// is not waited for: a player that is truly stuck would otherwise take the window down with it.
     /// </summary>
     private async void ReloadPlayer_Click(object sender, RoutedEventArgs e)
     {
@@ -419,97 +481,114 @@ public partial class MainWindow : Window
         var (resumeAt, wasPlaying) = ((long)_viewModel.PositionMs, _viewModel.IsPlaying);
         _viewModel.StatusText = "Reloading the player...";
 
-        // The new pair first: from here on, events from the old player are ignored (see CreatePlayer).
-        var (retiredPlayer, retiredVlc) = (_mediaPlayer, _libVlc);
-        _libVlc = new LibVLC();
-        _mediaPlayer = CreatePlayer();
+        var retired = _mpv;
+        _mpv = null;
         _isScrubbing = false;
-
-        // The old player is stopped while it still owns the video surface (see PlayMedia), but off this thread.
-        var stopping = Task.Run(retiredPlayer.Stop);
-        var stopped = await Task.WhenAny(stopping, Task.Delay(2500)) == stopping;
-        _ = stopping.ContinueWith(_ =>
-        {
-            retiredPlayer.Dispose();
-            retiredVlc.Dispose();
-        }, TaskScheduler.Default);
-
         _viewModel.IsPlaying = false;
-        _pauseWhenStarted = !wasPlaying;
-        VideoView.MediaPlayer = _mediaPlayer;
-        StartPlayback(path, attemptsLeft: 20, startMs: resumeAt);
+        retired?.Close();
 
-        _viewModel.StatusText = stopped
-            ? $"Player reloaded at {_viewModel.PositionText}."
-            : $"Player reloaded at {_viewModel.PositionText}. The old player did not answer and was left behind.";
+        _pendingMedia = (path, resumeAt, !wasPlaying);
+        await EnsurePlayerAsync();
+        if (_mpv is not null)
+            _viewModel.StatusText = $"Player reloaded at {_viewModel.PositionText}.";
         _reloadingPlayer = false;
     }
 
-    /// <summary>
-    /// Starts playing only once the player has the window's video surface. Without one, LibVLC would
-    /// create its own top-level Direct3D window; so if the surface is not attached yet, this waits for it.
-    /// </summary>
-    /// <param name="startMs">Where to start playing from, for a reload; 0 for the beginning.</param>
-    private void StartPlayback(string path, int attemptsLeft, long startMs = 0)
+    // ----- Live Preview -----
+
+    /// <summary>A setting changed: the graph is rebuilt shortly, once the changes have stopped coming.</summary>
+    private void ScheduleLiveFilter()
     {
-        var player = _mediaPlayer;
-        if (player.Hwnd == IntPtr.Zero)
-        {
-            // Assigning again is what attaches the surface, once the video control has created it.
-            VideoView.MediaPlayer = null;
-            VideoView.MediaPlayer = player;
-        }
+        if (_mpv is null || !_viewModel.LivePreview)
+            return;
 
-        if (player.Hwnd == IntPtr.Zero)
-        {
-            if (attemptsLeft <= 0)
-            {
-                _viewModel.StatusText = "The video surface is not ready, so playback was not started.";
-                return;
-            }
+        _liveFilterTimer.Stop();
+        _liveFilterTimer.Start();
+    }
 
-            // The surface appears with the control's first layout; look again after the next one.
-            Dispatcher.BeginInvoke(() =>
-            {
-                if (ReferenceEquals(player, _mediaPlayer))
-                    StartPlayback(path, attemptsLeft - 1, startMs);
-            }, System.Windows.Threading.DispatcherPriority.Loaded);
+    private void ClearLiveFilter(MpvPlayer player)
+    {
+        _liveFilterTimer.Stop();
+        _failedLiveGraph = null;
+        if (_liveGraph.Length == 0)
+            return;
+
+        _liveGraph = "";
+        player.SetFilterGraph("");
+        player.SetFiltering(false);
+    }
+
+    /// <summary>
+    /// Hands mpv the filter graph for the settings as they are now, when it is not the one already running:
+    /// the export's graph while Live Preview is ticked, none while it is not.
+    /// </summary>
+    private void ApplyLiveFilter()
+    {
+        _liveFilterTimer.Stop();
+
+        // A file still being opened gets its graph when it is ready (see FileLoaded), not before.
+        if (_mpv is not { IsLoading: false } player || !_viewModel.HasSource)
+            return;
+
+        // Built for the player as large as it is on screen, in real pixels.
+        var dpi = VisualTreeHelper.GetDpi(this);
+
+        // While a rectangle is being drawn on the video (the crop, or an element's place in the source) the
+        // source itself is shown: what is drawn is a part of it, not of the finished frame.
+        var graph = _viewModel.LivePreview && CurrentOverlayMode == OverlayMode.None
+            ? _viewModel.BuildLiveFilterGraph(VideoView.ActualWidth * dpi.DpiScaleX, VideoView.ActualHeight * dpi.DpiScaleY)
+            : "";
+        if (graph == _liveGraph || (graph.Length > 0 && graph == _failedLiveGraph))
+            return;
+
+        // Filters work on frames in main memory, so decoding hands them over there while a graph is running.
+        if (graph.Length > 0)
+            player.SetFiltering(true);
+
+        _liveGraph = graph;
+        var problem = player.SetFilterGraph(graph);
+        if (graph.Length == 0)
+            player.SetFiltering(false);
+        if (problem is not null)
+            OnPlayerError($"lavfi-complex: {problem}");
+    }
+
+    /// <summary>
+    /// mpv logged an error. When it is about the filters, the graph is taken off again, so the source keeps
+    /// playing, and is not tried a second time until the settings have changed.
+    /// </summary>
+    private void OnPlayerError(string text)
+    {
+        AppLog.Write($"Player: {text}");
+        if (_mpv is not { } player || _liveGraph.Length == 0
+            || !(text.Contains("lavfi", StringComparison.OrdinalIgnoreCase) || text.Contains("filter", StringComparison.OrdinalIgnoreCase)))
+        {
             return;
         }
 
-        // The player keeps its own reference to the media, so this one can go as soon as playback has started.
-        using var media = new Media(_libVlc, path, FromType.FromPath);
-        if (startMs > 0)
-            media.AddOption(string.Create(System.Globalization.CultureInfo.InvariantCulture, $":start-time={startMs / 1000.0:0.###}"));
-        player.Play(media);
+        var refused = _liveGraph;
+        ClearLiveFilter(player);
+        _failedLiveGraph = refused;
+        _viewModel.StatusText = $"Live Preview could not run the filters as they are set, and shows the source instead ({text}).";
     }
 
     // ----- One audio track on its own -----
 
-    /// <summary>
-    /// Has the player play the track chosen on the Audio tab, or the first one when none is. LibVLC numbers
-    /// the tracks its own way; they are listed in the order of the file, after an entry for "no audio".
-    /// </summary>
-    private void ApplySoloTrack()
-    {
-        var tracks = _mediaPlayer.AudioTrackDescription.Where(t => t.Id >= 0).Select(t => t.Id).ToList();
-        var index = _viewModel.SoloTrack?.Index ?? 0;
-        if (index < tracks.Count && _mediaPlayer.AudioTrack != tracks[index])
-            _mediaPlayer.SetAudioTrack(tracks[index]);
-    }
+    /// <summary>Has the player play the track chosen on the Audio tab, or the first one when none is.</summary>
+    private void ApplySoloTrack() => _mpv?.SetAudioTrack(_viewModel.SoloTrack?.Index ?? 0);
 
     private void OnSoloTrackChanged()
     {
-        if (_mediaPlayer.Media is null)
+        if (_mpv is null || !_viewModel.HasSource)
             return;
 
         ApplySoloTrack();
 
         // The button is a play button: choosing a track starts it, and letting go of it pauses.
-        if (_viewModel.SoloTrack is not null && !_mediaPlayer.IsPlaying)
+        if (_viewModel.SoloTrack is not null && !PlayerIsPlaying)
             PlayPause_Click(this, new RoutedEventArgs());
-        else if (_viewModel.SoloTrack is null && _mediaPlayer.IsPlaying)
-            _mediaPlayer.SetPause(true);
+        else if (_viewModel.SoloTrack is null && PlayerIsPlaying)
+            PlayerSetPause(true);
     }
 
     // ----- Seeking from a waveform -----
@@ -544,23 +623,23 @@ public partial class MainWindow : Window
 
     private void PlayPause_Click(object sender, RoutedEventArgs e)
     {
-        if (_mediaPlayer.Media is null)
+        if (!_viewModel.HasSource)
         {
             _viewModel.LoadSourceCommand.Execute(null);
         }
-        else if (_mediaPlayer.State == VLCState.Ended)
+        else if (_mpv is not { } player)
         {
-            // An ended player has to be stopped before it will play again.
-            _mediaPlayer.Stop();
-            _mediaPlayer.Play();
+            _ = EnsurePlayerAsync();
         }
-        else if (_mediaPlayer.IsPlaying)
+        else if (player.IsEnded)
         {
-            _mediaPlayer.Pause();
+            // Held on the last frame: play starts again from the beginning.
+            player.Seek(0, exact: true);
+            player.SetPause(false);
         }
         else
         {
-            _mediaPlayer.Play();
+            player.SetPause(!player.IsPaused);
         }
     }
 
@@ -576,24 +655,24 @@ public partial class MainWindow : Window
 
         // Smart playback: the moment the player is outside every cut segment, it is sent on to the start of
         // the next one, so only what will be kept is played. After the last segment there is nothing to play.
-        if (!_mediaPlayer.IsPlaying)
+        if (!PlayerIsPlaying)
             return;
 
         var next = _viewModel.GetSegmentSkipTarget(timeMs, out var isPastLast);
         if (next is { } target)
         {
-            _mediaPlayer.Time = (long)target;
+            PlayerSeek((long)target);
         }
         else if (isPastLast)
         {
-            _mediaPlayer.SetPause(true);
+            PlayerSetPause(true);
             _viewModel.StatusText = "End of the last cut segment.";
         }
     }
 
     private void TimelineSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (_updatingFromPlayer || !_mediaPlayer.IsSeekable)
+        if (_updatingFromPlayer || _mpv is null)
             return;
 
         // Magnetism: while dragging, a thumb that comes close enough to a keyframe is pulled onto it.
@@ -614,12 +693,18 @@ public partial class MainWindow : Window
             }
         }
 
-        _mediaPlayer.Time = (long)e.NewValue;
+        // While the thumb is being dragged the player jumps from keyframe to keyframe, which it can do as
+        // fast as the pointer moves; the exact frame follows when the thumb is let go.
+        PlayerSeek((long)e.NewValue, exact: !_isScrubbing);
     }
 
     private void TimelineSlider_DragStarted(object sender, DragStartedEventArgs e) => _isScrubbing = true;
 
-    private void TimelineSlider_DragCompleted(object sender, DragCompletedEventArgs e) => _isScrubbing = false;
+    private void TimelineSlider_DragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        _isScrubbing = false;
+        PlayerSeek((long)TimelineSlider.Value);
+    }
 
     // Selecting a segment already seeks; this covers clicking the one that is selected.
     private void SegmentItem_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -653,10 +738,18 @@ public partial class MainWindow : Window
             RebuildFilmstrip();
 
         if (e.PropertyName == nameof(MainViewModel.Volume))
-            _mediaPlayer.Volume = _viewModel.Volume;
+            _mpv?.SetVolume(_viewModel.Volume);
 
         if (e.PropertyName == nameof(MainViewModel.PlaybackSpeed))
-            _mediaPlayer.SetRate(_viewModel.PlaybackRate);
+            _mpv?.SetSpeed(_viewModel.PlaybackRate);
+
+        if (e.PropertyName == nameof(MainViewModel.LivePreview))
+        {
+            ApplyLiveFilter();
+            _viewModel.StatusText = _viewModel.LivePreview
+                ? "Live Preview on: the player shows the picture with the export's filters applied."
+                : "Live Preview off: the player shows the source as it is.";
+        }
 
         if (e.PropertyName is nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetElement))
             UpdateOverlayMode();
@@ -875,8 +968,8 @@ public partial class MainWindow : Window
     private void JumpToKeyframe(int direction)
     {
         // Like stepping, jumping is for looking at a still picture.
-        if (_mediaPlayer.IsPlaying)
-            _mediaPlayer.SetPause(true);
+        if (PlayerIsPlaying)
+            PlayerSetPause(true);
 
         _viewModel.SeekToKeyframe(direction);
     }
@@ -884,8 +977,8 @@ public partial class MainWindow : Window
     private void StepFrames(int frames)
     {
         // Stepping only makes sense on a still picture.
-        if (_mediaPlayer.IsPlaying)
-            _mediaPlayer.SetPause(true);
+        if (PlayerIsPlaying)
+            PlayerSetPause(true);
 
         _viewModel.StepFrames(frames);
     }
@@ -981,6 +1074,7 @@ public partial class MainWindow : Window
         }
 
         CropCanvas.Visibility = mode == OverlayMode.None ? Visibility.Collapsed : Visibility.Visible;
+        ApplyLiveFilter();
 
 
         // Red for the crop, gold for a UI element, so it is clear what is being drawn.
@@ -1379,8 +1473,8 @@ public partial class MainWindow : Window
         }
 
         // The player would only keep running behind a dialog that shows a still frame.
-        if (_mediaPlayer.IsPlaying)
-            _mediaPlayer.SetPause(true);
+        if (PlayerIsPlaying)
+            PlayerSetPause(true);
 
         new FramePreviewDialog(_viewModel) { Owner = this }.ShowDialog();
     }

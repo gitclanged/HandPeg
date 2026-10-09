@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="HandPeg" Width="780" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <StackPanel Margin="20">
         <TextBlock Text="HandPeg" FontSize="26" FontWeight="SemiBold" />
         <TextBlock Text="Drop a video to get started, pick up where you left off, or open a video with one of your presets."

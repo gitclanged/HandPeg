@@ -9,9 +9,6 @@ namespace HandPegApp;
 /// </summary>
 public partial class App : Application
 {
-    /// <summary>What the launch window was asked to open, for the main window to take up once it is loaded. Null for nothing.</summary>
-    public static LaunchRequest? LaunchRequest { get; set; }
-
     protected override void OnStartup(StartupEventArgs e)
     {
         LogBindingErrors();
@@ -25,17 +22,6 @@ public partial class App : Application
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             new FirstRunWindow().ShowDialog();
-            ShutdownMode = ShutdownMode.OnMainWindowClose;
-        }
-
-        // The launch window, when it is switched on: also before the main window, which then opens what was chosen.
-        // Closing it without choosing anything is the same as asking for a blank project.
-        if (Services.AppSettings.Current is { FirstRunComplete: true, SplashPresetCount: > 0 })
-        {
-            ShutdownMode = ShutdownMode.OnExplicitShutdown;
-            var splash = new SplashWindow();
-            splash.ShowDialog();
-            LaunchRequest = splash.Request;
             ShutdownMode = ShutdownMode.OnMainWindowClose;
         }
 

@@ -1,34 +1,52 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Services;
 using Microsoft.Win32;
 
 namespace HandPegApp;
 
+/// <summary>One line of the Video Combinator's list: a video, its place in the order, and what is known about it.</summary>
+public sealed partial class CombinatorItem : ObservableObject
+{
+    public required string Path { get; init; }
+
+    public string FileName => System.IO.Path.GetFileName(Path);
+
+    /// <summary>What ffprobe said; null until it has, or when the file is not a video that can be read.</summary>
+    public MediaInfo? Info { get; set; }
+
+    [ObservableProperty] private string _number = "";
+    [ObservableProperty] private string _details = "Looking at the file...";
+
+    public bool IsUsable => Info?.Video is not null;
+}
+
 /// <summary>
-/// The Video Combinator: picks two videos, a frame size and a transition, and joins them with FFmpeg, either
+/// The Video Combinator: a list of up to five videos, a frame size and a transition, joined with FFmpeg either
 /// into a file the user names or into a temporary one that is then loaded into the editor.
 /// </summary>
 public partial class CombinatorDialog : Window
 {
     private const string VideoFilter = "Video files|*.mp4;*.mkv;*.mov;*.avi;*.webm;*.m4v;*.ts;*.m2ts;*.wmv;*.flv;*.mpg;*.mpeg|All files|*.*";
 
-    private MediaInfo? _infoA;
-    private MediaInfo? _infoB;
-    private CancellationTokenSource? _probeCancellation;
+    private readonly ObservableCollection<CombinatorItem> _items = [];
+    private readonly CancellationTokenSource _closing = new();
     private CancellationTokenSource? _runCancellation;
 
     public CombinatorDialog()
     {
         InitializeComponent();
+        FileList.ItemsSource = _items;
         ResolutionBox.ItemsSource = VideoCombinator.Resolutions;
         ResolutionBox.SelectedIndex = 0;
         TransitionBox.ItemsSource = VideoCombinator.Transitions;
         TransitionBox.SelectedIndex = 0;
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
-        UpdateSummary();
+        Refresh();
     }
 
     /// <summary>Set when Send to Editor has finished: the joined video, for the main window to load.</summary>
@@ -36,116 +54,169 @@ public partial class CombinatorDialog : Window
 
     private bool IsRunning => _runCancellation is not null;
 
-    // ----- Choosing the videos -----
+    private bool IsReady => _items.Count >= 2 && _items.All(i => i.IsUsable);
 
-    private void Browse_Click(object sender, RoutedEventArgs e)
+    // ----- The list -----
+
+    private void Add_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: TextBox target })
-            return;
-
-        var dialog = new OpenFileDialog { Title = "Select a video", Filter = VideoFilter };
+        var dialog = new OpenFileDialog { Title = "Select the videos to combine", Filter = VideoFilter, Multiselect = true };
         if (dialog.ShowDialog(this) == true)
-            target.Text = dialog.FileName;
+            AddFiles(dialog.FileNames.OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
     }
 
-    // A text box takes text drops by itself and refuses files, so files are let through here.
-    private void PathBox_PreviewDragOver(object sender, DragEventArgs e)
+    private void FileList_DragOver(object sender, DragEventArgs e)
     {
-        if (e.Data.GetDataPresent(DataFormats.FileDrop))
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) && !IsRunning ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void FileList_Drop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        if (!IsRunning && e.Data.GetData(DataFormats.FileDrop) is string[] files)
+            AddFiles(files.Where(File.Exists).OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Adds files to the end of the list, as far as there is room, and has each one looked at.</summary>
+    private void AddFiles(IEnumerable<string> files)
+    {
+        var left = 0;
+        foreach (var file in files)
         {
-            e.Effects = DragDropEffects.Copy;
-            e.Handled = true;
+            if (_items.Count >= VideoCombinator.MaxInputs)
+            {
+                left++;
+                continue;
+            }
+
+            var item = new CombinatorItem { Path = file };
+            _items.Add(item);
+            _ = InspectAsync(item);
         }
+
+        Refresh();
+        if (left > 0)
+            ShowStatus($"The list holds {VideoCombinator.MaxInputs} videos: {left} more {(left == 1 ? "was" : "were")} left out.", isProblem: true);
+        else if (!IsRunning)
+            StatusText.Text = "";
     }
 
-    private void PathBox_Drop(object sender, DragEventArgs e)
+    private async Task InspectAsync(CombinatorItem item)
     {
-        if (sender is TextBox box && e.Data.GetData(DataFormats.FileDrop) is string[] { Length: > 0 } files)
-        {
-            box.Text = files[0];
-            e.Handled = true;
-        }
-    }
-
-    private void PathBox_TextChanged(object sender, TextChangedEventArgs e) => _ = InspectAsync();
-
-    private void Choice_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateSummary();
-
-    private static string Clean(string path) => path.Trim().Trim('"');
-
-    /// <summary>Looks at both files, so the summary can say what will come out and the buttons know whether to work.</summary>
-    private async Task InspectAsync()
-    {
-        _probeCancellation?.Cancel();
-        var cancellation = _probeCancellation = new CancellationTokenSource();
         try
         {
-            var (a, b) = (await ProbeAsync(Clean(PathABox.Text), cancellation.Token), await ProbeAsync(Clean(PathBBox.Text), cancellation.Token));
-            if (cancellation.IsCancellationRequested)
-                return;
-
-            (_infoA, _infoB) = (a, b);
-            InfoAText.Text = Describe(Clean(PathABox.Text), a);
-            InfoBText.Text = Describe(Clean(PathBBox.Text), b);
-            UpdateSummary();
+            item.Info = File.Exists(item.Path) ? await MediaProbe.ProbeAsync(item.Path, _closing.Token) : null;
         }
         catch (OperationCanceledException)
         {
+            return;
         }
+
+        item.Details = !File.Exists(item.Path) ? "File not found."
+            : item.Info?.Video is not { } video
+                ? (File.Exists(DependencyUpdater.FfprobePath) ? "Not a video that can be read." : "FFmpeg is not installed: install it from Settings first.")
+            : $"{video.Width} x {video.Height}, {video.FrameRate:0.##} fps, {Models.TimeDisplay.Format(item.Info.DurationSeconds)}, "
+              + item.Info.Audio.Count switch { 0 => "no sound", 1 => "1 audio track", var count => $"{count} audio tracks" };
+        Refresh();
     }
 
-    private static async Task<MediaInfo?> ProbeAsync(string path, CancellationToken cancellationToken) =>
-        path.Length > 0 && File.Exists(path) ? await MediaProbe.ProbeAsync(path, cancellationToken) : null;
-
-    private static string Describe(string path, MediaInfo? info)
+    private void Remove_Click(object sender, RoutedEventArgs e)
     {
-        if (path.Length == 0)
-            return "";
-        if (!File.Exists(path))
-            return "File not found.";
-        if (info?.Video is not { } video)
-            return File.Exists(DependencyUpdater.FfprobePath) ? "Not a video that can be read." : "FFmpeg is not installed: install it from Settings first.";
+        if (FileList.SelectedItem is not CombinatorItem item)
+            return;
 
-        return $"{video.Width} x {video.Height}, {video.FrameRate:0.##} fps, {Models.TimeDisplay.Format(info.DurationSeconds)}"
-               + (info.Audio.Count == 0 ? ", no sound" : "");
+        var index = _items.IndexOf(item);
+        _items.Remove(item);
+        FileList.SelectedIndex = Math.Min(index, _items.Count - 1);
+        Refresh();
     }
 
-    private bool IsReady => _infoA?.Video is not null && _infoB?.Video is not null;
+    private void MoveUp_Click(object sender, RoutedEventArgs e) => MoveSelected(-1);
 
-    private void UpdateSummary()
+    private void MoveDown_Click(object sender, RoutedEventArgs e) => MoveSelected(1);
+
+    private void MoveSelected(int by)
+    {
+        var index = FileList.SelectedIndex;
+        if (index < 0 || index + by < 0 || index + by >= _items.Count)
+            return;
+
+        _items.Move(index, index + by);
+        FileList.SelectedIndex = index + by;
+        Refresh();
+    }
+
+    private void Clear_Click(object sender, RoutedEventArgs e)
+    {
+        _items.Clear();
+        Refresh();
+    }
+
+    private void FileList_SelectionChanged(object sender, SelectionChangedEventArgs e) => Refresh();
+
+    private void Choice_SelectionChanged(object sender, SelectionChangedEventArgs e) => Refresh();
+
+    private List<CombinatorInput> Inputs => _items.Where(i => i.IsUsable).Select(i => new CombinatorInput(i.Path, i.Info!)).ToList();
+
+    /// <summary>Numbers the list, says what will come out, and sets which buttons can be pressed.</summary>
+    private void Refresh()
     {
         // Raised while the window is still being built.
         if (SummaryText is null || ResolutionBox.SelectedItem is not string resolution || TransitionBox.SelectedItem is not string transition)
             return;
 
+        for (var i = 0; i < _items.Count; i++)
+            _items[i].Number = $"{i + 1}.";
+
+        var selected = FileList.SelectedIndex;
+        AddButton.IsEnabled = _items.Count < VideoCombinator.MaxInputs;
+        RemoveButton.IsEnabled = selected >= 0;
+        UpButton.IsEnabled = selected > 0;
+        DownButton.IsEnabled = selected >= 0 && selected < _items.Count - 1;
+        ClearButton.IsEnabled = _items.Count > 0;
         if (!IsRunning)
             ExportButton.IsEnabled = SendButton.IsEnabled = IsReady;
 
-        if (_infoA is not { Video: not null } a || _infoB is not { Video: not null } b)
+        if (_items.Count < 2)
         {
-            SummaryText.Text = "Choose the two videos to join.";
+            SummaryText.Text = $"Add at least two videos (up to {VideoCombinator.MaxInputs}): with Add Videos, or by dropping files on the list.";
             return;
         }
 
-        var (width, height) = VideoCombinator.GetFrameSize(resolution, a, b);
-        var note = transition != VideoCombinator.HardSplice && !VideoCombinator.UsesTransition(a, b, transition)
-            ? " One of the videos is too short for a one-second transition, so they will be spliced."
+        if (!IsReady)
+        {
+            SummaryText.Text = _items.Any(i => i.Info is null && i.Details.StartsWith("Looking", StringComparison.Ordinal))
+                ? "Looking at the files..."
+                : "One of the files cannot be used: remove it to carry on.";
+            return;
+        }
+
+        var inputs = Inputs;
+        var (width, height) = VideoCombinator.GetFrameSize(resolution, inputs);
+        var tracks = VideoCombinator.GetAudioTrackCount(inputs);
+        var note = transition != VideoCombinator.HardSplice && !VideoCombinator.UsesTransition(inputs, transition)
+            ? " One of the videos is too short for one-second transitions, so they will be spliced."
             : "";
-        SummaryText.Text = $"Result: {width} x {height}, {Models.TimeDisplay.Format(VideoCombinator.GetOutputSeconds(a, b, transition))} long.{note}";
+        SummaryText.Text = $"Result: {inputs.Count} videos, {width} x {height}, {Models.TimeDisplay.Format(VideoCombinator.GetOutputSeconds(inputs, transition))} long, "
+                           + tracks switch { 0 => "no sound", 1 => "1 audio track", _ => $"{tracks} audio tracks" } + $".{note}";
     }
 
     // ----- Joining -----
 
     private async void Export_Click(object sender, RoutedEventArgs e)
     {
-        var pathA = Clean(PathABox.Text);
+        if (!IsReady)
+            return;
+
+        var first = _items[0].Path;
         var dialog = new SaveFileDialog
         {
             Title = "Save the combined video as",
             Filter = "MP4|*.mp4",
             DefaultExt = "mp4",
-            FileName = $"{Path.GetFileNameWithoutExtension(pathA)}_combined.mp4",
-            InitialDirectory = Path.GetDirectoryName(pathA) ?? "",
+            FileName = $"{Path.GetFileNameWithoutExtension(first)}_combined.mp4",
+            InitialDirectory = Path.GetDirectoryName(first) ?? "",
         };
         if (dialog.ShowDialog(this) != true)
             return;
@@ -157,8 +228,7 @@ public partial class CombinatorDialog : Window
     private async void Send_Click(object sender, RoutedEventArgs e)
     {
         // In the session's folder: a working file, which goes when HandPeg closes.
-        var folder = Path.Combine(SessionPaths.Root, "combined");
-        var output = Path.Combine(folder, $"combined_{DateTime.Now:yyyyMMdd_HHmmss}.mp4");
+        var output = Path.Combine(SessionPaths.Root, "combined", $"combined_{DateTime.Now:yyyyMMdd_HHmmss}.mp4");
         if (!await RunAsync(output))
             return;
 
@@ -169,16 +239,13 @@ public partial class CombinatorDialog : Window
     /// <summary>Runs the join. Returns whether the file was made; what went wrong otherwise is shown in the dialog.</summary>
     private async Task<bool> RunAsync(string outputPath)
     {
-        var (pathA, pathB) = (Clean(PathABox.Text), Clean(PathBBox.Text));
-        if (IsRunning || _infoA is not { Video: not null } a || _infoB is not { Video: not null } b
-            || ResolutionBox.SelectedItem is not string resolution || TransitionBox.SelectedItem is not string transition)
-        {
+        if (IsRunning || !IsReady || ResolutionBox.SelectedItem is not string resolution || TransitionBox.SelectedItem is not string transition)
             return false;
-        }
 
-        if (new[] { pathA, pathB }.Any(p => string.Equals(Path.GetFullPath(p), Path.GetFullPath(outputPath), StringComparison.OrdinalIgnoreCase)))
+        var inputs = Inputs;
+        if (inputs.Any(i => string.Equals(Path.GetFullPath(i.Path), Path.GetFullPath(outputPath), StringComparison.OrdinalIgnoreCase)))
         {
-            ShowStatus("The result cannot be saved over one of the two videos it is made from.", isProblem: true);
+            ShowStatus("The result cannot be saved over one of the videos it is made from.", isProblem: true);
             return false;
         }
 
@@ -187,7 +254,7 @@ public partial class CombinatorDialog : Window
         ShowStatus("Starting FFmpeg...", isProblem: false);
         Progress.IsIndeterminate = true;
 
-        var expected = TimeSpan.FromSeconds(Math.Max(VideoCombinator.GetOutputSeconds(a, b, transition), 0.1));
+        var expected = TimeSpan.FromSeconds(Math.Max(VideoCombinator.GetOutputSeconds(inputs, transition), 0.1));
         var progress = new Progress<FfmpegProgress>(report =>
         {
             if (!ReferenceEquals(_runCancellation, cancellation) || report.Position is not { } position)
@@ -201,8 +268,7 @@ public partial class CombinatorDialog : Window
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
-            await FfmpegRunner.RunAsync(VideoCombinator.BuildCommand(pathA, pathB, a, b, resolution, transition, outputPath), progress, cancellation.Token);
-            Progress.Value = 1;
+            await FfmpegRunner.RunAsync(VideoCombinator.BuildCommand(inputs, resolution, transition, outputPath), progress, cancellation.Token);
             return true;
         }
         catch (OperationCanceledException)
@@ -240,10 +306,10 @@ public partial class CombinatorDialog : Window
     private void SetRunning(bool running)
     {
         InputPanel.IsEnabled = !running;
-        ExportButton.IsEnabled = SendButton.IsEnabled = !running && IsReady;
         CloseButton.Content = running ? "Cancel" : "Close";
         if (!running)
             Progress.Value = 0;
+        ExportButton.IsEnabled = SendButton.IsEnabled = !running && IsReady;
     }
 
     private void ShowStatus(string text, bool isProblem)
@@ -264,7 +330,7 @@ public partial class CombinatorDialog : Window
     /// <summary>Closing the window in the middle of a join stops it: nothing is left running behind the main window.</summary>
     protected override void OnClosing(CancelEventArgs e)
     {
-        _probeCancellation?.Cancel();
+        _closing.Cancel();
         _runCancellation?.Cancel();
         base.OnClosing(e);
     }

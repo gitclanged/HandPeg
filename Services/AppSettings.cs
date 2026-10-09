@@ -163,6 +163,18 @@ public sealed class AppSettings
     /// </summary>
     public Dictionary<string, Models.PresetParts> PresetImportChoices { get; set; } = [];
 
+    /// <summary>
+    /// Live Preview: the player shows the picture with the export's filters applied as they are set.
+    /// Remembered from the box beside the playback controls.
+    /// </summary>
+    public bool LivePreview { get; set; }
+
+    /// <summary>
+    /// The graphics card decodes the video in the player, as well as drawing it. Off, the processor decodes:
+    /// for a driver that shows a green or garbled picture, or stutters.
+    /// </summary>
+    public bool PlayerHardwareAcceleration { get; set; } = true;
+
     // ----- Dead air -----
 
     /// <summary>Remove Dead Air: anything quieter than this, in decibels, counts as silence.</summary>
@@ -192,6 +204,15 @@ public sealed class AppSettings
     public bool StartWithChapterMarkers { get; set; } = true;
     public bool StartWithChaptersAtCuts { get; set; }
 
+    /// <summary>A new window starts with the Frame &amp; Layer Engine switched on.</summary>
+    public bool StartWithFrameEngine { get; set; }
+
+    /// <summary>
+    /// The video encoder a new window starts with, by its FFmpeg name (libx264, h264_nvenc...), as chosen in
+    /// the first-run window. Blank for the built-in default, Copy.
+    /// </summary>
+    public string DefaultVideoEncoder { get; set; } = "";
+
     /// <summary>Opens the Edit Layout pane by itself as soon as there is a layout to edit.</summary>
     public bool AutoOpenLayoutPane { get; set; }
 
@@ -220,6 +241,9 @@ public sealed class AppSettings
         StartWithChaptersAtCuts = editor;
         AutoOpenLayoutPane = editor;
         ShowTimelineThumbnails = editor;
+        StartWithFrameEngine = editor;
+        if (!editor)
+            DefaultVideoEncoder = "";
 
         if (editor)
         {

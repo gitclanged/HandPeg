@@ -21,9 +21,9 @@ public enum LaunchKind
 public sealed record LaunchRequest(LaunchKind Kind, string Path, string? PresetName = null, PresetParts Parts = PresetParts.All);
 
 /// <summary>
-/// The launch window, shown before the main window when it is switched on in the settings: a place to drop a
-/// video, a way back into a recent project, and the first few presets as drop targets. It only records what
-/// was asked for; the main window, once it is up, does the opening.
+/// The launch window, shown over the main window as it starts, when it is switched on in the settings: a place
+/// to drop a video, a way back into a recent project, and the first few presets as drop targets. It only
+/// records what was asked for; the main window, which owns it, does the opening once it has closed.
 /// </summary>
 public partial class SplashWindow : Window
 {

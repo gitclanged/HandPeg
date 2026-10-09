@@ -57,7 +57,7 @@ public partial class MainViewModel : ObservableObject
         nameof(DrawTargetElement), nameof(IsArrangeActive), nameof(SpriteSheetPath),
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
         nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloTrack),
-        nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth),
+        nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
     ];
 
 
@@ -111,7 +111,20 @@ public partial class MainViewModel : ObservableObject
 #pragma warning disable MVVMTK0034
         (_snapToKeyframes, _playOnlySegments) = (settings.StartWithSnapToKeyframes, settings.StartWithPlayOnlySegments);
         (_chapterMarkers, _chaptersAtCuts) = (settings.StartWithChapterMarkers, settings.StartWithChaptersAtCuts);
+        _frameEngine = settings.StartWithFrameEngine;
+
+        // The encoder chosen in the first-run window. A hardware one is only in the list once the probe
+        // has found it, so until then it waits; see ProbeHardwareEncodersAsync.
+        if (settings.DefaultVideoEncoder.Length > 0)
+        {
+            if (VideoEncoders.FirstOrDefault(e => e.Name == settings.DefaultVideoEncoder) is { } chosen)
+                _videoEncoder = chosen;
+            else
+                _pendingDefaultEncoder = settings.DefaultVideoEncoder;
+        }
 #pragma warning restore MVVMTK0034
+
+        UpdateEncoderPresets();
 
         InitializeQueue();
         ApplyDisplaySettings();
@@ -141,6 +154,9 @@ public partial class MainViewModel : ObservableObject
     }
 
     private readonly string _workFolder = SessionPaths.Root;
+
+    // The default encoder from the settings, while it is a hardware one the probe has not reported on yet.
+    private string? _pendingDefaultEncoder;
 
     /// <summary>Raised with a local file path when a source is ready to be played.</summary>
     public event Action<string>? MediaLoaded;
@@ -455,7 +471,22 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Keyframe timestamps of the loaded source in seconds, ascending. Filled in the background after a load.</summary>
     public List<double> Keyframes { get; private set; } = [];
 
+    /// <summary>Shown in the status bar. What the indexing came to is cleared again after ten seconds.</summary>
     [ObservableProperty] private string _keyframeStatusText = "";
+
+    private int _keyframeStatusVersion;
+
+    async partial void OnKeyframeStatusTextChanged(string value)
+    {
+        // "Indexing keyframes..." stays for as long as that takes; only its outcome is passing news.
+        var version = ++_keyframeStatusVersion;
+        if (value.Length == 0 || value.StartsWith("Indexing", StringComparison.Ordinal))
+            return;
+
+        await Task.Delay(TimeSpan.FromSeconds(10));
+        if (version == _keyframeStatusVersion)
+            KeyframeStatusText = "";
+    }
 
     [ObservableProperty] private CutSegment? _selectedSegment;
 
@@ -809,8 +840,11 @@ public partial class MainViewModel : ObservableObject
         if (run != _hardwareProbeRun)
             return;
 
-        // Rebuild the hardware part of the list, keeping the selection where it still exists.
-        var selected = VideoEncoder.Name;
+        // Rebuild the hardware part of the list, keeping the selection where it still exists. The first time
+        // round, a hardware encoder set as the default is selected, unless another was chosen in the meantime.
+        var untouched = VideoEncoder.Family is EncoderFamily.Copy || VideoEncoder == DefaultVideoEncoder;
+        var selected = _pendingDefaultEncoder is { } pending && untouched ? pending : VideoEncoder.Name;
+        _pendingDefaultEncoder = null;
         foreach (var stale in VideoEncoders.Where(e => e.IsHardware).ToList())
             VideoEncoders.Remove(stale);
         foreach (var name in supported)
@@ -1300,6 +1334,10 @@ public partial class MainViewModel : ObservableObject
         // The Properties tab follows the settings even while the command itself is frozen by a manual edit.
         UpdateProjectedOutput();
         OnPropertyChanged(nameof(CaptionHint));
+
+        // So does Live Preview, which shows the settings, not the command.
+        if (!_isBackgroundWorker)
+            LiveFilterInvalidated?.Invoke();
 
         if (IsCommandManuallyEdited)
             return;

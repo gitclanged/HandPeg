@@ -203,6 +203,87 @@ public partial class MainViewModel
         return string.Join(" ", args);
     }
 
+    // ----- Live Preview -----
+
+    /// <summary>Whether the player shows the picture with the export's filters applied. Bound to the box beside the playback controls, and remembered.</summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private bool _livePreview = AppSettings.Current.LivePreview;
+
+    /// <summary>Raised whenever a setting changed that may have changed what Live Preview should show.</summary>
+    public event Action? LiveFilterInvalidated;
+
+    partial void OnLivePreviewChanged(bool value)
+    {
+        if (AppSettings.Current.LivePreview == value)
+            return;
+
+        AppSettings.Current.LivePreview = value;
+        try
+        {
+            AppSettings.Current.SaveAsCurrent();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The choice still holds for this session.
+        }
+    }
+
+    /// <summary>
+    /// The filter graph Live Preview runs on the picture, for mpv's lavfi-complex: the same per-frame chain the
+    /// export uses (crop, the Frame &amp; Layer Engine, scaling, color, LUT), with burned-in subtitles, from the
+    /// video track to the screen. Empty when the export would not filter the picture at all (Copy), which
+    /// is then what the preview shows too.
+    ///
+    /// The cuts are not part of it: the preview stays on the source's own timeline, where Play only cut
+    /// segments does the skipping. Fades are placed by the length of the output and are left out, and
+    /// auto-captions are drawn only once they have been transcribed and while nothing is cut, which is when
+    /// their times are the source's.
+    /// </summary>
+    /// <param name="surfaceWidth">Width of the player on screen, in screen pixels: the picture is not built larger than it is shown.</param>
+    public string BuildLiveFilterGraph(double surfaceWidth, double surfaceHeight)
+    {
+        if (!HasSource || _mediaInfo is { Video: null } || (VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput))
+            return "";
+
+        // The whole graph is built for a frame the size the player shows, not the size of the export: a 4K
+        // layout watched in a 900-pixel player is composed at a quarter of its width and a sixteenth of the
+        // work. The scale goes in steps, so that resizing the window a little does not rebuild the graph.
+        var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
+        var shown = surfaceWidth > 0 && surfaceHeight > 0 ? Math.Min(surfaceWidth / frameWidth, surfaceHeight / frameHeight) : 1;
+        _liveScale = LiveScaleSteps.FirstOrDefault(step => step >= shown, 1);
+
+        _buildingLiveGraph = true;
+        try
+        {
+            var chain = BuildVideoFilters(labelSuffix: "");
+            chain.AddRange(BuildSubtitleBurnFilters(LocalMediaPath));
+            if (AutoCaptions && Segments.Count == 0 && File.Exists(CaptionsFilePath))
+                chain.Add(BuildCaptionOverlay(CaptionsFilePath));
+
+            return chain.Count == 0 ? "" : $"[vid1]{string.Join(",", chain)}[vo]";
+        }
+        finally
+        {
+            (_buildingLiveGraph, _liveScale) = (false, 1);
+        }
+    }
+
+    // What makes the live graph cheaper than the export's, while showing the same layers in the same places:
+    //   - everything is sized for the player (see above), sources being scaled down before anything is done to them;
+    //   - the blurred background is blurred at a quarter of that size and scaled back up, which a blur hides;
+    //   - an element's rounded or feathered outline is worked out once and reused, where the export works it
+    //     out again for every frame;
+    //   - a source faster than 30 frames a second is previewed at half its rate.
+    private static readonly double[] LiveScaleSteps = [0.25, 1 / 3.0, 0.5, 0.75, 1];
+
+    private bool _buildingLiveGraph;
+    private double _liveScale = 1;
+
+    /// <summary>A size in output pixels as the graph being built needs it: as it is for the export, scaled (and kept even) for Live Preview.</summary>
+    private int Sized(int pixels) => _liveScale >= 1 ? pixels : Math.Max((int)Math.Round(pixels * _liveScale / 2) * 2, 2);
+
+    /// <summary>A distance in output pixels, scaled the same way but not rounded to an even number.</summary>
+    private int Placed(int pixels) => _liveScale >= 1 ? pixels : (int)Math.Round(pixels * _liveScale);
+
     // ----- Render preview -----
 
     /// <summary>
@@ -462,6 +543,15 @@ public partial class MainViewModel
         if (Deinterlace)
             filters.Add("yadif");
 
+        // Live Preview: fewer frames from a fast source, and fewer pixels, before anything else is done to them.
+        if (_buildingLiveGraph)
+        {
+            if (SourceFrameRate > 40)
+                filters.Add($"fps={Number(SourceFrameRate / 2)}");
+            if (_liveScale < 1)
+                filters.Add($"scale=trunc(iw*{Number(_liveScale)}/2)*2:trunc(ih*{Number(_liveScale)}/2)*2:flags=fast_bilinear");
+        }
+
         // The crop is written as fractions of the input frame, so the same settings cut the same part out
         // of a source of any resolution. Width and height are kept even, as most encoders need.
         string? crop = null;
@@ -491,9 +581,9 @@ public partial class MainViewModel
             // A vertical size is not the source's shape, so both sides are spelled out; otherwise a side
             // left blank follows the other in the source's shape (-2).
             if (UseVerticalResolution && GetRequestedSize() is { } vertical)
-                filters.Add($"scale={vertical.Width}:{vertical.Height}");
+                filters.Add($"scale={Sized(vertical.Width)}:{Sized(vertical.Height)}");
             else if (hasWidth || hasHeight)
-                filters.Add($"scale={(hasWidth ? width : -2)}:{(hasHeight ? height : -2)}");
+                filters.Add($"scale={(hasWidth ? Sized(width) : -2)}:{(hasHeight ? Sized(height) : -2)}");
 
             if (GetSampleAspectRatio() is { } sampleAspectRatio)
                 filters.Add($"setsar={sampleAspectRatio}");
@@ -520,9 +610,10 @@ public partial class MainViewModel
     /// </summary>
     private string BuildFrameEngine(string? centerCrop, string s)
     {
-        var (width, height) = (FrameWidth, FrameHeight);
+        var (width, height) = (Sized(FrameWidth), Sized(FrameHeight));
         var elements = UiElements.Where(e => e.IsUsable).ToList();
-        var center = GetCenterRect();
+        var full = GetCenterRect();
+        var center = (X: Placed(full.X), Y: Placed(full.Y), Width: Sized(full.Width), Height: Sized(full.Height));
 
         // A sharp video that fills the whole frame hides the background completely, so none is made.
         var needsBackground = center.X > 0 || center.Y > 0 || center.X + center.Width < width || center.Y + center.Height < height;
@@ -549,9 +640,21 @@ public partial class MainViewModel
         if (needsBackground)
         {
             // The blur radius cannot exceed half the smaller side of the colour planes, which are half size.
-            var radius = Math.Min(Math.Clamp(BlurRadius, 5, 50), Math.Max(Math.Min(width, height) / 4 - 1, 1));
-            graph.Append($"[bg_in{s}]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
-                         + $"boxblur={radius}:{Math.Clamp(BlurPasses, 1, 5)},eq=brightness={Number(Math.Clamp(BackgroundDim, -0.5, 0))}[bg_layer{s}]");
+            if (_buildingLiveGraph)
+            {
+                // Blurred small and scaled back up: the blur hides the difference, and it is a sixteenth of the work.
+                var (smallWidth, smallHeight) = (Math.Max(width / 8 * 2, 16), Math.Max(height / 8 * 2, 16));
+                var smallRadius = Math.Clamp((int)Math.Round(Math.Clamp(BlurRadius, 5, 50) * _liveScale / 4), 1, Math.Max(Math.Min(smallWidth, smallHeight) / 4 - 1, 1));
+                graph.Append($"[bg_in{s}]scale={smallWidth}:{smallHeight}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop={smallWidth}:{smallHeight},"
+                             + $"boxblur={smallRadius}:{Math.Clamp(BlurPasses, 1, 5)},eq=brightness={Number(Math.Clamp(BackgroundDim, -0.5, 0))},"
+                             + $"scale={width}:{height}:flags=bilinear[bg_layer{s}]");
+            }
+            else
+            {
+                var radius = Math.Min(Math.Clamp(BlurRadius, 5, 50), Math.Max(Math.Min(width, height) / 4 - 1, 1));
+                graph.Append($"[bg_in{s}]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
+                             + $"boxblur={radius}:{Math.Clamp(BlurPasses, 1, 5)},eq=brightness={Number(Math.Clamp(BackgroundDim, -0.5, 0))}[bg_layer{s}]");
+            }
             graph.Append($";[center_in{s}]{centerChain}[center_layer{s}]");
             graph.Append($";[bg_layer{s}][center_layer{s}]overlay={center.X}:{center.Y}");
         }
@@ -568,12 +671,12 @@ public partial class MainViewModel
             var element = elements[n - 1];
             var (x, y, elementWidth, elementHeight) = element.GetOutputRect(width, height, SourceWidth, SourceHeight);
             graph.Append($"[stage{n}{s}];");
-            graph.Append(BuildElementLayer(element, $"ui{n}", s, elementWidth, elementHeight));
+            graph.Append(BuildElementLayer(element, $"ui{n}", s, elementWidth, elementHeight, _liveScale, _buildingLiveGraph));
 
             if (element.Shadow)
             {
                 // The shadow is the element's own outline in black at reduced opacity, laid down first and offset.
-                var offset = Math.Clamp(element.ShadowOffset, 0, 200);
+                var offset = Placed(Math.Clamp(element.ShadowOffset, 0, 200));
                 graph.Append($";[ui{n}_layer{s}]split[ui{n}_top{s}][ui{n}_shadow_in{s}]");
                 graph.Append($";[ui{n}_shadow_in{s}]format=yuva420p,lutyuv=y=16:u=128:v=128:a=val*{Number(Math.Clamp(element.ShadowOpacity, 0, 1))},"
                              + $"boxblur=2:1:0:0:2:1[ui{n}_shadow{s}]");
@@ -594,9 +697,14 @@ public partial class MainViewModel
     /// file, scaled, then given its transparency. Rounded corners and soft edges are an alpha mask worked
     /// out per pixel by geq; opacity scales whatever alpha results.
     /// </summary>
-    private static string BuildElementLayer(OverlayRegion element, string name, string s, int width, int height)
+    /// <param name="pixelScale">What sizes given in output pixels (the feather) are multiplied by: less than 1 for Live Preview.</param>
+    /// <param name="reuseMask">
+    /// Live Preview: the outline of a piece of video is drawn once and held, instead of being worked out for
+    /// every frame as the export does. The outline does not change from frame to frame, so the picture is the same.
+    /// </param>
+    private static string BuildElementLayer(OverlayRegion element, string name, string s, int width, int height, double pixelScale = 1, bool reuseMask = false)
     {
-        var mask = BuildElementMask(element, width, height);
+        var mask = BuildElementMask(element, width, height, pixelScale);
         var opacity = Math.Clamp(element.Opacity, 0, 100) / 100.0;
         var chain = new StringBuilder();
 
@@ -619,7 +727,14 @@ public partial class MainViewModel
         chain.Append($"[{name}_in{s}]crop=trunc(iw*{Fraction(element.SourceWidth)}/2)*2:trunc(ih*{Fraction(element.SourceHeight)}/2)*2:"
                      + $"iw*{Fraction(element.SourceX)}:ih*{Fraction(element.SourceY)},scale={width}:{height}");
 
-        if (mask is not null)
+        if (mask is not null && reuseMask)
+        {
+            // One grey picture, white where the element is to show, made once and repeated for as long as the video runs.
+            chain.Append($",format=yuva420p[{name}_pic{s}]");
+            chain.Append($";color=c=black:s={width}x{height}:r=1,format=gray,geq=lum='255*{mask}',trim=end_frame=1,loop=loop=-1:size=1[{name}_mask{s}]");
+            chain.Append($";[{name}_pic{s}][{name}_mask{s}]alphamerge");
+        }
+        else if (mask is not null)
         {
             // A grey picture the size of the element, white where it is to show, merged in as its alpha channel.
             // It is drawn from a copy of the element itself, so the two always arrive frame for frame.
@@ -645,11 +760,11 @@ public partial class MainViewModel
     /// It measures how far a pixel is inside a rounded rectangle: zero on the edge, rising inwards. Rounded
     /// corners cut the picture off at that edge; a feather lets it fade in over its width instead.
     /// </summary>
-    private static string? BuildElementMask(OverlayRegion element, int width, int height)
+    private static string? BuildElementMask(OverlayRegion element, int width, int height, double pixelScale = 1)
     {
         var limit = Math.Max(Math.Min(width, height) / 2 - 1, 1);
         var corner = Math.Min((int)Math.Round(Math.Clamp(element.CornerRadius, 0, 50) / 100.0 * Math.Min(width, height)), limit);
-        var feather = element.Feather ? Math.Clamp(element.FeatherRadius, 1, limit) : 0;
+        var feather = element.Feather ? Math.Clamp((int)Math.Round(element.FeatherRadius * pixelScale), 1, limit) : 0;
         if (corner == 0 && feather == 0)
             return null;
 
