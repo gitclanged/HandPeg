@@ -162,7 +162,11 @@ public sealed class MpvPlayer
                      ("config", "no"), ("terminal", "no"), ("osc", "no"), ("osd-level", "0"),
                      ("input-default-bindings", "no"), ("input-vo-keyboard", "no"), ("input-cursor", "no"), ("cursor-autohide", "no"),
                      ("idle", "yes"), ("force-window", "yes"), ("keep-open", "yes"), ("pause", "yes"),
-                     ("vo", "gpu"), ("gpu-api", "d3d11"), ("hwdec", player.DecodingMode),
+
+                     // gpu-next: the renderer built on libplacebo, which keeps its compiled shaders between runs.
+                     // The older one is named after it, for a libmpv that was built without.
+                     ("vo", "gpu-next,gpu"), ("gpu-api", "d3d11"), ("hwdec", player.DecodingMode),
+                     ("gpu-shader-cache", "yes"),
                      ("hr-seek", "yes"), ("audio-display", "no"), ("sub-auto", "no"), ("sid", "no"),
 
                      // The cheap way of putting the picture on screen: it is a preview, and the filters want the processor.

@@ -135,7 +135,7 @@
                         <CheckBox Content="Chapters at cut points" IsChecked="{Binding StartWithChaptersAtCuts}" Margin="0,2,24,2" />
                         <CheckBox Content="Auto-captions controls on the Subtitles tab" IsChecked="{Binding ShowAutoCaptions}" Margin="0,2,24,2" />
                         <CheckBox Content="Open the layout pane by itself" IsChecked="{Binding AutoOpenLayoutPane}" Margin="0,2,24,2"
-                                  ToolTip="Opens the Edit Layout pane beside the player as soon as there is a layout to edit." />
+                                  ToolTip="Opens the Layout Pane beside the player as soon as there is a layout to edit." />
                         <CheckBox Content="Live Preview" IsChecked="{Binding LivePreview}" Margin="0,2,24,2" />
                     </WrapPanel>
 
@@ -163,6 +163,12 @@
                     <TextBlock Text="Appearance and layout" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Use GPU acceleration in the video player" IsChecked="{Binding PlayerHardwareAcceleration}"
                               ToolTip="The graphics card decodes the video as well as drawing it (Direct3D 11), which keeps high-resolution and high-frame-rate footage smooth and the processor free. With Live Preview on, the card still decodes and each frame is handed to the filters. Turn this off if the picture is green, garbled or stutters: the processor then decodes. Applied when you press Save." />
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,4">
+                        <TextBlock Text="Hardware Decode Adapter:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DecodeAdapterBox" MinWidth="300" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Index"
+                                  SelectedValue="{Binding HardwareDecodeAdapter}" AutomationProperties.Name="Hardware Decode Adapter"
+                                  ToolTip="Which graphics card decodes the video for an encode, when Enable Hardware Decoding is ticked on the Video tab. Automatic leaves it to FFmpeg (-hwaccel auto). Choosing a card names it to FFmpeg (-hwaccel d3d11va -hwaccel_device and its number), so that a second card can take the decoding while the first one encodes or runs a game." />
+                    </StackPanel>
                     <CheckBox Content="Show Command Preview Tab" IsChecked="{Binding ShowCommandPreviewTab}"
                               ToolTip="Adds a tab showing the FFmpeg command that will run, which can also be edited by hand." />
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,4">

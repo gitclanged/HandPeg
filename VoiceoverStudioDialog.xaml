@@ -19,7 +19,7 @@
     <!-- Bound straight to the main window's settings: the voiceover made here is part of the next encode. -->
     <StackPanel Margin="16">
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
-                   Text="Record a voiceover while the video plays in the main window, or bring one in from a file. It is added to the encode as a second input and mixed into the first audio track, after any cuts." />
+                   Text="{Binding VoiceoverIntro}" />
 
         <Grid>
             <Grid.ColumnDefinitions>

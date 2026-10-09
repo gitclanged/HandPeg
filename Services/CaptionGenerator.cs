@@ -180,11 +180,10 @@ public static partial class CaptionGenerator
 
         try
         {
-            var result = await Cli.Wrap(path)
+            var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(path)
                 .WithArguments(["--help"])
                 .WithWorkingDirectory(Path.GetDirectoryName(path) ?? DependencyUpdater.ToolFolder(DependencyUpdater.Whisper))
-                .WithValidation(CommandResultValidation.None)
-                .ExecuteBufferedAsync(cancellationToken);
+                .WithValidation(CommandResultValidation.None), cancellationToken);
             var supported = (result.StandardOutput + result.StandardError).Contains("--vad-model", StringComparison.Ordinal);
             _vadSupport = (program, supported);
             return supported;

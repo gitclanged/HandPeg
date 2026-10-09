@@ -7,6 +7,12 @@ namespace HandPegApp.Models;
 public sealed record MainPiece(double Start, double Duration, double Offset);
 
 /// <summary>
+/// One clip of the main video as it lies on the sequence: where it starts and ends there, and how far into the
+/// file it begins, all in seconds. Index 0 is the row's own clip; the others follow in the order they were made.
+/// </summary>
+public readonly record struct MainClip(int Index, double Start, double End, double Offset);
+
+/// <summary>
 /// A clip that was deleted from the timeline and waits in the recycle bin: a layer's clip as it was (with
 /// its place in the list), or a clip of the main video.
 /// </summary>

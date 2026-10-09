@@ -41,6 +41,9 @@ public static class AppPaths
     /// <summary>Mask pictures: the ones that arrive inside style presets, and the ones made for the HUD layers.</summary>
     public static string Masks { get; } = Path.Combine(UserRoot, "Masks");
 
+    /// <summary>Voiceovers recorded onto the timeline: kept, because the projects that use them are.</summary>
+    public static string Voiceovers { get; } = Path.Combine(UserRoot, "Voiceovers");
+
     /// <summary>The settings and the encoding presets.</summary>
     public static string Settings { get; } = SingleRoot is null
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), AppName)

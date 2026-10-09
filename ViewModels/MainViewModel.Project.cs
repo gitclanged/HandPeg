@@ -344,7 +344,7 @@ public partial class MainViewModel
         Checkpoint("add a segment");
         InsertSegment(segment);
         PendingStartMs = null;
-        StatusText = $"Added segment {segment.Display}";
+        Log($"Added segment {segment.Display}");
         return null;
     }
 

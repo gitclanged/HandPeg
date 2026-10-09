@@ -252,11 +252,10 @@ public static partial class DependencyUpdater
         BufferedCommandResult result;
         try
         {
-            result = await Cli.Wrap(Path.Combine(folder, program))
+            result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(Path.Combine(folder, program))
                 .WithArguments(argument)
                 .WithWorkingDirectory(folder)
-                .WithValidation(CommandResultValidation.None)
-                .ExecuteBufferedAsync(timeout.Token);
+                .WithValidation(CommandResultValidation.None), timeout.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

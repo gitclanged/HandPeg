@@ -214,7 +214,12 @@ public partial class MainViewModel
             LayerRows.Add(track[0]);
         LayerRows.Add(_backgroundRow);
 
+        // A video layer that has sound is a sound on the timeline too: it gets a row of its own on the Audio
+        // tab, which is the layer itself seen as its sound. So the sound is where the picture is, as long as
+        // the picture is, and goes where the picture goes; there is nothing to keep in step.
         AudioClipRows.Clear();
+        foreach (var track in Layers.Where(l => l is { IsVideoFile: true, HasAudio: true }).GroupBy(l => l.TrackId))
+            AudioClipRows.Add(track.First());
         foreach (var track in Layers.Where(l => l.IsAudio).GroupBy(l => l.TrackId))
             AudioClipRows.Add(track.First());
         OnPropertyChanged(nameof(HasAudioClips));
@@ -229,9 +234,32 @@ public partial class MainViewModel
     /// </summary>
     public ObservableCollection<object> AudioRows { get; } = [];
 
+    /// <summary>
+    /// Hide Dropped Tracks: the Audio tab lists only the sounds that go into the output. A track of the video
+    /// set to Ignore / Drop, and a clip that is muted, are still there; they are just not shown.
+    /// </summary>
+    [ObservableProperty] private bool _hideDroppedTracks;
+
+    partial void OnHideDroppedTracksChanged(bool value)
+    {
+        RefreshAudioRows();
+        var hidden = AudioTracks.Count + AudioClipRows.Count - AudioRows.Count;
+        StatusText = !value ? "Showing every audio track."
+            : hidden == 0 ? "Dropped and muted audio tracks are hidden. There are none right now."
+            : $"Hiding {hidden} dropped or muted audio track{(hidden == 1 ? "" : "s")}. Press the button again to show {(hidden == 1 ? "it" : "them")}.";
+    }
+
+    /// <summary>Whether a sound's row is listed: always, unless dropped sounds are hidden and it is one.</summary>
+    private bool IsAudioRowShown(object row) => !HideDroppedTracks || row switch
+    {
+        AudioTrack track => !track.IsDropped,
+        Layer layer => layer.Action != AudioTrack.Drop,
+        _ => true,
+    };
+
     private void RefreshAudioRows()
     {
-        var rows = AudioTracks.Cast<object>().Concat(AudioClipRows).ToList();
+        var rows = AudioTracks.Cast<object>().Concat(AudioClipRows).Where(IsAudioRowShown).ToList();
         if (rows.SequenceEqual(AudioRows))
             return;
 
@@ -369,6 +397,10 @@ public partial class MainViewModel
             return;
         }
 
+        // Where on the timeline the take begins: it is put there when it is finished.
+        if (!resuming)
+            _recordingStartSeconds = Math.Max(PositionMs / 1000, 0);
+
         (IsRecording, IsRecordingPaused) = (true, false);
         VoiceoverStatus = resuming ? $"Recording again from {SelectedMicrophone}..." : $"Recording from {SelectedMicrophone}...";
     }
@@ -400,14 +432,81 @@ public partial class MainViewModel
         }
 
         (IsRecording, IsRecordingPaused) = (false, false);
-        if (recorded)
+        if (recorded && PlacesVoiceoverOnTimeline)
+            await PlaceRecordingAsync();
+        else if (recorded)
             await LoadVoiceoverAsync(RecordingPath, "Recorded");
         else if (!VoiceoverStatus.StartsWith("The recording", StringComparison.Ordinal))
             VoiceoverStatus = "Nothing was recorded. Check that the microphone is not in use by another program.";
     }
 
-    /// <summary>Takes an existing audio file as the voiceover, instead of recording one.</summary>
-    public Task ImportVoiceoverAsync(string path) => LoadVoiceoverAsync(path, "Loaded");
+    // Where the playhead was when the take that is being recorded was begun, in seconds.
+    private double _recordingStartSeconds;
+
+    /// <summary>
+    /// In Editor Mode a voiceover is a clip like any other sound: once recorded it goes straight onto the
+    /// timeline, where it is moved, trimmed, split and ducked against as the rest are. Encoder Mode has no
+    /// timeline to put it on, and keeps the one voiceover it mixes in.
+    /// </summary>
+    public bool PlacesVoiceoverOnTimeline => IsEditorMode && HasSource;
+
+    /// <summary>What the Voiceover Studio says about itself, which differs with where the recording goes.</summary>
+    public string VoiceoverIntro => PlacesVoiceoverOnTimeline
+        ? "Record a voiceover while the video plays in the main window. When you press Stop it goes onto the timeline as an audio clip of its own, starting where the playhead was when you pressed Record. It is marked as a voice, so sounds set to Auto-Duck make room for it; move, trim, split or delete it on the Audio tab like any other sound."
+        : "Record a voiceover while the video plays in the main window, or bring one in from a file. It is added to the encode as a second input and mixed into the first audio track, after any cuts.";
+
+    /// <summary>
+    /// Makes the take that was just recorded an audio clip on the timeline, at the moment recording began. The
+    /// recording is first given a file of its own in the Voiceovers folder: the next take would otherwise
+    /// write over it, and a project that is saved has to find it again.
+    /// </summary>
+    private async Task PlaceRecordingAsync()
+    {
+        string kept;
+        try
+        {
+            Directory.CreateDirectory(AppPaths.Voiceovers);
+            kept = Path.Combine(AppPaths.Voiceovers, $"Voiceover {DateTime.Now:yyyy-MM-dd HH.mm.ss}.wav");
+            File.Copy(RecordingPath, kept, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            VoiceoverStatus = $"The recording could not be saved to {AppPaths.Voiceovers}: {ex.Message}";
+            return;
+        }
+
+        var at = _recordingStartSeconds;
+        var name = $"Voiceover {Layers.Count(l => l.IsAudio && l.IsVoice) + 1}";
+        if (!await AddAudioLayerAsync(kept, at, isVoice: true, name: name))
+        {
+            VoiceoverStatus = "Nothing was recorded. Check that the microphone is not in use by another program.";
+            return;
+        }
+
+        VoiceoverStatus = $"{name} is on the timeline at {TimeDisplay.Format(at)}, as an audio clip of its own (Audio tab). Press Record for another take; Ctrl+Z takes this one off again.";
+        Log($"Added {name} at {TimeDisplay.Format(at)}");
+    }
+
+    /// <summary>Takes an existing audio file as the voiceover, instead of recording one: in Editor Mode, as a clip at the playhead.</summary>
+    public async Task ImportVoiceoverAsync(string path)
+    {
+        if (!PlacesVoiceoverOnTimeline)
+        {
+            await LoadVoiceoverAsync(path, "Loaded");
+            return;
+        }
+
+        var at = Math.Max(PositionMs / 1000, 0);
+        if (await AddAudioLayerAsync(path, at, isVoice: true))
+        {
+            VoiceoverStatus = $"{Path.GetFileName(path)} is on the timeline at {TimeDisplay.Format(at)}, as an audio clip marked as a voice.";
+            Log($"Added voiceover {Path.GetFileName(path)} at {TimeDisplay.Format(at)}");
+        }
+        else
+        {
+            VoiceoverStatus = "That file has no audio that can be read.";
+        }
+    }
 
     [RelayCommand]
     private void RemoveVoiceover()

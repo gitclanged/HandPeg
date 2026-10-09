@@ -88,7 +88,7 @@ public partial class MainViewModel
                 Directory.CreateDirectory(QueueFolder);
                 var copy = Path.Combine(QueueFolder, $"captions_{Guid.NewGuid():N}.ass");
                 File.Copy(CaptionsFilePath, copy);
-                command = command.Replace(BuildCaptionFilter(CaptionsFilePath), BuildCaptionFilter(copy), StringComparison.OrdinalIgnoreCase);
+                command = command.Replace(FilterGraphBuilder.CaptionFilter(CaptionsFilePath), FilterGraphBuilder.CaptionFilter(copy), StringComparison.OrdinalIgnoreCase);
             }
 
             // The voiceover too: the next recording would otherwise replace it under the job.

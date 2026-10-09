@@ -23,11 +23,6 @@ public partial class MainViewModel : ObservableObject
     private const string ConstantBitrate = "Constant Bitrate (CBR)";
     private const string TonemapToSdr = "HDR to SDR (Tonemap)";
 
-    // Converts HDR (PQ or HLG, BT.2020) to SDR BT.709: linearize, map the primaries, compress
-    // the highlights with the Hable curve, then go back to 8-bit 4:2:0 for the encoder.
-    private const string TonemapFilters =
-        "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
-
     // Properties that have no influence on the generated FFmpeg command.
     private static readonly HashSet<string> NonCommandProperties =
     [
@@ -63,6 +58,7 @@ public partial class MainViewModel : ObservableObject
         nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName),
         nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
         nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
+        nameof(RecentActions), nameof(HideDroppedTracks), nameof(HasSelectedKeyframe), nameof(SelectedKeyEasing), nameof(PreviewSubtitles),
     ];
 
 
@@ -115,6 +111,9 @@ public partial class MainViewModel : ObservableObject
         var settings = AppSettings.Current;
 #pragma warning disable MVVMTK0034
         (_snapToIFrames, _playOnlySegments) = (settings.StartWithSnapToIFrames, settings.StartWithPlayOnlySegments);
+
+        // Editor Mode mixes the tracks it is given into one, which is what an edit is exported as.
+        _mergeAudioTracks = settings.UiMode == AppSettings.EditorMode;
         (_chapterMarkers, _chaptersAtCuts) = (settings.StartWithChapterMarkers, settings.StartWithChaptersAtCuts);
         // In Editor Mode the Layer Engine is simply how the picture is composed; there is nothing to switch on.
         _frameEngine = settings.StartWithFrameEngine || settings.UiMode == AppSettings.EditorMode;
@@ -146,6 +145,13 @@ public partial class MainViewModel : ObservableObject
         Presets.CollectionChanged += (_, _) => RefreshPresetNames();
         AudioTracks.CollectionChanged += (_, _) => KeepCaptionTrackValid();
         CaptionLayer.PropertyChanged += (_, _) => GenerateCommand();
+
+        // The caption file is written for the box as large as it is: a preview of it follows the box being resized.
+        CaptionLayer.PropertyChanged += (_, e) =>
+        {
+            if (PreviewSubtitles && e.PropertyName is nameof(Layer.SizeWidth) or nameof(Layer.SizeHeight))
+                RefreshLiveCaptionsSoon();
+        };
         _mainVideoRow.PropertyChanged += OnMainRowChanged;
         AudioTracks.CollectionChanged += (_, _) => RefreshAudioRows();
         _backgroundRow.PropertyChanged += (_, _) => GenerateCommand();
@@ -255,7 +261,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         SelectedPreset = preset;
-        StatusText = $"Saved preset \"{name}\".";
+        Log($"Saved preset \"{name}\"");
     }
 
     /// <summary>Reads presets.json again: for when it was replaced from outside, by an import.</summary>
@@ -355,7 +361,7 @@ public partial class MainViewModel : ObservableObject
         AudioBitrate = Pick(AudioBitrates, preset.AudioBitrate, "160k");
         MergeAudioTracks = preset.MergeAudioTracks;
         NormalizeAudio = preset.NormalizeAudio;
-        DuckAudio = preset.DuckAudio;
+        DuckAudio = false;
         DuckAmountDb = Math.Clamp(preset.DuckAmountDb, -40, -1);
 
         // A preset only speaks for the target size when it was saved with one.
@@ -370,9 +376,24 @@ public partial class MainViewModel : ObservableObject
         if (preset.Container is { } container && Containers.Contains(container))
             Container = container;
 
-        StatusText = encoderFound
-            ? $"Applied preset \"{preset.Name}\"."
-            : $"Applied preset \"{preset.Name}\", but {preset.VideoEncoder} is not available here: kept {VideoEncoder.DisplayName}.";
+        ApplyLegacyDuck(preset.DuckAudio);
+        Log(encoderFound
+            ? $"Applied preset \"{preset.Name}\""
+            : $"Applied preset \"{preset.Name}\", but {preset.VideoEncoder} is not available here: kept {VideoEncoder.DisplayName}");
+    }
+
+    // A preset from before ducking was set track by track: "duck the game audio to the mic" was one box
+    // for the first two tracks. It is carried over as what it meant, once there are two tracks to carry it to.
+    private bool _legacyDuckPending;
+
+    private void ApplyLegacyDuck(bool? asked = null)
+    {
+        _legacyDuckPending = asked ?? _legacyDuckPending;
+        if (!_legacyDuckPending || AudioTracks.Count < 2)
+            return;
+
+        _legacyDuckPending = false;
+        (AudioTracks[0].AutoDuck, AudioTracks[1].IsVoice) = (true, true);
     }
 
     /// <summary>Puts back per-track choices for the tracks that exist; states for missing tracks are ignored.</summary>
@@ -388,7 +409,7 @@ public partial class MainViewModel : ObservableObject
             track.Bitrate = Pick(AudioTrack.AllBitrates, saved.Bitrate, track.Bitrate);
             if (!string.IsNullOrWhiteSpace(saved.Title))
                 track.Title = saved.Title;
-            track.GainDb = Math.Clamp(saved.GainDb, -30, 30);
+            track.GainDb = Math.Clamp(saved.GainDb, -40, 30);
             track.Filters = saved.Filters?.Clone() ?? new TrackAudioFilters();
             track.SetEdits(saved.Offset, saved.Pieces);
             (track.AutoDuck, track.IsVoice) = (saved.AutoDuck, saved.IsVoice);
@@ -412,6 +433,31 @@ public partial class MainViewModel : ObservableObject
     // ----- Status bar -----
 
     [ObservableProperty] private string _statusText = "Ready";
+
+    // The action log: what was just done, said in a few words in the status bar and flashed there, so that
+    // every edit answers at once. The last few stay readable in the status bar's tooltip.
+
+    /// <summary>Raised when something that was done has been written to the status bar.</summary>
+    public event Action? ActionLogged;
+
+    private readonly List<string> _recentActions = [];
+
+    /// <summary>The last actions, the latest first, a line each with the time it was done.</summary>
+    public string RecentActions => _recentActions.Count > 0 ? string.Join(Environment.NewLine, _recentActions) : "Nothing has been done yet.";
+
+    /// <summary>Says what was just done: in the status bar, flashed, and kept among the recent actions.</summary>
+    public void Log(string action)
+    {
+        StatusText = action;
+        if (_isBackgroundWorker)
+            return;
+
+        _recentActions.Insert(0, $"{DateTime.Now:HH:mm:ss}  {action}");
+        if (_recentActions.Count > 12)
+            _recentActions.RemoveAt(12);
+        OnPropertyChanged(nameof(RecentActions));
+        ActionLogged?.Invoke();
+    }
     [ObservableProperty] private double _progressValue;
     [ObservableProperty] private bool _isProgressIndeterminate;
 
@@ -752,7 +798,7 @@ public partial class MainViewModel : ObservableObject
 
         PendingStartMs = null;
         PositionMs = stop;
-        StatusText = $"Added segment {segment.Display}";
+        Log($"Added segment {segment.Display}");
     }
 
     private bool CanAddStopPoint() => PendingStartMs is { } start && PositionMs > start;
@@ -875,6 +921,8 @@ public partial class MainViewModel : ObservableObject
         if (run != _hardwareProbeRun)
             return;
 
+        _ = ProbeOpenClBlurAsync();
+
         // Rebuild the hardware part of the list, keeping the selection where it still exists. The first time
         // round, a hardware encoder set as the default is selected, unless another was chosen in the meantime.
         var untouched = VideoEncoder.Family is EncoderFamily.Copy || VideoEncoder == DefaultVideoEncoder;
@@ -896,6 +944,21 @@ public partial class MainViewModel : ObservableObject
         // An encoder FFmpeg has but could not start is worth a word: it is usually a driver that needs updating.
         if (problems.Count > 0)
             HardwareEncoderStatusText += $". Not usable: {string.Join("; ", problems)}";
+    }
+
+    /// <summary>Tests whether the graphics card can blur the background (OpenCL), and writes the command again when it can.</summary>
+    private async Task ProbeOpenClBlurAsync()
+    {
+        try
+        {
+            var before = EncoderProber.OpenClBlurAvailable;
+            if (await EncoderProber.ProbeOpenClBlurAsync(_shutdown.Token) != before)
+                GenerateCommand();
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Not known: the processor blurs, as it always could.
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
@@ -966,8 +1029,16 @@ public partial class MainViewModel : ObservableObject
         OnSettingsSaved();
         (FrameEngine, PlayOnlySegments, ShowAutoCaptions) = (IsEditorMode || Layers.Count > 0, settings.StartWithPlayOnlySegments, settings.ShowAutoCaptions);
         (ShowIFrames, LivePreview) = (settings.ShowIFrames, settings.LivePreview);
+
+        // With nothing loaded yet the mode's own starting point applies: Editor Mode mixes the tracks into one.
+        if (!HasSource)
+            MergeAudioTracks = IsEditorMode;
         (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (settings.ShowCutSegmentsPane, settings.ShowKeyframesPane, settings.ShowClipKeyframes);
         OnPropertyChanged(nameof(ModeButtonText));
+
+        // The Layers tab draws the main video's clips with frames from it, which Encoder Mode has no use for.
+        if (IsEditorMode && HasSource && _mainVideoRow.Filmstrip is null)
+            _ = LoadMainFilmstripAsync(LocalMediaPath);
         StatusText = $"{settings.UiMode}: {(IsEditorMode ? "the tools for cutting, layering and captioning." : "the lean front end for converting and trimming.")}";
     }
 
@@ -1050,6 +1121,8 @@ public partial class MainViewModel : ObservableObject
             MediaLoaded?.Invoke(localPath);
             _ = ScanIFramesAsync(localPath);
             _ = GenerateSpriteSheetAsync(localPath);
+            _mainVideoRow.Filmstrip = null;
+            _ = LoadMainFilmstripAsync(localPath);
             _ = GenerateWaveformsAsync(localPath);
         }
         return (true, message);

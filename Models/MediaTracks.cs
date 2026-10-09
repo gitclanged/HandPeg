@@ -29,20 +29,35 @@ public sealed partial class AudioTrack : ObservableObject
 
         _title = stream.Title.Length > 0 ? stream.Title : $"Track {stream.Index + 1}";
 
-        var language = stream.Language.Length > 0 && stream.Language != "und" ? $" [{stream.Language}]" : "";
-        var layout = stream.ChannelLayout.Length > 0 ? stream.ChannelLayout : $"{stream.Channels} ch";
-        Description = $"#{stream.Index}{language}  ·  {stream.Codec}, {layout}";
     }
 
     /// <summary>The name written to the output as the track's title. Starts as the source's own.</summary>
-    [ObservableProperty] private string _title;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Description))]
+    private string _title;
+
+    /// <summary>The file the track is a stream of, as its row is headed. Set when the file is loaded.</summary>
+    [ObservableProperty] private string _sourceFileName = "";
 
     public AudioStreamInfo Stream { get; }
 
     /// <summary>Position among the audio streams, as used in "0:a:N".</summary>
     public int Index => Stream.Index;
 
-    public string Description { get; }
+    /// <summary>
+    /// The second line of its row: which stream of the file it is (counted from 1), the title it has when it
+    /// has one, its language, and its format. "Stream #2 (MIC)  ·  aac, stereo".
+    /// </summary>
+    public string Description
+    {
+        get
+        {
+            var named = Stream.Title.Length > 0 || Title != $"Track {Stream.Index + 1}" ? $" ({Title})" : "";
+            var language = Stream.Language.Length > 0 && Stream.Language != "und" ? $" [{Stream.Language}]" : "";
+            var layout = Stream.ChannelLayout.Length > 0 ? Stream.ChannelLayout : $"{Stream.Channels} ch";
+            return $"Stream #{Stream.Index + 1}{named}{language}  \u00B7  {Stream.Codec}, {layout}";
+        }
+    }
 
     // Instance accessors so the row template can bind to them.
     public IReadOnlyList<string> Actions => AllActions;
@@ -51,7 +66,11 @@ public sealed partial class AudioTrack : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsReencoded))]
+    [NotifyPropertyChangedFor(nameof(HasOwnFormat))]
     private string _action = Reencode;
+
+    /// <summary>Whether its codec and bitrate can be chosen: while it is re-encoded.</summary>
+    public bool HasOwnFormat => IsReencoded;
 
     [ObservableProperty] private string _codec = "aac";
     [ObservableProperty] private string _bitrate = "160k";
@@ -70,7 +89,28 @@ public sealed partial class AudioTrack : ObservableObject
     private TrackAudioFilters _filters = new();
 
     /// <summary>A picture of the whole track's sound, drawn in the background after a load.</summary>
-    [ObservableProperty] private System.Windows.Media.ImageSource? _waveform;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(TrackWaveform))]
+    private System.Windows.Media.ImageSource? _waveform;
+
+    // ----- As a row of the Audio tab -----
+    // The rows there are made from one template, for these tracks and for the sounds added from files alike
+    // (see Layer). These say what a track is where the two differ, under names both have.
+
+    /// <summary>One of the video's own audio streams, with a codec, filters and a solo button of its own.</summary>
+    public bool IsStream => true;
+
+    /// <summary>What the solo button plays: this track.</summary>
+    public object SoloTarget => this;
+
+    /// <summary>The picture behind the whole row: the track's waveform.</summary>
+    public System.Windows.Media.ImageSource? TrackWaveform => Waveform;
+
+    /// <summary>A track runs with the video, at the video's speed, and cannot be taken off the timeline.</summary>
+    public bool HasSpeed => false;
+
+    public double ClipSpeed { get => 1; set { } }
+    public bool IsRemovable => false;
 
     // ----- On the timeline -----
 

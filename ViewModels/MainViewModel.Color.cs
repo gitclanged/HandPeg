@@ -107,7 +107,7 @@ public partial class MainViewModel
         var filterOption = filters.Count > 0 ? $" -vf \"{string.Join(",", filters)}\"" : "";
         var time = Math.Max(seconds, 0).ToString("0.###", CultureInfo.InvariantCulture);
 
-        return $"{ffmpeg} -hide_banner{(HardwareDecoding ? " -hwaccel auto" : "")} -ss {time} -i {Quote(LocalMediaPath)} -frames:v 1{filterOption} -q:v 3 -y {Quote(outputPath)}";
+        return $"{ffmpeg} -hide_banner{(HardwareDecoding ? " " + GpuAdapters.DecodeArguments.TrimEnd() : "")} -ss {time} -i {Quote(LocalMediaPath)} -frames:v 1{filterOption} -q:v 3 -y {Quote(outputPath)}";
     }
 
     // ----- Layout files -----
@@ -472,7 +472,7 @@ public partial class MainViewModel
             applied.Add("subtitle settings");
         }
 
-        StatusText = applied.Count > 0 ? $"Imported {string.Join(", ", applied)}." : "Nothing was imported.";
+        Log(applied.Count > 0 ? $"Applied style preset: {string.Join(", ", applied)}" : "Nothing was imported");
         if (GetLayoutAspectWarning() is { } warning)
             StatusText += " " + warning;
     }

@@ -75,7 +75,7 @@ public partial class MainViewModel
         from.RemoveAt(from.Count - 1);
         to.Add((what, CaptureTimeline()));
         RestoreTimeline(state);
-        StatusText = $"{verb}: {what}.";
+        Log($"{verb}: {what}");
     }
 
     private void RestoreTimeline(string state)
@@ -120,19 +120,40 @@ public partial class MainViewModel
             case Layer { IsRemovable: true } layer when Layers.Contains(layer):
                 Checkpoint($"delete {layer.Name}");
                 MoveToBin(layer);
-                StatusText = $"Deleted {layer.Name}. It is in the recycle bin (the trash can), and Ctrl+Z brings it back.";
+                Log($"Deleted clip: {layer.Name} (in the recycle bin; Ctrl+Z brings it back)");
                 return true;
 
             case CutSegment segment when Segments.Contains(segment):
                 Checkpoint("delete a segment");
                 Segments.Remove(segment);
-                StatusText = $"Deleted the segment {segment.Display}. Ctrl+Z brings it back.";
+                Log($"Deleted segment {segment.Display}");
                 return true;
 
             default:
                 StatusText = "Select a layer or a cut segment to delete: click its block on the Layers tab.";
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Sets how fast a clip runs. The clip plays the same stretch of its file as before, so its block on the
+    /// timeline is as much shorter or longer as it is faster or slower.
+    /// </summary>
+    public void SetClipSpeed(Layer clip, double speed)
+    {
+        speed = Math.Round(Math.Clamp(speed, Layer.SlowestSpeed, Layer.FastestSpeed), 3);
+        if (!clip.HasSpeed || Math.Abs(clip.Speed - speed) < 0.0005)
+            return;
+
+        Checkpoint($"change the speed of {clip.Name}");
+        using (DeferCommand())
+        {
+            clip.SetSpeed(speed);
+            GenerateCommand();
+        }
+
+        var (from, to) = clip.GetSpan(SequenceSeconds);
+        Log(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Set speed of {clip.Name} to {speed:0.##}x: it now runs {TimeDisplay.Format(from)} to {TimeDisplay.Format(to)}"));
     }
 
     /// <summary>Trims the selected clip to the playhead: its start (everything before goes) or its end (everything after).</summary>
@@ -158,7 +179,7 @@ public partial class MainViewModel
                     {
                         // Its keyframes are counted from where it begins, which has just moved.
                         layer.ShiftKeys(layer.StartTime - seconds);
-                        (layer.MediaOffset, layer.StartTime, layer.Duration) = (layer.MediaOffset + seconds - layer.StartTime, seconds, end - seconds);
+                        (layer.MediaOffset, layer.StartTime, layer.Duration) = (layer.MediaOffset + (seconds - layer.StartTime) * layer.Speed, seconds, end - seconds);
                     }
                     else
                     {
@@ -166,7 +187,7 @@ public partial class MainViewModel
                     }
                 }
 
-                StatusText = $"{layer.Name} now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}.";
+                Log($"Trimmed clip: {layer.Name} now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}");
                 return true;
 
             case CutSegment segment when Segments.Contains(segment):
@@ -178,7 +199,7 @@ public partial class MainViewModel
                 Segments[Segments.IndexOf(segment)] = start
                     ? new CutSegment(at, segment.End) { IsSkipped = segment.IsSkipped }
                     : new CutSegment(segment.Start, at) { IsSkipped = segment.IsSkipped };
-                StatusText = $"The segment now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}.";
+                Log($"Trimmed segment: now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}");
                 return true;
         }
 
@@ -215,7 +236,7 @@ public partial class MainViewModel
             InsertLayer(at++, copy);
         }
 
-        StatusText = $"Duplicated {layer.Name}.";
+        Log($"Duplicated clip: {layer.Name}");
     }
 
     /// <summary>Removes a track: every clip on it.</summary>
@@ -269,7 +290,7 @@ public partial class MainViewModel
     [ObservableProperty] private bool _audioLinked = true;
 
     /// <summary>Whether the blocks of the Layers tab show the waveform of the sound that is linked to their picture, drawn over them.</summary>
-    [ObservableProperty] private bool _showLinkedAudio;
+    [ObservableProperty] private bool _showLinkedAudio = true;
 
     /// <summary>
     /// Links or unlinks audio and video. Linking again after something was slipped asks first: linked means
@@ -343,7 +364,7 @@ public partial class MainViewModel
 
         Checkpoint($"split {track.Title}");
         track.SplitAt(content, total);
-        StatusText = $"{track.Title} split at {TimeDisplay.Format(seconds)}. Select a part and press Delete to silence it.";
+        Log($"Split clip: {track.Title} at {TimeDisplay.Format(seconds)} (select a part and press Delete to silence it)");
         return true;
     }
 
@@ -371,7 +392,7 @@ public partial class MainViewModel
 
     /// <summary>The video layers whose own sound goes into the output: those that have any, and are not hidden.</summary>
     private List<Layer> GetLayerAudioSources() =>
-        Layers.Where(l => l.CarriesSound && !l.IsHidden && File.Exists(l.ImagePath)).ToList();
+        Layers.Where(l => l.CarriesSound && !l.IsHidden && !l.IsSoundMuted && File.Exists(l.ImagePath)).ToList();
 
     /// <summary>Draws the waveform of a video layer's sound, for its block on the Layers tab. In the background; the layer works without it.</summary>
     private async Task LoadLayerWaveformAsync(Layer layer)
@@ -399,9 +420,15 @@ public partial class MainViewModel
         }
     }
 
-    // The pictures made of layers' files this session, by file: waveforms, and strips of frames.
-    private readonly Dictionary<string, Task<System.Windows.Media.ImageSource?>> _layerWaveforms = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, System.Windows.Media.ImageSource> _layerFilmstrips = new(StringComparer.OrdinalIgnoreCase);
+    // The pictures made of layers' files this session, by file: waveforms, and strips of frames. No more
+    // than this many of each are kept: the file used longest ago gives way to a new one. A clip that is on
+    // the timeline holds its own pictures whatever happens here, so nothing that is showing goes blank; what
+    // is bounded is how much is remembered of files that are no longer in use. A strip is at most 25 frames
+    // 54 pixels high (about half a megabyte), a waveform 1200 by 60.
+    private const int PicturesKept = 24;
+
+    private readonly LruCache<string, Task<System.Windows.Media.ImageSource?>> _layerWaveforms = new(PicturesKept, StringComparer.OrdinalIgnoreCase);
+    private readonly LruCache<string, System.Windows.Media.ImageSource> _layerFilmstrips = new(PicturesKept, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The pictures a layer's block is drawn with: the waveform of its sound, and for a video a strip of its frames.</summary>
     private async Task LoadLayerPicturesAsync(Layer layer)
@@ -416,40 +443,101 @@ public partial class MainViewModel
     /// </summary>
     private async Task LoadLayerFilmstripAsync(Layer layer)
     {
-        var count = Math.Clamp(AppSettings.Current.LayerThumbnailCount, 1, 25);
         if (_isBackgroundWorker || !layer.IsVideoFile || layer.Filmstrip is not null || !File.Exists(layer.ImagePath))
             return;
-
-        if (_layerFilmstrips.TryGetValue(layer.ImagePath, out var made))
-        {
-            layer.Filmstrip = made;
-            return;
-        }
 
         try
         {
             if (layer.MediaDuration <= 0 && await MediaProbe.ProbeAsync(layer.ImagePath, _shutdown.Token) is { DurationSeconds: > 0 } info)
                 layer.MediaDuration = info.DurationSeconds;
-
-            var path = Path.Combine(SpriteFolder, $"layer_{Guid.NewGuid():N}.jpg");
-            var (file, length) = (layer.ImagePath, layer.MediaDuration);
-            if (!await Task.Run(() => FfmpegRunner.GenerateFilmstripAsync(file, path, count, length, _shutdown.Token)))
-                return;
-
-            // Read into memory, so that the file is not held open.
-            var picture = new System.Windows.Media.Imaging.BitmapImage();
-            picture.BeginInit();
-            picture.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-            picture.UriSource = new Uri(path);
-            picture.EndInit();
-            picture.Freeze();
-            _layerFilmstrips[layer.ImagePath] = picture;
-            foreach (var clip in Layers.Where(l => l.ImagePath == layer.ImagePath && l.IsVideoFile))
-                clip.Filmstrip = picture;
-            layer.Filmstrip = picture;
         }
-        catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException or UriFormatException)
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException)
         {
+            // Its length stays unknown: one frame is taken, from its start.
+        }
+
+        var file = layer.ImagePath;
+        if (await GetFilmstripAsync(file, Math.Clamp(AppSettings.Current.LayerThumbnailCount, 1, 25), layer.MediaDuration) is not { } picture)
+            return;
+
+        // Every clip of the file, whichever of them asked: a clip that was split while the strip was being
+        // made is two clips by now.
+        foreach (var clip in Layers.Where(l => l.IsVideoFile && l.Filmstrip is null && string.Equals(l.ImagePath, file, StringComparison.OrdinalIgnoreCase)).ToList())
+            clip.Filmstrip = picture;
+        if (layer.Filmstrip is null)
+            layer.Filmstrip = picture;
+    }
+
+    /// <summary>
+    /// The main video's own strip of frames, for its clips on the Layers tab: the main video is a clip like
+    /// any other there, and is drawn like one. Only in Editor Mode, which is where that tab is.
+    /// </summary>
+    private async Task LoadMainFilmstripAsync(string path)
+    {
+        if (_isBackgroundWorker || !IsEditorMode || _mediaInfo?.Video is null || !File.Exists(path))
+            return;
+
+        // More frames than a layer gets: the main video is usually the longest thing on the timeline.
+        var count = Math.Clamp(AppSettings.Current.LayerThumbnailCount * 2, 8, 25);
+        if (await GetFilmstripAsync(path, count, MainMediaSeconds) is { } picture && string.Equals(LocalMediaPath, path, StringComparison.OrdinalIgnoreCase))
+            _mainVideoRow.Filmstrip = picture;
+    }
+
+    // The strips that are being made right now, by file: a second clip of a file waits for the first one's.
+    private readonly Dictionary<string, Task<System.Windows.Media.ImageSource?>> _filmstripsBeingMade = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The strip of frames of a file: the one made earlier this session, the one being made, or a new one.</summary>
+    private Task<System.Windows.Media.ImageSource?> GetFilmstripAsync(string file, int count, double seconds)
+    {
+        if (_layerFilmstrips.TryGetValue(file, out var made))
+            return Task.FromResult<System.Windows.Media.ImageSource?>(made);
+        if (!_filmstripsBeingMade.TryGetValue(file, out var making))
+            _filmstripsBeingMade[file] = making = MakeFilmstripAsync(file, count, seconds);
+        return making;
+    }
+
+    private async Task<System.Windows.Media.ImageSource?> MakeFilmstripAsync(string file, int count, double seconds)
+    {
+        // Let the caller go on first, so that this is in the list of strips being made before it can leave it.
+        await Task.Yield();
+        try
+        {
+            var path = Path.Combine(SpriteFolder, $"layer_{Guid.NewGuid():N}.jpg");
+            var token = _shutdown.Token;
+
+            // Both the extraction and the reading of the picture happen away from the interface. The picture
+            // is frozen there, before it is handed over: a bitmap made on one thread cannot be shown by
+            // another until it is, and a frozen one is also the only kind WPF does not keep watching.
+            var picture = await Task.Run(async () =>
+            {
+                if (!await FfmpegRunner.GenerateFilmstripAsync(file, path, count, seconds, token))
+                    return null;
+
+                // Read into memory, so that the file is not held open.
+                var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+                bitmap.BeginInit();
+                bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                bitmap.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreColorProfile;
+                bitmap.UriSource = new Uri(path);
+                bitmap.EndInit();
+                bitmap.Freeze();
+                return (System.Windows.Media.ImageSource)bitmap;
+            }, token);
+
+            if (picture is not null)
+                _layerFilmstrips[file] = picture;
+            return picture;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException or UriFormatException or System.ComponentModel.Win32Exception)
+        {
+            if (ex is not OperationCanceledException)
+                AppLog.Write($"Thumbnails of {Path.GetFileName(file)} could not be read: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            // Made or not, it is no longer being made: a file that failed is tried again when next asked for.
+            _filmstripsBeingMade.Remove(file);
         }
     }
 
@@ -474,7 +562,9 @@ public partial class MainViewModel
     {
         var total = SequenceSeconds;
         var visibleFor = layer.Duration > 0.001 ? layer.Duration : Math.Max(total - layer.StartTime, 0);
-        var (from, to) = (layer.MediaOffset, Math.Min(layer.MediaOffset + visibleFor, fileSeconds));
+        // The silences are found in the file's own time; the layer covers it at its speed.
+        var speed = layer.HasSpeed ? Math.Clamp(layer.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
+        var (from, to) = (layer.MediaOffset, Math.Min(layer.MediaOffset + visibleFor * speed, fileSeconds));
 
         // The layer's stretch of its own video, as alternating parts: sound, silence, sound...
         var parts = new List<(double Start, double End, bool Silent)>();
@@ -505,7 +595,7 @@ public partial class MainViewModel
         foreach (var (start, end, silent) in parts.Where(p => keepSilent || !p.Silent))
         {
             var part = Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
-            (part.StartTime, part.Duration, part.MediaOffset) = (layer.StartTime + (start - from), end - start, start);
+            (part.StartTime, part.Duration, part.MediaOffset) = (layer.StartTime + (start - from) / speed, (end - start) / speed, start);
             (part.IsHidden, part.Name, part.Waveform, part.Filmstrip) = (silent, state.Name, layer.Waveform, layer.Filmstrip);
             part.ShiftKeys(layer.StartTime - part.StartTime);
             Hook(part);

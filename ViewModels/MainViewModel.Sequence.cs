@@ -25,9 +25,6 @@ public partial class MainViewModel
     // MediaOffset), which is also what its keyframes are counted from.
     private readonly List<MainPiece> _mainPieces = [];
 
-    /// <summary>One clip of the main video on the sequence. Index 0 is the row's own clip; the others follow in the order they were made.</summary>
-    public readonly record struct MainClip(int Index, double Start, double End, double Offset);
-
     // Worked out once for each state of the timeline, not once for each of the dozen things that ask.
     private List<MainClip>? _mainClips;
 
@@ -254,7 +251,7 @@ public partial class MainViewModel
             GenerateCommand();
         }
 
-        StatusText = $"{_mainVideoRow.Name} split at {TimeDisplay.Format(seconds)}: two clips, each of which can be moved, trimmed or deleted on its own.";
+        Log($"Split clip: {_mainVideoRow.Name} at {TimeDisplay.Format(seconds)}");
         return true;
     }
 
@@ -275,7 +272,7 @@ public partial class MainViewModel
             GenerateCommand();
         }
 
-        StatusText = $"That clip of {_mainVideoRow.Name} now starts at {TimeDisplay.Format(clip.Start + bySeconds)} on the timeline.";
+        Log($"Moved clip: {_mainVideoRow.Name} now starts at {TimeDisplay.Format(clip.Start + bySeconds)}");
     }
 
     /// <summary>Sets how long one clip of the main video stays, from where it starts: dragging the right edge of its block.</summary>
@@ -293,7 +290,7 @@ public partial class MainViewModel
             GenerateCommand();
         }
 
-        StatusText = $"That clip of {_mainVideoRow.Name} now ends at {TimeDisplay.Format(FindMainClip(index)?.End ?? 0)} on the timeline.";
+        Log($"Trimmed clip: {_mainVideoRow.Name} now ends at {TimeDisplay.Format(FindMainClip(index)?.End ?? 0)}");
     }
 
     /// <summary>Trims one clip of the main video to the playhead: its start (what came before goes) or its end.</summary>
@@ -315,7 +312,7 @@ public partial class MainViewModel
             GenerateCommand();
         }
 
-        StatusText = $"That clip of {_mainVideoRow.Name} now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}.";
+        Log($"Trimmed clip: {_mainVideoRow.Name} now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}");
         return true;
     }
 
@@ -428,7 +425,7 @@ public partial class MainViewModel
             GenerateCommand();
         }
 
-        StatusText = $"Deleted a clip of {_mainVideoRow.Name}. It is in the recycle bin (the trash can), and Ctrl+Z brings it back.";
+        Log($"Deleted clip of {_mainVideoRow.Name} (in the recycle bin; Ctrl+Z brings it back)");
         return true;
     }
 
@@ -461,7 +458,7 @@ public partial class MainViewModel
             GenerateCommand();
         }
 
-        StatusText = $"{item.Name} is back on the timeline, {item.TimeText}.";
+        Log($"Restored clip: {item.Name}, {item.TimeText}");
     }
 
     /// <summary>Empties the recycle bin: what was in it is gone for good (Ctrl+Z aside).</summary>
@@ -485,7 +482,7 @@ public partial class MainViewModel
     /// </summary>
     private int ReleaseUnusedLayerPictures()
     {
-        var used = new HashSet<string>(Layers.Select(l => l.ImagePath), StringComparer.OrdinalIgnoreCase);
+        var used = new HashSet<string>(Layers.Select(l => l.ImagePath), StringComparer.OrdinalIgnoreCase) { LocalMediaPath };
         var unused = _layerFilmstrips.Keys.Concat(_layerWaveforms.Keys).Where(path => !used.Contains(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         foreach (var path in unused)
         {
@@ -542,6 +539,13 @@ public partial class MainViewModel
     {
         if (_syncingMainRow)
             return;
+
+        // A picture of the clip arriving is something to draw, and nothing to do with the command.
+        if (e.PropertyName is nameof(Layer.Waveform) or nameof(Layer.Filmstrip))
+        {
+            TimelineChanged?.Invoke();
+            return;
+        }
 
         var main = _mainVideoRow;
         if (Layer.GetKeyProperty(e.PropertyName) is { } property and not KeyProperty.Rotation)
@@ -619,7 +623,60 @@ public partial class MainViewModel
     /// <summary>The clip the keyframe controls work on.</summary>
     public Layer ActiveKeyLayer => KeyLayer is { } layer && (layer.IsMainVideo || Layers.Contains(layer)) && layer.IsPicture ? layer : _mainVideoRow;
 
-    partial void OnKeyLayerChanged(Layer? value) => OnPropertyChanged(nameof(ActiveKeyLayer));
+    partial void OnKeyLayerChanged(Layer? value)
+    {
+        OnPropertyChanged(nameof(ActiveKeyLayer));
+        RefreshSelectedKey();
+    }
+
+    // ----- The selected keyframe, and its easing -----
+    // The keyframe that is selected is the one the playhead is on, of the clip the Keyframes pane shows:
+    // stepping onto a keyframe (the previous and next buttons, or a click on its diamond) selects it.
+
+    /// <summary>The easings a keyframe can have, for the Keyframes pane's drop-down.</summary>
+    public IReadOnlyList<EasingChoice> EasingChoices => EasingChoice.All;
+
+    private (bool Has, EasingType Easing) _selectedKey;
+
+    /// <summary>Whether the playhead is on a keyframe of the clip the Keyframes pane shows.</summary>
+    public bool HasSelectedKeyframe => _selectedKey.Has;
+
+    /// <summary>
+    /// How the clip moves on from the selected keyframe to the next one; null while none is selected.
+    /// Setting it changes the keyframe (place, size and turn leave it the same way), as one step that can be undone.
+    /// </summary>
+    public EasingType? SelectedKeyEasing
+    {
+        get => _selectedKey.Has ? _selectedKey.Easing : null;
+        set
+        {
+            if (value is not { } easing || !_selectedKey.Has || easing == _selectedKey.Easing)
+                return;
+
+            var layer = ActiveKeyLayer;
+            var time = PositionMs / 1000 - layer.StartTime;
+            Checkpoint($"change the easing of a keyframe of {layer.Name}");
+
+            // The keyframes changing is what redraws the clip and writes the command again.
+            if (layer.SetEasingAt(time, easing))
+                Log($"Easing of the keyframe at {TimeDisplay.Format(PositionMs / 1000)} set to {EasingChoice.All.First(c => c.Type == easing).Name} ({layer.Name})");
+            RefreshSelectedKey();
+        }
+    }
+
+    /// <summary>Looks again at whether the playhead is on a keyframe, and says so only when that has changed.</summary>
+    private void RefreshSelectedKey()
+    {
+        var layer = ActiveKeyLayer;
+        var easing = HasSource && layer.IsAnimated ? layer.GetEasingAt(PositionMs / 1000 - layer.StartTime) : null;
+        var now = (easing is not null, easing ?? EasingType.Linear);
+        if (now == _selectedKey)
+            return;
+
+        _selectedKey = now;
+        OnPropertyChanged(nameof(HasSelectedKeyframe));
+        OnPropertyChanged(nameof(SelectedKeyEasing));
+    }
 
     // Which panes are open beside the player, and whether clips show their keyframes: per mode, and remembered.
 
@@ -641,6 +698,55 @@ public partial class MainViewModel
         TimelineChanged?.Invoke();
     }
 
+    /// <summary>Remembers where a pane was put or how large it was made, for the mode in use.</summary>
+    public void SavePaneLayout(Action<AppSettings> set) => SaveView(set);
+
+    /// <summary>Reset Panes Layout: every pane back where this mode starts with it. The window then lays them out again.</summary>
+    public void ResetPaneLayout()
+    {
+        SaveView(settings => settings.ResetPaneLayout());
+        OnPropertyChanged(nameof(MasterTimelineHeight));
+        OnPropertyChanged(nameof(TimelineAreaHeight));
+        Log("Reset panes layout");
+    }
+
+    /// <summary>
+    /// Auto-Duck from a track's right-click menu: the sound is turned down while a voice speaks, or (the other
+    /// box) it is the voice the ducked sounds make room for. Says what that comes to, because ducking takes
+    /// two: a sound to turn down, and a voice to turn it down for.
+    /// </summary>
+    /// <param name="sound">An audio track of the video, or a clip that carries sound.</param>
+    /// <param name="voice">Whether it is the Voiceover / Dialogue box that was clicked, not Auto-Duck.</param>
+    public void ToggleDucking(object sound, bool voice)
+    {
+        var name = sound switch { AudioTrack track => track.Title, Layer layer => layer.Name, _ => "" };
+        if (name.Length == 0)
+            return;
+
+        Checkpoint($"change the ducking of {name}");
+        bool on;
+        switch (sound)
+        {
+            case AudioTrack track when voice: on = track.IsVoice = !track.IsVoice; break;
+            case AudioTrack track: on = track.AutoDuck = !track.AutoDuck; break;
+            case Layer layer when voice: on = layer.IsVoice = !layer.IsVoice; break;
+            default: on = ((Layer)sound).AutoDuck = !((Layer)sound).AutoDuck; break;
+        }
+
+        var voices = AudioTracks.Count(t => t.IsVoice && !t.IsDropped) + Layers.Count(l => l is { IsVoice: true, CarriesSound: true, IsHidden: false });
+        var ducked = AudioTracks.Count(t => t is { AutoDuck: true, IsVoice: false, IsDropped: false }) + Layers.Count(l => l is { AutoDuck: true, IsVoice: false, CarriesSound: true, IsHidden: false });
+        var amount = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{Math.Abs(DuckAmountDb):0} dB");
+        Log((voice, on) switch
+        {
+            (false, true) when voices == 0 => $"Auto-Duck on for {name}. Nothing is marked as a voice yet: right-click the voice's track and tick Voiceover / Dialogue",
+            (false, true) => $"Auto-Duck on for {name}: turned down by {amount} while a voice speaks",
+            (false, false) => $"Auto-Duck off for {name}",
+            (true, true) when ducked == 0 => $"{name} is marked as a voice. No sound is set to Auto-Duck yet: right-click the one to turn down",
+            (true, true) => $"{name} is marked as a voice: {ducked} sound{(ducked == 1 ? "" : "s")} duck{(ducked == 1 ? "s" : "")} under it by {amount}",
+            _ => $"{name} is no longer marked as a voice",
+        });
+    }
+
     private void SaveView(Action<AppSettings> set)
     {
         if (_isBackgroundWorker)
@@ -654,7 +760,11 @@ public partial class MainViewModel
     private bool _recordingKey;
     private bool _anyKeys;
 
-    private void RefreshAnyKeys() => _anyKeys = _mainVideoRow.IsAnimated || Layers.Any(l => l.IsAnimated);
+    private void RefreshAnyKeys()
+    {
+        _anyKeys = _mainVideoRow.IsAnimated || Layers.Any(l => l.IsAnimated);
+        RefreshSelectedKey();
+    }
 
     // The order matters for the main video, whose corner is worked out from its size.
     private static readonly KeyProperty[] KeyOrder = [KeyProperty.Scale, KeyProperty.X, KeyProperty.Y, KeyProperty.Rotation];
@@ -662,7 +772,10 @@ public partial class MainViewModel
     partial void OnPositionMsChanged(double value)
     {
         if (_anyKeys)
+        {
             ApplyKeyframes();
+            RefreshSelectedKey();
+        }
     }
 
     /// <summary>
@@ -752,9 +865,9 @@ public partial class MainViewModel
         Checkpoint($"set a keyframe for {layer.Name}");
         var first = !layer.IsAnimated;
         layer.SetMasterKey(time);
-        StatusText = first
-            ? $"{layer.Name} has its first keyframe, at {TimeDisplay.Format(PositionMs / 1000)}. Move the playhead, move the clip, and set another: it will travel between them."
-            : $"Keyframe set for {layer.Name} at {TimeDisplay.Format(PositionMs / 1000)}.";
+        Log(first
+            ? $"Added keyframe at {TimeDisplay.Format(PositionMs / 1000)} ({layer.Name}): move the playhead, move the clip, and add another"
+            : $"Added keyframe at {TimeDisplay.Format(PositionMs / 1000)} ({layer.Name})");
     }
 
     /// <summary>Takes away the clip's keyframe at the playhead.</summary>
@@ -769,7 +882,7 @@ public partial class MainViewModel
 
         Checkpoint($"remove a keyframe of {layer.Name}");
         layer.RemoveMasterKey(time);
-        StatusText = layer.IsAnimated ? $"Removed the keyframe of {layer.Name} at {TimeDisplay.Format(PositionMs / 1000)}." : $"{layer.Name} has no keyframes left: it stays as it is now.";
+        Log(layer.IsAnimated ? $"Removed keyframe at {TimeDisplay.Format(PositionMs / 1000)} ({layer.Name})" : $"Removed the last keyframe of {layer.Name}: it stays as it is now");
         ApplyKeyframes();
     }
 
@@ -804,107 +917,12 @@ public partial class MainViewModel
 
         Checkpoint($"clear the keyframes of {layer.Name}");
         layer.ClearKeys();
-        StatusText = $"{layer.Name} has no keyframes any more: it stays where it is now.";
+        Log($"Cleared the keyframes of {layer.Name}");
     }
 
-    // ----- Motion as FFmpeg expressions -----
-
-    /// <summary>
-    /// A property's keyframes as an expression of t, the time on the picture being composed: the first value,
-    /// plus for every stretch between two keyframes its change times how far through that stretch t is, held
-    /// to 0..1. That is the straight line from each keyframe to the next, level before the first and after
-    /// the last, in one flat sum: one term per keyframe, and nothing nested for the parser to descend into.
-    /// </summary>
-    /// <param name="clipStart">Where the clip begins on that picture's clock, in seconds.</param>
-    /// <param name="scale">What a value is multiplied by: the frame's width or height in pixels, or 1.</param>
-    private static string KeyExpression(IReadOnlyList<Keyframe> keys, double clipStart, double scale)
-    {
-        var text = new StringBuilder(16 + keys.Count * 36);
-        text.Append(Number(keys[0].Value * scale));
-        for (var i = 1; i < keys.Count; i++)
-        {
-            var change = (keys[i].Value - keys[i - 1].Value) * scale;
-            if (Math.Abs(change) < 0.0005)
-                continue;
-
-            var (from, length) = (clipStart + keys[i - 1].Time, keys[i].Time - keys[i - 1].Time);
-            text.Append(change < 0 ? '-' : '+').Append(Number(Math.Abs(change)));
-
-            // Two keyframes at the same moment are a jump.
-            if (length < 0.001)
-                text.Append("*gte(t,").Append(Number(from)).Append(')');
-            else
-                text.Append("*clip((t").Append(from < 0 ? '+' : '-').Append(Number(Math.Abs(from))).Append(")/").Append(Number(length)).Append(",0,1)");
-        }
-
-        return text.ToString();
-    }
-
-    /// <summary>How a layer moves while a stretch of the picture is composed; every part is null for a layer that keeps still in that respect.</summary>
-    /// <param name="X">Its left edge in pixels, as an expression.</param>
-    /// <param name="Width">Its width in pixels, as an expression.</param>
-    /// <param name="Angle">Degrees it is turned, as an expression.</param>
-    /// <param name="LargestWidth">The widest it gets, as a fraction of the frame: what it is built at, so that it is only ever scaled down.</param>
-    private readonly record struct Motion(string? X, string? Y, string? Width, string? Angle, double LargestWidth)
-    {
-        public bool Any => X is not null || Y is not null || Width is not null || Angle is not null;
-
-        /// <summary>Whether the picture itself changes from frame to frame, not only where it is laid.</summary>
-        public bool Reshapes => Width is not null || Angle is not null;
-    }
-
-    /// <param name="from">Where on the sequence the stretch being composed begins: its clock starts there.</param>
-    private static Motion GetMotion(Layer layer, int frameWidth, int frameHeight, double from)
-    {
-        if (!layer.IsAnimated)
-            return default;
-
-        var start = layer.StartTime - from;
-        string? Of(KeyProperty property, double scale) => layer.HasKeys(property) ? KeyExpression(layer.GetKeys(property), start, scale) : null;
-        return new Motion(
-            Of(KeyProperty.X, frameWidth), Of(KeyProperty.Y, frameHeight), Of(KeyProperty.Scale, frameWidth), layer.HasFilters ? Of(KeyProperty.Rotation, 1) : null,
-            layer.HasKeys(KeyProperty.Scale) ? layer.GetKeys(KeyProperty.Scale).Max(k => k.Value) : 0);
-    }
 
     // ----- What the player plays -----
 
-    /// <summary>
-    /// The stretches of a part of the sequence that the main video is there for, as a condition on t: for
-    /// switching on, between them, what comes from it. Clips that follow each other without a gap count as one stretch.
-    /// </summary>
-    /// <param name="from">Where the part begins: its clock starts there.</param>
-    private string BuildMainGate(double from, double to)
-    {
-        var gate = new StringBuilder();
-        var (start, end) = (double.NaN, double.NaN);
-        void Close()
-        {
-            if (double.IsNaN(start))
-                return;
-            if (gate.Length > 0)
-                gate.Append('+');
-            gate.Append("gte(t,").Append(Number(start - from)).Append(")*lt(t,").Append(Number(end - from)).Append(')');
-        }
-
-        foreach (var clip in GetMainClips())
-        {
-            var (a, b) = (Math.Max(clip.Start, from), Math.Min(clip.End, to));
-            if (b - a < 0.001)
-                continue;
-
-            if (!double.IsNaN(end) && a - end < 0.001)
-            {
-                end = b;
-                continue;
-            }
-
-            Close();
-            (start, end) = (a, b);
-        }
-
-        Close();
-        return gate.Length > 0 ? gate.ToString() : "0";
-    }
 
     /// <summary>
     /// What the player opens: the main video's file while that is the whole sequence, and otherwise the
@@ -945,5 +963,5 @@ public partial class MainViewModel
 
     /// <summary>The audio filter that goes with <see cref="PlayerSource"/>: silence where the main video is not there. Empty for none.</summary>
     public string PlayerAudioFilter =>
-        !HasSource || IsMainWholeSequence ? "" : $"lavfi=[volume=0:enable='not({BuildMainGate(0, SequenceSeconds)})']";
+        !HasSource || IsMainWholeSequence ? "" : $"lavfi=[volume=0:enable='not({FilterGraphBuilder.BuildMainGate(GetMainClips(), 0, SequenceSeconds)})']";
 }

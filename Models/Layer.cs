@@ -27,8 +27,11 @@ public enum LayerKind
     Audio,
 }
 
-/// <summary>One point of a motion: a value at a moment, counted in seconds from where its clip begins.</summary>
-public sealed record Keyframe(double Time, double Value);
+/// <summary>
+/// One point of a motion: a value at a moment, counted in seconds from where its clip begins, and how the
+/// clip moves on from it to the next keyframe.
+/// </summary>
+public sealed record Keyframe(double Time, double Value, EasingType Easing = EasingType.EaseInOut);
 
 /// <summary>What of a layer can be animated with keyframes.</summary>
 public enum KeyProperty
@@ -56,7 +59,10 @@ public enum KeyProperty
 /// </summary>
 public sealed partial class Layer : ObservableObject
 {
-    [ObservableProperty] private string _name = "Layer";
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Title))]
+    [NotifyPropertyChangedFor(nameof(Description))]
+    private string _name = "Layer";
 
     public LayerKind Kind { get; init; }
 
@@ -64,8 +70,14 @@ public sealed partial class Layer : ObservableObject
     public string ImagePath { get; init; } = "";
 
     // The picture's own size in pixels, which gives a locked image layer its shape.
-    public int ImageWidth { get; init; }
-    public int ImageHeight { get; init; }
+    public int ImageWidth { get; set; }
+    public int ImageHeight { get; set; }
+
+    /// <summary>
+    /// Dropped onto the timeline a moment ago, and still being looked at: its block is there, but its size,
+    /// its length and whether it has sound are not known yet, and nothing of it is rendered until they are.
+    /// </summary>
+    [ObservableProperty] private bool _isLoading;
 
     public bool IsImage => Kind == LayerKind.Image;
 
@@ -118,9 +130,10 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>What belongs to one clip alone, and is not copied to the others on its track when it changes.</summary>
     public static bool IsClipProperty(string? name) => name is nameof(StartTime) or nameof(Duration) or nameof(MediaOffset) or nameof(IsHidden)
+        or nameof(IsLoading) or nameof(Title) or nameof(Action) or nameof(GainDb)
         or nameof(AudioOffset) or nameof(Name) or nameof(TrackId) or nameof(PositionXPercent) or nameof(PositionYPercent) or nameof(SizePercent)
         or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges) or KeysChanged
-        or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(IsAnimated) or nameof(IsDeleted) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration);
+        or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(IsAnimated) or nameof(IsDeleted) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration) or nameof(Speed) or nameof(ClipSpeed);
 
     // When the layer is on screen, in seconds of the source's own time.
 
@@ -133,8 +146,60 @@ public sealed partial class Layer : ObservableObject
     /// <summary>For a video layer: how far into its own video it is when it appears. Set when a layer is split, so the second part carries on where the first left off.</summary>
     [ObservableProperty] private double _mediaOffset;
 
+    // Speed: how fast the clip's own video or sound runs. Its length on the timeline is the length of what
+    // it plays divided by its speed, so a clip that is slowed down is longer and one that is sped up shorter.
+
+    public const double SlowestSpeed = 0.1, FastestSpeed = 10;
+
+    /// <summary>How many times as fast as recorded the clip runs: 1 as it is, 0.5 at half speed, 2 at double.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ClipSpeed))]
+    private double _speed = 1;
+
+    /// <summary>Has a running time of its own that can be played faster or slower: a video from a file, or a sound.</summary>
+    public bool HasSpeed => IsVideoFile || IsAudio;
+
+    /// <summary>The speed, for the boxes that set it: setting it here changes how long the clip is with it.</summary>
+    public double ClipSpeed
+    {
+        get => Speed;
+        set => SetSpeed(value);
+    }
+
+    /// <summary>
+    /// Changes the speed, and with it everything that is counted in the timeline's seconds: the clip plays the
+    /// same stretch of its file as before, so it is as much shorter or longer as it is faster or slower, and
+    /// its keyframes stay on the frames they were set on.
+    /// </summary>
+    public void SetSpeed(double value)
+    {
+        if (!double.IsFinite(value))
+            return;
+
+        value = Math.Round(Math.Clamp(value, SlowestSpeed, FastestSpeed), 3);
+        var stretch = Speed / value;
+        if (Math.Abs(stretch - 1) < 1e-6)
+            return;
+
+        var length = Duration;
+        foreach (var property in Enum.GetValues<KeyProperty>())
+        {
+            var list = _keys[(int)property];
+            for (var i = 0; i < list.Count; i++)
+                list[i] = list[i] with { Time = Math.Round(list[i].Time * stretch, 3) };
+            if (list.Count > 0)
+                NotifyKeys(property);
+        }
+
+        Speed = value;
+        if (length > 0.001)
+            Duration = Math.Max(Math.Round(length * stretch, 3), 0.05);
+    }
+
     /// <summary>Kept in the list but left out of the picture, and (for a video layer) out of the sound.</summary>
-    [ObservableProperty] private bool _isHidden;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Action))]
+    private bool _isHidden;
 
     /// <summary>In the recycle bin: taken off the timeline, and kept so that it can be put back.</summary>
     [ObservableProperty] private bool _isDeleted;
@@ -155,7 +220,116 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private double _mediaDuration;
 
     /// <summary>How much louder or quieter the layer's sound is made, in decibels.</summary>
-    [ObservableProperty] private double _audioGainDb;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(GainDb))]
+    private double _audioGainDb;
+
+    // ----- As a row of the Audio tab -----
+    // A sound added from a file is listed there with the video's own audio tracks, in rows made from one
+    // template. These are the names that template binds to, which an audio track has too (see AudioTrack):
+    // some are this clip's own settings under the track's name for them, and the rest say that a clip has
+    // no such thing (a codec of its own, filters, a solo button), so that the row leaves the place empty.
+
+    /// <summary>What is done with a sound from a file: it is mixed into the output's first track, or left out.</summary>
+    public const string MixIntoFirstTrack = "Mix into First Track";
+
+    private static readonly IReadOnlyList<string> ClipActions = [MixIntoFirstTrack, AudioTrack.Drop];
+
+    public string Title
+    {
+        get => Name;
+        set => Name = string.IsNullOrWhiteSpace(value) ? Name : value.Trim();
+    }
+
+    /// <summary>The file the sound comes from, as its row is headed.</summary>
+    public string SourceFileName => ImagePath.Length > 0 ? System.IO.Path.GetFileName(ImagePath) : Name;
+
+    /// <summary>A voiceover recorded in HandPeg: its file is in the Voiceovers folder.</summary>
+    public bool IsVoiceoverRecording =>
+        IsAudio && ImagePath.StartsWith(HandPegApp.Services.AppPaths.Voiceovers + System.IO.Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>What the sound's stream is encoded as in its file (aac, pcm_s16le...), when that is known.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Description))]
+    private string _audioCodec = "";
+
+    /// <summary>Its channels as FFmpeg names them (stereo, mono, 5.1...), when known.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Description))]
+    private string _audioChannels = "";
+
+    /// <summary>
+    /// The second line of its row: what it is (a recorded voiceover, the sound of a video layer, the first
+    /// stream of a file), what the clip was named when that is not its file's name, and its format.
+    /// </summary>
+    public string Description
+    {
+        get
+        {
+            var origin = IsVoiceoverRecording ? "Voiceover Recording" : IsVideoFile ? "Stream #1 (video layer)" : "Stream #1";
+            if (!IsVideoFile && Name != SourceFileName && !string.IsNullOrWhiteSpace(Name))
+                origin += $" ({Name})";
+            var format = AudioCodec.Length > 0 ? (AudioChannels.Length > 0 ? $"{AudioCodec}, {AudioChannels}" : AudioCodec) : "mixed into the first track";
+            return $"{origin}  \u00B7  {format}";
+        }
+    }
+
+    public IReadOnlyList<string> Actions => ClipActions;
+
+    /// <summary>The sound is left out, while a video layer's picture stays. (A sound clip is simply hidden.)</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Action))]
+    private bool _isSoundMuted;
+
+    /// <summary>Mixed in, or left out. For a sound clip that is the same as hiding it; a video layer keeps its picture.</summary>
+    public string Action
+    {
+        get => (IsAudio ? IsHidden : IsSoundMuted) ? AudioTrack.Drop : MixIntoFirstTrack;
+        set
+        {
+            if (IsAudio)
+                IsHidden = value == AudioTrack.Drop;
+            else
+                IsSoundMuted = value == AudioTrack.Drop;
+        }
+    }
+
+    // It has no stream of its own in the output: it goes into the first track, and is encoded as that is.
+    // The format boxes of its row say so, and cannot be changed.
+    private static readonly IReadOnlyList<string> FirstTrackCodec = ["as first track"];
+    private static readonly IReadOnlyList<string> FirstTrackBitrate = ["mixed"];
+
+    public IReadOnlyList<string> Codecs => FirstTrackCodec;
+    public string Codec { get => FirstTrackCodec[0]; set { } }
+    public IReadOnlyList<string> Bitrates => FirstTrackBitrate;
+    public string Bitrate { get => FirstTrackBitrate[0]; set { } }
+
+    /// <summary>Whether its codec and bitrate can be chosen: never, see above.</summary>
+    public bool HasOwnFormat => false;
+
+    /// <summary>Always decoded and mixed, so its gain and filters always apply.</summary>
+    public bool IsReencoded => true;
+
+    /// <summary>The sound's processing: compressor, gate, equalizer and so on, as an audio track has. Replaced as a whole by its dialog.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(FiltersCountText))]
+    private TrackAudioFilters _audioFilters = new();
+
+    public double GainDb
+    {
+        get => AudioGainDb;
+        set => AudioGainDb = Math.Clamp(value, -40, 24);
+    }
+
+    /// <summary>One of the video's own audio streams? No: a clip.</summary>
+    public bool IsStream => false;
+
+    public bool IsSolo => false;
+    public object? SoloTarget => null;
+    public string FiltersCountText => AudioFilters.ActiveCount > 0 ? AudioFilters.ActiveCount.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
+
+    /// <summary>The picture behind a track's whole row. A clip's waveform is drawn on its block instead.</summary>
+    public System.Windows.Media.ImageSource? TrackWaveform => null;
 
     // Turning and mirroring.
 
@@ -312,11 +486,67 @@ public sealed partial class Layer : ObservableObject
             if (time < keys[i].Time)
             {
                 var (a, b) = (keys[i - 1], keys[i]);
-                return b.Time - a.Time < 1e-6 ? b.Value : a.Value + (b.Value - a.Value) * (time - a.Time) / (b.Time - a.Time);
+                return b.Time - a.Time < 1e-6 ? b.Value : a.Value + (b.Value - a.Value) * Ease((time - a.Time) / (b.Time - a.Time), a.Easing);
             }
         }
 
         return keys[^1].Value;
+    }
+
+    /// <summary>
+    /// How far along a stretch between two keyframes the clip is, given how far through its time it is (both
+    /// 0 to 1). The same curves FFmpeg is given for the export, so what is seen here is what is encoded.
+    /// </summary>
+    public static double Ease(double progress, EasingType easing)
+    {
+        var u = Math.Clamp(progress, 0, 1);
+        return easing switch
+        {
+            EasingType.EaseInOut => (1 - Math.Cos(u * Math.PI)) / 2,
+            EasingType.EaseIn => 1 - Math.Cos(u * Math.PI / 2),
+            EasingType.EaseOut => Math.Sin(u * Math.PI / 2),
+            EasingType.Smoothstep => u * u * (3 - 2 * u),
+            _ => u,
+        };
+    }
+
+    /// <summary>The easing of the keyframe at a moment, or null when the clip has no keyframe there.</summary>
+    public EasingType? GetEasingAt(double time)
+    {
+        foreach (var keys in _keys)
+        {
+            foreach (var key in keys)
+            {
+                if (Math.Abs(key.Time - time) <= KeyTolerance)
+                    return key.Easing;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Sets how the clip moves on from the keyframe at a moment. A keyframe pins place, size and turn
+    /// together, so all of them leave it the same way. False when there is no keyframe there.
+    /// </summary>
+    public bool SetEasingAt(double time, EasingType easing)
+    {
+        var changed = false;
+        foreach (var keys in _keys)
+        {
+            for (var i = 0; i < keys.Count; i++)
+            {
+                if (Math.Abs(keys[i].Time - time) <= KeyTolerance && keys[i].Easing != easing)
+                {
+                    keys[i] = keys[i] with { Easing = easing };
+                    changed = true;
+                }
+            }
+        }
+
+        if (changed)
+            NotifyAllKeys();
+        return changed;
     }
 
     /// <summary>Replaces a property's keyframes; none switches its animation off.</summary>
@@ -491,8 +721,12 @@ public sealed partial class Layer : ObservableObject
     public void ApplyTiming(LayerState? state)
     {
         (StartTime, Duration, MediaOffset) = (Math.Max(state?.StartTime ?? 0, 0), Math.Max(state?.Duration ?? 0, 0), Math.Max(state?.MediaOffset ?? 0, 0));
+        Speed = ReadSpeed(state?.Speed ?? 1);
         ApplyKeys(state);
     }
+
+    /// <summary>A saved speed, made one that can be used: files from before clips had a speed have none, which is 1.</summary>
+    private static double ReadSpeed(double saved) => double.IsFinite(saved) && saved > 0 ? Math.Clamp(saved, SlowestSpeed, FastestSpeed) : 1;
 
     private void ApplyKeys(LayerState? state)
     {
@@ -607,7 +841,7 @@ public sealed partial class Layer : ObservableObject
         set => SizeWidth = Math.Clamp(value, 1, 400) / 100.0;
     }
 
-    public bool IsUsable => !IsHidden && !IsDeleted && !IsAudio && SizeWidth > 0 && (IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
+    public bool IsUsable => !IsLoading && !IsHidden && !IsDeleted && !IsAudio && SizeWidth > 0 && (IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
 
     /// <summary>The source rectangle in pixels of a source of the given size.</summary>
     public (int X, int Y, int Width, int Height) GetSourceRect(int sourceWidth, int sourceHeight) =>
@@ -685,6 +919,7 @@ public sealed partial class Layer : ObservableObject
         StartTime = StartTime,
         Duration = Duration,
         MediaOffset = MediaOffset,
+        Speed = Speed,
         IsHidden = IsHidden,
         IsDeleted = IsDeleted,
         HasAudio = HasAudio,
@@ -706,6 +941,10 @@ public sealed partial class Layer : ObservableObject
         FilterLut = FilterLut,
         AutoDuck = AutoDuck,
         IsVoice = IsVoice,
+        IsSoundMuted = IsSoundMuted,
+        AudioCodec = AudioCodec,
+        AudioChannels = AudioChannels,
+        AudioFilters = AudioFilters.IsActive ? AudioFilters.Clone() : null,
         KeysX = KeysOrNull(_keys[(int)KeyProperty.X]),
         KeysY = KeysOrNull(_keys[(int)KeyProperty.Y]),
         KeysScale = KeysOrNull(_keys[(int)KeyProperty.Scale]),
@@ -757,6 +996,7 @@ public sealed partial class Layer : ObservableObject
             StartTime = Math.Max(state.StartTime, 0),
             Duration = Math.Max(state.Duration, 0),
             MediaOffset = Math.Max(state.MediaOffset, 0),
+            Speed = ReadSpeed(state.Speed),
             IsHidden = state.IsHidden,
             HasAudio = state.HasAudio,
             AudioOffset = state.AudioOffset,
@@ -777,6 +1017,10 @@ public sealed partial class Layer : ObservableObject
             FilterLut = state.FilterLut ?? "",
             AutoDuck = state.AutoDuck,
             IsVoice = state.IsVoice,
+            IsSoundMuted = state.IsSoundMuted,
+            AudioCodec = state.AudioCodec ?? "",
+            AudioChannels = state.AudioChannels ?? "",
+            AudioFilters = state.AudioFilters?.Clone() ?? new TrackAudioFilters(),
         };
         region.ApplyKeys(state);
 
@@ -850,6 +1094,7 @@ public sealed class LayerState
     public double StartTime { get; set; }
     public double Duration { get; set; }
     public double MediaOffset { get; set; }
+    public double Speed { get; set; } = 1;
     public bool IsHidden { get; set; }
     public bool IsDeleted { get; set; }
     public bool HasAudio { get; set; }
@@ -873,6 +1118,13 @@ public sealed class LayerState
 
     public bool AutoDuck { get; set; }
     public bool IsVoice { get; set; }
+    public bool IsSoundMuted { get; set; }
+    public string AudioCodec { get; set; } = "";
+    public string AudioChannels { get; set; } = "";
+
+    /// <summary>The sound's filters; left out while none is switched on.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public TrackAudioFilters? AudioFilters { get; set; }
 
     // The motion: the keyframes of each animated property; null for one that is not animated.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

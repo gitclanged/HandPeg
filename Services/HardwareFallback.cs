@@ -27,6 +27,14 @@ public static partial class HardwareFallback
     [GeneratedRegex(@" -rc (?:vbr_peak|vbr|cbr)\b")]
     private static partial Regex VendorRateModeRegex();
 
+    // Hardware decoding, on whichever card: "-hwaccel auto", or Direct3D 11 with the number of a card.
+    [GeneratedRegex(@" -hwaccel \S+(?: -hwaccel_device \S+)?")]
+    private static partial Regex HardwareDecodeRegex();
+
+    // The background blur as the graphics card does it, and the device it is given for that.
+    [GeneratedRegex(@"format=yuv420p,hwupload,boxblur_opencl=(?<radius>\d+):(?<passes>\d+),hwdownload,format=yuv420p")]
+    private static partial Regex OpenClBlurRegex();
+
     /// <summary>The software encoder that stands in for a hardware one, or null for anything else.</summary>
     public static string? GetSoftwareEncoder(string encoderName)
     {
@@ -69,7 +77,10 @@ public static partial class HardwareFallback
         rewritten = HardwareEncoderRegex().Replace(rewritten, replacement, 1);
 
         // If the GPU is the problem, do not ask it to decode either.
-        rewritten = rewritten.Replace(" -hwaccel auto", "");
+        rewritten = HardwareDecodeRegex().Replace(rewritten, "");
+
+        // Nor to blur: the processor does that as well as it ever did.
+        rewritten = OpenClBlurRegex().Replace(rewritten, "boxblur=${radius}:${passes}").Replace($" {EncoderProber.OpenClDeviceArguments}", "");
         return true;
     }
 

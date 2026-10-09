@@ -111,6 +111,9 @@ public sealed class ProjectClip
     public double Start { get; set; }
     public double Duration { get; set; }
     public double Offset { get; set; }
+
+    /// <summary>How many times as fast as recorded the clip runs; left out of the file at 1.</summary>
+    public double Speed { get; set; } = 1;
     public bool Hidden { get; set; }
     public double AudioOffset { get; set; }
 
@@ -122,6 +125,14 @@ public sealed class ProjectClip
     public double[]? KeysY { get; set; }
     public double[]? KeysScale { get; set; }
     public double[]? KeysRotation { get; set; }
+
+    // How the clip moves on from each of those keyframes, in the same order, as the number of its EasingType.
+    // Left out while every one of them is Linear, which is also what a project from before easing reads as:
+    // its motion stays as it was made.
+    public int[]? EaseX { get; set; }
+    public int[]? EaseY { get; set; }
+    public int[]? EaseScale { get; set; }
+    public int[]? EaseRotation { get; set; }
 }
 
 /// <summary>
@@ -220,16 +231,23 @@ public static class ProjectStore
 
     private static double[]? Flatten(List<Keyframe>? keys) => keys is { Count: > 0 } ? keys.SelectMany(k => new[] { k.Time, k.Value }).ToArray() : null;
 
-    private static List<Keyframe>? Unflatten(double[]? numbers)
+    private static List<Keyframe>? Unflatten(double[]? numbers, int[]? easings)
     {
         if (numbers is not { Length: >= 2 })
             return null;
 
         var keys = new List<Keyframe>(numbers.Length / 2);
         for (var i = 0; i + 1 < numbers.Length; i += 2)
-            keys.Add(new Keyframe(numbers[i], numbers[i + 1]));
+        {
+            var easing = easings is not null && i / 2 < easings.Length && Enum.IsDefined((EasingType)easings[i / 2]) ? (EasingType)easings[i / 2] : EasingType.Linear;
+            keys.Add(new Keyframe(numbers[i], numbers[i + 1], easing));
+        }
+
         return keys;
     }
+
+    private static int[]? Easings(List<Keyframe>? keys) =>
+        keys is { Count: > 0 } && keys.Any(k => k.Easing != EasingType.Linear) ? keys.Select(k => (int)k.Easing).ToArray() : null;
 
     private static LayerState Copy(LayerState state) => JsonSerializer.Deserialize<LayerState>(JsonSerializer.Serialize(state))!;
 
@@ -239,6 +257,7 @@ public static class ProjectStore
         Start = layer.StartTime,
         Duration = layer.Duration,
         Offset = layer.MediaOffset,
+        Speed = layer.Speed,
         Hidden = layer.IsHidden,
         AudioOffset = layer.AudioOffset,
         Place = layer.LockAspectRatio || layer.SizeHeight <= 0
@@ -248,13 +267,17 @@ public static class ProjectStore
         KeysY = Flatten(layer.KeysY),
         KeysScale = Flatten(layer.KeysScale),
         KeysRotation = Flatten(layer.KeysRotation),
+        EaseX = Easings(layer.KeysX),
+        EaseY = Easings(layer.KeysY),
+        EaseScale = Easings(layer.KeysScale),
+        EaseRotation = Easings(layer.KeysRotation),
     };
 
     /// <summary>A track's shared look: one of its clips with everything that is a clip's own taken out.</summary>
     private static LayerState ToLook(LayerState layer)
     {
         var look = Copy(layer);
-        (look.StartTime, look.Duration, look.MediaOffset, look.IsHidden, look.AudioOffset, look.TrackId) = (0, 0, 0, false, 0, 0);
+        (look.StartTime, look.Duration, look.MediaOffset, look.IsHidden, look.AudioOffset, look.TrackId, look.Speed) = (0, 0, 0, false, 0, 0, 1);
         (look.PositionX, look.PositionY, look.SizeWidth, look.SizeHeight) = (0, 0, 0, 0);
         (look.KeysX, look.KeysY, look.KeysScale, look.KeysRotation) = (null, null, null, null);
         return look;
@@ -266,8 +289,9 @@ public static class ProjectStore
         double At(int index) => clip.Place.Length > index ? clip.Place[index] : 0;
         (layer.Name, layer.TrackId) = (clip.Name ?? look.Name, trackId);
         (layer.StartTime, layer.Duration, layer.MediaOffset, layer.IsHidden, layer.AudioOffset) = (clip.Start, clip.Duration, clip.Offset, clip.Hidden, clip.AudioOffset);
+        layer.Speed = clip.Speed > 0 ? clip.Speed : 1;
         (layer.PositionX, layer.PositionY, layer.SizeWidth, layer.SizeHeight) = (At(0), At(1), At(2), At(3));
-        (layer.KeysX, layer.KeysY, layer.KeysScale, layer.KeysRotation) = (Unflatten(clip.KeysX), Unflatten(clip.KeysY), Unflatten(clip.KeysScale), Unflatten(clip.KeysRotation));
+        (layer.KeysX, layer.KeysY, layer.KeysScale, layer.KeysRotation) = (Unflatten(clip.KeysX, clip.EaseX), Unflatten(clip.KeysY, clip.EaseY), Unflatten(clip.KeysScale, clip.EaseScale), Unflatten(clip.KeysRotation, clip.EaseRotation));
         return layer;
     }
 

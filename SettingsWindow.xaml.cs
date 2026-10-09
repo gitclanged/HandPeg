@@ -61,6 +61,13 @@ public partial class SettingsWindow : Window
             _settings.Theme = ThemeManager.FollowSystem;
         ThemeBox.SelectedItem = _settings.Theme;
 
+        // The graphics cards there are now; a card chosen earlier that has since gone is Automatic again.
+        var adapters = GpuAdapters.All;
+        if (adapters.All(a => a.Index != _settings.HardwareDecodeAdapter))
+            _settings.HardwareDecodeAdapter = GpuAdapter.Automatic.Index;
+        DecodeAdapterBox.ItemsSource = adapters.Prepend(GpuAdapter.Automatic).ToList();
+        DecodeAdapterBox.SelectedValue = _settings.HardwareDecodeAdapter;
+
         PresetBarBox.ItemsSource = AppSettings.PresetBarLocations;
         if (!AppSettings.PresetBarLocations.Contains(_settings.PresetBarLocation))
             _settings.PresetBarLocation = AppSettings.PresetBarInSummary;

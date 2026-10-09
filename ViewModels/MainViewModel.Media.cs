@@ -77,11 +77,20 @@ public partial class MainViewModel
 
         foreach (var stream in info?.Audio ?? [])
         {
-            var track = new AudioTrack(stream) { WaveformColor = WaveformPalette[AudioTracks.Count % WaveformPalette.Length] };
+            var track = new AudioTrack(stream)
+            {
+                WaveformColor = WaveformPalette[AudioTracks.Count % WaveformPalette.Length],
+                SourceFileName = HasSource ? System.IO.Path.GetFileName(LocalMediaPath) : "",
+            };
             ApplyAudioDefaults(track);
             track.PropertyChanged += OnTrackChanged;
             AudioTracks.Add(track);
         }
+
+        ApplyLegacyDuck();
+
+        // A caption preview is of the video it was made for.
+        PreviewSubtitles = false;
 
         foreach (var stream in info?.Subtitles ?? [])
         {
@@ -109,6 +118,17 @@ public partial class MainViewModel
         if (e.PropertyName == nameof(AudioTrack.Action) && sender is AudioTrack && HasSource && !_isBackgroundWorker)
             _ = RefreshTimelineWaveformAsync(LocalMediaPath);
 
+        // Dropped, or taken back, while dropped tracks are hidden: its row goes, or comes back.
+        if (e.PropertyName == nameof(AudioTrack.Action) && HideDroppedTracks)
+            RefreshAudioRows();
+
+        // Set back to a copy while it is ducked: a copied track cannot be turned down, so the ducking goes.
+        if (e.PropertyName == nameof(AudioTrack.Action) && sender is AudioTrack { AutoDuck: true, IsPassthrough: true } copied)
+        {
+            copied.AutoDuck = false;
+            StatusText = $"{copied.Title} is copied as it is, so Auto-Duck was switched off for it: a ducked track has to be re-encoded.";
+        }
+
         // A sound that is ducked is changed, and sound that is changed cannot be copied.
         if (e.PropertyName == nameof(AudioTrack.AutoDuck) && sender is AudioTrack { AutoDuck: true, IsPassthrough: true } ducked)
         {
@@ -119,7 +139,8 @@ public partial class MainViewModel
 
         // (The command is what the time bars listen to as well: a slipped or split track redraws through it.)
         // A picture arriving is not a change of settings, and nor is which track the player plays.
-        if (e.PropertyName is not (nameof(AudioTrack.Waveform) or nameof(AudioTrack.IsSolo)))
+        if (e.PropertyName is not (nameof(AudioTrack.Waveform) or nameof(AudioTrack.IsSolo) or nameof(AudioTrack.TrackWaveform)
+            or nameof(AudioTrack.Description) or nameof(AudioTrack.SourceFileName) or nameof(AudioTrack.HasOwnFormat)))
             GenerateCommand();
     }
 

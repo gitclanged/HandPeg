@@ -89,10 +89,9 @@ public sealed partial class VoiceRecorder
 
         // Listing devices is not an error to FFmpeg, but opening the "dummy" input afterwards is: the
         // exit code says nothing, the list is on stderr.
-        var result = await Cli.Wrap(DependencyUpdater.FfmpegPath)
+        var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
             .WithArguments(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(System.Text.Encoding.UTF8, cancellationToken);
+            .WithValidation(CommandResultValidation.None), cancellationToken, System.Text.Encoding.UTF8);
 
         return AudioDeviceRegex().Matches(result.StandardError).Select(m => m.Groups[1].Value).Distinct().ToList();
     }

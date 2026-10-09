@@ -155,6 +155,110 @@ public partial class MainViewModel
     {
         CaptionStyle = style;
         OnPropertyChanged(nameof(CaptionStyleSummary));
+
+        // A preview of the captions shows the style they have now.
+        if (PreviewSubtitles)
+            _ = RefreshLiveCaptionsAsync(asked: false);
+    }
+
+    // ----- Preview Subtitles -----
+    // The captions as they will be drawn, over the picture in Live Preview: the words whisper heard, in the
+    // style that is set, in the caption box where it sits. The file is made for the preview and timed to the
+    // sequence as it plays (cuts and all), which the encode's own file, timed to the finished output, is not.
+
+    /// <summary>Whether Live Preview draws the styled captions. Switching it on makes them first, which takes a transcription the first time.</summary>
+    [ObservableProperty] private bool _previewSubtitles;
+
+    private string _liveCaptionsPath = "";
+    private int _liveCaptionsRun;
+
+    partial void OnPreviewSubtitlesChanged(bool value)
+    {
+        if (value)
+        {
+            _ = RefreshLiveCaptionsAsync();
+            return;
+        }
+
+        DeleteLiveCaptions(_liveCaptionsPath);
+        _liveCaptionsPath = "";
+        if (!_isBackgroundWorker)
+            LiveFilterInvalidated?.Invoke();
+    }
+
+    private CancellationTokenSource? _liveCaptionsWait;
+
+    /// <summary>Writes the preview's caption file again once the caption box has stopped being resized.</summary>
+    private async void RefreshLiveCaptionsSoon()
+    {
+        _liveCaptionsWait?.Cancel();
+        var wait = _liveCaptionsWait = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(600, wait.Token);
+            await RefreshLiveCaptionsAsync(asked: false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Resized again: the later change writes the file.
+        }
+    }
+
+    /// <summary>Writes the preview's caption file again (the words are kept, so only the first time transcribes) and has Live Preview draw it.</summary>
+    /// <param name="asked">Whether the button was pressed. A refresh that follows a change of style or size is simply skipped while something else is running.</param>
+    private async Task RefreshLiveCaptionsAsync(bool asked = true)
+    {
+        if (_isBackgroundWorker || (!asked && (IsBusy || !PreviewSubtitles)))
+            return;
+
+        if (!HasSource || !AutoCaptions || IsBusy)
+        {
+            var why = !HasSource ? "Load a video first: there is nothing to make captions from."
+                : !AutoCaptions ? "Switch Auto-Captions on first: the preview shows the captions it makes."
+                : "Wait for the running operation to finish, then press Preview Subtitles again.";
+            PreviewSubtitles = false;
+            StatusText = why;
+            return;
+        }
+
+        await RunOperationAsync(async cancellationToken =>
+        {
+            // A new name each time: Live Preview only rebuilds its graph when the graph's text changes.
+            var path = Path.Combine(_workFolder, $"captions_live_{++_liveCaptionsRun}.ass");
+
+            // The whole of what is listened to, on its own clock: the preview plays the sequence, not the cut output.
+            if (await PrepareCaptionsAsync([], path, CaptionUseVoiceover ? VoiceoverStartSeconds : 0, cancellationToken) is { } problem)
+            {
+                PreviewSubtitles = false;
+                return problem;
+            }
+
+            var before = _liveCaptionsPath;
+            _liveCaptionsPath = path;
+            DeleteLiveCaptions(before);
+
+            // They are drawn by Live Preview's graph, so that has to be running.
+            var switchedOn = !LivePreview;
+            if (switchedOn)
+                LivePreview = true;
+            LiveFilterInvalidated?.Invoke();
+            return switchedOn
+                ? "Subtitles preview on: Live Preview was switched on to draw the captions over the picture."
+                : "Subtitles preview on: the captions are drawn over the picture as they are styled.";
+        });
+    }
+
+    private static void DeleteLiveCaptions(string path)
+    {
+        try
+        {
+            if (path.Length > 0)
+                File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Still open in the player; it is in the session folder and goes when the application closes.
+        }
     }
 
     /// <summary>The subtitle file the encode draws. Rewritten by every encode that uses captions.</summary>
@@ -194,52 +298,8 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>How a command names a caption file: this is what is looked for to tell that a command draws one.</summary>
-    private static string BuildCaptionFilter(string assPath) => $"ass='{EscapeFilterPath(assPath)}'";
-
-    /// <summary>
-    /// The step that puts the captions on the picture as its top layer. They are drawn on a transparent
-    /// canvas the size of the caption box, which is then laid over the frame where the box sits; that is
-    /// what lets the captions be placed, sized and styled like any other layer: translucent, with rounded
-    /// or soft edges (the same mask a picture gets) and a drop shadow (the words' own outline, in black).
-    /// </summary>
-    private string BuildCaptionOverlay(string assPath)
-    {
-        var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
-        var (x, y, width, height) = GetCaptionRect(frameWidth, frameHeight);
-
-        // Live Preview draws everything smaller; the caption file is written for the box, whatever its size on the canvas.
-        (x, y, width, height) = (Placed(x), Placed(y), Sized(width), Sized(height));
-        var rate = GetTargetFramerate() ?? Number(SourceFrameRate);
-        var opacity = Math.Clamp(CaptionLayer.Opacity, 0, 100) / 100.0;
-
-        var layer = $"color=c=black@0:s={width}x{height}:r={rate},format=rgba,{BuildCaptionFilter(assPath)}:alpha=1";
-        if (BuildLayerMask(CaptionLayer, width, height, _liveScale) is { } mask)
-            layer += $",format=gbrap,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{mask}{(opacity < 1 ? "*" + Number(opacity) : "")}'";
-        else if (opacity < 1)
-            layer += $",colorchannelmixer=aa={Number(opacity)}";
-
-        // A mask of its own, as any layer can have: the words show where the mask is white.
-        var maskPath = CaptionLayer.MaskPath.Trim().Trim('"');
-        if (CaptionLayer.CustomMask && File.Exists(maskPath))
-        {
-            layer += $",format=yuva420p,split[cap_pic][cap_a_in];[cap_a_in]alphaextract[cap_a0];"
-                     + $"movie='{EscapeFilterPath(maskPath)}',scale={width}:{height},format=gray,trim=end_frame=1,loop=loop=-1:size=1[cap_mask];"
-                     + "[cap_a0][cap_mask]blend=all_mode=multiply:shortest=1[cap_a1];[cap_pic][cap_a1]alphamerge";
-        }
-
-        if (!CaptionLayer.Shadow)
-            return $"null[cap_base];{layer}[cap_layer];[cap_base][cap_layer]overlay={x}:{y}:shortest=1";
-
-        var offset = Placed(Math.Clamp(CaptionLayer.ShadowOffset, 0, 200));
-        return $"null[cap_base];{layer},split[cap_layer][cap_shadow_in];"
-               + $"[cap_shadow_in]format=rgba,colorchannelmixer=rr=0:gg=0:bb=0:aa={Number(Math.Clamp(CaptionLayer.ShadowOpacity, 0, 1))},boxblur=2:1[cap_shadow];"
-               + $"[cap_base][cap_shadow]overlay={x + offset}:{y + offset}:shortest=1[cap_shaded];"
-               + $"[cap_shaded][cap_layer]overlay={x}:{y}:shortest=1";
-    }
-
     private bool CommandUsesCaptions(string command) =>
-        command.Contains(BuildCaptionFilter(CaptionsFilePath), StringComparison.OrdinalIgnoreCase);
+        command.Contains(FilterGraphBuilder.CaptionFilter(CaptionsFilePath), StringComparison.OrdinalIgnoreCase);
 
     // Transcribing is the slow part, and the words do not change when only the style does. So the words are
     // kept, by what was listened to and with which model.

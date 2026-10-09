@@ -68,6 +68,13 @@ public sealed class ModeProfile
     public bool ShowCutSegmentsPane { get; set; }
     public bool ShowKeyframesPane { get; set; }
     public bool ShowClipKeyframes { get; set; }
+    public bool LayoutPaneOnLeft { get; set; }
+    public bool SidePanesOnLeft { get; set; }
+    public bool CutSegmentsOnTop { get; set; }
+    public bool TimelineOnTop { get; set; }
+    public double SidePanesWidth { get; set; }
+    public double LayoutPaneWidth { get; set; }
+    public double KeyframesPaneHeight { get; set; }
 }
 
 /// <summary>
@@ -93,6 +100,9 @@ public sealed class AppSettings
     public const string WhisperModelBaseUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
     public static string FilePath => AppPaths.SettingsFile;
+
+    // Declared before Current: static fields are set in the order they are written, and loading the settings uses this.
+    private static readonly System.Reflection.PropertyInfo[] ProfileProperties = typeof(ModeProfile).GetProperties();
 
     /// <summary>The settings in effect. Replaced as a whole when the user saves the settings window.</summary>
     public static AppSettings Current { get; private set; } = Load();
@@ -217,6 +227,12 @@ public sealed class AppSettings
     /// </summary>
     public bool PlayerHardwareAcceleration { get; set; } = true;
 
+    /// <summary>
+    /// Hardware Decode Adapter: which graphics card decodes for an encode, by its Direct3D number, so that the
+    /// work can be given to a second card. -1 leaves the choice to FFmpeg.
+    /// </summary>
+    public int HardwareDecodeAdapter { get; set; } = -1;
+
     // ----- Dead air -----
 
     /// <summary>Remove Dead Air: anything quieter than this, in decibels, counts as silence.</summary>
@@ -248,8 +264,6 @@ public sealed class AppSettings
 
     /// <summary>The interface settings of each mode, by mode name. The mode in use is written here whenever the settings are saved.</summary>
     public Dictionary<string, ModeProfile> ModeProfiles { get; set; } = [];
-
-    private static readonly System.Reflection.PropertyInfo[] ProfileProperties = typeof(ModeProfile).GetProperties();
 
     /// <summary>The interface settings as they are now, as a profile to put away.</summary>
     private ModeProfile CaptureProfile()
@@ -325,6 +339,41 @@ public sealed class AppSettings
     /// <summary>Whether clips on the timeline show a diamond at each of their keyframes.</summary>
     public bool ShowClipKeyframes { get; set; } = true;
 
+    // Where the panes are around the player, and how large: each mode keeps its own arrangement. False and 0
+    // are where a pane starts out, so settings from before the panes could be moved read as the usual layout.
+
+    /// <summary>The layout pane is to the left of the video instead of to its right.</summary>
+    public bool LayoutPaneOnLeft { get; set; }
+
+    /// <summary>The side panes (Keyframes, Cut Segments) are to the left of the player instead of to its right.</summary>
+    public bool SidePanesOnLeft { get; set; }
+
+    /// <summary>The Cut Segments pane is above the Keyframes pane instead of under it.</summary>
+    public bool CutSegmentsOnTop { get; set; }
+
+    /// <summary>The master timeline is above the player instead of under it.</summary>
+    public bool TimelineOnTop { get; set; }
+
+    /// <summary>How wide the side panes are, in pixels; 0 for the width they start with.</summary>
+    public double SidePanesWidth { get; set; }
+
+    /// <summary>How wide the layout pane is, in pixels; 0 for the width it starts with.</summary>
+    public double LayoutPaneWidth { get; set; }
+
+    /// <summary>How tall the Keyframes pane is, in pixels; 0 for as tall as what is in it.</summary>
+    public double KeyframesPaneHeight { get; set; }
+
+    /// <summary>How tall the master timeline starts out in a mode, 1 to 50.</summary>
+    public static int DefaultMasterTimelineHeight(string mode) => mode == EditorMode ? 17 : 1;
+
+    /// <summary>Reset Panes Layout: every pane back where the mode in use starts with it, at the size it starts with.</summary>
+    public void ResetPaneLayout()
+    {
+        (LayoutPaneOnLeft, SidePanesOnLeft, CutSegmentsOnTop, TimelineOnTop) = (false, false, false, false);
+        (SidePanesWidth, LayoutPaneWidth, KeyframesPaneHeight) = (0, 0, 0);
+        MasterTimelineHeight = DefaultMasterTimelineHeight(UiMode);
+    }
+
     /// <summary>A new window starts with the Frame &amp; Layer Engine switched on.</summary>
     public bool StartWithFrameEngine { get; set; }
 
@@ -358,7 +407,7 @@ public sealed class AppSettings
         UiMode = editor ? EditorMode : EncoderMode;
 
         TimelineHeight = editor ? 5 : 1;
-        MasterTimelineHeight = editor ? 17 : 1;
+        ResetPaneLayout();
         PresetBarLocation = editor ? PresetBarInSummary : PresetBarAtTop;
         ShowAdvancedFiltersTab = editor;
         ShowTimelineWaveform = editor;
@@ -513,6 +562,11 @@ public sealed class AppSettings
             if (File.Exists(FilePath))
             {
                 var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
+
+                // A file that spells these out as null, as one written by hand or by an older version might.
+                settings.SmartRules ??= [];
+                settings.ModeProfiles ??= [];
+
                 foreach (var rule in settings.SmartRules)
                     rule.Normalize();
 

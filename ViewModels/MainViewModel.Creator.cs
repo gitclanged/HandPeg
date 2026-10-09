@@ -271,7 +271,7 @@ public partial class MainViewModel
         if (!Layers.Any(e => e.IsVideo) && CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
         AttachLayer(element);
-        StatusText = $"Added {element.Name}. Use Draw Target to mark it on the video.";
+        Log($"Added layer {element.Name}: use Draw Target to mark it on the video");
     }
 
     /// <summary>Adds a picture from a file as a layer. Returns false when the file is not a readable image.</summary>
@@ -298,7 +298,7 @@ public partial class MainViewModel
         };
         Checkpoint("add an image");
         AttachLayer(element);
-        StatusText = $"Added {element.Name}. Use Arrange to place it on the frame.";
+        Log($"Added image layer {element.Name}");
         return true;
     }
 
@@ -309,39 +309,91 @@ public partial class MainViewModel
     /// </param>
     public async Task<bool> AddVideoLayerAsync(string path, double startSeconds = 0)
     {
-        var info = await MediaProbe.ProbeAsync(path, _shutdown.Token);
-        if (info?.Video is not { Width: > 0, Height: > 0 } video)
-        {
-            StatusText = $"Not a video that can be read: {path}";
-            return false;
-        }
-
+        // The block goes onto the timeline now, marked as loading: nothing is waited for before the drop is
+        // answered. What the file is (its size, its length, whether it has sound) is found out afterwards.
         var element = new Layer
         {
             Kind = LayerKind.VideoFile,
             Name = Path.GetFileName(path),
             ImagePath = path,
-            ImageWidth = video.Width,
-            ImageHeight = video.Height,
             SizeWidth = 0.4,
             PositionX = 0.05,
             PositionY = NextLayerY(),
-            HasAudio = info.Audio.Count > 0,
-            MediaDuration = Math.Max(info.DurationSeconds, 0),
+            StartTime = startSeconds > 0.01 ? Math.Round(startSeconds, 2) : 0,
+            IsLoading = true,
         };
-        if (startSeconds > 0.01)
-        {
-            var left = SequenceSeconds - startSeconds;
-            element.StartTime = Math.Round(startSeconds, 2);
-            element.Duration = info.DurationSeconds > 0.05 && info.DurationSeconds < left ? Math.Round(info.DurationSeconds, 2) : 0;
-        }
 
         Checkpoint("add a video layer");
         AttachLayer(element);
+        StatusText = $"Loading {element.Name}...";
+        return await CompleteVideoLayerAsync(element, startSeconds > 0.01);
+    }
+
+    /// <summary>Notes what a clip's sound is in its file (its first audio stream's codec and channels), for its row's heading.</summary>
+    private static void DescribeSound(Layer element, MediaInfo info)
+    {
+        if (info.Audio.FirstOrDefault() is not { } stream)
+            return;
+
+        (element.AudioCodec, element.AudioChannels) = (stream.Codec, stream.ChannelLayout.Length > 0 ? stream.ChannelLayout : $"{stream.Channels} ch");
+    }
+
+    /// <summary>Raised when a layer that was loading has been filled in: its box in the layout pane has its real shape now.</summary>
+    public event Action? LayerLoaded;
+
+    /// <summary>
+    /// Looks at a video layer's file, away from the interface, and fills the layer in with what it finds: then
+    /// its block has its real length and its frames are fetched. A file that turns out not to be a video is
+    /// taken off the timeline again.
+    /// </summary>
+    /// <param name="playOnce">Whether the layer was placed at a moment: it then plays once through from there, when that fits.</param>
+    private async Task<bool> CompleteVideoLayerAsync(Layer element, bool playOnce)
+    {
+        var path = element.ImagePath;
+        MediaInfo? info = null;
+        try
+        {
+            var token = _shutdown.Token;
+            info = await Task.Run(() => MediaProbe.ProbeAsync(path, token), token);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Not readable: dealt with below, as a file that is not a video.
+        }
+
+        // Undone, or removed, while it was being looked at: there is nothing left to fill in.
+        if (!Layers.Contains(element))
+            return false;
+
+        if (info?.Video is not { Width: > 0, Height: > 0 } video)
+        {
+            Detach(element);
+            StatusText = $"Not a video that can be read: {path}";
+            return false;
+        }
+
+        using (DeferCommand())
+        {
+            (element.ImageWidth, element.ImageHeight) = (video.Width, video.Height);
+            (element.HasAudio, element.MediaDuration) = (info.Audio.Count > 0, Math.Max(info.DurationSeconds, 0));
+            DescribeSound(element, info);
+            if (playOnce && element.Duration <= 0.001)
+            {
+                var left = SequenceSeconds - element.StartTime;
+                element.Duration = info.DurationSeconds > 0.05 && info.DurationSeconds < left ? Math.Round(info.DurationSeconds, 2) : 0;
+            }
+
+            element.IsLoading = false;
+            GenerateCommand();
+        }
+
+        // Its sound, when it has any, is a row of the Audio tab from now on: at the layer's place, for its length.
+        RefreshLayerRows();
+        LayerLoaded?.Invoke();
         _ = LoadLayerPicturesAsync(element);
-        StatusText = element.HasAudio
-            ? $"Added {element.Name} as a video layer. Its sound is mixed into the first audio track."
-            : $"Added {element.Name} as a video layer.";
+        Log(element.HasAudio
+            ? $"Added video layer {element.Name}, and its sound on the Audio tab at the same place"
+            : $"Added video layer {element.Name}");
         return true;
     }
 
@@ -349,7 +401,9 @@ public partial class MainViewModel
     /// Adds the sound of a file (a song, a recording, or the sound of a video) to the timeline as a clip of its
     /// own: it has no picture, starts where it is put, and is mixed into the first audio track of the output.
     /// </summary>
-    public async Task<bool> AddAudioLayerAsync(string path, double startSeconds = 0)
+    /// <param name="isVoice">Whether the sound is a voice (a voiceover): the sounds set to Auto-Duck make room for it.</param>
+    /// <param name="name">What the clip is called, when that is not its file's name.</param>
+    public async Task<bool> AddAudioLayerAsync(string path, double startSeconds = 0, bool isVoice = false, string? name = null)
     {
         var info = await MediaProbe.ProbeAsync(path, _shutdown.Token);
         if (info is not { Audio.Count: > 0 })
@@ -367,16 +421,19 @@ public partial class MainViewModel
             MediaDuration = Math.Max(info.DurationSeconds, 0),
             StartTime = Math.Round(Math.Max(startSeconds, 0), 2),
         };
+        DescribeSound(element, info);
 
         // Its block is as long as the sound is, unless that runs past the end of the video.
         if (element.MediaDuration > 0.05 && element.StartTime + element.MediaDuration < SequenceSeconds)
             element.Duration = Math.Round(element.MediaDuration, 2);
-        Checkpoint("add an audio clip");
+        (element.IsVoice, element.Name) = (isVoice, name ?? element.Name);
+        Checkpoint(isVoice ? "add a voiceover" : "add an audio clip");
         AttachLayer(element);
         _ = LoadLayerPicturesAsync(element);
-        StatusText = AudioTracks.Count == 0
-            ? $"Added {element.Name}. This video has no audio track of its own for it to be mixed into, so it will not be heard in the output."
-            : $"Added {element.Name} at {TimeDisplay.Format(element.StartTime)}. It is mixed into the first audio track; drag its block to move it.";
+        if (isVoice)
+            return true;
+
+        Log($"Added audio clip {element.Name} at {TimeDisplay.Format(element.StartTime)}");
         return true;
     }
 
@@ -482,7 +539,7 @@ public partial class MainViewModel
         var second = Layer.FromState(layer.ToState(), SourceWidth, SourceHeight, FrameWidth, FrameHeight);
         (second.Waveform, second.Filmstrip) = (layer.Waveform, layer.Filmstrip);
         (second.StartTime, second.Duration) = (seconds, end - seconds);
-        second.MediaOffset = layer.MediaOffset + (seconds - layer.StartTime);
+        second.MediaOffset = layer.MediaOffset + (seconds - layer.StartTime) * layer.Speed;
 
         // The motion carries on across the cut: the second part's keyframes are counted from its own beginning.
         second.ShiftKeys(layer.StartTime - seconds);
@@ -490,7 +547,7 @@ public partial class MainViewModel
 
         Hook(second);
         InsertLayer(Layers.IndexOf(layer) + 1, second);
-        StatusText = $"{layer.Name} split at {TimeDisplay.Format(seconds)}: two clips on the same track, each of which can be moved, trimmed or deleted on its own.";
+        Log($"Split clip: {layer.Name} at {TimeDisplay.Format(seconds)}");
         return true;
     }
 
@@ -509,7 +566,7 @@ public partial class MainViewModel
             Checkpoint("split the video");
             Segments.Add(new CutSegment(TimeSpan.Zero, at));
             Segments.Add(new CutSegment(at, TimeSpan.FromSeconds(total)));
-            StatusText = $"The video was split at {TimeDisplay.Format(seconds)} into two segments.";
+            Log($"Split the video at {TimeDisplay.Format(seconds)} into two segments");
             return true;
         }
 
@@ -523,7 +580,7 @@ public partial class MainViewModel
         var index = Segments.IndexOf(segment);
         Segments[index] = new CutSegment(segment.Start, at) { IsSkipped = segment.IsSkipped };
         Segments.Insert(index + 1, new CutSegment(at, segment.End) { IsSkipped = segment.IsSkipped });
-        StatusText = $"Segment split at {TimeDisplay.Format(seconds)}.";
+        Log($"Split segment at {TimeDisplay.Format(seconds)}");
         return true;
     }
 
@@ -668,7 +725,17 @@ public partial class MainViewModel
             if (Layers.FirstOrDefault(l => l.TrackId == layer.TrackId) is { } other && (other.Kind != layer.Kind || other.ImagePath != layer.ImagePath))
                 layer.TrackId = 0;
             AttachLayer(layer);
-            _ = LoadLayerPicturesAsync(layer);
+
+            // Saved while it was still being looked at (an undo step taken a moment after a drop): looked at again.
+            if (layer is { IsVideoFile: true, ImageWidth: <= 0 })
+            {
+                layer.IsLoading = true;
+                _ = CompleteVideoLayerAsync(layer, playOnce: false);
+            }
+            else
+            {
+                _ = LoadLayerPicturesAsync(layer);
+            }
         }
     }
 
@@ -730,6 +797,10 @@ public partial class MainViewModel
 
         if (e.PropertyName == Layer.KeysChanged)
             RefreshAnyKeys();
+
+        // Muted, or heard again, while dropped tracks are hidden: its row on the Audio tab goes, or comes back.
+        if (e.PropertyName is nameof(Layer.IsHidden) or nameof(Layer.IsSoundMuted) && HideDroppedTracks)
+            RefreshAudioRows();
 
         // Moved, sized or turned by hand: what that does to its keyframes.
         RecordKey(source, e.PropertyName);
