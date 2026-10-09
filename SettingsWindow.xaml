@@ -34,7 +34,17 @@
             <Button Grid.Column="2" Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
         </Grid>
 
-        <TabControl>
+        <!-- Type here to find an option: what does not match is hidden, on every tab -->
+        <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
+            <TextBox x:Name="SearchBox" Padding="28,5,8,5" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged"
+                     AutomationProperties.Name="Search Settings" ToolTip="Type part of an option's name or description. Tabs with nothing that matches are hidden; clear the box to see everything again." />
+            <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13" Margin="9,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
+                       Foreground="{DynamicResource MutedTextBrush}" IsHitTestVisible="False" />
+            <TextBlock x:Name="SearchHint" Text="Search settings" Margin="30,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
+                       Foreground="{DynamicResource MutedTextBrush}" IsHitTestVisible="False" />
+        </Grid>
+
+        <TabControl x:Name="SettingsTabs">
             <TabItem Header="Tools">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
                 <StackPanel>
@@ -97,19 +107,60 @@
                         <Button Grid.Row="3" Grid.Column="2" Content="Browse..." Margin="6,4,0,4" Tag="{Binding ElementName=WhisperPathBox}" Click="Browse_Click" />
                     </Grid>
 
-                    <TextBlock Text="Interface" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,4">
+                </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Interface">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+                <StackPanel>
+                    <TextBlock Text="Mode" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Encoder Mode is the lean front end for converting and trimming; Editor Mode adds layers, captions and the full timeline. The button beside the gear switches between them. Each mode keeps its own copy of the layout options on this tab and on the Timeline tab: what you set here is set for the mode you are in now." />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <TextBlock Text="Default Mode on Launch:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DefaultModeBox" MinWidth="170" Margin="0" SelectedItem="{Binding DefaultMode}" AutomationProperties.Name="Default Mode on Launch"
+                                  ToolTip="The mode HandPeg starts in: Encoder Mode, Editor Mode, or whichever was in use when it was last closed." />
+                        <TextBlock x:Name="CurrentModeText" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+
+                    <TextBlock Text="This mode starts with" Style="{StaticResource SectionTitle}" Margin="0,18,0,2" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="What is ticked in the main window when HandPeg starts in this mode. Each can still be changed there for the session." />
+                    <WrapPanel>
+                        <CheckBox Content="Play only cut segments" IsChecked="{Binding StartWithPlayOnlySegments}" Margin="0,2,24,2" />
+                        <CheckBox Content="Snap cuts to keyframes" IsChecked="{Binding StartWithSnapToKeyframes}" Margin="0,2,24,2" />
+                        <CheckBox Content="Show keyframes" IsChecked="{Binding ShowKeyframes}" Margin="0,2,24,2" />
+                        <CheckBox Content="Create chapter markers" IsChecked="{Binding StartWithChapterMarkers}" Margin="0,2,24,2" />
+                        <CheckBox Content="Chapters at cut points" IsChecked="{Binding StartWithChaptersAtCuts}" Margin="0,2,24,2" />
+                        <CheckBox Content="Auto-captions controls on the Subtitles tab" IsChecked="{Binding ShowAutoCaptions}" Margin="0,2,24,2" />
+                        <CheckBox Content="Open the layout pane by itself" IsChecked="{Binding AutoOpenLayoutPane}" Margin="0,2,24,2"
+                                  ToolTip="Opens the Edit Layout pane beside the player as soon as there is a layout to edit." />
+                        <CheckBox Content="Live Preview" IsChecked="{Binding LivePreview}" Margin="0,2,24,2" />
+                    </WrapPanel>
+
+                    <TextBlock Text="Launch window" Style="{StaticResource SectionTitle}" Margin="0,18,0,2" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Opens over the main window when HandPeg starts in Editor Mode: a place to drop a video, a way back into a recent project, and style presets to drop a video on. It is not shown in Encoder Mode." />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                         <TextBlock Text="Show Splash Screen on Launch:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="SplashBox" MinWidth="170" Margin="0" AutomationProperties.Name="Show Splash Screen on Launch"
-                                  ToolTip="The launch window opens before the main window: a place to drop a video, a way back into a recent project, and this many of your presets (the first ones in the list) to drop a video on. Disabled goes straight to the main window.">
+                                  ToolTip="How many style presets the launch window offers as buttons. Disabled goes straight to the main window.">
                             <ComboBoxItem Content="Disabled" />
-                            <ComboBoxItem Content="Show 1 Preset" />
-                            <ComboBoxItem Content="Show 2 Presets" />
-                            <ComboBoxItem Content="Show 3 Presets" />
-                            <ComboBoxItem Content="Show 4 Presets" />
-                            <ComboBoxItem Content="Show 5 Presets" />
+                            <ComboBoxItem Content="Show 1 Style" />
+                            <ComboBoxItem Content="Show 2 Styles" />
+                            <ComboBoxItem Content="Show 3 Styles" />
+                            <ComboBoxItem Content="Show 4 Styles" />
+                            <ComboBoxItem Content="Show 5 Styles" />
                         </ComboBox>
                     </StackPanel>
+                    <StackPanel>
+                        <TextBlock Text="Style presets shown as buttons (click to pick; none picked shows the most recent):" Margin="0,2,0,4" />
+                        <ListBox x:Name="SplashStyleList" SelectionMode="Multiple" Height="92" DisplayMemberPath="Name" AutomationProperties.Name="Launch Window Styles"
+                                 ToolTip="The style presets in the Styles folder. The ones selected here are the buttons of the launch window, up to the number set above." />
+                    </StackPanel>
+
+                    <TextBlock Text="Appearance and layout" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Use GPU acceleration in the video player" IsChecked="{Binding PlayerHardwareAcceleration}"
                               ToolTip="The graphics card decodes the video as well as drawing it (Direct3D 11), which keeps high-resolution and high-frame-rate footage smooth and the processor free. With Live Preview on, the card still decodes and each frame is handed to the filters. Turn this off if the picture is green, garbled or stutters: the processor then decodes. Applied when you press Save." />
                     <CheckBox Content="Show Command Preview Tab" IsChecked="{Binding ShowCommandPreviewTab}"
@@ -292,7 +343,7 @@
                                Text="Smart rules and the default preset are on the Automation tab of the main window." />
                     <CheckBox Content="Save the Target File Size with each preset" IsChecked="{Binding SaveTargetSizeInPresets}"
                               ToolTip="When on, Save Preset also stores the Target File Size set at the time, and applying that preset brings it back." />
-                    <CheckBox Content="Auto-fallback to Software Encoder on failure" IsChecked="{Binding AutoFallbackToSoftware}"
+                    <CheckBox Content="Fall back to the software encoder when a hardware encode fails" IsChecked="{Binding AutoFallbackToSoftware}"
                               ToolTip="If an encode or queue job fails on a hardware encoder, it is tried once more with libx264 (or libx265 for HEVC, SVT-AV1 for AV1)." />
                 </StackPanel>
             </TabItem>

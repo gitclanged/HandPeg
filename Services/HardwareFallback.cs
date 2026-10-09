@@ -21,6 +21,9 @@ public static partial class HardwareFallback
     [GeneratedRegex(@"-rc cqp -qp_i (?<q>\d+) -qp_p \d+")]
     private static partial Regex AmfQualityRegex();
 
+    [GeneratedRegex(@" -(?:preset|quality) (?:p[1-7]|speed|balanced|quality|veryfast|faster|fast|medium|slow|slower|veryslow)\b")]
+    private static partial Regex VendorPresetRegex();
+
     [GeneratedRegex(@" -rc (?:vbr_peak|vbr|cbr)\b")]
     private static partial Regex VendorRateModeRegex();
 
@@ -57,6 +60,9 @@ public static partial class HardwareFallback
 
         // In the bitrate modes only the vendor's "-rc" switch has to go; the bitrate itself carries over.
         rewritten = VendorRateModeRegex().Replace(rewritten, "");
+
+        // The vendor's own speed step (NVENC's p4, AMF's "balanced") means nothing to a software encoder.
+        rewritten = VendorPresetRegex().Replace(rewritten, "");
 
         // x264 and x265 take a preset; SVT-AV1 has its own numbering and is left at its default.
         var replacement = software == "libsvtav1" ? $"-c:v {software}" : $"-c:v {software} -preset medium";

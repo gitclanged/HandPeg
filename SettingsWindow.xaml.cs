@@ -39,6 +39,17 @@ public partial class SettingsWindow : Window
 
         TimeFormatBox.SelectedIndex = _settings.ShowTimesAsFrames ? 1 : 0;
         SplashBox.SelectedIndex = Math.Clamp(_settings.SplashPresetCount, 0, 5);
+        DefaultModeBox.ItemsSource = AppSettings.DefaultModes;
+        if (!AppSettings.DefaultModes.Contains(_settings.DefaultMode))
+            _settings.DefaultMode = AppSettings.LastUsedMode;
+        DefaultModeBox.SelectedItem = _settings.DefaultMode;
+        CurrentModeText.Text = $"You are in {_settings.UiMode} now.";
+
+        // The styles the launch window can show, with the ones picked for it selected.
+        var styles = StyleFile.All();
+        SplashStyleList.ItemsSource = styles;
+        foreach (var style in styles.Where(s => _settings.SplashStylePresets.Contains(s.FileName, StringComparer.OrdinalIgnoreCase)))
+            SplashStyleList.SelectedItems.Add(style);
 
         // A model saved under a name that is no longer offered still shows, so it is not silently replaced.
         var models = DependencyUpdater.WhisperModels.ToList();
@@ -93,6 +104,89 @@ public partial class SettingsWindow : Window
         firstRun.ShowDialog();
         _viewModel.OnSettingsSaved();
         DialogResult = false;
+    }
+
+    // ----- Search -----
+
+    /// <summary>
+    /// Shows only what matches the search box. An option is one of the things stacked down a tab (a tick box,
+    /// a labelled row, a block of text); it matches when its own words, or its tool tip, or the title of the
+    /// section it is under, contain what was typed. Tabs left with nothing are hidden.
+    /// </summary>
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        var query = SearchBox.Text.Trim();
+        SearchHint.Visibility = SearchBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        TabItem? firstMatch = null;
+        foreach (var tab in SettingsTabs.Items.OfType<TabItem>())
+        {
+            var panel = (tab.Content is ScrollViewer scroller ? scroller.Content : tab.Content) as Panel;
+            if (panel is null)
+                continue;
+
+            var any = false;
+            FrameworkElement? title = null;
+            var titleMatches = false;
+            foreach (var child in panel.Children.OfType<FrameworkElement>())
+            {
+                if (child is TextBlock heading && ReferenceEquals(heading.Style, FindResource("SectionTitle")))
+                {
+                    (title, titleMatches) = (heading, Contains(heading.Text, query));
+                    heading.Visibility = query.Length == 0 || titleMatches ? Visibility.Visible : Visibility.Collapsed;
+                    any |= titleMatches && query.Length > 0;
+                    continue;
+                }
+
+                var matches = query.Length == 0 || titleMatches || Contains(TextOf(child), query);
+                child.Visibility = matches ? Visibility.Visible : Visibility.Collapsed;
+                if (matches && query.Length > 0)
+                {
+                    any = true;
+                    if (title is not null)
+                        title.Visibility = Visibility.Visible;
+                }
+            }
+
+            tab.Visibility = query.Length == 0 || any ? Visibility.Visible : Visibility.Collapsed;
+            if (any)
+                firstMatch ??= tab;
+        }
+
+        // The tab that was open may just have been hidden.
+        if (query.Length > 0 && firstMatch is not null && SettingsTabs.SelectedItem is TabItem { Visibility: not Visibility.Visible })
+            SettingsTabs.SelectedItem = firstMatch;
+    }
+
+    private static bool Contains(string text, string query) => text.Contains(query, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Every word an option shows or explains itself with: its text, its content, its tool tip, and those of what is inside it.</summary>
+    private static string TextOf(DependencyObject element)
+    {
+        var text = new System.Text.StringBuilder();
+        void Collect(DependencyObject item)
+        {
+            switch (item)
+            {
+                case TextBlock block:
+                    text.Append(block.Text).Append(' ');
+                    break;
+                case ContentControl { Content: string content }:
+                    text.Append(content).Append(' ');
+                    break;
+            }
+
+            if (item is FrameworkElement { ToolTip: string tip })
+                text.Append(tip).Append(' ');
+            if (item is FrameworkElement named)
+                text.Append(System.Windows.Automation.AutomationProperties.GetName(named)).Append(' ');
+
+            foreach (var child in LogicalTreeHelper.GetChildren(item).OfType<DependencyObject>())
+                Collect(child);
+        }
+
+        Collect(element);
+        return text.ToString();
     }
 
     // ----- whisper.cpp -----
@@ -265,9 +359,7 @@ public partial class SettingsWindow : Window
 
         _settings.ShowTimesAsFrames = TimeFormatBox.SelectedIndex == 1;
         _settings.SplashPresetCount = Math.Max(SplashBox.SelectedIndex, 0);
-
-        // Answers to "Always use these settings for this preset" are given in the launch window; take them as they are now.
-        _settings.PresetImportChoices = AppSettings.Current.PresetImportChoices;
+        _settings.SplashStylePresets = SplashStyleList.SelectedItems.OfType<StyleFile>().Select(s => s.FileName).ToList();
 
         // The smart rules and the default preset are edited on the main window's Automation tab, and saved
         // there as they change. This copy was made when the window opened; take theirs as they are now.

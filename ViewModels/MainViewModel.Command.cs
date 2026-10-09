@@ -270,7 +270,7 @@ public partial class MainViewModel
     // What makes the live graph cheaper than the export's, while showing the same layers in the same places:
     //   - everything is sized for the player (see above), sources being scaled down before anything is done to them;
     //   - the blurred background is blurred at a quarter of that size and scaled back up, which a blur hides;
-    //   - an element's rounded or feathered outline is worked out once and reused, where the export works it
+    //   - a layer's rounded or feathered outline is worked out once and reused, where the export works it
     //     out again for every frame;
     //   - a source faster than 30 frames a second is previewed at half its rate.
     private static readonly double[] LiveScaleSteps = [0.25, 1 / 3.0, 0.5, 0.75, 1];
@@ -700,10 +700,19 @@ public partial class MainViewModel
 
             var (x, y, layerWidth, layerHeight) = layer.GetOutputRect(width, height, SourceWidth, SourceHeight);
             graph.Append($"[stage{n}{s}];");
-            graph.Append(BuildElementLayer(layer, $"ui{n}", s, layerWidth, layerHeight, startSeconds));
+            graph.Append(BuildLayer(layer, $"ui{n}", s, layerWidth, layerHeight, startSeconds));
 
             // A video from a file runs for as long as it is asked to; the picture under it decides when the output ends.
             var ending = layer.IsVideoFile ? ":shortest=1" : "";
+
+            // A layer with a time to appear and a time to go is only laid on between the two. The clock the
+            // filter sees starts at this stretch of the picture, so the times are counted from there.
+            if (layer.HasTiming && (layer.StartTime > 0.001 || layer.Duration > 0.001))
+            {
+                var from = layer.StartTime - startSeconds;
+                var until = layer.Duration > 0.001 ? Number(from + layer.Duration) : "1e9";
+                ending += $":enable='between(t,{Number(from)},{until})'";
+            }
             if (layer.Shadow)
             {
                 // The shadow is the layer's own outline in black at reduced opacity, laid down first and offset.
@@ -729,16 +738,21 @@ public partial class MainViewModel
     /// that makes parts of it transparent: its own transparency (a PNG's, or a color keyed out), a custom
     /// mask from a file, and the rounded or feathered outline. Opacity scales whatever results.
     /// </summary>
-    private string BuildElementLayer(OverlayRegion layer, string name, string s, int width, int height, double startSeconds)
+    private string BuildLayer(Layer layer, string name, string s, int width, int height, double startSeconds)
     {
         var chain = new StringBuilder();
         if (layer.IsVideoFile)
         {
             // Read by a source filter inside the graph, so no second -i is needed. It repeats without end,
             // is given an even clock, and is started as far in as the main video is.
+            // Its own video begins when the layer appears: by then this stretch of the picture may be some
+            // way in (so the start of the layer's video is skipped), or not there yet (so it is held back).
             chain.Append($"movie='{EscapeFilterPath(layer.ImagePath)}':loop=0,setpts=N/FRAME_RATE/TB");
-            if (startSeconds > 0.01)
-                chain.Append($",trim=start={Number(startSeconds)},setpts=PTS-STARTPTS");
+            var into = startSeconds - layer.StartTime + layer.MediaOffset;
+            if (into > 0.01)
+                chain.Append($",trim=start={Number(into)},setpts=PTS-STARTPTS");
+            else if (into < -0.01)
+                chain.Append($",setpts=PTS+{Number(-into)}/TB");
             chain.Append($",scale={width}:{height}");
         }
         else if (layer.IsImage)
@@ -770,7 +784,7 @@ public partial class MainViewModel
             masks.Add($"[{name}_cmask{s}]");
         }
 
-        if (BuildElementMask(layer, width, height, _liveScale) is { } shape)
+        if (BuildLayerMask(layer, width, height, _liveScale) is { } shape)
         {
             sources.Append($";color=c=black:s={width}x{height}:r=1,format=gray,geq=lum='255*{shape}',trim=end_frame=1,loop=loop=-1:size=1[{name}_smask{s}]");
             masks.Add($"[{name}_smask{s}]");
@@ -801,11 +815,11 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The geq expression (0 to 1 per pixel) for an element's shape, or null when it is a plain rectangle.
+    /// The geq expression (0 to 1 per pixel) for a layer's shape, or null when it is a plain rectangle.
     /// It measures how far a pixel is inside a rounded rectangle: zero on the edge, rising inwards. Rounded
     /// corners cut the picture off at that edge; a feather lets it fade in over its width instead.
     /// </summary>
-    private static string? BuildElementMask(OverlayRegion element, int width, int height, double pixelScale = 1)
+    private static string? BuildLayerMask(Layer element, int width, int height, double pixelScale = 1)
     {
         var limit = Math.Max(Math.Min(width, height) / 2 - 1, 1);
         var corner = Math.Min((int)Math.Round(Math.Clamp(element.CornerRadius, 0, 50) / 100.0 * Math.Min(width, height)), limit);
@@ -907,6 +921,10 @@ public partial class MainViewModel
                 _ => $"-crf {Crf}",
             });
         }
+
+        // Hardware encoders are particular about the pixel format they are handed; 4:2:0 is the one they all take.
+        if (VideoEncoder.IsHardware && !ExtraVideoArguments.Contains("-pix_fmt", StringComparison.Ordinal))
+            parts.Add("-pix_fmt yuv420p");
 
         if (!string.IsNullOrWhiteSpace(ExtraVideoArguments))
             parts.Add(ExtraVideoArguments.Trim());

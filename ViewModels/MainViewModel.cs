@@ -54,11 +54,11 @@ public partial class MainViewModel : ObservableObject
         nameof(CaptionUseExternalAudio), nameof(CaptionUseVideoAudio), nameof(CaptionAudioTrack), nameof(IsPlaying),
         nameof(ShowAdvancedPlayback), nameof(ShowSimplePlayback),
         nameof(ShowCommandPreviewTab), nameof(ShowAdvancedFiltersTab),
-        nameof(DrawTargetElement), nameof(IsArrangeActive), nameof(SpriteSheetPath),
+        nameof(DrawTargetLayer), nameof(IsArrangeActive), nameof(SpriteSheetPath),
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
         nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloTrack),
         nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
-        nameof(IsEditorMode), nameof(CopyBypassWarning),
+        nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText),
     ];
 
 
@@ -130,13 +130,13 @@ public partial class MainViewModel : ObservableObject
 
         InitializeQueue();
         ApplyDisplaySettings();
-        UiElements.CollectionChanged += (_, _) => RefreshElementRows();
-        RefreshElementRows();
+        Layers.CollectionChanged += (_, _) => RefreshLayerRows();
+        RefreshLayerRows();
         LoadAutomation();
         Presets.CollectionChanged += (_, _) => RefreshPresetNames();
         AudioTracks.CollectionChanged += (_, _) => KeepCaptionTrackValid();
         CaptionLayer.PropertyChanged += (_, _) => GenerateCommand();
-        UiElements.CollectionChanged += (_, _) => GenerateCommand();
+        Layers.CollectionChanged += (_, _) => GenerateCommand();
         Segments.CollectionChanged += (_, _) => GenerateCommand();
         GenerateCommand();
 
@@ -283,8 +283,8 @@ public partial class MainViewModel : ObservableObject
         BlurRadius = Math.Clamp(preset.BlurRadius, 5, 50);
         BlurPasses = Math.Clamp(preset.BlurPasses, 1, 5);
         BackgroundDim = Math.Clamp(preset.BackgroundDim, -0.5, 0);
-        SetUiElements(preset.UiElements ?? []);
-        MainVideoIndex = Math.Clamp(preset.MainVideoIndex, 0, UiElements.Count);
+        SetLayers(preset.Layers ?? []);
+        MainVideoIndex = Math.Clamp(preset.MainVideoIndex, 0, Layers.Count);
         _layoutSourceAspect = preset.LayoutSourceAspectRatio;
         AddLegacyWatermark(preset);
 
@@ -828,9 +828,10 @@ public partial class MainViewModel : ObservableObject
 
         HardwareEncoderStatusText = "Checking hardware encoders...";
         List<string> supported;
+        List<string> problems;
         try
         {
-            supported = await EncoderProber.ProbeAsync(_shutdown.Token);
+            (supported, problems) = await EncoderProber.ProbeAsync(_shutdown.Token);
         }
         catch (OperationCanceledException)
         {
@@ -863,6 +864,10 @@ public partial class MainViewModel : ObservableObject
             1 => "1 hardware encoder available",
             _ => $"{supported.Count} hardware encoders available",
         };
+
+        // An encoder FFmpeg has but could not start is worth a word: it is usually a driver that needs updating.
+        if (problems.Count > 0)
+            HardwareEncoderStatusText += $". Not usable: {string.Join("; ", problems)}";
     }
 
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
@@ -886,37 +891,49 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Loads a file and applies a preset to it, or only the chosen parts of one: what dropping a video on a
-    /// preset in the launch window does. The smart rules do not apply; the preset was chosen by hand.
+    /// Loads a file and gives it a style preset: what dropping a video on a style in the launch window does.
     /// </summary>
-    public Task LoadFileWithPresetAsync(string path, string presetName, PresetParts parts) => RunOperationAsync(async cancellationToken =>
+    public Task LoadFileWithStyleAsync(string path, string stylePath) => RunOperationAsync(async cancellationToken =>
     {
         SourcePath = path;
         EditingJob = null;
-        var (loaded, message) = await LoadMediaAsync(path, knownLocalPath: null, applyAutomation: false, cancellationToken);
+        var (loaded, message) = await LoadMediaAsync(path, knownLocalPath: null, applyAutomation: true, cancellationToken);
         if (!loaded)
             return message;
 
-        if (Presets.FirstOrDefault(p => p.Name.Equals(presetName, StringComparison.OrdinalIgnoreCase)) is not { } preset)
-            return $"{message}. The preset \"{presetName}\" no longer exists.";
+        if (ReadStyle(stylePath) is not { } style)
+            return $"{message}. {StatusText}";
 
-        if (parts == PresetParts.All)
+        ApplyStyle(style, layout: true, color: true, blur: true, subtitles: true);
+        return $"{message}. Style \"{Path.GetFileNameWithoutExtension(stylePath)}\" applied.";
+    });
+
+    /// <summary>
+    /// Switches between Encoder Mode and Editor Mode. Each mode keeps its own interface settings, which are
+    /// swapped here; what is loaded, cut and set for the encode stays as it is.
+    /// </summary>
+    public void ToggleMode()
+    {
+        var settings = AppSettings.Current;
+        settings.SwitchMode(IsEditorMode ? AppSettings.EncoderMode : AppSettings.EditorMode);
+        try
         {
-            // Selecting it applies it; when it is already selected, apply it again.
-            if (ReferenceEquals(SelectedPreset, preset))
-                ApplyPreset(preset);
-            else
-                SelectedPreset = preset;
-            return $"{message}. Preset \"{preset.Name}\" applied.";
+            settings.SaveAsCurrent();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The switch still holds for this session.
         }
 
-        // Everything as it is now, with the chosen parts replaced by the preset's.
-        var merged = CaptureSettings(preset.Name);
-        merged.TakeFrom(preset, parts);
-        SelectedPreset = null;
-        ApplyPreset(merged);
-        return $"{message}. Preset \"{preset.Name}\" applied in part ({parts}).";
-    });
+        OnSettingsSaved();
+        (FrameEngine, PlayOnlySegments, ShowAutoCaptions) = (IsEditorMode || Layers.Count > 0, settings.StartWithPlayOnlySegments, settings.ShowAutoCaptions);
+        (ShowKeyframes, LivePreview) = (settings.ShowKeyframes, settings.LivePreview);
+        OnPropertyChanged(nameof(ModeButtonText));
+        StatusText = $"{settings.UiMode}: {(IsEditorMode ? "the tools for cutting, layering and captioning." : "the lean front end for converting and trimming.")}";
+    }
+
+    /// <summary>What the mode button says: the mode in use.</summary>
+    public string ModeButtonText => IsEditorMode ? "Editor" : "Encoder";
 
     /// <summary>
     /// Makes a source the current one: downloads it if it is a URL, inspects it and starts playback.
@@ -984,7 +1001,7 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
-        // Elements marked on a video of another shape will not sit on the same things in this one.
+        // Layers marked on a video of another shape will not sit on the same things in this one.
         if (GetLayoutAspectWarning() is { } warning)
             message += $". {warning}";
 
@@ -1204,6 +1221,7 @@ public partial class MainViewModel : ObservableObject
             // The hardware encoder let us down: one more attempt on the software encoder for the same codec.
             HardwareFallback.TryRewrite(command, out var retry, out var hardware, out var software);
             StatusText = $"Warning: {hardware} failed. Retrying with {software}...";
+            Notifier.Show("Hardware encoder failed", $"{hardware} could not encode this video. HandPeg is trying again with {software}.");
 
             // Reflect the switch in the Video tab where that is possible; a hand-edited command is patched in place.
             if (!IsCommandManuallyEdited && VideoEncoders.FirstOrDefault(e => e.Name == software) is { } replacement)

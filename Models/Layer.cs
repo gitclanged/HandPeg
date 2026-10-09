@@ -2,8 +2,8 @@ using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace HandPegApp.Models;
 
-/// <summary>What an element shows.</summary>
-public enum ElementKind
+/// <summary>What a layer shows.</summary>
+public enum LayerKind
 {
     /// <summary>A rectangle cut out of the source video (a minimap, an ammo counter).</summary>
     Video,
@@ -30,36 +30,36 @@ public enum ElementKind
 ///
 /// Everything is stored as a fraction, 0 to 1: the source rectangle relative to the source frame, and the
 /// position and size relative to the output frame. A layout made for one resolution therefore fits any
-/// other: switching the frame from 1080 to 720 wide moves and sizes every element with it.
+/// other: switching the frame from 1080 to 720 wide moves and sizes every layer with it.
 /// </summary>
-public sealed partial class OverlayRegion : ObservableObject
+public sealed partial class Layer : ObservableObject
 {
-    [ObservableProperty] private string _name = "Element";
+    [ObservableProperty] private string _name = "Layer";
 
-    public ElementKind Kind { get; init; }
+    public LayerKind Kind { get; init; }
 
-    /// <summary>The picture of an image element.</summary>
+    /// <summary>The picture of an image layer.</summary>
     public string ImagePath { get; init; } = "";
 
-    // The picture's own size in pixels, which gives a locked image element its shape.
+    // The picture's own size in pixels, which gives a locked image layer its shape.
     public int ImageWidth { get; init; }
     public int ImageHeight { get; init; }
 
-    public bool IsImage => Kind == ElementKind.Image;
+    public bool IsImage => Kind == LayerKind.Image;
 
-    public bool IsVideoFile => Kind == ElementKind.VideoFile;
+    public bool IsVideoFile => Kind == LayerKind.VideoFile;
 
     /// <summary>A picture or a video that comes from a file of its own, not from the main video.</summary>
     public bool IsFile => IsImage || IsVideoFile;
 
-    public bool IsCaptions => Kind == ElementKind.Captions;
+    public bool IsCaptions => Kind == LayerKind.Captions;
 
-    public bool IsMainVideo => Kind == ElementKind.MainVideo;
+    public bool IsMainVideo => Kind == LayerKind.MainVideo;
 
-    public bool IsBackground => Kind == ElementKind.Background;
+    public bool IsBackground => Kind == LayerKind.Background;
 
     /// <summary>Something added by hand, which can be removed again: the captions, the main video and the background cannot.</summary>
-    public bool IsRemovable => Kind is ElementKind.Video or ElementKind.Image or ElementKind.VideoFile;
+    public bool IsRemovable => Kind is LayerKind.Video or LayerKind.Image or LayerKind.VideoFile;
 
     /// <summary>Has a place and a size on the frame of its own, and a style: everything but the main video and the background.</summary>
     public bool HasPlacement => !IsMainVideo && !IsBackground;
@@ -69,6 +69,20 @@ public sealed partial class OverlayRegion : ObservableObject
 
     /// <summary>Can have a color keyed out of it or a mask laid on it: the pictures and videos added by hand.</summary>
     public bool HasKeying => IsRemovable;
+
+    // When the layer is on screen, in seconds of the source's own time.
+
+    /// <summary>When the layer appears.</summary>
+    [ObservableProperty] private double _startTime;
+
+    /// <summary>How long it stays; 0 for until the end of the video.</summary>
+    [ObservableProperty] private double _duration;
+
+    /// <summary>For a video layer: how far into its own video it is when it appears. Set when a layer is split, so the second part carries on where the first left off.</summary>
+    [ObservableProperty] private double _mediaOffset;
+
+    /// <summary>Can be given a time to appear and a time to go: the layers added by hand.</summary>
+    public bool HasTiming => IsRemovable;
 
     // Chroma key: one color of the layer (a green or blue screen) made transparent.
     [ObservableProperty] private bool _chromaKey;
@@ -87,9 +101,9 @@ public sealed partial class OverlayRegion : ObservableObject
     [ObservableProperty] private string _maskPath = "";
 
     /// <summary>Only a piece of the video has a place in the source to be marked.</summary>
-    public bool IsVideo => Kind == ElementKind.Video;
+    public bool IsVideo => Kind == LayerKind.Video;
 
-    // Where the element is in the source, as fractions of the source frame.
+    // Where the layer is in the source, as fractions of the source frame.
     [ObservableProperty] private double _sourceX;
     [ObservableProperty] private double _sourceY;
     [ObservableProperty] private double _sourceWidth = 0.25;
@@ -127,12 +141,12 @@ public sealed partial class OverlayRegion : ObservableObject
     [NotifyPropertyChangedFor(nameof(SizeHeightPercent))]
     private double _sizeHeight;
 
-    /// <summary>While locked, the element keeps the shape of its source rectangle; unlocked, it can be stretched.</summary>
+    /// <summary>While locked, the layer keeps the shape of its source rectangle; unlocked, it can be stretched.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsFreeHeight))]
     private bool _lockAspectRatio = true;
 
-    /// <summary>The height is set on its own: an unlocked element, and always the caption box.</summary>
+    /// <summary>The height is set on its own: an unlocked layer, and always the caption box.</summary>
     public bool IsFreeHeight => !LockAspectRatio;
 
     /// <summary>The height as a whole percentage of the frame height, for typing.</summary>
@@ -142,10 +156,10 @@ public sealed partial class OverlayRegion : ObservableObject
         set => SizeHeight = Math.Clamp(value, 1, 200) / 100.0;
     }
 
-    // Style: rounded corners, soft edges, transparency and a drop shadow, so the element sits on the
+    // Style: rounded corners, soft edges, transparency and a drop shadow, so the layer sits on the
     // picture instead of being pasted on it.
 
-    /// <summary>Corner rounding as a percentage of the element's shorter side: 0 is square, 50 a full half-circle.</summary>
+    /// <summary>Corner rounding as a percentage of the layer's shorter side: 0 is square, 50 a full half-circle.</summary>
     [ObservableProperty] private int _cornerRadius;
 
     /// <summary>100 is solid; lower lets the picture underneath show through.</summary>
@@ -172,8 +186,8 @@ public sealed partial class OverlayRegion : ObservableObject
             Math.Max(Even(SourceWidth * sourceWidth), 2), Math.Max(Even(SourceHeight * sourceHeight), 2));
 
     /// <summary>
-    /// Where and how large the element is on an output frame of the given size, in pixels. The source
-    /// size is needed for the shape of a locked element; when it is unknown, 16:9 is assumed.
+    /// Where and how large the layer is on an output frame of the given size, in pixels. The source
+    /// size is needed for the shape of a locked layer; when it is unknown, 16:9 is assumed.
     /// </summary>
     public (int X, int Y, int Width, int Height) GetOutputRect(int frameWidth, int frameHeight, int sourceWidth, int sourceHeight)
     {
@@ -186,7 +200,7 @@ public sealed partial class OverlayRegion : ObservableObject
         return ((int)Math.Round(PositionX * frameWidth), (int)Math.Round(PositionY * frameHeight), width, height);
     }
 
-    /// <summary>The height that keeps the element's own shape at a given width: the source rectangle's, or the picture's.</summary>
+    /// <summary>The height that keeps the layer's own shape at a given width: the source rectangle's, or the picture's.</summary>
     private int GetProportionalHeight(int width, int sourceWidth, int sourceHeight)
     {
         if (IsFile)
@@ -196,7 +210,7 @@ public sealed partial class OverlayRegion : ObservableObject
         return Math.Max(Even((double)width * cutHeight / cutWidth), 2);
     }
 
-    /// <summary>Called when the lock is released: the free height starts from the shape the element has now.</summary>
+    /// <summary>Called when the lock is released: the free height starts from the shape the layer has now.</summary>
     public void StartFreeHeight(int frameWidth, int frameHeight, int sourceWidth, int sourceHeight)
     {
         if (frameHeight <= 0)
@@ -208,7 +222,7 @@ public sealed partial class OverlayRegion : ObservableObject
 
     private static int Even(double value) => (int)Math.Round(value / 2) * 2;
 
-    public OverlayRegionState ToState() => new()
+    public LayerState ToState() => new()
     {
         Name = Name,
         Kind = Kind,
@@ -237,15 +251,18 @@ public sealed partial class OverlayRegion : ObservableObject
         ChromaBlend = ChromaBlend,
         CustomMask = CustomMask,
         MaskPath = MaskPath,
+        StartTime = StartTime,
+        Duration = Duration,
+        MediaOffset = MediaOffset,
     };
 
     /// <summary>
-    /// Rebuilds an element from saved state. Presets saved before positions became fractions hold pixel
+    /// Rebuilds a layer from saved state. Presets saved before positions became fractions hold pixel
     /// values; those are converted using the sizes given (or 1920 x 1080 and 1080 x 1920 when unknown).
     /// </summary>
-    public static OverlayRegion FromState(OverlayRegionState state, int sourceWidth, int sourceHeight, int frameWidth, int frameHeight)
+    public static Layer FromState(LayerState state, int sourceWidth, int sourceHeight, int frameWidth, int frameHeight)
     {
-        var region = new OverlayRegion
+        var region = new Layer
         {
             Name = state.Name,
             Kind = state.Kind,
@@ -266,6 +283,9 @@ public sealed partial class OverlayRegion : ObservableObject
             ChromaBlend = Math.Clamp(state.ChromaBlend, 0, 1),
             CustomMask = state.CustomMask,
             MaskPath = state.MaskPath ?? "",
+            StartTime = Math.Max(state.StartTime, 0),
+            Duration = Math.Max(state.Duration, 0),
+            MediaOffset = Math.Max(state.MediaOffset, 0),
         };
 
         if (state.SourceWidth <= 0 && state.Width is > 0 && state.Height is > 0)
@@ -297,12 +317,12 @@ public sealed partial class OverlayRegion : ObservableObject
     }
 }
 
-/// <summary>An element as it is written to presets and projects.</summary>
-public sealed class OverlayRegionState
+/// <summary>A layer as it is written to presets and projects.</summary>
+public sealed class LayerState
 {
-    public string Name { get; set; } = "Element";
+    public string Name { get; set; } = "Layer";
 
-    public ElementKind Kind { get; set; }
+    public LayerKind Kind { get; set; }
     public string ImagePath { get; set; } = "";
     public int ImageWidth { get; set; }
     public int ImageHeight { get; set; }
@@ -334,6 +354,10 @@ public sealed class OverlayRegionState
     public double ChromaBlend { get; set; } = 0.05;
     public bool CustomMask { get; set; }
     public string MaskPath { get; set; } = "";
+
+    public double StartTime { get; set; }
+    public double Duration { get; set; }
+    public double MediaOffset { get; set; }
 
     // Pixel values from presets saved by earlier versions. Read for conversion, never written.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

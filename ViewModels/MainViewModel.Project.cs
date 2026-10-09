@@ -46,7 +46,7 @@ public partial class MainViewModel
         DuckAudio = DuckAudio,
         FrameEngine = FrameEngine,
         CenterZoom = CenterZoom,
-        UiElements = UiElements.Select(e => e.ToState()).ToList(),
+        Layers = Layers.Select(e => e.ToState()).ToList(),
         MainVideoIndex = MainVideoIndex,
         LayoutSourceAspectRatio = GetLayoutSourceAspect(),
         AutoCaptions = AutoCaptions,

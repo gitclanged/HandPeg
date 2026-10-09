@@ -89,7 +89,7 @@
         </DataTemplate>
 
         <!-- The handle on a layer's corner, dragged to resize it. Drawn by ResizeAdorner. -->
-        <Style x:Key="ElementGrip" TargetType="Thumb">
+        <Style x:Key="LayerGrip" TargetType="Thumb">
             <Setter Property="Width" Value="12" />
             <Setter Property="Height" Value="12" />
             <Setter Property="Template">
@@ -129,8 +129,8 @@
             </Setter>
         </Style>
 
-        <!-- An element (a piece of the video, or an image) as it is dragged around the frame: a tinted box carrying its name. -->
-        <Style x:Key="ElementThumb" TargetType="Thumb">
+        <!-- A layer (a piece of the video, or an image) as it is dragged around the frame: a tinted box carrying its name. -->
+        <Style x:Key="LayerThumb" TargetType="Thumb">
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Thumb">
@@ -219,9 +219,19 @@
                         ToolTip="Save the current source, cuts and settings as a project, or open a saved one." />
                 <Button Grid.Column="7" Content="{Binding QueueButtonText}" Margin="6,0,0,0" MinWidth="86" Click="OpenQueue_Click"
                         ToolTip="Show the batch queue. The number is how many jobs are waiting." />
-                <Button Grid.Column="8" Content="&#xE71B;" FontFamily="Segoe MDL2 Assets" FontSize="15" Padding="10,6" Margin="6,0,0,0"
-                        Click="OpenCombinator_Click" AutomationProperties.Name="Video Combinator"
-                        ToolTip="Video Combinator: join two videos into one, with a hard splice, a crossfade or a dip to black" />
+                <StackPanel Grid.Column="8" Orientation="Horizontal">
+                    <Button Content="&#xE71B;" FontFamily="Segoe MDL2 Assets" FontSize="15" Padding="10,6" Margin="6,0,0,0"
+                            Click="OpenCombinator_Click" AutomationProperties.Name="Video Combinator"
+                            ToolTip="Video Combinator: join up to five videos into one, stitched as they are or re-encoded with a transition" />
+                    <!-- The mode in use, and the way to the other one. Each mode keeps its own interface settings. -->
+                    <Button Margin="6,0,0,0" Padding="12,6" MinWidth="84" FontWeight="SemiBold" Click="ToggleMode_Click" AutomationProperties.Name="Switch Mode"
+                            ToolTip="Switches between Encoder Mode (the lean front end for converting and trimming) and Editor Mode (layers, captions, the full timeline). Each mode remembers its own layout: timeline height, which tabs show, the playback controls.">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE8AB;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" FontWeight="Normal" />
+                            <TextBlock Text="{Binding ModeButtonText}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
                 <Grid Grid.Column="9" Margin="6,0,0,0">
                     <Button Content="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="15" Padding="10,6"
                             Click="OpenSettings_Click" ToolTip="Settings: dependencies, tool paths, update sources and automation"
@@ -626,12 +636,12 @@
 
                         <!-- Layout files: the Frame & Layer Engine's layers, with the color and blur settings that go with them -->
                         <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Margin="0,14,0,0">
-                            <TextBlock Text="Import/Export Project Settings" FontWeight="SemiBold" Margin="0,0,0,6" />
+                            <TextBlock Text="Style Presets" FontWeight="SemiBold" Margin="0,0,0,6" />
                             <StackPanel Orientation="Horizontal">
-                                <Button Content="Export Project Settings" Padding="12,6" Click="ExportLayout_Click"
-                                        ToolTip="Saves the parts you tick to a .json file: layout and elements, color filters, blur settings, subtitle settings." />
-                                <Button Content="Import Project Settings" Padding="12,6" Margin="6,0,0,0" Click="ImportLayout_Click"
-                                        ToolTip="Loads such a file. You choose which of its parts to take." />
+                                <Button Content="Export Style Preset" Padding="12,6" Click="ExportLayout_Click"
+                                        ToolTip="Saves the parts you tick as one .hpstyle file: layers with their masks inside, color filters, blur settings, subtitle settings. Styles saved in the Styles folder are offered in the launch window." />
+                                <Button Content="Import Style Preset" Padding="12,6" Margin="6,0,0,0" Click="ImportLayout_Click"
+                                        ToolTip="Loads a .hpstyle file. You choose which of its parts to take; its masks are unpacked into the Masks folder." />
                             </StackPanel>
                         </StackPanel>
                     </Grid>
@@ -887,10 +897,14 @@
             <TabItem Header="Layers" x:Name="LayersTab" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
                     <DockPanel IsEnabled="{Binding IsVideoReencoded}">
                         <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
-                            <Button Content="Add Element" Padding="12,5" Command="{Binding AddElementCommand}"
+                            <Button Content="Add Layer" Padding="12,5" Command="{Binding AddLayerCommand}"
                                     ToolTip="Lift a piece of the source video (a minimap, an ammo counter) onto the frame as a layer. Mark it with Draw Target." />
                             <Button Content="Add Image" Padding="12,5" Margin="6,0,0,0" Click="AddImage_Click"
                                     ToolTip="Place a .png or .jpg picture (a logo, a watermark, a frame) on the picture as a layer." />
+                            <Button Content="Split at Playhead (S)" Padding="12,5" Margin="6,0,0,0" Click="SplitClip_Click" AutomationProperties.Name="Split at Playhead"
+                                    ToolTip="The razor: cuts the block selected on a layer's time bar in two at the playhead. A layer becomes two layers; a cut segment of the main video becomes two segments. With nothing selected, the main video is split." />
+                            <Button Content="HUD Masks" Padding="12,5" Margin="6,0,0,0" Click="HudMasks_Click"
+                                    ToolTip="Takes a game's HUD apart into layers (killfeed, health, radar, abilities), each cut out with its own mask, so each can be moved on its own. For Overwatch 2, Counter-Strike 2, Apex Legends and Marvel Rivals." />
                             <Button Content="Add Video" Padding="12,5" Margin="6,0,0,0" Click="AddVideo_Click"
                                     ToolTip="Place a video from a file on the picture as a layer: it plays alongside the main video and starts again when it runs out. Its sound is not used." />
                             <ToggleButton Content="Edit Layout" Padding="12,5" Margin="6,0,0,0" IsChecked="{Binding IsArrangeActive}" IsEnabled="{Binding CanEditLayout}"
@@ -930,11 +944,11 @@
                             One row per layer, the front one first: the caption box (while auto-captions are on), the layers
                             added by hand with the main video among them, and the blurred background at the bottom.
                         -->
-                        <ListBox ItemsSource="{Binding ElementRows}"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="Elements">
+                        <ListBox ItemsSource="{Binding LayerRows}"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="Layers">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <!-- Line 1: what the element is and its look; line 2: its size and where it sits on the frame -->
+                                    <!-- Line 1: what the layer is and its look; line 2: its size and where it sits on the frame -->
                                     <StackPanel ToolTip="X and Y place the layer's top-left corner, and Size sets its width, all as a share of the output frame, so the layout holds at any resolution. Edit Layout does the same by dragging.">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
@@ -981,14 +995,23 @@
                                                     ToolTip="Drag a rectangle on the video to mark what this layer shows."
                                                     Command="{Binding DataContext.DrawTargetCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
                                                     CommandParameter="{Binding}" />
-                                            <Button Grid.Column="4" Content="Properties" Padding="10,2" Margin="6,0,0,0" Click="ElementStyle_Click"
+                                            <Button Grid.Column="4" Content="Properties" Padding="10,2" Margin="6,0,0,0" Click="LayerProperties_Click"
                                                     Visibility="{Binding HasPlacement, Converter={StaticResource BoolToVisibility}}"
                                                     ToolTip="Opacity, rounded corners, soft edges and a drop shadow, for every layer including the subtitles; and for pictures and videos, a chroma key and a custom mask. The captions' font and colors are under Caption Style Settings on the Subtitles tab." />
                                             <Button Grid.Column="5" Content="Remove" Padding="10,2" Margin="6,0,0,0"
                                                     Visibility="{Binding IsRemovable, Converter={StaticResource BoolToVisibility}}"
-                                                    Command="{Binding DataContext.RemoveElementCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                    Command="{Binding DataContext.RemoveLayerCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
                                                     CommandParameter="{Binding}" />
                                         </Grid>
+                                        <!--
+                                            The layer in time: a bar as long as the video, with the layer as a block on it from
+                                            when it appears to when it goes. The Main Video's bar shows the cut segments. A layer's
+                                            block is dragged to move it and by its right edge to change how long it stays; a click
+                                            on the bar moves the playhead there. Drawn from code.
+                                        -->
+                                        <Canvas Height="18" Margin="66,4,0,1" Background="{DynamicResource InsetBrush}" ClipToBounds="True" Cursor="Hand"
+                                                Loaded="ClipTrack_Loaded" Unloaded="ClipTrack_Unloaded" SizeChanged="ClipTrack_Changed" DataContextChanged="ClipTrack_DataContextChanged"
+                                                MouseLeftButtonDown="ClipTrack_MouseLeftButtonDown" AutomationProperties.Name="Layer Timeline" />
                                         <Grid Margin="66,3,0,2" Visibility="{Binding HasPlacement, Converter={StaticResource BoolToVisibility}}">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
@@ -1004,32 +1027,32 @@
                                             <TextBlock Text="Size %" VerticalAlignment="Center" Margin="0,0,6,0" />
                                             <StackPanel Grid.Column="1" Orientation="Horizontal">
                                                 <TextBox Style="{StaticResource ValueBox}" Width="46" Margin="0"
-                                                         Text="{Binding SizePercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Element Size"
+                                                         Text="{Binding SizePercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Layer Size"
                                                          local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="200"
                                                          ToolTip="Width of the layer as a percentage of the frame's width. Drag sideways to adjust, or click to type." />
                                                 <!-- A layer that is not held to its shape (and so always the caption box) has a height of its own -->
                                                 <StackPanel Orientation="Horizontal" Visibility="{Binding IsFreeHeight, Converter={StaticResource BoolToVisibility}}">
                                                     <TextBlock Text="H %" VerticalAlignment="Center" Margin="8,0,6,0" />
                                                     <TextBox Style="{StaticResource ValueBox}" Width="46" Margin="0"
-                                                             Text="{Binding SizeHeightPercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Element Height"
+                                                             Text="{Binding SizeHeightPercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Layer Height"
                                                              local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="200"
                                                              ToolTip="Height of the layer as a percentage of the frame's height. For the caption box, a taller box makes the words larger." />
                                                 </StackPanel>
                                             </StackPanel>
                                             <CheckBox Grid.Column="2" Content="Lock Aspect" IsChecked="{Binding LockAspectRatio}" Margin="10,0,0,0"
                                                       Visibility="{Binding IsRemovable, Converter={StaticResource BoolToVisibility}}"
-                                                      ToolTip="On: the element keeps its own shape. Off: its width and height can be stretched separately with the corner handle in Edit Layout." />
+                                                      ToolTip="On: the layer keeps its own shape. Off: its width and height can be stretched separately with the corner handle in Edit Layout." />
                                             <TextBlock Grid.Column="3" Text="X %" VerticalAlignment="Center" Margin="12,0,6,0" />
                                             <Slider Grid.Column="4" Minimum="0" Maximum="1" SmallChange="0.005" LargeChange="0.05" VerticalAlignment="Center"
-                                                    Value="{Binding PositionX}" AutomationProperties.Name="Element X" />
+                                                    Value="{Binding PositionX}" AutomationProperties.Name="Layer X" />
                                             <TextBox Grid.Column="5" Style="{StaticResource ValueBox}" Width="48" Text="{Binding PositionXPercent, StringFormat={}{0:0.#}}"
-                                                     AutomationProperties.Name="Element X Value"
+                                                     AutomationProperties.Name="Layer X Value"
                                                      local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" />
                                             <TextBlock Grid.Column="6" Text="Y %" VerticalAlignment="Center" Margin="12,0,6,0" />
                                             <Slider Grid.Column="7" Minimum="0" Maximum="1" SmallChange="0.005" LargeChange="0.05" VerticalAlignment="Center"
-                                                    Value="{Binding PositionY}" AutomationProperties.Name="Element Y" />
+                                                    Value="{Binding PositionY}" AutomationProperties.Name="Layer Y" />
                                             <TextBox Grid.Column="8" Style="{StaticResource ValueBox}" Width="48" Text="{Binding PositionYPercent, StringFormat={}{0:0.#}}"
-                                                     AutomationProperties.Name="Element Y Value"
+                                                     AutomationProperties.Name="Layer Y Value"
                                                      local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" />
                                         </Grid>
                                     </StackPanel>
@@ -1331,7 +1354,7 @@
                                 <ToggleButton Content="Edit Layout" Margin="6,0,0,0" IsChecked="{Binding IsArrangeActive}"
                                               ToolTip="Opens the layout pane beside the player, where the caption box can be dragged into place and resized." />
                                 <Button Content="Style / Blending" Margin="6,0,0,0" Click="CaptionLayerStyle_Click"
-                                        ToolTip="The captions as a layer: opacity, rounded or soft edges, and a drop shadow. The same layer is listed under Elements on the Filters tab." />
+                                        ToolTip="The captions as a layer: opacity, rounded or soft edges, and a drop shadow. The same layer is listed under Layers on the Filters tab." />
                                 <Button Content="Reset Position" Margin="6,0,0,0" Command="{Binding ResetCaptionLayerCommand}"
                                         ToolTip="Puts the caption box back in the lower part of the frame." />
                                 <TextBlock Text="{Binding CaptionStyleSummary}" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />

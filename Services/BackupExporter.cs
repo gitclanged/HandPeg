@@ -25,6 +25,9 @@ public static class BackupExporter
             ["ExportedAt"] = DateTime.Now.ToString("s"),
             ["AppSettings"] = ReadFile(AppSettings.FilePath) ?? JsonSerializer.SerializeToNode(AppSettings.Current),
             ["Presets"] = ReadFile(PresetStore.FilePath) ?? JsonSerializer.SerializeToNode(PresetStore.Load()),
+
+            // The mask pictures the layers refer to, by file name, so a backup brings them along.
+            ["Masks"] = ReadMasks(),
         };
         File.WriteAllText(path, export.ToJsonString(JsonOptions));
     }
@@ -57,6 +60,27 @@ public static class BackupExporter
 
         // Every entry but the version marker is a project.
         return (export.Count - 1, skipped);
+    }
+
+    private static JsonObject ReadMasks()
+    {
+        var masks = new JsonObject();
+        if (!Directory.Exists(AppPaths.Masks))
+            return masks;
+
+        foreach (var file in Directory.EnumerateFiles(AppPaths.Masks).Order(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                masks[Path.GetFileName(file)] = Convert.ToBase64String(File.ReadAllBytes(file));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // One mask that cannot be read does not stop the backup of everything else.
+            }
+        }
+
+        return masks;
     }
 
     private static JsonNode? ReadFile(string path) => File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path)) : null;

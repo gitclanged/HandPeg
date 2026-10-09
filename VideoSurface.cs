@@ -10,7 +10,7 @@ namespace HandPegApp;
 /// Where the video is drawn: a native child window for the player (mpv) to draw into, and, lying exactly over
 /// it, a transparent window of its own for WPF content. A native window always covers the WPF content of the
 /// window it is in, so anything that has to appear on top of the video (the crop rectangle, the drop hint)
-/// cannot simply be placed over it; it is the content of this element instead, and is shown in that second
+/// cannot simply be placed over it; it is the content of this layer instead, and is shown in that second
 /// window, which follows the first wherever it goes.
 ///
 /// The second window never takes the focus: a click on it reaches its content, and the keyboard stays with
@@ -51,7 +51,7 @@ public sealed class VideoSurface : HwndHost
         IsVisibleChanged += (_, _) => PlaceOverlay();
     }
 
-    /// <summary>What is shown on top of the video. Set once, in XAML, as this element's content.</summary>
+    /// <summary>What is shown on top of the video. Set once, in XAML, as this layer's content.</summary>
     public UIElement? Overlay { get; set; }
 
     /// <summary>The native window the player draws into; zero until it has been created.</summary>

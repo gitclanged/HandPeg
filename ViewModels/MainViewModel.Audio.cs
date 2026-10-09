@@ -131,24 +131,24 @@ public partial class MainViewModel
             StatusText = $"Playing {value.Title} on its own. Press its button again to go back to the first track.";
     }
 
-    // ----- The elements list -----
+    // ----- The layers list -----
 
     /// <summary>
-    /// The rows of the Filters tab's elements list: the pieces of video and the images, and after them the
+    /// The rows of the Filters tab's layers list: the pieces of video and the images, and after them the
     /// caption box while auto-captions are on. One list, so every layer is placed and sized the same way.
     /// </summary>
-    public ObservableCollection<OverlayRegion> ElementRows { get; } = [];
+    public ObservableCollection<Layer> LayerRows { get; } = [];
 
-    private void RefreshElementRows()
+    private void RefreshLayerRows()
     {
         // As they are stacked, front first: the captions over everything, then the layers with the main video
         // among them, and the blurred background behind it all.
-        ElementRows.Clear();
+        LayerRows.Clear();
         if (AutoCaptions)
-            ElementRows.Add(CaptionLayer);
+            LayerRows.Add(CaptionLayer);
         foreach (var layer in Enumerable.Reverse(GetStack()))
-            ElementRows.Add(layer);
-        ElementRows.Add(_backgroundRow);
+            LayerRows.Add(layer);
+        LayerRows.Add(_backgroundRow);
     }
 
     /// <summary>Opens the layout pane by itself when the settings ask for that (Editor Mode does).</summary>

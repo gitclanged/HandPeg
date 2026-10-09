@@ -6,7 +6,7 @@
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <StackPanel Margin="20">
         <TextBlock Text="HandPeg" FontSize="26" FontWeight="SemiBold" />
-        <TextBlock Text="Drop a video to get started, pick up where you left off, or open a video with one of your presets."
+        <TextBlock Text="Drop a video to get started, pick up where you left off, or open a video with one of your style presets."
                    Foreground="{DynamicResource MutedTextBrush}" Margin="0,2,0,14" TextWrapping="Wrap" />
 
         <!-- The drop zone: a video dropped (or chosen with a click) here opens as it would in the main window -->
@@ -47,12 +47,12 @@
             </ComboBox>
         </Grid>
 
-        <!-- The first few presets, as targets: a video dropped on one opens with that preset -->
-        <StackPanel x:Name="PresetPanel" Margin="0,18,0,0">
-            <TextBlock Text="Open with a preset" FontWeight="SemiBold" FontSize="14" />
+        <!-- Style presets, as targets: a video dropped on one opens with that look and layout -->
+        <StackPanel x:Name="StylePanel" Margin="0,18,0,0">
+            <TextBlock Text="Open with a style preset" FontWeight="SemiBold" FontSize="14" />
             <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,2,0,8"
-                       Text="Drop a video on a preset, or click one to choose a video. You are asked which of the preset's settings to bring in." />
-            <ItemsControl x:Name="PresetList" Focusable="False">
+                       Text="Drop a video on a style, or click one to choose a video: it opens with that style's layers, masks, colors and captions. Which styles are shown is chosen in Settings, on the Interface tab." />
+            <ItemsControl x:Name="StyleList" Focusable="False">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
                         <UniformGrid Rows="1" />
@@ -60,11 +60,11 @@
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <Button Height="74" Margin="0,0,6,0" Padding="8,4" AllowDrop="True" Click="Preset_Click"
-                                DragEnter="DropTarget_DragEnter" DragLeave="DropTarget_DragLeave" DragOver="DropTarget_DragOver" Drop="Preset_Drop"
-                                AutomationProperties.Name="{Binding Name}" ToolTip="{Binding Name}">
+                        <Button Height="74" Margin="0,0,6,0" Padding="8,4" AllowDrop="True" Click="Style_Click"
+                                DragEnter="DropTarget_DragEnter" DragLeave="DropTarget_DragLeave" DragOver="DropTarget_DragOver" Drop="Style_Drop"
+                                AutomationProperties.Name="{Binding Name}" ToolTip="{Binding Path}">
                             <StackPanel>
-                                <TextBlock Text="&#xE8B2;" FontFamily="Segoe MDL2 Assets" FontSize="18" HorizontalAlignment="Center"
+                                <TextBlock Text="&#xE790;" FontFamily="Segoe MDL2 Assets" FontSize="18" HorizontalAlignment="Center"
                                            Foreground="{DynamicResource MutedTextBrush}" />
                                 <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" TextAlignment="Center" Margin="0,6,0,0" />
                             </StackPanel>
@@ -73,8 +73,10 @@
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
         </StackPanel>
+        <TextBlock x:Name="NoStylesText" Visibility="Collapsed" Foreground="{DynamicResource MutedTextBrush}" Margin="0,16,0,0" TextWrapping="Wrap"
+                   Text="There are no style presets yet. Set up layers, colors or captions, then use Export Style Preset on the Summary tab: styles saved in the Styles folder appear here." />
 
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" Margin="0,16,0,0" TextWrapping="Wrap"
-                   Text="How many presets are shown here, and whether this window opens at all, is set under Settings, Tools, Interface." />
+                   Text="This window opens in Editor Mode. It can be switched off, and its styles chosen, under Settings, Interface." />
     </StackPanel>
 </Window>

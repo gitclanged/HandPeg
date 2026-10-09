@@ -36,6 +36,28 @@ public static class BackupImporter
 
         SwapIn(newSettings, AppSettings.FilePath);
         SwapIn(newPresets, PresetStore.FilePath);
+
+        // The masks a backup carries go back where the layers look for them. One already there is kept.
+        if (root["Masks"] is JsonObject masks)
+        {
+            Directory.CreateDirectory(AppPaths.Masks);
+            foreach (var (name, value) in masks)
+            {
+                var target = Path.Combine(AppPaths.Masks, Path.GetFileName(name));
+                if (!File.Exists(target) && value?.GetValue<string>() is { } encoded)
+                {
+                    try
+                    {
+                        File.WriteAllBytes(target, Convert.FromBase64String(encoded));
+                    }
+                    catch (FormatException)
+                    {
+                        // Not a picture this backup can give back; the rest is still restored.
+                    }
+                }
+            }
+        }
+
         return count;
     }
 

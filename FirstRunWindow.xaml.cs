@@ -110,7 +110,7 @@ public partial class FirstRunWindow : Window
         EncoderStatusText.Text = "Checking hardware encoders...";
         try
         {
-            var hardware = await EncoderProber.ProbeAsync(_probeCancellation.Token);
+            var (hardware, _) = await EncoderProber.ProbeAsync(_probeCancellation.Token);
             FillEncoders(hardware);
             EncoderStatusText.Text = hardware.Count switch
             {
@@ -187,6 +187,7 @@ public partial class FirstRunWindow : Window
         settings.AutoFallbackToSoftware = FallbackBox.IsChecked == true;
         settings.ApplyMode(EditorCard.IsChecked == true ? AppSettings.EditorMode : AppSettings.EncoderMode);
         settings.DefaultVideoEncoder = EditorCard.IsChecked == true && EncoderBox.SelectedItem is EncoderOption encoder ? encoder.Name : "";
+        settings.DefaultMode = settings.UiMode;
         settings.FirstRunComplete = true;
 
         try

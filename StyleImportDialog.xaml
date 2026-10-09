@@ -1,7 +1,7 @@
-<Window x:Class="HandPegApp.LayoutImportDialog"
+<Window x:Class="HandPegApp.StyleImportDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Import Project Settings" Width="480" SizeToContent="Height" ResizeMode="NoResize"
+        Title="Import Style Preset" Width="480" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <StackPanel Margin="16">
@@ -9,7 +9,7 @@
         <TextBlock x:Name="IntroText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,10" />
 
         <!-- A part the file does not have is shown unticked and greyed out -->
-        <CheckBox x:Name="LayoutBox" Content="Layout / Elements" />
+        <CheckBox x:Name="LayoutBox" Content="HUD Masks &amp; Layers" />
         <TextBlock x:Name="LayoutText" Foreground="{DynamicResource MutedTextBrush}" Margin="26,0,0,6" TextWrapping="Wrap" />
         <CheckBox x:Name="ColorBox" Content="Color Filters" />
         <TextBlock x:Name="ColorText" Foreground="{DynamicResource MutedTextBrush}" Margin="26,0,0,6" TextWrapping="Wrap" />

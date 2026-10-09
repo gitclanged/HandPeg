@@ -202,7 +202,7 @@ public partial class MainViewModel
     private void ResetCenterVideo() => (CenterZoom, CenterOffsetX, CenterOffsetY) = (1, 0, 0);
 
     /// <summary>Pieces of the source (a minimap, an ammo counter) and images (a logo) placed on the frame.</summary>
-    public ObservableCollection<OverlayRegion> UiElements { get; } = [];
+    public ObservableCollection<Layer> Layers { get; } = [];
 
     /// <summary>False with the engine: its layers are composed with square pixels.</summary>
     public bool CanSetPixelAspect => !FrameEngine;
@@ -212,7 +212,7 @@ public partial class MainViewModel
         // Nothing to mark without the frame; the layout pane stays only while it has captions to show.
         OnPropertyChanged(nameof(CanEditLayout));
         if (!value)
-            DrawTargetElement = null;
+            DrawTargetLayer = null;
         if (!CanEditLayout)
             IsArrangeActive = false;
         else if (value)
@@ -244,7 +244,7 @@ public partial class MainViewModel
 
     /// <summary>
     /// Makes the sharp video wider or narrower by a number of output pixels, its shape kept. Its top-left
-    /// corner stays where it is, as when any other element is resized by its corner.
+    /// corner stays where it is, as when any other layer is resized by its corner.
     /// </summary>
     public void ResizeCenter(double deltaWidth)
     {
@@ -258,19 +258,19 @@ public partial class MainViewModel
 
     /// <summary>Adds a piece of the source video. Where it is cut from is marked afterwards with Draw Target.</summary>
     [RelayCommand]
-    private void AddElement()
+    private void AddLayer()
     {
-        var element = new OverlayRegion { Name = $"Element {UiElements.Count + 1}", PositionY = NextElementY() };
+        var element = new Layer { Name = $"Layer {Layers.Count + 1}", PositionY = NextLayerY() };
 
         // The first piece of video in a layout ties the layout to the shape of this video.
-        if (!UiElements.Any(e => e.IsVideo) && CurrentSourceAspect > 0)
+        if (!Layers.Any(e => e.IsVideo) && CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
-        AttachUiElement(element);
+        AttachLayer(element);
         StatusText = $"Added {element.Name}. Use Draw Target to mark it on the video.";
     }
 
-    /// <summary>Adds a picture from a file as an element. Returns false when the file is not a readable image.</summary>
-    public bool AddImageElement(string path)
+    /// <summary>Adds a picture from a file as a layer. Returns false when the file is not a readable image.</summary>
+    public bool AddImageLayer(string path)
     {
         if (ImageInfo.GetSize(path) is not { } size)
         {
@@ -278,24 +278,24 @@ public partial class MainViewModel
             return false;
         }
 
-        var element = new OverlayRegion
+        var element = new Layer
         {
-            Kind = ElementKind.Image,
+            Kind = LayerKind.Image,
             Name = Path.GetFileName(path),
             ImagePath = path,
             ImageWidth = size.Width,
             ImageHeight = size.Height,
             SizeWidth = 0.25,
             PositionX = 0.05,
-            PositionY = NextElementY(),
+            PositionY = NextLayerY(),
         };
-        AttachUiElement(element);
+        AttachLayer(element);
         StatusText = $"Added {element.Name}. Use Arrange to place it on the frame.";
         return true;
     }
 
     /// <summary>Adds a video from a file as a layer: it plays alongside the main video, and starts again when it runs out.</summary>
-    public async Task<bool> AddVideoElementAsync(string path)
+    public async Task<bool> AddVideoLayerAsync(string path)
     {
         var info = await MediaProbe.ProbeAsync(path, _shutdown.Token);
         if (info?.Video is not { Width: > 0, Height: > 0 } video)
@@ -304,18 +304,18 @@ public partial class MainViewModel
             return false;
         }
 
-        var element = new OverlayRegion
+        var element = new Layer
         {
-            Kind = ElementKind.VideoFile,
+            Kind = LayerKind.VideoFile,
             Name = Path.GetFileName(path),
             ImagePath = path,
             ImageWidth = video.Width,
             ImageHeight = video.Height,
             SizeWidth = 0.4,
             PositionX = 0.05,
-            PositionY = NextElementY(),
+            PositionY = NextLayerY(),
         };
-        AttachUiElement(element);
+        AttachLayer(element);
         StatusText = $"Added {element.Name} as a video layer. Its sound is not used.";
         return true;
     }
@@ -328,28 +328,28 @@ public partial class MainViewModel
     /// <summary>The main video's place in the stack: how many of the layers lie under it. 0 is beneath them all.</summary>
     [ObservableProperty] private int _mainVideoIndex;
 
-    partial void OnMainVideoIndexChanged(int value) => RefreshElementRows();
+    partial void OnMainVideoIndexChanged(int value) => RefreshLayerRows();
 
     // The two layers that are always there, as rows of the list.
-    private readonly OverlayRegion _mainVideoRow = new() { Kind = ElementKind.MainVideo, Name = "Main Video" };
-    private readonly OverlayRegion _backgroundRow = new() { Kind = ElementKind.Background, Name = "Background Blur" };
+    private readonly Layer _mainVideoRow = new() { Kind = LayerKind.MainVideo, Name = "Main Video" };
+    private readonly Layer _backgroundRow = new() { Kind = LayerKind.Background, Name = "Background Blur" };
 
     /// <summary>The layers that can be reordered, bottom first: the ones added by hand, with the main video among them.</summary>
-    private List<OverlayRegion> GetStack()
+    private List<Layer> GetStack()
     {
-        var stack = UiElements.ToList();
+        var stack = Layers.ToList();
         stack.Insert(Math.Clamp(MainVideoIndex, 0, stack.Count), _mainVideoRow);
         return stack;
     }
 
     [RelayCommand]
-    private void MoveLayerUp(OverlayRegion? layer) => MoveLayer(layer, 1);
+    private void MoveLayerUp(Layer? layer) => MoveLayer(layer, 1);
 
     [RelayCommand]
-    private void MoveLayerDown(OverlayRegion? layer) => MoveLayer(layer, -1);
+    private void MoveLayerDown(Layer? layer) => MoveLayer(layer, -1);
 
     /// <summary>Moves a layer one place towards the front (+1) or the back (-1).</summary>
-    private void MoveLayer(OverlayRegion? layer, int by)
+    private void MoveLayer(Layer? layer, int by)
     {
         var stack = GetStack();
         var from = layer is null ? -1 : stack.IndexOf(layer);
@@ -364,14 +364,113 @@ public partial class MainViewModel
         var elements = stack.Where(l => !ReferenceEquals(l, _mainVideoRow)).ToList();
         for (var i = 0; i < elements.Count; i++)
         {
-            var current = UiElements.IndexOf(elements[i]);
+            var current = Layers.IndexOf(elements[i]);
             if (current != i)
-                UiElements.Move(current, i);
+                Layers.Move(current, i);
         }
 
         MainVideoIndex = main;
-        RefreshElementRows();
+        RefreshLayerRows();
         StatusText = $"{layer!.Name} moved {(by > 0 ? "up" : "down")}: it is now {(stack.IndexOf(layer) == stack.Count - 1 ? "the front layer" : stack.IndexOf(layer) == 0 ? "the back layer, just above the background" : $"layer {stack.IndexOf(layer) + 1} of {stack.Count} from the back")}.";
+    }
+
+    // ----- Splitting: the razor -----
+
+    /// <summary>
+    /// Cuts a layer in two at a time: the first part ends there and a second layer, the same in everything
+    /// else, begins there, just above it in the stack. The two are then independent of each other.
+    /// </summary>
+    public bool SplitLayer(Layer layer, double seconds)
+    {
+        var total = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        var end = layer.Duration > 0.001 ? layer.StartTime + layer.Duration : total;
+        if (!layer.HasTiming || seconds <= layer.StartTime + 0.05 || seconds >= end - 0.05)
+        {
+            StatusText = $"The playhead is not inside {layer.Name}: move it to where the layer should be split.";
+            return false;
+        }
+
+        var second = Layer.FromState(layer.ToState(), SourceWidth, SourceHeight, FrameWidth, FrameHeight);
+        (second.StartTime, second.Duration) = (seconds, end - seconds);
+        second.MediaOffset = layer.MediaOffset + (seconds - layer.StartTime);
+        second.Name = layer.Name.EndsWith(" (2)", StringComparison.Ordinal) ? layer.Name : layer.Name + " (2)";
+        layer.Duration = seconds - layer.StartTime;
+
+        var index = Layers.IndexOf(layer);
+        second.PropertyChanged += OnLayerChanged;
+        Layers.Insert(index + 1, second);
+        if (MainVideoIndex > index)
+            MainVideoIndex++;
+        StatusText = $"{layer.Name} split at {TimeDisplay.Format(seconds)}: the two parts can now be moved and changed separately.";
+        return true;
+    }
+
+    /// <summary>
+    /// Cuts the main video at a time: the cut segment the time lies in becomes two that meet there, each of
+    /// which can then be removed on its own. With no cuts yet, the whole video becomes two segments.
+    /// </summary>
+    public bool SplitSegment(CutSegment? segment, double seconds)
+    {
+        var total = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        var at = TimeSpan.FromSeconds(seconds);
+        segment ??= Segments.FirstOrDefault(s => at > s.Start && at < s.End);
+
+        if (segment is null && Segments.Count == 0 && seconds > 0.05 && seconds < total - 0.05)
+        {
+            Segments.Add(new CutSegment(TimeSpan.Zero, at));
+            Segments.Add(new CutSegment(at, TimeSpan.FromSeconds(total)));
+            StatusText = $"The video was split at {TimeDisplay.Format(seconds)} into two segments.";
+            return true;
+        }
+
+        if (segment is null || at <= segment.Start + TimeSpan.FromMilliseconds(50) || at >= segment.End - TimeSpan.FromMilliseconds(50))
+        {
+            StatusText = "The playhead is not inside a cut segment: move it to where the video should be split.";
+            return false;
+        }
+
+        var index = Segments.IndexOf(segment);
+        Segments[index] = new CutSegment(segment.Start, at);
+        Segments.Insert(index + 1, new CutSegment(at, segment.End));
+        StatusText = $"Segment split at {TimeDisplay.Format(seconds)}.";
+        return true;
+    }
+
+    // ----- HUD layers -----
+
+    /// <summary>
+    /// Takes a game's HUD apart: one layer per piece, each cut out of the video where that piece sits and laid
+    /// back in the same place, with a mask for the pieces that are not rectangles. From there each can be moved.
+    /// </summary>
+    public void AddHudLayers(HudGame game)
+    {
+        foreach (var piece in game.Pieces)
+        {
+            var layer = new Layer
+            {
+                Name = $"{game.Name}: {piece.Name}",
+                SourceX = piece.X, SourceY = piece.Y, SourceWidth = piece.Width, SourceHeight = piece.Height,
+                PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
+                CornerRadius = piece.Shape == HudShape.Panel ? 6 : 0,
+            };
+
+            try
+            {
+                if (HudLibrary.EnsureMask(piece.Shape) is { } mask)
+                    (layer.CustomMask, layer.MaskPath) = (true, mask);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Without its mask the piece is a plain rectangle, which still works.
+            }
+
+            AttachLayer(layer);
+        }
+
+        if (CurrentSourceAspect > 0)
+            _layoutSourceAspect = CurrentSourceAspect;
+        FrameEngine = true;
+        StatusText = $"Added {game.Pieces.Count} layers for {game.Name}. They sit where the HUD is by default: check each against your video and correct it with Draw Target.";
     }
 
     // ----- Stream copy -----
@@ -387,7 +486,7 @@ public partial class MainViewModel
             if (VideoEncoder.Family != EncoderFamily.Copy || IsAnimatedOutput)
                 return "";
 
-            var skipped = UiElements.Any(e => e.IsUsable) || AutoCaptions || HasCrop || Deinterlace || Denoise || FadeIn || FadeOut
+            var skipped = Layers.Any(e => e.IsUsable) || AutoCaptions || HasCrop || Deinterlace || Denoise || FadeIn || FadeOut
                           || !string.IsNullOrWhiteSpace(LutPath) || BuildColorFilters().Count > 0
                           || !string.IsNullOrWhiteSpace(OutputWidth) || !string.IsNullOrWhiteSpace(OutputHeight)
                           || Math.Abs(CenterZoom - 1) > 0.001 || CenterOffsetX != 0 || CenterOffsetY != 0;
@@ -395,39 +494,39 @@ public partial class MainViewModel
         }
     }
 
-    // Stacked down the frame, so a new element does not land exactly on top of the last.
-    private double NextElementY() => Math.Min(0.03 + UiElements.Count * 0.2, 0.8);
+    // Stacked down the frame, so a new layer does not land exactly on top of the last.
+    private double NextLayerY() => Math.Min(0.03 + Layers.Count * 0.2, 0.8);
 
     [RelayCommand]
-    private void RemoveElement(OverlayRegion? element)
+    private void RemoveLayer(Layer? element)
     {
         if (element is null)
             return;
 
-        if (ReferenceEquals(DrawTargetElement, element))
-            DrawTargetElement = null;
-        element.PropertyChanged -= OnUiElementChanged;
-        UiElements.Remove(element);
+        if (ReferenceEquals(DrawTargetLayer, element))
+            DrawTargetLayer = null;
+        element.PropertyChanged -= OnLayerChanged;
+        Layers.Remove(element);
     }
 
-    private void AttachUiElement(OverlayRegion element)
+    private void AttachLayer(Layer element)
     {
-        element.PropertyChanged += OnUiElementChanged;
-        UiElements.Add(element);
+        element.PropertyChanged += OnLayerChanged;
+        Layers.Add(element);
     }
 
-    private void SetUiElements(IEnumerable<OverlayRegionState> states)
+    private void SetLayers(IEnumerable<LayerState> states)
     {
-        DrawTargetElement = null;
-        foreach (var element in UiElements)
-            element.PropertyChanged -= OnUiElementChanged;
-        UiElements.Clear();
+        DrawTargetLayer = null;
+        foreach (var element in Layers)
+            element.PropertyChanged -= OnLayerChanged;
+        Layers.Clear();
         foreach (var state in states)
-            AttachUiElement(OverlayRegion.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight));
+            AttachLayer(Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight));
     }
 
     /// <summary>
-    /// Presets saved before images became elements may carry a watermark. It becomes an image element in
+    /// Presets saved before images became layers may carry a watermark. It becomes an image layer in
     /// the same place and at the same size, and the engine is switched on to draw it.
     /// </summary>
     private void AddLegacyWatermark(EncodingPreset preset)
@@ -452,9 +551,9 @@ public partial class MainViewModel
             _ => (1 - width - marginX, 1 - height - marginY),
         };
 
-        AttachUiElement(new OverlayRegion
+        AttachLayer(new Layer
         {
-            Kind = ElementKind.Image,
+            Kind = LayerKind.Image,
             Name = Path.GetFileName(path),
             ImagePath = path,
             ImageWidth = size?.Width ?? 0,
@@ -467,14 +566,14 @@ public partial class MainViewModel
         FrameEngine = true;
     }
 
-    private void OnUiElementChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    private void OnLayerChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        // Releasing the aspect lock: the element keeps the shape it has until it is stretched.
-        if (e.PropertyName == nameof(OverlayRegion.LockAspectRatio) && sender is OverlayRegion { LockAspectRatio: false } element)
+        // Releasing the aspect lock: the layer keeps the shape it has until it is stretched.
+        if (e.PropertyName == nameof(Layer.LockAspectRatio) && sender is Layer { LockAspectRatio: false } element)
             element.StartFreeHeight(FrameWidth, FrameHeight, SourceWidth, SourceHeight);
 
         // Marked again on the video that is loaded: the layout now fits this shape.
-        if (e.PropertyName is nameof(OverlayRegion.SourceWidth) or nameof(OverlayRegion.SourceHeight) && CurrentSourceAspect > 0)
+        if (e.PropertyName is nameof(Layer.SourceWidth) or nameof(Layer.SourceHeight) && CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
 
         GenerateCommand();
@@ -529,7 +628,8 @@ public partial class MainViewModel
     private static readonly string[] SoftwarePresets = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
     private static readonly string[] QsvPresets = ["veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
     private static readonly string[] AmfPresets = ["speed", "balanced", "quality"];
-    private static readonly string[] NvencPresets = ["fast", "medium", "slow"];
+    // NVENC's current names: p1 the fastest, p7 the best, p4 the middle.
+    private static readonly string[] NvencPresets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
     /// <summary>The preset steps of the selected encoder; empty for encoders that have none here.</summary>
     public ObservableCollection<string> EncoderPresets { get; } = [.. SoftwarePresets];
@@ -569,13 +669,13 @@ public partial class MainViewModel
 
     // ----- Drawing on the video -----
     // One overlay over the player serves three jobs, one at a time: setting the crop,
-    // marking where a UI element is in the source, and arranging the elements on the output frame.
+    // marking where a UI layer is in the source, and arranging the layers on the output frame.
 
     /// <summary>While on, a rectangle can be dragged over the video to set the crop.</summary>
     [ObservableProperty] private bool _isInteractiveCropActive;
 
-    /// <summary>The UI element whose source rectangle is being drawn on the video, if any.</summary>
-    [ObservableProperty] private OverlayRegion? _drawTargetElement;
+    /// <summary>The UI layer whose source rectangle is being drawn on the video, if any.</summary>
+    [ObservableProperty] private Layer? _drawTargetLayer;
 
     /// <summary>While on, the output frame is drawn over the player and its layers can be dragged into place.</summary>
     [ObservableProperty] private bool _isArrangeActive;
@@ -584,19 +684,19 @@ public partial class MainViewModel
     partial void OnIsInteractiveCropActiveChanged(bool value)
     {
         if (value)
-            DrawTargetElement = null;
+            DrawTargetLayer = null;
     }
 
-    partial void OnDrawTargetElementChanged(OverlayRegion? value)
+    partial void OnDrawTargetLayerChanged(Layer? value)
     {
         if (value is not null)
             IsInteractiveCropActive = false;
     }
 
-    /// <summary>Starts (or, pressed again, stops) drawing an element's source rectangle on the video.</summary>
+    /// <summary>Starts (or, pressed again, stops) drawing a layer's source rectangle on the video.</summary>
     [RelayCommand]
-    private void DrawTarget(OverlayRegion? element) =>
-        DrawTargetElement = ReferenceEquals(DrawTargetElement, element) ? null : element;
+    private void DrawTarget(Layer? element) =>
+        DrawTargetLayer = ReferenceEquals(DrawTargetLayer, element) ? null : element;
 
     [RelayCommand]
     private void ResetCrop() => (CropTop, CropBottom, CropLeft, CropRight) = (0, 0, 0, 0);

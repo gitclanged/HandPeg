@@ -78,8 +78,8 @@ public partial class MainWindow : Window
         _viewModel.AskOverwrite = AskOverwrite;
         _viewModel.Confirm = (title, message, confirm) => new ConfirmDialog(title, message, confirm) { Owner = this }.ShowDialog() == true;
 
-        // Elements added or removed while they are being arranged change what is on the canvas.
-        _viewModel.UiElements.CollectionChanged += (_, _) => RedrawLayout();
+        // Layers added or removed while they are being arranged change what is on the canvas.
+        _viewModel.Layers.CollectionChanged += (_, _) => RedrawLayout();
 
         // The choices of the rule columns on the Automation tab.
         RuleTypeColumn.ItemsSource = SmartRule.Types;
@@ -90,6 +90,11 @@ public partial class MainWindow : Window
         Loaded += (_, _) => _ = CheckForHandPegUpdateAsync();
 
         _viewModel.LiveFilterInvalidated += ScheduleLiveFilter;
+
+        // The time bars on the Layers tab follow the cuts, the layers, and anything about a layer that changes.
+        _viewModel.LiveFilterInvalidated += ScheduleClipRedraw;
+        _viewModel.Segments.CollectionChanged += (_, _) => ScheduleClipRedraw();
+        _viewModel.Layers.CollectionChanged += (_, _) => ScheduleClipRedraw();
         VideoView.SizeChanged += (_, _) => ScheduleLiveFilter();
         _liveFilterTimer.Tick += (_, _) => ApplyLiveFilter();
 
@@ -98,7 +103,9 @@ public partial class MainWindow : Window
         Loaded += (_, _) => _ = EnsurePlayerAsync();
 
         // Once the window has been drawn, so the launch window opens over the program rather than over nothing.
-        Loaded += (_, _) => Dispatcher.BeginInvoke(ShowLaunchWindow, System.Windows.Threading.DispatcherPriority.ContextIdle);
+        // (ContentRendered is raised once, when the window has actually been drawn; waiting for the dispatcher
+        // to fall idle instead could be put off indefinitely by a player that is busy.)
+        ContentRendered += (_, _) => ShowLaunchWindow();
     }
 
     /// <summary>
@@ -107,7 +114,8 @@ public partial class MainWindow : Window
     /// </summary>
     private void ShowLaunchWindow()
     {
-        if (AppSettings.Current is not { FirstRunComplete: true, SplashPresetCount: > 0 })
+        // An Editor Mode thing: Encoder Mode goes straight to work.
+        if (AppSettings.Current is not { FirstRunComplete: true, SplashPresetCount: > 0, UiMode: AppSettings.EditorMode })
             return;
 
         var splash = new SplashWindow { Owner = this };
@@ -117,8 +125,8 @@ public partial class MainWindow : Window
 
         switch (request.Kind)
         {
-            case LaunchKind.Video when request.PresetName is { } preset:
-                _ = _viewModel.LoadFileWithPresetAsync(request.Path, preset, request.Parts);
+            case LaunchKind.Video when request.StylePath is { } style:
+                _ = _viewModel.LoadFileWithStyleAsync(request.Path, style);
                 break;
 
             case LaunchKind.Video:
@@ -183,6 +191,10 @@ public partial class MainWindow : Window
 
             case Key.I when _viewModel.AddStartPointCommand.CanExecute(null):
                 _viewModel.AddStartPointCommand.Execute(null);
+                break;
+
+            case Key.S when _viewModel.IsEditorMode && _viewModel.HasSource:
+                SplitSelectedClip();
                 break;
 
             case Key.O when _viewModel.AddStopPointCommand.CanExecute(null):
@@ -590,7 +602,7 @@ public partial class MainWindow : Window
         // Built for the player as large as it is on screen, in real pixels.
         var dpi = VisualTreeHelper.GetDpi(this);
 
-        // While a rectangle is being drawn on the video (the crop, or an element's place in the source) the
+        // While a rectangle is being drawn on the video (the crop, or a layer's place in the source) the
         // source itself is shown: what is drawn is a part of it, not of the finished frame.
         var graph = _viewModel.LivePreview && CurrentOverlayMode == OverlayMode.None
             ? _viewModel.BuildLiveFilterGraph(VideoView.ActualWidth * dpi.DpiScaleX, VideoView.ActualHeight * dpi.DpiScaleY)
@@ -788,6 +800,12 @@ public partial class MainWindow : Window
         if (e.PropertyName == nameof(MainViewModel.SoloTrack))
             OnSoloTrackChanged();
 
+        if (e.PropertyName is nameof(MainViewModel.DurationMs) or nameof(MainViewModel.IsEditorMode))
+            ScheduleClipRedraw();
+
+        if (e.PropertyName == nameof(MainViewModel.PositionMs))
+            MoveClipPlayheads();
+
         if (e.PropertyName == nameof(MainViewModel.HasSource))
             DropHint.Visibility = _viewModel.HasSource ? Visibility.Collapsed : Visibility.Visible;
 
@@ -808,7 +826,7 @@ public partial class MainWindow : Window
                 : "Live Preview off: the player shows the source as it is.";
         }
 
-        if (e.PropertyName is nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetElement))
+        if (e.PropertyName is nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer))
             UpdateOverlayMode();
 
         if (e.PropertyName == nameof(MainViewModel.IsArrangeActive))
@@ -1072,6 +1090,204 @@ public partial class MainWindow : Window
 
     private void ClearLut_Click(object sender, RoutedEventArgs e) => _viewModel.LutPath = "";
 
+    private void HudMasks_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new HudMasksDialog { Owner = this };
+        if (dialog.ShowDialog() == true && dialog.Game is { } game)
+            _viewModel.AddHudLayers(game);
+    }
+
+    // ----- Layers in time -----
+    // Every row of the Layers tab has a time bar as long as the video. A layer is a block on its bar, from when
+    // it appears to when it goes; the Main Video's bar shows its cut segments. Everything is placed by one sum:
+    // seconds / length * width. While a block is being dragged only that block is moved; the layer itself is
+    // changed when it is let go, which is also when everything else (the command, Live Preview) hears of it.
+
+    private static readonly Brush MainClipBrush = Frozen(Color.FromRgb(0x2F, 0x6F, 0xB5));
+    private static readonly Brush LayerClipBrush = Frozen(Color.FromRgb(0x8E, 0x5A, 0xB8));
+    private const double ClipEdge = 9;
+
+    // The bars that are on screen now (the list makes and drops rows as it scrolls).
+    private readonly List<Canvas> _clipTracks = [];
+
+    // What is selected: a Layer or a CutSegment; null with the flag set is the main video as a whole.
+    private object? _selectedClip;
+    private bool _mainClipSelected;
+    private bool _clipRedrawQueued;
+
+    // The drag in progress: the block, what it stands for, where the pointer went down, and the block as it was then.
+    private (Border Block, Canvas Track, Layer Layer, double PointerX, double Left, double Width, bool Resizing)? _clipDrag;
+
+    private void ClipTrack_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is Canvas track && !_clipTracks.Contains(track))
+            _clipTracks.Add(track);
+        DrawTrack(sender as Canvas);
+    }
+
+    private void ClipTrack_Unloaded(object sender, RoutedEventArgs e) => _clipTracks.Remove((Canvas)sender);
+
+    private void ClipTrack_Changed(object sender, SizeChangedEventArgs e) => DrawTrack(sender as Canvas);
+
+    private void ClipTrack_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e) => DrawTrack(sender as Canvas);
+
+    // A click on a bar, beside its blocks, moves the playhead to that moment.
+    private void ClipTrack_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is Canvas { ActualWidth: > 0 } track && _viewModel.DurationMs > 0)
+            _viewModel.PositionMs = Math.Clamp(e.GetPosition(track).X / track.ActualWidth, 0, 1) * _viewModel.DurationMs;
+    }
+
+    /// <summary>Redraws the bars once, however many things have just changed.</summary>
+    private void ScheduleClipRedraw()
+    {
+        if (_clipRedrawQueued || _clipDrag is not null)
+            return;
+
+        _clipRedrawQueued = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _clipRedrawQueued = false;
+            foreach (var track in _clipTracks.ToList())
+                DrawTrack(track);
+        }, System.Windows.Threading.DispatcherPriority.Background);
+    }
+
+    /// <summary>Draws one row's bar: its block or blocks, and the playhead.</summary>
+    private void DrawTrack(Canvas? track)
+    {
+        if (track is null || _clipDrag is { } drag && ReferenceEquals(drag.Track, track))
+            return;
+
+        track.Children.Clear();
+        var seconds = _viewModel.DurationMs / 1000;
+        var show = track.DataContext is Layer { IsMainVideo: true } or Layer { HasTiming: true } && seconds > 0;
+        track.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show || track.ActualWidth <= 0 || track.DataContext is not Layer layer)
+            return;
+
+        var scale = track.ActualWidth / seconds;
+        if (layer.IsMainVideo)
+        {
+            var segments = _viewModel.Segments.OrderBy(s => s.Start).ToList();
+            if (segments.Count == 0)
+                AddClip(track, 0, track.ActualWidth, "The whole video", MainClipBrush, null, null);
+            foreach (var segment in segments)
+                AddClip(track, segment.Start.TotalSeconds * scale, segment.Duration.TotalSeconds * scale, "", MainClipBrush, segment, null);
+        }
+        else
+        {
+            var end = layer.Duration > 0.001 ? layer.StartTime + layer.Duration : seconds;
+            AddClip(track, layer.StartTime * scale, (end - layer.StartTime) * scale, "", LayerClipBrush, layer, layer);
+        }
+
+        // The playhead, so it can be seen where a split would fall.
+        var playhead = new System.Windows.Shapes.Rectangle { Width = 1.5, Height = track.Height, Fill = Brushes.OrangeRed, IsHitTestVisible = false, Tag = "playhead" };
+        Canvas.SetLeft(playhead, _viewModel.PositionMs / 1000 * scale);
+        track.Children.Add(playhead);
+    }
+
+    /// <summary>Moves the playhead line of every bar; nothing else about them changes as the video plays.</summary>
+    private void MoveClipPlayheads()
+    {
+        var seconds = _viewModel.DurationMs / 1000;
+        if (seconds <= 0)
+            return;
+
+        foreach (var track in _clipTracks)
+        {
+            if (track.Children.Count > 0 && track.Children[^1] is System.Windows.Shapes.Rectangle { Tag: "playhead" } playhead)
+                Canvas.SetLeft(playhead, _viewModel.PositionMs / 1000 * track.ActualWidth / seconds);
+        }
+    }
+
+    private bool IsSelected(object? clip) => clip is null ? _mainClipSelected && _selectedClip is null : ReferenceEquals(clip, _selectedClip);
+
+    private void AddClip(Canvas track, double left, double width, string name, Brush fill, object? clip, Layer? layer)
+    {
+        var block = new Border
+        {
+            Width = Math.Max(width, 3),
+            Height = track.Height - 2,
+            Background = fill,
+            CornerRadius = new CornerRadius(3),
+            BorderBrush = IsSelected(clip) ? Brushes.White : Brushes.Transparent,
+            BorderThickness = new Thickness(1.5),
+            Cursor = layer is null ? Cursors.Hand : Cursors.SizeAll,
+            ToolTip = layer is null
+                ? "A stretch of the main video that is kept. Click to select it; S splits it at the playhead."
+                : "Drag to move the layer in time; drag its right edge to change how long it stays. Click to select it; S splits it at the playhead.",
+            Child = new TextBlock { Text = name, Foreground = Brushes.White, FontSize = 10.5, Margin = new Thickness(5, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis },
+            Tag = "clip",
+        };
+        Canvas.SetLeft(block, left);
+        Canvas.SetTop(block, 1);
+
+        block.MouseLeftButtonDown += (_, e) =>
+        {
+            (_selectedClip, _mainClipSelected) = (clip, clip is null);
+            foreach (var other in _clipTracks.SelectMany(t => t.Children.OfType<Border>()))
+                other.BorderBrush = ReferenceEquals(other, block) ? Brushes.White : Brushes.Transparent;
+
+            // Only a layer is moved; the main video's blocks are where its cuts are.
+            if (layer is not null && block.CaptureMouse())
+                _clipDrag = (block, track, layer, e.GetPosition(track).X, Canvas.GetLeft(block), block.Width, e.GetPosition(block).X > block.Width - ClipEdge);
+
+            e.Handled = true;
+        };
+        block.MouseMove += (_, e) =>
+        {
+            if (_clipDrag is not { } drag || !ReferenceEquals(drag.Block, block))
+            {
+                // The right edge is the handle for the length.
+                if (layer is not null)
+                    block.Cursor = e.GetPosition(block).X > block.Width - ClipEdge ? Cursors.SizeWE : Cursors.SizeAll;
+                return;
+            }
+
+            var moved = e.GetPosition(track).X - drag.PointerX;
+            if (drag.Resizing)
+                block.Width = Math.Clamp(drag.Width + moved, 4, track.ActualWidth - drag.Left);
+            else
+                Canvas.SetLeft(block, Math.Clamp(drag.Left + moved, 0, Math.Max(track.ActualWidth - drag.Width, 0)));
+        };
+        block.MouseLeftButtonUp += (_, _) =>
+        {
+            if (_clipDrag is not { } drag || !ReferenceEquals(drag.Block, block))
+                return;
+
+            _clipDrag = null;
+            block.ReleaseMouseCapture();
+
+            // A click that did not move the block changes nothing about the layer.
+            var seconds = _viewModel.DurationMs / 1000;
+            var (left, width) = (Canvas.GetLeft(block), block.Width);
+            if (seconds > 0 && track.ActualWidth > 0 && (Math.Abs(left - drag.Left) > 0.5 || Math.Abs(width - drag.Width) > 0.5))
+            {
+                var perPixel = seconds / track.ActualWidth;
+                (drag.Layer.StartTime, drag.Layer.Duration) = (Math.Round(left * perPixel, 2), Math.Round(width * perPixel, 2));
+            }
+
+            ScheduleClipRedraw();
+        };
+        track.Children.Add(block);
+    }
+
+    private void SplitClip_Click(object sender, RoutedEventArgs e) => SplitSelectedClip();
+
+    /// <summary>The razor: cuts the selected block in two at the playhead. Nothing selected means the main video.</summary>
+    private void SplitSelectedClip()
+    {
+        var at = _viewModel.PositionMs / 1000;
+        if (_selectedClip is Layer layer && _viewModel.Layers.Contains(layer))
+            _viewModel.SplitLayer(layer, at);
+        else
+            _viewModel.SplitSegment(_selectedClip as CutSegment, at);
+
+        (_selectedClip, _mainClipSelected) = (null, false);
+        ScheduleClipRedraw();
+    }
+
     private async void AddVideo_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
@@ -1080,20 +1296,20 @@ public partial class MainWindow : Window
             Filter = "Video files|*.mp4;*.mkv;*.mov;*.avi;*.webm;*.m4v;*.ts;*.m2ts;*.wmv;*.flv;*.mpg;*.mpeg;*.gif|All files|*.*",
         };
         if (dialog.ShowDialog(this) == true)
-            await _viewModel.AddVideoElementAsync(dialog.FileName);
+            await _viewModel.AddVideoLayerAsync(dialog.FileName);
     }
 
     private void AddImage_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog { Title = "Select an image to place on the frame", Filter = "Images|*.png;*.jpg;*.jpeg" };
         if (dialog.ShowDialog(this) == true)
-            _viewModel.AddImageElement(dialog.FileName);
+            _viewModel.AddImageLayer(dialog.FileName);
     }
 
     // ----- Drawing on the video -----
     // One canvas lies over the video and serves three jobs, one at a time:
     //   Crop        drag a rectangle to set the Top/Bottom/Left/Right crop;
-    //   DrawTarget  drag a rectangle to mark where an element is in the source.
+    //   DrawTarget  drag a rectangle to mark where a layer is in the source.
     // Arranging the layers on the output frame has a pane of its own beside the player; see further down.
 
     private enum OverlayMode
@@ -1105,7 +1321,7 @@ public partial class MainWindow : Window
     }
 
     private readonly List<UIElement> _arrangeVisuals = [];
-    private readonly List<(OverlayRegion Element, PropertyChangedEventHandler Handler)> _arrangeSubscriptions = [];
+    private readonly List<(Layer Layer, PropertyChangedEventHandler Handler)> _arrangeSubscriptions = [];
     private readonly List<Adorner> _arrangeAdorners = [];
 
     // Puts the centre video's box where the view model says it is; set while Arrange is showing.
@@ -1114,7 +1330,7 @@ public partial class MainWindow : Window
 
     private OverlayMode CurrentOverlayMode =>
         _viewModel.IsInteractiveCropActive ? OverlayMode.Crop
-        : _viewModel.DrawTargetElement is not null ? OverlayMode.DrawTarget
+        : _viewModel.DrawTargetLayer is not null ? OverlayMode.DrawTarget
         : OverlayMode.None;
 
     /// <summary>Where the picture actually is inside the player: the video is letterboxed to keep its shape.</summary>
@@ -1137,7 +1353,7 @@ public partial class MainWindow : Window
         if (mode != OverlayMode.None && _viewModel.SourceWidth <= 0)
         {
             _viewModel.StatusText = "Load a video before drawing on it.";
-            (_viewModel.IsInteractiveCropActive, _viewModel.DrawTargetElement) = (false, null);
+            (_viewModel.IsInteractiveCropActive, _viewModel.DrawTargetLayer) = (false, null);
             return;
         }
 
@@ -1145,7 +1361,7 @@ public partial class MainWindow : Window
         ApplyLiveFilter();
 
 
-        // Red for the crop, gold for a UI element, so it is clear what is being drawn.
+        // Red for the crop, gold for a UI layer, so it is clear what is being drawn.
         var colour = mode == OverlayMode.DrawTarget ? Colors.Gold : Colors.Red;
         CropRectangle.Stroke = new SolidColorBrush(colour);
         CropRectangle.Fill = new SolidColorBrush(Color.FromArgb(0x18, colour.R, colour.G, colour.B));
@@ -1153,7 +1369,7 @@ public partial class MainWindow : Window
         _viewModel.StatusText = mode switch
         {
             OverlayMode.Crop => "Drag on the video to draw the crop. Double-click inside the rectangle to centre it.",
-            OverlayMode.DrawTarget => $"Drag on the video to mark where {_viewModel.DrawTargetElement!.Name} is.",
+            OverlayMode.DrawTarget => $"Drag on the video to mark where {_viewModel.DrawTargetLayer!.Name} is.",
 
             _ => _viewModel.StatusText,
         };
@@ -1173,7 +1389,7 @@ public partial class MainWindow : Window
                 ShowSourceRectangle(crop.Left, crop.Top, crop.Width, crop.Height);
                 break;
 
-            case OverlayMode.DrawTarget when _viewModel.DrawTargetElement is { } element:
+            case OverlayMode.DrawTarget when _viewModel.DrawTargetLayer is { } element:
                 var (x, y, width, height) = element.GetSourceRect(_viewModel.SourceWidth, _viewModel.SourceHeight);
                 ShowSourceRectangle(x, y, width, height);
                 break;
@@ -1251,7 +1467,7 @@ public partial class MainWindow : Window
         var left = Even((drawn.Left - area.Left) / scale);
         var top = Even((drawn.Top - area.Top) / scale);
 
-        if (_viewModel.DrawTargetElement is { } element)
+        if (_viewModel.DrawTargetLayer is { } element)
         {
             // Kept as fractions of the frame, which is all the drawn rectangle really says.
             (element.SourceX, element.SourceY) = ((drawn.Left - area.Left) / area.Width, (drawn.Top - area.Top) / area.Height);
@@ -1271,10 +1487,10 @@ public partial class MainWindow : Window
         _dragStart = null;
         CropCanvas.ReleaseMouseCapture();
 
-        // Marking an element is a one-shot job: once the rectangle is drawn, the canvas goes away again.
-        if (wasDragging && _viewModel.DrawTargetElement is { } element)
+        // Marking a layer is a one-shot job: once the rectangle is drawn, the canvas goes away again.
+        if (wasDragging && _viewModel.DrawTargetLayer is { } element)
         {
-            _viewModel.DrawTargetElement = null;
+            _viewModel.DrawTargetLayer = null;
             var (x, y, width, height) = element.GetSourceRect(_viewModel.SourceWidth, _viewModel.SourceHeight);
             _viewModel.StatusText = $"{element.Name}: {width} x {height} at {x}, {y} in the source.";
         }
@@ -1314,7 +1530,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Draws the output frame, in whatever shape Resolution &amp; Cropping on the Video tab gives it, with a box
-    /// for each layer: the sharp centre video and the elements when the engine is on, and the caption box
+    /// for each layer: the sharp centre video and the layers when the engine is on, and the caption box
     /// when auto-captions are. Every box is dragged to move its layer, and carries a resize handle on its
     /// corner. The boxes and the sliders show the same numbers: moving either moves the other.
     /// </summary>
@@ -1346,7 +1562,7 @@ public partial class MainWindow : Window
         _arrangeVisuals.Add(stage);
         LayoutCanvas.Children.Add(stage);
 
-        // The sharp video first, so that it lies under the elements as it does in the output.
+        // The sharp video first, so that it lies under the layers as it does in the output.
         if (_viewModel.FrameEngine)
         {
             _placeCenter = AddArrangeLayer(
@@ -1385,10 +1601,10 @@ public partial class MainWindow : Window
             _arrangeSubscriptions.Add((captions, captionHandler));
         }
 
-        foreach (var element in _viewModel.FrameEngine ? _viewModel.UiElements.ToList() : [])
+        foreach (var element in _viewModel.FrameEngine ? _viewModel.Layers.ToList() : [])
         {
             var place = AddArrangeLayer(
-                element.Name, (Style)FindResource("ElementThumb"), element, frame, scale,
+                element.Name, (Style)FindResource("LayerThumb"), element, frame, scale,
                 () => element.GetOutputRect(frameWidth, frameHeight, _viewModel.SourceWidth, _viewModel.SourceHeight),
                 (deltaX, deltaY) =>
                 {
@@ -1406,7 +1622,7 @@ public partial class MainWindow : Window
                 },
                 reset: () =>
                 {
-                    // An element keeps its size; it goes to the middle of the frame.
+                    // A layer keeps its size; it goes to the middle of the frame.
                     var (_, _, width, height) = element.GetOutputRect(frameWidth, frameHeight, _viewModel.SourceWidth, _viewModel.SourceHeight);
                     element.PositionX = Math.Clamp((frameWidth - width) / 2.0 / frameWidth, 0, 1);
                     element.PositionY = Math.Clamp((frameHeight - height) / 2.0 / frameHeight, 0, 1);
@@ -1461,8 +1677,8 @@ public partial class MainWindow : Window
         }
 
         _arrangeVisuals.Add(box);
-        // The caption box was made first so that its handlers exist, but it belongs on top: elements go under it.
-        var captionBox = LayoutCanvas.Children.OfType<Thumb>().FirstOrDefault(t => t.DataContext is OverlayRegion { IsCaptions: true });
+        // The caption box was made first so that its handlers exist, but it belongs on top: layers go under it.
+        var captionBox = LayoutCanvas.Children.OfType<Thumb>().FirstOrDefault(t => t.DataContext is Layer { IsCaptions: true });
         if (captionBox is not null && !ReferenceEquals(dataContext, captionBox.DataContext))
             LayoutCanvas.Children.Insert(LayoutCanvas.Children.IndexOf(captionBox), box);
         else
@@ -1472,7 +1688,7 @@ public partial class MainWindow : Window
         // The handle is an adorner on the box: it stays on the corner however the box moves or grows.
         if (AdornerLayer.GetAdornerLayer(box) is { } layer)
         {
-            var adorner = new ResizeAdorner(box, (Style)FindResource("ElementGrip"), name);
+            var adorner = new ResizeAdorner(box, (Style)FindResource("LayerGrip"), name);
             adorner.ResizeDelta += (_, e) => resize(e.HorizontalChange / scale, e.VerticalChange / scale);
             layer.Add(adorner);
             _arrangeAdorners.Add(adorner);
@@ -1530,7 +1746,7 @@ public partial class MainWindow : Window
     private VoiceoverStudioDialog? _voiceoverStudio;
     /// <summary>The caption box as a layer: its opacity.</summary>
     private void CaptionLayerStyle_Click(object sender, RoutedEventArgs e) =>
-        new ElementStyleDialog { Owner = this, DataContext = _viewModel.CaptionLayer }.ShowDialog();
+        new LayerPropertiesDialog { Owner = this, DataContext = _viewModel.CaptionLayer }.ShowDialog();
 
     private void LiveFramePreview_Click(object sender, RoutedEventArgs e)
     {
@@ -1614,49 +1830,51 @@ public partial class MainWindow : Window
 
     // ----- Layout files -----
 
-    private const string LayoutFileFilter = "HandPeg project settings (*.json)|*.json|All files|*.*";
+    private const string LayoutFileFilter = "HandPeg style preset (*.hpstyle)|*.hpstyle|All files|*.*";
+
+    private void ToggleMode_Click(object sender, RoutedEventArgs e) => _viewModel.ToggleMode();
 
     /// <summary>Where layout files are kept unless the user picks somewhere else. Made on first use, so the dialog can open in it.</summary>
     private static string LayoutsFolder()
     {
         try
         {
-            Directory.CreateDirectory(AppPaths.Layouts);
+            Directory.CreateDirectory(AppPaths.Styles);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // The dialog then opens wherever Windows last had it.
         }
 
-        return AppPaths.Layouts;
+        return AppPaths.Styles;
     }
 
     private void ExportLayout_Click(object sender, RoutedEventArgs e)
     {
         // First which parts, then where to.
-        var choice = new LayoutImportDialog(_viewModel.CaptureProjectSettings(), fileName: null) { Owner = this };
+        var choice = new StyleImportDialog(_viewModel.CaptureStyleWithMasks(), fileName: null) { Owner = this };
         if (choice.ShowDialog() != true)
             return;
 
         var dialog = new SaveFileDialog
         {
-            Title = "Export Project Settings", Filter = LayoutFileFilter, FileName = "HandPeg project settings.json", DefaultExt = "json",
+            Title = "Export Style Preset", Filter = LayoutFileFilter, FileName = "My Style.hpstyle", DefaultExt = "hpstyle",
             InitialDirectory = LayoutsFolder(),
         };
         if (dialog.ShowDialog(this) == true)
-            _viewModel.ExportLayout(dialog.FileName, choice.ImportLayout, choice.ImportColor, choice.ImportBlur, choice.ImportSubtitles);
+            _viewModel.ExportStyle(dialog.FileName, choice.ImportLayout, choice.ImportColor, choice.ImportBlur, choice.ImportSubtitles);
     }
 
     private void ImportLayout_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Title = "Import Project Settings", Filter = LayoutFileFilter, InitialDirectory = LayoutsFolder() };
-        if (dialog.ShowDialog(this) != true || _viewModel.ReadLayout(dialog.FileName) is not { } layout)
+        var dialog = new OpenFileDialog { Title = "Import Style Preset", Filter = LayoutFileFilter, InitialDirectory = LayoutsFolder() };
+        if (dialog.ShowDialog(this) != true || _viewModel.ReadStyle(dialog.FileName) is not { } layout)
             return;
 
         // Which parts of the file to take.
-        var choice = new LayoutImportDialog(layout, Path.GetFileName(dialog.FileName)) { Owner = this };
+        var choice = new StyleImportDialog(layout, Path.GetFileName(dialog.FileName)) { Owner = this };
         if (choice.ShowDialog() == true)
-            _viewModel.ApplyLayout(layout, choice.ImportLayout, choice.ImportColor, choice.ImportBlur, choice.ImportSubtitles);
+            _viewModel.ApplyStyle(layout, choice.ImportLayout, choice.ImportColor, choice.ImportBlur, choice.ImportSubtitles);
     }
 
     // ----- Frame & Layer Engine dialogs -----
@@ -1664,10 +1882,10 @@ public partial class MainWindow : Window
     private void BlurSettings_Click(object sender, RoutedEventArgs e) =>
         new BlurSettingsDialog { Owner = this, DataContext = _viewModel }.ShowDialog();
 
-    private void ElementStyle_Click(object sender, RoutedEventArgs e)
+    private void LayerProperties_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is FrameworkElement { DataContext: OverlayRegion element })
-            new ElementStyleDialog { Owner = this, DataContext = element }.ShowDialog();
+        if (sender is FrameworkElement { DataContext: Layer element })
+            new LayerPropertiesDialog { Owner = this, DataContext = element }.ShowDialog();
     }
 
     // ----- Timeline hover previews -----

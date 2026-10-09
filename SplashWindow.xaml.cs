@@ -2,7 +2,6 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using HandPegApp.Models;
 using HandPegApp.Services;
 using Microsoft.Win32;
 
@@ -16,14 +15,46 @@ public enum LaunchKind
 }
 
 /// <param name="Path">The video, or the project file.</param>
-/// <param name="PresetName">The preset to apply to the video, or null to open it the usual way (smart rules and all).</param>
-/// <param name="Parts">Which of that preset's settings to bring in.</param>
-public sealed record LaunchRequest(LaunchKind Kind, string Path, string? PresetName = null, PresetParts Parts = PresetParts.All);
+/// <param name="StylePath">The style preset to give the video, or null to open it as it is.</param>
+public sealed record LaunchRequest(LaunchKind Kind, string Path, string? StylePath = null);
+
+/// <summary>A style preset as the launch window and the settings list it: a file in the Styles folder.</summary>
+public sealed record StyleFile(string Path)
+{
+    public const string Extension = ".hpstyle";
+
+    public string Name => System.IO.Path.GetFileNameWithoutExtension(Path);
+
+    public string FileName => System.IO.Path.GetFileName(Path);
+
+    /// <summary>The style presets in the Styles folder, most recently saved first.</summary>
+    public static List<StyleFile> All()
+    {
+        try
+        {
+            return Directory.Exists(AppPaths.Styles)
+                ? new DirectoryInfo(AppPaths.Styles).EnumerateFiles("*" + Extension).OrderByDescending(f => f.LastWriteTime).Select(f => new StyleFile(f.FullName)).ToList()
+                : [];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>The ones the launch window shows: those picked in the settings, or failing that the most recent, up to the number set.</summary>
+    public static List<StyleFile> ForLaunch()
+    {
+        var (all, settings) = (All(), AppSettings.Current);
+        var picked = all.Where(s => settings.SplashStylePresets.Contains(s.FileName, StringComparer.OrdinalIgnoreCase)).ToList();
+        return (picked.Count > 0 ? picked : all).Take(Math.Clamp(settings.SplashPresetCount, 0, 5)).ToList();
+    }
+}
 
 /// <summary>
-/// The launch window, shown over the main window as it starts, when it is switched on in the settings: a place
-/// to drop a video, a way back into a recent project, and the first few presets as drop targets. It only
-/// records what was asked for; the main window, which owns it, does the opening once it has closed.
+/// The launch window, shown over the main window as it starts in Editor Mode, when it is switched on in the
+/// settings: a place to drop a video, a way back into a recent project, and style presets as drop targets.
+/// It only records what was asked for; the main window, which owns it, does the opening once it has closed.
 /// </summary>
 public partial class SplashWindow : Window
 {
@@ -34,10 +65,9 @@ public partial class SplashWindow : Window
         InitializeComponent();
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
 
-        var presets = PresetStore.Load().Take(Math.Clamp(AppSettings.Current.SplashPresetCount, 0, 5)).ToList();
-        PresetList.ItemsSource = presets;
-        if (presets.Count == 0)
-            PresetPanel.Visibility = Visibility.Collapsed;
+        var styles = StyleFile.ForLaunch();
+        StyleList.ItemsSource = styles;
+        (StylePanel.Visibility, NoStylesText.Visibility) = styles.Count > 0 ? (Visibility.Visible, Visibility.Collapsed) : (Visibility.Collapsed, Visibility.Visible);
 
         var recent = ProjectStore.ListRecent().Take(12).ToList();
         RecentBox.ItemsSource = recent;
@@ -47,7 +77,7 @@ public partial class SplashWindow : Window
             RecentButton.ToolTip = "There are no saved projects yet. Save one with the Project button in the main window.";
     }
 
-    /// <summary>What to open once the main window is up; null for nothing (a blank project, or the window was simply closed).</summary>
+    /// <summary>What to open once this window has closed; null for nothing (a blank project, or the window was simply closed).</summary>
     public LaunchRequest? Request { get; private set; }
 
     private void Finish(LaunchRequest? request)
@@ -75,7 +105,7 @@ public partial class SplashWindow : Window
         e.Handled = true;
     }
 
-    // The target under the pointer lights up, so it is clear which preset a drop would use.
+    // The target under the pointer lights up, so it is clear which style a drop would use.
     private void DropTarget_DragEnter(object sender, DragEventArgs e)
     {
         if (sender is UIElement target && e.Data.GetDataPresent(DataFormats.FileDrop))
@@ -102,73 +132,26 @@ public partial class SplashWindow : Window
             Finish(new LaunchRequest(LaunchKind.Video, file));
     }
 
-    private void Preset_Drop(object sender, DragEventArgs e)
+    private void Style_Drop(object sender, DragEventArgs e)
     {
         e.Handled = true;
-        if (sender is not Button { DataContext: EncodingPreset preset } button)
+        if (sender is not Button { DataContext: StyleFile style } button)
             return;
 
         button.Opacity = 1;
-        if (DroppedFile(e) is not { } file)
-            return;
-
-        // Shift held while dropping asks again, for a preset whose answer was saved.
-        var askAgain = e.KeyStates.HasFlag(DragDropKeyStates.ShiftKey);
-
-        // The question must not be asked inside the drop itself: Explorer waits, frozen, until the drop handler returns.
-        Dispatcher.BeginInvoke(() => OpenWithPreset(file, preset, askAgain));
+        if (DroppedFile(e) is { } file)
+            Finish(new LaunchRequest(LaunchKind.Video, file, style.Path));
     }
 
-    private void Preset_Click(object sender, RoutedEventArgs e)
+    private void Style_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { DataContext: EncodingPreset preset } && Browse() is { } file)
-            OpenWithPreset(file, preset, askAgain: Keyboard.Modifiers.HasFlag(ModifierKeys.Shift));
+        if (sender is Button { DataContext: StyleFile style } && Browse() is { } file)
+            Finish(new LaunchRequest(LaunchKind.Video, file, style.Path));
     }
 
     private string? Browse()
     {
         var dialog = new OpenFileDialog { Title = "Select a video", Filter = VideoFilter };
         return dialog.ShowDialog(this) == true ? dialog.FileName : null;
-    }
-
-    /// <summary>
-    /// Asks which of the preset's settings to bring in, unless that was answered for this preset before with
-    /// "Always use these settings for this preset" ticked.
-    /// </summary>
-    private void OpenWithPreset(string file, EncodingPreset preset, bool askAgain)
-    {
-        Activate();
-
-        var settings = AppSettings.Current;
-        if (askAgain || !settings.PresetImportChoices.TryGetValue(preset.Name, out var parts))
-        {
-            var known = settings.PresetImportChoices.TryGetValue(preset.Name, out var saved);
-            var dialog = new PresetPartsDialog(preset.Name, Path.GetFileName(file), known ? saved : PresetParts.All, known) { Owner = this };
-            if (dialog.ShowDialog() != true)
-                return;
-
-            parts = dialog.Parts;
-            if (dialog.Always)
-                settings.PresetImportChoices[preset.Name] = parts;
-            else
-                settings.PresetImportChoices.Remove(preset.Name);
-
-            if (dialog.Always || known)
-            {
-                try
-                {
-                    settings.SaveAsCurrent();
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    // The choice still holds for this launch.
-                }
-            }
-        }
-
-        // With nothing ticked there is nothing of the preset to apply: the video opens the usual way.
-        Finish(parts == PresetParts.None
-            ? new LaunchRequest(LaunchKind.Video, file)
-            : new LaunchRequest(LaunchKind.Video, file, preset.Name, parts));
     }
 }

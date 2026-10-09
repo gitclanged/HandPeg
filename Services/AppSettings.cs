@@ -32,6 +32,41 @@ public sealed class SmartRule
 }
 
 /// <summary>
+/// What the interface looks like and starts with in one mode. Encoder Mode and Editor Mode each keep their
+/// own: switching mode puts the other one's away and takes this one's out, so a change made in one mode
+/// (a taller timeline, the Command Preview tab) does not follow into the other. Every property here has a
+/// property of the same name in <see cref="AppSettings"/>, which holds the values of the mode in use.
+/// </summary>
+public sealed class ModeProfile
+{
+    public int TimelineHeight { get; set; }
+    public int AudioTrackHeight { get; set; }
+    public string PresetBarLocation { get; set; } = "";
+    public bool ShowAdvancedFiltersTab { get; set; }
+    public bool ShowTimelineWaveform { get; set; }
+    public bool ShowAdvancedPlayback { get; set; }
+    public bool ShowCommandPreviewTab { get; set; }
+    public bool GenerateHoverPreviews { get; set; }
+    public bool? ShowTimelineThumbnails { get; set; }
+    public int ThumbnailIntervalSeconds { get; set; }
+    public int HoverPreviewScale { get; set; }
+    public int PreviewDurationSeconds { get; set; }
+    public int PreviewResolutionPercent { get; set; }
+    public bool AutoOpenLayoutPane { get; set; }
+    public bool ShowAutoCaptions { get; set; }
+    public bool ShowKeyframes { get; set; }
+    public bool SnapTimelineToKeyframes { get; set; }
+    public bool AutoToggleTimelineSnap { get; set; }
+    public bool SaveTargetSizeInPresets { get; set; }
+    public bool LivePreview { get; set; }
+    public bool StartWithPlayOnlySegments { get; set; }
+    public bool StartWithSnapToKeyframes { get; set; }
+    public bool StartWithChapterMarkers { get; set; }
+    public bool StartWithChaptersAtCuts { get; set; }
+    public bool StartWithFrameEngine { get; set; }
+}
+
+/// <summary>
 /// User overrides stored in appsettings.json in the settings folder (see <see cref="AppPaths"/>). A blank value means "use the default".
 /// </summary>
 public sealed class AppSettings
@@ -154,14 +189,8 @@ public sealed class AppSettings
 
     // ----- Launch -----
 
-    /// <summary>How many presets the launch window offers as buttons, 1 to 5. 0 switches the launch window off.</summary>
+    /// <summary>How many style presets the launch window offers as buttons, 1 to 5. 0 switches the launch window off. It is only shown in Editor Mode.</summary>
     public int SplashPresetCount { get; set; } = 3;
-
-    /// <summary>
-    /// Which parts of a preset to apply when a video is dropped on its button in the launch window, by preset
-    /// name: kept for the presets where "Always use these settings for this preset" was ticked.
-    /// </summary>
-    public Dictionary<string, Models.PresetParts> PresetImportChoices { get; set; } = [];
 
     /// <summary>
     /// Live Preview: the player shows the picture with the export's filters applied as they are set.
@@ -194,8 +223,55 @@ public sealed class AppSettings
     public const string EncoderMode = "Encoder Mode";
     public const string EditorMode = "Editor Mode";
 
-    /// <summary>The mode last chosen in the first-run window. A record of the choice: the settings it set can be changed one by one.</summary>
+    public const string LastUsedMode = "Last Used";
+
+    public static IReadOnlyList<string> DefaultModes { get; } = [LastUsedMode, EncoderMode, EditorMode];
+
+    /// <summary>The mode in use. The interface settings in this object are that mode's; the other mode's wait in <see cref="ModeProfiles"/>.</summary>
     public string UiMode { get; set; } = EncoderMode;
+
+    /// <summary>The mode HandPeg starts in: one of the two, or whichever was in use when it was last closed.</summary>
+    public string DefaultMode { get; set; } = LastUsedMode;
+
+    /// <summary>The interface settings of each mode, by mode name. The mode in use is written here whenever the settings are saved.</summary>
+    public Dictionary<string, ModeProfile> ModeProfiles { get; set; } = [];
+
+    private static readonly System.Reflection.PropertyInfo[] ProfileProperties = typeof(ModeProfile).GetProperties();
+
+    /// <summary>The interface settings as they are now, as a profile to put away.</summary>
+    private ModeProfile CaptureProfile()
+    {
+        var profile = new ModeProfile();
+        foreach (var property in ProfileProperties)
+            property.SetValue(profile, typeof(AppSettings).GetProperty(property.Name)!.GetValue(this));
+        return profile;
+    }
+
+    /// <summary>
+    /// Changes mode: the interface settings of the mode being left are put away, and those of the mode being
+    /// entered are taken out; a mode never used before starts from its defaults.
+    /// </summary>
+    public void SwitchMode(string mode)
+    {
+        mode = mode == EditorMode ? EditorMode : EncoderMode;
+        if (mode == UiMode)
+            return;
+
+        ModeProfiles[UiMode] = CaptureProfile();
+        if (ModeProfiles.TryGetValue(mode, out var profile))
+        {
+            foreach (var property in ProfileProperties)
+                typeof(AppSettings).GetProperty(property.Name)!.SetValue(this, property.GetValue(profile));
+            UiMode = mode;
+        }
+        else
+        {
+            ApplyMode(mode);
+        }
+    }
+
+    /// <summary>The style presets shown as buttons in the launch window, by file name. Empty for the most recent ones.</summary>
+    public List<string> SplashStylePresets { get; set; } = [];
 
     // What a freshly started window begins with. Unlike the settings above these are only starting points:
     // the boxes they stand for are on the main window and can be changed there for the session.
@@ -268,7 +344,7 @@ public sealed class AppSettings
     public bool ShowAutoCaptions { get; set; }
 
     /// <summary>When an encode fails on a hardware encoder, try again once with the matching software encoder.</summary>
-    public bool AutoFallbackToSoftware { get; set; }
+    public bool AutoFallbackToSoftware { get; set; } = true;
 
     // SponsorBlock categories yt-dlp cuts out of a download
     public bool SponsorBlockSponsor { get; set; }
@@ -343,7 +419,8 @@ public sealed class AppSettings
     {
         var copy = (AppSettings)MemberwiseClone();
         copy.SmartRules = SmartRules.Select(r => new SmartRule { Type = r.Type, Path = r.Path, Preset = r.Preset }).ToList();
-        copy.PresetImportChoices = new(PresetImportChoices);
+        copy.ModeProfiles = new(ModeProfiles);
+        copy.SplashStylePresets = [.. SplashStylePresets];
         return copy;
     }
 
@@ -359,6 +436,9 @@ public sealed class AppSettings
 
         WhisperReleaseUrl = WhisperReleaseUrl.Trim();
         SmartRules = SmartRules.Where(r => !string.IsNullOrWhiteSpace(r.Path) && !string.IsNullOrWhiteSpace(r.Preset)).ToList();
+
+        // The mode in use keeps its interface settings in the profiles too, so the file always holds both modes whole.
+        ModeProfiles[UiMode] = CaptureProfile();
 
         Directory.CreateDirectory(AppPaths.Settings);
         File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions));
@@ -380,6 +460,10 @@ public sealed class AppSettings
 
                 // Settings saved before the option existed: on where the mode would have switched it on.
                 settings.ShowTimelineThumbnails ??= settings.UiMode == EditorMode;
+
+                // Starting in a set mode, whatever was in use when HandPeg was last closed.
+                if (settings.DefaultMode is EncoderMode or EditorMode)
+                    settings.SwitchMode(settings.DefaultMode);
                 return settings;
             }
         }

@@ -5,7 +5,7 @@ namespace HandPegApp.Models;
 /// with the look. Each part is optional, so a file may carry only some of them and an import may take
 /// only some of what a file carries.
 /// </summary>
-public sealed class LayoutPreset
+public sealed class StylePreset
 {
     [System.Text.Json.Serialization.JsonPropertyName("schema_version")]
     public string SchemaVersion { get; set; } = "1.0";
@@ -14,6 +14,12 @@ public sealed class LayoutPreset
     public ColorSection? Color { get; set; }
     public BlurSection? Blur { get; set; }
     public SubtitleSection? Subtitles { get; set; }
+
+    /// <summary>
+    /// The mask pictures the layers use, by file name, each as Base64: carried inside the file, so that a
+    /// style preset is one file that works on any machine. Null when no layer has a mask.
+    /// </summary>
+    public Dictionary<string, string>? Masks { get; set; }
 }
 
 /// <summary>Auto-captions: whether they are on, how whisper is asked to listen, how they look and where they sit.</summary>
@@ -24,10 +30,10 @@ public sealed class SubtitleSection
     public string WhisperLanguage { get; set; } = "en";
     public bool WhisperTranslate { get; set; }
     public CaptionStyle Style { get; set; } = new();
-    public OverlayRegionState? Layer { get; set; }
+    public LayerState? Layer { get; set; }
 }
 
-/// <summary>The centre video and the elements. Everything is a fraction of the frame, so it fits any frame size.</summary>
+/// <summary>The centre video and the layers. Everything is a fraction of the frame, so it fits any frame size.</summary>
 public sealed class LayoutSection
 {
     public double CenterZoom { get; set; } = 1;
@@ -35,12 +41,12 @@ public sealed class LayoutSection
     public double CenterOffsetY { get; set; }
 
     /// <summary>
-    /// Width divided by height of the video the layout was made on; 0 when not recorded. The elements are
+    /// Width divided by height of the video the layout was made on; 0 when not recorded. The layers are
     /// cut from the source by fractions of its frame, which only land on the same things in a video of the same shape.
     /// </summary>
     public double SourceAspectRatio { get; set; }
 
-    public List<OverlayRegionState> Elements { get; set; } = [];
+    public List<LayerState> Layers { get; set; } = [];
 }
 
 public sealed class ColorSection

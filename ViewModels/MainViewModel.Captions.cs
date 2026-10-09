@@ -66,14 +66,14 @@ public partial class MainViewModel
     // ----- The caption box -----
 
     /// <summary>
-    /// Where the captions are drawn on the output frame: a layer like the elements, placed and sized on the
+    /// Where the captions are drawn on the output frame: a layer like the layers, placed and sized on the
     /// Edit Layout canvas, and always the top one.
     /// </summary>
-    public OverlayRegion CaptionLayer { get; } = CreateCaptionLayer();
+    public Layer CaptionLayer { get; } = CreateCaptionLayer();
 
-    private static OverlayRegion CreateCaptionLayer() => new()
+    private static Layer CreateCaptionLayer() => new()
     {
-        Kind = ElementKind.Captions,
+        Kind = LayerKind.Captions,
         Name = "Subtitles",
         LockAspectRatio = false,
         PositionX = DefaultCaptionX,
@@ -88,7 +88,7 @@ public partial class MainViewModel
     private const double DefaultCaptionWidth = 0.90;
     private const double DefaultCaptionHeight = 0.20;
 
-    private void SetCaptionLayer(OverlayRegionState? state)
+    private void SetCaptionLayer(LayerState? state)
     {
         (CaptionLayer.PositionX, CaptionLayer.PositionY) = (state?.PositionX ?? DefaultCaptionX, state?.PositionY ?? DefaultCaptionY);
         CaptionLayer.SizeWidth = state is { SizeWidth: > 0 } ? state.SizeWidth : DefaultCaptionWidth;
@@ -110,7 +110,7 @@ public partial class MainViewModel
     partial void OnAutoCaptionsChanged(bool value)
     {
         OnPropertyChanged(nameof(CanEditLayout));
-        RefreshElementRows();
+        RefreshLayerRows();
         if (!CanEditLayout)
             IsArrangeActive = false;
         else if (value)
@@ -213,7 +213,7 @@ public partial class MainViewModel
         var opacity = Math.Clamp(CaptionLayer.Opacity, 0, 100) / 100.0;
 
         var layer = $"color=c=black@0:s={width}x{height}:r={rate},format=rgba,{BuildCaptionFilter(assPath)}:alpha=1";
-        if (BuildElementMask(CaptionLayer, width, height, _liveScale) is { } mask)
+        if (BuildLayerMask(CaptionLayer, width, height, _liveScale) is { } mask)
             layer += $",format=gbrap,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{mask}{(opacity < 1 ? "*" + Number(opacity) : "")}'";
         else if (opacity < 1)
             layer += $",colorchannelmixer=aa={Number(opacity)}";

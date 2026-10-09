@@ -154,7 +154,7 @@ public static class VideoCombinator
     {
         EncoderFamily.Qsv => ["veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
         EncoderFamily.Amf => ["speed", "balanced", "quality"],
-        EncoderFamily.Nvenc => ["fast", "medium", "slow"],
+        EncoderFamily.Nvenc => ["p1", "p2", "p3", "p4", "p5", "p6", "p7"],
         _ => ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
     };
 
@@ -164,9 +164,9 @@ public static class VideoCombinator
         quality = Math.Clamp(quality, 0, 51);
         return encoder.Family switch
         {
-            EncoderFamily.Nvenc => $"-c:v {encoder.Name} -preset {preset} -rc vbr -cq {quality} -b:v 0",
-            EncoderFamily.Qsv => $"-c:v {encoder.Name} -preset {preset} -q:v {quality}",
-            EncoderFamily.Amf => $"-c:v {encoder.Name} -quality {preset} -rc cqp -qp_i {quality} -qp_p {quality}",
+            EncoderFamily.Nvenc => $"-c:v {encoder.Name} -preset {preset} -rc vbr -cq {quality} -b:v 0 -pix_fmt yuv420p",
+            EncoderFamily.Qsv => $"-c:v {encoder.Name} -preset {preset} -q:v {quality} -pix_fmt yuv420p",
+            EncoderFamily.Amf => $"-c:v {encoder.Name} -quality {preset} -rc cqp -qp_i {quality} -qp_p {quality} -pix_fmt yuv420p",
             _ => $"-c:v {encoder.Name} -preset {preset} -crf {quality}",
         };
     }
