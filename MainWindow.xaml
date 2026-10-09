@@ -407,12 +407,21 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Text="{Binding Display}" Style="{StaticResource TimeText}" TextTrimming="CharacterEllipsis" />
+                                    <Grid.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="Skip / Restore" Click="SegmentSkip_Click" ToolTip="A skipped segment stays on the timeline, greyed out, and is left out of the output." />
+                                            <MenuItem Header="Delete" Click="SegmentDelete_Click" />
+                                        </ContextMenu>
+                                    </Grid.ContextMenu>
+                                    <TextBlock x:Name="segmentText" Text="{Binding Display}" Style="{StaticResource TimeText}" TextTrimming="CharacterEllipsis" />
                                     <Button Grid.Column="1" Content="Remove" Padding="10,2" Margin="6,0,0,0"
                                             Command="{Binding DataContext.RemoveSegmentCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
                                             CommandParameter="{Binding}" />
                                 </Grid>
                                 <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding IsSkipped}" Value="True">
+                                        <Setter TargetName="segmentText" Property="Opacity" Value="0.45" />
+                                    </DataTrigger>
                                     <!-- Flashes when snapping to keyframes has changed this segment's times. -->
                                     <DataTrigger Binding="{Binding IsFlashing}" Value="True">
                                         <Setter TargetName="row" Property="Background" Value="{DynamicResource AccentBrush}" />
@@ -552,14 +561,19 @@
                     </Grid>
 
                     <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                        <Button x:Name="AddStartButton" Content="Add Start Point" Command="{Binding AddStartPointCommand}" />
-                        <Button Content="Add Stop Point" Command="{Binding AddStopPointCommand}" Margin="6,0,0,0" />
+                        <!-- The cut buttons: here in Encoder Mode; in Editor Mode they are on the Layers tab, with the rest of the editing tools. -->
+                        <Button x:Name="AddStartButton" Content="Add Start Point" Command="{Binding AddStartPointCommand}"
+                                Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}" />
+                        <Button Content="Add Stop Point" Command="{Binding AddStopPointCommand}" Margin="6,0,0,0"
+                                Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}" />
                         <!-- Available whenever a start point could be added: that is, once a video is loaded. -->
                         <Button Content="Manual Cut Entry" Margin="6,0,0,0" Click="ManualCut_Click"
                                 IsEnabled="{Binding IsEnabled, ElementName=AddStartButton}"
+                                Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}"
                                 ToolTip="Type the start and stop of a cut." />
                         <Button x:Name="RemoveDeadAirButton" Content="Remove Dead Air..." Margin="6,0,0,0" Click="RemoveDeadAir_Click"
                                 IsEnabled="{Binding IsEnabled, ElementName=AddStartButton}"
+                                Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}"
                                 ToolTip="Find the silent stretches of the first audio track and replace the cut list with everything in between. Opens a small dialog to set how quiet counts as silence." />
                         <TextBlock Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="12,0,0,0" />
                         <CheckBox Content="Snap cuts to keyframes" IsChecked="{Binding SnapToKeyframes}" Margin="24,0,0,0"
@@ -896,22 +910,48 @@
             -->
             <TabItem Header="Layers" x:Name="LayersTab" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
                     <DockPanel IsEnabled="{Binding IsVideoReencoded}">
-                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
-                            <Button Content="Add Layer" Padding="12,5" Command="{Binding AddLayerCommand}"
+                        <!--
+                            Everything below the layers in one panel: what adds a layer, the editing tools, and the
+                            centre video's numbers. On one row when the window is wide enough; wrapping when it is not.
+                        -->
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0" x:Name="LayerAddBar">
+                            <Button Content="Add Layer" Padding="12,5" Margin="0,2,0,2" Command="{Binding AddLayerCommand}"
                                     ToolTip="Lift a piece of the source video (a minimap, an ammo counter) onto the frame as a layer. Mark it with Draw Target." />
                             <Button Content="Add Image" Padding="12,5" Margin="6,0,0,0" Click="AddImage_Click"
                                     ToolTip="Place a .png or .jpg picture (a logo, a watermark, a frame) on the picture as a layer." />
-                            <Button Content="Split at Playhead (S)" Padding="12,5" Margin="6,0,0,0" Click="SplitClip_Click" AutomationProperties.Name="Split at Playhead"
-                                    ToolTip="The razor: cuts the block selected on a layer's time bar in two at the playhead. A layer becomes two layers; a cut segment of the main video becomes two segments. With nothing selected, the main video is split." />
                             <Button Content="HUD Masks" Padding="12,5" Margin="6,0,0,0" Click="HudMasks_Click"
                                     ToolTip="Takes a game's HUD apart into layers (killfeed, health, radar, abilities), each cut out with its own mask, so each can be moved on its own. For Overwatch 2, Counter-Strike 2, Apex Legends and Marvel Rivals." />
                             <Button Content="Add Video" Padding="12,5" Margin="6,0,0,0" Click="AddVideo_Click"
                                     ToolTip="Place a video from a file on the picture as a layer: it plays alongside the main video and starts again when it runs out. Its sound is not used." />
                             <ToggleButton Content="Edit Layout" Padding="12,5" Margin="6,0,0,0" IsChecked="{Binding IsArrangeActive}" IsEnabled="{Binding CanEditLayout}"
                                           ToolTip="Opens the layout pane beside the player: the output frame with the main video, the layers and the caption box. Drag to move, drag a corner handle to resize, double-click to center." />
-                        </WrapPanel>
-                        <!-- The sharp centre video: the same numbers that dragging it in Arrange changes -->
-                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,4,0,0">
+                            <!-- The editing tools, as icons: each works on whatever block is selected on a time bar -->
+                            <Button Content="[" FontFamily="Consolas" FontWeight="Bold" FontSize="14" Padding="11,5" Margin="18,0,4,0" Command="{Binding AddStartPointCommand}"
+                                    AutomationProperties.Name="Add Start Point" ToolTip="Add Start Point (I): a new cut segment of the main video begins at the playhead." />
+                            <Button Content="]" FontFamily="Consolas" FontWeight="Bold" FontSize="14" Padding="11,5" Margin="0,0,4,0" Command="{Binding AddStopPointCommand}"
+                                    AutomationProperties.Name="Add Stop Point" ToolTip="Add Stop Point (O): the segment begun with the start point ends at the playhead." />
+                            <Button Content="&#xE70F;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="ManualCut_Click" IsEnabled="{Binding IsEnabled, ElementName=AddStartButton}"
+                                    AutomationProperties.Name="Manual Cut Entry" ToolTip="Manual Cut Entry: type the start and stop of a cut." />
+                            <Button Content="&#xE8C6;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="SplitClip_Click" IsEnabled="{Binding IsEnabled, ElementName=AddStartButton}"
+                                    AutomationProperties.Name="Split at Playhead" ToolTip="Split at Playhead (S): cuts the selected block in two at the playhead. A layer becomes two layers, a cut segment two segments, an audio track two parts. With nothing selected, the main video is split." />
+                            <Button Content="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="TrimStart_Click" IsEnabled="{Binding IsEnabled, ElementName=AddStartButton}"
+                                    AutomationProperties.Name="Trim Start to Playhead" ToolTip="Trim Start to Playhead: the selected layer or segment begins at the playhead; what came before goes." />
+                            <Button Content="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="TrimEnd_Click" IsEnabled="{Binding IsEnabled, ElementName=AddStartButton}"
+                                    AutomationProperties.Name="Trim End to Playhead" ToolTip="Trim End to Playhead: the selected layer or segment ends at the playhead; what came after goes." />
+                            <Button Content="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="DeleteClip_Click" IsEnabled="{Binding IsEnabled, ElementName=AddStartButton}"
+                                    AutomationProperties.Name="Delete Selected" ToolTip="Delete (Del): removes the selected layer or cut segment, or silences the selected part of an audio track." />
+                            <Button Content="&#xE74F;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="RemoveDeadAir_Click" IsEnabled="{Binding IsEnabled, ElementName=AddStartButton}"
+                                    AutomationProperties.Name="Remove Dead Air" ToolTip="Remove Dead Air: finds the silences in the selected track (a video layer, an audio track, or otherwise the main video) and either marks them as skipped or removes them." />
+                            <Button Content="&#xE7A7;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="10,0,4,0" Click="Undo_Click"
+                                    AutomationProperties.Name="Undo" ToolTip="Undo (Ctrl+Z): takes back the last change to the cuts, the layers or the audio. Twenty steps are kept." />
+                            <Button Content="&#xE7A6;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="Redo_Click"
+                                    AutomationProperties.Name="Redo" ToolTip="Redo (Ctrl+Y): does again what was just undone." />
+                            <ToggleButton Content="&#xE71B;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="10,0,4,0" IsChecked="{Binding AudioLinked, Mode=OneWay}" Checked="LinkAudio_Click" Unchecked="LinkAudio_Click"
+                                          AutomationProperties.Name="Link Audio and Video" ToolTip="Link Audio and Video: linked, sound follows its picture and is cut with it. Unlinked, an audio block can be dragged on its own; linking again offers to snap it back." />
+                            <CheckBox Content="Show audio tracks for selected layer/clip" IsChecked="{Binding ShowLayerAudio}" Margin="10,0,0,0" VerticalAlignment="Center"
+                                      ToolTip="Gives each video layer's row a second bar for its own sound, and shows the main video's waveform behind its blocks. A layer's sound goes into the output with it, and auto-captions can listen to it (right-click the layer)." />
+                            <TextBlock Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="14,0,18,0" />
+    <!-- The sharp centre video: the same numbers that dragging it in Arrange changes -->
                             <StackPanel Orientation="Horizontal" Margin="0,2,14,2">
                                 <TextBlock Text="Center Zoom:" Style="{StaticResource FieldLabel}" Margin="0,0,6,0" />
                                 <Slider Width="90" Minimum="0.1" Maximum="4" TickFrequency="0.05" IsSnapToTickEnabled="True" VerticalAlignment="Center"
@@ -944,12 +984,15 @@
                             One row per layer, the front one first: the caption box (while auto-captions are on), the layers
                             added by hand with the main video among them, and the blurred background at the bottom.
                         -->
-                        <ListBox ItemsSource="{Binding LayerRows}"
+                        <ListBox ItemsSource="{Binding LayerRows}" x:Name="LayersList"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="Layers">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <!-- Line 1: what the layer is and its look; line 2: its size and where it sits on the frame -->
-                                    <StackPanel ToolTip="X and Y place the layer's top-left corner, and Size sets its width, all as a share of the output frame, so the layout holds at any resolution. Edit Layout does the same by dragging.">
+                                    <StackPanel x:Name="layerRow" Background="Transparent" ContextMenuOpening="LayerRow_ContextMenuOpening" ToolTip="X and Y place the layer's top-left corner, and Size sets its width, all as a share of the output frame, so the layout holds at any resolution. Edit Layout does the same by dragging.">
+                                        <StackPanel.ContextMenu>
+                                            <ContextMenu />
+                                        </StackPanel.ContextMenu>
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
@@ -1012,6 +1055,10 @@
                                         <Canvas Height="18" Margin="66,4,0,1" Background="{DynamicResource InsetBrush}" ClipToBounds="True" Cursor="Hand"
                                                 Loaded="ClipTrack_Loaded" Unloaded="ClipTrack_Unloaded" SizeChanged="ClipTrack_Changed" DataContextChanged="ClipTrack_DataContextChanged"
                                                 MouseLeftButtonDown="ClipTrack_MouseLeftButtonDown" AutomationProperties.Name="Layer Timeline" />
+                                        <!-- A video layer's own sound, on a bar of its own when asked for -->
+                                        <Canvas Height="16" Margin="66,1,0,1" Background="{DynamicResource InsetBrush}" ClipToBounds="True" Tag="audio" Visibility="Collapsed"
+                                                Loaded="ClipTrack_Loaded" Unloaded="ClipTrack_Unloaded" SizeChanged="ClipTrack_Changed" DataContextChanged="ClipTrack_DataContextChanged"
+                                                MouseLeftButtonDown="ClipTrack_MouseLeftButtonDown" AutomationProperties.Name="Layer Audio Timeline" />
                                         <Grid Margin="66,3,0,2" Visibility="{Binding HasPlacement, Converter={StaticResource BoolToVisibility}}">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
@@ -1056,6 +1103,12 @@
                                                      local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" />
                                         </Grid>
                                     </StackPanel>
+                                    <DataTemplate.Triggers>
+                                        <!-- A hidden layer stays in the list, dimmed -->
+                                        <DataTrigger Binding="{Binding IsHidden}" Value="True">
+                                            <Setter TargetName="layerRow" Property="Opacity" Value="0.45" />
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
@@ -1085,7 +1138,6 @@
                         </Button>
                     </WrapPanel>
                     <TextBlock DockPanel.Dock="Bottom" Text="{Binding AudioTracksHint}" Foreground="{DynamicResource MutedTextBrush}" Margin="0,4,0,0" />
-
                     <!-- The voiceover, once there is one: a track of its own in the picture, mixed into the first track in the encode -->
                     <Grid DockPanel.Dock="Bottom" Height="50" Margin="0,6,0,0" Visibility="{Binding HasVoiceover, Converter={StaticResource BoolToVisibility}}">
                         <Grid.ColumnDefinitions>
@@ -1118,13 +1170,31 @@
                     </Grid>
 
                     <!-- Master mix: the tracks' waveforms laid over each other, each with its gain -->
-                    <Grid DockPanel.Dock="Bottom" Height="38" Margin="0,6,0,0" Visibility="{Binding ShowWaveforms, Converter={StaticResource BoolToVisibility}}">
+                    <!-- One line: the tools for the audio blocks (the same as on the Layers tab), then the mix -->
+                    <Grid DockPanel.Dock="Bottom" Height="34" Margin="0,6,0,0">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="240" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="Master Mix View" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <Border Grid.Column="1" Background="{DynamicResource InsetBrush}" CornerRadius="4" ClipToBounds="True" Cursor="Hand"
+                        <StackPanel Orientation="Horizontal" Margin="0,0,14,0" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
+                                    ToolTip="Click a track's waveform to select it. Unlink (the chain button) to drag it; split it at the playhead to silence a part.">
+                            <Button Content="&#xE8C6;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="SplitClip_Click"
+                                    AutomationProperties.Name="Split Audio at Playhead" ToolTip="Split at Playhead (S): cuts the selected audio track in two at the playhead, so a part of it can be silenced." />
+                            <Button Content="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="DeleteClip_Click"
+                                    AutomationProperties.Name="Silence Selected Audio" ToolTip="Delete (Del): silences the selected part of an audio track. Pressed again on a silenced part, it plays again." />
+                            <Button Content="&#xE74F;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="RemoveDeadAir_Click"
+                                    AutomationProperties.Name="Remove Dead Air from Audio" ToolTip="Remove Dead Air: listens to the selected audio track for silences, and marks or removes them from the video." />
+                            <Button Content="&#xE7A7;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="10,0,4,0" Click="Undo_Click" AutomationProperties.Name="Undo Audio" ToolTip="Undo (Ctrl+Z)" />
+                            <Button Content="&#xE7A6;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="Redo_Click" AutomationProperties.Name="Redo Audio" ToolTip="Redo (Ctrl+Y)" />
+                            <ToggleButton Content="&#xE71B;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="10,0,4,0" IsChecked="{Binding AudioLinked, Mode=OneWay}" Checked="LinkAudio_Click" Unchecked="LinkAudio_Click"
+                                          AutomationProperties.Name="Link Audio and Video (Audio Tab)" ToolTip="Link Audio and Video: linked, sound follows its picture and is cut with it. Unlinked, an audio block can be dragged on its own; linking again offers to snap it back." />
+                        </StackPanel>
+                        <TextBlock Grid.Column="1" Text="Master Mix" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,12,0"
+                                   Visibility="{Binding ShowWaveforms, Converter={StaticResource BoolToVisibility}}"
+                                   ToolTip="The tracks' waveforms laid over each other, each at its gain: what the mix looks like." />
+                        <Border Grid.Column="2" Background="{DynamicResource InsetBrush}" CornerRadius="4" ClipToBounds="True" Cursor="Hand"
+                                Visibility="{Binding ShowWaveforms, Converter={StaticResource BoolToVisibility}}"
                                 MouseLeftButtonDown="Waveform_MouseLeftButtonDown" MouseMove="Waveform_MouseMove" MouseLeftButtonUp="Waveform_MouseLeftButtonUp"
                                 ToolTip="Click or drag to move the playhead to that moment.">
                             <Grid>
@@ -1220,11 +1290,17 @@
                                             MouseLeftButtonDown="Waveform_MouseLeftButtonDown" MouseMove="Waveform_MouseMove" MouseLeftButtonUp="Waveform_MouseLeftButtonUp"
                                             ToolTip="Click or drag to move the playhead to that moment."
                                             Visibility="{Binding DataContext.ShowWaveforms, RelativeSource={RelativeSource AncestorType=ListBox}, Converter={StaticResource BoolToVisibility}}">
+                                        <Grid>
                                         <Image Source="{Binding Waveform}" Stretch="Fill" RenderTransformOrigin="0.5,0.5" AutomationProperties.Name="Track Waveform">
                                             <Image.RenderTransform>
                                                 <ScaleTransform ScaleY="{Binding GainDb, Converter={StaticResource DecibelToScale}}" />
                                             </Image.RenderTransform>
                                         </Image>
+                                        <!-- The track as a block, or as the parts it was split into: dragged when unlinked, selected for Split and Delete. Drawn from code. -->
+                                        <Canvas ClipToBounds="True" Background="Transparent"
+                                                Loaded="ClipTrack_Loaded" Unloaded="ClipTrack_Unloaded" SizeChanged="ClipTrack_Changed" DataContextChanged="ClipTrack_DataContextChanged"
+                                                AutomationProperties.Name="Audio Track Timeline" />
+                                        </Grid>
                                     </Border>
                                     <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="10,0,0,0">
                                         <StackPanel Orientation="Horizontal">

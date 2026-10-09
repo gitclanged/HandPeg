@@ -41,7 +41,9 @@ public partial class MainViewModel
         // The voiceover from the Voiceover Studio, as one more input. It is mixed into the first audio
         // track, which therefore cannot be a copied one.
         var voiceover = !animated && IncludeVoiceover ? VoiceoverPath : null;
-        var copyAnyAudio = !mixAudio && tracks.Where((_, index) => voiceover is null || index > 0).Any(t => t.IsPassthrough);
+        // So is the sound of video layers, for the same reason.
+        var layerAudio = animated || tracks.Count == 0 ? [] : GetLayerAudioSources();
+        var copyAnyAudio = !mixAudio && tracks.Where((_, index) => (voiceover is null && layerAudio.Count == 0) || index > 0).Any(t => t.IsPassthrough);
 
         // Ducking needs the game and microphone tracks decoded, which a mix always does.
         var duckAudio = DuckAudio && tracks.Count >= 2 && (mixAudio || tracks.Take(2).All(t => !t.IsPassthrough));
@@ -100,6 +102,50 @@ public partial class MainViewModel
         var maps = new List<string>();
         string? simpleVideoFilters = null;
 
+        // Audio that was edited on the timeline (slipped, silenced in places) or that has layer sound to take
+        // in is made ready first, each track on a chain of its own; what follows then works from that instead
+        // of from the input. Not with cuts made by the demuxer, which copies packets: no filter can be put
+        // in front of those.
+        var preparedAudio = new Dictionary<int, string[]>();
+        if (!cutWithDemuxer)
+        {
+            for (var k = 0; k < tracks.Count; k++)
+            {
+                var track = tracks[k];
+                var edits = track.BuildEditChain();
+                var mixedIn = k == 0 ? layerAudio : [];
+                if (edits.Count == 0 && mixedIn.Count == 0)
+                    continue;
+
+                var label = $"[0:a:{track.Index}]";
+                if (edits.Count > 0)
+                {
+                    graph.Add($"{label}{string.Join(",", edits)}[aedit{track.Index}]");
+                    label = $"[aedit{track.Index}]";
+                }
+
+                if (mixedIn.Count > 0)
+                {
+                    for (var n = 0; n < mixedIn.Count; n++)
+                        graph.Add($"{BuildLayerAudio(mixedIn[n])}[alayer{n}]");
+                    graph.Add($"{label}{string.Concat(mixedIn.Select((_, n) => $"[alayer{n}]"))}amix=inputs={mixedIn.Count + 1}:duration=first:normalize=0[amixed{track.Index}]");
+                    label = $"[amixed{track.Index}]";
+                }
+
+                // A filter's output can be read once; with cuts it is wanted once per segment.
+                var uses = cutWithFilters ? segments.Count : 1;
+                if (uses > 1)
+                {
+                    preparedAudio[track.Index] = Enumerable.Range(0, uses).Select(u => $"[aprep{track.Index}_{u}]").ToArray();
+                    graph.Add($"{label}asplit={uses}{string.Concat(preparedAudio[track.Index])}");
+                }
+                else
+                {
+                    preparedAudio[track.Index] = [label];
+                }
+            }
+        }
+
         if (cutWithFilters)
         {
             // Trim every segment out of the video and each audio track and reset its timestamps, then join
@@ -132,7 +178,8 @@ public partial class MainViewModel
 
                 foreach (var track in tracks)
                 {
-                    graph.Add($"[0:a:{track.Index}]atrim={range},asetpts=PTS-STARTPTS[a{track.Index}_{i}]");
+                    var from = preparedAudio.TryGetValue(track.Index, out var ready) ? ready[i] : $"[0:a:{track.Index}]";
+                    graph.Add($"{from}atrim={range},asetpts=PTS-STARTPTS[a{track.Index}_{i}]");
                     concatInputs.Append($"[a{track.Index}_{i}]");
                 }
             }
@@ -162,7 +209,7 @@ public partial class MainViewModel
             }
         }
 
-        var audioOptions = BuildAudio(tracks, mixAudio, duckAudio, cutWithFilters, duration, voiceoverInput, graph, maps);
+        var audioOptions = BuildAudio(tracks, mixAudio, duckAudio, cutWithFilters, duration, voiceoverInput, preparedAudio, graph, maps);
 
         // Soft subtitles cannot follow filter-based cuts, so they are carried over for uncut and demuxer-cut encodes only.
         var softSubtitles = cutWithFilters || animated ? [] : SubtitleTracks.Where(t => t.Action == SubtitleTrack.SoftSub).ToList();
@@ -362,12 +409,16 @@ public partial class MainViewModel
     /// <param name="voiceoverInput">Which input (-i) the voiceover is, or null when there is none to mix in.</param>
     private List<string> BuildAudio(
         List<AudioTrack> tracks, bool mix, bool duck, bool cutWithFilters, double duration, int? voiceoverInput,
-        List<string> graph, List<string> maps)
+        Dictionary<int, string[]> preparedAudio, List<string> graph, List<string> maps)
     {
         var options = new List<string>();
 
         // After a filter-based cut each track continues from the concat filter; otherwise from the input.
-        string Source(AudioTrack track) => cutWithFilters ? $"[ac{track.Index}]" : $"[0:a:{track.Index}]";
+        // (Or, without cuts, from what was made ready for it: see preparedAudio in BuildFfmpegCommand.)
+        string Source(AudioTrack track) =>
+            cutWithFilters ? $"[ac{track.Index}]"
+            : preparedAudio.TryGetValue(track.Index, out var ready) ? ready[0]
+            : $"[0:a:{track.Index}]";
 
         // A track with a gain or processing of its own (the Audio tab) gets that first, as a step of the
         // graph, and whatever is done with the track afterwards continues from there.
@@ -479,7 +530,7 @@ public partial class MainViewModel
                     label = "[mic_done]";
                 }
             }
-            else if (cutWithFilters)
+            else if (cutWithFilters || preparedAudio.ContainsKey(track.Index))
             {
                 label = Prepared(track);
                 if (finishing.Count > 0)
@@ -535,6 +586,27 @@ public partial class MainViewModel
 
         return options;
     }
+    /// <summary>
+    /// The sound of a video layer, as a chain that ends where the caller labels it: read from the layer's file
+    /// inside the graph, started where the layer's picture starts (or as far from there as it was slipped),
+    /// and no longer than the layer is on screen.
+    /// </summary>
+    private string BuildLayerAudio(Layer layer)
+    {
+        var chain = new List<string> { $"amovie='{EscapeFilterPath(layer.ImagePath)}'" };
+        var trim = layer.MediaOffset > 0.01 ? $"atrim=start={Number(layer.MediaOffset)}" : "";
+        if (layer.Duration > 0.001)
+            trim = (trim.Length > 0 ? trim + ":" : "atrim=") + $"end={Number(layer.MediaOffset + layer.Duration)}";
+        if (trim.Length > 0)
+            chain.Add(trim + ",asetpts=PTS-STARTPTS");
+
+        chain.Add("aresample=48000");
+        var startsAt = Math.Max(layer.StartTime + (AudioLinked ? 0 : layer.AudioOffset), 0);
+        if (startsAt > 0.01)
+            chain.Add($"adelay={(int)Math.Round(startsAt * 1000)}:all=1");
+        return string.Join(",", chain);
+    }
+
     /// <param name="outputIndex">Position of the stream among the output's audio streams.</param>
     private static string BuildAudioEncodeOptions(int outputIndex, string codec, string bitrate) =>
         codec.StartsWith("pcm_", StringComparison.Ordinal)
@@ -778,7 +850,7 @@ public partial class MainViewModel
         // made once and held, not worked out again for every frame.
         var masks = new List<string>();
         var sources = new StringBuilder();
-        if (layer.CustomMask && layer.HasKeying && File.Exists(layer.MaskPath.Trim().Trim('"')))
+        if (layer.CustomMask && layer.HasMask && File.Exists(layer.MaskPath.Trim().Trim('"')))
         {
             sources.Append($";movie='{EscapeFilterPath(layer.MaskPath)}',scale={width}:{height},format=gray,trim=end_frame=1,loop=loop=-1:size=1[{name}_cmask{s}]");
             masks.Add($"[{name}_cmask{s}]");

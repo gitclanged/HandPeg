@@ -58,7 +58,7 @@ public partial class MainViewModel : ObservableObject
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
         nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloTrack),
         nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
-        nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText),
+        nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText), nameof(ShowLayerAudio), nameof(IsEncoderMode),
     ];
 
 
@@ -124,6 +124,12 @@ public partial class MainViewModel : ObservableObject
             else
                 _pendingDefaultEncoder = settings.DefaultVideoEncoder;
         }
+
+        // And the audio settings chosen there, so that sound is encoded rather than copied from the start.
+        if (AudioEncoders.Contains(settings.DefaultAudioEncoder))
+            _audioEncoder = settings.DefaultAudioEncoder;
+        if (AudioBitrates.Contains(settings.DefaultAudioBitrate))
+            _audioBitrate = settings.DefaultAudioBitrate;
 #pragma warning restore MVVMTK0034
 
         UpdateEncoderPresets();
@@ -164,6 +170,9 @@ public partial class MainViewModel : ObservableObject
     public event Action<string>? MediaLoaded;
 
     /// <summary>Asks the user to confirm something (title, message, what the confirming button says). Returning false calls it off.</summary>
+    /// <summary>A question with two ways of going ahead: 1 for the first, 2 for the second, 0 for neither.</summary>
+    public Func<string, string, string, string, int>? Choose { get; set; }
+
     public Func<string, string, string, bool>? Confirm { get; set; }
 
     /// <summary>Asked before an encode replaces an existing file. Returning false aborts the encode.</summary>
@@ -368,6 +377,7 @@ public partial class MainViewModel : ObservableObject
                 track.Title = saved.Title;
             track.GainDb = Math.Clamp(saved.GainDb, -30, 30);
             track.Filters = saved.Filters?.Clone() ?? new TrackAudioFilters();
+            track.SetEdits(saved.Offset, saved.Pieces);
         }
     }
 
@@ -457,7 +467,7 @@ public partial class MainViewModel : ObservableObject
             if (Math.Abs(snappedStart - start) <= tolerance && Math.Abs(snappedEnd - end) <= tolerance)
                 continue;
 
-            var snapped = new CutSegment(TimeSpan.FromSeconds(snappedStart), TimeSpan.FromSeconds(snappedEnd));
+            var snapped = new CutSegment(TimeSpan.FromSeconds(snappedStart), TimeSpan.FromSeconds(snappedEnd)) { IsSkipped = segment.IsSkipped };
             Segments[i] = snapped;
             _ = FlashAsync(snapped);
             adjusted++;
@@ -718,6 +728,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         var segment = new CutSegment(TimeSpan.FromMilliseconds(start), TimeSpan.FromMilliseconds(stop));
+        Checkpoint("add a segment");
 
         // Keep the list ordered by start time.
         var index = 0;
@@ -769,7 +780,10 @@ public partial class MainViewModel : ObservableObject
     private void RemoveSegment(CutSegment? segment)
     {
         if (segment is not null)
+        {
+            Checkpoint("remove a segment");
             Segments.Remove(segment);
+        }
     }
 
     // ----- Long-running operations -----
@@ -880,6 +894,9 @@ public partial class MainViewModel : ObservableObject
         // Loading something by hand ends the editing of a queued job.
         EditingJob = null;
         var (_, message) = await LoadMediaAsync(source, knownLocalPath: null, applyAutomation: true, cancellationToken);
+        _undo.Clear();
+        _redo.Clear();
+        MarkSaved();
         return message;
     });
 
@@ -904,7 +921,10 @@ public partial class MainViewModel : ObservableObject
         if (ReadStyle(stylePath) is not { } style)
             return $"{message}. {StatusText}";
 
+        // A style is layers: the Layer Engine is what shows them, whatever mode or preset was in effect.
+        FrameEngine = true;
         ApplyStyle(style, layout: true, color: true, blur: true, subtitles: true);
+        MarkSaved();
         return $"{message}. Style \"{Path.GetFileNameWithoutExtension(stylePath)}\" applied.";
     });
 
@@ -1392,7 +1412,7 @@ public partial class MainViewModel : ObservableObject
     private List<CutSegment> GetMergedSegments()
     {
         var merged = new List<CutSegment>();
-        foreach (var segment in Segments.OrderBy(s => s.Start))
+        foreach (var segment in Segments.Where(s => !s.IsSkipped).OrderBy(s => s.Start))
         {
             if (merged.Count > 0 && segment.Start <= merged[^1].End)
             {

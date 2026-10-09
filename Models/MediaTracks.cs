@@ -6,6 +6,12 @@ namespace HandPegApp.Models;
 /// <summary>One line of a label/value card in the Properties tab.</summary>
 public sealed record InfoRow(string Label, string Value);
 
+/// <summary>
+/// One part of an audio track that was cut up on the timeline: from where to where in the track's own time,
+/// and whether it has been silenced.
+/// </summary>
+public sealed record AudioPiece(double Start, double End, bool Muted);
+
 /// <summary>An audio stream of the source and what to do with it in the output.</summary>
 public sealed partial class AudioTrack : ObservableObject
 {
@@ -65,6 +71,68 @@ public sealed partial class AudioTrack : ObservableObject
 
     /// <summary>A picture of the whole track's sound, drawn in the background after a load.</summary>
     [ObservableProperty] private System.Windows.Media.ImageSource? _waveform;
+
+    // ----- On the timeline -----
+
+    /// <summary>How far the track has been slipped against the picture, in seconds: positive is later.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsEdited))]
+    private double _offsetSeconds;
+
+    /// <summary>The parts the track was cut into, in its own time; empty while it is still whole.</summary>
+    public IReadOnlyList<AudioPiece> Pieces { get; private set; } = [];
+
+    /// <summary>Moved, or silenced in places: sound like that cannot be copied, only encoded again.</summary>
+    public bool IsEdited => Math.Abs(OffsetSeconds) > 0.001 || Pieces.Any(p => p.Muted);
+
+    public void SetEdits(double offset, IEnumerable<AudioPiece>? pieces)
+    {
+        Pieces = [.. pieces ?? []];
+        OffsetSeconds = offset;
+        OnPropertyChanged(nameof(Pieces));
+        OnPropertyChanged(nameof(IsEdited));
+    }
+
+    /// <summary>Cuts the track in two at a moment of its own time. <paramref name="total"/> is its length, for the first cut of a whole track.</summary>
+    public void SplitAt(double seconds, double total)
+    {
+        var pieces = Pieces.Count > 0 ? Pieces.ToList() : [new AudioPiece(0, total, false)];
+        var index = pieces.FindIndex(p => seconds > p.Start + 0.02 && seconds < p.End - 0.02);
+        if (index < 0)
+            return;
+
+        var piece = pieces[index];
+        pieces[index] = piece with { End = seconds };
+        pieces.Insert(index + 1, piece with { Start = seconds });
+        SetEdits(OffsetSeconds, pieces);
+    }
+
+    public void ToggleMuted(AudioPiece piece)
+    {
+        var pieces = Pieces.ToList();
+        var index = pieces.IndexOf(piece);
+        if (index < 0)
+            return;
+
+        pieces[index] = piece with { Muted = !piece.Muted };
+        SetEdits(OffsetSeconds, pieces);
+    }
+
+    /// <summary>
+    /// What the edits come to as audio filters, applied to the track before anything else: the silenced
+    /// parts turned down to nothing, then the whole track moved later (with silence in front) or earlier.
+    /// </summary>
+    public List<string> BuildEditChain()
+    {
+        static string Number(double value) => value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+        var chain = Pieces.Where(p => p.Muted).Select(p => $"volume=0:enable='between(t,{Number(p.Start)},{Number(p.End)})'").ToList();
+        if (OffsetSeconds > 0.001)
+            chain.Add($"adelay={(int)Math.Round(OffsetSeconds * 1000)}:all=1");
+        else if (OffsetSeconds < -0.001)
+            chain.Add($"atrim=start={Number(-OffsetSeconds)},asetpts=PTS-STARTPTS");
+        return chain;
+    }
 
     /// <summary>The player is playing this track instead of the first one. Set by the view model.</summary>
     [ObservableProperty] private bool _isSolo;

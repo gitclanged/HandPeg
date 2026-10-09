@@ -343,8 +343,62 @@
                                Text="Smart rules and the default preset are on the Automation tab of the main window." />
                     <CheckBox Content="Save the Target File Size with each preset" IsChecked="{Binding SaveTargetSizeInPresets}"
                               ToolTip="When on, Save Preset also stores the Target File Size set at the time, and applying that preset brings it back." />
+                    <CheckBox Content="Prompt to save before closing" IsChecked="{Binding PromptToSaveOnExit}"
+                              ToolTip="When HandPeg is closed while the open video has cuts, layers or settings that were not saved as a project, asks whether to save them first." />
                     <CheckBox Content="Fall back to the software encoder when a hardware encode fails" IsChecked="{Binding AutoFallbackToSoftware}"
                               ToolTip="If an encode or queue job fails on a hardware encoder, it is tried once more with libx264 (or libx265 for HEVC, SVT-AV1 for AV1)." />
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Keyboard Shortcuts">
+                <StackPanel>
+                    <TextBlock Text="Keyboard shortcuts" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="The keys of the main window. They apply while no text box or drop-down has the focus: typing stays typing." />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="Space" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="Play / Pause" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="1" Text="Left / Right" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="Step back / forward one frame" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="2" Text="I" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="Add Start Point" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="3" Text="O" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Text="Add Stop Point" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="4" Text="S" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" Text="Split the selected block at the playhead (Editor Mode)" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="5" Text="Delete" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="5" Grid.Column="1" Text="Delete the selected layer or cut segment; silence the selected part of an audio track (Editor Mode)" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="6" Text="Ctrl+Z" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="6" Grid.Column="1" Text="Undo the last change to the cuts, layers or audio" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="7" Text="Ctrl+Y" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="7" Grid.Column="1" Text="Redo" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="8" Text="Right-drag on the timeline" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="8" Grid.Column="1" Text="Mark a new cut segment" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="9" Text="Right-click a layer" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="9" Grid.Column="1" Text="Its menu: properties, split, trim, hide, duplicate, delete" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="10" Text="Double-click a slider or number" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="10" Grid.Column="1" Text="Put it back to its default" TextWrapping="Wrap" Margin="0,3" />
+                        <TextBlock Grid.Row="11" Text="Enter in the source box" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
+                        <TextBlock Grid.Row="11" Grid.Column="1" Text="Load the path or URL" TextWrapping="Wrap" Margin="0,3" />
+                    </Grid>
                 </StackPanel>
             </TabItem>
 

@@ -67,8 +67,11 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Can be moved up and down the stack: the captions stay on top and the background at the bottom.</summary>
     public bool CanReorder => !IsCaptions && !IsBackground;
 
-    /// <summary>Can have a color keyed out of it or a mask laid on it: the pictures and videos added by hand.</summary>
+    /// <summary>Can have a color keyed out of it: the pictures and videos added by hand.</summary>
     public bool HasKeying => IsRemovable;
+
+    /// <summary>Can have a mask of its own laid on it: those, and the caption box.</summary>
+    public bool HasMask => IsRemovable || IsCaptions;
 
     // When the layer is on screen, in seconds of the source's own time.
 
@@ -80,6 +83,18 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>For a video layer: how far into its own video it is when it appears. Set when a layer is split, so the second part carries on where the first left off.</summary>
     [ObservableProperty] private double _mediaOffset;
+
+    /// <summary>Kept in the list but left out of the picture, and (for a video layer) out of the sound.</summary>
+    [ObservableProperty] private bool _isHidden;
+
+    /// <summary>A video layer whose file has sound, which goes into the output with it.</summary>
+    [ObservableProperty] private bool _hasAudio;
+
+    /// <summary>How far that sound has been slipped against the layer's picture, in seconds. Only while audio and video are unlinked.</summary>
+    [ObservableProperty] private double _audioOffset;
+
+    /// <summary>A picture of the layer's sound, drawn behind its block on the Layers tab. Not saved: it is made again from the file.</summary>
+    [ObservableProperty] private System.Windows.Media.ImageSource? _waveform;
 
     /// <summary>Can be given a time to appear and a time to go: the layers added by hand.</summary>
     public bool HasTiming => IsRemovable;
@@ -178,7 +193,7 @@ public sealed partial class Layer : ObservableObject
         set => SizeWidth = Math.Clamp(value, 1, 200) / 100.0;
     }
 
-    public bool IsUsable => SizeWidth > 0 && (IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
+    public bool IsUsable => !IsHidden && SizeWidth > 0 && (IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
 
     /// <summary>The source rectangle in pixels of a source of the given size.</summary>
     public (int X, int Y, int Width, int Height) GetSourceRect(int sourceWidth, int sourceHeight) =>
@@ -254,6 +269,9 @@ public sealed partial class Layer : ObservableObject
         StartTime = StartTime,
         Duration = Duration,
         MediaOffset = MediaOffset,
+        IsHidden = IsHidden,
+        HasAudio = HasAudio,
+        AudioOffset = AudioOffset,
     };
 
     /// <summary>
@@ -286,6 +304,9 @@ public sealed partial class Layer : ObservableObject
             StartTime = Math.Max(state.StartTime, 0),
             Duration = Math.Max(state.Duration, 0),
             MediaOffset = Math.Max(state.MediaOffset, 0),
+            IsHidden = state.IsHidden,
+            HasAudio = state.HasAudio,
+            AudioOffset = state.AudioOffset,
         };
 
         if (state.SourceWidth <= 0 && state.Width is > 0 && state.Height is > 0)
@@ -358,6 +379,9 @@ public sealed class LayerState
     public double StartTime { get; set; }
     public double Duration { get; set; }
     public double MediaOffset { get; set; }
+    public bool IsHidden { get; set; }
+    public bool HasAudio { get; set; }
+    public double AudioOffset { get; set; }
 
     // Pixel values from presets saved by earlier versions. Read for conversion, never written.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

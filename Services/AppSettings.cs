@@ -289,6 +289,17 @@ public sealed class AppSettings
     /// </summary>
     public string DefaultVideoEncoder { get; set; } = "";
 
+    /// <summary>
+    /// The audio codec and bitrate a new window starts with, as chosen in the first-run window: so that sound
+    /// is encoded from the start, and nothing an edit does to it runs into a copied track. Blank for Copy.
+    /// </summary>
+    public string DefaultAudioEncoder { get; set; } = "";
+
+    public string DefaultAudioBitrate { get; set; } = "";
+
+    /// <summary>Asks whether to save the project when HandPeg is closed with changes that have not been saved.</summary>
+    public bool PromptToSaveOnExit { get; set; } = true;
+
     /// <summary>Opens the Edit Layout pane by itself as soon as there is a layout to edit.</summary>
     public bool AutoOpenLayoutPane { get; set; }
 
@@ -319,7 +330,7 @@ public sealed class AppSettings
         ShowTimelineThumbnails = editor;
         StartWithFrameEngine = editor;
         if (!editor)
-            DefaultVideoEncoder = "";
+            (DefaultVideoEncoder, DefaultAudioEncoder, DefaultAudioBitrate) = ("", "", "");
 
         if (editor)
         {

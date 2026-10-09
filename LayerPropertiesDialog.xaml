@@ -93,8 +93,8 @@
         </StackPanel>
 
         <!-- For the pictures and videos added by hand: making part of the layer see-through -->
-        <StackPanel Visibility="{Binding HasKeying, Converter={StaticResource BoolToVisibility}}" Margin="0,12,0,0">
-            <CheckBox Content="Chroma Key" IsChecked="{Binding ChromaKey}"
+        <StackPanel Visibility="{Binding HasMask, Converter={StaticResource BoolToVisibility}}" Margin="0,12,0,0">
+            <CheckBox Content="Chroma Key" IsChecked="{Binding ChromaKey}" Visibility="{Binding HasKeying, Converter={StaticResource BoolToVisibility}}"
                       ToolTip="Makes one color of the layer transparent: the green or blue of a screen behind a presenter, or of a game overlay recorded on a plain background." />
             <Grid Margin="26,0,0,10" Visibility="{Binding ChromaKey, Converter={StaticResource BoolToVisibility}}">
                 <Grid.ColumnDefinitions>

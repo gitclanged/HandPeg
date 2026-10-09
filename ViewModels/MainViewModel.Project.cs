@@ -81,7 +81,8 @@ public partial class MainViewModel
 
     /// <summary>What is set track by track: action, codec, bitrate, title, gain and processing.</summary>
     private List<AudioTrackState> CaptureAudioTracks() =>
-        AudioTracks.Select(t => new AudioTrackState(t.Index, t.Action, t.Codec, t.Bitrate, t.Title, t.GainDb, t.Filters.IsActive ? t.Filters.Clone() : null)).ToList();
+        AudioTracks.Select(t => new AudioTrackState(t.Index, t.Action, t.Codec, t.Bitrate, t.Title, t.GainDb, t.Filters.IsActive ? t.Filters.Clone() : null,
+            t.OffsetSeconds, t.Pieces.Count > 0 ? [.. t.Pieces] : null)).ToList();
 
     /// <summary>A snapshot of the source, the cuts and every setting.</summary>
     public ProjectState CaptureState(string name = "") => new()
@@ -93,7 +94,7 @@ public partial class MainViewModel
         DestinationPath = DestinationPath,
         DownloadResolution = DownloadResolution,
         DownloadSubtitles = DownloadSubtitles,
-        Segments = Segments.Select(s => new SegmentState(s.Start.TotalMilliseconds, s.End.TotalMilliseconds)).ToList(),
+        Segments = Segments.Select(s => new SegmentState(s.Start.TotalMilliseconds, s.End.TotalMilliseconds, s.IsSkipped)).ToList(),
         SnapToKeyframes = SnapToKeyframes,
         Container = Container,
         WebOptimized = WebOptimized,
@@ -147,7 +148,7 @@ public partial class MainViewModel
         }
 
         foreach (var segment in state.Segments.OrderBy(s => s.StartMs))
-            Segments.Add(new CutSegment(TimeSpan.FromMilliseconds(segment.StartMs), TimeSpan.FromMilliseconds(segment.EndMs)));
+            Segments.Add(new CutSegment(TimeSpan.FromMilliseconds(segment.StartMs), TimeSpan.FromMilliseconds(segment.EndMs)) { IsSkipped = segment.Skipped });
 
         if (!string.IsNullOrWhiteSpace(state.DestinationPath))
             DestinationPath = state.DestinationPath;
@@ -158,6 +159,9 @@ public partial class MainViewModel
         if (state.ManualCommand is { } manualCommand)
             CommandPreview = manualCommand;
 
+        _undo.Clear();
+        _redo.Clear();
+        MarkSaved();
         return GetLayoutAspectWarning() is { } warning ? $"{doneMessage}. {warning}" : doneMessage;
     });
 
@@ -169,6 +173,7 @@ public partial class MainViewModel
         try
         {
             var path = ProjectStore.Save(CaptureState(name.Trim()));
+            MarkSaved();
             return StatusText = $"Project saved: {Path.GetFileNameWithoutExtension(path)}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -239,6 +244,7 @@ public partial class MainViewModel
             return "The start point is past the end of the video.";
 
         var segment = new CutSegment(TimeSpan.FromSeconds(startSeconds), TimeSpan.FromSeconds(stopSeconds));
+        Checkpoint("add a segment");
         InsertSegment(segment);
         PendingStartMs = null;
         StatusText = $"Added segment {segment.Display}";

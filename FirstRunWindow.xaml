@@ -53,6 +53,8 @@
             <TextBlock Text="Theme:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <ComboBox x:Name="ThemeBox" MinWidth="170" Margin="0" SelectionChanged="ThemeBox_SelectionChanged" AutomationProperties.Name="Theme"
                       ToolTip="Dark, light, or whichever Windows is set to. The window changes at once so you can see it." />
+            <CheckBox x:Name="PromptBox" Content="Prompt to save before closing" Margin="32,0,0,0"
+                      ToolTip="Asks whether to save the project when HandPeg is closed with changes that were not saved." />
             <CheckBox x:Name="FallbackBox" Content="Allow software encoding fallback" Margin="32,0,0,0"
                       ToolTip="If an encode fails on a hardware encoder (NVENC, QuickSync, AMF), try once more with the matching software encoder." />
         </StackPanel>
@@ -96,6 +98,12 @@
                 <ComboBox x:Name="EncoderBox" MinWidth="300" Margin="0" SelectionChanged="EncoderBox_SelectionChanged" AutomationProperties.Name="Default Video Encoder"
                           ToolTip="The video encoder selected when HandPeg starts. It can be changed for any video on the Video tab." />
                 <TextBlock x:Name="EncoderStatusText" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <TextBlock Text="Default Audio Encoder:" VerticalAlignment="Center" Margin="0,0,12,0" />
+                <ComboBox x:Name="AudioEncoderBox" MinWidth="170" Margin="0" AutomationProperties.Name="Default Audio Encoder"
+                          ToolTip="The audio codec HandPeg starts with. Editing sound (moving it, silencing part of it, mixing in a layer or a voiceover) needs it encoded, so Copy is not offered here; it can still be chosen for any video on the Audio tab." />
+                <ComboBox x:Name="AudioBitrateBox" MinWidth="90" Margin="8,0,0,0" AutomationProperties.Name="Default Audio Bitrate" ToolTip="The bitrate that goes with it." />
             </StackPanel>
             <TextBlock x:Name="CopyWarningText" Visibility="Collapsed" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0"
                        Text="Warning: The Frame and Layer Engine features will be unavailable during 'Copy' exports unless the encoder is changed in the project settings." />

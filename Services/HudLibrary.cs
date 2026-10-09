@@ -16,6 +16,9 @@ public enum HudShape
 
     /// <summary>A bar leaning to the right, as slanted health bars do.</summary>
     Slant,
+
+    /// <summary>A rectangle whose edges fade out, so the piece sits on the picture without a hard border.</summary>
+    Soft,
 }
 
 /// <summary>One piece of a game's HUD: what it is, and where it sits on a 16:9 frame, as fractions of the frame.</summary>
@@ -39,13 +42,12 @@ public static class HudLibrary
 {
     public static IReadOnlyList<HudGame> Games { get; } =
     [
-        new("Overwatch 2",
+        new("Overwatch",
         [
-            new("Health", 0.035, 0.845, 0.225, 0.115, HudShape.Slant),
-            new("Ultimate", 0.455, 0.835, 0.090, 0.150, HudShape.Ellipse),
-            new("Abilities & Weapon", 0.745, 0.845, 0.225, 0.120, HudShape.Slant),
-            new("Killfeed", 0.725, 0.035, 0.265, 0.190),
-            new("Objective", 0.380, 0.020, 0.240, 0.105),
+            new("Killfeed", 0.75, 0.05, 0.24, 0.25, HudShape.Soft),
+            new("Health & Portrait", 0.02, 0.80, 0.25, 0.18, HudShape.Soft),
+            new("Abilities & Weapon", 0.75, 0.80, 0.23, 0.18, HudShape.Soft),
+            new("Ultimate", 0.45, 0.85, 0.10, 0.12, HudShape.Ellipse),
         ]),
         new("Counter-Strike 2",
         [
@@ -85,24 +87,30 @@ public static class HudLibrary
         if (shape == HudShape.Panel)
             return null;
 
-        var path = Path.Combine(AppPaths.Masks, shape == HudShape.Ellipse ? "hud_ellipse.png" : "hud_slant.png");
+        var path = Path.Combine(AppPaths.Masks, $"hud_{shape.ToString().ToLowerInvariant()}_soft.png");
         if (File.Exists(path))
             return path;
 
-        // On a unit square; the mask is stretched to whatever shape the layer has.
+        // On a unit square; the mask is stretched to whatever shape the layer has. The shape is drawn a little
+        // in from the edges and then blurred, so that it fades out to black all the way round: a feathered edge.
         const int size = 512;
-        Geometry outline = shape == HudShape.Ellipse
-            ? new EllipseGeometry(new Point(size / 2.0, size / 2.0), size / 2.0 - 6, size / 2.0 - 6)
-            : new PathGeometry([new PathFigure(new Point(size * 0.10, 6), [new PolyLineSegment([new Point(size - 6, 6), new Point(size * 0.90, size - 6), new Point(6, size - 6)], true)], true)]);
+        const double inset = 34, feather = 22;
+        Geometry outline = shape switch
+        {
+            HudShape.Ellipse => new EllipseGeometry(new Point(size / 2.0, size / 2.0), size / 2.0 - inset, size / 2.0 - inset),
+            HudShape.Slant => new PathGeometry([new PathFigure(new Point(size * 0.10 + inset, inset),
+                [new PolyLineSegment([new Point(size - inset, inset), new Point(size * 0.90 - inset, size - inset), new Point(inset, size - inset)], true)], true)]),
+            _ => new RectangleGeometry(new Rect(inset, inset, size - 2 * inset, size - 2 * inset), 18, 18),
+        };
+
+        var shapeVisual = new DrawingVisual { Effect = new System.Windows.Media.Effects.BlurEffect { Radius = feather, KernelType = System.Windows.Media.Effects.KernelType.Gaussian } };
+        using (var context = shapeVisual.RenderOpen())
+            context.DrawGeometry(Brushes.White, null, outline);
 
         var drawing = new DrawingVisual();
         using (var context = drawing.RenderOpen())
-        {
             context.DrawRectangle(Brushes.Black, null, new Rect(0, 0, size, size));
-
-            // A soft edge: the outline is drawn in white with a blurred pen-width of grey around it.
-            context.DrawGeometry(Brushes.White, new Pen(new SolidColorBrush(Color.FromRgb(0x80, 0x80, 0x80)), 6), outline);
-        }
+        drawing.Children.Add(shapeVisual);
 
         var bitmap = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(drawing);

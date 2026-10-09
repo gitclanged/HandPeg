@@ -105,6 +105,7 @@ public partial class MainViewModel
         if (e.PropertyName == nameof(AudioTrack.Action) && sender is AudioTrack && HasSource && !_isBackgroundWorker)
             _ = RefreshTimelineWaveformAsync(LocalMediaPath);
 
+        // (The command is what the time bars listen to as well: a slipped or split track redraws through it.)
         // A picture arriving is not a change of settings, and nor is which track the player plays.
         if (e.PropertyName is not (nameof(AudioTrack.Waveform) or nameof(AudioTrack.IsSolo)))
             GenerateCommand();

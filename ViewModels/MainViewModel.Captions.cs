@@ -99,6 +99,7 @@ public partial class MainViewModel
         (CaptionLayer.CornerRadius, CaptionLayer.Feather) = (Math.Clamp(state?.CornerRadius ?? 0, 0, 50), state?.Feather ?? false);
         (CaptionLayer.FeatherRadius, CaptionLayer.Shadow) = (state?.FeatherRadius ?? 12, state?.Shadow ?? false);
         (CaptionLayer.ShadowOpacity, CaptionLayer.ShadowOffset) = (state?.ShadowOpacity ?? 0.5, state?.ShadowOffset ?? 10);
+        (CaptionLayer.CustomMask, CaptionLayer.MaskPath) = (state?.CustomMask ?? false, state?.MaskPath ?? "");
     }
 
     [RelayCommand]
@@ -217,6 +218,15 @@ public partial class MainViewModel
             layer += $",format=gbrap,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{mask}{(opacity < 1 ? "*" + Number(opacity) : "")}'";
         else if (opacity < 1)
             layer += $",colorchannelmixer=aa={Number(opacity)}";
+
+        // A mask of its own, as any layer can have: the words show where the mask is white.
+        var maskPath = CaptionLayer.MaskPath.Trim().Trim('"');
+        if (CaptionLayer.CustomMask && File.Exists(maskPath))
+        {
+            layer += $",format=yuva420p,split[cap_pic][cap_a_in];[cap_a_in]alphaextract[cap_a0];"
+                     + $"movie='{EscapeFilterPath(maskPath)}',scale={width}:{height},format=gray,trim=end_frame=1,loop=loop=-1:size=1[cap_mask];"
+                     + "[cap_a0][cap_mask]blend=all_mode=multiply:shortest=1[cap_a1];[cap_pic][cap_a1]alphamerge";
+        }
 
         if (!CaptionLayer.Shadow)
             return $"null[cap_base];{layer}[cap_layer];[cap_base][cap_layer]overlay={x}:{y}:shortest=1";

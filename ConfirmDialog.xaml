@@ -8,6 +8,7 @@
         <TextBlock x:Name="MessageText" TextWrapping="Wrap" AutomationProperties.AutomationId="Confirm Message" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
             <Button x:Name="ConfirmButton" MinWidth="110" IsDefault="True" Click="Confirm_Click" />
+            <Button x:Name="OtherButton" MinWidth="110" Margin="6,0,0,0" Click="Other_Click" Visibility="Collapsed" />
             <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
         </StackPanel>
     </StackPanel>

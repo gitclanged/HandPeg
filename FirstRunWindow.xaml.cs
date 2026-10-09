@@ -25,6 +25,13 @@ public partial class FirstRunWindow : Window
         ThemeBox.ItemsSource = ThemeManager.Themes;
         ThemeBox.SelectedItem = ThemeManager.Themes.Contains(_originalTheme) ? _originalTheme : ThemeManager.FollowSystem;
         FallbackBox.IsChecked = AppSettings.Current.AutoFallbackToSoftware;
+        PromptBox.IsChecked = AppSettings.Current.PromptToSaveOnExit;
+
+        // The audio settings an editor starts with: encoded, so that edits to the sound never meet a copied track.
+        AudioEncoderBox.ItemsSource = AudioTrack.AllCodecs;
+        AudioEncoderBox.SelectedItem = AudioTrack.AllCodecs.Contains(AppSettings.Current.DefaultAudioEncoder) ? AppSettings.Current.DefaultAudioEncoder : "aac";
+        AudioBitrateBox.ItemsSource = AudioTrack.AllBitrates;
+        AudioBitrateBox.SelectedItem = AudioTrack.AllBitrates.Contains(AppSettings.Current.DefaultAudioBitrate) ? AppSettings.Current.DefaultAudioBitrate : "192k";
         (AppSettings.Current.UiMode == AppSettings.EditorMode ? EditorCard : EncoderCard).IsChecked = true;
 
         Dependencies.UseExistingFfmpegRequested += UseExistingFfmpeg;
@@ -187,6 +194,9 @@ public partial class FirstRunWindow : Window
         settings.AutoFallbackToSoftware = FallbackBox.IsChecked == true;
         settings.ApplyMode(EditorCard.IsChecked == true ? AppSettings.EditorMode : AppSettings.EncoderMode);
         settings.DefaultVideoEncoder = EditorCard.IsChecked == true && EncoderBox.SelectedItem is EncoderOption encoder ? encoder.Name : "";
+        settings.PromptToSaveOnExit = PromptBox.IsChecked == true;
+        if (EditorCard.IsChecked == true)
+            (settings.DefaultAudioEncoder, settings.DefaultAudioBitrate) = (AudioEncoderBox.SelectedItem as string ?? "aac", AudioBitrateBox.SelectedItem as string ?? "192k");
         settings.DefaultMode = settings.UiMode;
         settings.FirstRunComplete = true;
 

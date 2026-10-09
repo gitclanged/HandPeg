@@ -121,15 +121,16 @@ public static partial class FfmpegRunner
     /// <param name="noiseDb">Anything quieter than this counts as silence.</param>
     /// <param name="minimumSeconds">Shorter pauses are ignored.</param>
     /// <param name="duration">Length of the file, to close a silence that runs to the very end.</param>
+    /// <param name="trackIndex">Which of the file's audio tracks to listen to, counted from 0.</param>
     public static async Task<List<(double Start, double End)>> DetectSilenceAsync(
-        string path, double noiseDb, double minimumSeconds, double duration, CancellationToken cancellationToken)
+        string path, int trackIndex, double noiseDb, double minimumSeconds, double duration, CancellationToken cancellationToken)
     {
         if (!File.Exists(DependencyUpdater.FfmpegPath))
             throw new InvalidOperationException("FFmpeg is not installed. Install it from Settings first.");
 
         var filter = string.Create(CultureInfo.InvariantCulture, $"silencedetect=noise={noiseDb}dB:d={minimumSeconds}");
         var result = await Cli.Wrap(DependencyUpdater.FfmpegPath)
-            .WithArguments(["-hide_banner", "-nostats", "-i", path, "-map", "0:a:0", "-af", filter, "-f", "null", "-"])
+            .WithArguments(["-hide_banner", "-nostats", "-i", path, "-map", $"0:a:{Math.Max(trackIndex, 0)}", "-af", filter, "-f", "null", "-"])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(cancellationToken);
         if (result.ExitCode != 0)

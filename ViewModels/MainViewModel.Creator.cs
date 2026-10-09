@@ -260,6 +260,7 @@ public partial class MainViewModel
     [RelayCommand]
     private void AddLayer()
     {
+        Checkpoint("add a layer");
         var element = new Layer { Name = $"Layer {Layers.Count + 1}", PositionY = NextLayerY() };
 
         // The first piece of video in a layout ties the layout to the shape of this video.
@@ -270,7 +271,8 @@ public partial class MainViewModel
     }
 
     /// <summary>Adds a picture from a file as a layer. Returns false when the file is not a readable image.</summary>
-    public bool AddImageLayer(string path)
+    /// <param name="startSeconds">When on the timeline the layer appears; 0 with no length is the whole video.</param>
+    public bool AddImageLayer(string path, double startSeconds = 0)
     {
         if (ImageInfo.GetSize(path) is not { } size)
         {
@@ -288,14 +290,20 @@ public partial class MainViewModel
             SizeWidth = 0.25,
             PositionX = 0.05,
             PositionY = NextLayerY(),
+            StartTime = Math.Round(Math.Max(startSeconds, 0), 2),
         };
+        Checkpoint("add an image");
         AttachLayer(element);
         StatusText = $"Added {element.Name}. Use Arrange to place it on the frame.";
         return true;
     }
 
     /// <summary>Adds a video from a file as a layer: it plays alongside the main video, and starts again when it runs out.</summary>
-    public async Task<bool> AddVideoLayerAsync(string path)
+    /// <param name="startSeconds">
+    /// When on the timeline the layer appears. Placed at a moment, it plays once through from there; left at
+    /// the start, it runs for the whole video.
+    /// </param>
+    public async Task<bool> AddVideoLayerAsync(string path, double startSeconds = 0)
     {
         var info = await MediaProbe.ProbeAsync(path, _shutdown.Token);
         if (info?.Video is not { Width: > 0, Height: > 0 } video)
@@ -314,9 +322,21 @@ public partial class MainViewModel
             SizeWidth = 0.4,
             PositionX = 0.05,
             PositionY = NextLayerY(),
+            HasAudio = info.Audio.Count > 0,
         };
+        if (startSeconds > 0.01)
+        {
+            var left = DurationMs / 1000 - startSeconds;
+            element.StartTime = Math.Round(startSeconds, 2);
+            element.Duration = info.DurationSeconds > 0.05 && info.DurationSeconds < left ? Math.Round(info.DurationSeconds, 2) : 0;
+        }
+
+        Checkpoint("add a video layer");
         AttachLayer(element);
-        StatusText = $"Added {element.Name} as a video layer. Its sound is not used.";
+        _ = LoadLayerWaveformAsync(element);
+        StatusText = element.HasAudio
+            ? $"Added {element.Name} as a video layer. Its sound is mixed into the first audio track."
+            : $"Added {element.Name} as a video layer.";
         return true;
     }
 
@@ -324,6 +344,8 @@ public partial class MainViewModel
 
     /// <summary>Whether the tools of Editor Mode are in use: the Layers tab, and the Layer Engine composing every picture.</summary>
     public bool IsEditorMode => AppSettings.Current.UiMode == AppSettings.EditorMode;
+
+    public bool IsEncoderMode => !IsEditorMode;
 
     /// <summary>The main video's place in the stack: how many of the layers lie under it. 0 is beneath them all.</summary>
     [ObservableProperty] private int _mainVideoIndex;
@@ -357,6 +379,7 @@ public partial class MainViewModel
         if (from < 0 || to < 0 || to >= stack.Count)
             return;
 
+        Checkpoint($"move {layer!.Name} {(by > 0 ? "up" : "down")}");
         (stack[from], stack[to]) = (stack[to], stack[from]);
 
         // Written back as the two things it is kept as: the order of the layers, and where the main video is among them.
@@ -390,7 +413,9 @@ public partial class MainViewModel
             return false;
         }
 
+        Checkpoint($"split {layer.Name}");
         var second = Layer.FromState(layer.ToState(), SourceWidth, SourceHeight, FrameWidth, FrameHeight);
+        second.Waveform = layer.Waveform;
         (second.StartTime, second.Duration) = (seconds, end - seconds);
         second.MediaOffset = layer.MediaOffset + (seconds - layer.StartTime);
         second.Name = layer.Name.EndsWith(" (2)", StringComparison.Ordinal) ? layer.Name : layer.Name + " (2)";
@@ -417,6 +442,7 @@ public partial class MainViewModel
 
         if (segment is null && Segments.Count == 0 && seconds > 0.05 && seconds < total - 0.05)
         {
+            Checkpoint("split the video");
             Segments.Add(new CutSegment(TimeSpan.Zero, at));
             Segments.Add(new CutSegment(at, TimeSpan.FromSeconds(total)));
             StatusText = $"The video was split at {TimeDisplay.Format(seconds)} into two segments.";
@@ -429,9 +455,10 @@ public partial class MainViewModel
             return false;
         }
 
+        Checkpoint("split a segment");
         var index = Segments.IndexOf(segment);
-        Segments[index] = new CutSegment(segment.Start, at);
-        Segments.Insert(index + 1, new CutSegment(at, segment.End));
+        Segments[index] = new CutSegment(segment.Start, at) { IsSkipped = segment.IsSkipped };
+        Segments.Insert(index + 1, new CutSegment(at, segment.End) { IsSkipped = segment.IsSkipped });
         StatusText = $"Segment split at {TimeDisplay.Format(seconds)}.";
         return true;
     }
@@ -444,6 +471,7 @@ public partial class MainViewModel
     /// </summary>
     public void AddHudLayers(HudGame game)
     {
+        Checkpoint($"add the {game.Name} HUD layers");
         foreach (var piece in game.Pieces)
         {
             var layer = new Layer
@@ -452,6 +480,8 @@ public partial class MainViewModel
                 SourceX = piece.X, SourceY = piece.Y, SourceWidth = piece.Width, SourceHeight = piece.Height,
                 PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
                 CornerRadius = piece.Shape == HudShape.Panel ? 6 : 0,
+
+
             };
 
             try
@@ -503,6 +533,7 @@ public partial class MainViewModel
         if (element is null)
             return;
 
+        Checkpoint($"remove {element.Name}");
         if (ReferenceEquals(DrawTargetLayer, element))
             DrawTargetLayer = null;
         element.PropertyChanged -= OnLayerChanged;
@@ -522,7 +553,11 @@ public partial class MainViewModel
             element.PropertyChanged -= OnLayerChanged;
         Layers.Clear();
         foreach (var state in states)
-            AttachLayer(Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight));
+        {
+            var layer = Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
+            AttachLayer(layer);
+            _ = LoadLayerWaveformAsync(layer);
+        }
     }
 
     /// <summary>
@@ -1072,6 +1107,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowCommandPreviewTab));
         OnPropertyChanged(nameof(ShowAdvancedFiltersTab));
         OnPropertyChanged(nameof(IsEditorMode));
+        OnPropertyChanged(nameof(IsEncoderMode));
         OnPropertyChanged(nameof(ShowPresetBarAtTop));
         OnPropertyChanged(nameof(ShowPresetBarInSummary));
         OnPropertyChanged(nameof(TimelineAreaHeight));
@@ -1092,18 +1128,36 @@ public partial class MainViewModel
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
     private Task RemoveDeadAirAsync() => RunOperationAsync(async cancellationToken =>
     {
+        // How, and on what: set by RunDeadAir; left alone, it is the classic way on the main video.
+        var (mode, target) = (_deadAirMode, _deadAirTarget);
+        (_deadAirMode, _deadAirTarget) = (DeadAirMode.Classic, null);
+
         if (!HasSource)
             return "Load a video first.";
-        if (_mediaInfo is { Audio.Count: 0 })
-            return "This video has no audio to analyse.";
 
         IsProgressIndeterminate = true;
         StatusText = "Listening for silence...";
-
-        var duration = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
         var noiseDb = Math.Clamp(AppSettings.Current.DeadAirThresholdDb, -80, -10);
         var minimumSeconds = Math.Clamp(AppSettings.Current.DeadAirMinSeconds, 0.2, 30);
-        var silences = await FfmpegRunner.DetectSilenceAsync(LocalMediaPath, noiseDb, minimumSeconds, duration, cancellationToken);
+
+        // A video layer: its own sound is listened to, and the layer is what gets cut up.
+        if (target is Layer { IsVideoFile: true } layer && Layers.Contains(layer))
+        {
+            var info = await MediaProbe.ProbeAsync(layer.ImagePath, cancellationToken);
+            if (info is not { DurationSeconds: > 0, Audio.Count: > 0 })
+                return $"{layer.Name} has no sound to listen to.";
+
+            var found = await FfmpegRunner.DetectSilenceAsync(layer.ImagePath, 0, noiseDb, minimumSeconds, info.DurationSeconds, cancellationToken);
+            return ApplyDeadAirToLayer(layer, found, mode == DeadAirMode.SplitAndMark, info.DurationSeconds);
+        }
+
+        if (_mediaInfo is { Audio.Count: 0 })
+            return "This video has no audio to analyse.";
+
+        // The main video, listening to the selected audio track, or the first one.
+        var listenTo = target is AudioTrack chosen && AudioTracks.Contains(chosen) ? chosen.Index : 0;
+        var duration = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        var silences = await FfmpegRunner.DetectSilenceAsync(LocalMediaPath, listenTo, noiseDb, minimumSeconds, duration, cancellationToken);
         if (silences.Count == 0)
             return $"Nothing quieter than {noiseDb:0} dB for {minimumSeconds:0.#} s was found: the cut list was left as it is.";
 
@@ -1123,16 +1177,25 @@ public partial class MainViewModel
         if (kept.Count == 0)
             return "The whole video counts as silence: the cut list was left as it is.";
 
+        // Split & Mark: the silences stay on the timeline as segments of their own, marked as skipped.
+        if (mode == DeadAirMode.SplitAndMark)
+            kept.AddRange(silences.Select(s => new CutSegment(TimeSpan.FromSeconds(s.Start), TimeSpan.FromSeconds(Math.Min(s.End, duration))) { IsSkipped = true }));
+
+        Checkpoint("remove dead air");
         Segments.Clear();
         PendingStartMs = null;
-        foreach (var segment in kept)
+        foreach (var segment in kept.OrderBy(s => s.Start))
             Segments.Add(segment);
 
-        if (SnapToKeyframes)
+        // Snapping grows segments onto keyframes; marked silences are left exactly where they were heard.
+        if (SnapToKeyframes && mode != DeadAirMode.SplitAndMark)
             SnapSegmentsToKeyframes();
 
         var removed = silences.Sum(s => s.End - s.Start);
-        return $"Removed {silences.Count} silent stretch{(silences.Count == 1 ? "" : "es")} below {noiseDb:0} dB ({removed:0.#} s): {Segments.Count} segment{(Segments.Count == 1 ? "" : "s")} kept.";
+        var count = $"{silences.Count} silent stretch{(silences.Count == 1 ? "" : "es")} below {noiseDb:0} dB ({removed:0.#} s)";
+        return mode == DeadAirMode.SplitAndMark
+            ? $"Marked {count} as skipped: they stay on the timeline, greyed out, and are left out of the output. Right-click one to bring it back."
+            : $"Removed {count}: {Segments.Count} segment{(Segments.Count == 1 ? "" : "s")} kept.";
     });
 
     // ----- Chapters at cut points -----

@@ -45,7 +45,9 @@
                    Text="With Play only cut segments ticked, what was removed is shaded on the timeline. Both values are remembered." />
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
-            <Button Content="Remove Dead Air" MinWidth="130" IsDefault="True" Click="Confirm_Click" />
+            <Button x:Name="MarkButton" Content="Split &amp; Mark" MinWidth="120" Margin="0,0,6,0" Click="Mark_Click" Visibility="Collapsed"
+                    ToolTip="Cuts at the silences and marks the silent stretches as skipped: they stay on the timeline, greyed out, are left out of the output, and can each be brought back." />
+            <Button x:Name="ConfirmButton" Content="Remove Dead Air" MinWidth="130" IsDefault="True" Click="Confirm_Click" />
             <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
         </StackPanel>
     </StackPanel>

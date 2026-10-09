@@ -54,9 +54,10 @@ public sealed class ProjectState
     public string? ManualCommand { get; set; }
 }
 
-public sealed record SegmentState(double StartMs, double EndMs);
+public sealed record SegmentState(double StartMs, double EndMs, bool Skipped = false);
 
 public sealed record AudioTrackState(
-    int Index, string Action, string Codec, string Bitrate, string? Title = null, double GainDb = 0, TrackAudioFilters? Filters = null);
+    int Index, string Action, string Codec, string Bitrate, string? Title = null, double GainDb = 0, TrackAudioFilters? Filters = null,
+    double Offset = 0, List<AudioPiece>? Pieces = null);
 
 public sealed record SubtitleTrackState(int Index, string Action);
