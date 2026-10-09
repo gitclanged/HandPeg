@@ -102,32 +102,108 @@ public partial class MainViewModel
         var maps = new List<string>();
         string? simpleVideoFilters = null;
 
-        // Audio that was edited on the timeline (slipped, silenced in places) or that has layer sound to take
-        // in is made ready first, each track on a chain of its own; what follows then works from that instead
-        // of from the input. Not with cuts made by the demuxer, which copies packets: no filter can be put
+        // Audio that was edited on the timeline (slipped, silenced in places), that sits on the sequence
+        // somewhere other than its start, that is ducked under a voice, or that has layer sound to take in, is
+        // made ready first, each track on a chain of its own; what follows then works from that instead of
+        // from the input. Not with cuts made by the demuxer, which copies packets: no filter can be put
         // in front of those.
         var preparedAudio = new Dictionary<int, string[]>();
         if (!cutWithDemuxer)
         {
+            var mainTiming = BuildMainAudioTiming();
+
+            // Auto-duck. The voices are mixed into one signal, and each ducked sound gets a copy of it to be
+            // pressed down by. A copy that nothing listened to would be an error, so they are counted first.
+            bool IsDucked(AudioTrack track) => track is { AutoDuck: true, IsVoice: false } && !ReferenceEquals(track, _silentBase);
+            var ducked = tracks.Count(IsDucked) + layerAudio.Count(l => l is { AutoDuck: true, IsVoice: false });
+            var keys = new Queue<string>();
+            if (ducked > 0)
+            {
+                var voices = new List<string>();
+                foreach (var track in tracks.Where(t => t.IsVoice && !ReferenceEquals(t, _silentBase)))
+                    voices.Add($"[0:a:{track.Index}]{string.Join(",", track.BuildEditChain().Concat(mainTiming).DefaultIfEmpty("anull"))}");
+                voices.AddRange(layerAudio.Where(l => l.IsVoice).Select(BuildLayerAudio));
+
+                // The voiceover is timed against the finished video, which is the sequence only while nothing is cut out of it.
+                if (voiceoverInput is { } voiceInput && segments.Count == 0)
+                    voices.Add($"[{voiceInput}:a:0]{BuildVoiceoverChain()}");
+
+                if (voices.Count > 0)
+                {
+                    for (var n = 0; n < voices.Count; n++)
+                        graph.Add($"{voices[n]},aresample=48000,apad[dvoice{n}]");
+
+                    var key = "[dvoice0]";
+                    if (voices.Count > 1)
+                    {
+                        key = "[dkey]";
+                        graph.Add($"{string.Concat(voices.Select((_, n) => $"[dvoice{n}]"))}amix=inputs={voices.Count}:normalize=0[dkey]");
+                    }
+
+                    if (ducked == 1)
+                    {
+                        keys.Enqueue(key);
+                    }
+                    else
+                    {
+                        var copies = Enumerable.Range(0, ducked).Select(n => $"[dkey{n}]").ToList();
+                        graph.Add($"{key}asplit={ducked}{string.Concat(copies)}");
+                        copies.ForEach(keys.Enqueue);
+                    }
+                }
+            }
+
             for (var k = 0; k < tracks.Count; k++)
             {
                 var track = tracks[k];
-                var edits = track.BuildEditChain();
+                var silent = ReferenceEquals(track, _silentBase);
+                var edits = silent ? [] : track.BuildEditChain().Concat(mainTiming).ToList();
+
+                // A mono track that now begins with silence is made two-channel. FFmpeg's AAC encoder has been
+                // seen to stop dead on exactly that (one channel, digital silence first, 192k or more); the
+                // same sound on two channels goes through.
+                if (track.Stream.Channels == 1 && edits.Any(e => e.StartsWith("adelay", StringComparison.Ordinal)))
+                    edits.Add("aformat=channel_layouts=stereo");
+
                 var mixedIn = k == 0 ? layerAudio : [];
-                if (edits.Count == 0 && mixedIn.Count == 0)
+                var duck = keys.Count > 0 && IsDucked(track);
+                if (edits.Count == 0 && mixedIn.Count == 0 && !duck && !silent)
                     continue;
 
                 var label = $"[0:a:{track.Index}]";
-                if (edits.Count > 0)
+                if (silent)
+                {
+                    // The sequence has no sound of its own: silence as long as it is, for the rest to be mixed into.
+                    graph.Add($"anullsrc=r=48000:cl=stereo:d={Number(Math.Max(SequenceSeconds, 0.1))}[asilent]");
+                    label = "[asilent]";
+                }
+                else if (edits.Count > 0)
                 {
                     graph.Add($"{label}{string.Join(",", edits)}[aedit{track.Index}]");
                     label = $"[aedit{track.Index}]";
                 }
 
+                if (duck)
+                {
+                    graph.Add($"{label}{keys.Dequeue()}{DuckFilter}[aduck{track.Index}]");
+                    label = $"[aduck{track.Index}]";
+                }
+
                 if (mixedIn.Count > 0)
                 {
                     for (var n = 0; n < mixedIn.Count; n++)
-                        graph.Add($"{BuildLayerAudio(mixedIn[n])}[alayer{n}]");
+                    {
+                        if (keys.Count > 0 && mixedIn[n] is { AutoDuck: true, IsVoice: false })
+                        {
+                            graph.Add($"{BuildLayerAudio(mixedIn[n])}[alraw{n}]");
+                            graph.Add($"[alraw{n}]{keys.Dequeue()}{DuckFilter}[alayer{n}]");
+                        }
+                        else
+                        {
+                            graph.Add($"{BuildLayerAudio(mixedIn[n])}[alayer{n}]");
+                        }
+                    }
+
                     graph.Add($"{label}{string.Concat(mixedIn.Select((_, n) => $"[alayer{n}]"))}amix=inputs={mixedIn.Count + 1}:duration=first:normalize=0[amixed{track.Index}]");
                     label = $"[amixed{track.Index}]";
                 }
@@ -148,26 +224,42 @@ public partial class MainViewModel
 
         if (cutWithFilters)
         {
-            // Trim every segment out of the video and each audio track and reset its timestamps, then join
-            // the pieces with one concat filter so all streams stay locked together.
+            // Every kept stretch is cut out of the video and each audio track with its timestamps reset, then
+            // the pieces are joined with one concat filter so all streams stay locked together.
             var concatInputs = new StringBuilder();
             for (var i = 0; i < segments.Count; i++)
             {
                 var range = $"start={Seconds(segments[i].Start)}:end={Seconds(segments[i].End)}";
-                var frameFilters = BuildVideoFilters(labelSuffix: i.ToString(CultureInfo.InvariantCulture), segments[i].Start.TotalSeconds);
-
-                // Burned-in subtitles are placed by timestamp, so they must be drawn before the timestamps are reset.
-                var chain = new List<string> { $"trim={range}" };
-                if (burnFilters.Count > 0)
+                var suffix = i.ToString(CultureInfo.InvariantCulture);
+                var chain = new List<string>();
+                if (FrameEngine)
                 {
-                    chain.AddRange(frameFilters);
-                    chain.AddRange(burnFilters);
-                    chain.Add("setpts=PTS-STARTPTS");
+                    // The engine composes this stretch of the sequence on a clock that starts at 0. Burned-in
+                    // subtitles are placed by the main video's own time, which the clock is set to while they are drawn.
+                    chain.AddRange(BuildVideoFilters(suffix, segments[i].Start.TotalSeconds, segments[i].End.TotalSeconds));
+                    if (burnFilters.Count > 0)
+                    {
+                        chain.Add($"setpts=PTS{Signed(segments[i].Start.TotalSeconds - MainShift)}/TB");
+                        chain.AddRange(burnFilters);
+                        chain.Add("setpts=PTS-STARTPTS");
+                    }
                 }
                 else
                 {
-                    chain.Add("setpts=PTS-STARTPTS");
-                    chain.AddRange(frameFilters);
+                    // Burned-in subtitles are placed by timestamp, so they must be drawn before the timestamps are reset.
+                    var frameFilters = BuildVideoFilters(suffix);
+                    chain.Add($"trim={range}");
+                    if (burnFilters.Count > 0)
+                    {
+                        chain.AddRange(frameFilters);
+                        chain.AddRange(burnFilters);
+                        chain.Add("setpts=PTS-STARTPTS");
+                    }
+                    else
+                    {
+                        chain.Add("setpts=PTS-STARTPTS");
+                        chain.AddRange(frameFilters);
+                    }
                 }
 
                 if (framerate is not null)
@@ -198,8 +290,22 @@ public partial class MainViewModel
 
             if (!copyVideo)
             {
-                var chain = BuildVideoFilters(labelSuffix: "");
-                chain.AddRange(burnFilters);
+                var chain = BuildVideoFilters(labelSuffix: "", 0, SequenceSeconds);
+
+                // Burned-in subtitles are placed by the main video's own time: the clock is set to it while
+                // they are drawn, wherever on the sequence the main video has been put.
+                var shift = MainShift;
+                if (burnFilters.Count > 0 && Math.Abs(shift) > 0.001)
+                {
+                    chain.Add($"setpts=PTS{Signed(-shift)}/TB");
+                    chain.AddRange(burnFilters);
+                    chain.Add($"setpts=PTS{Signed(shift)}/TB");
+                }
+                else
+                {
+                    chain.AddRange(burnFilters);
+                }
+
                 chain.AddRange(onceFilters);
                 if (framerate is not null)
                     chain.Add($"fps=fps={framerate}");
@@ -301,8 +407,20 @@ public partial class MainViewModel
         _buildingLiveGraph = true;
         try
         {
-            var chain = BuildVideoFilters(labelSuffix: "");
-            chain.AddRange(BuildSubtitleBurnFilters(LocalMediaPath));
+            // The player's clock is the sequence's, so the whole of it is composed as one stretch from 0.
+            var chain = BuildVideoFilters(labelSuffix: "", 0, SequenceSeconds);
+            var (burn, shift) = (BuildSubtitleBurnFilters(LocalMediaPath), MainShift);
+            if (burn.Count > 0 && Math.Abs(shift) > 0.001)
+            {
+                chain.Add($"setpts=PTS{Signed(-shift)}/TB");
+                chain.AddRange(burn);
+                chain.Add($"setpts=PTS{Signed(shift)}/TB");
+            }
+            else
+            {
+                chain.AddRange(burn);
+            }
+
             if (AutoCaptions && Segments.Count == 0 && File.Exists(CaptionsFilePath))
                 chain.Add(BuildCaptionOverlay(CaptionsFilePath));
 
@@ -338,48 +456,111 @@ public partial class MainViewModel
     /// chain, layers and burned-in subtitles as the real command, then scaled down. Speed matters more
     /// than quality here, so it always uses the fastest software settings.
     /// </summary>
-    /// <param name="ranges">The stretches of the source to show, joined end to end: one, or several cut segments.</param>
+    /// <param name="ranges">The stretches of the timeline to show, joined end to end: one, or several cut segments.</param>
     /// <param name="captionsPath">An auto-caption file made for these stretches, or null.</param>
     private string BuildPreviewCommand(string outputPath, List<(double Start, double End)> ranges, int percent, string? captionsPath)
     {
-        var (startSeconds, durationSeconds) = (ranges[0].Start, ranges[0].End - ranges[0].Start);
-        var chain = BuildVideoFilters(labelSuffix: "", startSeconds);
         var burnFilters = BuildSubtitleBurnFilters(LocalMediaPath);
-        chain.AddRange(burnFilters);
 
-        // Fades are left out: they are placed by the length of the whole output, which a few seconds do not have.
-        chain.AddRange(BuildWholeVideoFilters(duration: 0));
+        // What is done once, to the finished picture. Fades are left out: they are placed by the length of
+        // the whole output, which a few seconds do not have.
+        var finishing = BuildWholeVideoFilters(duration: 0);
         if (captionsPath is not null)
-            chain.Add(BuildCaptionOverlay(captionsPath));
+            finishing.Add(BuildCaptionOverlay(captionsPath));
         if (GetTargetFramerate() is { } framerate)
-            chain.Add($"fps=fps={framerate}");
+            finishing.Add($"fps=fps={framerate}");
 
         var factor = Number(Math.Clamp(percent, 5, 100) / 100.0);
-        chain.Add($"scale=trunc(iw*{factor}/2)*2:trunc(ih*{factor}/2)*2");
-        chain.Add("format=yuv420p");
+        finishing.Add($"scale=trunc(iw*{factor}/2)*2:trunc(ih*{factor}/2)*2");
+        finishing.Add("format=yuv420p");
 
         var ffmpeg = DependencyUpdater.IsFfmpegOverridden ? Quote(DependencyUpdater.FfmpegPath) : "ffmpeg";
         var hardware = HardwareDecoding ? "-hwaccel auto " : "";
         const string encode = "-c:v libx264 -preset ultrafast -crf 24 -c:a aac -b:a 128k -movflags +faststart";
+        var hasSound = _mediaInfo is not { Audio.Count: 0 };
+
+        if (!FrameEngine)
+        {
+            // Without the engine the timeline is the file's own: each stretch is simply a stretch of the file.
+            var (startSeconds, durationSeconds) = (ranges[0].Start, ranges[0].End - ranges[0].Start);
+            var chain = BuildVideoFilters(labelSuffix: "");
+            chain.AddRange(burnFilters);
+            chain.AddRange(finishing);
+
+            if (ranges.Count > 1)
+            {
+                // Each stretch is opened as an input of its own, already cut to length, and the stretches are
+                // joined before anything is done to the picture: what is filtered is the trimmed timeline.
+                var cutInputs = string.Join(" ", ranges.Select(r => $"{hardware}-ss {Number(r.Start)} -t {Number(r.End - r.Start)} -i {Quote(LocalMediaPath)}"));
+                var joined = $"{string.Concat(ranges.Select((_, i) => $"[{i}:v:0]"))}concat=n={ranges.Count}:v=1:a=0[joined];[joined]{string.Join(",", chain)}[v]";
+                if (hasSound)
+                    joined += $";{string.Concat(ranges.Select((_, i) => $"[{i}:a:0]"))}concat=n={ranges.Count}:v=0:a=1[a]";
+
+                return $"{ffmpeg} -hide_banner -y {cutInputs} -filter_complex \"{joined}\" -map \"[v]\"{(hasSound ? " -map \"[a]\"" : "")} {encode} {Quote(outputPath)}";
+            }
+
+            // Seeking before the input is fast. Burned-in subtitles need the original timestamps, though,
+            // so with those the seek comes after the input: slower, but the text lands on the right frames.
+            var seek = $"-ss {Number(startSeconds)} -t {Number(durationSeconds)}";
+            var input = hardware + (burnFilters.Count > 0 ? $"-i {Quote(LocalMediaPath)} {seek}" : $"{seek} -i {Quote(LocalMediaPath)}");
+            return $"{ffmpeg} -hide_banner -y {input} -map 0:v:0 -map 0:a:0? -vf \"{string.Join(",", chain)}\" {encode} {Quote(outputPath)}";
+        }
+
+        // With the engine every stretch of the sequence is composed on its own, as the export composes a cut
+        // segment. The file is opened once per stretch, wound forward to the first frame that stretch shows
+        // of it, which is where its frames then count from.
+        var (mainStart, mainEnd) = GetMainSpan();
+        var shift = MainShift;
+        var inputs = new List<string>();
+        var graph = new List<string>();
+        for (var i = 0; i < ranges.Count; i++)
+        {
+            var (from, to) = ranges[i];
+            var (seenFrom, seenTo) = (Math.Max(from, mainStart), Math.Min(to, mainEnd));
+            var origin = Math.Max(Math.Min(seenFrom, mainEnd) - shift, 0);
+            inputs.Add($"{hardware}-ss {Number(origin)} -i {Quote(LocalMediaPath)}");
+
+            List<string> chain;
+            _inputOrigin = origin;
+            try
+            {
+                chain = BuildVideoFilters(i.ToString(CultureInfo.InvariantCulture), from, to);
+            }
+            finally
+            {
+                _inputOrigin = 0;
+            }
+
+            if (burnFilters.Count > 0)
+            {
+                chain.Add($"setpts=PTS{Signed(from - shift)}/TB");
+                chain.AddRange(burnFilters);
+                chain.Add("setpts=PTS-STARTPTS");
+            }
+
+            graph.Add($"[{i}:v:0]{string.Join(",", chain)}[pv{i}]");
+            if (!hasSound)
+                continue;
+
+            // The main video's first track for as long as it is there in this stretch, and silence around it.
+            var lead = (int)Math.Round((seenFrom - from) * 1000);
+            graph.Add(seenTo - seenFrom > 0.001
+                ? $"[{i}:a:0]atrim=end={Number(seenTo - seenFrom)},asetpts=PTS-STARTPTS{(lead > 0 ? $",adelay={lead}:all=1" : "")},apad=whole_dur={Number(to - from)}[pa{i}]"
+                : $"anullsrc=r=48000:cl=stereo:d={Number(to - from)}[pa{i}]");
+        }
 
         if (ranges.Count > 1)
         {
-            // Each stretch is opened as an input of its own, already cut to length, and the stretches are
-            // joined before anything is done to the picture: what is filtered is the trimmed timeline.
-            var inputs = string.Join(" ", ranges.Select(r => $"{hardware}-ss {Number(r.Start)} -t {Number(r.End - r.Start)} -i {Quote(LocalMediaPath)}"));
-            var hasSound = _mediaInfo is not { Audio.Count: 0 };
-            var graph = $"{string.Concat(ranges.Select((_, i) => $"[{i}:v:0]"))}concat=n={ranges.Count}:v=1:a=0[joined];[joined]{string.Join(",", chain)}[v]";
-            if (hasSound)
-                graph += $";{string.Concat(ranges.Select((_, i) => $"[{i}:a:0]"))}concat=n={ranges.Count}:v=0:a=1[a]";
-
-            return $"{ffmpeg} -hide_banner -y {inputs} -filter_complex \"{graph}\" -map \"[v]\"{(hasSound ? " -map \"[a]\"" : "")} {encode} {Quote(outputPath)}";
+            graph.Add($"{string.Concat(ranges.Select((_, i) => hasSound ? $"[pv{i}][pa{i}]" : $"[pv{i}]"))}concat=n={ranges.Count}:v=1:a={(hasSound ? 1 : 0)}[joined]{(hasSound ? "[a]" : "")}");
+            graph.Add($"[joined]{string.Join(",", finishing)}[v]");
+        }
+        else
+        {
+            graph.Add($"[pv0]{string.Join(",", finishing)}[v]");
         }
 
-        // Seeking before the input is fast. Burned-in subtitles need the original timestamps, though,
-        // so with those the seek comes after the input: slower, but the text lands on the right frames.
-        var seek = $"-ss {Number(startSeconds)} -t {Number(durationSeconds)}";
-        var input = hardware + (burnFilters.Count > 0 ? $"-i {Quote(LocalMediaPath)} {seek}" : $"{seek} -i {Quote(LocalMediaPath)}");
-        return $"{ffmpeg} -hide_banner -y {input} -map 0:v:0 -map 0:a:0? -vf \"{string.Join(",", chain)}\" {encode} {Quote(outputPath)}";
+        var sound = !hasSound ? "" : ranges.Count > 1 ? " -map \"[a]\"" : " -map \"[pa0]\"";
+        return $"{ffmpeg} -hide_banner -y {string.Join(" ", inputs)} -filter_complex \"{string.Join(";", graph)}\" -map \"[v]\"{sound} {encode} {Quote(outputPath)}";
     }
 
     // ----- Audio -----
@@ -391,11 +572,73 @@ public partial class MainViewModel
     private List<AudioTrack> GetOutputAudioTracks()
     {
         if (_mediaInfo is not null)
-            return AudioTracks.Where(t => !t.IsDropped).ToList();
+        {
+            var kept = AudioTracks.Where(t => !t.IsDropped).ToList();
+
+            // No sound of the sequence's own, but sound on its layers: a silent track is made for them to be
+            // mixed into, so that they are heard. It is always encoded.
+            if (kept.Count == 0 && GetLayerAudioSources().Count > 0)
+            {
+                ApplyAudioDefaults(_silentBase);
+                (_silentBase.Action, _silentBase.Codec) = (AudioTrack.Reencode, MixedAudioCodec);
+                kept.Add(_silentBase);
+            }
+
+            return kept;
+        }
 
         var standIn = new AudioTrack(new AudioStreamInfo(0, "", 2, "", 48000, 0, "", ""));
         ApplyAudioDefaults(standIn);
         return [standIn];
+    }
+
+    // Stands for the silence that layer sound is mixed into when the sequence has none of its own. It is not
+    // a stream of the file: the graph makes it (anullsrc), under a number no real track has.
+    private readonly AudioTrack _silentBase = new(new AudioStreamInfo(900, "", 2, "stereo", 48000, 0, "", "")) { Title = "Timeline Audio" };
+
+    /// <summary>How far a sound set to Auto-Duck is turned down while a voice speaks, in decibels.</summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private double _duckAmountDb = -15;
+
+    /// <summary>
+    /// The ducking step: its first input is the sound, its second the voices. The compressor is driven hard
+    /// (the voices are heard by it far louder than they are), so that while anyone speaks it shuts the sound
+    /// almost off; and only a share of the result is that shut-off sound, the rest being the sound untouched.
+    /// The share is what makes the dip the number of decibels asked for, however loud the voice happens to be.
+    /// </summary>
+    private string DuckFilter =>
+        $"sidechaincompress=threshold=0.02:ratio=20:attack=15:release=350:level_sc=16:mix={Number(1 - Math.Pow(10, Math.Clamp(DuckAmountDb, -40, -1) / 20))}";
+
+    /// <summary>
+    /// What puts the main video's own sound where its picture is on the sequence: cut to the part of the
+    /// file that is used, and held back until the main video comes in. Empty while the main video is the
+    /// whole sequence.
+    /// </summary>
+    private List<string> BuildMainAudioTiming()
+    {
+        var steps = new List<string>();
+        if (IsMainWholeSequence)
+            return steps;
+
+        var (start, end) = GetMainSpan();
+        var offset = _mainVideoRow.MediaOffset;
+        if (offset > 0.001 || _mainVideoRow.Duration > 0.001)
+            steps.Add($"atrim={(offset > 0.001 ? $"start={Number(offset)}:" : "")}end={Number(offset + end - start)},asetpts=PTS-STARTPTS");
+        if (start > 0.001)
+            steps.Add($"adelay={(int)Math.Round(start * 1000)}:all=1");
+        return steps;
+    }
+
+    /// <summary>The voiceover's own steps: cut to its trim handles, moved to where it starts, set to its gain.</summary>
+    private string BuildVoiceoverChain()
+    {
+        var steps = new List<string>();
+        if (VoiceoverTrimStart > 0.05 || (VoiceoverDuration > 0 && VoiceoverTrimEnd < VoiceoverDuration - 0.05 && VoiceoverTrimEnd > VoiceoverTrimStart))
+            steps.Add($"atrim=start={Number(Math.Max(VoiceoverTrimStart, 0))}:end={Number(VoiceoverTrimEnd)},asetpts=PTS-STARTPTS");
+        if (VoiceoverStartSeconds >= 0.01)
+            steps.Add($"adelay={(int)Math.Round(VoiceoverStartSeconds * 1000)}:all=1");
+        if (Math.Abs(VoiceoverGainDb) >= 0.05)
+            steps.Add($"volume={Number(VoiceoverGainDb)}dB");
+        return steps.Count > 0 ? string.Join(",", steps) : "anull";
     }
 
     /// <summary>A mix is always encoded: when the tab's default is Copy, AAC stands in.</summary>
@@ -455,14 +698,7 @@ public partial class MainViewModel
         string? voice = null;
         if (voiceoverInput is { } input)
         {
-            var steps = new List<string>();
-            if (VoiceoverTrimStart > 0.05 || (VoiceoverDuration > 0 && VoiceoverTrimEnd < VoiceoverDuration - 0.05 && VoiceoverTrimEnd > VoiceoverTrimStart))
-                steps.Add($"atrim=start={Number(Math.Max(VoiceoverTrimStart, 0))}:end={Number(VoiceoverTrimEnd)},asetpts=PTS-STARTPTS");
-            if (VoiceoverStartSeconds >= 0.01)
-                steps.Add($"adelay={(int)Math.Round(VoiceoverStartSeconds * 1000)}:all=1");
-            if (Math.Abs(VoiceoverGainDb) >= 0.05)
-                steps.Add($"volume={Number(VoiceoverGainDb)}dB");
-            graph.Add($"[{input}:a:0]{(steps.Count > 0 ? string.Join(",", steps) : "anull")}[voiceover]");
+            graph.Add($"[{input}:a:0]{BuildVoiceoverChain()}[voiceover]");
             voice = "[voiceover]";
         }
 
@@ -625,11 +861,11 @@ public partial class MainViewModel
     /// Makes the labels inside a step unique. With filter-based cuts the chain is written once per segment
     /// into one graph, where two pieces may not share a label.
     /// </param>
-    /// <param name="startSeconds">
-    /// Where in the source this stretch of picture begins: a video layer is started that far in, so that it
-    /// runs alongside the main video as it does when nothing is cut.
+    /// <param name="from">
+    /// With the Layer Engine: where on the sequence the stretch of picture being composed begins, and
+    /// (<paramref name="to"/>) where it ends. Every layer is placed in time by them.
     /// </param>
-    private List<string> BuildVideoFilters(string labelSuffix, double startSeconds = 0)
+    private List<string> BuildVideoFilters(string labelSuffix, double from = 0, double to = 0)
     {
         var filters = new List<string>();
         if (Deinterlace)
@@ -655,7 +891,7 @@ public partial class MainViewModel
 
         if (FrameEngine)
         {
-            filters.Add(BuildFrameEngine(crop, labelSuffix, startSeconds));
+            filters.Add(BuildFrameEngine(crop, labelSuffix, from, to));
             if (Denoise)
                 filters.Add("hqdn3d");
             filters.Add("setsar=1");
@@ -693,65 +929,141 @@ public partial class MainViewModel
         return filters;
     }
 
-    /// <summary>
-    /// Composes the output frame as a sequence: a canvas the size of the project, and every track laid on it
-    /// in stacking order, the main video being one of them and built exactly as the others are. The canvas
-    /// is black, or the blurred copy of the video while the Background Blur row is shown. A layer may lie
-    /// partly or wholly outside the canvas: it is simply cut off at the edge, and the canvas keeps its size.
-    ///
-    /// The source is split into independent branches, one per layer that shows it; nothing done to an upper
-    /// layer can reach the ones below, because by then they are a finished picture. One shortcut is kept: a
-    /// main video that lies at the bottom, covers the whole canvas and lets nothing show through is itself
-    /// the base, since nothing under it could be seen.
-    /// </summary>
-    private string BuildFrameEngine(string? centerCrop, string s, double startSeconds)
+    // A preview encode opens the main video's file already wound forward to where it begins; the file's frames
+    // then count from there, and this is how far in that is.
+    private double _inputOrigin;
+
+    // Frame rates that are not the round numbers they are quoted as.
+    private static readonly (double Rate, string Exact)[] BroadcastRates =
+        [(23.976, "24000/1001"), (29.97, "30000/1001"), (59.94, "60000/1001"), (119.88, "120000/1001")];
+
+    /// <summary>The rate the sequence's canvas ticks at: the main video's own, so that its frames fall one to a tick.</summary>
+    private string CanvasRate
     {
+        get
+        {
+            var rate = SourceFrameRate;
+            foreach (var (near, exact) in BroadcastRates)
+            {
+                if (Math.Abs(rate - near) < 0.01)
+                    return exact;
+            }
+
+            return Number(rate);
+        }
+    }
+
+    /// <summary>A number with its sign always written, to follow PTS in a setpts expression.</summary>
+    private static string Signed(double value) => (value < 0 ? "-" : "+") + Number(Math.Abs(value));
+
+    /// <summary>The enable option for a step that is only applied while every one of the given conditions holds; nothing when there are none.</summary>
+    private static string Enabled(string? first, string? second = null) =>
+        first is null && second is null ? "" : $":enable='{(first is not null && second is not null ? $"{first}*{second}" : first ?? second)}'";
+
+    /// <summary>
+    /// Composes one stretch of the sequence. The base is the sequence's own canvas: black, the size of the
+    /// project, as long as the stretch, with a clock that belongs to nothing that is laid on it. Every track
+    /// is laid on it in stacking order, the main video being one of them: cut to the part of its file this
+    /// stretch shows, and set down at the moment it comes in. Before it starts and after it ends the canvas
+    /// simply goes on without it. A layer may lie partly or wholly outside the canvas: it is cut off at the edge.
+    ///
+    /// The main video's frames are split into independent branches, one per thing that shows them (the
+    /// blurred background, the main video itself, the pieces cut from it); nothing done to an upper layer can
+    /// reach the ones below, because by then they are a finished picture. One shortcut is kept: the blurred
+    /// background is not made at all while the main video would hide every pixel of it.
+    ///
+    /// Live Preview is the exception to the canvas: the player's frames are the clock there, the player having
+    /// been given the sequence to play, so the canvas is made from them and what comes from the main video is
+    /// switched off outside the main video's stretch instead of being cut to it.
+    /// </summary>
+    /// <param name="from">Where on the sequence the stretch begins, in seconds: the clock of what is composed starts there.</param>
+    /// <param name="to">Where it ends.</param>
+    private string BuildFrameEngine(string? centerCrop, string s, double from, double to)
+    {
+        var live = _buildingLiveGraph;
         var (width, height) = (Sized(FrameWidth), Sized(FrameHeight));
         var full = GetCenterRect();
         var center = (X: Placed(full.X), Y: Placed(full.Y), Width: Sized(full.Width), Height: Sized(full.Height));
         var main = _mainVideoRow;
 
+        // How much of this stretch the main video is there for. A file whose length is not known is taken to
+        // be all of it, and lends the canvas its clock as it does for Live Preview.
+        var (mainStart, mainEnd) = GetMainSpan();
+        var (seenFrom, seenTo) = (Math.Max(from, mainStart), Math.Min(to, mainEnd));
+        var known = to - from > 0.001 && MainMediaSeconds > 0;
+        var mainSeen = !known || seenTo - seenFrom > 0.001;
+        var throughout = !known || (seenFrom - from < 0.001 && to - seenTo < 0.001);
+        var clockFromInput = live || !known;
+
         // The stack, bottom first, without the layers that have nothing to show.
-        var stack = GetStack().Where(l => l.IsMainVideo ? !l.IsHidden : l.IsUsable).ToList();
+        var stack = GetStack().Where(l => l.IsMainVideo ? !l.IsHidden && mainSeen : l.IsUsable && (!l.IsVideo || mainSeen)).ToList();
+        var motions = stack.ConvertAll(l => GetMotion(l, width, height, from));
 
         var covers = center.X <= 0 && center.Y <= 0 && center.X + center.Width >= width && center.Y + center.Height >= height;
-        var mainIsBase = stack.Count > 0 && stack[0].IsMainVideo && covers && IsOpaque(main);
-        var blurred = !mainIsBase && !_backgroundRow.IsHidden;
+        var hidesBackground = stack.Count > 0 && stack[0].IsMainVideo && covers && throughout && IsOpaque(main) && !motions[0].Any;
+        var blurred = mainSeen && !hidesBackground && !_backgroundRow.IsHidden;
 
-        // One copy of the frame for each thing that shows the video: the base, the main video, and the pieces
-        // cut from it. Layers from files bring their own picture and need no copy.
+        // One copy of the main video's frames for each thing that shows them. Layers from files bring their own picture.
         var branches = new List<string>();
-        if (!mainIsBase)
-            branches.Add(blurred ? $"[bg_in{s}]" : $"[canvas_in{s}]");
+        if (clockFromInput)
+            branches.Add($"[canvas_in{s}]");
+        if (blurred)
+            branches.Add($"[bg_in{s}]");
         if (stack.Any(l => l.IsMainVideo))
             branches.Add($"[center_in{s}]");
         for (var n = 0; n < stack.Count; n++)
         {
             if (stack[n].IsVideo)
                 branches.Add($"[ui{n}_in{s}]");
+            else if (live && stack[n].IsImage && motions[n].Reshapes)
+                branches.Add($"[ui{n}_tick{s}]");
         }
 
-        // A lone branch needs no copies: the chain simply runs on through it.
-        var isSplit = branches.Count > 1;
-        var graph = new StringBuilder(isSplit ? $"split={branches.Count}{string.Concat(branches)};" : "");
+        var graph = new StringBuilder(1024);
 
-        // The main video. The crop frames this layer only; the background uses the whole picture.
-        var centerChain = $"{(centerCrop is null ? "" : centerCrop + ",")}scale={center.Width}:{center.Height}";
-
-        if (mainIsBase)
+        // The main video, cut to what this stretch shows of it and set down where it comes in. Left as it is
+        // when it is the whole sequence and all of it is wanted.
+        if (!clockFromInput && mainSeen && !(IsMainWholeSequence && from < 0.001 && to >= SequenceSeconds - 0.001 && _inputOrigin == 0))
         {
-            // What of the main video lies inside the canvas is the base picture.
-            var own = BuildLayerFilters(main, width);
-            graph.Append($"{(isSplit ? $"[center_in{s}]" : "")}{centerChain}{(own.Count > 0 ? "," + string.Join(",", own) : "")},crop={width}:{height}:{-center.X}:{-center.Y}");
+            var (cutFrom, cutTo, lead) = (seenFrom - MainShift - _inputOrigin, seenTo - MainShift - _inputOrigin, seenFrom - from);
+            graph.Append("trim=");
+            if (cutFrom > 0.001)
+                graph.Append("start=").Append(Number(cutFrom)).Append(':');
+            graph.Append("end=").Append(Number(cutTo)).Append(",setpts=PTS-STARTPTS");
+            if (lead > 0.001)
+                graph.Append('+').Append(Number(lead)).Append("/TB");
+            graph.Append(',');
         }
-        else if (blurred)
+
+        // Nothing of it wanted at all: one frame is read and dropped, and the file is left alone.
+        graph.Append(branches.Count switch
         {
-            if (_buildingLiveGraph)
+            0 => "trim=end_frame=1,nullsink;",
+            1 => $"null{branches[0]};",
+            _ => $"split={branches.Count}{string.Concat(branches)};",
+        });
+
+        // The canvas. For Live Preview four pixels of the player's own frame are blackened and stretched, which
+        // keeps its clock: frame for frame, through seeking.
+        if (clockFromInput)
+            graph.Append($"[canvas_in{s}]crop=2:2:0:0,format=yuv420p,lutyuv=y=16:u=128:v=128,scale={width}:{height}:flags=neighbor");
+        else
+            graph.Append($"color=c=black:s={width}x{height}:r={CanvasRate}:d={Number(to - from)},format=yuv420p");
+
+        // What comes from the main video is there only while the main video is. Composed on the canvas, its
+        // frames run out and the canvas carries on; on the player's clock it is switched off outside its stretch.
+        var mainEnding = clockFromInput ? "" : ":eof_action=pass";
+        var mainGate = clockFromInput && !throughout ? $"gte(t,{Number(seenFrom - from)})*lt(t,{Number(seenTo - from)})" : null;
+
+        if (blurred)
+        {
+            graph.Append($"[base{s}];[bg_in{s}]");
+            if (live)
             {
                 // Blurred small and scaled back up: the blur hides the difference, and it is a sixteenth of the work.
                 var (smallWidth, smallHeight) = (Math.Max(width / 8 * 2, 16), Math.Max(height / 8 * 2, 16));
                 var smallRadius = Math.Clamp((int)Math.Round(Math.Clamp(BlurRadius, 5, 50) * _liveScale / 4), 1, Math.Max(Math.Min(smallWidth, smallHeight) / 4 - 1, 1));
-                graph.Append($"[bg_in{s}]scale={smallWidth}:{smallHeight}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop={smallWidth}:{smallHeight},"
+                graph.Append($"scale={smallWidth}:{smallHeight}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop={smallWidth}:{smallHeight},"
                              + $"boxblur={smallRadius}:{Math.Clamp(BlurPasses, 1, 5)},eq=brightness={Number(Math.Clamp(BackgroundDim, -0.5, 0))},"
                              + $"scale={width}:{height}:flags=bilinear");
             }
@@ -759,48 +1071,76 @@ public partial class MainViewModel
             {
                 // The blur radius cannot exceed half the smaller side of the colour planes, which are half size.
                 var radius = Math.Min(Math.Clamp(BlurRadius, 5, 50), Math.Max(Math.Min(width, height) / 4 - 1, 1));
-                graph.Append($"[bg_in{s}]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
+                graph.Append($"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
                              + $"boxblur={radius}:{Math.Clamp(BlurPasses, 1, 5)},eq=brightness={Number(Math.Clamp(BackgroundDim, -0.5, 0))}");
             }
-        }
-        else
-        {
-            // The blank canvas: black, the size of the project. It is made from a corner of the video's own
-            // frames rather than by a source of its own, so that it keeps the video's clock: frame for
-            // frame, through seeking and through cut segments. Four pixels are blackened and stretched.
-            graph.Append($"{(isSplit ? $"[canvas_in{s}]" : "")}crop=2:2:0:0,format=yuv420p,lutyuv=y=16:u=128:v=128,scale={width}:{height}:flags=neighbor");
+
+            graph.Append($"[bg{s}];[base{s}][bg{s}]overlay=0:0{mainEnding}{Enabled(mainGate)}");
         }
 
         // The layers, each on the picture built so far. The running picture is labelled between steps;
         // after the last one it is left open, so the rest of the chain continues from it.
         for (var n = 0; n < stack.Count; n++)
         {
-            var layer = stack[n];
-            if (layer.IsMainVideo && mainIsBase)
-                continue;
-
+            var (layer, motion) = (stack[n], motions[n]);
             var name = layer.IsMainVideo ? "center" : $"ui{n}";
             var (x, y, layerWidth, layerHeight) = layer.IsMainVideo
                 ? center
                 : layer.GetOutputRect(width, height, SourceWidth, SourceHeight);
+
+            // A layer whose size is animated is built once, at the largest it gets, and scaled from there.
+            var (builtWidth, builtHeight) = (layerWidth, layerHeight);
+            if (motion.Width is not null)
+            {
+                builtWidth = Even(motion.LargestWidth * width);
+                builtHeight = Even((double)layerHeight * builtWidth / layerWidth);
+            }
+
+            // The main video. The crop frames this layer only; the background uses the whole picture.
+            var mainSource = layer.IsMainVideo ? $"[center_in{s}]{(centerCrop is null ? "" : centerCrop + ",")}scale={builtWidth}:{builtHeight}" : null;
+            var tick = live && layer.IsImage && motion.Reshapes ? $"[ui{n}_tick{s}]" : null;
             graph.Append($"[stage{n}{s}];");
-            graph.Append(BuildLayer(layer, name, s, layerWidth, layerHeight, startSeconds, layer.IsMainVideo ? $"[center_in{s}]{centerChain}" : null));
+            graph.Append(BuildLayer(layer, name, s, builtWidth, builtHeight, from, motion, mainSource, tick));
 
             // A turned picture is larger than the layer it was; it stays where its middle was.
-            var (turnedWidth, turnedHeight) = GetTurnedSize(layer, layerWidth, layerHeight);
-            (x, y) = (x - (turnedWidth - layerWidth) / 2, y - (turnedHeight - layerHeight) / 2);
+            var (boxWidth, boxHeight) = GetBox(layer, motion, builtWidth, builtHeight);
+            string placeX, placeY;
+            if (motion.Any)
+            {
+                // The box is that much larger than the layer on each side, and grows and shrinks with it.
+                var size = motion.Width is null ? "" : $"*({motion.Width})/{builtWidth}";
+                var (marginX, marginY) = ((boxWidth - builtWidth) / 2.0, (boxHeight - builtHeight) / 2.0);
+                placeX = (motion.X ?? Number(x)) + (marginX == 0 ? "" : $"-{Number(marginX)}{size}");
+                placeY = (motion.Y ?? Number(y)) + (marginY == 0 ? "" : $"-{Number(marginY)}{size}");
+            }
+            else
+            {
+                (placeX, placeY) = (Number(x - (boxWidth - layerWidth) / 2), Number(y - (boxHeight - layerHeight) / 2));
+            }
 
-            // A video from a file runs for as long as it is asked to; the picture under it decides when the output ends.
-            var ending = layer.IsVideoFile ? ":shortest=1" : "";
+            string At(int offset) => motion.Any
+                ? $"x='{placeX}{(offset == 0 ? "" : "+" + offset)}':y='{placeY}{(offset == 0 ? "" : "+" + offset)}':eval=frame"
+                : $"{int.Parse(placeX, CultureInfo.InvariantCulture) + offset}:{int.Parse(placeY, CultureInfo.InvariantCulture) + offset}";
+
+            var ending = new StringBuilder();
+            if (layer.IsMainVideo || layer.IsVideo)
+                ending.Append(mainEnding);
+
+            // A video from a file runs for as long as it is asked to, and so does a still that was made into
+            // a stream to be animated; the picture under it decides when the output ends.
+            if (layer.IsVideoFile || (layer.IsImage && motion.Reshapes && !live))
+                ending.Append(":shortest=1");
 
             // A layer with a time to appear and a time to go is only laid on between the two. The clock the
             // filter sees starts at this stretch of the picture, so the times are counted from there.
-            if (layer.HasTiming && (layer.StartTime > 0.001 || layer.Duration > 0.001))
+            string? timed = null;
+            if (!layer.IsMainVideo && layer.HasTiming && (layer.StartTime > 0.001 || layer.Duration > 0.001))
             {
-                var from = layer.StartTime - startSeconds;
-                var until = layer.Duration > 0.001 ? Number(from + layer.Duration) : "1e9";
-                ending += $":enable='between(t,{Number(from)},{until})'";
+                var appears = layer.StartTime - from;
+                timed = $"between(t,{Number(appears)},{(layer.Duration > 0.001 ? Number(appears + layer.Duration) : "1e9")})";
             }
+
+            ending.Append(Enabled(layer.IsMainVideo || layer.IsVideo ? mainGate : null, timed));
 
             if (layer.Shadow)
             {
@@ -809,16 +1149,29 @@ public partial class MainViewModel
                 graph.Append($";[{name}_layer{s}]split[{name}_top{s}][{name}_shadow_in{s}]");
                 graph.Append($";[{name}_shadow_in{s}]format=yuva420p,lutyuv=y=16:u=128:v=128:a=val*{Number(Math.Clamp(layer.ShadowOpacity, 0, 1))},"
                              + $"boxblur=2:1:0:0:2:1[{name}_shadow{s}]");
-                graph.Append($";[stage{n}{s}][{name}_shadow{s}]overlay={x + offset}:{y + offset}{ending}[{name}_shaded{s}]");
-                graph.Append($";[{name}_shaded{s}][{name}_top{s}]overlay={x}:{y}{ending}");
+                graph.Append($";[stage{n}{s}][{name}_shadow{s}]overlay={At(offset)}{ending}[{name}_shaded{s}]");
+                graph.Append($";[{name}_shaded{s}][{name}_top{s}]overlay={At(0)}{ending}");
             }
             else
             {
-                graph.Append($";[stage{n}{s}][{name}_layer{s}]overlay={x}:{y}{ending}");
+                graph.Append($";[stage{n}{s}][{name}_layer{s}]overlay={At(0)}{ending}");
             }
         }
 
         return graph.ToString();
+    }
+
+    /// <summary>
+    /// The size of the picture a layer is laid on the frame as: the layer itself, the box its corners reach
+    /// when it is turned, or, when its turning is animated, the square it can turn all the way round in.
+    /// </summary>
+    private static (int Width, int Height) GetBox(Layer layer, Motion motion, int width, int height)
+    {
+        if (motion.Angle is null)
+            return GetTurnedSize(layer, width, height);
+
+        var across = (int)Math.Ceiling(Math.Sqrt((double)width * width + (double)height * height) / 2) * 2;
+        return (across, across);
     }
 
     /// <summary>Whether a layer hides everything under the rectangle it covers: solid, square-cornered, unturned, with nothing keyed or masked out.</summary>
@@ -874,12 +1227,15 @@ public partial class MainViewModel
     /// (or the main video itself), or read from its image or video file, and scaled. Its own filters are then
     /// applied to it. What shows of it is the product of everything that makes parts of it transparent: its
     /// own transparency (a PNG's, or a color keyed out), a custom mask from a file, and the rounded or
-    /// feathered outline. Opacity scales whatever results, and last of all the picture is turned.
+    /// feathered outline. Opacity scales whatever results, and last of all the picture is turned, and, when
+    /// its size is animated, scaled frame by frame.
     /// </summary>
+    /// <param name="width">The size it is built at: its size on the frame, or the largest it gets when that is animated.</param>
     /// <param name="mainSource">For the main video: the chain that brings its picture, already scaled.</param>
-    private string BuildLayer(Layer layer, string name, string s, int width, int height, double startSeconds, string? mainSource = null)
+    /// <param name="tick">For a still that changes shape in Live Preview: the branch of the player's frames that gives it a clock.</param>
+    private string BuildLayer(Layer layer, string name, string s, int width, int height, double startSeconds, Motion motion, string? mainSource = null, string? tick = null)
     {
-        var chain = new StringBuilder();
+        var chain = new StringBuilder(512);
         if (mainSource is not null)
         {
             chain.Append(mainSource);
@@ -920,7 +1276,7 @@ public partial class MainViewModel
         }
         else if (own.Count > 0)
         {
-            chain.Append("," + string.Join(",", own));
+            chain.Append(',').Append(string.Join(",", own));
         }
 
         if (layer.ChromaKey && layer.HasKeying)
@@ -960,13 +1316,39 @@ public partial class MainViewModel
         if (opacity < 1)
             chain.Append($",lutyuv=a=val*{Number(opacity)}");
 
+        // A still picture is one frame, and one frame cannot change shape as time passes: it is made into a
+        // frame for every tick first. For an encode it is simply repeated at the canvas's rate. For Live
+        // Preview it is laid on see-through frames cut from the player's own, which carry the player's clock
+        // through every seek; a stream counted up from nothing would have to be run through to catch up.
+        if (layer.IsImage && motion.Reshapes)
+        {
+            if (tick is null)
+                chain.Append($",loop=loop=-1:size=1,setpts=N/({CanvasRate}*TB)");
+            else
+                chain.Append($"[{name}_still{s}];{tick}crop=2:2:0:0,format=yuva420p,lutyuv=a=0,scale={width}:{height}:flags=neighbor[{name}_clock{s}];"
+                             + $"[{name}_clock{s}][{name}_still{s}]overlay=format=auto,format=yuva420p");
+        }
+
         // Turned about its middle, into a box large enough for its corners; what the box adds is transparent.
-        var (turnedWidth, turnedHeight) = GetTurnedSize(layer, width, height);
-        if ((turnedWidth, turnedHeight) != (width, height) || (layer.HasFilters && Math.Abs(layer.Rotation % 360) >= 0.05))
-            chain.Append($",rotate={Number(layer.Rotation)}*PI/180:ow={turnedWidth}:oh={turnedHeight}:c=black@0");
+        var (boxWidth, boxHeight) = GetBox(layer, motion, width, height);
+        if (motion.Angle is not null)
+            chain.Append($",rotate='({motion.Angle})*PI/180':ow={boxWidth}:oh={boxHeight}:c=black@0");
+        else if ((boxWidth, boxHeight) != (width, height) || (layer.HasFilters && Math.Abs(layer.Rotation % 360) >= 0.05))
+            chain.Append($",rotate={Number(layer.Rotation)}*PI/180:ow={boxWidth}:oh={boxHeight}:c=black@0");
+
+        // An animated size: the finished picture, box and all, scaled for each frame from the size it was built at.
+        if (motion.Width is not null)
+        {
+            var across = boxWidth == width ? motion.Width : $"({motion.Width})*{Ratio((double)boxWidth / width)}";
+            chain.Append($",scale=w='max(2,trunc({across}))':h='max(2,trunc(({across})*{Ratio((double)boxHeight / boxWidth)}))':eval=frame");
+            if (_buildingLiveGraph)
+                chain.Append(":flags=fast_bilinear");
+        }
 
         return chain.Append($"[{name}_layer{s}]").ToString();
     }
+
+    private static string Ratio(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
 
     /// <summary>#RRGGBB as FFmpeg writes a color, RRGGBB; anything unreadable becomes green.</summary>
     private static string KeyColor(string color)

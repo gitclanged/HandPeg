@@ -134,6 +134,12 @@ public sealed partial class AudioTrack : ObservableObject
         return chain;
     }
 
+    /// <summary>The track is turned down while a voice is speaking.</summary>
+    [ObservableProperty] private bool _autoDuck;
+
+    /// <summary>The track is a voice (a microphone, dialogue): what the ducked tracks make room for.</summary>
+    [ObservableProperty] private bool _isVoice;
+
     /// <summary>The player is playing this track instead of the first one. Set by the view model.</summary>
     [ObservableProperty] private bool _isSolo;
 

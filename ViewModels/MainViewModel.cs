@@ -59,6 +59,7 @@ public partial class MainViewModel : ObservableObject
         nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloTrack),
         nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
         nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips), nameof(IsEncoderMode),
+        nameof(AutoKeyGenerate), nameof(AutoKeySnap), nameof(IsAutoKeying),
     ];
 
 
@@ -142,7 +143,8 @@ public partial class MainViewModel : ObservableObject
         Presets.CollectionChanged += (_, _) => RefreshPresetNames();
         AudioTracks.CollectionChanged += (_, _) => KeepCaptionTrackValid();
         CaptionLayer.PropertyChanged += (_, _) => GenerateCommand();
-        _mainVideoRow.PropertyChanged += (_, _) => GenerateCommand();
+        _mainVideoRow.PropertyChanged += OnMainRowChanged;
+        AudioTracks.CollectionChanged += (_, _) => RefreshAudioRows();
         _backgroundRow.PropertyChanged += (_, _) => GenerateCommand();
         Layers.CollectionChanged += (_, _) => GenerateCommand();
         Segments.CollectionChanged += (_, _) => GenerateCommand();
@@ -263,6 +265,8 @@ public partial class MainViewModel : ObservableObject
 
     private void ApplyPreset(EncodingPreset preset)
     {
+        // Some sixty settings change here; the command is built once, when they have all been set.
+        using var whole = DeferCommand();
         FrameEngine = preset.FrameEngine || IsEditorMode;
 
         // Width and height are set as stored, without one recalculating the other on the way.
@@ -348,6 +352,7 @@ public partial class MainViewModel : ObservableObject
         MergeAudioTracks = preset.MergeAudioTracks;
         NormalizeAudio = preset.NormalizeAudio;
         DuckAudio = preset.DuckAudio;
+        DuckAmountDb = Math.Clamp(preset.DuckAmountDb, -40, -1);
 
         // A preset only speaks for the target size when it was saved with one.
         if (!string.IsNullOrWhiteSpace(preset.TargetFileSize))
@@ -382,6 +387,7 @@ public partial class MainViewModel : ObservableObject
             track.GainDb = Math.Clamp(saved.GainDb, -30, 30);
             track.Filters = saved.Filters?.Clone() ?? new TrackAudioFilters();
             track.SetEdits(saved.Offset, saved.Pieces);
+            (track.AutoDuck, track.IsVoice) = (saved.AutoDuck, saved.IsVoice);
         }
     }
 
@@ -1097,8 +1103,7 @@ public partial class MainViewModel : ObservableObject
         _keyframeScanCancellation?.Cancel();
         var cancellation = _keyframeScanCancellation = new CancellationTokenSource();
 
-        Keyframes = [];
-        UpdateKeyframeMarks();
+        SetSourceKeyframes([]);
         KeyframeStatusText = "Indexing keyframes...";
         try
         {
@@ -1108,8 +1113,7 @@ public partial class MainViewModel : ObservableObject
             if (cancellation.IsCancellationRequested)
                 return;
 
-            Keyframes = keyframes;
-            UpdateKeyframeMarks();
+            SetSourceKeyframes(keyframes);
             KeyframeStatusText = keyframes.Count > 0
                 ? $"{keyframes.Count} keyframes indexed"
                 : "No keyframe index: cut points will not snap";
@@ -1355,6 +1359,11 @@ public partial class MainViewModel : ObservableObject
         PendingStartMs = null;
         PositionMs = 0;
         DurationMs = 0;
+
+        // A new main video starts where any does: at the beginning of the timeline, whole, and keeping still.
+        _playerMediaSeconds = 0;
+        _mainVideoRow.ApplyTiming(null);
+        _mainVideoRow.MediaDuration = 0;
     }
 
     // ----- Command generation -----
@@ -1391,8 +1400,45 @@ public partial class MainViewModel : ObservableObject
             GenerateCommand();
     }
 
+    // While a whole set of settings is being put in place (a preset, an undo step) the command is not built
+    // for each of them: it is built once, when the last deferral ends.
+    private int _commandDeferrals;
+    private bool _commandPending;
+
+    private CommandDeferral DeferCommand()
+    {
+        _commandDeferrals++;
+        return new CommandDeferral(this);
+    }
+
+    private readonly struct CommandDeferral(MainViewModel owner) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (--owner._commandDeferrals > 0 || !owner._commandPending)
+                return;
+
+            owner._commandPending = false;
+            owner.GenerateCommand();
+        }
+    }
+
     private void GenerateCommand()
     {
+        // A layer following its keyframes as the playhead moves changes nothing about the command.
+        if (_applyingKeys)
+            return;
+
+        if (_commandDeferrals > 0)
+        {
+            _commandPending = true;
+            return;
+        }
+
+        // The timeline is as long as its clips reach, and the main video's row shows where it sits.
+        RefreshSequence();
+        SyncMainRow();
+
         // The Properties tab follows the settings even while the command itself is frozen by a manual edit.
         UpdateProjectedOutput();
         OnPropertyChanged(nameof(CaptionHint));
@@ -1457,21 +1503,32 @@ public partial class MainViewModel : ObservableObject
     /// Writes the concat list: the source named once per segment with its in and out points.
     /// Copied video can only start on a keyframe, so a cut begins at the keyframe at or before its in point.
     /// </summary>
+    private string _writtenCuts = "";
+
     private void WriteCutsFile(string input, List<CutSegment> segments)
     {
         var list = new StringBuilder("ffconcat version 1.0\n");
         var file = input.Replace('\\', '/').Replace("'", @"'\''");
+
+        // The cuts are times on the sequence; the list wants them as times in the file.
+        var shift = TimeSpan.FromSeconds(MainShift);
         foreach (var segment in segments)
         {
             list.Append($"file '{file}'\n");
-            list.Append($"inpoint {Seconds(segment.Start)}\n");
-            list.Append($"outpoint {Seconds(segment.End)}\n");
+            list.Append($"inpoint {Seconds(segment.Start - shift < TimeSpan.Zero ? TimeSpan.Zero : segment.Start - shift)}\n");
+            list.Append($"outpoint {Seconds(segment.End - shift)}\n");
         }
+
+        // The command is rebuilt for every setting that changes; the file is only written when the cuts have.
+        var text = list.ToString();
+        if (text == _writtenCuts && File.Exists(CutsFilePath))
+            return;
 
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(CutsFilePath)!);
-            File.WriteAllText(CutsFilePath, list.ToString());
+            File.WriteAllText(CutsFilePath, text);
+            _writtenCuts = text;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

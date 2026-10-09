@@ -61,6 +61,10 @@ public partial class MainViewModel
     private void SetMediaInfo(MediaInfo? info)
     {
         _mediaInfo = info;
+
+        // The main video is a clip like the others, and is called what its file is.
+        _mainVideoRow.MediaDuration = Math.Max(info?.DurationSeconds ?? 0, 0);
+        _mainVideoRow.Name = HasSource ? System.IO.Path.GetFileName(LocalMediaPath) : "Main Video";
         (SourceWidth, SourceHeight, IsSourceHdr) = (info?.Video?.Width ?? 0, info?.Video?.Height ?? 0, info?.Video?.IsHdr ?? false);
 
         foreach (var track in AudioTracks)
@@ -104,6 +108,14 @@ public partial class MainViewModel
         // A track dropped or taken back changes what the mix sounds like, and so what the timeline should show.
         if (e.PropertyName == nameof(AudioTrack.Action) && sender is AudioTrack && HasSource && !_isBackgroundWorker)
             _ = RefreshTimelineWaveformAsync(LocalMediaPath);
+
+        // A sound that is ducked is changed, and sound that is changed cannot be copied.
+        if (e.PropertyName == nameof(AudioTrack.AutoDuck) && sender is AudioTrack { AutoDuck: true, IsPassthrough: true } ducked)
+        {
+            ducked.Action = AudioTrack.Reencode;
+            if (AudioEncoder != CopyOption)
+                ducked.Codec = AudioEncoder;
+        }
 
         // (The command is what the time bars listen to as well: a slipped or split track redraws through it.)
         // A picture arriving is not a change of settings, and nor is which track the player plays.
@@ -330,7 +342,7 @@ public partial class MainViewModel
         if (segments.Count > 0)
             return segments.Sum(s => s.Duration.TotalSeconds);
 
-        return _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        return SequenceSeconds;
     }
 
     /// <summary>Size of the loaded file, in the same MB/GB form as the estimate it sits beside.</summary>

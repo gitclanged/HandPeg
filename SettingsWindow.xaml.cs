@@ -324,7 +324,7 @@ public partial class SettingsWindow : Window
 
     private void ImportProjects_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Title = "Import Projects", Filter = "Project files|*.txt|All files|*.*", Multiselect = true, InitialDirectory = BackupFolder() };
+        var dialog = new OpenFileDialog { Title = "Import Projects", Filter = "Project files|*.hproj;*.txt|All files|*.*", Multiselect = true, InitialDirectory = BackupFolder() };
         if (dialog.ShowDialog(this) != true)
             return;
 

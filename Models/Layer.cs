@@ -27,6 +27,25 @@ public enum LayerKind
     Audio,
 }
 
+/// <summary>One point of a motion: a value at a moment, counted in seconds from where its clip begins.</summary>
+public sealed record Keyframe(double Time, double Value);
+
+/// <summary>What of a layer can be animated with keyframes.</summary>
+public enum KeyProperty
+{
+    /// <summary>Where its left edge is, as a fraction of the frame's width.</summary>
+    X,
+
+    /// <summary>Where its top edge is, as a fraction of the frame's height.</summary>
+    Y,
+
+    /// <summary>Its width, as a fraction of the frame's width.</summary>
+    Scale,
+
+    /// <summary>Degrees it is turned clockwise.</summary>
+    Rotation,
+}
+
 /// <summary>
 /// Something the Frame &amp; Layer Engine places on the output frame: a rectangle of the source video, or an
 /// image file. Both kinds are positioned, sized and styled in exactly the same way.
@@ -73,8 +92,8 @@ public sealed partial class Layer : ObservableObject
     /// <summary>A picture on the frame: everything but the background, which is the frame, and a sound.</summary>
     public bool IsPicture => !IsBackground && !IsAudio;
 
-    /// <summary>Placed with the sliders of its row: its top-left corner and its width. The main video is placed about its middle instead.</summary>
-    public bool HasPlacement => IsPicture && !IsMainVideo;
+    /// <summary>Placed with the sliders of its row: its top-left corner and its width.</summary>
+    public bool HasPlacement => IsPicture;
 
     /// <summary>Has a look of its own: opacity, corners, soft edges, a shadow.</summary>
     public bool HasStyle => IsPicture;
@@ -100,7 +119,8 @@ public sealed partial class Layer : ObservableObject
     /// <summary>What belongs to one clip alone, and is not copied to the others on its track when it changes.</summary>
     public static bool IsClipProperty(string? name) => name is nameof(StartTime) or nameof(Duration) or nameof(MediaOffset) or nameof(IsHidden)
         or nameof(AudioOffset) or nameof(Name) or nameof(TrackId) or nameof(PositionXPercent) or nameof(PositionYPercent) or nameof(SizePercent)
-        or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges);
+        or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges) or KeysChanged
+        or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration);
 
     // When the layer is on screen, in seconds of the source's own time.
 
@@ -207,11 +227,208 @@ public sealed partial class Layer : ObservableObject
         }
     }
 
-    /// <summary>Can be given a time to appear and a time to go: the layers added by hand.</summary>
-    public bool HasTiming => IsRemovable;
+    /// <summary>Can be given a time to appear and a time to go: the layers added by hand, and the main video.</summary>
+    public bool HasTiming => IsRemovable || IsMainVideo;
 
-    /// <summary>The seconds of the timeline the clip covers, on a video of the given length.</summary>
-    public (double Start, double End) GetSpan(double totalSeconds) => (StartTime, Duration > 0.001 ? StartTime + Duration : Math.Max(totalSeconds, StartTime));
+    /// <summary>
+    /// The seconds of the timeline the clip covers, on a sequence of the given length. A layer with no length
+    /// of its own stays to the end; the main video is as long as what is left of its file.
+    /// </summary>
+    public (double Start, double End) GetSpan(double totalSeconds) =>
+        Duration > 0.001 ? (StartTime, StartTime + Duration)
+        : IsMainVideo && MediaDuration > 0.001 ? (StartTime, StartTime + Math.Max(MediaDuration - MediaOffset, 0))
+        : (StartTime, Math.Max(totalSeconds, StartTime));
+
+    // ----- Keyframes -----
+    // A property with keyframes moves between them in straight lines, and holds the first value before the
+    // first and the last after the last. Their times are counted from where the clip begins, so a clip that
+    // is moved along the timeline takes its motion with it.
+
+    /// <summary>Two keyframes closer together than this are the same one: about half a frame.</summary>
+    public const double KeyTolerance = 0.02;
+
+    private readonly List<Keyframe>[] _keys = [[], [], [], []];
+
+    public IReadOnlyList<Keyframe> GetKeys(KeyProperty property) => _keys[(int)property];
+
+    public bool HasKeys(KeyProperty property) => _keys[(int)property].Count > 0;
+
+    /// <summary>Whether anything about the layer is animated.</summary>
+    public bool IsAnimated => _keys[0].Count + _keys[1].Count + _keys[2].Count + _keys[3].Count > 0;
+
+    // For the diamonds of the layer's row.
+    public bool AnimatesX => HasKeys(KeyProperty.X);
+    public bool AnimatesY => HasKeys(KeyProperty.Y);
+    public bool AnimatesScale => HasKeys(KeyProperty.Scale);
+    public bool AnimatesRotation => HasKeys(KeyProperty.Rotation);
+
+    /// <summary>Every moment that has a keyframe of any kind, for the marks on the clip's block.</summary>
+    public IEnumerable<double> KeyTimes => _keys.SelectMany(k => k).Select(k => k.Time).Distinct().Order();
+
+    /// <summary>The property as it is set now: what is shown, and what a property without keyframes always is.</summary>
+    public double GetValue(KeyProperty property) => property switch
+    {
+        KeyProperty.X => PositionX,
+        KeyProperty.Y => PositionY,
+        KeyProperty.Scale => SizeWidth,
+        _ => Rotation,
+    };
+
+    public void SetValue(KeyProperty property, double value)
+    {
+        switch (property)
+        {
+            case KeyProperty.X: PositionX = value; break;
+            case KeyProperty.Y: PositionY = value; break;
+            case KeyProperty.Scale: SizeWidth = value; break;
+            default: Rotation = value; break;
+        }
+    }
+
+    /// <summary>Which animated property a changed property is, or null for one that cannot be animated.</summary>
+    public static KeyProperty? GetKeyProperty(string? name) => name switch
+    {
+        nameof(PositionX) => KeyProperty.X,
+        nameof(PositionY) => KeyProperty.Y,
+        nameof(SizeWidth) => KeyProperty.Scale,
+        nameof(Rotation) => KeyProperty.Rotation,
+        _ => null,
+    };
+
+    /// <summary>The value of an animated property at a moment of the clip; its set value when it has no keyframes.</summary>
+    public double Evaluate(KeyProperty property, double time)
+    {
+        var keys = _keys[(int)property];
+        if (keys.Count == 0)
+            return GetValue(property);
+        if (time <= keys[0].Time)
+            return keys[0].Value;
+
+        for (var i = 1; i < keys.Count; i++)
+        {
+            if (time < keys[i].Time)
+            {
+                var (a, b) = (keys[i - 1], keys[i]);
+                return b.Time - a.Time < 1e-6 ? b.Value : a.Value + (b.Value - a.Value) * (time - a.Time) / (b.Time - a.Time);
+            }
+        }
+
+        return keys[^1].Value;
+    }
+
+    /// <summary>Replaces a property's keyframes; none switches its animation off.</summary>
+    public void SetKeys(KeyProperty property, IEnumerable<Keyframe>? keys)
+    {
+        var list = _keys[(int)property];
+        if (list.Count == 0 && keys is null)
+            return;
+
+        list.Clear();
+        if (keys is not null)
+            list.AddRange(keys.Where(k => double.IsFinite(k.Time) && double.IsFinite(k.Value)).OrderBy(k => k.Time));
+        NotifyKeys(property);
+    }
+
+    /// <summary>Sets a keyframe at a moment: a new one, or the value of the one that is already there.</summary>
+    public void SetKey(KeyProperty property, double time, double value)
+    {
+        var list = _keys[(int)property];
+        var at = list.FindIndex(k => Math.Abs(k.Time - time) <= KeyTolerance);
+        if (at >= 0)
+        {
+            list[at] = list[at] with { Value = value };
+        }
+        else
+        {
+            at = list.FindIndex(k => k.Time > time);
+            list.Insert(at < 0 ? list.Count : at, new Keyframe(Math.Round(time, 3), value));
+        }
+
+        NotifyKeys(property);
+    }
+
+    /// <summary>Takes away the keyframe at a moment. False when there is none there.</summary>
+    public bool RemoveKey(KeyProperty property, double time)
+    {
+        if (_keys[(int)property].RemoveAll(k => Math.Abs(k.Time - time) <= KeyTolerance) == 0)
+            return false;
+
+        NotifyKeys(property);
+        return true;
+    }
+
+    /// <summary>The keyframe nearest a moment, or null when the property has none.</summary>
+    public Keyframe? GetNearestKey(KeyProperty property, double time) => _keys[(int)property].MinBy(k => Math.Abs(k.Time - time));
+
+    /// <summary>Moves a whole motion: every keyframe of the property by the same amount.</summary>
+    public void OffsetKeys(KeyProperty property, double by)
+    {
+        var list = _keys[(int)property];
+        for (var i = 0; i < list.Count; i++)
+            list[i] = list[i] with { Value = list[i].Value + by };
+        NotifyKeys(property);
+    }
+
+    /// <summary>Moves every keyframe in time: for the second half of a clip that was split, whose beginning is later.</summary>
+    public void ShiftKeys(double seconds)
+    {
+        foreach (var property in Enum.GetValues<KeyProperty>())
+        {
+            var list = _keys[(int)property];
+            if (list.Count == 0)
+                continue;
+
+            for (var i = 0; i < list.Count; i++)
+                list[i] = list[i] with { Time = Math.Round(list[i].Time + seconds, 3) };
+            NotifyKeys(property);
+        }
+    }
+
+    public void ClearKeys()
+    {
+        foreach (var property in Enum.GetValues<KeyProperty>())
+            SetKeys(property, null);
+    }
+
+    /// <summary>The name a change of keyframes is announced under: it is not a property of its own.</summary>
+    public const string KeysChanged = "Keys";
+
+    private void NotifyKeys(KeyProperty property)
+    {
+        OnPropertyChanged(property switch
+        {
+            KeyProperty.X => nameof(AnimatesX),
+            KeyProperty.Y => nameof(AnimatesY),
+            KeyProperty.Scale => nameof(AnimatesScale),
+            _ => nameof(AnimatesRotation),
+        });
+        OnPropertyChanged(KeysChanged);
+    }
+
+    private static List<Keyframe>? KeysOrNull(List<Keyframe> keys) => keys.Count > 0 ? [.. keys] : null;
+
+    /// <summary>Takes when a saved clip is on screen, and its motion: what <see cref="ApplyLook"/> leaves alone.</summary>
+    public void ApplyTiming(LayerState? state)
+    {
+        (StartTime, Duration, MediaOffset) = (Math.Max(state?.StartTime ?? 0, 0), Math.Max(state?.Duration ?? 0, 0), Math.Max(state?.MediaOffset ?? 0, 0));
+        ApplyKeys(state);
+    }
+
+    private void ApplyKeys(LayerState? state)
+    {
+        SetKeys(KeyProperty.X, state?.KeysX);
+        SetKeys(KeyProperty.Y, state?.KeysY);
+        SetKeys(KeyProperty.Scale, state?.KeysScale);
+        SetKeys(KeyProperty.Rotation, state?.KeysRotation);
+    }
+
+    // ----- Ducking -----
+
+    /// <summary>The layer's sound is turned down while a voice is speaking.</summary>
+    [ObservableProperty] private bool _autoDuck;
+
+    /// <summary>The layer's sound is a voice: what the ducked sounds make room for.</summary>
+    [ObservableProperty] private bool _isVoice;
 
     // Chroma key: one color of the layer (a green or blue screen) made transparent.
     [ObservableProperty] private bool _chromaKey;
@@ -406,6 +623,12 @@ public sealed partial class Layer : ObservableObject
         FilterBlur = FilterBlur,
         FilterDenoise = FilterDenoise,
         FilterLut = FilterLut,
+        AutoDuck = AutoDuck,
+        IsVoice = IsVoice,
+        KeysX = KeysOrNull(_keys[(int)KeyProperty.X]),
+        KeysY = KeysOrNull(_keys[(int)KeyProperty.Y]),
+        KeysScale = KeysOrNull(_keys[(int)KeyProperty.Scale]),
+        KeysRotation = KeysOrNull(_keys[(int)KeyProperty.Rotation]),
     };
 
     /// <summary>Takes the look of a saved layer (style, mask, key, filters, turning) and leaves place, size and timing as they are.</summary>
@@ -471,7 +694,10 @@ public sealed partial class Layer : ObservableObject
             FilterBlur = Math.Clamp(state.FilterBlur, 0, 50),
             FilterDenoise = state.FilterDenoise,
             FilterLut = state.FilterLut ?? "",
+            AutoDuck = state.AutoDuck,
+            IsVoice = state.IsVoice,
         };
+        region.ApplyKeys(state);
 
         if (state.SourceWidth <= 0 && state.Width is > 0 && state.Height is > 0)
         {
@@ -562,6 +788,22 @@ public sealed class LayerState
     public double FilterBlur { get; set; }
     public bool FilterDenoise { get; set; }
     public string FilterLut { get; set; } = "";
+
+    public bool AutoDuck { get; set; }
+    public bool IsVoice { get; set; }
+
+    // The motion: the keyframes of each animated property; null for one that is not animated.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<Keyframe>? KeysX { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<Keyframe>? KeysY { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<Keyframe>? KeysScale { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<Keyframe>? KeysRotation { get; set; }
 
     // Pixel values from presets saved by earlier versions. Read for conversion, never written.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

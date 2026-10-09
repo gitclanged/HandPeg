@@ -50,6 +50,9 @@ public sealed class ProjectState
     /// <summary>Which of the video's audio tracks captions listen to.</summary>
     public int CaptionAudioTrackIndex { get; set; }
 
+    /// <summary>Whether sound follows its picture on the timeline, or has been unlinked from it.</summary>
+    public bool AudioLinked { get; set; } = true;
+
     /// <summary>The command text when it had been edited by hand; null when it was the generated one.</summary>
     public string? ManualCommand { get; set; }
 }
@@ -58,6 +61,6 @@ public sealed record SegmentState(double StartMs, double EndMs, bool Skipped = f
 
 public sealed record AudioTrackState(
     int Index, string Action, string Codec, string Bitrate, string? Title = null, double GainDb = 0, TrackAudioFilters? Filters = null,
-    double Offset = 0, List<AudioPiece>? Pieces = null);
+    double Offset = 0, List<AudioPiece>? Pieces = null, bool AutoDuck = false, bool IsVoice = false);
 
 public sealed record SubtitleTrackState(int Index, string Action);

@@ -12,7 +12,7 @@
     <RootNamespace>HandPegApp</RootNamespace>
     <Product>HandPeg</Product>
     <AssemblyTitle>HandPeg</AssemblyTitle>
-    <Version>1.1.0</Version>
+    <Version>2.0.0</Version>
 
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>

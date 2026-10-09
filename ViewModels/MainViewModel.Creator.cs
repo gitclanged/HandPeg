@@ -331,7 +331,7 @@ public partial class MainViewModel
         };
         if (startSeconds > 0.01)
         {
-            var left = DurationMs / 1000 - startSeconds;
+            var left = SequenceSeconds - startSeconds;
             element.StartTime = Math.Round(startSeconds, 2);
             element.Duration = info.DurationSeconds > 0.05 && info.DurationSeconds < left ? Math.Round(info.DurationSeconds, 2) : 0;
         }
@@ -369,7 +369,7 @@ public partial class MainViewModel
         };
 
         // Its block is as long as the sound is, unless that runs past the end of the video.
-        if (element.MediaDuration > 0.05 && element.StartTime + element.MediaDuration < DurationMs / 1000)
+        if (element.MediaDuration > 0.05 && element.StartTime + element.MediaDuration < SequenceSeconds)
             element.Duration = Math.Round(element.MediaDuration, 2);
         Checkpoint("add an audio clip");
         AttachLayer(element);
@@ -470,9 +470,9 @@ public partial class MainViewModel
     /// </summary>
     public bool SplitLayer(Layer layer, double seconds)
     {
-        var total = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        var total = SequenceSeconds;
         var end = layer.Duration > 0.001 ? layer.StartTime + layer.Duration : total;
-        if (!layer.HasTiming || seconds <= layer.StartTime + 0.05 || seconds >= end - 0.05)
+        if (!layer.HasTiming || layer.IsMainVideo || seconds <= layer.StartTime + 0.05 || seconds >= end - 0.05)
         {
             StatusText = $"The playhead is not inside {layer.Name}: move it to where the layer should be split.";
             return false;
@@ -483,13 +483,13 @@ public partial class MainViewModel
         (second.Waveform, second.Filmstrip) = (layer.Waveform, layer.Filmstrip);
         (second.StartTime, second.Duration) = (seconds, end - seconds);
         second.MediaOffset = layer.MediaOffset + (seconds - layer.StartTime);
+
+        // The motion carries on across the cut: the second part's keyframes are counted from its own beginning.
+        second.ShiftKeys(layer.StartTime - seconds);
         layer.Duration = seconds - layer.StartTime;
 
-        var index = Layers.IndexOf(layer);
         Hook(second);
-        Layers.Insert(index + 1, second);
-        if (!layer.IsAudio && MainVideoIndex > Layers.Take(index + 1).Count(l => !l.IsAudio) - 1)
-            MainVideoIndex++;
+        InsertLayer(Layers.IndexOf(layer) + 1, second);
         StatusText = $"{layer.Name} split at {TimeDisplay.Format(seconds)}: two clips on the same track, each of which can be moved, trimmed or deleted on its own.";
         return true;
     }
@@ -500,7 +500,7 @@ public partial class MainViewModel
     /// </summary>
     public bool SplitSegment(CutSegment? segment, double seconds)
     {
-        var total = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        var total = SequenceSeconds;
         var at = TimeSpan.FromSeconds(seconds);
         segment ??= Segments.FirstOrDefault(s => at > s.Start && at < s.End);
 
@@ -585,10 +585,37 @@ public partial class MainViewModel
             return;
 
         Checkpoint($"remove {element.Name}");
+        Detach(element);
+    }
+
+    /// <summary>
+    /// Takes a layer out of the list. The main video's place in the stack is a count of the pictures under it,
+    /// so a picture that goes from under it takes one off that count: otherwise the main video would climb
+    /// over the next layer up.
+    /// </summary>
+    private void Detach(Layer element)
+    {
+        var index = Layers.IndexOf(element);
+        if (index < 0)
+            return;
+
         if (ReferenceEquals(DrawTargetLayer, element))
             DrawTargetLayer = null;
         element.PropertyChanged -= OnLayerChanged;
-        Layers.Remove(element);
+        var under = !element.IsAudio && Layers.Take(index).Count(l => !l.IsAudio) < MainVideoIndex;
+        Layers.RemoveAt(index);
+        if (under)
+            MainVideoIndex--;
+    }
+
+    /// <summary>Puts a layer into the list at a place of its own; one that goes in under the main video adds one to that count.</summary>
+    private void InsertLayer(int index, Layer element)
+    {
+        index = Math.Clamp(index, 0, Layers.Count);
+        var under = !element.IsAudio && Layers.Take(index).Count(l => !l.IsAudio) < MainVideoIndex;
+        Layers.Insert(index, element);
+        if (under)
+            MainVideoIndex++;
     }
 
     /// <summary>Adds a layer to the list: a picture above the other pictures, a sound after everything.</summary>
@@ -691,10 +718,19 @@ public partial class MainViewModel
 
         // A track is one thing with several clips on it: where it sits, how it looks and what filters it has
         // are the track's, so a change to one clip is made to the others on its track as well.
-        if (_copyingToTrack)
+        if (_copyingToTrack || _applyingKeys || sender is not Layer source)
             return;
 
+        if (e.PropertyName == Layer.KeysChanged)
+            RefreshAnyKeys();
+
+        // Moved, sized or turned by hand: what that does to its keyframes.
+        RecordKey(source, e.PropertyName);
         TimelineChanged?.Invoke();
+
+        // A picture of the clip arriving is something to draw, and nothing to do with the command.
+        if (e.PropertyName is nameof(Layer.Waveform) or nameof(Layer.Filmstrip))
+            return;
 
         if (sender is Layer changed && e.PropertyName is { } name && !Layer.IsClipProperty(name) && GetTrackProperty(name) is { } property)
         {
@@ -1197,7 +1233,7 @@ public partial class MainViewModel
     {
         KeyframeMarks.Clear();
 
-        var duration = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        var duration = SequenceSeconds;
         if (duration <= 0 || Keyframes.Count == 0)
             return;
 
@@ -1282,14 +1318,17 @@ public partial class MainViewModel
 
         // The main video, listening to the selected audio track, or the first one.
         var listenTo = target is AudioTrack chosen && AudioTracks.Contains(chosen) ? chosen.Index : 0;
-        var duration = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
-        var silences = await FfmpegRunner.DetectSilenceAsync(LocalMediaPath, listenTo, noiseDb, minimumSeconds, duration, cancellationToken);
+        // Heard in the file's own time, and put on the timeline where the main video is.
+        var (mainFrom, duration) = GetMainSpan();
+        var shift = MainShift;
+        var silences = (await FfmpegRunner.DetectSilenceAsync(LocalMediaPath, listenTo, noiseDb, minimumSeconds, MainMediaSeconds, cancellationToken))
+            .Select(s => (Start: Math.Max(s.Start + shift, mainFrom), End: Math.Min(s.End + shift, duration))).Where(s => s.End - s.Start > 0.05).ToList();
         if (silences.Count == 0)
             return $"Nothing quieter than {noiseDb:0} dB for {minimumSeconds:0.#} s was found: the cut list was left as it is.";
 
         // Keep what lies between the silences.
         var kept = new List<CutSegment>();
-        var cursor = 0.0;
+        var cursor = mainFrom;
         foreach (var (start, end) in silences.OrderBy(s => s.Start))
         {
             if (start - cursor >= ShortestKeptSeconds)

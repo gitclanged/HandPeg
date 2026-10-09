@@ -155,6 +155,25 @@ public partial class MainViewModel
         foreach (var track in Layers.Where(l => l.IsAudio).GroupBy(l => l.TrackId))
             AudioClipRows.Add(track.First());
         OnPropertyChanged(nameof(HasAudioClips));
+        RefreshAudioRows();
+        RefreshAnyKeys();
+    }
+
+    /// <summary>
+    /// Every sound on the timeline, one row each, for the Audio tab's one list: the main video's own audio
+    /// tracks, and after them the sounds added from files. They are the same kind of thing there.
+    /// </summary>
+    public ObservableCollection<object> AudioRows { get; } = [];
+
+    private void RefreshAudioRows()
+    {
+        var rows = AudioTracks.Cast<object>().Concat(AudioClipRows).ToList();
+        if (rows.SequenceEqual(AudioRows))
+            return;
+
+        AudioRows.Clear();
+        foreach (var row in rows)
+            AudioRows.Add(row);
     }
 
     /// <summary>The sounds added to the timeline from files, one row per track, for the Audio tab.</summary>
@@ -397,7 +416,7 @@ public partial class MainViewModel
     /// </summary>
     private void UpdateVoiceoverMix()
     {
-        var total = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        var total = SequenceSeconds;
         if (!HasVoiceover || VoiceoverDuration <= 0 || total <= 0 || VoiceoverWaveform is not System.Windows.Media.Imaging.BitmapSource picture)
         {
             (VoiceoverMixWaveform, VoiceoverMixStart, VoiceoverMixWidth) = (null, 0, 0);

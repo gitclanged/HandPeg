@@ -105,6 +105,7 @@ public partial class MainWindow : Window
         _viewModel.MainLayer.PropertyChanged += (_, _) => ScheduleClipRedraw();
         VideoView.SizeChanged += (_, _) => ScheduleLiveFilter();
         _liveFilterTimer.Tick += (_, _) => ApplyLiveFilter();
+        _shuttleTimer.Tick += (_, _) => ShuttleBack();
 
         // The player starts once there is a surface for it to draw on, away from the UI thread.
         VideoView.SurfaceReady += () => _ = EnsurePlayerAsync();
@@ -272,6 +273,19 @@ public partial class MainWindow : Window
 
             case Key.S when _viewModel.IsEditorMode && _viewModel.HasSource:
                 SplitSelectedClip();
+                break;
+
+            // The transport keys of every editor: J back, K stop, L forward; J or L again goes faster.
+            case Key.J:
+                Shuttle(-1);
+                break;
+
+            case Key.K:
+                Shuttle(0);
+                break;
+
+            case Key.L:
+                Shuttle(1);
                 break;
 
             case Key.O when _viewModel.AddStopPointCommand.CanExecute(null):
@@ -595,17 +609,18 @@ public partial class MainWindow : Window
             });
 
             player.TimeChanged += time => OnUi(() => OnPlayerTimeChanged(time));
-            player.DurationChanged += length => OnUi(() =>
-            {
-                if (length > 0)
-                    _viewModel.DurationMs = length;
-            });
+
+            // The timeline's length is the sequence's, which the view model works out; the player's word is
+            // only needed for a file that could not be inspected.
+            player.DurationChanged += length => OnUi(() => _viewModel.ReportPlayerDuration(length / 1000.0, _playerSource == _viewModel.LocalMediaPath));
             player.StateChanged += () => OnUi(() => _viewModel.IsPlaying = player.IsPlaying);
             player.FileLoaded += () => OnUi(() =>
             {
                 // Opening a file takes the graph off; it is given again, for this file.
                 _liveGraph = "";
-                ApplyLiveFilter();
+                player.SetAudioFilter(_viewModel.PlayerAudioFilter);
+                if (!SyncPlayerSource())
+                    ApplyLiveFilter();
                 if (_viewModel.SoloTrack is not null)
                     ApplySoloTrack();
             });
@@ -618,10 +633,11 @@ public partial class MainWindow : Window
 
             // A video may have been loaded while the player was still starting.
             if (_pendingMedia is null && _viewModel.HasSource && File.Exists(_viewModel.LocalMediaPath))
-                _pendingMedia = (_viewModel.LocalMediaPath, (long)_viewModel.PositionMs, true);
+                _pendingMedia = (_viewModel.PlayerSource, (long)_viewModel.PositionMs, true);
             if (_pendingMedia is { } media)
             {
                 _pendingMedia = null;
+                _playerSource = media.Path;
                 player.Open(media.Path, media.StartMs, media.Paused);
             }
         }
@@ -697,11 +713,34 @@ public partial class MainWindow : Window
             return;
         }
 
-        OpenInPlayer(path, 0, paused: false);
+        StopShuttle();
+        OpenInPlayer(_viewModel.PlayerSource, 0, paused: false);
+    }
+
+    // What the player has open: the main video's file, or the sequence written out for it (see PlayerSource).
+    private string _playerSource = "";
+
+    /// <summary>
+    /// Has the player open the sequence as it is now, when that is no longer what it has open: the main video
+    /// was moved or trimmed, or a clip now reaches past its end. It carries on from where it was. Returns
+    /// whether it had to.
+    /// </summary>
+    private bool SyncPlayerSource()
+    {
+        if (_mpv is not { IsLoading: false } player || !_viewModel.HasSource || _reloadingPlayer)
+            return false;
+
+        var source = _viewModel.PlayerSource;
+        if (source == _playerSource || !File.Exists(_viewModel.LocalMediaPath))
+            return false;
+
+        OpenInPlayer(source, (long)_viewModel.PositionMs, paused: !player.IsPlaying);
+        return true;
     }
 
     private void OpenInPlayer(string path, long startMs, bool paused)
     {
+        _playerSource = path;
         if (_mpv is not { } player)
         {
             _pendingMedia = (path, startMs, paused);
@@ -744,7 +783,8 @@ public partial class MainWindow : Window
         _viewModel.IsPlaying = false;
         retired?.Close();
 
-        _pendingMedia = (path, resumeAt, !wasPlaying);
+        StopShuttle();
+        _pendingMedia = (_viewModel.PlayerSource, resumeAt, !wasPlaying);
         await EnsurePlayerAsync();
         if (_mpv is not null)
             _viewModel.StatusText = $"Player reloaded at {_viewModel.PositionText}.";
@@ -756,7 +796,8 @@ public partial class MainWindow : Window
     /// <summary>A setting changed: the graph is rebuilt shortly, once the changes have stopped coming.</summary>
     private void ScheduleLiveFilter()
     {
-        if (_mpv is null || !_viewModel.LivePreview)
+        // Also with Live Preview off: what the player has open follows the sequence either way.
+        if (_mpv is null)
             return;
 
         _liveFilterTimer.Stop();
@@ -786,6 +827,11 @@ public partial class MainWindow : Window
         // A file still being opened gets its graph when it is ready (see FileLoaded), not before.
         if (_mpv is not { IsLoading: false } player || !_viewModel.HasSource)
             return;
+
+        // The sequence has changed shape: it is opened afresh, and gets its graph when that is done.
+        if (SyncPlayerSource())
+            return;
+        player.SetAudioFilter(_viewModel.PlayerAudioFilter);
 
         // Built for the player as large as it is on screen, in real pixels.
         var dpi = VisualTreeHelper.GetDpi(this);
@@ -878,8 +924,87 @@ public partial class MainWindow : Window
 
     // ----- Playback / scrubbing -----
 
+    // ----- J, K, L -----
+    // L plays; pressed again it plays twice as fast, then four and eight times. J does the same backwards.
+    // K stops. mpv does not play a filtered picture backwards, so going back is done here: the player is
+    // paused and sent back along the timeline, step by step, as fast as was asked.
+
+    // 0 while not shuttling; otherwise the speed, negative for backwards.
+    private int _shuttle;
+    private double _shuttlePositionMs;
+    private readonly System.Windows.Threading.DispatcherTimer _shuttleTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+
+    private void Shuttle(int direction)
+    {
+        if (!_viewModel.HasSource || _mpv is not { } player)
+            return;
+
+        if (direction == 0)
+        {
+            StopShuttle();
+            player.SetPause(true);
+            _viewModel.StatusText = "Paused.";
+            return;
+        }
+
+        // The same key again doubles the speed; the other key turns round, at normal speed. L while it is
+        // already playing is the second press.
+        var speed = Math.Sign(_shuttle) == direction ? Math.Min(Math.Abs(_shuttle) * 2, 8)
+            : direction > 0 && _shuttle == 0 && player.IsPlaying ? 2
+            : 1;
+        _shuttle = direction * speed;
+
+        if (direction > 0)
+        {
+            _shuttleTimer.Stop();
+            if (player.IsEnded)
+                player.Seek(0, exact: true);
+            player.SetSpeed(speed);
+            player.SetPause(false);
+        }
+        else
+        {
+            player.SetPause(true);
+            _shuttlePositionMs = _viewModel.PositionMs;
+            _shuttleTimer.Start();
+        }
+
+        _viewModel.StatusText = $"{(direction > 0 ? "Forward" : "Reverse")} {speed}x. K stops; {(direction > 0 ? "L" : "J")} again goes faster.";
+    }
+
+    private void ShuttleBack()
+    {
+        if (_shuttle >= 0 || _mpv is null)
+        {
+            _shuttleTimer.Stop();
+            return;
+        }
+
+        _shuttlePositionMs = Math.Max(_shuttlePositionMs + _shuttle * _shuttleTimer.Interval.TotalMilliseconds, 0);
+        _updatingFromPlayer = true;
+        _viewModel.PositionMs = _shuttlePositionMs;
+        _updatingFromPlayer = false;
+
+        // At speed the player keeps up by landing on keyframes; slowly, it shows every step exactly.
+        PlayerSeek((long)_shuttlePositionMs, exact: _shuttle >= -2);
+        if (_shuttlePositionMs <= 0)
+            StopShuttle();
+    }
+
+    /// <summary>Ends J/K/L shuttling, and puts the playback speed back to the one chosen in the speed box.</summary>
+    private void StopShuttle()
+    {
+        _shuttleTimer.Stop();
+        if (_shuttle == 0)
+            return;
+
+        _shuttle = 0;
+        _mpv?.SetSpeed(_viewModel.PlaybackRate);
+    }
+
     private void PlayPause_Click(object sender, RoutedEventArgs e)
     {
+        StopShuttle();
         if (!_viewModel.HasSource)
         {
             _viewModel.LoadSourceCommand.Execute(null);
@@ -902,8 +1027,8 @@ public partial class MainWindow : Window
 
     private void OnPlayerTimeChanged(long timeMs)
     {
-        // Don't fight the user for the thumb while they are dragging it.
-        if (_isScrubbing)
+        // Don't fight the user for the thumb while they are dragging it, or the shuttle while it is winding back.
+        if (_isScrubbing || _shuttle < 0)
             return;
 
         _updatingFromPlayer = true;
@@ -1307,7 +1432,39 @@ public partial class MainWindow : Window
     private static readonly Brush SoundClipBrush = Frozen(Color.FromArgb(0xD0, 0x2B, 0x7A, 0x6B));
     private static readonly Brush OffClipBrush = Frozen(Color.FromArgb(0xC0, 0x55, 0x55, 0x55));
     private static readonly Brush LabelShadeBrush = Frozen(Color.FromArgb(0x90, 0x00, 0x00, 0x00));
+    private static readonly Brush MainUnderBrush = Frozen(Color.FromArgb(0x48, 0x2F, 0x6F, 0xB5));
+    private static readonly Transform DiamondTurn = FrozenTurn(45);
     private const double ClipEdge = 9;
+
+    private static Transform FrozenTurn(double angle)
+    {
+        var turn = new RotateTransform(angle);
+        turn.Freeze();
+        return turn;
+    }
+
+    /// <summary>The diamond beside a property in a layer's row: sets or removes its keyframe at the playhead, for the clip that is selected on that row.</summary>
+    private void KeyToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: Layer layer, Tag: string tag } || !Enum.TryParse<KeyProperty>(tag, out var property))
+            return;
+
+        if (!_viewModel.HasSource)
+        {
+            _viewModel.StatusText = "Load a video first: a keyframe is set at the playhead.";
+            return;
+        }
+
+        var clips = _viewModel.GetTrackClips(layer);
+        _viewModel.ToggleKey(_selectedClip is Layer selected && clips.Contains(selected) ? selected : layer, property);
+        ScheduleClipRedraw();
+    }
+
+    // The stopwatch that opened the menu would, clicked again to close it, open it straight back up (see TimelineOptionsPopup_Opened).
+    private void AutoKeyPopup_Opened(object? sender, EventArgs e) => AutoKeyButton.IsHitTestVisible = false;
+
+    private void AutoKeyPopup_Closed(object? sender, EventArgs e) =>
+        Dispatcher.BeginInvoke(() => AutoKeyButton.IsHitTestVisible = true, System.Windows.Threading.DispatcherPriority.Input);
 
     /// <summary>An audio track, or one of the parts it was split into, as something that can be selected.</summary>
     private sealed record AudioClip(AudioTrack Track, AudioPiece? Piece);
@@ -1390,19 +1547,25 @@ public partial class MainWindow : Window
         {
             // An audio track: one block, or its parts, moved along with the track when it has been slipped.
             case AudioTrack audio:
-                var pieces = audio.Pieces.Count > 0 ? audio.Pieces : [new AudioPiece(0, seconds, false)];
+                // The track is the main video's: it lies along the timeline where the main video's file does.
+                var (fileAt, fileLength) = (_viewModel.MainLayer.StartTime - _viewModel.MainLayer.MediaOffset, _viewModel.MainLayer.MediaDuration > 0 ? _viewModel.MainLayer.MediaDuration : seconds);
+                var pieces = audio.Pieces.Count > 0 ? audio.Pieces : [new AudioPiece(0, fileLength, false)];
                 foreach (var piece in pieces)
                 {
                     var clip = new AudioClip(audio, audio.Pieces.Count > 0 ? piece : null);
-                    AddClip(track, (piece.Start + audio.OffsetSeconds) * scale, (piece.End - piece.Start) * scale, piece.Muted ? "silenced" : "",
+                    AddClip(track, (piece.Start + audio.OffsetSeconds + fileAt) * scale, (piece.End - piece.Start) * scale, piece.Muted ? "silenced" : "",
                         piece.Muted ? OffClipBrush : AudioClipBrush, clip, canDrag: () => !_viewModel.AudioLinked, resizable: false,
-                        commit: (left, _) => _viewModel.SlipAudio(audio, left * perPixel - piece.Start),
+                        commit: (left, _) => _viewModel.SlipAudio(audio, left * perPixel - piece.Start - fileAt),
                         cannotDrag: "Audio and video are linked. Unlink them (the chain button) to move this track on its own.");
                 }
 
-                // The picture of the sound moves with it.
+                // The picture of the sound is of the whole file, and lies where the file does.
                 if (track.Parent is Grid { Children: [Image waveform, ..] })
-                    waveform.Margin = new Thickness(audio.OffsetSeconds * scale, 0, -audio.OffsetSeconds * scale, 0);
+                {
+                    var waveLeft = (audio.OffsetSeconds + fileAt) * scale;
+                    waveform.Margin = new Thickness(waveLeft, 0, width - waveLeft - fileLength * scale, 0);
+                }
+
                 break;
 
             // A video layer's own sound, unlinked: each clip's starts with the clip, or wherever it was slipped to.
@@ -1423,16 +1586,36 @@ public partial class MainWindow : Window
                 break;
 
             // The main video: its cut segments, with the waveform of its sound over them when asked for.
+            // The main video: a clip like any other, dragged along the timeline and by its right edge to
+            // trim it. Its cut segments lie on it, with the waveform of its sound over them when asked for;
+            // dragging one moves the whole clip, cuts and all.
             case Layer { IsMainVideo: true } main:
                 var mainWave = _viewModel.ShowLinkedAudio && !main.IsHidden ? _viewModel.TimelineWaveform : null;
                 var segments = _viewModel.Segments.OrderBy(s => s.Start).ToList();
-                if (segments.Count == 0)
-                    AddClip(track, 0, width, main.IsHidden ? "The whole video (picture hidden)" : "The whole video", main.IsHidden ? OffClipBrush : MainClipBrush, null, wave: PartBrush(mainWave, 0, width, height));
+                var (mainFrom, mainTo) = _viewModel.GetMainSpan();
+                var (mainLeft, mainWidth) = (mainFrom * scale, (mainTo - mainFrom) * scale);
+
+                // The waveform is of the whole file: a block shows the part of it that the block covers.
+                var (fileLeft, filePixels) = ((main.StartTime - main.MediaOffset) * scale, main.MediaDuration > 0 ? main.MediaDuration * scale : width);
+                Brush? MainWave(double left) => PartBrush(mainWave, left - fileLeft, filePixels, height);
+
+                AddClip(track, mainLeft, mainWidth, segments.Count > 0 ? "" : main.IsHidden ? $"{main.Name} (picture hidden)" : main.Name,
+                    main.IsHidden ? OffClipBrush : segments.Count > 0 ? MainUnderBrush : MainClipBrush, null, canDrag: () => true, resizable: true,
+                    wave: segments.Count > 0 ? null : MainWave(mainLeft), keys: main.KeyTimes.Select(t => t * scale),
+                    commit: (left, nowWidth) =>
+                    {
+                        if (Math.Abs(nowWidth - mainWidth) > 0.5)
+                            _viewModel.SetMainLength(nowWidth * perPixel);
+                        else
+                            _viewModel.MoveMain(left * perPixel - mainFrom);
+                    });
                 foreach (var segment in segments)
                 {
                     var left = segment.Start.TotalSeconds * scale;
                     AddClip(track, left, segment.Duration.TotalSeconds * scale, segment.IsSkipped ? "skipped" : "",
-                        segment.IsSkipped || main.IsHidden ? OffClipBrush : MainClipBrush, segment, wave: segment.IsSkipped ? null : PartBrush(mainWave, left, width, height));
+                        segment.IsSkipped || main.IsHidden ? OffClipBrush : MainClipBrush, segment, canDrag: () => true, resizable: false,
+                        wave: segment.IsSkipped ? null : MainWave(left),
+                        commit: (nowLeft, _) => _viewModel.MoveMain((nowLeft - left) * perPixel));
                 }
 
                 break;
@@ -1448,6 +1631,7 @@ public partial class MainWindow : Window
                         clip.IsHidden ? OffClipBrush : clip.IsAudio ? SoundClipBrush : LayerClipBrush, clip, canDrag: () => true, resizable: true,
                         frames: clip.IsHidden ? null : BuildFrames(clip, blockWidth, height, scale),
                         wave: clip.IsHidden || !showsSound ? null : MediaBrush(clip.Waveform, clip, scale, height),
+                        keys: clip.KeyTimes.Select(t => t * scale),
                         commit: (left, nowWidth) =>
                         {
                             _viewModel.Checkpoint($"move {clip.Name}");
@@ -1560,13 +1744,37 @@ public partial class MainWindow : Window
     /// <param name="wave">A picture of the block's sound, drawn inside it over the frames.</param>
     private void AddClip(
         Canvas track, double left, double width, string name, Brush fill, object? clip,
-        Func<bool>? canDrag = null, bool resizable = false, Action<double, double>? commit = null, UIElement? frames = null, Brush? wave = null, string cannotDrag = "")
+        Func<bool>? canDrag = null, bool resizable = false, Action<double, double>? commit = null, UIElement? frames = null, Brush? wave = null, string cannotDrag = "",
+        IEnumerable<double>? keys = null)
     {
         var content = new Grid { IsHitTestVisible = false };
         if (frames is not null)
             content.Children.Add(frames);
         if (wave is not null)
             content.Children.Add(new System.Windows.Shapes.Rectangle { Fill = wave, Opacity = frames is null ? 0.6 : 0.85 });
+
+        // The clip's keyframes: a diamond along its lower edge at each moment that has one.
+        if (keys is not null)
+        {
+            Canvas? marks = null;
+            foreach (var at in keys)
+            {
+                if (at < -4 || at > width + 4)
+                    continue;
+
+                var mark = new System.Windows.Shapes.Rectangle
+                {
+                    Width = 7, Height = 7, Fill = Brushes.Gold, Stroke = Brushes.Black, StrokeThickness = 0.6,
+                    RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = DiamondTurn,
+                };
+                Canvas.SetLeft(mark, at - 3.5);
+                Canvas.SetBottom(mark, 1.5);
+                (marks ??= new Canvas()).Children.Add(mark);
+            }
+
+            if (marks is not null)
+                content.Children.Add(marks);
+        }
         if (name.Length > 0)
         {
             // Over frames, the words get a shade of their own to be read against.
@@ -1625,10 +1833,12 @@ public partial class MainWindow : Window
             }
 
             var moved = e.GetPosition(track).X - drag.PointerX;
+            // A clip may be dragged, or stretched, past the right-hand end of the bar: the sequence is as long
+            // as its clips reach, and the bars are drawn to the new length when it is let go.
             if (drag.Resizing)
-                block.Width = Math.Clamp(drag.Width + moved, 4, track.ActualWidth - drag.Left);
+                block.Width = Math.Max(drag.Width + moved, 4);
             else
-                Canvas.SetLeft(block, clip is AudioClip or LayerSound ? drag.Left + moved : Math.Clamp(drag.Left + moved, 0, Math.Max(track.ActualWidth - drag.Width, 0)));
+                Canvas.SetLeft(block, clip is AudioClip or LayerSound ? drag.Left + moved : Math.Max(drag.Left + moved, 0));
         };
         block.MouseLeftButtonUp += (_, _) =>
         {
@@ -1683,7 +1893,9 @@ public partial class MainWindow : Window
     private void TrimSelectedClip(bool start)
     {
         // A trimmed segment is a new one; the selection follows nothing, so it is let go.
-        if (_viewModel.TrimClip(_selectedClip is LayerSound sound ? sound.Layer : _selectedClip, start, _viewModel.PositionMs / 1000) && _selectedClip is CutSegment)
+        // The main video's own block, selected as a whole, is trimmed as the clip it is.
+        var clip = _selectedClip is LayerSound sound ? sound.Layer : _selectedClip ?? (_mainClipSelected ? _viewModel.MainLayer : null);
+        if (_viewModel.TrimClip(clip, start, _viewModel.PositionMs / 1000) && _selectedClip is CutSegment)
             (_selectedClip, _mainClipSelected) = (null, false);
         ScheduleClipRedraw();
     }
@@ -1801,10 +2013,13 @@ public partial class MainWindow : Window
         {
             Separate();
             Add("Split at Playhead", () => _viewModel.SplitSegment(null, at));
+            Add("Trim Start to Playhead", () => _viewModel.TrimClip(layer, start: true, at));
+            Add("Trim End to Playhead", () => _viewModel.TrimClip(layer, start: false, at));
+            Add("Back to the Start of the Timeline, Whole", () => _viewModel.ResetMainTiming(),
+                layer.StartTime > 0.001 || layer.MediaOffset > 0.001 || layer.Duration > 0.001);
             Add("Reset Position and Zoom", () => _viewModel.ResetCenterVideoCommand.Execute(null));
         }
-
-        if (layer.HasTiming)
+        else if (layer.HasTiming)
         {
             Separate();
             Add("Split at Playhead", () => _viewModel.SplitLayer(clip, at));
@@ -1815,6 +2030,32 @@ public partial class MainWindow : Window
                 _viewModel.Checkpoint($"show {clip.Name} throughout");
                 (clip.StartTime, clip.Duration, clip.MediaOffset) = (0, 0, 0);
             }, clip.StartTime > 0.001 || clip.Duration > 0.001);
+        }
+
+        if (clip.IsAnimated)
+        {
+            Separate();
+            Add("Clear Keyframes", () => _viewModel.ClearKeys(clip));
+        }
+
+        // What its sound does when someone is speaking.
+        if (layer.CarriesSound)
+        {
+            Separate();
+            foreach (var (header, isOn, toggle) in new (string, bool, Action)[]
+                     {
+                         ("Auto-Duck against Voice", layer.AutoDuck, () => layer.AutoDuck = !layer.AutoDuck),
+                         ("Voiceover / Dialogue", layer.IsVoice, () => layer.IsVoice = !layer.IsVoice),
+                     })
+            {
+                var item = new MenuItem { Header = header, IsCheckable = true, IsChecked = isOn };
+                item.Click += (_, _) =>
+                {
+                    _viewModel.Checkpoint($"change the ducking of {layer.Name}");
+                    toggle();
+                };
+                menu.Items.Add(item);
+            }
         }
 
         if (layer.CanReorder && !layer.IsAudio)

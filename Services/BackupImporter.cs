@@ -136,17 +136,18 @@ public static class BackupImporter
         return entries.All(entry => entry.Value is JsonObject project && IsProject(project)) ? entries : [];
     }
 
-    /// <summary>A project names its source and carries a block of settings.</summary>
+    /// <summary>A project says that it is one, in the format this version reads, and can be read as such. Projects from before 2.0 are not taken.</summary>
     private static bool IsProject(JsonObject node)
     {
-        if (node["SourcePath"] is not JsonValue || node["Settings"] is not JsonObject)
+        if (!ProjectStore.IsProject(node))
             return false;
 
         try
         {
-            return node.Deserialize<ProjectState>() is not null;
+            ProjectStore.Deserialize(node.ToJsonString());
+            return true;
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidDataException)
         {
             return false;
         }
@@ -159,13 +160,13 @@ public static class BackupImporter
         if (baseName.Length == 0)
             baseName = "Project";
 
-        var target = Path.Combine(ProjectStore.Folder, baseName + ".txt");
+        var target = Path.Combine(ProjectStore.Folder, baseName + ProjectStore.Extension);
         for (var number = 2; File.Exists(target); number++)
         {
             // The same project, however it happens to be laid out in the file.
             if (ParseObject(File.ReadAllText(target)) is { } existing && JsonNode.DeepEquals(existing, JsonNode.Parse(json)))
                 return false;
-            target = Path.Combine(ProjectStore.Folder, $"{baseName} ({number}).txt");
+            target = Path.Combine(ProjectStore.Folder, $"{baseName} ({number}){ProjectStore.Extension}");
         }
 
         File.WriteAllText(target, json);

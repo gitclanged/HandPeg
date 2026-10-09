@@ -145,6 +145,9 @@ public sealed class EncodingPreset
     public bool NormalizeAudio { get; set; }
     public bool DuckAudio { get; set; }
 
+    /// <summary>How far a track set to Auto-Duck is turned down while a voice speaks, in decibels (negative).</summary>
+    public double DuckAmountDb { get; set; } = -15;
+
     /// <summary>
     /// What was set track by track (action, codec, bitrate, title), by track number. Applied on top of the
     /// codec and bitrate above to the tracks a source actually has.

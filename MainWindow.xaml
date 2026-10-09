@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="clr-namespace:HandPegApp.ViewModels"
         xmlns:local="clr-namespace:HandPegApp"
+        xmlns:models="clr-namespace:HandPegApp.Models"
         mc:Ignorable="d"
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel}"
         Title="HandPeg" Height="1030" Width="1280" MinHeight="800" MinWidth="1100"
@@ -399,6 +400,32 @@
                     <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
                             AutomationProperties.Name="Render Preview"
                             ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
+                    <!-- Auto-keyframing: what moving a layer does to its keyframes. Lit while either mode is on. -->
+                    <ToggleButton x:Name="AutoKeyButton" Content="&#xE916;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0"
+                                  Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Auto-Keyframing"
+                                  ToolTip="Auto-keyframing: what dragging a layer in the layout pane (or changing its size, place or rotation) does to its keyframes at the playhead.">
+                        <ToggleButton.Style>
+                            <Style TargetType="ToggleButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsAutoKeying}" Value="True">
+                                        <Setter Property="Foreground" Value="Gold" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ToggleButton.Style>
+                    </ToggleButton>
+                    <Popup x:Name="AutoKeyPopup" PlacementTarget="{Binding ElementName=AutoKeyButton}" Placement="Top" VerticalOffset="-4" StaysOpen="False"
+                           AllowsTransparency="True" IsOpen="{Binding IsChecked, ElementName=AutoKeyButton, Mode=TwoWay}"
+                           Opened="AutoKeyPopup_Opened" Closed="AutoKeyPopup_Closed">
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
+                            <StackPanel TextElement.Foreground="{DynamicResource TextBrush}">
+                                <CheckBox Content="Generate new keyframe on move" IsChecked="{Binding AutoKeyGenerate}" Margin="0,2"
+                                          ToolTip="Moving, resizing or turning a layer sets a keyframe at the playhead, starting a motion where there was none." />
+                                <CheckBox Content="Snap to nearest keyframe on move" IsChecked="{Binding AutoKeySnap}" Margin="0,2"
+                                          ToolTip="Moving a layer changes its keyframe nearest the playhead, and makes no new ones. With neither box ticked, a layer that is moved takes its whole motion with it." />
+                            </StackPanel>
+                        </Border>
+                    </Popup>
                 </StackPanel>
                 <!-- Volume and speed, beside the transport buttons -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
@@ -948,8 +975,8 @@
             <TabItem Header="Layers" x:Name="LayersTab" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
                     <DockPanel IsEnabled="{Binding IsVideoReencoded}">
                         <!--
-                            Everything below the layers in one panel: what adds a layer, the editing tools, and the
-                            centre video's numbers. On one row when the window is wide enough; wrapping when it is not.
+                            Everything below the layers in one panel: what adds a layer, and the editing tools.
+                            On one row when the window is wide enough; wrapping when it is not.
                         -->
                         <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0" x:Name="LayerAddBar">
                             <Button Content="Add Layer" Padding="12,5" Margin="0,2,0,2" Command="{Binding AddLayerCommand}"
@@ -988,41 +1015,27 @@
                             <CheckBox Content="Show linked audio" IsChecked="{Binding ShowLinkedAudio}" Margin="10,0,0,0" VerticalAlignment="Center"
                                       ToolTip="Draws the waveform of the sound that belongs to a picture over its block: the main video's own audio over its segments, and a video layer's over its clips. While audio and video are unlinked, a video layer's sound has a bar of its own instead, so that it can be dragged." />
                             <TextBlock Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="14,0,18,0" />
-    <!-- The sharp centre video: the same numbers that dragging it in Arrange changes -->
-                            <StackPanel Orientation="Horizontal" Margin="0,2,14,2">
-                                <TextBlock Text="Center Zoom:" Style="{StaticResource FieldLabel}" Margin="0,0,6,0" />
-                                <Slider Width="90" Minimum="0.1" Maximum="4" TickFrequency="0.05" IsSnapToTickEnabled="True" VerticalAlignment="Center"
-                                        Value="{Binding CenterZoom}" AutomationProperties.Name="Center Video Zoom" local:NumericInput.Default="1"
-                                        ToolTip="1 fills the width of the frame. Larger crops the sides of the video; smaller shows more background." />
-                                <TextBox Style="{StaticResource ValueBox}" Text="{Binding CenterZoom, StringFormat={}{0:0.00}}" AutomationProperties.Name="Center Zoom Value"
-                                         local:NumericInput.Default="1" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="4" />
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,2,14,2">
-                                <TextBlock Text="X Offset %:" Style="{StaticResource FieldLabel}" Margin="0,0,6,0" />
-                                <Slider Width="90" Minimum="-100" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
-                                        Value="{Binding CenterOffsetX}" AutomationProperties.Name="Center Horizontal Offset" local:NumericInput.Default="0"
-                                        ToolTip="Moves the sharp video left (negative) or right, as a percentage of the frame's width." />
-                                <TextBox Style="{StaticResource ValueBox}" Text="{Binding CenterOffsetX, StringFormat={}{0:0.#}}" AutomationProperties.Name="Center X Offset Value"
-                                         local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-100" local:NumericInput.Maximum="100" />
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,2,14,2">
-                                <TextBlock Text="Y Offset %:" Style="{StaticResource FieldLabel}" Margin="0,0,6,0" />
-                                <Slider Width="90" Minimum="-100" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
-                                        Value="{Binding CenterOffsetY}" AutomationProperties.Name="Center Vertical Offset" local:NumericInput.Default="0"
-                                        ToolTip="Moves the sharp video up (negative) or down, as a percentage of the frame's height." />
-                                <TextBox Style="{StaticResource ValueBox}" Text="{Binding CenterOffsetY, StringFormat={}{0:0.#}}" AutomationProperties.Name="Center Y Offset Value"
-                                         local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-100" local:NumericInput.Maximum="100" />
-                            </StackPanel>
-                            <Button Content="Reset Center" Padding="12,5" Margin="0,2" Command="{Binding ResetCenterVideoCommand}"
-                                    ToolTip="Back to the middle of the frame at full width." />
                         </WrapPanel>
 
                         <!--
                             One row per layer, the front one first: the caption box (while auto-captions are on), the layers
                             added by hand with the main video among them, and the blurred background at the bottom.
+                            The main video is a row like the others, named after its file.
                         -->
                         <ListBox ItemsSource="{Binding LayerRows}" x:Name="LayersList"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="Layers">
+                            <ListBox.Resources>
+                                <!-- The diamond beside a property: sets or removes its keyframe at the playhead. Gold while the property is animated. -->
+                                <Style x:Key="KeyDiamond" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Setter Property="Content" Value="&#x2666;" />
+                                    <Setter Property="Padding" Value="6,1" />
+                                    <Setter Property="Margin" Value="3,0,0,0" />
+                                    <Setter Property="FontSize" Value="12" />
+                                    <Setter Property="VerticalAlignment" Value="Center" />
+                                    <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+                                    <Setter Property="ToolTip" Value="Keyframe: sets a keyframe for this property at the playhead, or removes the one that is there. With two or more, the layer moves between them. Gold while the property is animated." />
+                                </Style>
+                            </ListBox.Resources>
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <!-- Line 1: what the layer is and its look; line 2: its size and where it sits on the frame -->
@@ -1051,10 +1064,6 @@
                                                         Command="{Binding DataContext.MoveLayerDownCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}" />
                                             </StackPanel>
                                             <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
-                                            <!-- The main video is placed with the Center controls under the list -->
-                                            <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}"
-                                                       Text="Zoom and place it with the Center controls below. Right-click for its filters, rotation and mask."
-                                                       Visibility="{Binding IsMainVideo, Converter={StaticResource BoolToVisibility}}" />
                                             <!-- The background: its blur, here where it is in the stack -->
                                             <StackPanel Grid.Column="2" Orientation="Horizontal" Visibility="{Binding IsBackground, Converter={StaticResource BoolToVisibility}}">
                                                 <TextBlock Text="Blur Radius:" VerticalAlignment="Center" Margin="0,0,8,0" />
@@ -1107,6 +1116,7 @@
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Text="Size %" VerticalAlignment="Center" Margin="0,0,6,0" />
                                             <StackPanel Grid.Column="1" Orientation="Horizontal">
@@ -1114,6 +1124,17 @@
                                                          Text="{Binding SizePercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Layer Size"
                                                          local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="400"
                                                          ToolTip="Width of the layer as a percentage of the frame's width. The layer grows and shrinks about its middle. Drag sideways to adjust, or click to type." />
+                                                <Button Click="KeyToggle_Click" Tag="Scale" AutomationProperties.Name="Size Keyframe">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button" BasedOn="{StaticResource KeyDiamond}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding AnimatesScale}" Value="True">
+                                                                    <Setter Property="Foreground" Value="Gold" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Button.Style>
+                                                </Button>
                                                 <!-- A layer that is not held to its shape (and so always the caption box) has a height of its own -->
                                                 <StackPanel Orientation="Horizontal" Visibility="{Binding IsFreeHeight, Converter={StaticResource BoolToVisibility}}">
                                                     <TextBlock Text="H %" VerticalAlignment="Center" Margin="8,0,6,0" />
@@ -1130,16 +1151,61 @@
                                             <Slider Grid.Column="4" Minimum="-1" Maximum="1" SmallChange="0.005" LargeChange="0.05" VerticalAlignment="Center"
                                                     Value="{Binding PositionX}" AutomationProperties.Name="Layer X"
                                                     ToolTip="Where the left edge of the layer is. Left of the middle of the slider the layer starts outside the frame, where it is simply cut off." />
-                                            <TextBox Grid.Column="5" Style="{StaticResource ValueBox}" Width="48" Text="{Binding PositionXPercent, StringFormat={}{0:0.#}}"
-                                                     AutomationProperties.Name="Layer X Value"
-                                                     local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+                                            <StackPanel Grid.Column="5" Orientation="Horizontal">
+                                                <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding PositionXPercent, StringFormat={}{0:0.#}}"
+                                                         AutomationProperties.Name="Layer X Value"
+                                                         local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+                                                <Button Click="KeyToggle_Click" Tag="X" AutomationProperties.Name="X Keyframe">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button" BasedOn="{StaticResource KeyDiamond}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding AnimatesX}" Value="True">
+                                                                    <Setter Property="Foreground" Value="Gold" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Button.Style>
+                                                </Button>
+                                            </StackPanel>
                                             <TextBlock Grid.Column="6" Text="Y %" VerticalAlignment="Center" Margin="12,0,6,0" />
                                             <Slider Grid.Column="7" Minimum="-1" Maximum="1" SmallChange="0.005" LargeChange="0.05" VerticalAlignment="Center"
                                                     Value="{Binding PositionY}" AutomationProperties.Name="Layer Y"
                                                     ToolTip="Where the top edge of the layer is. Above the middle of the slider the layer starts outside the frame." />
-                                            <TextBox Grid.Column="8" Style="{StaticResource ValueBox}" Width="48" Text="{Binding PositionYPercent, StringFormat={}{0:0.#}}"
-                                                     AutomationProperties.Name="Layer Y Value"
-                                                     local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+                                            <StackPanel Grid.Column="8" Orientation="Horizontal">
+                                                <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding PositionYPercent, StringFormat={}{0:0.#}}"
+                                                         AutomationProperties.Name="Layer Y Value"
+                                                         local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+                                                <Button Click="KeyToggle_Click" Tag="Y" AutomationProperties.Name="Y Keyframe">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button" BasedOn="{StaticResource KeyDiamond}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding AnimatesY}" Value="True">
+                                                                    <Setter Property="Foreground" Value="Gold" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Button.Style>
+                                                </Button>
+                                            </StackPanel>
+                                            <!-- Every picture but the caption box can be turned -->
+                                            <StackPanel Grid.Column="9" Orientation="Horizontal" Visibility="{Binding HasFilters, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="Rot &#176;" VerticalAlignment="Center" Margin="12,0,6,0" />
+                                                <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding Rotation, StringFormat={}{0:0.#}}"
+                                                         AutomationProperties.Name="Layer Rotation"
+                                                         local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-360" local:NumericInput.Maximum="360"
+                                                         ToolTip="Degrees the layer is turned clockwise about its middle." />
+                                                <Button Click="KeyToggle_Click" Tag="Rotation" AutomationProperties.Name="Rotation Keyframe">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button" BasedOn="{StaticResource KeyDiamond}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding AnimatesRotation}" Value="True">
+                                                                    <Setter Property="Foreground" Value="Gold" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Button.Style>
+                                                </Button>
+                                            </StackPanel>
                                         </Grid>
                                     </StackPanel>
                                     <DataTemplate.Triggers>
@@ -1169,6 +1235,12 @@
                                   ToolTip="Applies loudnorm (I=-16, TP=-1.5, LRA=11) to re-encoded and mixed tracks. Copied tracks are left as they are." />
                         <CheckBox Content="Auto-Duck Game Audio to Mic" IsChecked="{Binding DuckAudio}" Margin="24,0,0,0"
                                   ToolTip="Lowers the first track (game) whenever the second track (microphone) is loud, using sidechaincompress. Needs both tracks re-encoded or mixed." />
+                        <StackPanel Orientation="Horizontal" Margin="24,0,0,0"
+                                    ToolTip="How far a sound with Duck ticked is turned down while a sound marked Voice (or the voiceover) is speaking.">
+                            <TextBlock Text="Duck by (dB):" Style="{StaticResource FieldLabel}" Margin="0,0,6,0" />
+                            <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding DuckAmountDb, StringFormat={}{0:0}}" AutomationProperties.Name="Duck Amount"
+                                     local:NumericInput.Default="-15" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="-40" local:NumericInput.Maximum="-1" />
+                        </StackPanel>
                         <Button Content="Add Audio File..." Margin="24,0,0,0" Padding="12,5" Click="AddAudio_Click" IsEnabled="{Binding IsEnabled, ElementName=AddStartButton}"
                                 ToolTip="Adds a sound from a file (music, a recording, or the sound of a video) to the timeline as a clip of its own, starting at the playhead. It is mixed into the first audio track. A file can also be dropped anywhere on this tab." />
                         <Button Margin="8,0,0,0" Padding="12,5" Click="OpenVoiceoverStudio_Click" AutomationProperties.Name="Voiceover Studio"
@@ -1283,13 +1355,21 @@
                     </Grid>
 
                     <!--
-                        Sounds added from files (dropped here, or on the tracks): one row per track of them, each a block
-                        that is dragged to where it should start, split, trimmed and deleted like any clip.
+                        One row per track, as tall as the Audio Track Height setting makes it. Left: its name. Middle:
+                        its waveform, which takes all the height there is. Right, in two lines: what to do with the
+                        track, then its gain and filters.
                     -->
-                    <ItemsControl DockPanel.Dock="Bottom" ItemsSource="{Binding AudioClipRows}" Margin="0,4,0,0" Focusable="False" AutomationProperties.Name="Added Audio">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Height="34" Margin="5,2,5,0" Background="Transparent" ContextMenuOpening="LayerRow_ContextMenuOpening">
+                    <!--
+                        One list for every sound on the timeline: the video's own audio tracks, and after them the
+                        sounds added from files. Each is a row with its name, its block on the timeline (dragged,
+                        split and silenced in the same way) and its gain, ducking and voice settings.
+                    -->
+                    <ListBox Margin="0,8,0,0" ItemsSource="{Binding AudioRows}" AutomationProperties.Name="Audio Tracks"
+                             ScrollViewer.CanContentScroll="False" ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
+                        <ListBox.Resources>
+                            <!-- A sound added from a file -->
+                            <DataTemplate DataType="{x:Type models:Layer}">
+                                <Grid Height="{Binding DataContext.AudioTrackRowHeight, RelativeSource={RelativeSource AncestorType=ListBox}}" Background="Transparent" ContextMenuOpening="LayerRow_ContextMenuOpening">
                                     <Grid.ContextMenu>
                                         <ContextMenu />
                                     </Grid.ContextMenu>
@@ -1298,34 +1378,36 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0"
-                                               ToolTip="A sound added from a file. It is mixed into the first audio track of the output." />
-                                    <Canvas Grid.Column="1" Background="{DynamicResource InsetBrush}" ClipToBounds="True" Cursor="Hand"
-                                            Loaded="ClipTrack_Loaded" Unloaded="ClipTrack_Unloaded" SizeChanged="ClipTrack_Changed" DataContextChanged="ClipTrack_DataContextChanged"
-                                            MouseLeftButtonDown="ClipTrack_MouseLeftButtonDown" AutomationProperties.Name="Added Audio Timeline" />
-                                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
-                                        <TextBlock Text="Gain (dB):" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                        <Slider Width="130" Minimum="-40" Maximum="24" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
-                                                Value="{Binding AudioGainDb}" AutomationProperties.Name="Added Audio Gain" local:NumericInput.Default="0" />
-                                        <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding AudioGainDb, StringFormat={}{0:0}}" AutomationProperties.Name="Added Audio Gain Value"
-                                                 local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="-40" local:NumericInput.Maximum="24" />
-                                        <Button Content="Remove" Padding="10,3" Margin="12,0,0,0" Click="RemoveTrack_Click" />
+                                    <StackPanel VerticalAlignment="Center" Margin="0,0,10,0">
+                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="Added from a file  &#183;  mixed into the first track" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" FontSize="11"
+                                                   Foreground="{DynamicResource MutedTextBrush}" />
+                                    </StackPanel>
+                                    <Border Grid.Column="1" Margin="0,3" Background="{DynamicResource InsetBrush}" CornerRadius="4" ClipToBounds="True">
+                                        <Canvas ClipToBounds="True" Background="Transparent" Cursor="Hand"
+                                                Loaded="ClipTrack_Loaded" Unloaded="ClipTrack_Unloaded" SizeChanged="ClipTrack_Changed" DataContextChanged="ClipTrack_DataContextChanged"
+                                                MouseLeftButtonDown="ClipTrack_MouseLeftButtonDown" AutomationProperties.Name="Added Audio Timeline" />
+                                    </Border>
+                                    <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="10,0,0,0">
+                                        <StackPanel Orientation="Horizontal">
+                                            <CheckBox Content="Auto-Duck against Voice" IsChecked="{Binding AutoDuck}" Margin="0,1"
+                                                      ToolTip="Turns this sound down, by the amount set above, whenever a sound marked Voice (or the voiceover) is speaking." />
+                                            <CheckBox Content="Voice" IsChecked="{Binding IsVoice}" Margin="14,1,0,1"
+                                                      ToolTip="Voiceover / Dialogue: this sound is a voice. Sounds set to Auto-Duck make room for it." />
+                                            <Button Content="Remove" Padding="10,3" Margin="14,0,0,0" Click="RemoveTrack_Click" />
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                            <TextBlock Text="Gain (dB):" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                            <Slider Width="170" Minimum="-40" Maximum="24" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                                    Value="{Binding AudioGainDb}" AutomationProperties.Name="Added Audio Gain" local:NumericInput.Default="0" />
+                                            <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding AudioGainDb, StringFormat={}{0:0}}" AutomationProperties.Name="Added Audio Gain Value"
+                                                     local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="-40" local:NumericInput.Maximum="24" />
+                                        </StackPanel>
                                     </StackPanel>
                                 </Grid>
                             </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-
-                    <!--
-                        One row per track, as tall as the Audio Track Height setting makes it. Left: its name. Middle:
-                        its waveform, which takes all the height there is. Right, in two lines: what to do with the
-                        track, then its gain and filters.
-                    -->
-                    <ListBox Margin="0,8,0,0" ItemsSource="{Binding AudioTracks}" AutomationProperties.Name="Audio Tracks"
-                             VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling"
-                             ScrollViewer.CanContentScroll="True">
-                        <ListBox.ItemTemplate>
-                            <DataTemplate>
+                            <!-- An audio track of the video itself -->
+                            <DataTemplate DataType="{x:Type models:AudioTrack}">
                                 <Grid Height="{Binding DataContext.AudioTrackRowHeight, RelativeSource={RelativeSource AncestorType=ListBox}}">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="232" />
@@ -1385,6 +1467,10 @@
                                                       IsEnabled="{Binding IsReencoded}" />
                                             <ComboBox Margin="6,1,0,1" MinWidth="80" ItemsSource="{Binding Bitrates}" SelectedItem="{Binding Bitrate}"
                                                       IsEnabled="{Binding IsReencoded}" />
+                                            <CheckBox Content="Duck" IsChecked="{Binding AutoDuck}" Margin="12,1,0,1"
+                                                      ToolTip="Auto-Duck against Voice: turns this track down, by the amount set above, whenever a sound marked Voice (or the voiceover) is speaking. A ducked track is re-encoded." />
+                                            <CheckBox Content="Voice" IsChecked="{Binding IsVoice}" Margin="10,1,0,1"
+                                                      ToolTip="Voiceover / Dialogue: this track is a voice. Sounds set to Auto-Duck make room for it." />
                                         </StackPanel>
                                         <StackPanel Orientation="Horizontal" Margin="0,2,0,0" IsEnabled="{Binding IsReencoded}"
                                                     ToolTip="Gain and filters change the sound, so they apply to a track that is re-encoded, not to one that is copied.">
@@ -1405,7 +1491,7 @@
                                     </StackPanel>
                                 </Grid>
                             </DataTemplate>
-                        </ListBox.ItemTemplate>
+                        </ListBox.Resources>
                     </ListBox>
                 </DockPanel>
             </TabItem>

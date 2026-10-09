@@ -44,6 +44,7 @@ public partial class MainViewModel
         MergeAudioTracks = MergeAudioTracks,
         NormalizeAudio = NormalizeAudio,
         DuckAudio = DuckAudio,
+        DuckAmountDb = DuckAmountDb,
         FrameEngine = FrameEngine,
         CenterZoom = CenterZoom,
         Layers = Layers.Select(e => e.ToState()).ToList(),
@@ -84,7 +85,7 @@ public partial class MainViewModel
     /// <summary>What is set track by track: action, codec, bitrate, title, gain and processing.</summary>
     private List<AudioTrackState> CaptureAudioTracks() =>
         AudioTracks.Select(t => new AudioTrackState(t.Index, t.Action, t.Codec, t.Bitrate, t.Title, t.GainDb, t.Filters.IsActive ? t.Filters.Clone() : null,
-            t.OffsetSeconds, t.Pieces.Count > 0 ? [.. t.Pieces] : null)).ToList();
+            t.OffsetSeconds, t.Pieces.Count > 0 ? [.. t.Pieces] : null, t.AutoDuck, t.IsVoice)).ToList();
 
     /// <summary>A snapshot of the source, the cuts and every setting.</summary>
     public ProjectState CaptureState(string name = "") => new()
@@ -109,6 +110,7 @@ public partial class MainViewModel
         CaptionAudioPath = CaptionAudioPath,
         CaptionUseExternalAudio = CaptionUseExternalAudio,
         CaptionAudioTrackIndex = CaptionAudioTrack?.Index ?? 0,
+        AudioLinked = AudioLinked,
         ManualCommand = IsCommandManuallyEdited ? CommandPreview : null,
     };
 
@@ -135,6 +137,10 @@ public partial class MainViewModel
 
         SelectedPreset = null;
         ApplyPreset(state.Settings);
+
+        // What a preset leaves alone, being about one video and not a look: where the main video sits in time, and how it moves.
+        _mainVideoRow.ApplyTiming(state.Settings.MainLayer);
+        AudioLinked = state.AudioLinked;
         TargetFileSize = state.TargetFileSize;
         CaptionAudioPath = state.CaptionAudioPath ?? "";
         CaptionUseExternalAudio = state.CaptionUseExternalAudio ?? CaptionAudioPath.Length > 0;
@@ -237,7 +243,7 @@ public partial class MainViewModel
             stopSeconds = GetKeyframeCeiling(stopSeconds, tolerance) ?? stopSeconds;
         }
 
-        var duration = DurationMs / 1000;
+        var duration = SequenceSeconds;
         if (duration > 0)
             stopSeconds = Math.Min(stopSeconds, duration);
         if (stopSeconds <= startSeconds)

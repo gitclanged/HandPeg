@@ -83,12 +83,15 @@ public partial class MainViewModel
         if (JsonSerializer.Deserialize<TimelineSnapshot>(state) is not { } snapshot)
             return;
 
+        // One rebuild of the command for the whole step, not one for every clip that is put back.
+        using var whole = DeferCommand();
         Segments.Clear();
         foreach (var segment in snapshot.Segments)
             Segments.Add(new CutSegment(TimeSpan.FromMilliseconds(segment.StartMs), TimeSpan.FromMilliseconds(segment.EndMs)) { IsSkipped = segment.Skipped });
 
         SetLayers(snapshot.Layers);
         _mainVideoRow.ApplyLook(snapshot.MainLayer);
+        _mainVideoRow.ApplyTiming(snapshot.MainLayer);
         _backgroundRow.IsHidden = snapshot.BackgroundHidden;
         MainVideoIndex = Math.Clamp(snapshot.MainVideoIndex, 0, Layers.Count);
         foreach (var edit in snapshot.Audio)
@@ -100,6 +103,7 @@ public partial class MainViewModel
         AudioLinked = snapshot.AudioLinked;
         RefreshLayerRows();
         GenerateCommand();
+        ApplyKeyframes();
     }
 
     // ----- Whatever is selected -----
@@ -129,19 +133,29 @@ public partial class MainViewModel
     /// <summary>Trims the selected clip to the playhead: its start (everything before goes) or its end (everything after).</summary>
     public bool TrimClip(object? clip, bool start, double seconds)
     {
-        var total = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        var total = SequenceSeconds;
         switch (clip)
         {
             case Layer { HasTiming: true } layer:
-                var end = layer.Duration > 0.001 ? layer.StartTime + layer.Duration : total;
+                var end = layer.IsMainVideo ? GetMainSpan().End : layer.GetSpan(total).End;
                 if (seconds <= layer.StartTime + 0.05 || seconds >= end - 0.05)
                     break;
 
                 Checkpoint($"trim {layer.Name}");
-                if (start)
-                    (layer.MediaOffset, layer.StartTime, layer.Duration) = (layer.MediaOffset + seconds - layer.StartTime, seconds, end - seconds);
-                else
-                    layer.Duration = seconds - layer.StartTime;
+                using (DeferCommand())
+                {
+                    if (start)
+                    {
+                        // Its keyframes are counted from where it begins, which has just moved.
+                        layer.ShiftKeys(layer.StartTime - seconds);
+                        (layer.MediaOffset, layer.StartTime, layer.Duration) = (layer.MediaOffset + seconds - layer.StartTime, seconds, end - seconds);
+                    }
+                    else
+                    {
+                        layer.Duration = seconds - layer.StartTime;
+                    }
+                }
+
                 StatusText = $"{layer.Name} now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}.";
                 return true;
 
@@ -188,7 +202,7 @@ public partial class MainViewModel
             (copy.PositionX, copy.PositionY) = (clip.PositionX + 0.03, clip.PositionY + 0.03);
             (copy.Waveform, copy.Filmstrip) = (clip.Waveform, clip.Filmstrip);
             Hook(copy);
-            Layers.Insert(at++, copy);
+            InsertLayer(at++, copy);
         }
 
         StatusText = $"Duplicated {layer.Name}.";
@@ -201,13 +215,9 @@ public partial class MainViewModel
             return;
 
         Checkpoint($"remove {layer.Name}");
+        using var whole = DeferCommand();
         foreach (var clip in GetTrackClips(layer))
-        {
-            if (ReferenceEquals(DrawTargetLayer, clip))
-                DrawTargetLayer = null;
-            clip.PropertyChanged -= OnLayerChanged;
-            Layers.Remove(clip);
-        }
+            Detach(clip);
 
         StatusText = $"Removed {layer.Name}. Ctrl+Z brings it back.";
     }
@@ -313,8 +323,8 @@ public partial class MainViewModel
     /// <summary>Cuts an audio track's block in two at a time, so that either part can be silenced on its own.</summary>
     public bool SplitAudio(AudioTrack track, double seconds)
     {
-        var total = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
-        var content = seconds - track.OffsetSeconds;
+        var total = MainMediaSeconds;
+        var content = seconds - track.OffsetSeconds - MainShift;
         if (content <= 0.05 || content >= total - 0.05)
         {
             StatusText = $"The playhead is not inside {track.Title}.";
@@ -359,22 +369,29 @@ public partial class MainViewModel
         if (_isBackgroundWorker || !layer.CarriesSound || layer.Waveform is not null || !(ShowWaveforms || layer.IsAudio))
             return;
 
-        // Clips cut from one file show the same picture: it is made once.
-        if (Layers.FirstOrDefault(l => !ReferenceEquals(l, layer) && l.ImagePath == layer.ImagePath && l.Waveform is not null) is { } same)
+        // The picture of a file is made once in a session, however often its clips are split, undone and
+        // put back: every one of those makes new clips, and none of them a new picture.
+        var path = layer.ImagePath;
+        if (!_layerWaveforms.TryGetValue(path, out var drawing))
         {
-            layer.Waveform = same.Waveform;
-            return;
+            _layerWaveforms[path] = drawing = Waveforms.RenderAsync(
+                path, [0], Path.Combine(WaveformFolder, $"layer_{Guid.NewGuid():N}.png"), 1200, 60, "white", _shutdown.Token);
         }
 
         try
         {
-            layer.Waveform = await Waveforms.RenderAsync(
-                layer.ImagePath, [0], Path.Combine(WaveformFolder, $"layer_{Guid.NewGuid():N}.png"), 1200, 60, "white", _shutdown.Token);
+            layer.Waveform = await drawing;
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
+            // Not kept: the next clip of this file may have better luck.
+            _layerWaveforms.Remove(path);
         }
     }
+
+    // The pictures made of layers' files this session, by file: waveforms, and strips of frames.
+    private readonly Dictionary<string, Task<System.Windows.Media.ImageSource?>> _layerWaveforms = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, System.Windows.Media.ImageSource> _layerFilmstrips = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The pictures a layer's block is drawn with: the waveform of its sound, and for a video a strip of its frames.</summary>
     private async Task LoadLayerPicturesAsync(Layer layer)
@@ -393,9 +410,9 @@ public partial class MainViewModel
         if (_isBackgroundWorker || !layer.IsVideoFile || layer.Filmstrip is not null || !File.Exists(layer.ImagePath))
             return;
 
-        if (Layers.FirstOrDefault(l => !ReferenceEquals(l, layer) && l.ImagePath == layer.ImagePath && l.Filmstrip is not null) is { } same)
+        if (_layerFilmstrips.TryGetValue(layer.ImagePath, out var made))
         {
-            layer.Filmstrip = same.Filmstrip;
+            layer.Filmstrip = made;
             return;
         }
 
@@ -415,6 +432,7 @@ public partial class MainViewModel
             picture.UriSource = new Uri(path);
             picture.EndInit();
             picture.Freeze();
+            _layerFilmstrips[layer.ImagePath] = picture;
             foreach (var clip in Layers.Where(l => l.ImagePath == layer.ImagePath && l.IsVideoFile))
                 clip.Filmstrip = picture;
             layer.Filmstrip = picture;
@@ -443,7 +461,7 @@ public partial class MainViewModel
     /// <summary>Cuts a video layer at the silences in its own sound: into the parts with sound, and (marked hidden, or left out) the silent ones.</summary>
     private string ApplyDeadAirToLayer(Layer layer, List<(double Start, double End)> silences, bool keepSilent, double fileSeconds)
     {
-        var total = _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : DurationMs / 1000;
+        var total = SequenceSeconds;
         var visibleFor = layer.Duration > 0.001 ? layer.Duration : Math.Max(total - layer.StartTime, 0);
         var (from, to) = (layer.MediaOffset, Math.Min(layer.MediaOffset + visibleFor, fileSeconds));
 
@@ -469,18 +487,18 @@ public partial class MainViewModel
             return $"{layer.Name} has too many silences to cut into layers ({parts.Count} parts): raise the shortest silence and try again.";
 
         Checkpoint($"remove dead air from {layer.Name}");
+        using var whole = DeferCommand();
         var index = Layers.IndexOf(layer);
         var state = layer.ToState();
-        RemoveLayerCommand.Execute(layer);
-        var number = 0;
+        Detach(layer);
         foreach (var (start, end, silent) in parts.Where(p => keepSilent || !p.Silent))
         {
             var part = Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
             (part.StartTime, part.Duration, part.MediaOffset) = (layer.StartTime + (start - from), end - start, start);
             (part.IsHidden, part.Name, part.Waveform, part.Filmstrip) = (silent, state.Name, layer.Waveform, layer.Filmstrip);
-            number++;
+            part.ShiftKeys(layer.StartTime - part.StartTime);
             Hook(part);
-            Layers.Insert(Math.Min(index++, Layers.Count), part);
+            InsertLayer(Math.Min(index++, Layers.Count), part);
         }
 
         var removed = parts.Where(p => p.Silent).Sum(p => p.End - p.Start);

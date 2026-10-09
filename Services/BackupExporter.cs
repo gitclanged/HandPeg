@@ -43,7 +43,7 @@ public static class BackupExporter
 
         if (Directory.Exists(ProjectStore.Folder))
         {
-            foreach (var file in Directory.EnumerateFiles(ProjectStore.Folder, "*.txt").Order(StringComparer.OrdinalIgnoreCase))
+            foreach (var file in Directory.EnumerateFiles(ProjectStore.Folder, "*" + ProjectStore.Extension).Order(StringComparer.OrdinalIgnoreCase))
             {
                 try
                 {

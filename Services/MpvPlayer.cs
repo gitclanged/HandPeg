@@ -253,6 +253,21 @@ public sealed class MpvPlayer
 
     public void SetSpeed(double speed) => SetProperty("speed", Number(speed));
 
+    /// <summary>
+    /// Gives mpv an audio filter chain in its own syntax (its af property); an empty string for none. Used to
+    /// silence the stretches of a sequence where the main video is not there.
+    /// </summary>
+    public void SetAudioFilter(string filter)
+    {
+        if (filter == _audioFilter)
+            return;
+
+        _audioFilter = filter;
+        SetProperty("af", filter);
+    }
+
+    private string _audioFilter = "";
+
     /// <param name="index">Which of the file's audio tracks, counted from 0.</param>
     public void SetAudioTrack(int index) => SetProperty("aid", Number(index + 1));
 
@@ -316,6 +331,10 @@ public sealed class MpvPlayer
 
     private void Command(params string[] arguments)
     {
+        // Once it has been told to quit, the player is on its way to being released: nothing more is sent to it.
+        if (_closing && arguments is not ["quit"])
+            return;
+
         // A list of C strings with a null at the end.
         var pointers = new IntPtr[arguments.Length + 1];
         try
