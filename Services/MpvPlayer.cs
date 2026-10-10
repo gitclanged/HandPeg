@@ -169,6 +169,9 @@ public sealed class MpvPlayer
                      ("gpu-shader-cache", "yes"),
                      ("hr-seek", "yes"), ("audio-display", "no"), ("sub-auto", "no"), ("sid", "no"),
 
+                     // The only subtitles shown are HandPeg's own caption preview, drawn exactly as its file says.
+                     ("sub-ass-override", "no"), ("sub-visibility", "yes"),
+
                      // The cheap way of putting the picture on screen: it is a preview, and the filters want the processor.
                      ("profile", "fast"), ("vd-lavc-threads", "0"), ("framedrop", "vo"),
                  })
@@ -271,6 +274,41 @@ public sealed class MpvPlayer
     }
 
     private string _audioFilter = "";
+
+    // ----- Subtitles -----
+    // A subtitle file of HandPeg's own (the captions' preview) is drawn by mpv itself, as a track added to the
+    // file that is playing: libass renders it and the graphics card lays it over the picture, on whatever the
+    // filter graph made of that picture or on the plain source. Nothing of it goes through the filter graph.
+
+    private readonly object _subtitleLock = new();
+    private string _subtitleFile = "";
+
+    /// <summary>
+    /// Has mpv draw an ASS file over the picture; an empty string takes it off again. The file is read whole
+    /// when it is given, so it may be deleted afterwards. It is kept for the files opened from now on too:
+    /// opening a file drops the tracks added to the one before.
+    /// </summary>
+    public void SetSubtitleFile(string path)
+    {
+        lock (_subtitleLock)
+        {
+            if (path == _subtitleFile)
+                return;
+
+            var hadOne = _subtitleFile.Length > 0;
+            _subtitleFile = path;
+
+            // A file still being opened is given its track when it is ready (see ReadEvents).
+            if (IsLoading || _path is null)
+                return;
+
+            // The only subtitle track ever selected is this one (sid starts as "no"), so the current one is it.
+            if (hadOne)
+                Command("sub-remove");
+            if (path.Length > 0)
+                Command("sub-add", path, "select");
+        }
+    }
 
     /// <param name="index">Which of the file's audio tracks, counted from 0.</param>
     public void SetAudioTrack(int index) => SetProperty("aid", Number(index + 1));
@@ -406,7 +444,15 @@ public sealed class MpvPlayer
 
                 case EventPlaybackRestart when _awaitingFirstFrame:
                     _awaitingFirstFrame = false;
-                    IsLoading = false;
+                    lock (_subtitleLock)
+                    {
+                        IsLoading = false;
+
+                        // The new file has none of the tracks that were added to the one before.
+                        if (_subtitleFile.Length > 0 && File.Exists(_subtitleFile))
+                            Command("sub-add", _subtitleFile, "select");
+                    }
+
                     FileLoaded?.Invoke();
                     break;
 

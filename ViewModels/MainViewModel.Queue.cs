@@ -298,7 +298,7 @@ public partial class MainViewModel
                 SetTaskbarProgress(System.Windows.Shell.TaskbarItemProgressState.None);
                 throw;
             }
-            catch (InvalidOperationException) when (
+            catch (InvalidOperationException ex) when (
                 AppSettings.Current.AutoFallbackToSoftware
                 && !job.Detail.StartsWith(FallbackNote, StringComparison.Ordinal)
                 && HardwareFallback.TryRewrite(job.Command, out _, out _, out _))
@@ -306,6 +306,7 @@ public partial class MainViewModel
                 // The hardware encoder failed: put the job back in line with the software encoder for the same codec.
                 // The note on the job stops it from being rewritten a second time.
                 HardwareFallback.TryRewrite(job.Command, out var rewritten, out var hardware, out var software);
+                AppLog.Write($"{hardware} failed for {name} and {software} is tried instead: {ex.Message}");
                 job.Command = rewritten;
                 job.Detail = $"{FallbackNote} {hardware} failed, retried with {software}.";
                 job.Status = QueueJob.Pending;

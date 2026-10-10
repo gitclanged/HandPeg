@@ -686,11 +686,20 @@ public partial class MainViewModel
     /// <summary>The Keyframes pane beside the player.</summary>
     [ObservableProperty] private bool _showKeyframesPane = AppSettings.Current.ShowKeyframesPane;
 
+    /// <summary>The Source pane at the top of the side column. Editor Mode's: Encoder Mode has the source in its top bar.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsSourcePaneVisible))]
+    private bool _showSourcePane = AppSettings.Current.ShowSourcePane;
+
+    /// <summary>Whether the Source pane is on screen: open, and in the mode that has it.</summary>
+    public bool IsSourcePaneVisible => IsEditorMode && ShowSourcePane;
+
     /// <summary>Whether a clip's block on the timeline shows a diamond at each of its keyframes.</summary>
     [ObservableProperty] private bool _showClipKeyframes = AppSettings.Current.ShowClipKeyframes;
 
     partial void OnShowCutSegmentsPaneChanged(bool value) => SaveView(s => s.ShowCutSegmentsPane = value);
     partial void OnShowKeyframesPaneChanged(bool value) => SaveView(s => s.ShowKeyframesPane = value);
+    partial void OnShowSourcePaneChanged(bool value) => SaveView(s => s.ShowSourcePane = value);
 
     partial void OnShowClipKeyframesChanged(bool value)
     {

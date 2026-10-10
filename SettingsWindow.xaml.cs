@@ -76,6 +76,11 @@ public partial class SettingsWindow : Window
         WhisperModelBox.ItemsSource = models;
         WhisperModelBox.SelectedItem = _settings.WhisperModel;
 
+        // The Automation tab shows the view model's rules, and the choices of its two drop-down columns.
+        AutomationPanel.DataContext = viewModel;
+        RuleTypeColumn.ItemsSource = SmartRule.Types;
+        PresetColumn.ItemsSource = viewModel.PresetNames;
+
         // An install or a model download ends with IsBusy going back to false: time to look again at what is there.
         viewModel.PropertyChanged += ViewModel_PropertyChanged;
         Closed += (_, _) => viewModel.PropertyChanged -= ViewModel_PropertyChanged;
@@ -238,6 +243,53 @@ public partial class SettingsWindow : Window
         WhisperStatusText.Text = $"{program}; {modelState}";
     }
 
+    // ----- Automation: smart rules -----
+    // The rules are saved as they are edited; the tab has no Save button of its own, and Cancel does not undo them.
+
+    private void AddFolderRule_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFolderDialog { Title = "Videos in this folder get the preset" };
+        if (dialog.ShowDialog(this) == true)
+            SelectRule(_viewModel.AddSmartRule(SmartRule.Folder, dialog.FolderName), edit: false);
+    }
+
+    // Added with a word to replace, already in edit so it can be typed over at once.
+    private void AddKeywordRule_Click(object sender, RoutedEventArgs e) => SelectRule(_viewModel.AddSmartRule(SmartRule.Keyword, "keyword"), edit: true);
+
+    private void AddExtensionRule_Click(object sender, RoutedEventArgs e) => SelectRule(_viewModel.AddSmartRule(SmartRule.Extension, "*.mkv"), edit: true);
+
+    private void SelectRule(SmartRule? rule, bool edit)
+    {
+        if (rule is null)
+        {
+            // Why not is said in the main window's status bar, which this window covers.
+            ErrorText.Text = _viewModel.StatusText;
+            return;
+        }
+
+        RulesGrid.SelectedItem = rule;
+        RulesGrid.ScrollIntoView(rule);
+        if (edit)
+        {
+            RulesGrid.CurrentCell = new DataGridCellInfo(rule, RulesGrid.Columns[1]);
+            RulesGrid.Focus();
+            RulesGrid.BeginEdit();
+        }
+    }
+
+    private void RemoveRule_Click(object sender, RoutedEventArgs e)
+    {
+        if (RulesGrid.SelectedItem is SmartRule rule)
+            _viewModel.RemoveSmartRule(rule);
+    }
+
+    // The edit reaches the rule once this event has returned, so the save waits for that.
+    private void RulesGrid_CellEditEnding(object? sender, DataGridCellEditEndingEventArgs e)
+    {
+        if (e.EditAction == DataGridEditAction.Commit)
+            Dispatcher.BeginInvoke(_viewModel.SaveAutomation, System.Windows.Threading.DispatcherPriority.Background);
+    }
+
     // ----- Backup & Export -----
 
     private const string BackupFileFilter = "Text file (JSON)|*.txt;*.json|All files|*.*";
@@ -369,8 +421,8 @@ public partial class SettingsWindow : Window
         _settings.SplashPresetCount = Math.Max(SplashBox.SelectedIndex, 0);
         _settings.SplashStylePresets = SplashStyleList.SelectedItems.OfType<StyleFile>().Select(s => s.FileName).ToList();
 
-        // The smart rules and the default preset are edited on the main window's Automation tab, and saved
-        // there as they change. This copy was made when the window opened; take theirs as they are now.
+        // The smart rules and the default preset are edited on the Automation tab, which saves them as they
+        // change. This copy was made when the window opened; take theirs as they are now.
         _settings.SmartRules = AppSettings.Current.SmartRules;
         _settings.DefaultPreset = AppSettings.Current.DefaultPreset;
 

@@ -252,12 +252,6 @@ public sealed record SequenceExportState
     public string OutputPath { get; init; } = "";
 
     /// <summary>
-    /// Preview Subtitles: a caption file timed to the sequence, for Live Preview to draw over the picture in
-    /// the captions' own style. Blank while the preview is off.
-    /// </summary>
-    public string LiveCaptionsPath { get; init; } = "";
-
-    /// <summary>
     /// The files named in this state that were there when it was compiled (masks, LUTs, the caption file). The
     /// builder leaves out a mask or a LUT whose file is missing, and asks this instead of the disk.
     /// </summary>
@@ -288,12 +282,26 @@ public static class FilterGraphBuilder
     }
 
     /// <summary>
-    /// The graph for mpv's lavfi-complex, from its video track to the screen; empty when the export would not
-    /// filter the picture at all.
+    /// The graph for mpv's lavfi-complex: from its video track to the screen and, while the layers have sound
+    /// to be heard, from its audio track to the speakers. Empty when the export would not filter the picture at
+    /// all and there is no such sound.
     /// </summary>
     /// <param name="surfaceWidth">Width of the player on screen, in screen pixels: the picture is not built larger than it is shown.</param>
-    public static string BuildLiveGraph(SequenceExportState state, double surfaceWidth, double surfaceHeight) =>
-        new Pass(state).BuildLiveFilterGraph(surfaceWidth, surfaceHeight);
+    /// <param name="audioFrom">
+    /// The moment playback starts from, in sequence seconds, for the layers' sound to be laid out from; null
+    /// leaves the sound out of the graph, and the player plays the main video's own as it is.
+    /// </param>
+    /// <param name="mainAudioTrack">Which of the main video's audio tracks the player plays, counted from 0; negative when it has none.</param>
+    public static string BuildLiveGraph(SequenceExportState state, double surfaceWidth, double surfaceHeight, double? audioFrom = null, int mainAudioTrack = 0)
+    {
+        var pass = new Pass(state);
+        var picture = pass.BuildLiveFilterGraph(surfaceWidth, surfaceHeight);
+        var sound = audioFrom is { } from ? pass.BuildLiveAudioGraph(Math.Max(from, 0), mainAudioTrack) : "";
+        return picture.Length > 0 && sound.Length > 0 ? $"{picture};{sound}" : picture + sound;
+    }
+
+    /// <summary>The output pad of the sound half of a live graph: a graph that has it mixes the layers' sound in.</summary>
+    public const string LiveAudioOutput = "[ao]";
 
     /// <summary>Render Preview: a short, small encode of the given stretches of the timeline.</summary>
     /// <param name="ranges">The stretches to show, joined end to end.</param>
@@ -620,7 +628,7 @@ public static class FilterGraphBuilder
                     var voices = new List<string>();
                     foreach (var track in tracks.Where(t => t.IsVoice && !t.IsSilentBase))
                         voices.Add(PlaceMainAudio(graph, $"[0:a:{track.Index}]", track.BuildEditChain(), track.IsMono, $"dvsrc{track.Index}") + "anull");
-                    voices.AddRange(layerAudio.Where(l => l.IsVoice).Select(BuildLayerAudio));
+                    voices.AddRange(layerAudio.Where(l => l.IsVoice).Select(l => BuildLayerAudio(l)));
 
                     // The voiceover is timed against the finished video, which is the sequence only while nothing is cut out of it.
                     if (voiceoverInput is { } voiceInput && segments.Count == 0)
@@ -848,14 +856,13 @@ public static class FilterGraphBuilder
 
         /// <summary>
         /// The filter graph Live Preview runs on the picture, for mpv's lavfi-complex: the same per-frame chain the
-        /// export uses (crop, the Frame &amp; Layer Engine, scaling, color, LUT), with burned-in subtitles, from the
+        /// export uses (crop, the Frame &amp; Layer Engine, scaling, color, LUT), with the source's burned-in subtitles, from the
         /// video track to the screen. Empty when the export would not filter the picture at all (Copy), which
         /// is then what the preview shows too.
         ///
         /// The cuts are not part of it: the preview stays on the source's own timeline, where Play only cut
-        /// segments does the skipping. Fades are placed by the length of the output and are left out, and
-        /// auto-captions are drawn only once they have been transcribed and while nothing is cut, which is when
-        /// their times are the source's.
+        /// segments does the skipping. Fades are placed by the length of the output and are left out, and so are
+        /// auto-captions, which the player draws by itself while Preview Subtitles is on.
         /// </summary>
         /// <param name="surfaceWidth">Width of the player on screen, in screen pixels: the picture is not built larger than it is shown.</param>
         public string BuildLiveFilterGraph(double surfaceWidth, double surfaceHeight)
@@ -887,19 +894,67 @@ public static class FilterGraphBuilder
                     chain.AddRange(burn);
                 }
 
-                // Preview Subtitles: a caption file made for the preview, timed to the sequence. Otherwise the one
-                // the last encode drew, while nothing is cut (which is when its times are the sequence's).
-                if (S.LiveCaptionsPath.Length > 0 && Exists(S.LiveCaptionsPath))
-                    chain.Add(BuildCaptionOverlay(S.LiveCaptionsPath));
-                else if (AutoCaptions && !S.HasCutSegments && Exists(CaptionsFilePath))
-                    chain.Add(BuildCaptionOverlay(CaptionsFilePath));
-
+                // Auto-captions are not part of it: drawn here, the processor draws them on every frame, which
+                // a long video does not keep up with. Preview Subtitles has the player draw them itself.
                 return chain.Count == 0 ? "" : $"[vid1]{string.Join(",", chain)}[vo]";
             }
             finally
             {
                 (_buildingLiveGraph, _liveScale) = (false, 1);
             }
+        }
+
+        /// <summary>
+        /// The sound half of the live graph: the main video's audio track with the sound of the layers (video
+        /// layers that carry sound, and audio clips) mixed into it, from the player's audio track to its
+        /// speakers. Empty when no layer has sound left to play, and then the player is given no audio graph at
+        /// all: it plays the track as it is, with nothing in between.
+        ///
+        /// A layer's sound is read from its file inside the graph (amovie), as the export reads it, and mpv
+        /// does not seek such a source: after every jump it begins again at its beginning. Nor does the mix look
+        /// at time stamps; it adds up whatever samples arrive. So the sound is laid out from one moment, the one
+        /// playback starts at: every layer is cut and held back as that moment needs, the main video's track is
+        /// made to begin exactly there (aresample's first_pts drops what comes before it and fills in what is
+        /// missing), and all of them then start level. A jump to another moment needs the graph built again for
+        /// that moment, which is for whoever plays it to ask for.
+        ///
+        /// Left out, as they are from the rest of the preview: the cuts, the fades, each track's own filters,
+        /// auto-ducking and the voiceover.
+        /// </summary>
+        /// <param name="from">The moment playback starts from, in sequence seconds.</param>
+        /// <param name="mainTrack">Which of the main video's audio tracks the player plays, counted from 0; negative when it has none.</param>
+        public string BuildLiveAudioGraph(double from, int mainTrack)
+        {
+            if (!HasSource)
+                return "";
+
+            // Only what still has something to play: a clip that ended before this moment is not opened at all.
+            var layers = GetLayerAudioSources().Where(l => l.Duration <= 0.001 || LayerAudioStart(l) + l.Duration > from + 0.05).ToList();
+            if (layers.Count == 0)
+                return "";
+
+            // Every input in the one form, so that the mix has nothing to convert.
+            const string form = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+            var graph = new List<string>();
+            if (mainTrack >= 0)
+            {
+                // Where the main video is not on the sequence the player plays a stand-in stretch of its file
+                // (see MainViewModel.PlayerSource), whose sound is not to be heard.
+                var gate = IsMainWholeSequence ? "" : $"volume=0:enable='not({FilterGraphBuilder.BuildMainGate(GetMainClips(), 0, SequenceSeconds)})',";
+                var first = ((long)Math.Round(from * 48000)).ToString(CultureInfo.InvariantCulture);
+                graph.Add($"[aid{(mainTrack + 1).ToString(CultureInfo.InvariantCulture)}]{gate}aresample=48000:async=1:first_pts={first},{form}[la_base]");
+            }
+            else
+            {
+                // No sound of the main video's own: silence to the end of the sequence, for the rest to be mixed into.
+                graph.Add($"anullsrc=r=48000:cl=stereo,atrim=end={Number(Math.Max(SequenceSeconds - from, 0.1))},asetpts=PTS+{Number(from)}/TB,{form}[la_base]");
+            }
+
+            for (var n = 0; n < layers.Count; n++)
+                graph.Add($"{BuildLayerAudio(layers[n], from)},{form}[la_{n}]");
+
+            graph.Add($"[la_base]{string.Concat(layers.Select((_, n) => $"[la_{n}]"))}amix=inputs={layers.Count + 1}:duration=first:normalize=0:dropout_transition=0{LiveAudioOutput}");
+            return string.Join(";", graph);
         }
 
         // What makes the live graph cheaper than the export's, while showing the same layers in the same places:
@@ -1312,12 +1367,25 @@ public static class FilterGraphBuilder
         /// inside the graph, started where the layer's picture starts (or as far from there as it was slipped),
         /// and no longer than the layer is on screen.
         /// </summary>
-        private string BuildLayerAudio(Layer layer)
+        /// <param name="from">
+        /// The moment of the sequence the chain's sound begins at: 0 for the export, which plays the whole
+        /// sequence, and for Live Preview the moment playback starts from. What the layer would have played
+        /// before then is skipped in its file, and it is held back only by what is left until it starts.
+        /// </param>
+        private string BuildLayerAudio(Layer layer, double from = 0)
         {
             // The clip's length is in the timeline's seconds; at its speed it plays that many times as much of its file.
             var speed = GetSpeed(layer);
-            var chain = new List<string> { $"amovie='{EscapeFilterPath(layer.ImagePath)}'" };
-            var trim = layer.MediaOffset > 0.01 ? $"atrim=start={Number(layer.MediaOffset)}" : "";
+            var startsAt = LayerAudioStart(layer);
+            var into = layer.MediaOffset + Math.Max(from - startsAt, 0) * speed;
+
+            // Read from a little before where it is wanted, when that is well into the file: the cut that follows is exact.
+            var source = $"amovie='{EscapeFilterPath(layer.ImagePath)}'";
+            if (from > 0 && into > 2)
+                source += $":seek_point={Number(into - 1)}";
+
+            var chain = new List<string> { source };
+            var trim = into > 0.01 ? $"atrim=start={Number(into)}" : "";
             if (layer.Duration > 0.001)
                 trim = (trim.Length > 0 ? trim + ":" : "atrim=") + $"end={Number(layer.MediaOffset + layer.Duration * speed)}";
             if (trim.Length > 0)
@@ -1327,11 +1395,13 @@ public static class FilterGraphBuilder
             chain.AddRange(BuildTempo(speed));
             // Its own processing and gain, as a track of the video has them.
             chain.AddRange(layer.AudioFilters.BuildChain(Math.Clamp(layer.AudioGainDb, -40, 24)));
-            var startsAt = Math.Max(layer.StartTime + (AudioLinked || layer.IsAudio ? 0 : layer.AudioOffset), 0);
-            if (startsAt > 0.01)
-                chain.Add($"adelay={(int)Math.Round(startsAt * 1000)}:all=1");
+            if (startsAt - from > 0.01)
+                chain.Add($"adelay={(int)Math.Round((startsAt - from) * 1000)}:all=1");
             return string.Join(",", chain);
         }
+
+        /// <summary>Where on the sequence a layer's sound starts: with its picture, or as far from there as it was slipped.</summary>
+        private double LayerAudioStart(Layer layer) => Math.Max(layer.StartTime + (AudioLinked || layer.IsAudio ? 0 : layer.AudioOffset), 0);
 
         /// <summary>A clip's speed as the graph uses it: within its limits, and exactly 1 for a clip that has none.</summary>
         private static double GetSpeed(Layer layer) =>

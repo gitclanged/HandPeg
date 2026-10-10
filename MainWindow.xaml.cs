@@ -87,16 +87,13 @@ public partial class MainWindow : Window
         // Layers added or removed while they are being arranged change what is on the canvas.
         _viewModel.Layers.CollectionChanged += (_, _) => RedrawLayout();
 
-        // The choices of the rule columns on the Automation tab.
-        RuleTypeColumn.ItemsSource = SmartRule.Types;
-        PresetColumn.ItemsSource = _viewModel.PresetNames;
-
         PreviewKeyDown += MainWindow_PreviewKeyDown;
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
         Loaded += (_, _) => _ = CheckForHandPegUpdateAsync();
 
         _viewModel.LiveFilterInvalidated += ScheduleLiveFilter;
+        _viewModel.LiveFilterInvalidated += () => _liveSoundRefused = false;
 
         // The time bars on the Layers tab follow the cuts, the layers, and anything about a layer that changes.
         _viewModel.LiveFilterInvalidated += ScheduleClipRedraw;
@@ -586,6 +583,22 @@ public partial class MainWindow : Window
             _viewModel.LoadSourceCommand.Execute(null);
     }
 
+    // The Source pane's one button, and Enter in its box: with the box empty there is nothing to load, and
+    // it browses for a file; with a path or a URL in it, it loads that.
+    private void SourceAction_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_viewModel.SourcePath))
+            BrowseSource_Click(sender, e);
+        else
+            _viewModel.LoadSourceCommand.Execute(null);
+    }
+
+    private void SourcePaneBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+            SourceAction_Click(sender, e);
+    }
+
     // ----- The player: libmpv -----
     // mpv draws into the video surface, reports where it is as it plays, and can run an FFmpeg filter graph on
     // the picture (its lavfi-complex property). That graph is Live Preview: with the box ticked it is the one
@@ -609,7 +622,18 @@ public partial class MainWindow : Window
 
     private void PlayerSetPause(bool paused) => _mpv?.SetPause(paused);
 
-    private void PlayerSeek(long positionMs, bool exact = true) => _mpv?.Seek(positionMs, exact);
+    private void PlayerSeek(long positionMs, bool exact = true)
+    {
+        _mpv?.Seek(positionMs, exact);
+
+        // The layers' sound is laid out in the graph from one moment on (see ApplyLiveFilter): after a jump it
+        // is laid out again, from where the jump lands.
+        if (LiveGraphHasSound)
+        {
+            _liveAudioSeekMs = positionMs;
+            ScheduleLiveFilter();
+        }
+    }
 
     /// <summary>
     /// Starts the player when there is none yet. Loading libmpv and starting it take a moment, and happen on
@@ -652,7 +676,16 @@ public partial class MainWindow : Window
             // The timeline's length is the sequence's, which the view model works out; the player's word is
             // only needed for a file that could not be inspected.
             player.DurationChanged += length => OnUi(() => _viewModel.ReportPlayerDuration(length / 1000.0, _playerSource == _viewModel.LocalMediaPath));
-            player.StateChanged += () => OnUi(() => _viewModel.IsPlaying = player.IsPlaying);
+            player.StateChanged += () => OnUi(() =>
+            {
+                var wasPlaying = _viewModel.IsPlaying;
+                _viewModel.IsPlaying = player.IsPlaying;
+
+                // The layers' sound is in the graph only while it plays: it comes in as playback starts, from
+                // where it starts, and goes again when it stops.
+                if (wasPlaying != player.IsPlaying && _viewModel.LivePreview && (player.IsPlaying || LiveGraphHasSound))
+                    ApplyLiveFilter();
+            });
             player.FileLoaded += () => OnUi(() =>
             {
                 // Opening a file takes the graph off; it is given again, for this file.
@@ -870,30 +903,74 @@ public partial class MainWindow : Window
         // The sequence has changed shape: it is opened afresh, and gets its graph when that is done.
         if (SyncPlayerSource())
             return;
-        player.SetAudioFilter(_viewModel.PlayerAudioFilter);
+
+        // Preview Subtitles: the player draws the captions itself, with Live Preview on or off.
+        player.SetSubtitleFile(_viewModel.LiveCaptionsPath);
 
         // Built for the player as large as it is on screen, in real pixels.
         var dpi = VisualTreeHelper.GetDpi(this);
 
         // While a rectangle is being drawn on the video (the crop, or a layer's place in the source) the
         // source itself is shown: what is drawn is a part of it, not of the finished frame.
-        var graph = _viewModel.LivePreview && CurrentOverlayMode == OverlayMode.None
-            ? _viewModel.BuildLiveFilterGraph(VideoView.ActualWidth * dpi.DpiScaleX, VideoView.ActualHeight * dpi.DpiScaleY)
+        var live = _viewModel.LivePreview && CurrentOverlayMode == OverlayMode.None;
+        string Build(long? audioFromMs) => live
+            ? _viewModel.BuildLiveFilterGraph(VideoView.ActualWidth * dpi.DpiScaleX, VideoView.ActualHeight * dpi.DpiScaleY, audioFromMs)
             : "";
+
+        // The sound of the layers is part of the graph only while the video plays forwards: paused, dragged
+        // or wound back, nothing is heard anyway, and a graph without sound in it jumps about far faster.
+        // It is laid out from one moment on. While nothing calls for another, that moment is kept, so that the
+        // graph compares equal to the one running; a jump, or any change to the graph, lays it out afresh
+        // from where playback is.
+        // Not while one track is played on its own either, nor after mpv has turned such a graph down.
+        var wantsSound = player.IsPlaying && !_isScrubbing && _shuttle >= 0 && _viewModel.SoloTrack is null && !_liveSoundRefused;
+        var (jumpedTo, now) = (_liveAudioSeekMs, (long)_viewModel.PositionMs);
+        _liveAudioSeekMs = null;
+        long? kept = wantsSound && jumpedTo is null && LiveGraphHasSound ? _liveAudioFromMs : null;
+        long? from = wantsSound ? kept ?? jumpedTo ?? now : null;
+        var graph = Build(from);
+
+        // With the layers' sound in the graph, the silence where the main video is not there is part of the
+        // graph too; as a filter of the player's it would silence the layers with it.
+        var hasSound = graph.Contains(FilterGraphBuilder.LiveAudioOutput, StringComparison.Ordinal);
+        player.SetAudioFilter(hasSound ? "" : _viewModel.PlayerAudioFilter);
         if (graph == _liveGraph || (graph.Length > 0 && graph == _failedLiveGraph))
             return;
+
+        if (hasSound && kept is not null && kept != now)
+        {
+            from = now;
+            graph = Build(from);
+        }
 
         // Filters work on frames in main memory, so decoding hands them over there while a graph is running.
         if (graph.Length > 0)
             player.SetFiltering(true);
 
-        _liveGraph = graph;
+        (_liveGraph, _liveAudioFromMs) = (graph, hasSound ? from : null);
         var problem = player.SetFilterGraph(graph);
         if (graph.Length == 0)
             player.SetFiltering(false);
         if (problem is not null)
+        {
             OnPlayerError($"lavfi-complex: {problem}");
+            return;
+        }
+
+        // Playback is started again at the moment the sound was laid out from, so that the main video's own
+        // sound and the layers' set off together.
+        if (hasSound && from is { } start)
+            player.Seek(start, exact: true);
     }
+
+    // Whether the graph that is running mixes the layers' sound in, the moment it was laid out from, and a
+    // jump made since that it has yet to be laid out for.
+    private bool LiveGraphHasSound => _liveGraph.Contains(FilterGraphBuilder.LiveAudioOutput, StringComparison.Ordinal);
+    private long? _liveAudioFromMs;
+    private long? _liveAudioSeekMs;
+
+    // mpv turned down a graph with the layers' sound in it: the picture's graph is run without, until a setting changes.
+    private bool _liveSoundRefused;
 
     /// <summary>
     /// mpv logged an error. When it is about the filters, the graph is taken off again, so the source keeps
@@ -905,6 +982,15 @@ public partial class MainWindow : Window
         if (_mpv is not { } player || _liveGraph.Length == 0
             || !(text.Contains("lavfi", StringComparison.OrdinalIgnoreCase) || text.Contains("filter", StringComparison.OrdinalIgnoreCase)))
         {
+            return;
+        }
+
+        // A graph that mixes the layers' sound in is tried again without it first: the picture may be fine.
+        if (LiveGraphHasSound)
+        {
+            _liveSoundRefused = true;
+            _viewModel.StatusText = $"Live Preview could not mix the layers' sound in, and plays the main video's sound alone ({text}).";
+            ApplyLiveFilter();
             return;
         }
 
@@ -925,6 +1011,9 @@ public partial class MainWindow : Window
             return;
 
         ApplySoloTrack();
+
+        // A track played on its own is played without the layers' sound.
+        ScheduleLiveFilter();
 
         // The button is a play button: choosing a track starts it, and letting go of it pauses.
         if (_viewModel.SoloTrack is not null && !PlayerIsPlaying)
@@ -1119,12 +1208,26 @@ public partial class MainWindow : Window
         PlayerSeek((long)e.NewValue, exact: !_isScrubbing);
     }
 
-    private void TimelineSlider_DragStarted(object sender, DragStartedEventArgs e) => _isScrubbing = true;
+    private void TimelineSlider_DragStarted(object sender, DragStartedEventArgs e)
+    {
+        _isScrubbing = true;
+
+        // Dragged while it plays: the layers' sound comes out of the graph for as long as the drag lasts.
+        if (LiveGraphHasSound)
+            ApplyLiveFilter();
+    }
 
     private void TimelineSlider_DragCompleted(object sender, DragCompletedEventArgs e)
     {
         _isScrubbing = false;
         PlayerSeek((long)TimelineSlider.Value);
+
+        // And goes back in, from where the thumb was let go, if it is still playing.
+        if (PlayerIsPlaying && _viewModel.LivePreview)
+        {
+            _liveAudioSeekMs = (long)TimelineSlider.Value;
+            ScheduleLiveFilter();
+        }
     }
 
     // Selecting a segment already seeks; this covers clicking the one that is selected.
@@ -1237,8 +1340,9 @@ public partial class MainWindow : Window
         if (e.PropertyName == nameof(MainViewModel.IsEditorMode))
             UpdateBottomBar();
 
+        // Layers is Editor Mode's tab and Chapters is Encoder Mode's.
         if (e.PropertyName == nameof(MainViewModel.IsEditorMode)
-            && !_viewModel.IsEditorMode && ReferenceEquals(SettingsTabs.SelectedItem, LayersTab))
+            && ReferenceEquals(SettingsTabs.SelectedItem, _viewModel.IsEditorMode ? ChaptersTab : LayersTab))
         {
             SettingsTabs.SelectedIndex = 0;
         }
@@ -1659,6 +1763,22 @@ public partial class MainWindow : Window
         UpdateSidePanes();
         UpdateLayoutPane(announce: false);
         UpdatePaneButtons();
+        PlaceViewsPopup();
+    }
+
+    /// <summary>
+    /// Puts the Views menu beside the button that opens it in the mode in use: over the transport row's in
+    /// Encoder Mode, under the one in the side panes' header in Editor Mode.
+    /// </summary>
+    private void PlaceViewsPopup()
+    {
+        var (button, placement, offset) = _viewModel.IsEditorMode ? (HeaderViewsButton, PlacementMode.Bottom, 4) : (ViewsButton, PlacementMode.Top, -4);
+        if (ReferenceEquals(ViewsPopup.PlacementTarget, button))
+            return;
+
+        // Open beside the other mode's button, it closes first.
+        ViewsButton.IsChecked = false;
+        (ViewsPopup.PlacementTarget, ViewsPopup.Placement, ViewsPopup.VerticalOffset) = (button, placement, offset);
     }
 
     /// <summary>The rows of the player area: the player takes what height there is, the timeline what it needs.</summary>
@@ -1671,17 +1791,19 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Opens and closes the column of side panes with the panes in it: with neither the Keyframes pane nor the
-    /// Cut Segments pane showing, the column and its splitter go, and the player has the width.
+    /// Cut Segments pane showing, the column and its splitter go, and the player has the width. Not in Editor
+    /// Mode, where the column starts with the header and is always there.
     /// </summary>
     private void UpdateSidePanes()
     {
         var settings = AppSettings.Current;
         var (keys, cuts) = (_viewModel.ShowKeyframesPane, _viewModel.ShowCutSegmentsPane);
-        var any = keys || cuts;
+        var any = keys || cuts || _viewModel.IsEditorMode;
 
         SidePanes.Visibility = SideSplitter.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
         var width = settings.SidePanesWidth > 0 ? settings.SidePanesWidth : DefaultSidePanesWidth;
-        (SideColumn.MinWidth, SideColumn.Width) = any ? (200, new GridLength(width)) : (0, new GridLength(0));
+        SideColumn.Width = any ? new GridLength(width) : new GridLength(0);
+        UpdateSideColumnMinWidth();
 
         // The two panes over each other, either way round, with a border between them to drag. The Cut
         // Segments pane takes the height that is left; the Keyframes pane is as tall as what is in it until
@@ -1693,7 +1815,7 @@ public partial class MainWindow : Window
         Grid.SetRow(CutSegmentsPane, cutsRow);
         SidePaneSplitter.Visibility = both ? Visibility.Visible : Visibility.Collapsed;
 
-        var rows = SidePanes.RowDefinitions;
+        var rows = SidePaneStack.RowDefinitions;
         var keysHeight = both && settings.KeyframesPaneHeight > 0 ? new GridLength(settings.KeyframesPaneHeight) : GridLength.Auto;
         foreach (var row in new[] { 0, 2 })
         {
@@ -1704,7 +1826,51 @@ public partial class MainWindow : Window
                 : (keys && !cuts ? Star : GridLength.Auto, 0);
         }
 
+        LimitKeyframesPane();
         Dispatcher.BeginInvoke(DrawKeyTimeline, System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    // The header's buttons have changed width (the queue's count grew a digit), or have just come or gone with the mode.
+    private void EditorHeader_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateSideColumnMinWidth();
+
+    /// <summary>
+    /// How narrow the side column can be dragged. In Editor Mode it is never narrower than the header's row
+    /// of buttons, so that all of them stay on the one row and none is cut off; the border beside the player
+    /// stops there. The width is asked of the row itself: what the buttons need with nothing holding them in.
+    /// </summary>
+    private void UpdateSideColumnMinWidth()
+    {
+        const double least = 200;
+        if (SidePanes.Visibility != Visibility.Visible)
+        {
+            SideColumn.MinWidth = 0;
+            return;
+        }
+
+        var header = 0.0;
+        if (_viewModel.IsEditorMode && EditorHeader.Visibility == Visibility.Visible)
+        {
+            EditorHeader.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            header = Math.Ceiling(EditorHeader.DesiredSize.Width);
+        }
+
+        SideColumn.MinWidth = Math.Max(least, header);
+    }
+
+    private void SidePaneStack_SizeChanged(object sender, SizeChangedEventArgs e) => LimitKeyframesPane();
+
+    /// <summary>
+    /// Keeps the Keyframes pane inside the column while it shares it with the Cut Segments pane. It is as tall
+    /// as what is in it, and a row of that kind is given its height whether there is room or not: in a short
+    /// column its lower controls would be cut off. Held to the room there is, it scrolls instead.
+    /// </summary>
+    private void LimitKeyframesPane()
+    {
+        const double cutSegmentsLeast = 70, splitter = 10;
+        var both = _viewModel.ShowKeyframesPane && _viewModel.ShowCutSegmentsPane;
+        KeyframesPane.MaxHeight = both && SidePaneStack.ActualHeight > 0
+            ? Math.Max(SidePaneStack.ActualHeight - cutSegmentsLeast - splitter, 110)
+            : double.PositiveInfinity;
     }
 
     /// <summary>What the Arrange buttons of the Views menu say: where each pane would go.</summary>
@@ -1779,8 +1945,8 @@ public partial class MainWindow : Window
     private void RememberPaneSizes()
     {
         var (side, layout) = (SidePanes.Visibility == Visibility.Visible ? SideColumn.ActualWidth : 0, LayoutPane.Visibility == Visibility.Visible ? LayoutColumn.ActualWidth : 0);
-        var keys = SidePaneSplitter.Visibility == Visibility.Visible && SidePanes.RowDefinitions[Grid.GetRow(KeyframesPane)].Height.IsAbsolute
-            ? SidePanes.RowDefinitions[Grid.GetRow(KeyframesPane)].ActualHeight
+        var keys = SidePaneSplitter.Visibility == Visibility.Visible && SidePaneStack.RowDefinitions[Grid.GetRow(KeyframesPane)].Height.IsAbsolute
+            ? SidePaneStack.RowDefinitions[Grid.GetRow(KeyframesPane)].ActualHeight
             : 0;
         _viewModel.SavePaneLayout(s =>
         {
@@ -1881,8 +2047,8 @@ public partial class MainWindow : Window
         var inSide = e.GetPosition(SidePanes);
         if (inSide.X >= 0 && inSide.X <= SidePanes.ActualWidth)
         {
-            // Inside the side column: above or below its middle is where this pane goes.
-            var above = inSide.Y < SidePanes.ActualHeight / 2;
+            // Inside the side column: above or below the middle of its panes is where this pane goes.
+            var above = e.GetPosition(SidePaneStack).Y < SidePaneStack.ActualHeight / 2;
             MovePane("Order", to: (pane == "CutSegments") == above);
         }
         else
@@ -1932,10 +2098,10 @@ public partial class MainWindow : Window
     // A button that opened a menu would, clicked again to close it, open it straight back up (see
     // TimelineOptionsPopup_Opened). The views menu, the bins and the keyframe menu share the cure: each popup
     // knows its button (its placement target), which is deaf while the popup is open.
-    private void ViewsPopup_Opened(object? sender, EventArgs e) => ViewsButton.IsHitTestVisible = false;
+    private void ViewsPopup_Opened(object? sender, EventArgs e) => ViewsButton.IsHitTestVisible = HeaderViewsButton.IsHitTestVisible = false;
 
     private void ViewsPopup_Closed(object? sender, EventArgs e) =>
-        Dispatcher.BeginInvoke(() => ViewsButton.IsHitTestVisible = true, System.Windows.Threading.DispatcherPriority.Input);
+        Dispatcher.BeginInvoke(() => ViewsButton.IsHitTestVisible = HeaderViewsButton.IsHitTestVisible = true, System.Windows.Threading.DispatcherPriority.Input);
 
     private void BinPopup_Opened(object? sender, EventArgs e)
     {
@@ -3282,49 +3448,6 @@ public partial class MainWindow : Window
         var dialog = new CaptionStyleDialog(_viewModel.CaptionStyle) { Owner = this };
         if (dialog.ShowDialog() == true)
             _viewModel.SetCaptionStyle(dialog.EditedStyle);
-    }
-
-    // ----- Automation: smart rules -----
-    // The rules are saved as they are edited; the tab has no Save button.
-
-    private void AddFolderRule_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFolderDialog { Title = "Videos in this folder get the preset" };
-        if (dialog.ShowDialog(this) == true)
-            SelectRule(_viewModel.AddSmartRule(SmartRule.Folder, dialog.FolderName), edit: false);
-    }
-
-    // Added with a word to replace, already in edit so it can be typed over at once.
-    private void AddKeywordRule_Click(object sender, RoutedEventArgs e) => SelectRule(_viewModel.AddSmartRule(SmartRule.Keyword, "keyword"), edit: true);
-
-    private void AddExtensionRule_Click(object sender, RoutedEventArgs e) => SelectRule(_viewModel.AddSmartRule(SmartRule.Extension, "*.mkv"), edit: true);
-
-    private void SelectRule(SmartRule? rule, bool edit)
-    {
-        if (rule is null)
-            return;
-
-        RulesGrid.SelectedItem = rule;
-        RulesGrid.ScrollIntoView(rule);
-        if (edit)
-        {
-            RulesGrid.CurrentCell = new DataGridCellInfo(rule, RulesGrid.Columns[1]);
-            RulesGrid.Focus();
-            RulesGrid.BeginEdit();
-        }
-    }
-
-    private void RemoveRule_Click(object sender, RoutedEventArgs e)
-    {
-        if (RulesGrid.SelectedItem is SmartRule rule)
-            _viewModel.RemoveSmartRule(rule);
-    }
-
-    // The edit reaches the rule once this event has returned, so the save waits for that.
-    private void RulesGrid_CellEditEnding(object? sender, DataGridCellEditEndingEventArgs e)
-    {
-        if (e.EditAction == DataGridEditAction.Commit)
-            Dispatcher.BeginInvoke(_viewModel.SaveAutomation, System.Windows.Threading.DispatcherPriority.Background);
     }
 
     // ----- Layout files -----

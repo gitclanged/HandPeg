@@ -67,6 +67,7 @@ public sealed class ModeProfile
     public int MasterTimelineHeight { get; set; }
     public bool ShowCutSegmentsPane { get; set; }
     public bool ShowKeyframesPane { get; set; }
+    public bool ShowSourcePane { get; set; }
     public bool ShowClipKeyframes { get; set; }
     public bool LayoutPaneOnLeft { get; set; }
     public bool SidePanesOnLeft { get; set; }
@@ -116,6 +117,13 @@ public sealed class AppSettings
 
     public string YtDlpReleaseUrl { get; set; } = "";
     public string FfmpegReleaseUrl { get; set; } = "";
+
+    /// <summary>
+    /// Installs the FFmpeg 8.1 build instead of the newest one. Newer FFmpeg asks for an NVIDIA driver (610 or
+    /// later) that cards up to the GTX 10 series never get, and NVENC does not start at all without it. Turned
+    /// on by the hardware encoder check when it sees exactly that; see <see cref="EncoderProber.NvencNeedsOlderFfmpeg"/>.
+    /// </summary>
+    public bool UseFfmpegForOlderNvidiaDrivers { get; set; }
 
     public string WhisperReleaseUrl { get; set; } = "";
 
@@ -336,6 +344,9 @@ public sealed class AppSettings
     /// <summary>The Keyframes pane beside the player: the selected clip's keyframes on a timeline of their own.</summary>
     public bool ShowKeyframesPane { get; set; }
 
+    /// <summary>The Source pane at the top of the side column, in Editor Mode: Encoder Mode has the source in its top bar.</summary>
+    public bool ShowSourcePane { get; set; } = true;
+
     /// <summary>Whether clips on the timeline show a diamond at each of their keyframes.</summary>
     public bool ShowClipKeyframes { get; set; } = true;
 
@@ -409,7 +420,9 @@ public sealed class AppSettings
         TimelineHeight = editor ? 5 : 1;
         ResetPaneLayout();
         PresetBarLocation = editor ? PresetBarInSummary : PresetBarAtTop;
-        ShowAdvancedFiltersTab = editor;
+
+        // Both modes have the whole Filters tab: a batch of conversions is graded as an edit is.
+        ShowAdvancedFiltersTab = true;
         ShowTimelineWaveform = editor;
         ShowAdvancedPlayback = editor;
         StartWithPlayOnlySegments = editor;
@@ -425,6 +438,7 @@ public sealed class AppSettings
         ShowTimelineThumbnails = editor;
         StartWithFrameEngine = editor;
         (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (!editor, editor, true);
+        ShowSourcePane = true;
         if (!editor)
             (DefaultVideoEncoder, DefaultAudioEncoder, DefaultAudioBitrate) = ("", "", "");
 
@@ -585,6 +599,26 @@ public sealed class AppSettings
                         (profile.ShowCutSegmentsPane, profile.ShowKeyframesPane, profile.ShowClipKeyframes) = (mode != EditorMode, mode == EditorMode, true);
                         profile.MasterTimelineHeight = Math.Clamp(4 * profile.TimelineHeight - 3, 1, 50);
                     }
+                }
+
+                // Settings from when Encoder Mode started without the color grading on its Filters tab: it is
+                // switched on there once. It can still be hidden again, under Interface.
+                if (settings.ViewDefaultsVersion < 2)
+                {
+                    settings.ViewDefaultsVersion = 2;
+                    if (settings.UiMode != EditorMode)
+                        settings.ShowAdvancedFiltersTab = true;
+                    if (settings.ModeProfiles.TryGetValue(EncoderMode, out var encoderProfile))
+                        encoderProfile.ShowAdvancedFiltersTab = true;
+                }
+
+                // Settings from before the Source pane: it is open in each mode until it is closed there.
+                if (settings.ViewDefaultsVersion < 3)
+                {
+                    settings.ViewDefaultsVersion = 3;
+                    settings.ShowSourcePane = true;
+                    foreach (var profile in settings.ModeProfiles.Values)
+                        profile.ShowSourcePane = true;
                 }
 
                 // Starting in a set mode, whatever was in use when HandPeg was last closed.

@@ -74,8 +74,6 @@ public partial class MainViewModel
         }
 
         Note(CaptionsFilePath);
-        var liveCaptions = PreviewSubtitles ? _liveCaptionsPath : "";
-        Note(liveCaptions);
 
         var tracks = GetOutputAudioTracks()
             .Select(t => new ExportAudioTrack(
@@ -177,7 +175,6 @@ public partial class MainViewModel
             OutputPath = string.IsNullOrWhiteSpace(DestinationPath)
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), $"HandPeg_output.{Container}")
                 : DestinationPath.Trim().Trim('"'),
-            LiveCaptionsPath = liveCaptions,
             ExistingFiles = files,
         };
     }
@@ -201,8 +198,14 @@ public partial class MainViewModel
     /// not filter the picture at all (Copy), which is then what the preview shows too.
     /// </summary>
     /// <param name="surfaceWidth">Width of the player on screen, in screen pixels: the picture is not built larger than it is shown.</param>
-    public string BuildLiveFilterGraph(double surfaceWidth, double surfaceHeight) =>
-        FilterGraphBuilder.BuildLiveGraph(CompileExportState(), surfaceWidth, surfaceHeight);
+    /// <param name="audioFromMs">
+    /// Where playback starts from, for the sound of the layers to be mixed into what is heard from there on;
+    /// null while nothing is playing, and the graph then has no sound in it. See <see cref="FilterGraphBuilder.BuildLiveGraph"/>.
+    /// </param>
+    public string BuildLiveFilterGraph(double surfaceWidth, double surfaceHeight, long? audioFromMs = null) =>
+        FilterGraphBuilder.BuildLiveGraph(
+            CompileExportState(), surfaceWidth, surfaceHeight, audioFromMs / 1000.0,
+            mainAudioTrack: _mediaInfo is { Audio.Count: 0 } ? -1 : 0);
 
     /// <summary>Render Preview's command: a short, small encode of the given stretches of the timeline.</summary>
     private string BuildPreviewCommand(string outputPath, List<(double Start, double End)> ranges, int percent, string? captionsPath) =>
@@ -301,9 +304,12 @@ public partial class MainViewModel
                 parts.Add(isX264 ? $"-level {Level}" : $"-x265-params level-idc={Level}");
         }
 
-        if (!HasRateControl)
+        var isNvenc = VideoEncoder.Family == EncoderFamily.Nvenc;
+
+        if (!HasRateControl || (isNvenc && NvencTune == NvencLossless))
         {
-            // ProRes and DNxHR take their quality from the profile given in the extra options.
+            // ProRes and DNxHR take their quality from the profile given in the extra options, and a lossless
+            // encode has no quality or bitrate to aim for.
         }
         else if (IsBitrateMode && int.TryParse(TargetBitrate, out var bitrate) && bitrate > 0)
         {
@@ -325,22 +331,75 @@ public partial class MainViewModel
                 EncoderFamily.Nvenc => $"-rc vbr -cq {Crf} -b:v 0",
                 // Constant QP. Measured on Intel hardware: "-global_quality" on its own left the output
                 // identical at every value, for H.264, HEVC and AV1 alike, while "-q:v" is honoured.
-                EncoderFamily.Qsv => $"-q:v {Crf}",
+                // ICQ is asked for by "-global_quality" with no bitrate beside it, and starts at 1.
+                EncoderFamily.Qsv => QsvIcq ? $"-global_quality {Math.Max(Crf, 1)}" : $"-q:v {Crf}",
                 EncoderFamily.Amf => $"-rc cqp -qp_i {Crf} -qp_p {Crf}",
                 _ when encoder == "libvpx-vp9" => $"-crf {Crf} -b:v 0",
                 _ => $"-crf {Crf}",
             });
         }
 
-        // Hardware encoders are particular about the pixel format they are handed; 4:2:0 is the one they all take.
-        if (VideoEncoder.IsHardware && !ExtraVideoArguments.Contains("-pix_fmt", StringComparison.Ordinal))
-            parts.Add("-pix_fmt yuv420p");
+        if (isNvenc)
+            parts.AddRange(BuildNvencArguments());
+        else if (VideoEncoder.Family == EncoderFamily.Amf)
+            parts.Add($"-usage {VendorToken(AmfUsage)}");
+        else if (VideoEncoder.Family == EncoderFamily.Qsv)
+            parts.AddRange(BuildQsvArguments());
 
-        if (!string.IsNullOrWhiteSpace(ExtraVideoArguments))
-            parts.Add(ExtraVideoArguments.Trim());
+        // Hardware encoders are particular about the pixel format they are handed; 4:2:0 is the one they all take,
+        // in 8 bits or, where 10-bit is ticked and the card can, in 10. A software encoder takes what the
+        // graph gives it, and is only told a format when it is to encode in 10 bits.
+        if (!ExtraVideoArguments.Contains("-pix_fmt", StringComparison.Ordinal))
+        {
+            if (VideoEncoder.IsHardware)
+                parts.Add(TenBit && CanTenBit ? "-pix_fmt p010le" : "-pix_fmt yuv420p");
+            else if (TenBit && HasTenBit)
+                parts.Add("-pix_fmt yuv420p10le");
+        }
+
+        // B-frames stop an NVENC encoder that has none (HEVC before the RTX 20 series), so a "-bf" left in
+        // the extra options from another encoder is not passed on to one.
+        var extra = ExtraVideoArguments.Trim();
+        if (isNvenc && !EncoderProber.Supports(encoder, EncoderProber.BFrames))
+            extra = System.Text.RegularExpressions.Regex.Replace(extra, @"(?<!\S)-bf\s+\d+\s*", "").Trim();
+
+        if (extra.Length > 0)
+            parts.Add(extra);
 
         return string.Join(" ", parts);
     }
+
+    /// <summary>NVENC's tuning as set in the Video tab. What the card cannot do (see <see cref="EncoderProber"/>) is left out.</summary>
+    private IEnumerable<string> BuildNvencArguments()
+    {
+        yield return $"-tune {VendorToken(NvencTune)}";
+        if (NvencMultipass != NvencSinglePass)
+            yield return $"-multipass {VendorToken(NvencMultipass)}";
+        if (NvencSpatialAq)
+            yield return "-spatial-aq 1";
+        if (NvencTemporalAq && CanNvencTemporalAq)
+            yield return "-temporal-aq 1";
+        if (Lookahead > 0)
+            yield return $"-rc-lookahead {Math.Min(Lookahead, LargestNvencLookahead).ToString(CultureInfo.InvariantCulture)}";
+    }
+
+    /// <summary>
+    /// QuickSync's lookahead as set in the Video tab. Only its H.264 encoder has the "-look_ahead" switch; HEVC
+    /// and AV1 take the depth alone.
+    /// </summary>
+    private IEnumerable<string> BuildQsvArguments()
+    {
+        if (Lookahead <= 0)
+            yield break;
+
+        if (VideoEncoder.Name == "h264_qsv")
+            yield return "-look_ahead 1";
+        yield return $"-look_ahead_depth {Math.Min(Lookahead, LargestQsvLookahead).ToString(CultureInfo.InvariantCulture)}";
+    }
+
+    // The name FFmpeg knows each choice by is the one in brackets: "Low Latency (ll)" is "ll".
+    private static string VendorToken(string choice) =>
+        choice.LastIndexOf('(') is >= 0 and var open ? choice[(open + 1)..].TrimEnd(')') : choice.ToLowerInvariant();
 
     private static string Number(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
 }

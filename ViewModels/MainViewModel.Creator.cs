@@ -939,7 +939,11 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(HasEncoderPresets));
     }
 
-    partial void OnVideoEncoderChanged(EncoderOption value) => UpdateEncoderPresets();
+    partial void OnVideoEncoderChanged(EncoderOption value)
+    {
+        UpdateEncoderPresets();
+        UpdateRateControlChoices();
+    }
 
     // ----- Drawing on the video -----
     // One overlay over the player serves three jobs, one at a time: setting the crop,
@@ -1346,6 +1350,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowCommandPreviewTab));
         OnPropertyChanged(nameof(ShowAdvancedFiltersTab));
         OnPropertyChanged(nameof(IsEditorMode));
+        OnPropertyChanged(nameof(IsSourcePaneVisible));
         OnPropertyChanged(nameof(IsEncoderMode));
         OnPropertyChanged(nameof(ShowTimelineOptionsBelow));
         OnPropertyChanged(nameof(ShowPresetBarAtTop));

@@ -61,6 +61,20 @@ public static partial class DependencyUpdater
     private const string FfmpegAssetName = "ffmpeg-master-latest-win64-gpl.zip";
     private const string WhisperAssetName = "whisper-bin-x64.zip";
 
+    // The builds of FFmpeg's numbered releases, published beside the newest one: "ffmpeg-n8.1-latest-win64-gpl-8.1.zip".
+    [GeneratedRegex(@"^ffmpeg-n(?<version>\d+\.\d+)-latest-win64-gpl-\k<version>\.zip$")]
+    private static partial Regex FfmpegReleaseAssetRegex();
+
+    // The last FFmpeg whose NVENC runs on NVIDIA drivers before 610 (NVENC API 13.0), and so on the GTX 10 series.
+    private static readonly Version LastFfmpegForOlderNvidiaDrivers = new(8, 1);
+
+    /// <summary>The version in the name of a numbered FFmpeg build that older NVIDIA drivers can still use, or null.</summary>
+    private static Version? OlderNvidiaFfmpegVersion(string? name) =>
+        name is not null && FfmpegReleaseAssetRegex().Match(name) is { Success: true } match
+        && Version.Parse(match.Groups["version"].Value) is var version && version <= LastFfmpegForOlderNvidiaDrivers
+            ? version
+            : null;
+
     // Checksum lists some projects attach to a release: yt-dlp's, and the FFmpeg builds'.
     private static readonly string[] SumsAssetNames = ["SHA2-256SUMS", "checksums.sha256"];
 
@@ -331,9 +345,13 @@ public static partial class DependencyUpdater
     public static async Task<RemoteAsset> GetLatestAsync(string tool, CancellationToken cancellationToken)
     {
         var releaseUrl = ReleaseUrl(tool);
+
+        // The same release answers differently when the build for older NVIDIA drivers is wanted from it.
+        var olderFfmpeg = tool == Ffmpeg && AppSettings.Current.UseFfmpegForOlderNvidiaDrivers;
+        var answerKey = olderFfmpeg ? releaseUrl + "|older" : releaseUrl;
         lock (Answers)
         {
-            if (Answers.TryGetValue(releaseUrl, out var kept) && DateTime.UtcNow - kept.At < AnswerLifetime)
+            if (Answers.TryGetValue(answerKey, out var kept) && DateTime.UtcNow - kept.At < AnswerLifetime)
                 return kept.Asset;
         }
 
@@ -353,30 +371,40 @@ public static partial class DependencyUpdater
         {
             var tag = release.GetProperty("tag_name").GetString() ?? "";
             var assets = release.GetProperty("assets").EnumerateArray().ToList();
-            foreach (var asset in assets)
-            {
-                var assetName = asset.GetProperty("name").GetString();
-                if (!IsAssetFor(tool, assetName))
-                    continue;
 
-                // Rolling releases keep the same tag, so the asset timestamp is part of the version stamp.
-                var url = asset.GetProperty("browser_download_url").GetString()!;
-                var updatedAt = asset.GetProperty("updated_at").GetString();
-                var size = asset.TryGetProperty("size", out var sizeValue) && sizeValue.TryGetInt64(out var bytes) ? bytes : 0;
+            // For older NVIDIA drivers, the newest numbered build they can use; when the release no longer
+            // carries one, the usual build, which still does everything but NVENC.
+            var older = olderFfmpeg
+                ? assets.Where(a => OlderNvidiaFfmpegVersion(a.GetProperty("name").GetString()) is not null)
+                    .OrderByDescending(a => OlderNvidiaFfmpegVersion(a.GetProperty("name").GetString()))
+                    .FirstOrDefault()
+                : default;
+            var isOlder = older.ValueKind == JsonValueKind.Object;
+            var asset = isOlder ? older : assets.FirstOrDefault(a => IsAssetFor(tool, a.GetProperty("name").GetString()));
+            if (asset.ValueKind != JsonValueKind.Object)
+                continue;
 
-                var digest = asset.TryGetProperty("digest", out var digestValue) && digestValue.ValueKind == JsonValueKind.String
-                    ? digestValue.GetString()
-                    : null;
-                var sha256 = digest is not null && digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) ? digest[7..] : null;
+            var assetName = asset.GetProperty("name").GetString()!;
 
-                var sums = assets.FirstOrDefault(a => SumsAssetNames.Contains(a.GetProperty("name").GetString()));
-                var sumsUrl = sums.ValueKind == JsonValueKind.Object ? sums.GetProperty("browser_download_url").GetString() : null;
+            // Rolling releases keep the same tag, so the asset timestamp is part of the version stamp; and two
+            // builds share this release, so the older one's stamp also says which it is.
+            var url = asset.GetProperty("browser_download_url").GetString()!;
+            var updatedAt = asset.GetProperty("updated_at").GetString();
+            var stamp = isOlder ? $"{tag}|{updatedAt}|{assetName}" : $"{tag}|{updatedAt}";
+            var size = asset.TryGetProperty("size", out var sizeValue) && sizeValue.TryGetInt64(out var bytes) ? bytes : 0;
 
-                var found = new RemoteAsset(assetName!, url, $"{tag}|{updatedAt}", tag, size, sha256, sumsUrl);
-                lock (Answers)
-                    Answers[releaseUrl] = (DateTime.UtcNow, found);
-                return found;
-            }
+            var digest = asset.TryGetProperty("digest", out var digestValue) && digestValue.ValueKind == JsonValueKind.String
+                ? digestValue.GetString()
+                : null;
+            var sha256 = digest is not null && digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) ? digest[7..] : null;
+
+            var sums = assets.FirstOrDefault(a => SumsAssetNames.Contains(a.GetProperty("name").GetString()));
+            var sumsUrl = sums.ValueKind == JsonValueKind.Object ? sums.GetProperty("browser_download_url").GetString() : null;
+
+            var found = new RemoteAsset(assetName, url, stamp, tag, size, sha256, sumsUrl);
+            lock (Answers)
+                Answers[answerKey] = (DateTime.UtcNow, found);
+            return found;
         }
 
         throw new InvalidOperationException($"No release at {releaseUrl} has the download for {DisplayName(tool)}.");

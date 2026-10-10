@@ -15,6 +15,14 @@ public static partial class HardwareFallback
     [GeneratedRegex(@"-rc vbr -cq (?<q>\d+) -b:v 0")]
     private static partial Regex NvencQualityRegex();
 
+    // NVENC's own tuning, which a software encoder either does not know or means something else by.
+    [GeneratedRegex(@" -(?:tune (?:hq|uhq|ll|ull|lossless)|multipass \w+|(?:spatial|temporal)[-_]aq \d|rc-lookahead \d+)\b")]
+    private static partial Regex NvencTuningRegex();
+
+    // AMF's usage and QuickSync's lookahead, which no software encoder knows.
+    [GeneratedRegex(@" -(?:usage \w+|look_ahead \d|look_ahead_depth \d+)\b")]
+    private static partial Regex AmfQsvTuningRegex();
+
     [GeneratedRegex(@"-(?:q:v|global_quality) (?<q>\d+)")]
     private static partial Regex QsvQualityRegex();
 
@@ -65,6 +73,22 @@ public static partial class HardwareFallback
             "qsv" => QsvQualityRegex().Replace(rewritten, "-crf ${q}"),
             _ => AmfQualityRegex().Replace(rewritten, "-crf ${q}"),
         };
+
+        if (match.Groups["vendor"].Value == "nvenc")
+        {
+            // Lossless had no quality number to carry over: x264 and x265 are asked for the best they have.
+            var lossless = rewritten.Contains(" -tune lossless", StringComparison.Ordinal) && software != "libsvtav1";
+            rewritten = NvencTuningRegex().Replace(rewritten, "");
+            if (lossless)
+                rewritten = HardwareEncoderRegex().Replace(rewritten, "${0} -crf 0", 1);
+        }
+        else
+        {
+            rewritten = AmfQsvTuningRegex().Replace(rewritten, "");
+        }
+
+        // 10-bit under the name the software encoders know it by.
+        rewritten = rewritten.Replace("-pix_fmt p010le", "-pix_fmt yuv420p10le");
 
         // In the bitrate modes only the vendor's "-rc" switch has to go; the bitrate itself carries over.
         rewritten = VendorRateModeRegex().Replace(rewritten, "");

@@ -191,7 +191,7 @@
                     <CheckBox Content="Notify when an encode finishes" IsChecked="{Binding NotifyOnEncodeComplete}"
                               ToolTip="Sends a Windows notification when an encode, or the queue, has finished." />
                     <CheckBox Content="Show color grading on the Filters tab" IsChecked="{Binding ShowAdvancedFiltersTab}"
-                              ToolTip="Adds the Advanced tab: colour correction (contrast, brightness, saturation, gamma), sharpening, and a live preview of a single frame. Values already set there keep applying while the tab is hidden." />
+                              ToolTip="Shows colour correction (contrast, brightness, saturation, gamma) and sharpening on the Filters tab, in this mode. Values already set there keep applying while they are hidden." />
 
                     <TextBlock Text="Render Preview" Style="{StaticResource SectionTitle}" Margin="0,16,0,2" />
                     <StackPanel Orientation="Horizontal">
@@ -237,6 +237,10 @@
 
                         <TextBlock Grid.Row="4" Text="HandPeg itself:" Style="{StaticResource FieldLabel}" />
                         <TextBlock Grid.Row="4" Grid.Column="1" x:Name="HandPegUpdateText" Style="{StaticResource Hint}" Margin="0,8,0,8" />
+
+                        <CheckBox Grid.Row="5" Grid.Column="1" Margin="0,0,0,8" Content="Install FFmpeg 8.1 instead of the newest build (for older NVIDIA drivers)"
+                                  IsChecked="{Binding UseFfmpegForOlderNvidiaDrivers}"
+                                  ToolTip="Newer FFmpeg needs NVIDIA driver 610 or later for NVENC, which the GTX 10 series and older cards never get. HandPeg turns this on by itself when NVENC fails to start for that reason; the next FFmpeg update then installs the 8.1 build." />
 
                         <TextBlock Grid.Row="6" Text="whisper.cpp releases:" Style="{StaticResource FieldLabel}" />
                         <TextBox Grid.Row="6" Grid.Column="1" Margin="0,4" Text="{Binding WhisperReleaseUrl, UpdateSourceTrigger=PropertyChanged}"
@@ -343,7 +347,7 @@
                 <StackPanel>
                     <TextBlock Text="Presets and encoding" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Smart rules and the default preset are on the Automation tab of the main window." />
+                               Text="Smart rules and the default preset are on the Automation tab of this window." />
                     <CheckBox Content="Save the Target File Size with each preset" IsChecked="{Binding SaveTargetSizeInPresets}"
                               ToolTip="When on, Save Preset also stores the Target File Size set at the time, and applying that preset brings it back." />
                     <CheckBox Content="Default to Vertical Video" IsChecked="{Binding DefaultVerticalVideo}"
@@ -353,6 +357,98 @@
                     <CheckBox Content="Fall back to the software encoder when a hardware encode fails" IsChecked="{Binding AutoFallbackToSoftware}"
                               ToolTip="If an encode or queue job fails on a hardware encoder, it is tried once more with libx264 (or libx265 for HEVC, SVT-AV1 for AV1)." />
                 </StackPanel>
+            </TabItem>
+
+            <!--
+                Presets applied by themselves when a video is loaded. This tab is the main window's view model's,
+                not the copy of the settings the other tabs edit: it is saved as it is edited, without the Save button.
+            -->
+            <TabItem Header="Automation">
+                <DockPanel x:Name="AutomationPanel">
+                    <TextBlock DockPanel.Dock="Top" Text="Automation" Style="{StaticResource SectionTitle}" />
+                    <TextBlock DockPanel.Dock="Top" Style="{StaticResource Hint}"
+                               Text="Presets applied by themselves when a video is loaded. Folder rules win over keyword rules, which win over extension rules. Double-click a cell to edit it. Rules are saved as they are edited: Save and Cancel below do not affect them." />
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Global Default Preset:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="260" Margin="0" ItemsSource="{Binding DefaultPresetChoices}" SelectedItem="{Binding DefaultPresetChoice}"
+                                  AutomationProperties.Name="Global Default Preset" ToolTip="Applied to a newly loaded video when no rule matches." />
+                    </StackPanel>
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="Add Folder Rule..." Click="AddFolderRule_Click" ToolTip="Videos in this folder, or a folder inside it, get the preset." />
+                        <Button Content="Add Keyword Rule" Margin="6,0,0,0" Click="AddKeywordRule_Click"
+                                ToolTip="Videos whose file name, path or web address contains the keyword get the preset. Upper and lower case are the same." />
+                        <Button Content="Add Extension Rule" Margin="6,0,0,0" Click="AddExtensionRule_Click" ToolTip="Videos of this file type, written as *.mkv, get the preset." />
+                        <Button Content="Remove Rule" Margin="6,0,0,0" Click="RemoveRule_Click" />
+                    </StackPanel>
+                    <DataGrid x:Name="RulesGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                              CanUserResizeRows="False" CanUserReorderColumns="False" SelectionMode="Single" SelectionUnit="FullRow"
+                              HeadersVisibility="Column" GridLinesVisibility="Horizontal" RowHeight="30"
+                              Background="{DynamicResource ControlBrush}" RowBackground="{DynamicResource ControlBrush}"
+                              Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource ControlBorderBrush}"
+                              HorizontalGridLinesBrush="{DynamicResource ControlBorderBrush}"
+                              ItemsSource="{Binding SmartRules}" CellEditEnding="RulesGrid_CellEditEnding" AutomationProperties.Name="Smart Rules">
+                        <DataGrid.ColumnHeaderStyle>
+                            <Style TargetType="DataGridColumnHeader">
+                                <Setter Property="Background" Value="{DynamicResource ControlHoverBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+                                <Setter Property="Padding" Value="8,6" />
+                                <Setter Property="BorderThickness" Value="0" />
+                            </Style>
+                        </DataGrid.ColumnHeaderStyle>
+                        <DataGrid.CellStyle>
+                            <Style TargetType="DataGridCell">
+                                <Setter Property="BorderThickness" Value="0" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                                <Setter Property="VerticalContentAlignment" Value="Center" />
+                                <Style.Triggers>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource AccentPressedBrush}" />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.CellStyle>
+                        <DataGrid.Columns>
+                            <DataGridComboBoxColumn x:Name="RuleTypeColumn" Header="Rule" Width="130"
+                                                    SelectedItemBinding="{Binding Type, UpdateSourceTrigger=PropertyChanged}">
+                                <DataGridComboBoxColumn.ElementStyle>
+                                    <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Static DataGridComboBoxColumn.TextBlockComboBoxStyleKey}}">
+                                        <Setter Property="Margin" Value="8,0" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridComboBoxColumn.ElementStyle>
+                                <DataGridComboBoxColumn.EditingElementStyle>
+                                    <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+                                        <Setter Property="Margin" Value="0" />
+                                        <Setter Property="HorizontalAlignment" Value="Stretch" />
+                                    </Style>
+                                </DataGridComboBoxColumn.EditingElementStyle>
+                            </DataGridComboBoxColumn>
+                            <DataGridTextColumn Header="Matches (folder, keyword, or *.extension)" Width="*" Binding="{Binding Path, UpdateSourceTrigger=PropertyChanged}">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Margin" Value="8,0" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridComboBoxColumn x:Name="PresetColumn" Header="Preset" Width="230"
+                                                    SelectedItemBinding="{Binding Preset, UpdateSourceTrigger=PropertyChanged}">
+                                <DataGridComboBoxColumn.ElementStyle>
+                                    <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Static DataGridComboBoxColumn.TextBlockComboBoxStyleKey}}">
+                                        <Setter Property="Margin" Value="8,0" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridComboBoxColumn.ElementStyle>
+                                <DataGridComboBoxColumn.EditingElementStyle>
+                                    <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+                                        <Setter Property="Margin" Value="0" />
+                                        <Setter Property="HorizontalAlignment" Value="Stretch" />
+                                    </Style>
+                                </DataGridComboBoxColumn.EditingElementStyle>
+                            </DataGridComboBoxColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
             </TabItem>
 
             <TabItem Header="Keyboard Shortcuts">

@@ -138,6 +138,29 @@ public sealed class EncodingPreset
     /// <summary>Encoder options with no control of their own, for example "-g 1 -keyint_min 1".</summary>
     public string ExtraVideoArguments { get; set; } = "";
 
+    // The selected encoder's own settings: each is only used while an encoder that has it is the one selected.
+    public string NvencTune { get; set; } = "High Quality (hq)";
+    public string NvencMultipass { get; set; } = "Disabled";
+    public bool NvencSpatialAq { get; set; }
+    public bool NvencTemporalAq { get; set; }
+    public string AmfUsage { get; set; } = "Transcoding (transcoding)";
+
+    /// <summary>QuickSync: constant quality as ICQ (-global_quality) instead of a constant QP (-q:v).</summary>
+    public bool QsvIcq { get; set; }
+
+    /// <summary>Frames of rate-control lookahead, for NVENC and QuickSync; 0 for none.</summary>
+    public int Lookahead { get; set; }
+
+    /// <summary>10-bit output instead of 8-bit, for the encoders that have it.</summary>
+    public bool TenBit { get; set; }
+
+    // The two above as they were saved while they were NVENC's alone. Read into them; never written.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? NvencLookahead { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? NvencTenBit { get; set; }
+
     // Audio: the codec and bitrate apply to every track.
     public string AudioEncoder { get; set; } = "aac";
     public string AudioBitrate { get; set; } = "160k";

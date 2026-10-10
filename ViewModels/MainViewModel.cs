@@ -35,7 +35,8 @@ public partial class MainViewModel : ObservableObject
         nameof(IsAudioReencoded), nameof(IsCustomFramerate), nameof(IsConstantQuality), nameof(IsBitrateMode),
         nameof(IsSourceHdr), nameof(HdrStatusText), nameof(SelectedPreset), nameof(PresetName),
         nameof(DownloadSubtitles), nameof(AudioTracksHint), nameof(SubtitleTracksHint), nameof(HasRateControl),
-        nameof(QueueButtonText), nameof(IsQueuePauseRequested),
+        nameof(QueueButtonText), nameof(IsQueuePauseRequested), nameof(IsNvencEncoder), nameof(CanNvencTemporalAq),
+        nameof(IsAmfEncoder), nameof(HasLookahead), nameof(HasTenBit), nameof(CanTenBit), nameof(RateControlChoice),
         nameof(IsDependencyUpdateAvailable), nameof(DependencyStatusText),
         nameof(IsInteractiveCropActive), nameof(TargetSizeHint), nameof(PlaybackSpeed), nameof(CanSetPixelAspect), nameof(HasEncoderPresets),
         nameof(FrameWidth), nameof(FrameHeight), nameof(ShowIFrames),
@@ -57,7 +58,7 @@ public partial class MainViewModel : ObservableObject
         nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer),
         nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName),
         nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
-        nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
+        nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowSourcePane), nameof(IsSourcePaneVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
         nameof(RecentActions), nameof(HideDroppedTracks), nameof(HasSelectedKeyframe), nameof(SelectedKeyEasing), nameof(PreviewSubtitles),
     ];
 
@@ -136,6 +137,7 @@ public partial class MainViewModel : ObservableObject
 #pragma warning restore MVVMTK0034
 
         UpdateEncoderPresets();
+        UpdateRateControlChoices();
 
         InitializeQueue();
         ApplyDisplaySettings();
@@ -146,11 +148,16 @@ public partial class MainViewModel : ObservableObject
         AudioTracks.CollectionChanged += (_, _) => KeepCaptionTrackValid();
         CaptionLayer.PropertyChanged += (_, _) => GenerateCommand();
 
-        // The caption file is written for the box as large as it is: a preview of it follows the box being resized.
+        // The preview's caption file is written for the box where and as large as it is, with its opacity and
+        // its shadow: a preview of it follows the box being moved, resized or restyled.
         CaptionLayer.PropertyChanged += (_, e) =>
         {
-            if (PreviewSubtitles && e.PropertyName is nameof(Layer.SizeWidth) or nameof(Layer.SizeHeight))
+            if (PreviewSubtitles && e.PropertyName is nameof(Layer.SizeWidth) or nameof(Layer.SizeHeight)
+                    or nameof(Layer.PositionX) or nameof(Layer.PositionY) or nameof(Layer.Opacity)
+                    or nameof(Layer.Shadow) or nameof(Layer.ShadowOffset) or nameof(Layer.ShadowOpacity))
+            {
                 RefreshLiveCaptionsSoon();
+            }
         };
         _mainVideoRow.PropertyChanged += OnMainRowChanged;
         AudioTracks.CollectionChanged += (_, _) => RefreshAudioRows();
@@ -211,6 +218,7 @@ public partial class MainViewModel : ObservableObject
     public IReadOnlyList<string> Tunes { get; } = [NoneOption, "film", "animation", "grain", "fastdecode", "zerolatency"];
     public IReadOnlyList<string> Profiles { get; } = [AutoOption, "baseline", "main", "high", "high10"];
     public IReadOnlyList<string> Levels { get; } = [AutoOption, "3.1", "4.0", "4.1", "4.2", "5.1", "5.2"];
+    /// <summary>The three ways of spending data, as presets and projects store them. The Video tab shows them under the selected encoder's own names: see <see cref="RateControlChoices"/>.</summary>
     public IReadOnlyList<string> RateControls { get; } = [ConstantQuality, AverageBitrate, ConstantBitrate];
     public IReadOnlyList<string> Colorspaces { get; } = [SameAsSource, TonemapToSdr];
 
@@ -357,6 +365,16 @@ public partial class MainViewModel : ObservableObject
         Colorspace = Pick(Colorspaces, preset.Colorspace, SameAsSource);
         HardwareDecoding = preset.HardwareDecoding;
         ExtraVideoArguments = preset.ExtraVideoArguments;
+        NvencTune = Pick(NvencTunes, preset.NvencTune, NvencHighQuality);
+        NvencMultipass = Pick(NvencMultipasses, preset.NvencMultipass, NvencSinglePass);
+        NvencSpatialAq = preset.NvencSpatialAq;
+        NvencTemporalAq = preset.NvencTemporalAq;
+        AmfUsage = Pick(AmfUsages, preset.AmfUsage, AmfTranscoding);
+        QsvIcq = preset.QsvIcq;
+
+        // Presets saved while NVENC had a lookahead and a 10-bit box of its own carry them under its name.
+        Lookahead = Math.Clamp(Math.Max(preset.Lookahead, preset.NvencLookahead ?? 0), 0, LargestQsvLookahead);
+        TenBit = preset.TenBit || preset.NvencTenBit == true;
         AudioEncoder = Pick(AudioEncoders, preset.AudioEncoder, "aac");
         AudioBitrate = Pick(AudioBitrates, preset.AudioBitrate, "160k");
         MergeAudioTracks = preset.MergeAudioTracks;
@@ -421,7 +439,12 @@ public partial class MainViewModel : ObservableObject
 
     // ----- Source / destination -----
 
-    [ObservableProperty] private string _sourcePath = "";
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SourceActionText))]
+    private string _sourcePath = "";
+
+    /// <summary>What the button in the Source pane's box does: with nothing typed there is nothing to load, and it browses for a file.</summary>
+    public string SourceActionText => string.IsNullOrWhiteSpace(SourcePath) ? "Browse" : "Load";
     [ObservableProperty] private string _downloadResolution = "Best";
     [ObservableProperty] private string _destinationPath = "";
 
@@ -700,6 +723,12 @@ public partial class MainViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(AreSoftwareEncoderOptionsEnabled))]
     [NotifyPropertyChangedFor(nameof(IsVideoReencoded))]
     [NotifyPropertyChangedFor(nameof(HasRateControl))]
+    [NotifyPropertyChangedFor(nameof(IsNvencEncoder))]
+    [NotifyPropertyChangedFor(nameof(CanNvencTemporalAq))]
+    [NotifyPropertyChangedFor(nameof(IsAmfEncoder))]
+    [NotifyPropertyChangedFor(nameof(HasLookahead))]
+    [NotifyPropertyChangedFor(nameof(HasTenBit))]
+    [NotifyPropertyChangedFor(nameof(CanTenBit))]
     private EncoderOption _videoEncoder;
 
     /// <summary>Only x264 and x265 take the preset names in the list; anything else would reject them.</summary>
@@ -725,6 +754,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsConstantQuality))]
     [NotifyPropertyChangedFor(nameof(IsBitrateMode))]
+    [NotifyPropertyChangedFor(nameof(RateControlChoice))]
     private string _rateControl = ConstantQuality;
 
     /// <summary>Target bitrate in kbps, used by the two bitrate modes.</summary>
@@ -734,6 +764,125 @@ public partial class MainViewModel : ObservableObject
     public bool IsBitrateMode => !IsConstantQuality;
 
     [ObservableProperty] private string _colorspace = SameAsSource;
+
+    // ----- Rate Control, under the selected encoder's names -----
+    // Every encoder spends data in the same three ways (a constant quality, a bitrate held, a bitrate
+    // averaged), and RateControl says which. What differs is what each encoder calls them, and QuickSync has
+    // two kinds of constant quality. So the one Rate Control box lists the selected encoder's own names, and
+    // what is chosen there is turned into RateControl (and, for QuickSync, QsvIcq): presets and projects go on
+    // storing what they always have.
+
+    private const string RcCrf = "CRF";
+    private const string RcCq = "CQ";
+    private const string RcCqp = "CQP";
+    private const string RcIcq = "ICQ";
+    private const string RcCbr = "CBR";
+    private const string RcVbr = "VBR";
+
+    /// <summary>The rate controls of the selected encoder, by its own names; refilled when the encoder changes.</summary>
+    public ObservableCollection<string> RateControlChoices { get; } = [RcCrf, RcCbr, RcVbr];
+
+    /// <summary>What <see cref="RateControl"/> is called by the selected encoder. CBR and VBR are the same everywhere; the constant quality has four names.</summary>
+    public string RateControlChoice
+    {
+        get => RateControl == ConstantBitrate ? RcCbr
+            : RateControl == AverageBitrate ? RcVbr
+            : VideoEncoder.Family switch
+            {
+                EncoderFamily.Nvenc => RcCq,
+                EncoderFamily.Amf => RcCqp,
+                EncoderFamily.Qsv => QsvIcq ? RcIcq : RcCqp,
+                _ => RcCrf,
+            };
+        set
+        {
+            // A drop-down whose list is being refilled reports "nothing selected" for a moment.
+            if (value is null)
+                return;
+
+            if (VideoEncoder.Family == EncoderFamily.Qsv)
+                QsvIcq = value == RcIcq;
+            RateControl = value == RcCbr ? ConstantBitrate : value == RcVbr ? AverageBitrate : ConstantQuality;
+        }
+    }
+
+    /// <summary>Refills the Rate Control box for the selected encoder; what is chosen stays chosen, under its new name.</summary>
+    private void UpdateRateControlChoices()
+    {
+        string[] choices = VideoEncoder.Family switch
+        {
+            EncoderFamily.Nvenc => [RcCq, RcCbr, RcVbr],
+            EncoderFamily.Amf => [RcCqp, RcCbr, RcVbr],
+            EncoderFamily.Qsv => [RcCqp, RcIcq, RcCbr, RcVbr],
+            _ => [RcCrf, RcCbr, RcVbr],
+        };
+
+        if (!choices.SequenceEqual(RateControlChoices))
+        {
+            RateControlChoices.Clear();
+            foreach (var choice in choices)
+                RateControlChoices.Add(choice);
+        }
+
+        OnPropertyChanged(nameof(RateControlChoice));
+    }
+
+    // ----- The selected encoder's own settings -----
+    // Each is shown, in the one row under the shared settings, only while an encoder that has it is selected,
+    // and only then reaches the command. The speed step and the rate control are not among them: those are
+    // Encoder Preset and Rate Control, which every encoder shares.
+
+    private const string NvencHighQuality = "High Quality (hq)";
+    private const string NvencLossless = "Lossless";
+    private const string NvencSinglePass = "Disabled";
+    private const string AmfTranscoding = "Transcoding (transcoding)";
+
+    public IReadOnlyList<string> NvencTunes { get; } = [NvencHighQuality, "Low Latency (ll)", "Ultra Low Latency (ull)", NvencLossless];
+    public IReadOnlyList<string> NvencMultipasses { get; } = [NvencSinglePass, "Quarter Resolution (qres)", "Full Resolution (fullres)"];
+
+    public IReadOnlyList<string> AmfUsages { get; } =
+    [
+        AmfTranscoding, "High Quality (high_quality)", "Low Latency (lowlatency)",
+        "Low Latency High Quality (lowlatency_high_quality)", "Ultra Low Latency (ultralowlatency)", "Webcam (webcam)",
+    ];
+
+    /// <summary>The most frames NVENC looks ahead, and the most QuickSync does.</summary>
+    private const int LargestNvencLookahead = 32;
+    private const int LargestQsvLookahead = 100;
+
+    public bool IsNvencEncoder => VideoEncoder.Family == EncoderFamily.Nvenc;
+    public bool IsAmfEncoder => VideoEncoder.Family == EncoderFamily.Amf;
+
+    /// <summary>NVENC and QuickSync can look ahead; AMF and the software encoders have no such setting here.</summary>
+    public bool HasLookahead => VideoEncoder.Family is EncoderFamily.Nvenc or EncoderFamily.Qsv;
+
+    /// <summary>The hardware encoders and the four software ones take 10-bit frames; the editing codecs set their depth by profile.</summary>
+    public bool HasTenBit => VideoEncoder.IsHardware || VideoEncoder.Family == EncoderFamily.Software;
+
+    // NVENC
+    [ObservableProperty] private string _nvencTune = NvencHighQuality;
+    [ObservableProperty] private string _nvencMultipass = NvencSinglePass;
+    [ObservableProperty] private bool _nvencSpatialAq;
+    [ObservableProperty] private bool _nvencTemporalAq;
+
+    // AMF
+    [ObservableProperty] private string _amfUsage = AmfTranscoding;
+
+    /// <summary>QuickSync: constant quality as ICQ (-global_quality) instead of a constant QP (-q:v). Set by choosing ICQ as the rate control.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RateControlChoice))]
+    private bool _qsvIcq;
+
+    /// <summary>Frames of lookahead for the rate control, for NVENC and QuickSync; 0 leaves it off.</summary>
+    [ObservableProperty] private int _lookahead;
+
+    /// <summary>10-bit output instead of 8-bit: p010le for a hardware encoder, yuv420p10le for a software one.</summary>
+    [ObservableProperty] private bool _tenBit;
+
+    // What the selected encoder can do on this card, as the probe found it: asking for more stops the encode.
+    // (The probe only ever turns a hardware encoder down, so a software one can always.)
+    public bool CanNvencTemporalAq => EncoderProber.Supports(VideoEncoder.Name, EncoderProber.TemporalAq);
+    public bool CanTenBit => EncoderProber.Supports(VideoEncoder.Name, EncoderProber.TenBit);
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HdrStatusText))]
@@ -941,9 +1090,50 @@ public partial class MainViewModel : ObservableObject
             _ => $"{supported.Count} hardware encoders available",
         };
 
+        // What the card can do is known now, for the encoder that is selected as for the others.
+        OnPropertyChanged(nameof(CanNvencTemporalAq));
+        OnPropertyChanged(nameof(CanTenBit));
+        GenerateCommand();
+
         // An encoder FFmpeg has but could not start is worth a word: it is usually a driver that needs updating.
         if (problems.Count > 0)
             HardwareEncoderStatusText += $". Not usable: {string.Join("; ", problems)}";
+
+        if (EncoderProber.NvencNeedsOlderFfmpeg)
+            OfferFfmpegForOlderNvidiaDrivers();
+    }
+
+    /// <summary>
+    /// NVENC did not start because this FFmpeg asks for a newer NVIDIA driver than the one installed. A card that
+    /// still gets drivers needs a driver update; one that does not (the GTX 10 series and older) needs the older
+    /// FFmpeg build, which the next FFmpeg update then installs.
+    /// </summary>
+    private void OfferFfmpegForOlderNvidiaDrivers()
+    {
+        if (DependencyUpdater.IsFfmpegOverridden)
+        {
+            HardwareEncoderStatusText += ". NVENC needs a newer NVIDIA driver, or an FFmpeg 8.1 build in place of the one set in Settings.";
+            return;
+        }
+
+        var settings = AppSettings.Current;
+        if (!settings.UseFfmpegForOlderNvidiaDrivers)
+        {
+            settings.UseFfmpegForOlderNvidiaDrivers = true;
+            try
+            {
+                settings.SaveAsCurrent();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The choice still holds for this session.
+            }
+
+            AppLog.Write("NVENC needs a newer NVIDIA driver than is installed, so FFmpeg updates now install the build for older drivers.");
+            _ = CheckDependencyUpdatesAsync();
+        }
+
+        HardwareEncoderStatusText += ". NVENC needs a newer NVIDIA driver, or the FFmpeg build for older drivers: update FFmpeg in Settings to install it.";
     }
 
     /// <summary>Tests whether the graphics card can blur the background (OpenCL), and writes the command again when it can.</summary>
@@ -1034,6 +1224,7 @@ public partial class MainViewModel : ObservableObject
         if (!HasSource)
             MergeAudioTracks = IsEditorMode;
         (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (settings.ShowCutSegmentsPane, settings.ShowKeyframesPane, settings.ShowClipKeyframes);
+        ShowSourcePane = settings.ShowSourcePane;
         OnPropertyChanged(nameof(ModeButtonText));
 
         // The Layers tab draws the main video's clips with frames from it, which Encoder Mode has no use for.
@@ -1324,12 +1515,13 @@ public partial class MainViewModel : ObservableObject
             NotifyFinished("Encode complete", Path.GetFileName(DestinationPath.Trim().Trim('"')));
             return "Encode complete.";
         }
-        catch (InvalidOperationException) when (
+        catch (InvalidOperationException ex) when (
             AppSettings.Current.AutoFallbackToSoftware
             && HardwareFallback.TryRewrite(command, out _, out _, out _))
         {
             // The hardware encoder let us down: one more attempt on the software encoder for the same codec.
             HardwareFallback.TryRewrite(command, out var retry, out var hardware, out var software);
+            AppLog.Write($"{hardware} failed and {software} is tried instead: {ex.Message}");
             StatusText = $"Warning: {hardware} failed. Retrying with {software}...";
             Notifier.Show("Hardware encoder failed", $"{hardware} could not encode this video. HandPeg is trying again with {software}.");
 

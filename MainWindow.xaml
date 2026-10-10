@@ -40,6 +40,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
         <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
         <local:FractionToOffsetConverter x:Key="FractionToOffset" />
+        <local:EncoderPresetLabelConverter x:Key="EncoderPresetLabel" />
         <local:DecibelToScaleConverter x:Key="DecibelToScale" />
 
         <!-- The parts of a slider's track either side of the thumb: there to be clicked, not seen. -->
@@ -193,6 +194,40 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Margin" Value="0,0,12,0" />
         </Style>
+
+        <!--
+            A button that is the right end of a text box: laid over the box, as tall as the inside of it and
+            against the inside of its right border, with that end's corners rounded as the box's are (the box's
+            are 4, so one pixel in they are 3) and the other end square.
+        -->
+        <Style x:Key="InFieldButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="HorizontalAlignment" Value="Right" />
+            <Setter Property="VerticalAlignment" Value="Stretch" />
+            <Setter Property="Margin" Value="0,1,1,1" />
+            <Setter Property="Padding" Value="8,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="0,3,3,0"
+                                Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{DynamicResource AccentHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{DynamicResource AccentPressedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="border" Property="Background" Value="{DynamicResource ControlHoverBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="TimeText" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Consolas" />
             <Setter Property="VerticalAlignment" Value="Center" />
@@ -210,8 +245,13 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Source -->
-        <Border Grid.Row="0" Style="{StaticResource Panel}" Margin="0,0,0,10">
+        <!--
+            Source, and the buttons that open the other windows. Encoder Mode's: in Editor Mode the row is not
+            there at all, the player has its height, and the buttons are at the top of the side column instead
+            (see EditorHeader), over a Source pane of its own (see SourcePane).
+        -->
+        <Border Grid.Row="0" Style="{StaticResource Panel}" Margin="0,0,0,10"
+                Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -266,6 +306,50 @@
                 </Grid>
             </Grid>
         </Border>
+
+        <!--
+            The Views menu: which panes are open and where each of them is. Opened by the Views button of the
+            transport row in Encoder Mode and by the one in the side panes' header in Editor Mode; which of the
+            two it opens beside is set from code (see PlaceViewsPopup). It takes no room here.
+        -->
+        <Popup x:Name="ViewsPopup" StaysOpen="False"
+               AllowsTransparency="True" IsOpen="{Binding IsChecked, ElementName=ViewsButton, Mode=TwoWay}"
+               Opened="ViewsPopup_Opened" Closed="ViewsPopup_Closed">
+            <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
+                <StackPanel TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="250">
+                    <TextBlock Text="Panes" FontWeight="SemiBold" Margin="0,0,0,4" />
+                    <!-- Editor Mode's: the layout pane arranges layers, which Encoder Mode has none of. -->
+                    <CheckBox Content="Layout Pane" IsChecked="{Binding IsArrangeActive}" IsEnabled="{Binding CanEditLayout}" Margin="0,2"
+                              Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Layout Pane"
+                              ToolTip="The layout pane beside the video: the output frame with the main video, the layers and the caption box. Drag to move, drag a corner handle to resize, double-click to center." />
+                    <!-- Editor Mode's too: Encoder Mode has the source in its top bar. -->
+                    <CheckBox Content="Source" IsChecked="{Binding ShowSourcePane}" Margin="0,2"
+                              Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Source Pane"
+                              ToolTip="The Source pane at the top of the side column: the box for a file path or a web address, and the download resolution. With it closed, a video is still opened by dropping it on the window." />
+                    <CheckBox Content="Cut Segments" IsChecked="{Binding ShowCutSegmentsPane}" Margin="0,2"
+                              ToolTip="The list of cut segments beside the player." />
+                    <CheckBox Content="Keyframes" IsChecked="{Binding ShowKeyframesPane}" Margin="0,2"
+                              ToolTip="The selected clip's keyframes on a timeline of their own, with the keyframe controls and its place, size and rotation at the playhead." />
+                    <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,8,0,4" />
+                    <CheckBox Content="Keyframe diamonds on clips" IsChecked="{Binding ShowClipKeyframes}" Margin="0,2"
+                              ToolTip="Draws a diamond on a clip's block at each of its keyframes." />
+                    <!-- Where the panes are. Each button says where its pane would go; the borders between panes are dragged to resize them. -->
+                    <TextBlock Text="Arrange" FontWeight="SemiBold" Margin="0,8,0,4"
+                               ToolTip="Each pane can be moved to the other side. A pane's title can also be dragged there, and the thin lines between panes are dragged to resize them." />
+                    <Button x:Name="MoveLayoutPaneButton" Tag="Layout" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
+                            Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Move Layout Pane" />
+                    <Button x:Name="MoveSidePanesButton" Tag="Side" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
+                            AutomationProperties.Name="Move Side Panes" />
+                    <Button x:Name="SwapSidePanesButton" Tag="Order" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
+                            AutomationProperties.Name="Swap Keyframes and Cut Segments" />
+                    <Button x:Name="MoveTimelineButton" Tag="Timeline" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
+                            AutomationProperties.Name="Move Master Timeline" />
+                    <Button Content="Reset Panes Layout" Click="ResetPanesLayout_Click" Padding="10,4" Margin="0,8,0,0" HorizontalContentAlignment="Left"
+                            AutomationProperties.Name="Reset Panes Layout"
+                            ToolTip="Puts every pane back where this mode starts with it, at the size it starts with: the side panes on the right, the layout pane right of the video, the timeline underneath." />
+                </StackPanel>
+            </Border>
+        </Popup>
 
         <!--
             Player area: video beside the side panes, with the timeline underneath both. That is where the panes
@@ -343,7 +427,7 @@
                                 <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="54" Foreground="#88FFFFFF" HorizontalAlignment="Center" />
                                 <TextBlock Text="Drag &amp; Drop Video File Here" FontSize="26" FontWeight="SemiBold" Foreground="#AAFFFFFF"
                                            HorizontalAlignment="Center" Margin="0,14,0,0" />
-                                <TextBlock Text="or click to browse, or paste a path or URL above" FontSize="13" Foreground="#77FFFFFF"
+                                <TextBlock Text="or click to browse, or paste a path or URL into the source box" FontSize="13" Foreground="#77FFFFFF"
                                            HorizontalAlignment="Center" Margin="0,6,0,0" />
                             </StackPanel>
                         </Grid>
@@ -428,44 +512,11 @@
                     <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
                             AutomationProperties.Name="Render Preview"
                             ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
-                    <!-- Views: which panes are open, where each of them is, and whether clips show their keyframes. -->
+                    <!-- Views: which panes are open, where each of them is, and whether clips show their keyframes. Encoder Mode's: Editor Mode has the button in the side panes' header. -->
                     <ToggleButton x:Name="ViewsButton" Content="&#xE8A9;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0"
+                                  Visibility="{Binding IsEditorMode, Converter={StaticResource InverseBoolToVisibility}}"
                                   AutomationProperties.Name="Views and Panes"
                                   ToolTip="Views / Panes: show or hide the Layout, Cut Segments and Keyframes panes, move them around the player, and put them back where they started." />
-                    <Popup x:Name="ViewsPopup" PlacementTarget="{Binding ElementName=ViewsButton}" Placement="Top" VerticalOffset="-4" StaysOpen="False"
-                           AllowsTransparency="True" IsOpen="{Binding IsChecked, ElementName=ViewsButton, Mode=TwoWay}"
-                           Opened="ViewsPopup_Opened" Closed="ViewsPopup_Closed">
-                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
-                            <StackPanel TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="250">
-                                <TextBlock Text="Panes" FontWeight="SemiBold" Margin="0,0,0,4" />
-                                <!-- Editor Mode's: the layout pane arranges layers, which Encoder Mode has none of. -->
-                                <CheckBox Content="Layout Pane" IsChecked="{Binding IsArrangeActive}" IsEnabled="{Binding CanEditLayout}" Margin="0,2"
-                                          Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Layout Pane"
-                                          ToolTip="The layout pane beside the video: the output frame with the main video, the layers and the caption box. Drag to move, drag a corner handle to resize, double-click to center." />
-                                <CheckBox Content="Cut Segments" IsChecked="{Binding ShowCutSegmentsPane}" Margin="0,2"
-                                          ToolTip="The list of cut segments beside the player." />
-                                <CheckBox Content="Keyframes" IsChecked="{Binding ShowKeyframesPane}" Margin="0,2"
-                                          ToolTip="The selected clip's keyframes on a timeline of their own, with the keyframe controls and its place, size and rotation at the playhead." />
-                                <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,8,0,4" />
-                                <CheckBox Content="Keyframe diamonds on clips" IsChecked="{Binding ShowClipKeyframes}" Margin="0,2"
-                                          ToolTip="Draws a diamond on a clip's block at each of its keyframes." />
-                                <!-- Where the panes are. Each button says where its pane would go; the borders between panes are dragged to resize them. -->
-                                <TextBlock Text="Arrange" FontWeight="SemiBold" Margin="0,8,0,4"
-                                           ToolTip="Each pane can be moved to the other side. A pane's title can also be dragged there, and the thin lines between panes are dragged to resize them." />
-                                <Button x:Name="MoveLayoutPaneButton" Tag="Layout" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
-                                        Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Move Layout Pane" />
-                                <Button x:Name="MoveSidePanesButton" Tag="Side" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
-                                        AutomationProperties.Name="Move Side Panes" />
-                                <Button x:Name="SwapSidePanesButton" Tag="Order" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
-                                        AutomationProperties.Name="Swap Keyframes and Cut Segments" />
-                                <Button x:Name="MoveTimelineButton" Tag="Timeline" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
-                                        AutomationProperties.Name="Move Master Timeline" />
-                                <Button Content="Reset Panes Layout" Click="ResetPanesLayout_Click" Padding="10,4" Margin="0,8,0,0" HorizontalContentAlignment="Left"
-                                        AutomationProperties.Name="Reset Panes Layout"
-                                        ToolTip="Puts every pane back where this mode starts with it, at the size it starts with: the side panes on the right, the layout pane right of the video, the timeline underneath." />
-                            </StackPanel>
-                        </Border>
-                    </Popup>
                 </StackPanel>
                 <!-- Volume and speed, beside the transport buttons -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
@@ -493,10 +544,86 @@
                           ToolTip="Drag to resize the side panes" AutomationProperties.Name="Resize side panes" />
 
             <!--
-                The side panes, shown and hidden from the Views menu of the transport row: the Keyframes pane, and
-                under it the Cut Segments pane. With neither open the column closes and the player has the width.
+                The side column. In Editor Mode it starts with a row of buttons that is always there, the ones
+                Encoder Mode has in its top bar, and under it the Source pane. Then the side panes, the Keyframes
+                pane and under it the Cut Segments pane. All three panes are shown and hidden from the Views menu.
+                In Encoder Mode, with neither of its two panes open, the column closes and the player has the width.
             -->
             <Grid Grid.Column="2" x:Name="SidePanes">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!--
+                Editor Mode's header: the buttons that open the other windows, as they are in Encoder Mode's top
+                bar, held against the right edge. It is not a pane: it cannot be closed or dragged off, and goes
+                where the side column goes. The buttons are always on the one row: the column is never narrower
+                than they are together (see UpdateSideColumnMinWidth).
+            -->
+            <StackPanel x:Name="EditorHeader" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,0,2" SizeChanged="EditorHeader_SizeChanged"
+                        Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
+                <Button Content="Project" Margin="6,0,0,6" Click="OpenProjects_Click"
+                        ToolTip="Save the current source, cuts and settings as a project, or open a saved one." />
+                <Button Content="{Binding QueueButtonText}" Margin="6,0,0,6" MinWidth="86" Click="OpenQueue_Click"
+                        ToolTip="Show the batch queue. The number is how many jobs are waiting." />
+                <Button Content="&#xE71B;" FontFamily="Segoe MDL2 Assets" FontSize="15" Padding="10,6" Margin="6,0,0,6"
+                        Click="OpenCombinator_Click" AutomationProperties.Name="Video Combinator"
+                        ToolTip="Video Combinator: join up to five videos into one, stitched as they are or re-encoded with a transition" />
+                <!-- The mode in use, and the way to the other one. Each mode keeps its own interface settings. -->
+                <Button Margin="6,0,0,6" Padding="12,6" MinWidth="84" FontWeight="SemiBold" Click="ToggleMode_Click" AutomationProperties.Name="Switch Mode"
+                        ToolTip="Switches between Encoder Mode (the lean front end for converting and trimming) and Editor Mode (layers, captions, the full timeline). Each mode remembers its own layout: timeline height, which tabs show, the playback controls.">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE8AB;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" FontWeight="Normal" />
+                        <TextBlock Text="{Binding ModeButtonText}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <!-- The Views menu, which shows and hides the panes under this row. -->
+                <ToggleButton x:Name="HeaderViewsButton" Content="&#xE8A9;" FontFamily="Segoe MDL2 Assets" FontSize="15" Padding="10,6" Margin="6,0,0,6"
+                              IsChecked="{Binding IsChecked, ElementName=ViewsButton, Mode=TwoWay}" AutomationProperties.Name="Views and Panes"
+                              ToolTip="Views / Panes: show or hide the Source, Layout, Cut Segments and Keyframes panes, move them around the player, and put them back where they started." />
+                <Grid Margin="6,0,0,6">
+                    <Button Content="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="15" Padding="10,6"
+                            Click="OpenSettings_Click" ToolTip="Settings: dependencies, tool paths, update sources and automation"
+                            AutomationProperties.Name="Settings" />
+                    <!-- Badge: yt-dlp or FFmpeg is missing or has a newer release -->
+                    <Ellipse Width="11" Height="11" Fill="#FF8C00" Stroke="{DynamicResource WindowBackgroundBrush}" StrokeThickness="1.5"
+                             HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-4,-4,0" IsHitTestVisible="False"
+                             Visibility="{Binding IsDependencyUpdateAvailable, Converter={StaticResource BoolToVisibility}}"
+                             AutomationProperties.Name="Dependency update available" />
+                </Grid>
+            </StackPanel>
+
+            <!--
+                Source, in Editor Mode: one box as wide as the pane for a path or a URL, with the one button that
+                acts on it resting inside its right end. With the box empty the button browses for a file; with
+                something in it, it loads that.
+            -->
+            <Border Grid.Row="1" x:Name="SourcePane" Style="{StaticResource Panel}" Margin="0,0,0,8"
+                    Visibility="{Binding IsSourcePaneVisible, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel>
+                    <!-- The pane's title, and against the right edge, level with it, the resolution asked of yt-dlp for a URL. -->
+                    <DockPanel Margin="0,0,0,6">
+                        <ComboBox DockPanel.Dock="Right" MinWidth="92" Margin="0" VerticalAlignment="Center" ItemsSource="{Binding DownloadResolutions}" SelectedItem="{Binding DownloadResolution}"
+                                  AutomationProperties.Name="Download Resolution" ToolTip="Maximum height requested from yt-dlp when the source is a URL." />
+                        <TextBlock DockPanel.Dock="Right" Text="Download Resolution:" VerticalAlignment="Center" Margin="12,0,8,0" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Text="Source" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </DockPanel>
+                    <Grid>
+                        <!-- The room on the right is the button's: what is typed stops short of it, however long it is. -->
+                        <TextBox HorizontalAlignment="Stretch" VerticalContentAlignment="Center" Padding="6,6,76,6" KeyDown="SourcePaneBox_KeyDown"
+                                 Text="{Binding SourcePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Source URL or File Path"
+                                 ToolTip="Type or paste a path or URL and press Enter, or drop a video file anywhere on the window. A web address is downloaded with yt-dlp." />
+                        <Button Style="{StaticResource InFieldButton}" Content="{Binding SourceActionText}" Width="68"
+                                Click="SourceAction_Click" AutomationProperties.Name="Browse or Load Source"
+                                ToolTip="Browse: opens the file browser, while the box is empty. Load: loads the path or URL in the box (Enter does the same)." />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- The panes themselves: one over the other, either way round, with a border between them to drag. -->
+            <Grid Grid.Row="2" x:Name="SidePaneStack" SizeChanged="SidePaneStack_SizeChanged">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -616,6 +743,7 @@
                     </ListBox>
                 </DockPanel>
             </Border>
+            </Grid>
             </Grid>
 
             <!--
@@ -975,8 +1103,9 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
 
+                    <StackPanel Grid.Column="2" VerticalAlignment="Top">
                     <!-- Output size and crop: what used to be the Dimensions tab -->
-                    <GroupBox Grid.Column="2" Header="Resolution &amp; Cropping" VerticalAlignment="Top" IsEnabled="{Binding IsVideoReencoded}">
+                    <GroupBox Header="Resolution &amp; Cropping" IsEnabled="{Binding IsVideoReencoded}">
                         <WrapPanel>
                             <StackPanel Margin="0,0,18,4">
                             <ComboBox Margin="0,0,0,4" ItemsSource="{Binding ResolutionPresets}" SelectedItem="{Binding ResolutionPreset}"
@@ -1056,6 +1185,18 @@
                         </WrapPanel>
                     </GroupBox>
 
+                    <!-- Editor Mode: the chapter options, which have a tab of their own in Encoder Mode only -->
+                    <GroupBox Header="Chapters" Margin="0,8,0,0"
+                              Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
+                        <WrapPanel>
+                            <CheckBox Content="Create chapter markers" IsChecked="{Binding ChapterMarkers}" Margin="0,2,24,2"
+                                      ToolTip="Carries the source's chapters over. Only for uncut encodes: once sections are removed, the source's chapter times no longer fit." />
+                            <CheckBox Content="Generate Chapters at Cut Points" IsChecked="{Binding ChaptersAtCuts}" Margin="0,2,0,2"
+                                      ToolTip="Gives the output one chapter per kept segment, so a player can jump from cut to cut." />
+                        </WrapPanel>
+                    </GroupBox>
+                    </StackPanel>
+
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -1065,6 +1206,7 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
@@ -1093,8 +1235,10 @@
                               ToolTip="HDR to SDR converts PQ or HLG video to standard BT.709. Only use it on HDR sources." />
 
                     <TextBlock Grid.Row="3" Text="Rate Control:" Style="{StaticResource FieldLabel}" />
-                    <ComboBox Grid.Row="3" Grid.Column="1" MinWidth="200" ItemsSource="{Binding RateControls}"
-                              SelectedItem="{Binding RateControl}" IsEnabled="{Binding HasRateControl}" />
+                    <!-- The one rate control box: its list is the selected encoder's own, and what is chosen is stored as one of the same three modes whichever encoder it was chosen for. -->
+                    <ComboBox Grid.Row="3" Grid.Column="1" MinWidth="200" ItemsSource="{Binding RateControlChoices}"
+                              SelectedItem="{Binding RateControlChoice}" IsEnabled="{Binding HasRateControl}" AutomationProperties.Name="Rate Control"
+                              ToolTip="How the data is spent, under the selected encoder's names. The first holds the picture at the Constant Quality value: CRF (x264, x265, SVT-AV1, VP9), CQ (NVENC), CQP (AMF and QuickSync, a fixed quantizer) or ICQ (QuickSync, a quality aimed for). CBR holds the Target Bitrate; VBR averages it and lets busy scenes take more." />
 
                     <TextBlock Grid.Row="4" Text="Constant Quality:" Style="{StaticResource FieldLabel}"
                                Visibility="{Binding IsConstantQuality, Converter={StaticResource BoolToVisibility}}" />
@@ -1121,15 +1265,28 @@
                     <TextBlock Grid.Row="4" Text="Target Bitrate (kbps):" Style="{StaticResource FieldLabel}"
                                Visibility="{Binding IsBitrateMode, Converter={StaticResource BoolToVisibility}}" />
 
-                    <!-- Right: options that only the x264 and x265 software encoders understand -->
+                    <!--
+                        Right: the speed step, whose list is the selected encoder's own, and the options that only
+                        some encoders have. Tune is x264's and x265's, or, while an NVENC encoder is selected, NVIDIA's.
+                    -->
                     <TextBlock Grid.Column="3" Text="Encoder Preset:" Style="{StaticResource FieldLabel}" />
                     <ComboBox Grid.Column="4" ItemsSource="{Binding EncoderPresets}" SelectedItem="{Binding EncoderPreset}"
-                              IsEnabled="{Binding HasEncoderPresets}"
-                              ToolTip="Speed against quality. The steps offered are the selected encoder's own: x264/x265 and QuickSync presets, or AMF's speed, balanced and quality." />
+                              IsEnabled="{Binding HasEncoderPresets}" AutomationProperties.Name="Encoder Preset"
+                              ToolTip="Speed against quality. The steps offered are the selected encoder's own: ultrafast to veryslow for x264 and x265, veryfast to veryslow for QuickSync, Speed, Balanced and Quality for AMF, p1 (fastest) to p7 (highest quality) for NVENC.">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Converter={StaticResource EncoderPresetLabel}}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
 
                     <TextBlock Grid.Row="1" Grid.Column="3" Text="Tune:" Style="{StaticResource FieldLabel}" />
                     <ComboBox Grid.Row="1" Grid.Column="4" ItemsSource="{Binding Tunes}" SelectedItem="{Binding Tune}"
-                              IsEnabled="{Binding AreSoftwareEncoderOptionsEnabled}" />
+                              IsEnabled="{Binding AreSoftwareEncoderOptionsEnabled}"
+                              Visibility="{Binding IsNvencEncoder, Converter={StaticResource InverseBoolToVisibility}}" />
+                    <ComboBox Grid.Row="1" Grid.Column="4" ItemsSource="{Binding NvencTunes}" SelectedItem="{Binding NvencTune}" AutomationProperties.Name="NVENC Tuning"
+                              Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}"
+                              ToolTip="What the encoder aims for (-tune). High Quality suits files; the low latency ones are for streaming. Lossless keeps every pixel and ignores Rate Control: the files are very large." />
 
                     <TextBlock Grid.Row="2" Grid.Column="3" Text="Profile:" Style="{StaticResource FieldLabel}" />
                     <ComboBox Grid.Row="2" Grid.Column="4" ItemsSource="{Binding Profiles}" SelectedItem="{Binding Profile}"
@@ -1139,16 +1296,48 @@
                     <ComboBox Grid.Row="3" Grid.Column="4" ItemsSource="{Binding Levels}" SelectedItem="{Binding Level}"
                               IsEnabled="{Binding AreSoftwareEncoderOptionsEnabled}" />
 
-                    <CheckBox Grid.Row="5" Grid.Column="3" Grid.ColumnSpan="2" Content="Enable Hardware Decoding (-hwaccel auto)"
+                    <!--
+                        What only some encoders have, in one row of the same panel: each control is there while an
+                        encoder that has it is selected, and the row takes no room when none of them is.
+                    -->
+                    <WrapPanel Grid.Row="5" Grid.ColumnSpan="5" Margin="0,2,0,0" IsEnabled="{Binding IsVideoReencoded}">
+                        <StackPanel Orientation="Horizontal" Margin="0,0,24,0" Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="Multipass:" Style="{StaticResource FieldLabel}" />
+                            <ComboBox MinWidth="190" ItemsSource="{Binding NvencMultipasses}" SelectedItem="{Binding NvencMultipass}" AutomationProperties.Name="NVENC Multipass"
+                                      ToolTip="NVENC: a first look at each frame before it is encoded (-multipass), at a quarter of the resolution or all of it. Spends the bitrate better, at some cost in speed." />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,24,0" Visibility="{Binding IsAmfEncoder, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="Usage:" Style="{StaticResource FieldLabel}" />
+                            <ComboBox MinWidth="250" ItemsSource="{Binding AmfUsages}" SelectedItem="{Binding AmfUsage}" AutomationProperties.Name="AMF Usage"
+                                      ToolTip="AMF: what the encoder is set up for (-usage). Transcoding suits files; High Quality spends more time on each frame and needs a recent FFmpeg and driver; the low latency ones and Webcam are for streaming." />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,24,0" Visibility="{Binding HasLookahead, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="Lookahead (frames):" Style="{StaticResource FieldLabel}" />
+                            <TextBox Style="{StaticResource ValueBox}" Width="46" Text="{Binding Lookahead, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Lookahead"
+                                     local:NumericInput.Default="0" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100"
+                                     ToolTip="How many frames ahead the rate control looks; 0 turns it off. NVENC looks up to 32 ahead (-rc-lookahead) and a larger number is taken as 32; QuickSync up to 100 (-look_ahead_depth), with VBR and ICQ." />
+                        </StackPanel>
+                        <CheckBox Content="Spatial AQ" IsChecked="{Binding NvencSpatialAq}" Margin="0,4,24,4" VerticalAlignment="Center"
+                                  Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}"
+                                  ToolTip="NVENC: spends more of the bitrate on flat areas, where blocking shows first (-spatial-aq 1)." />
+                        <CheckBox Content="Temporal AQ" IsChecked="{Binding NvencTemporalAq}" IsEnabled="{Binding CanNvencTemporalAq}" Margin="0,4,24,4" VerticalAlignment="Center"
+                                  Visibility="{Binding IsNvencEncoder, Converter={StaticResource BoolToVisibility}}" ToolTipService.ShowOnDisabled="True"
+                                  ToolTip="NVENC: spends more of the bitrate on what stays still from frame to frame (-temporal-aq 1). Greyed out when this graphics card cannot do it for the selected encoder." />
+                        <CheckBox Content="10-bit" IsChecked="{Binding TenBit}" IsEnabled="{Binding CanTenBit}" Margin="0,4,0,4" VerticalAlignment="Center"
+                                  Visibility="{Binding HasTenBit, Converter={StaticResource BoolToVisibility}}" ToolTipService.ShowOnDisabled="True"
+                                  ToolTip="Encodes in 10 bits instead of 8, which shows less banding in gradients (-pix_fmt p010le for a hardware encoder, yuv420p10le for a software one). Greyed out when this graphics card cannot do it for the selected encoder: neither AMF nor QuickSync has 10-bit H.264." />
+                    </WrapPanel>
+
+                    <CheckBox Grid.Row="6" Grid.Column="3" Grid.ColumnSpan="2" Content="Enable Hardware Decoding (-hwaccel auto)"
                               IsChecked="{Binding HardwareDecoding}" IsEnabled="{Binding IsVideoReencoded}"
                               ToolTip="Let the GPU decode the source. Speeds up most encodes; turn it off if an encode fails to start." />
 
                     <!-- Bottom: free-form encoder options, and what was detected -->
-                    <TextBlock Grid.Row="5" Text="Extra Options:" Style="{StaticResource FieldLabel}" />
-                    <TextBox Grid.Row="5" Grid.Column="1" Margin="0,4" FontFamily="Consolas" IsEnabled="{Binding IsVideoReencoded}"
+                    <TextBlock Grid.Row="6" Text="Extra Options:" Style="{StaticResource FieldLabel}" />
+                    <TextBox Grid.Row="6" Grid.Column="1" Margin="0,4" FontFamily="Consolas" IsEnabled="{Binding IsVideoReencoded}"
                              Text="{Binding ExtraVideoArguments, UpdateSourceTrigger=PropertyChanged}"
                              ToolTip="Added after the encoder's own options, for example -g 1 -keyint_min 1 or -profile:v 0." />
-                    <StackPanel Grid.Row="6" Grid.ColumnSpan="5" Orientation="Horizontal" Margin="0,4,0,0">
+                    <StackPanel Grid.Row="7" Grid.ColumnSpan="5" Orientation="Horizontal" Margin="0,4,0,0">
                         <TextBlock Text="{Binding HardwareEncoderStatusText}" Foreground="{DynamicResource MutedTextBrush}" />
                         <TextBlock Text="{Binding HdrStatusText}" Foreground="{DynamicResource WarningTextBrush}" Margin="24,0,0,0" />
                     </StackPanel>
@@ -1895,7 +2084,7 @@
                                 <Button Content="Caption Style Settings" Click="CaptionStyle_Click"
                                         ToolTip="Font, colors, outline, words per line and the animation." />
                                 <ToggleButton Content="Preview Subtitles" Margin="6,0,0,0" IsChecked="{Binding PreviewSubtitles}" AutomationProperties.Name="Preview Subtitles"
-                                              ToolTip="Draws the captions over the picture in Live Preview, in the style and the box they have: the words are transcribed the first time, which takes a moment. Change the style and the preview follows." />
+                                              ToolTip="Draws the captions over the picture in the player, in the style and the box they have: the words are transcribed the first time, which takes a moment. Change the style, or move the box, and the preview follows. The player draws them itself, so playback stays smooth; the box's rounded or soft edges and its mask are only in the export and in Render Preview." />
                                 <ToggleButton Content="Layout Pane" Margin="6,0,0,0" IsChecked="{Binding IsArrangeActive}"
                                               ToolTip="Opens the layout pane beside the player, where the caption box can be dragged into place and resized." />
                                 <Button Content="Style / Blending" Margin="6,0,0,0" Click="CaptionLayerStyle_Click"
@@ -1909,101 +2098,14 @@
                     </Grid>
                 </DockPanel>
             </TabItem>
-            <TabItem Header="Chapters">
+            <!-- Encoder Mode only: Editor Mode has these two boxes on its Video tab. -->
+            <TabItem Header="Chapters" x:Name="ChaptersTab" Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}">
                 <StackPanel>
                     <CheckBox Content="Create chapter markers" IsChecked="{Binding ChapterMarkers}"
                               ToolTip="Carries the source's chapters over. Only for uncut encodes: once sections are removed, the source's chapter times no longer fit." />
                     <CheckBox Content="Generate Chapters at Cut Points" IsChecked="{Binding ChaptersAtCuts}"
                               ToolTip="Gives the output one chapter per kept segment, so a player can jump from cut to cut." />
                 </StackPanel>
-            </TabItem>
-
-            <!-- Presets applied by themselves when a video is loaded. Saved as it is edited: there is no Save button. -->
-            <TabItem Header="Automation">
-                <DockPanel>
-                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-                        <TextBlock Text="Global Default Preset:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox MinWidth="260" Margin="0" ItemsSource="{Binding DefaultPresetChoices}" SelectedItem="{Binding DefaultPresetChoice}"
-                                  AutomationProperties.Name="Global Default Preset" ToolTip="Applied to a newly loaded video when no rule matches." />
-                        <TextBlock VerticalAlignment="Center" Margin="16,0,0,0" Foreground="{DynamicResource MutedTextBrush}"
-                                   Text="Folder rules win over keyword rules, which win over extension rules. Double-click a cell to edit it." />
-                    </StackPanel>
-                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
-                        <Button Content="Add Folder Rule..." Click="AddFolderRule_Click" ToolTip="Videos in this folder, or a folder inside it, get the preset." />
-                        <Button Content="Add Keyword Rule" Margin="6,0,0,0" Click="AddKeywordRule_Click"
-                                ToolTip="Videos whose file name, path or web address contains the keyword get the preset. Upper and lower case are the same." />
-                        <Button Content="Add Extension Rule" Margin="6,0,0,0" Click="AddExtensionRule_Click" ToolTip="Videos of this file type, written as *.mkv, get the preset." />
-                        <Button Content="Remove Rule" Margin="6,0,0,0" Click="RemoveRule_Click" />
-                    </StackPanel>
-                    <DataGrid x:Name="RulesGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
-                              CanUserResizeRows="False" CanUserReorderColumns="False" SelectionMode="Single" SelectionUnit="FullRow"
-                              HeadersVisibility="Column" GridLinesVisibility="Horizontal" RowHeight="30"
-                              Background="{DynamicResource ControlBrush}" RowBackground="{DynamicResource ControlBrush}"
-                              Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource ControlBorderBrush}"
-                              HorizontalGridLinesBrush="{DynamicResource ControlBorderBrush}"
-                              ItemsSource="{Binding SmartRules}" CellEditEnding="RulesGrid_CellEditEnding" AutomationProperties.Name="Smart Rules">
-                        <DataGrid.ColumnHeaderStyle>
-                            <Style TargetType="DataGridColumnHeader">
-                                <Setter Property="Background" Value="{DynamicResource ControlHoverBrush}" />
-                                <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
-                                <Setter Property="Padding" Value="8,6" />
-                                <Setter Property="BorderThickness" Value="0" />
-                            </Style>
-                        </DataGrid.ColumnHeaderStyle>
-                        <DataGrid.CellStyle>
-                            <Style TargetType="DataGridCell">
-                                <Setter Property="BorderThickness" Value="0" />
-                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
-                                <Setter Property="VerticalContentAlignment" Value="Center" />
-                                <Style.Triggers>
-                                    <Trigger Property="IsSelected" Value="True">
-                                        <Setter Property="Background" Value="{DynamicResource AccentPressedBrush}" />
-                                    </Trigger>
-                                </Style.Triggers>
-                            </Style>
-                        </DataGrid.CellStyle>
-                        <DataGrid.Columns>
-                            <DataGridComboBoxColumn x:Name="RuleTypeColumn" Header="Rule" Width="170"
-                                                    SelectedItemBinding="{Binding Type, UpdateSourceTrigger=PropertyChanged}">
-                                <DataGridComboBoxColumn.ElementStyle>
-                                    <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Static DataGridComboBoxColumn.TextBlockComboBoxStyleKey}}">
-                                        <Setter Property="Margin" Value="8,0" />
-                                        <Setter Property="VerticalAlignment" Value="Center" />
-                                    </Style>
-                                </DataGridComboBoxColumn.ElementStyle>
-                                <DataGridComboBoxColumn.EditingElementStyle>
-                                    <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
-                                        <Setter Property="Margin" Value="0" />
-                                        <Setter Property="HorizontalAlignment" Value="Stretch" />
-                                    </Style>
-                                </DataGridComboBoxColumn.EditingElementStyle>
-                            </DataGridComboBoxColumn>
-                            <DataGridTextColumn Header="Matches (folder, keyword, or *.extension)" Width="*" Binding="{Binding Path, UpdateSourceTrigger=PropertyChanged}">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Margin" Value="8,0" />
-                                        <Setter Property="VerticalAlignment" Value="Center" />
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridComboBoxColumn x:Name="PresetColumn" Header="Preset" Width="280"
-                                                    SelectedItemBinding="{Binding Preset, UpdateSourceTrigger=PropertyChanged}">
-                                <DataGridComboBoxColumn.ElementStyle>
-                                    <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Static DataGridComboBoxColumn.TextBlockComboBoxStyleKey}}">
-                                        <Setter Property="Margin" Value="8,0" />
-                                        <Setter Property="VerticalAlignment" Value="Center" />
-                                    </Style>
-                                </DataGridComboBoxColumn.ElementStyle>
-                                <DataGridComboBoxColumn.EditingElementStyle>
-                                    <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
-                                        <Setter Property="Margin" Value="0" />
-                                        <Setter Property="HorizontalAlignment" Value="Stretch" />
-                                    </Style>
-                                </DataGridComboBoxColumn.EditingElementStyle>
-                            </DataGridComboBoxColumn>
-                        </DataGrid.Columns>
-                    </DataGrid>
-                </DockPanel>
             </TabItem>
 
             <!-- Off by default; switched on in Settings for those who want to read or edit the FFmpeg command. -->
