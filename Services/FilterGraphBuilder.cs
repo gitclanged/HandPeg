@@ -1622,11 +1622,11 @@ public static class FilterGraphBuilder
             {
                 if (stack[n].IsVideo)
                     branches.Add($"[ui{n}_in{s}]");
-                else if (live && stack[n].IsImage && motions[n].Reshapes)
+                else if (live && stack[n].IsStill && motions[n].Reshapes)
                     branches.Add($"[ui{n}_tick{s}]");
             }
 
-            var graph = new StringBuilder(1024);
+            var graph = RentBuilder();
 
             // The main video, cut to what this stretch shows of it and set down where it comes in. Left as it is
             // when it is the whole sequence and all of it is wanted.
@@ -1702,9 +1702,9 @@ public static class FilterGraphBuilder
 
                 // The main video. The crop frames this layer only; the background uses the whole picture.
                 var mainSource = layer.IsMainVideo ? $"[center_in{s}]{(centerCrop is null ? "" : centerCrop + ",")}scale={builtWidth}:{builtHeight}" : null;
-                var tick = live && layer.IsImage && motion.Reshapes ? $"[ui{n}_tick{s}]" : null;
+                var tick = live && layer.IsStill && motion.Reshapes ? $"[ui{n}_tick{s}]" : null;
                 graph.Append($"[stage{n}{s}];");
-                graph.Append(BuildLayer(layer, name, s, builtWidth, builtHeight, from, motion, mainSource, tick));
+                AppendLayer(graph, layer, name, s, builtWidth, builtHeight, from, motion, mainSource, tick);
 
                 // A turned picture is larger than the layer it was; it stays where its middle was.
                 var (boxWidth, boxHeight) = GetBox(layer, motion, builtWidth, builtHeight);
@@ -1732,7 +1732,7 @@ public static class FilterGraphBuilder
 
                 // A video from a file runs for as long as it is asked to, and so does a still that was made into
                 // a stream to be animated; the picture under it decides when the output ends.
-                if (layer.IsVideoFile || (layer.IsImage && motion.Reshapes && !live))
+                if (layer.IsVideoFile || (layer.IsStill && motion.Reshapes && !live))
                     ending.Append(":shortest=1");
 
                 // A layer with a time to appear and a time to go is only laid on between the two. The clock the
@@ -1762,7 +1762,26 @@ public static class FilterGraphBuilder
                 }
             }
 
-            return graph.ToString();
+            return ReturnBuilder(graph);
+        }
+
+        // One builder is kept for each thread and used again: a graph is some kilobytes, written many times a
+        // second while a layer is dragged, and the room for it is not asked for afresh each time.
+        [ThreadStatic] private static StringBuilder? _pooledBuilder;
+
+        private static StringBuilder RentBuilder()
+        {
+            var builder = _pooledBuilder ?? new StringBuilder(4096);
+            _pooledBuilder = null;
+            return builder.Clear();
+        }
+
+        private static string ReturnBuilder(StringBuilder builder)
+        {
+            var text = builder.ToString();
+            if (builder.Capacity <= 256 * 1024)
+                _pooledBuilder = builder;
+            return text;
         }
 
         /// <summary>The parts of the main video's clips that fall inside a stretch of the sequence, in order, each with the moment of the file it begins at.</summary>
@@ -1911,7 +1930,7 @@ public static class FilterGraphBuilder
         }
 
         /// <summary>
-        /// One layer as a finished picture with its transparency, labelled [name_layer]: cut from the main video
+        /// Writes one layer into the graph as a finished picture with its transparency, labelled [name_layer]: cut from the main video
         /// (or the main video itself), or read from its image or video file, and scaled. Its own filters are then
         /// applied to it. What shows of it is the product of everything that makes parts of it transparent: its
         /// own transparency (a PNG's, or a color keyed out), a custom mask from a file, and the rounded or
@@ -1921,9 +1940,8 @@ public static class FilterGraphBuilder
         /// <param name="width">The size it is built at: its size on the frame, or the largest it gets when that is animated.</param>
         /// <param name="mainSource">For the main video: the chain that brings its picture, already scaled.</param>
         /// <param name="tick">For a still that changes shape in Live Preview: the branch of the player's frames that gives it a clock.</param>
-        private string BuildLayer(Layer layer, string name, string s, int width, int height, double startSeconds, Motion motion, string? mainSource = null, string? tick = null)
+        private void AppendLayer(StringBuilder chain, Layer layer, string name, string s, int width, int height, double startSeconds, Motion motion, string? mainSource = null, string? tick = null)
         {
-            var chain = new StringBuilder(512);
             if (mainSource is not null)
             {
                 chain.Append(mainSource);
@@ -1953,6 +1971,10 @@ public static class FilterGraphBuilder
                 // A single frame, which the overlay repeats for as long as the video runs.
                 chain.Append($"movie='{EscapeFilterPath(layer.ImagePath)}',scale={width}:{height}");
             }
+            else if (layer.IsText)
+            {
+                AppendTextSource(chain, layer, width, height);
+            }
             else
             {
                 // Cut out of the source by fractions of the frame, so the same layer works at any source size.
@@ -1961,7 +1983,7 @@ public static class FilterGraphBuilder
             }
 
             var own = BuildLayerFilters(layer, Sized(FrameWidth));
-            if (own.Count > 0 && layer.IsImage)
+            if (own.Count > 0 && layer.IsStill)
             {
                 // The colour filters know nothing of transparency: a picture's own is set aside and put back after them.
                 chain.Append($",format=yuva420p,split[{name}_fc{s}][{name}_fa_in{s}];[{name}_fa_in{s}]alphaextract"
@@ -2014,7 +2036,7 @@ public static class FilterGraphBuilder
             // frame for every tick first. For an encode it is simply repeated at the canvas's rate. For Live
             // Preview it is laid on see-through frames cut from the player's own, which carry the player's clock
             // through every seek; a stream counted up from nothing would have to be run through to catch up.
-            if (layer.IsImage && motion.Reshapes)
+            if (layer.IsStill && motion.Reshapes)
             {
                 if (tick is null)
                     chain.Append($",loop=loop=-1:size=1,setpts=N/({CanvasRate}*TB)");
@@ -2039,10 +2061,93 @@ public static class FilterGraphBuilder
                     chain.Append(":flags=fast_bilinear");
             }
 
-            return chain.Append($"[{name}_layer{s}]").ToString();
+            chain.Append($"[{name}_layer{s}]");
         }
 
         private static string Ratio(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// A text layer's picture: its words drawn by drawtext on a see-through canvas the size the layer is built
+        /// at. It is one frame, as an image from a file is, and from here on it is treated as one: masked, faded,
+        /// turned, and moved and scaled by its keyframes like any other picture.
+        ///
+        /// Each line is drawn by a drawtext of its own, centred, with its baseline where the layout puts it
+        /// (drawtext places a line by the top of its tallest letter, so that height is taken off again: "y-ascent").
+        /// The font is scaled to the canvas, so the words fill the layer's box at whatever size it is built.
+        /// The canvas is see-through but has a colour, the outline's or the letters': the soft edge of a letter
+        /// fades towards it, and so shows no dark fringe.
+        /// </summary>
+        private static void AppendTextSource(StringBuilder chain, Layer layer, int width, int height)
+        {
+            var layout = TextLayout.Measure(layer);
+            var scale = Math.Min((double)width / layout.Width, (double)height / layout.Height);
+            var border = layer.OutlineThickness > 0 ? Math.Max((int)Math.Round(Math.Clamp(layer.OutlineThickness, 0, TextLayout.LargestOutline) * scale), 1) : 0;
+            var (letters, outline) = (TextColor(layer.FontColor, "FFFFFF"), TextColor(layer.OutlineColor, "000000"));
+            var font = layout.FontFile.Length > 0 ? $"fontfile='{EscapeFilterPath(layout.FontFile)}'" : $"font={EscapeDrawText(layout.FontName)}";
+
+            chain.Append($"color=c=0x{(border > 0 ? outline : letters)}@0:s={width}x{height}:r=1,format=yuva444p");
+
+            // The lines are in the middle of the canvas, top to bottom, as they are in the middle of the layout.
+            var top = (height - layout.Lines.Count * layout.LineHeight * scale) / 2;
+            for (var i = 0; i < layout.Lines.Count; i++)
+            {
+                if (string.IsNullOrWhiteSpace(layout.Lines[i]))
+                    continue;
+
+                var baseline = top + (i * layout.LineHeight + layout.Baseline) * scale;
+                chain.Append($",drawtext={font}:text={EscapeDrawText(layout.Lines[i])}:expansion=none"
+                             + $":fontsize={Number(Math.Max(layer.FontSize * scale, 1))}:fontcolor=0x{letters}");
+                if (border > 0)
+                    chain.Append($":bordercolor=0x{outline}:borderw={border}");
+                chain.Append($":x=(w-text_w)/2:y={Number(baseline)}-ascent");
+            }
+
+            chain.Append(",trim=end_frame=1");
+        }
+
+        /// <summary>#RRGGBB as FFmpeg writes a color, RRGGBB; anything unreadable becomes the fallback.</summary>
+        private static string TextColor(string? color, string fallback)
+        {
+            var hex = (color ?? "").Trim().TrimStart('#');
+            return hex.Length == 6 && hex.All(Uri.IsHexDigit) ? hex.ToUpperInvariant() : fallback;
+        }
+
+        /// <summary>
+        /// Words as the value of a drawtext option, quoted, for a filter graph that is itself inside a command.
+        /// The words pass through three readers, and each has characters of its own to be kept from:
+        ///
+        ///   drawtext itself   would expand "%{...}" and "\"; it is told not to (expansion=none), so nothing here.
+        ///   the option list   ends a value at ":" and reads "\" and "'" itself: each gets a backslash.
+        ///   the filter graph  reads "'", "\", ",", ";", "[" and "]": the value is put in single quotes, where
+        ///                     all of them are plain, and a quote inside it is written by closing the quotes,
+        ///                     escaping one, and opening them again.
+        ///
+        /// Outside all of those, the graph sits in double quotes on a command line, where a double quote cannot be
+        /// written at all without the command being read differently by everything that reads it. A straight
+        /// double quote is therefore drawn as a typographic one, opening or closing by where it stands.
+        /// Line breaks and other control characters never get here: a line is one drawtext.
+        /// </summary>
+        private static string EscapeDrawText(string text)
+        {
+            var value = new StringBuilder(text.Length + 16).Append('\'');
+            for (var i = 0; i < text.Length; i++)
+            {
+                var c = text[i];
+                switch (c)
+                {
+                    case '\\': value.Append(@"\\"); break;
+                    case ':': value.Append(@"\:"); break;
+                    case '\'': value.Append(@"\'\''"); break;
+                    case '"': value.Append(i == 0 || char.IsWhiteSpace(text[i - 1]) || text[i - 1] is '(' or '[' or '{' ? '\u201C' : '\u201D'); break;
+                    default:
+                        if (!char.IsControl(c))
+                            value.Append(c);
+                        break;
+                }
+            }
+
+            return value.Append('\'').ToString();
+        }
 
         /// <summary>#RRGGBB as FFmpeg writes a color, RRGGBB; anything unreadable becomes green.</summary>
         private static string KeyColor(string color)

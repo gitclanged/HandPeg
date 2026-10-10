@@ -61,6 +61,10 @@ public sealed class ProjectOutput
     public bool ChaptersAtCuts { get; set; }
     public string TargetFileSize { get; set; } = "";
     public string? ManualCommand { get; set; }
+
+    /// <summary>The subtitle track (imported, or edited by hand): its cues, its offset, where it came from. Left out when there is none.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public SubtitleTrackData? Subtitles { get; set; }
 }
 
 public sealed class ProjectSequence
@@ -207,6 +211,36 @@ public static class ProjectStore
         return path;
     }
 
+    /// <summary>What an autosave's file name ends in, before the extension: "My Project.autosave.hproj".</summary>
+    public const string AutosaveSuffix = ".autosave";
+
+    /// <summary>Saves the state to a file of the user's choosing, wherever it is.</summary>
+    public static string SaveTo(ProjectState state, string path)
+    {
+        WriteWhole(path, Serialize(state));
+        return path;
+    }
+
+    /// <summary>Where a project's autosave goes: beside the project when it has a file, in the projects folder under its name otherwise.</summary>
+    public static string AutosavePath(string projectPath, string name)
+    {
+        if (projectPath.Length > 0 && Path.GetDirectoryName(projectPath) is { Length: > 0 } folder)
+            return Path.Combine(folder, Path.GetFileNameWithoutExtension(projectPath) + AutosaveSuffix + Extension);
+
+        var fileName = string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)).Trim();
+        return Path.Combine(Folder, (fileName.Length > 0 ? fileName : "Untitled") + AutosaveSuffix + Extension);
+    }
+
+    /// <summary>Writes a file so that it is either the old one or the new one, never half of each: beside it first, then moved over it.</summary>
+    public static void WriteWhole(string path, string content)
+    {
+        if (Path.GetDirectoryName(path) is { Length: > 0 } folder)
+            Directory.CreateDirectory(folder);
+        var partial = path + ".tmp";
+        File.WriteAllText(partial, content);
+        File.Move(partial, path, overwrite: true);
+    }
+
     public static string Serialize(ProjectState state) => JsonSerializer.Serialize(ToFile(state), JsonOptions);
 
     public static ProjectState Load(string filePath) => Deserialize(File.ReadAllText(filePath));
@@ -334,6 +368,7 @@ public static class ProjectStore
                 WebOptimized = state.WebOptimized,
                 ChapterMarkers = state.ChapterMarkers,
                 ChaptersAtCuts = state.ChaptersAtCuts,
+                Subtitles = state.Subtitles,
                 TargetFileSize = state.TargetFileSize,
                 ManualCommand = state.ManualCommand,
             },
@@ -383,6 +418,7 @@ public static class ProjectStore
             WebOptimized = file.Output.WebOptimized,
             ChapterMarkers = file.Output.ChapterMarkers,
             ChaptersAtCuts = file.Output.ChaptersAtCuts,
+            Subtitles = file.Output.Subtitles,
             TargetFileSize = file.Output.TargetFileSize,
             ManualCommand = file.Output.ManualCommand,
             Segments = sequence.Cuts.Where(c => c.Length >= 2).Select(c => new SegmentState(c[0], c[1], c.Length > 2 && c[2] != 0)).ToList(),

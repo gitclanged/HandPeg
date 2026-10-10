@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using CliWrap;
@@ -11,12 +12,32 @@ namespace HandPegApp.Services;
 /// <summary>Pictures of sound: the waveform images shown on the timeline and in the mixer.</summary>
 public static partial class Waveforms
 {
+    // The sound is read at this rate, which is plenty for its outline, and for every so many samples only the
+    // lowest and the highest are kept: twenty pairs to the second. An hour of sound is 72,000 pairs, 576 KB.
+    private const int SampleRate = 4000, SamplesPerPeak = 200;
+
+    /// <summary>How many pairs of peaks there are to a second of sound.</summary>
+    public const double PeaksPerSecond = (double)SampleRate / SamplesPerPeak;
+
+    // The picture made for places that want a picture has at most this many columns, however long the sound.
+    private const int MostColumns = 4000;
+
+    // The peaks behind each picture, for what draws a waveform itself at the size it is shown (the time bars).
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ImageSource, WaveformData> Peaks = [];
+
+    /// <summary>The peaks a waveform picture was drawn from; null for a picture that is not one of these.</summary>
+    public static WaveformData? DataOf(ImageSource? picture) => picture is not null && Peaks.TryGetValue(picture, out var data) ? data : null;
+
     /// <summary>
-    /// Draws the whole of one audio track as a single picture with FFmpeg's showwavespic. Returns the
-    /// picture, loaded into memory so the file is not held open, or null when it could not be made.
+    /// Reads the whole of one audio track as peaks, and returns a picture of them made of geometry: the
+    /// outline of its loudness, as one filled shape. FFmpeg decodes the sound to plain samples, which are
+    /// read as they come and reduced; no image file is made and no bitmap is held. The peaks stay with the
+    /// picture (see <see cref="DataOf"/>). Null when it could not be made.
     /// </summary>
     /// <param name="trackIndexes">Which of the file's audio tracks, counted from 0. Several are mixed together (amix) first.</param>
-    /// <param name="color">A colour FFmpeg understands: a name such as gray, or 0xRRGGBB.</param>
+    /// <param name="imagePath">Not used any more: the picture is not a file. Kept for the callers that name one.</param>
+    /// <param name="width">The shape of the picture: it is this many units wide for every <paramref name="height"/> high.</param>
+    /// <param name="color">A colour as FFmpeg would be given it: a name such as gray, or 0xRRGGBB.</param>
     public static async Task<ImageSource?> RenderAsync(
         string mediaPath, IReadOnlyList<int> trackIndexes, string imagePath, int width, int height, string color, CancellationToken cancellationToken)
     {
@@ -26,14 +47,119 @@ public static partial class Waveforms
         var inputs = string.Concat(trackIndexes.Select(index => $"[0:a:{index}]"));
         var mix = trackIndexes.Count > 1 ? $"amix=inputs={trackIndexes.Count}:normalize=0," : "";
 
-        Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
+        var (lows, highs) = (new List<float>(4096), new List<float>(4096));
+        var samples = PipeTarget.Create(async (stream, token) =>
+        {
+            var buffer = new byte[32768];
+            var (held, count, low, high) = (0, 0, 0, 0);
+            int read;
+            while ((read = await stream.ReadAsync(buffer.AsMemory(held), token)) > 0)
+            {
+                var have = held + read;
+                var whole = have & ~1;
+                for (var i = 0; i < whole; i += 2)
+                {
+                    var sample = (int)(short)(buffer[i] | buffer[i + 1] << 8);
+                    if (sample < low)
+                        low = sample;
+                    if (sample > high)
+                        high = sample;
+                    if (++count == SamplesPerPeak)
+                    {
+                        lows.Add(low / 32768f);
+                        highs.Add(high / 32768f);
+                        (count, low, high) = (0, 0, 0);
+                    }
+                }
+
+                // Half a sample at the end of what was read waits for its other half.
+                held = have - whole;
+                if (held > 0)
+                    buffer[0] = buffer[whole];
+            }
+
+            if (count > 0)
+            {
+                lows.Add(low / 32768f);
+                highs.Add(high / 32768f);
+            }
+        });
+
         var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
-            .WithArguments(["-hide_banner", "-loglevel", "error", "-y", "-i", mediaPath,
-                "-filter_complex", $"{inputs}{mix}showwavespic=s={width}x{height}:colors={color}", "-frames:v", "1", imagePath])
+            .WithArguments(["-hide_banner", "-loglevel", "error", "-i", mediaPath, "-filter_complex",
+                $"{inputs}{mix}aresample={SampleRate},aformat=sample_fmts=s16:channel_layouts=mono[wave]", "-map", "[wave]", "-f", "s16le", "-"])
+            .WithStandardOutputPipe(samples)
             .WithValidation(CommandResultValidation.None),
             cancellationToken);
 
-        return result.ExitCode == 0 ? Load(imagePath) : null;
+        if (result.ExitCode != 0 || highs.Count == 0)
+            return null;
+
+        var data = new WaveformData(lows.ToArray(), highs.ToArray(), BrushOf(color));
+        var picture = Draw(data, Math.Max(width, 2), Math.Max(height, 2));
+        Peaks.AddOrUpdate(picture, data);
+        return picture;
+    }
+
+    /// <summary>The peaks as a picture: one shape, a column for every so many pairs.</summary>
+    private static ImageSource Draw(WaveformData data, double width, double height)
+    {
+        var columns = Math.Min(data.Count, MostColumns);
+        var (step, middle) = (width / columns, height / 2);
+        var (tops, bottoms) = (new double[columns], new double[columns]);
+        for (var c = 0; c < columns; c++)
+        {
+            var (low, high) = data.Range((double)c / columns, (double)(c + 1) / columns);
+
+            // Silence is still a line: the sound is there, and quiet.
+            tops[c] = middle - Math.Max(high * middle, height / 200);
+            bottoms[c] = middle - Math.Min(low * middle, -height / 200);
+        }
+
+        var outline = new StreamGeometry();
+        using (var path = outline.Open())
+        {
+            path.BeginFigure(new Point(0, tops[0]), isFilled: true, isClosed: true);
+            for (var c = 0; c < columns; c++)
+                path.LineTo(new Point((c + 0.5) * step, tops[c]), false, false);
+            path.LineTo(new Point(width, tops[^1]), false, false);
+            path.LineTo(new Point(width, bottoms[^1]), false, false);
+            for (var c = columns - 1; c >= 0; c--)
+                path.LineTo(new Point((c + 0.5) * step, bottoms[c]), false, false);
+            path.LineTo(new Point(0, bottoms[0]), false, false);
+        }
+
+        outline.Freeze();
+
+        // The see-through rectangle gives the picture its full size: without it, it would be as tall as the loudest moment only.
+        var drawing = new DrawingGroup();
+        drawing.Children.Add(new GeometryDrawing(Brushes.Transparent, null, new RectangleGeometry(new Rect(0, 0, width, height))));
+        drawing.Children.Add(new GeometryDrawing(data.Fill, null, outline));
+        drawing.Freeze();
+
+        var image = new DrawingImage(drawing);
+        image.Freeze();
+        return image;
+    }
+
+    private static Brush BrushOf(string color)
+    {
+        try
+        {
+            var name = color.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? "#" + color[2..] : color;
+            if (ColorConverter.ConvertFromString(name) is Color parsed)
+            {
+                var brush = new SolidColorBrush(parsed);
+                brush.Freeze();
+                return brush;
+            }
+        }
+        catch (FormatException)
+        {
+            // Gray, then.
+        }
+
+        return Brushes.Gray;
     }
 
     /// <summary>Reads a picture completely into memory and lets go of the file.</summary>
@@ -287,5 +413,38 @@ public static class Notifier
     {
         _icon?.Dispose();
         _icon = null;
+    }
+}
+
+/// <summary>
+/// A sound reduced to peaks: for each twentieth of a second, the lowest and the highest sample (-1 to 1).
+/// Whatever draws it asks for the range over a stretch of it, as wide a stretch as one of its pixels covers:
+/// zoomed out, many pairs fall into one pixel and are merged into one; zoomed in, each pair is its own.
+/// </summary>
+public sealed class WaveformData(float[] lows, float[] highs, Brush fill)
+{
+    public int Count => highs.Length;
+
+    /// <summary>The colour it is drawn in.</summary>
+    public Brush Fill { get; } = fill;
+
+    /// <summary>The lowest and the highest sample between two points of the sound, each a fraction of its length (0 to 1).</summary>
+    public (float Low, float High) Range(double from, double to)
+    {
+        if (highs.Length == 0 || to <= 0 || from >= 1)
+            return (0, 0);
+
+        var first = Math.Clamp((int)(from * highs.Length), 0, highs.Length - 1);
+        var last = Math.Clamp((int)Math.Ceiling(to * highs.Length) - 1, first, highs.Length - 1);
+        var (low, high) = (lows[first], highs[first]);
+        for (var i = first + 1; i <= last; i++)
+        {
+            if (lows[i] < low)
+                low = lows[i];
+            if (highs[i] > high)
+                high = highs[i];
+        }
+
+        return (low, high);
     }
 }

@@ -64,6 +64,29 @@ public partial class MainWindow : Window
         InitializeComponent();
         DataContext = _viewModel;
 
+        // Asked for even when already handled: the slider itself answers a press beside its playhead (it moves
+        // the playhead there) and marks it handled, which would keep it from this window altogether.
+        _settingsFlyoutClose.Tick += SettingsFlyoutClose_Tick;
+        _autosave.Tick += Autosave_Tick;
+        _autosave.Start();
+
+        // Ctrl+S and Ctrl+Shift+S are key bindings of the window (see the XAML) on commands of the view model, which ask here.
+        _viewModel.SaveRequested += choosePlace =>
+        {
+            if (choosePlace)
+                SaveProjectAs();
+            else
+                SaveProject();
+        };
+        _viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(MainViewModel.SyncMasterTimeline))
+                UpdateMasterStretch();
+        };
+        SidePanes.ClipToBounds = true;
+        Application.Current.Resources["GlobalScrollBarThickness"] = Math.Clamp(AppSettings.Current.ScrollbarThickness, 4, 16);
+        TimelineSlider.AddHandler(PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler(TimelineSlider_PreviewMouseLeftButtonDown), handledEventsToo: true);
+
         // The first-run window may have been shown before this one, and WPF takes the first window made
         // as the main one.
         Application.Current.MainWindow = this;
@@ -147,12 +170,46 @@ public partial class MainWindow : Window
         if (AppSettings.Current is not { FirstRunComplete: true, SplashPresetCount: > 0, UiMode: AppSettings.EditorMode })
             return;
 
-        var splash = new SplashWindow { Owner = this };
-        splash.ShowDialog();
-        if (splash.Request is not { } request)
-            return;
+        OpenLaunchWindow();
+    }
 
-        _ = OpenLaunchRequestAsync(request);
+    private SplashWindow? _launchWindow;
+
+    /// <summary>Opens the launch window, whatever the settings say about showing it at startup: it is also where the Social Squisher is.</summary>
+    private void OpenLaunchWindow()
+    {
+        if (_launchWindow is not null)
+        {
+            _launchWindow.Activate();
+            return;
+        }
+
+        // A soft dialog: it lies over this window without holding it, and a press anywhere on this window
+        // (or a file dropped on it) puts it away, as choosing nothing in it would.
+        var splash = _launchWindow = new SplashWindow
+        {
+            Owner = this,
+            AvailableEncoders = () => _viewModel.VideoEncoders.Where(encoder => encoder.IsHardware).Select(encoder => encoder.Name).ToList(),
+        };
+
+        // Not while it is squishing a video, or holding the result: that is only closed with its own button.
+        void Dismiss(object? sender, EventArgs e)
+        {
+            if (!splash.IsSquishing)
+                splash.Close();
+        }
+
+        PreviewMouseDown += Dismiss;
+        PreviewDrop += Dismiss;
+        splash.Closed += (_, _) =>
+        {
+            _launchWindow = null;
+            PreviewMouseDown -= Dismiss;
+            PreviewDrop -= Dismiss;
+            if (splash.Request is { } request)
+                _ = OpenLaunchRequestAsync(request);
+        };
+        splash.Show();
     }
 
     /// <summary>
@@ -239,6 +296,24 @@ public partial class MainWindow : Window
 
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // Saving, before anything else sees the keys: a text box, which has uses of its own for some key
+        // combinations, never gets these two. The window's key bindings (see the XAML) are the same commands,
+        // for the keys that reach it by the ordinary road.
+        //
+        // Save As is Ctrl+Alt+S, not Ctrl+Shift+S: that one is taken, on computers with AMD's graphics
+        // software, by its "save instant replay" hotkey, which is registered with Windows for every program,
+        // so the keys are never given to HandPeg at all. (With Alt held, WPF reports the key as a system key.)
+        var pressed = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (pressed == Key.S && Keyboard.Modifiers is ModifierKeys.Control or (ModifierKeys.Control | ModifierKeys.Alt))
+        {
+            if (Keyboard.Modifiers != ModifierKeys.Control)
+                _viewModel.SaveProjectAsCommand.Execute(null);
+            else
+                _viewModel.SaveProjectNowCommand.Execute(null);
+            e.Handled = true;
+            return;
+        }
+
         // Typing stays typing (a text box has an undo of its own), and a drop-down keeps its own keys.
         var focused = Keyboard.FocusedElement;
         if (focused is TextBoxBase or ComboBox or ComboBoxItem)
@@ -396,18 +471,224 @@ public partial class MainWindow : Window
             _timelineOptionsWidth = TimelineOptionsInline.DesiredSize.Width;
         }
 
+        // No room: the checkboxes are taken out of the row altogether and offered in the Views menu instead; with
+        // room again they come back. They are never wrapped onto a second line.
         var fits = TimelineOptionsHost.ActualWidth >= _timelineOptionsWidth + 4;
-        (TimelineOptionsInline.Visibility, TimelineOptionsButton.Visibility) = fits ? (Visibility.Visible, Visibility.Collapsed) : (Visibility.Hidden, Visibility.Visible);
-        if (fits)
-            TimelineOptionsButton.IsChecked = false;
+        UpdateTransportMinWidth();
+        TimelineOptionsInline.Visibility = fits ? Visibility.Visible : Visibility.Collapsed;
+        ViewsPlaybackOptions.Visibility = fits || !_viewModel.IsEditorMode ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    // The button that opened the menu would, clicked again to close it, open it straight back up: the click
-    // that closes the menu from outside reaches the button as well. So it is deaf while the menu is open.
-    private void TimelineOptionsPopup_Opened(object? sender, EventArgs e) => TimelineOptionsButton.IsHitTestVisible = false;
+    // ----- A track's controls: in its row while there is room, in a flyout from its row when there is not -----
 
-    private void TimelineOptionsPopup_Closed(object? sender, EventArgs e) =>
-        Dispatcher.BeginInvoke(() => TimelineOptionsButton.IsHitTestVisible = true, System.Windows.Threading.DispatcherPriority.Input);
+    // What a row needs beside its controls: the name block, and a time bar wide enough to be of use.
+    private const double NarrowestTrackList = 232 + 250 + 700;
+
+    private void TrackList_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (sender is FrameworkElement { ActualWidth: > 0 } list)
+            _viewModel.CompactTrackControls = _viewModel.IsEditorMode && list.ActualWidth < NarrowestTrackList;
+    }
+
+    // The button that opened a flyout would, clicked again to close it, open it straight back up; so it is deaf while the flyout is open.
+    private void TrackControlsPopup_Opened(object? sender, EventArgs e)
+    {
+        if (sender is Popup { PlacementTarget: UIElement button })
+            button.IsHitTestVisible = false;
+    }
+
+    private void TrackControlsPopup_Closed(object? sender, EventArgs e)
+    {
+        if (sender is Popup { PlacementTarget: UIElement button })
+            Dispatcher.BeginInvoke(() => button.IsHitTestVisible = true, System.Windows.Threading.DispatcherPriority.Input);
+    }
+
+    private void TimelineOptionsBar_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e) => UpdateTransportMinWidth();
+
+    /// <summary>
+    /// However narrow the player gets, the Views button keeps its place at the left of the playback bar: with
+    /// the checkboxes folded into it, it is the only way to them. In Encoder Mode there is nothing there to keep room for.
+    /// </summary>
+    private void UpdateTransportMinWidth() =>
+        TransportRow.ColumnDefinitions[0].MinWidth = TimelineOptionsBar.IsVisible
+            ? Math.Ceiling((EditorViewsButton.ActualWidth > 0 ? EditorViewsButton.ActualWidth : 90) + 22)
+            : 0;
+
+    // ----- The Settings button's flyout: the queue and the combinator, while the pointer is on the button or on it -----
+
+    private readonly System.Windows.Threading.DispatcherTimer _settingsFlyoutClose = new() { Interval = TimeSpan.FromMilliseconds(260) };
+
+    // ----- Fitting -----
+
+    private void PlayerArea_SizeChanged(object sender, SizeChangedEventArgs e) => ClampSideColumn();
+
+    /// <summary>
+    /// Keeps the side column inside the window. It has a width of its own (the one it was dragged to), which
+    /// a narrower window has no room for: it then takes what is left beside the player's least width, down to
+    /// its own least, and is given its width back when there is room again. It never lies over the player.
+    /// </summary>
+    private void ClampSideColumn()
+    {
+        if (SidePanes.Visibility != Visibility.Visible || PlayerArea.ActualWidth <= 0)
+            return;
+
+        var settings = AppSettings.Current;
+        var wanted = settings.SidePanesWidth > 0 ? settings.SidePanesWidth : DefaultSidePanesWidth;
+        var room = PlayerArea.ActualWidth - PlayerColumn.MinWidth - 10;
+        var width = Math.Max(Math.Min(wanted, room), SideColumn.MinWidth);
+        if (Math.Abs(SideColumn.Width.Value - width) > 0.5 || !SideColumn.Width.IsAbsolute)
+            SideColumn.Width = new GridLength(width);
+    }
+
+    // ----- The time bars' view: zoomed and moved along together -----
+    // Every layer and audio time bar shows the same stretch of the sequence. Ctrl + wheel over any of them
+    // zooms all of them about the pointer; Shift + wheel, or a drag with the middle button, moves them along.
+    // The master timeline follows when "Sync Master Timeline Stretch" is on in the Views menu.
+
+    private double _timelineZoom = 1, _timelineOffsetSeconds;
+
+    private void ClipTrack_ZoomRequested(TimelineTrack track, double factor, double x)
+    {
+        var seconds = _viewModel.DurationMs / 1000;
+        if (seconds <= 0 || track.ActualWidth <= 0)
+            return;
+
+        // The moment under the pointer stays under it.
+        var under = _timelineOffsetSeconds + x / (track.ActualWidth * _timelineZoom) * seconds;
+        _timelineZoom = Math.Clamp(_timelineZoom * factor, 1, 400);
+        _timelineOffsetSeconds = under - x / (track.ActualWidth * _timelineZoom) * seconds;
+        ApplyTimelineView();
+    }
+
+    private void ClipTrack_PanRequested(TimelineTrack track, double pixels)
+    {
+        var seconds = _viewModel.DurationMs / 1000;
+        if (seconds <= 0 || track.ActualWidth <= 0)
+            return;
+
+        _timelineOffsetSeconds += pixels / (track.ActualWidth * _timelineZoom) * seconds;
+        ApplyTimelineView();
+    }
+
+    private void ApplyTimelineView()
+    {
+        var seconds = _viewModel.DurationMs / 1000;
+        _timelineOffsetSeconds = Math.Clamp(_timelineOffsetSeconds, 0, Math.Max(seconds * (1 - 1 / _timelineZoom), 0));
+        foreach (var track in _clipTracks.ToList())
+            DrawTrack(track);
+        UpdateMasterStretch();
+        _viewModel.StatusText = _timelineZoom > 1.001
+            ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Time bars zoomed {_timelineZoom:0.#}x (Ctrl + wheel zooms, Shift + wheel or a middle-button drag moves along).")
+            : "Time bars show the whole sequence.";
+    }
+
+    private void MasterTimelineViewport_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateMasterStretch();
+
+    /// <summary>Stretches the master timeline to the time bars' zoom and slides it to their place, while that is switched on; otherwise it fills its place as it always did.</summary>
+    private void UpdateMasterStretch()
+    {
+        var seconds = _viewModel.DurationMs / 1000;
+        if (!_viewModel.SyncMasterTimeline || _timelineZoom <= 1.001 || seconds <= 0 || MasterTimelineViewport.ActualWidth <= 0)
+        {
+            (MasterTimelineContent.Width, MasterTimelineContent.HorizontalAlignment, MasterTimelineContent.Margin) = (double.NaN, HorizontalAlignment.Stretch, new Thickness(0));
+            return;
+        }
+
+        var width = MasterTimelineViewport.ActualWidth * _timelineZoom;
+        MasterTimelineContent.HorizontalAlignment = HorizontalAlignment.Left;
+        MasterTimelineContent.Width = width;
+        MasterTimelineContent.Margin = new Thickness(-_timelineOffsetSeconds / seconds * width, 0, 0, 0);
+    }
+
+    private void FlyoutSquisher_Click(object sender, RoutedEventArgs e)
+    {
+        SettingsFlyout.IsOpen = false;
+        OpenLaunchWindow();
+    }
+
+    private void SettingsHost_MouseEnter(object sender, MouseEventArgs e)
+    {
+        _viewModel.RefreshAutosave();
+        _settingsFlyoutClose.Stop();
+        SettingsFlyout.IsOpen = true;
+    }
+
+    // Leaving the button or the flyout does not close it at once: the pointer is given a moment to cross from one to the other.
+    private void SettingsFlyout_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _settingsFlyoutClose.Stop();
+        _settingsFlyoutClose.Start();
+    }
+
+    private void SettingsFlyoutClose_Tick(object? sender, EventArgs e)
+    {
+        _settingsFlyoutClose.Stop();
+        if (!SettingsHost.IsMouseOver && !SettingsFlyoutPanel.IsMouseOver)
+            SettingsFlyout.IsOpen = false;
+    }
+
+    private void FlyoutQueue_Click(object sender, RoutedEventArgs e)
+    {
+        SettingsFlyout.IsOpen = false;
+        OpenQueue_Click(sender, e);
+    }
+
+    private void FlyoutCombinator_Click(object sender, RoutedEventArgs e)
+    {
+        SettingsFlyout.IsOpen = false;
+        OpenCombinator_Click(sender, e);
+    }
+
+    // ----- Saving: Ctrl+S, Ctrl+Shift+S, and the autosave -----
+
+    /// <summary>Save: to the file the project already has; without one, Save As.</summary>
+    private void SaveProject()
+    {
+        if (!_viewModel.HasSource)
+            _viewModel.StatusText = "There is nothing to save yet: load a video first.";
+        else if (_viewModel.CurrentProjectPath.Length > 0)
+            _viewModel.SaveProjectTo(_viewModel.CurrentProjectPath);
+        else
+            SaveProjectAs();
+    }
+
+    /// <summary>Save As: asks where, with the Windows file dialog. Neither kind of save touches the undo history.</summary>
+    private void SaveProjectAs()
+    {
+        if (!_viewModel.HasSource)
+        {
+            _viewModel.StatusText = "There is nothing to save yet: load a video first.";
+            return;
+        }
+
+        var current = _viewModel.CurrentProjectPath;
+        Directory.CreateDirectory(AppPaths.Projects);
+        var dialog = new SaveFileDialog
+        {
+            Title = "Save Project As",
+            Filter = $"HandPeg project (*{ProjectStore.Extension})|*{ProjectStore.Extension}",
+            DefaultExt = ProjectStore.Extension,
+            AddExtension = true,
+            InitialDirectory = current.Length > 0 ? Path.GetDirectoryName(current) : AppPaths.Projects,
+            FileName = current.Length > 0 ? Path.GetFileName(current) : Path.GetFileNameWithoutExtension(_viewModel.SourcePath.Trim().Trim('"')),
+        };
+        if (dialog.ShowDialog(this) == true)
+            _viewModel.SaveProjectTo(dialog.FileName);
+    }
+
+    private readonly System.Windows.Threading.DispatcherTimer _autosave = new() { Interval = TimeSpan.FromSeconds(20) };
+    private DateTime _lastAutosave = DateTime.UtcNow;
+
+    // Looked at every twenty seconds: when autosave is on and its interval has passed, the project is written (if it has changed).
+    private void Autosave_Tick(object? sender, EventArgs e)
+    {
+        var settings = AppSettings.Current;
+        if (!settings.AutosaveEnabled || DateTime.UtcNow - _lastAutosave < TimeSpan.FromMinutes(Math.Clamp(settings.AutosaveMinutes, 1, 120)))
+            return;
+
+        _lastAutosave = DateTime.UtcNow;
+        _ = _viewModel.AutosaveAsync();
+    }
 
     // ----- Drag and drop -----
 
@@ -1208,6 +1489,37 @@ public partial class MainWindow : Window
         PlayerSeek((long)e.NewValue, exact: !_isScrubbing);
     }
 
+    /// <summary>
+    /// A press anywhere on the master timeline, not only on the playhead: the playhead goes to where the
+    /// pointer is, and the press is then handed to it, so that it is held from that moment exactly as if it
+    /// had been pressed itself. Holding and dragging scrubs; letting go ends it, by the same steps as any
+    /// drag of the playhead (DragStarted, DragCompleted). The slider has usually moved the playhead to the
+    /// pointer already by the time this runs; what it does not do by itself is take hold of it.
+    /// </summary>
+    private void TimelineSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (TimelineSlider.Template?.FindName("PART_Track", TimelineSlider) is not System.Windows.Controls.Primitives.Track { Thumb: { } thumb } track
+            || thumb.IsMouseOver || thumb.IsDragging || TimelineSlider.Maximum <= TimelineSlider.Minimum)
+        {
+            return;
+        }
+
+        // The track works out a value from where its playhead was last laid out. The slider may just have moved
+        // the playhead (it does, for a press beside it), so the track is laid out first: asked before that, it
+        // would add the distance to the pointer a second time.
+        TimelineSlider.UpdateLayout();
+        var value = track.ValueFromPoint(e.GetPosition(track));
+        if (!double.IsFinite(value))
+            return;
+
+        TimelineSlider.Value = Math.Clamp(value, TimelineSlider.Minimum, TimelineSlider.Maximum);
+
+        // The playhead is laid out where it now is before it is pressed: it measures the drag from there.
+        TimelineSlider.UpdateLayout();
+        thumb.RaiseEvent(new MouseButtonEventArgs(e.MouseDevice, e.Timestamp, MouseButton.Left) { RoutedEvent = MouseLeftButtonDownEvent, Source = thumb });
+        e.Handled = true;
+    }
+
     private void TimelineSlider_DragStarted(object sender, DragStartedEventArgs e)
     {
         _isScrubbing = true;
@@ -1264,8 +1576,8 @@ public partial class MainWindow : Window
         if (e.PropertyName == nameof(MainViewModel.PositionMs))
         {
             MoveClipPlayheads();
-            if (_keyPlayhead is not null && _viewModel.DurationMs > 0)
-                Canvas.SetLeft(_keyPlayhead, _viewModel.PositionMs / _viewModel.DurationMs * KeyTimeline.ActualWidth);
+            if (_viewModel.DurationMs > 0 && !double.IsNaN(KeyTimeline.PlayheadX))
+                KeyTimeline.PlayheadX = _viewModel.PositionMs / _viewModel.DurationMs * KeyTimeline.ActualWidth;
         }
 
         if (e.PropertyName is nameof(MainViewModel.ShowCutSegmentsPane) or nameof(MainViewModel.ShowKeyframesPane))
@@ -1594,10 +1906,9 @@ public partial class MainWindow : Window
     private static readonly Brush LayerAudioBrush = Frozen(Color.FromArgb(0xD0, 0x3C, 0x9A, 0x5F));
     private static readonly Brush SoundClipBrush = Frozen(Color.FromArgb(0xD0, 0x2B, 0x7A, 0x6B));
     private static readonly Brush OffClipBrush = Frozen(Color.FromArgb(0xC0, 0x55, 0x55, 0x55));
-    private static readonly Brush LabelShadeBrush = Frozen(Color.FromArgb(0x90, 0x00, 0x00, 0x00));
+    private static readonly Brush SubtitleClipBrush = Frozen(Color.FromArgb(0xD0, 0x2E, 0x7D, 0x6B));
     private static readonly Brush MainUnderBrush = Frozen(Color.FromArgb(0x48, 0x2F, 0x6F, 0xB5));
     private static readonly Brush SegmentMarkBrush = Frozen(Color.FromArgb(0xD0, 0x1F, 0x4E, 0x82));
-    private static readonly Transform DiamondTurn = FrozenTurn(45);
 
     /// <summary>One clip of the main video, as something that can be selected.</summary>
     private sealed record MainClipRef(int Index);
@@ -1606,14 +1917,6 @@ public partial class MainWindow : Window
     /// <param name="shift">How far the moment the keyframes are counted from lies from the start of the block, in seconds.</param>
     private IEnumerable<double>? ClipKeys(Layer clip, double shift, double scale) =>
         _viewModel.ShowClipKeyframes && clip.IsAnimated ? clip.KeyTimes.Select(t => (t + shift) * scale) : null;
-    private const double ClipEdge = 9;
-
-    private static Transform FrozenTurn(double angle)
-    {
-        var turn = new RotateTransform(angle);
-        turn.Freeze();
-        return turn;
-    }
 
     // ----- Keyframes: the pane, and the buttons of the bottom bar -----
 
@@ -1648,50 +1951,26 @@ public partial class MainWindow : Window
 
     private void KeyTimeline_SizeChanged(object sender, SizeChangedEventArgs e) => DrawKeyTimeline();
 
-    private System.Windows.Shapes.Rectangle? _keyPlayhead;
-
     /// <summary>
     /// Draws the Keyframes pane's timeline: the same span as the master timeline, the selected clip's stretch
-    /// of it shaded, a diamond at each of its keyframes, and the playhead. Drawn when the keyframes or the
-    /// clip change; as the video plays only the playhead line is moved.
+    /// of it shaded, a diamond at each of its keyframes, and the playhead. The bar draws itself from these
+    /// figures; as the video plays only its playhead is moved.
     /// </summary>
     private void DrawKeyTimeline()
     {
-        KeyTimeline.Children.Clear();
-        _keyPlayhead = null;
-        var (seconds, width, height) = (_viewModel.DurationMs / 1000, KeyTimeline.ActualWidth, KeyTimeline.ActualHeight);
+        var (seconds, width) = (_viewModel.DurationMs / 1000, KeyTimeline.ActualWidth);
         if (!KeyframesPane.IsVisible || seconds <= 0 || width <= 0)
+        {
+            KeyTimeline.Show(0, 0, null, []);
+            KeyTimeline.PlayheadX = double.NaN;
             return;
+        }
 
         var clip = _viewModel.ActiveKeyLayer;
         var scale = width / seconds;
         var (from, to) = clip.IsMainVideo ? _viewModel.GetMainSpan() : clip.GetSpan(seconds);
-        var span = new System.Windows.Shapes.Rectangle { Width = Math.Max((to - from) * scale, 2), Height = 6, Fill = clip.IsMainVideo ? MainClipBrush : LayerClipBrush, RadiusX = 2, RadiusY = 2, IsHitTestVisible = false };
-        Canvas.SetLeft(span, from * scale);
-        Canvas.SetTop(span, (height - 6) / 2);
-        KeyTimeline.Children.Add(span);
-
-        foreach (var time in clip.KeyTimes)
-        {
-            var at = clip.StartTime + time;
-            var mark = new System.Windows.Shapes.Rectangle
-            {
-                Width = 11, Height = 11, Fill = Brushes.Gold, Stroke = Brushes.Black, StrokeThickness = 0.8, Cursor = Cursors.Hand,
-                RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = DiamondTurn, ToolTip = $"Keyframe at {TimeDisplay.Format(at)}",
-            };
-            mark.MouseLeftButtonDown += (_, e) =>
-            {
-                _viewModel.PositionMs = Math.Clamp(at * 1000, 0, _viewModel.DurationMs);
-                e.Handled = true;
-            };
-            Canvas.SetLeft(mark, at * scale - 5.5);
-            Canvas.SetTop(mark, (height - 11) / 2);
-            KeyTimeline.Children.Add(mark);
-        }
-
-        _keyPlayhead = new System.Windows.Shapes.Rectangle { Width = 1.5, Height = height, Fill = Brushes.OrangeRed, IsHitTestVisible = false };
-        Canvas.SetLeft(_keyPlayhead, _viewModel.PositionMs / 1000 * scale);
-        KeyTimeline.Children.Add(_keyPlayhead);
+        KeyTimeline.Show(from * scale, (to - from) * scale, clip.IsMainVideo ? MainClipBrush : LayerClipBrush, clip.KeyTimes.Select(time => (clip.StartTime + time) * scale).ToList());
+        KeyTimeline.PlayheadX = _viewModel.PositionMs / 1000 * scale;
     }
 
     private void KeyTimeline_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1710,8 +1989,14 @@ public partial class MainWindow : Window
 
     private void SeekKeyTimeline(MouseEventArgs e)
     {
-        if (KeyTimeline.ActualWidth > 0)
-            _viewModel.PositionMs = Math.Clamp(e.GetPosition(KeyTimeline).X / KeyTimeline.ActualWidth, 0, 1) * _viewModel.DurationMs;
+        if (KeyTimeline.ActualWidth <= 0)
+            return;
+
+        // A click on a diamond goes to that keyframe exactly; anywhere else, to where the pointer is.
+        var x = e.GetPosition(KeyTimeline).X;
+        if (e is MouseButtonEventArgs && KeyTimeline.KeyNear(x) is { } key)
+            x = key;
+        _viewModel.PositionMs = Math.Clamp(x / KeyTimeline.ActualWidth, 0, 1) * _viewModel.DurationMs;
     }
 
     // ----- The panes: where each is, and how large -----
@@ -1772,7 +2057,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void PlaceViewsPopup()
     {
-        var (button, placement, offset) = _viewModel.IsEditorMode ? (HeaderViewsButton, PlacementMode.Bottom, 4) : (ViewsButton, PlacementMode.Top, -4);
+        var (button, placement, offset) = _viewModel.IsEditorMode ? (EditorViewsButton, PlacementMode.Top, -4) : (ViewsButton, PlacementMode.Top, -4);
         if (ReferenceEquals(ViewsPopup.PlacementTarget, button))
             return;
 
@@ -1840,7 +2125,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void UpdateSideColumnMinWidth()
     {
-        const double least = 200;
+        const double least = 170;
         if (SidePanes.Visibility != Visibility.Visible)
         {
             SideColumn.MinWidth = 0;
@@ -2098,10 +2383,10 @@ public partial class MainWindow : Window
     // A button that opened a menu would, clicked again to close it, open it straight back up (see
     // TimelineOptionsPopup_Opened). The views menu, the bins and the keyframe menu share the cure: each popup
     // knows its button (its placement target), which is deaf while the popup is open.
-    private void ViewsPopup_Opened(object? sender, EventArgs e) => ViewsButton.IsHitTestVisible = HeaderViewsButton.IsHitTestVisible = false;
+    private void ViewsPopup_Opened(object? sender, EventArgs e) => ViewsButton.IsHitTestVisible = EditorViewsButton.IsHitTestVisible = false;
 
     private void ViewsPopup_Closed(object? sender, EventArgs e) =>
-        Dispatcher.BeginInvoke(() => ViewsButton.IsHitTestVisible = HeaderViewsButton.IsHitTestVisible = true, System.Windows.Threading.DispatcherPriority.Input);
+        Dispatcher.BeginInvoke(() => ViewsButton.IsHitTestVisible = EditorViewsButton.IsHitTestVisible = true, System.Windows.Threading.DispatcherPriority.Input);
 
     private void BinPopup_Opened(object? sender, EventArgs e)
     {
@@ -2146,40 +2431,75 @@ public partial class MainWindow : Window
     private sealed record LayerSound(Layer Layer);
 
     // The bars that are on screen now (the lists make and drop rows as they scroll).
-    private readonly List<Canvas> _clipTracks = [];
+    private readonly List<TimelineTrack> _clipTracks = [];
 
     // What is selected: a Layer (one clip), a MainClipRef (a clip of the main video), a CutSegment, an AudioClip, a LayerSound.
     private object? _selectedClip;
     private bool _mainClipSelected;
     private bool _clipRedrawQueued;
 
-    // The drag in progress: the block and its bar, where the pointer went down, the block as it was then, and what to do when it is let go.
-    private (Border Block, Canvas Track, double PointerX, double Left, double Width, bool Resizing, Action<double, double> Commit)? _clipDrag;
-
     private void ClipTrack_Loaded(object sender, RoutedEventArgs e)
     {
-        if (sender is Canvas track && !_clipTracks.Contains(track))
+        if (sender is TimelineTrack track && !_clipTracks.Contains(track))
+        {
             _clipTracks.Add(track);
-        DrawTrack(sender as Canvas);
+            track.IsSelected = IsSelected;
+            track.BlockPressed += ClipTrack_BlockPressed;
+            track.DragRefused += ClipTrack_DragRefused;
+            track.DragEnded += ScheduleClipRedraw;
+            track.ZoomRequested += ClipTrack_ZoomRequested;
+            track.PanRequested += ClipTrack_PanRequested;
+        }
+
+        DrawTrack(sender as TimelineTrack);
     }
 
-    private void ClipTrack_Unloaded(object sender, RoutedEventArgs e) => _clipTracks.Remove((Canvas)sender);
+    private void ClipTrack_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is TimelineTrack track && _clipTracks.Remove(track))
+        {
+            track.BlockPressed -= ClipTrack_BlockPressed;
+            track.DragRefused -= ClipTrack_DragRefused;
+            track.DragEnded -= ScheduleClipRedraw;
+            track.ZoomRequested -= ClipTrack_ZoomRequested;
+            track.PanRequested -= ClipTrack_PanRequested;
+        }
+    }
 
-    private void ClipTrack_Changed(object sender, SizeChangedEventArgs e) => DrawTrack(sender as Canvas);
+    private void ClipTrack_Changed(object sender, SizeChangedEventArgs e) => DrawTrack(sender as TimelineTrack);
 
-    private void ClipTrack_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e) => DrawTrack(sender as Canvas);
+    private void ClipTrack_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e) => DrawTrack(sender as TimelineTrack);
+
+    // A block was pressed, with either button: it is what is selected now (a right-click selects it too, so that the menu that opens is about it).
+    private void ClipTrack_BlockPressed(TimelineBlock block, MouseButtonEventArgs e)
+    {
+        // A subtitle on the caption layer's bar is not a clip: it is edited in the Subtitle Editor.
+        if (block.Clip is SubtitleRef)
+            return;
+
+        SelectClip(block.Clip);
+
+        // On an audio track a click is also what moves the playhead, as it was before the track had blocks.
+        if (block.Clip is AudioClip && e.ChangedButton == MouseButton.Left && e.Source is TimelineTrack { ActualWidth: > 0 } track)
+            _viewModel.PositionMs = Math.Clamp((e.GetPosition(track).X + track.ViewOffsetX) / (track.ActualWidth * _timelineZoom), 0, 1) * _viewModel.DurationMs;
+    }
+
+    private void ClipTrack_DragRefused(string why) => _viewModel.StatusText = why;
+
+    /// <summary>A subtitle drawn on the caption layer's bar.</summary>
+    private sealed record SubtitleRef(double Start);
 
     // A click on a bar, beside its blocks, moves the playhead to that moment.
     private void ClipTrack_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (sender is Canvas { ActualWidth: > 0 } track && _viewModel.DurationMs > 0)
-            _viewModel.PositionMs = Math.Clamp(e.GetPosition(track).X / track.ActualWidth, 0, 1) * _viewModel.DurationMs;
+        if (sender is TimelineTrack { ActualWidth: > 0 } track && _viewModel.DurationMs > 0)
+            _viewModel.PositionMs = Math.Clamp((e.GetPosition(track).X + track.ViewOffsetX) / (track.ActualWidth * _timelineZoom), 0, 1) * _viewModel.DurationMs;
     }
 
     /// <summary>Redraws the bars once, however many things have just changed.</summary>
     private void ScheduleClipRedraw()
     {
-        if (_clipRedrawQueued || _clipDrag is not null)
+        if (_clipRedrawQueued || _clipTracks.Exists(t => t.IsDragging))
             return;
 
         _clipRedrawQueued = true;
@@ -2192,12 +2512,14 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Draws one bar: its block or blocks, and the playhead.</summary>
-    private void DrawTrack(Canvas? track)
+    private void DrawTrack(TimelineTrack? track)
     {
-        if (track is null || _clipDrag is { } drag && ReferenceEquals(drag.Track, track))
+        if (track is null || track.IsDragging)
             return;
 
-        track.Children.Clear();
+        track.Blocks.Clear();
+        track.PlayheadX = double.NaN;
+        track.InvalidateVisual();
         var seconds = _viewModel.DurationMs / 1000;
         // A video layer's sound is drawn on the bar under its picture on the Layers tab ("audio"), and on
         // the layer's row of the Audio tab ("row"), where it is listed with the other sounds.
@@ -2210,6 +2532,7 @@ public partial class MainWindow : Window
             // A video layer's sound has a bar of its own only while it is unlinked from its picture; linked, it is drawn on the picture's block.
             // On the Audio tab its row always shows it.
             Layer layerOf when isSound => (onAudioTab || !_viewModel.AudioLinked) && layerOf is { IsVideoFile: true, HasAudio: true },
+            Layer { IsCaptions: true } => _viewModel.GetSubtitleSegments().Count > 0,
             Layer { IsMainVideo: true } or Layer { HasTiming: true } => true,
             _ => false,
         };
@@ -2217,7 +2540,10 @@ public partial class MainWindow : Window
         if (!show || track.ActualWidth <= 0)
             return;
 
-        var (width, scale) = (track.ActualWidth, track.ActualWidth / seconds);
+        // The bar is laid out as wide as the zoom makes it, and the part of it that is seen is slid into view.
+        var width = track.ActualWidth * _timelineZoom;
+        var scale = width / seconds;
+        track.ViewOffsetX = _timelineOffsetSeconds * scale;
         var perPixel = seconds / width;
         var height = Math.Max(track.ActualHeight - 2, 4);
         switch (track.DataContext)
@@ -2229,7 +2555,7 @@ public partial class MainWindow : Window
                 var pieces = audio.Pieces.Count > 0 ? audio.Pieces : [new AudioPiece(0, fileLength, false)];
                 foreach (var piece in pieces)
                 {
-                    var clip = new AudioClip(audio, audio.Pieces.Count > 0 ? piece : null);
+                    var clip = new AudioClip(audio, audio.Pieces.Count > 0 ? piece : (AudioPiece?)null);
                     AddClip(track, (piece.Start + audio.OffsetSeconds + fileAt) * scale, (piece.End - piece.Start) * scale, piece.Muted ? "silenced" : "",
                         piece.Muted ? OffClipBrush : AudioClipBrush, clip, canDrag: () => !_viewModel.AudioLinked, resizable: false,
                         commit: (left, _) => _viewModel.SlipAudio(audio, left * perPixel - piece.Start - fileAt),
@@ -2240,7 +2566,7 @@ public partial class MainWindow : Window
                 if (track.Parent is Grid { Children: [Image waveform, ..] })
                 {
                     var waveLeft = (audio.OffsetSeconds + fileAt) * scale;
-                    waveform.Margin = new Thickness(waveLeft, 0, width - waveLeft - fileLength * scale, 0);
+                    waveform.Margin = new Thickness(waveLeft - track.ViewOffsetX, 0, track.ActualWidth - (waveLeft - track.ViewOffsetX) - fileLength * scale, 0);
                 }
 
                 break;
@@ -2251,7 +2577,7 @@ public partial class MainWindow : Window
                 {
                     var (from, to) = clip.GetSpan(seconds);
                     AddClip(track, (from + clip.AudioOffset) * scale, (to - from) * scale, "sound", clip.IsHidden ? OffClipBrush : LayerAudioBrush, new LayerSound(clip),
-                        canDrag: () => !_viewModel.AudioLinked, resizable: false, wave: MediaBrush(clip.Waveform, clip, scale, height),
+                        canDrag: () => !_viewModel.AudioLinked, resizable: false, peaks: MediaPeaks(clip.Waveform, clip, scale),
                         commit: (left, _) =>
                         {
                             _viewModel.Checkpoint($"move the sound of {clip.Name}");
@@ -2277,7 +2603,7 @@ public partial class MainWindow : Window
                     AddClip(track, pieceLeft, pieceWidth, mainClips.Count > 1 ? "" : main.IsHidden ? $"{main.Name} (picture hidden)" : main.Name,
                         main.IsHidden ? OffClipBrush : MainClipBrush, new MainClipRef(piece.Index), canDrag: () => true, resizable: true,
                         frames: main.IsHidden ? null : BuildFrames(main.Filmstrip, _viewModel.SourceWidth, _viewModel.SourceHeight, piece.Offset, main.MediaDuration, 1, pieceWidth, height, scale),
-                        wave: PartBrush(mainWave, piece.Offset * scale, filePixels, height),
+                        peaks: WaveOf(mainWave, piece.Offset * scale, filePixels),
                         keys: ClipKeys(main, main.StartTime - piece.Start, scale),
                         commit: (left, nowWidth) =>
                         {
@@ -2296,6 +2622,19 @@ public partial class MainWindow : Window
 
                 break;
 
+            // The caption layer: the subtitles, each from when it is shown to when it goes. Not dragged here:
+            // they are retimed and reworded in the Subtitle Editor (right-click, Manual Edit).
+            case Layer { IsCaptions: true }:
+                foreach (var (from, to, text, _) in _viewModel.GetSubtitleSegments())
+                {
+                    // Off the bar altogether: not worth a block.
+                    if (to * scale < 0 || from * scale > width)
+                        continue;
+                    AddClip(track, from * scale, (to - from) * scale, text, SubtitleClipBrush, new SubtitleRef(from));
+                }
+
+                break;
+
             // A track: its clips, each from when it appears to when it goes.
             case Layer layer:
                 foreach (var clip in _viewModel.GetTrackClips(layer))
@@ -2307,7 +2646,7 @@ public partial class MainWindow : Window
                         clip.IsLoading || clip.IsHidden ? OffClipBrush : clip.IsAudio ? SoundClipBrush : LayerClipBrush, clip, canDrag: () => true, resizable: true,
                         frames: clip.IsHidden || !clip.IsVideoFile ? null
                             : BuildFrames(clip.Filmstrip, clip.ImageWidth, clip.ImageHeight, clip.MediaOffset, clip.MediaDuration, ClipSpeed(clip), blockWidth, height, scale),
-                        wave: clip.IsHidden || !showsSound ? null : MediaBrush(clip.Waveform, clip, scale, height),
+                        peaks: clip.IsHidden || !showsSound ? null : MediaPeaks(clip.Waveform, clip, scale),
                         keys: ClipKeys(clip, 0, scale),
                         commit: (left, nowWidth) =>
                         {
@@ -2320,36 +2659,28 @@ public partial class MainWindow : Window
         }
 
         // The playhead, so it can be seen where a split would fall.
-        var playhead = new System.Windows.Shapes.Rectangle { Width = 1.5, Height = Math.Max(track.ActualHeight, 4), Fill = Brushes.OrangeRed, IsHitTestVisible = false, Tag = "playhead" };
-        Canvas.SetLeft(playhead, _viewModel.PositionMs / 1000 * scale);
-        track.Children.Add(playhead);
+        track.PlayheadX = _viewModel.PositionMs / 1000 * scale - track.ViewOffsetX;
     }
 
     /// <summary>
-    /// A picture of a clip's whole file (the waveform of its sound) as a brush for the clip's block: laid out
-    /// at the scale of the timeline and shifted, so that the block shows the part of the file the clip plays.
+    /// The part of a clip's sound that its block shows: its file's waveform, laid out at the scale of the
+    /// timeline and shifted to where the clip begins in it. The bar draws it from the peaks, at the block's own size.
     /// </summary>
-    private static Brush? MediaBrush(ImageSource? picture, Layer clip, double scale, double height)
+    private static WaveSpan? MediaPeaks(ImageSource? picture, Layer clip, double scale)
     {
-        if (picture is null)
-            return null;
-
-        // A clip that runs faster covers its file in less of the timeline, and its picture is that much narrower.
+        // A clip that runs faster covers its file in less of the timeline, and its sound is that much narrower.
         var speed = ClipSpeed(clip);
         return clip.MediaDuration > 0.05
-            ? PartBrush(picture, clip.MediaOffset * scale / speed, clip.MediaDuration * scale / speed, height)
-            : new ImageBrush(picture) { Stretch = Stretch.Fill };
+            ? WaveOf(picture, clip.MediaOffset * scale / speed, clip.MediaDuration * scale / speed)
+            : WaveOf(picture, 0, 0);
     }
+
+    /// <summary>One stretch of a sound, for a block: the sound is <paramref name="span"/> pixels wide in all, and the block begins <paramref name="offset"/> pixels into it.</summary>
+    private static WaveSpan? WaveOf(ImageSource? picture, double offset, double span) =>
+        Waveforms.DataOf(picture) is { } data ? new WaveSpan(data, offset, span) : null;
 
     /// <summary>How many times as fast as recorded a clip runs; 1 for a clip that has no speed of its own.</summary>
     private static double ClipSpeed(Layer clip) => clip.HasSpeed ? Math.Clamp(clip.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
-
-    /// <summary>A brush that shows one stretch of a long picture: the picture is <paramref name="span"/> pixels wide in all, and the block begins <paramref name="offset"/> pixels into it.</summary>
-    private static Brush? PartBrush(ImageSource? picture, double offset, double span, double height) =>
-        picture is null || span < 1 ? null : Frozen(new ImageBrush(picture)
-        {
-            Stretch = Stretch.Fill, TileMode = TileMode.None, ViewportUnits = BrushMappingMode.Absolute, Viewport = new Rect(-offset, 0, span, height),
-        });
 
     /// <summary>A brush that will not change again, frozen: WPF then neither watches it nor ties it to this thread.</summary>
     private static ImageBrush Frozen(ImageBrush brush)
@@ -2371,7 +2702,7 @@ public partial class MainWindow : Window
     /// <param name="pixelWidth">The video's own size, which gives a frame of the strip its shape.</param>
     /// <param name="mediaOffset">How far into the file the block begins, in seconds.</param>
     /// <param name="speed">How many times as fast as recorded the block runs through the file.</param>
-    private static Canvas? BuildFrames(ImageSource? filmstrip, int pixelWidth, int pixelHeight, double mediaOffset, double mediaDuration, double speed, double blockWidth, double height, double scale)
+    private static List<(ImageSource Picture, double Left, double Width)>? BuildFrames(ImageSource? filmstrip, int pixelWidth, int pixelHeight, double mediaOffset, double mediaDuration, double speed, double blockWidth, double height, double scale)
     {
         if (filmstrip is not BitmapSource strip || strip.PixelHeight <= 0 || blockWidth < 6)
             return null;
@@ -2387,19 +2718,17 @@ public partial class MainWindow : Window
             return null;
 
         var slot = height * framePixels / strip.PixelHeight;
-        var canvas = new Canvas { IsHitTestVisible = false, ClipToBounds = true, Opacity = 0.9 };
+        var pictures = new List<(ImageSource Picture, double Left, double Width)>();
         for (var k = 0; k * slot < blockWidth && k < 80; k++)
         {
             // What the layer shows in the middle of this slot.
             var into = mediaOffset + (k + 0.5) * slot / scale * speed;
             var index = mediaDuration > 0.05 ? Math.Clamp((int)(into % mediaDuration / mediaDuration * count), 0, count - 1) : 0;
             var frame = frames[index] ??= Cut(strip, index * framePixels, framePixels);
-            var picture = new Image { Source = frame, Width = slot, Height = height, Stretch = Stretch.Fill };
-            Canvas.SetLeft(picture, k * slot);
-            canvas.Children.Add(picture);
+            pictures.Add((frame, k * slot, slot));
         }
 
-        return canvas;
+        return pictures;
 
         static CroppedBitmap Cut(BitmapSource strip, int x, int width)
         {
@@ -2409,7 +2738,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Moves the playhead line of every bar; nothing else about them changes as the video plays.</summary>
+    /// <summary>Moves the playhead line of every bar; nothing else about them changes as the video plays, and nothing else is drawn again.</summary>
     private void MoveClipPlayheads()
     {
         var seconds = _viewModel.DurationMs / 1000;
@@ -2418,140 +2747,51 @@ public partial class MainWindow : Window
 
         foreach (var track in _clipTracks)
         {
-            if (track.Children.Count > 0 && track.Children[^1] is System.Windows.Shapes.Rectangle { Tag: "playhead" } playhead)
-                Canvas.SetLeft(playhead, _viewModel.PositionMs / 1000 * track.ActualWidth / seconds);
+            if (!double.IsNaN(track.PlayheadX))
+                track.PlayheadX = _viewModel.PositionMs / 1000 * track.ActualWidth * _timelineZoom / seconds - track.ViewOffsetX;
         }
     }
 
     private bool IsSelected(object? clip) => clip is null ? _mainClipSelected && _selectedClip is null : Equals(clip, _selectedClip);
 
-    private void SelectClip(object? clip, Border block)
+    private void SelectClip(object? clip)
     {
         (_selectedClip, _mainClipSelected) = (clip, clip is null);
         _viewModel.KeyLayer = clip switch { Layer { IsPicture: true } layer => layer, MainClipRef => _viewModel.MainLayer, _ => _viewModel.KeyLayer };
-        foreach (var other in _clipTracks.SelectMany(t => t.Children.OfType<Border>()))
-            other.BorderBrush = ReferenceEquals(other, block) ? Brushes.White : Brushes.Transparent;
+
+        // The outline is drawn by each bar from what is selected: they are asked to draw themselves again.
+        foreach (var track in _clipTracks)
+            track.InvalidateVisual();
     }
 
+    /// <summary>Puts a block on a bar. The bar draws it, and moves or stretches it when it is dragged.</summary>
     /// <param name="canDrag">Whether the block can be moved right now; null for one that never can (a cut segment).</param>
     /// <param name="commit">What letting go of a moved block does, given its new left edge and width in pixels.</param>
     /// <param name="frames">Frames of the block's video, drawn inside it.</param>
-    /// <param name="wave">A picture of the block's sound, drawn inside it over the frames.</param>
-    private void AddClip(
-        Canvas track, double left, double width, string name, Brush fill, object? clip,
-        Func<bool>? canDrag = null, bool resizable = false, Action<double, double>? commit = null, UIElement? frames = null, Brush? wave = null, string cannotDrag = "",
-        IEnumerable<double>? keys = null, double top = 0)
-    {
-        var content = new Grid { IsHitTestVisible = false };
-        if (frames is not null)
-            content.Children.Add(frames);
-        if (wave is not null)
-            content.Children.Add(new System.Windows.Shapes.Rectangle { Fill = wave, Opacity = frames is null ? 0.6 : 0.85 });
-
-        // The clip's keyframes: a diamond along its lower edge at each moment that has one.
-        if (keys is not null)
+    /// <param name="peaks">The block's sound, drawn inside it over the frames.</param>
+    private static void AddClip(
+        TimelineTrack track, double left, double width, string name, Brush fill, object? clip,
+        Func<bool>? canDrag = null, bool resizable = false, Action<double, double>? commit = null,
+        IReadOnlyList<(ImageSource Picture, double Left, double Width)>? frames = null, WaveSpan? peaks = null, string cannotDrag = "",
+        IEnumerable<double>? keys = null, double top = 0) =>
+        track.Blocks.Add(new TimelineBlock
         {
-            Canvas? marks = null;
-            foreach (var at in keys)
-            {
-                if (at < -4 || at > width + 4)
-                    continue;
-
-                var mark = new System.Windows.Shapes.Rectangle
-                {
-                    Width = 7, Height = 7, Fill = Brushes.Gold, Stroke = Brushes.Black, StrokeThickness = 0.6,
-                    RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = DiamondTurn,
-                };
-                Canvas.SetLeft(mark, at - 3.5);
-                Canvas.SetBottom(mark, 1.5);
-                (marks ??= new Canvas()).Children.Add(mark);
-            }
-
-            if (marks is not null)
-                content.Children.Add(marks);
-        }
-        if (name.Length > 0)
-        {
-            // Over frames, the words get a shade of their own to be read against.
-            content.Children.Add(new Border
-            {
-                Background = frames is null ? null : LabelShadeBrush, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center,
-                CornerRadius = new CornerRadius(2), Margin = new Thickness(3, 0, 3, 0),
-                Child = new TextBlock { Text = name, Foreground = Brushes.White, FontSize = 10.5, Margin = new Thickness(2, 0, 2, 0), TextTrimming = TextTrimming.CharacterEllipsis },
-            });
-        }
-
-        var block = new Border
-        {
+            Left = left,
+            Top = 1 + top,
             Width = Math.Max(width, 3),
             Height = Math.Max(track.ActualHeight - 2 - top, 4),
-            Background = fill,
-            CornerRadius = new CornerRadius(3),
-            BorderBrush = IsSelected(clip) ? Brushes.White : Brushes.Transparent,
-            BorderThickness = new Thickness(1.5),
-            Cursor = canDrag is null ? Cursors.Hand : Cursors.SizeAll,
-            Child = content,
-            ClipToBounds = true,
-            Tag = "clip",
-        };
-        Canvas.SetLeft(block, left);
-        Canvas.SetTop(block, 1 + top);
-
-        // A right-click selects the block as well, so that the menu that opens is about it.
-        block.MouseRightButtonDown += (_, _) => SelectClip(clip, block);
-        block.MouseLeftButtonDown += (_, e) =>
-        {
-            SelectClip(clip, block);
-
-            // On an audio track a click is also what moves the playhead, as it was before the track had blocks.
-            if (clip is AudioClip && track.ActualWidth > 0)
-                _viewModel.PositionMs = Math.Clamp(e.GetPosition(track).X / track.ActualWidth, 0, 1) * _viewModel.DurationMs;
-
-            if (canDrag is not null && commit is not null)
-            {
-                if (!canDrag())
-                    _viewModel.StatusText = cannotDrag;
-                else if (block.CaptureMouse())
-                    _clipDrag = (block, track, e.GetPosition(track).X, Canvas.GetLeft(block), block.Width, resizable && e.GetPosition(block).X > block.Width - ClipEdge, commit);
-            }
-
-            e.Handled = true;
-        };
-        block.MouseMove += (_, e) =>
-        {
-            if (_clipDrag is not { } drag || !ReferenceEquals(drag.Block, block))
-            {
-                // The right edge is the handle for the length.
-                if (resizable)
-                    block.Cursor = e.GetPosition(block).X > block.Width - ClipEdge ? Cursors.SizeWE : Cursors.SizeAll;
-                return;
-            }
-
-            var moved = e.GetPosition(track).X - drag.PointerX;
-            // A clip may be dragged, or stretched, past the right-hand end of the bar: the sequence is as long
-            // as its clips reach, and the bars are drawn to the new length when it is let go.
-            if (drag.Resizing)
-                block.Width = Math.Max(drag.Width + moved, 4);
-            else
-                Canvas.SetLeft(block, clip is AudioClip or LayerSound ? drag.Left + moved : Math.Max(drag.Left + moved, 0));
-        };
-        block.MouseLeftButtonUp += (_, _) =>
-        {
-            if (_clipDrag is not { } drag || !ReferenceEquals(drag.Block, block))
-                return;
-
-            _clipDrag = null;
-            block.ReleaseMouseCapture();
-
-            // A click that did not move the block changes nothing.
-            var (nowLeft, nowWidth) = (Canvas.GetLeft(block), block.Width);
-            if (Math.Abs(nowLeft - drag.Left) > 0.5 || Math.Abs(nowWidth - drag.Width) > 0.5)
-                drag.Commit(nowLeft, nowWidth);
-
-            ScheduleClipRedraw();
-        };
-        track.Children.Add(block);
-    }
+            Fill = fill,
+            Name = name,
+            Clip = clip,
+            Frames = frames,
+            Peaks = peaks,
+            Keys = keys?.ToList(),
+            CanDrag = canDrag,
+            Resizable = resizable,
+            Commit = commit,
+            CannotDrag = cannotDrag,
+            MayStartBeforeZero = clip is AudioClip or LayerSound,
+        });
 
     // ----- The editing tools: each works on whatever is selected -----
 
@@ -2697,6 +2937,14 @@ public partial class MainWindow : Window
         }
 
         var at = _viewModel.PositionMs / 1000;
+
+        // The caption layer: how the subtitles look, and the editor for what they say and when.
+        if (layer.IsCaptions)
+        {
+            Add("Caption Style Settings", () => CaptionStyle_Click(row, new RoutedEventArgs()));
+            Add("Manual Edit", () => _ = OpenSubtitleEditorAsync());
+            Separate();
+        }
 
         // The track's own modifiers.
         if (layer.HasFilters)
@@ -2932,6 +3180,105 @@ public partial class MainWindow : Window
         };
         if (dialog.ShowDialog(this) == true)
             await _viewModel.AddAudioLayerAsync(dialog.FileName, _viewModel.PositionMs / 1000);
+    }
+
+    // A layer's row picked on the Layers tab: it is the one the Keyframes pane and the Text Settings work on,
+    // as its block picked on the timeline is.
+    private void LayersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (LayersList.SelectedItem is Layer { IsPicture: true, IsCaptions: false } layer)
+            _viewModel.KeyLayer = layer;
+    }
+
+    /// <summary>Opens the Windows colour picker for one of the selected text layer's colours: its letters' or its outline's.</summary>
+    private void TextColor_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string which } || _viewModel.SelectedTextLayer is not { } layer)
+            return;
+
+        var outline = which == "Outline";
+        CaptionPreview.TryParse(outline ? layer.OutlineColor : layer.FontColor, out var current);
+        using var picker = new System.Windows.Forms.ColorDialog
+        {
+            Color = System.Drawing.Color.FromArgb(current.R, current.G, current.B),
+            FullOpen = true,
+        };
+
+        // Owned by this window, so that it opens over it and blocks it like any other dialog.
+        var owner = new System.Windows.Forms.NativeWindow();
+        owner.AssignHandle(new System.Windows.Interop.WindowInteropHelper(this).Handle);
+        try
+        {
+            if (picker.ShowDialog(owner) != System.Windows.Forms.DialogResult.OK)
+                return;
+        }
+        finally
+        {
+            owner.ReleaseHandle();
+        }
+
+        var color = $"#{picker.Color.R:X2}{picker.Color.G:X2}{picker.Color.B:X2}";
+        if (outline)
+            layer.OutlineColor = color;
+        else
+            layer.FontColor = color;
+    }
+
+    // ----- Add Layer: one button, and a menu of what kind -----
+
+    // While the menu is open the button does not answer the mouse: the click that closes the menu would otherwise open it again.
+    private void AddLayerPopup_Opened(object sender, EventArgs e) => AddLayerButton.IsHitTestVisible = false;
+
+    private void AddLayerPopup_Closed(object sender, EventArgs e) => AddLayerButton.IsHitTestVisible = true;
+
+    private void AddLayerMenu_Click(object sender, RoutedEventArgs e)
+    {
+        AddLayerButton.IsChecked = false;
+        switch ((sender as FrameworkElement)?.Tag as string)
+        {
+            case "Video": AddVideo_Click(sender, e); break;
+            case "Image": AddImage_Click(sender, e); break;
+            case "Text": _viewModel.AddTextLayerCommand.Execute(null); break;
+            case "Region": _viewModel.AddLayerCommand.Execute(null); break;
+        }
+    }
+
+    // ----- Subtitles: importing a track, and the editor -----
+
+    private void ImportSubtitles_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog { Title = "Select subtitles to import", Filter = SubtitleFiles.ImportFilter };
+        if (dialog.ShowDialog(this) == true)
+            _viewModel.ImportSubtitles(dialog.FileName);
+    }
+
+    private async void EditSubtitles_Click(object sender, RoutedEventArgs e) => await OpenSubtitleEditorAsync();
+
+    /// <summary>
+    /// Opens the Subtitle Editor on the subtitle track. With no track yet and auto-captions on, the track is
+    /// first made from them, so that what was transcribed is what is edited. While the editor is open the
+    /// main player draws no subtitles: the editor's own player does.
+    /// </summary>
+    private async Task OpenSubtitleEditorAsync()
+    {
+        if (_viewModel.IsSubtitleEditorOpen)
+            return;
+
+        if (!_viewModel.HasSubtitleCues && _viewModel.AutoCaptions && _viewModel.HasSource)
+            await _viewModel.ConvertCaptionsToCuesAsync();
+
+        if (PlayerIsPlaying)
+            PlayerSetPause(true);
+        _viewModel.IsSubtitleEditorOpen = true;
+        try
+        {
+            new Views.SubtitleEditorWindow(_viewModel) { Owner = this }.ShowDialog();
+        }
+        finally
+        {
+            _viewModel.IsSubtitleEditorOpen = false;
+            ScheduleClipRedraw();
+        }
     }
 
     private void AddImage_Click(object sender, RoutedEventArgs e)

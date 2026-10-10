@@ -176,7 +176,8 @@ public partial class MainViewModel
     [ObservableProperty] private bool _previewSubtitles;
 
     /// <summary>The caption file the player is to draw over the picture, or an empty string for none.</summary>
-    public string LiveCaptionsPath => PreviewSubtitles ? _liveCaptionsPath : "";
+    public string LiveCaptionsPath =>
+        IsSubtitleEditorOpen ? "" : PreviewSubtitles && _liveCaptionsPath.Length > 0 ? _liveCaptionsPath : LiveImageSubtitlePath;
 
     private string _liveCaptionsPath = "";
     private int _liveCaptionsRun;
@@ -277,6 +278,13 @@ public partial class MainViewModel
         {
             if (!AutoCaptions)
                 return "";
+            if (HasTextCues)
+            {
+                return VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput
+                    ? "Captions are drawn into the picture, so they need a video encoder other than Copy (Video tab)."
+                    : $"The captions are drawn from the subtitle track ({SubtitleCues.Count} cue{(SubtitleCues.Count == 1 ? "" : "s")}), in the caption style. Nothing is transcribed while it is there.";
+            }
+
             if (!File.Exists(DependencyUpdater.WhisperPath))
                 return DependencyUpdater.IsWhisperOverridden
                     ? $"The whisper.exe set in Settings (Tools) was not found: {DependencyUpdater.WhisperPath}"
@@ -293,6 +301,8 @@ public partial class MainViewModel
 
     partial void OnShowAutoCaptionsChanged(bool value)
     {
+        OnPropertyChanged(nameof(ShowLegacySubtitles));
+        OnPropertyChanged(nameof(ShowSubtitleImportRow));
         AppSettings.Current.ShowAutoCaptions = value;
         try
         {
@@ -341,12 +351,41 @@ public partial class MainViewModel
     private async Task<string?> PrepareCaptionsAsync(
         List<(double Start, double End)> ranges, string assPath, double timeOffset, CancellationToken cancellationToken, bool forPlayer = false)
     {
+        // A subtitle track with words is what the captions say: nothing is listened to.
+        if (HasTextCues)
+        {
+            var lines = GetCueCaptions(ranges);
+            WriteCaptionFile(lines.SelectMany(l => l).ToList(), lines, assPath, 0, forPlayer);
+            StatusText = $"Captions: {lines.Count} subtitle cue{(lines.Count == 1 ? "" : "s")} written.";
+            return null;
+        }
+
+        var (words, problem) = await GetCaptionWordsAsync(ranges, cancellationToken);
+        if (words is null)
+            return problem;
+
+        // What the preview shows is what the caption layer's time bar shows: the captions, on the timeline's clock.
+        if (forPlayer)
+        {
+            _generatedCaptions = CaptionGenerator.Lines(words, CaptionStyle)
+                .Select(line => line.Select(w => w with { Start = w.Start + timeOffset, End = w.End + timeOffset }).ToList()).ToList();
+            TimelineChanged?.Invoke();
+        }
+
+        WriteCaptionFile(words, null, assPath, timeOffset, forPlayer);
+        StatusText = $"Captions: {words.Count} word{(words.Count == 1 ? "" : "s")} written.";
+        return null;
+    }
+
+    /// <summary>The words that are spoken, transcribed with whisper.cpp (or as they were kept from the last time); or why they could not be.</summary>
+    private async Task<(List<CaptionWord>? Words, string? Problem)> GetCaptionWordsAsync(List<(double Start, double End)> ranges, CancellationToken cancellationToken)
+    {
         if (!File.Exists(DependencyUpdater.WhisperPath))
-            return "Auto-captions need whisper.cpp: use Install / Update All Dependencies in Settings (Tools), or set the path to your own whisper.exe there.";
+            return (null, "Auto-captions need whisper.cpp: use Install / Update All Dependencies in Settings (Tools), or set the path to your own whisper.exe there.");
 
         var modelPath = DependencyUpdater.WhisperModelPath;
         if (!File.Exists(modelPath))
-            return $"Auto-captions need the speech model {AppSettings.Current.WhisperModel}: download it in Settings (Tools).";
+            return (null, $"Auto-captions need the speech model {AppSettings.Current.WhisperModel}: download it in Settings (Tools).");
 
         // What to listen to: one of the video's tracks, the first track of a separate file, or the voiceover.
         string audioPath;
@@ -354,21 +393,21 @@ public partial class MainViewModel
         if (CaptionUseVoiceover)
         {
             if (await GetTrimmedVoiceoverAsync(cancellationToken) is not { } voiceover)
-                return "Auto-captions are set to the Recorded Voiceover Track, but there is no voiceover yet (Voiceover Studio, on the Audio tab).";
+                return (null, "Auto-captions are set to the Recorded Voiceover Track, but there is no voiceover yet (Voiceover Studio, on the Audio tab).");
             audioPath = voiceover;
         }
         else if (CaptionUseExternalAudio)
         {
             audioPath = CaptionAudioPath.Trim().Trim('"');
             if (audioPath.Length == 0)
-                return "Auto-captions are set to an External Audio File, but none is chosen (Subtitles tab).";
+                return (null, "Auto-captions are set to an External Audio File, but none is chosen (Subtitles tab).");
             if (!File.Exists(audioPath))
-                return $"The external audio file for captions was not found: {audioPath}";
+                return (null, $"The external audio file for captions was not found: {audioPath}");
         }
         else
         {
             if (_mediaInfo is { Audio.Count: 0 })
-                return "This video has no audio to make captions from. Choose an External Audio File, or switch Auto-Captions off.";
+                return (null, "This video has no audio to make captions from. Choose an External Audio File, or switch Auto-Captions off.");
             audioPath = LocalMediaPath;
             trackIndex = CaptionAudioTrack?.Index ?? 0;
         }
@@ -395,8 +434,14 @@ public partial class MainViewModel
                     CaptionGenerator.BuildExtractCommand(audioPath, trackIndex, ranges, wavPath), new Progress<FfmpegProgress>(), cancellationToken);
 
                 StatusText = $"Captions: transcribing with {Path.GetFileName(modelPath)}{(vadModel is null ? "" : ", skipping silence")}...";
+                // Whisper says how far through the sound it is; the bar shows that, and no longer just that something is happening.
+                var heard = new Progress<double>(percent =>
+                {
+                    IsProgressIndeterminate = false;
+                    ProgressValue = percent;
+                });
                 words = await Task.Run(
-                    () => CaptionGenerator.TranscribeAsync(wavPath, modelPath, language, prompt, translate, vadModel, cancellationToken), cancellationToken);
+                    () => CaptionGenerator.TranscribeAsync(wavPath, modelPath, language, prompt, translate, vadModel, cancellationToken, heard), cancellationToken);
             }
             finally
             {
@@ -406,6 +451,13 @@ public partial class MainViewModel
             _captionWords[key] = words;
         }
 
+        return (words, null);
+    }
+
+    /// <summary>Writes the captions as an ASS file: for the caption box, which is how the export draws them, or for the whole frame, for a player.</summary>
+    /// <param name="lines">The captions line by line, when they are given that way (a subtitle track's cues); otherwise the words are grouped by the style.</param>
+    private void WriteCaptionFile(IReadOnlyList<CaptionWord> words, IReadOnlyList<List<CaptionWord>>? lines, string assPath, double timeOffset, bool forPlayer)
+    {
         // The file is written for the caption box, not the frame: that is the canvas it is drawn on.
         // Text size follows the frame (so a style looks the same at 720p and 4K) and the height of the
         // box (so making the box taller makes the words bigger).
@@ -416,12 +468,45 @@ public partial class MainViewModel
             ? new CaptionFramePlacement(x, y, frameWidth, frameHeight, CaptionLayer.Opacity / 100.0,
                 CaptionLayer.Shadow ? Math.Clamp(CaptionLayer.ShadowOffset, 0, 200) : 0, CaptionLayer.ShadowOpacity)
             : null;
-        CaptionGenerator.WriteAss(words, CaptionStyle, width, height, textScale, assPath, timeOffset, frame);
-        StatusText = $"Captions: {words.Count} word{(words.Count == 1 ? "" : "s")} written.";
-        return null;
+        CaptionGenerator.WriteAss(words, CaptionStyle, width, height, textScale, assPath, timeOffset, frame, lines);
     }
 
     // ----- whisper.cpp model -----
+
+    // The models by the names they are known by: "base.en", "large-v3", "turbo". Their files are "ggml-<name>.bin".
+    private const string TurboFile = "ggml-large-v3-turbo.bin";
+
+    private static string ModelLabel(string file) =>
+        file == TurboFile ? "turbo" : file.StartsWith("ggml-", StringComparison.Ordinal) && file.EndsWith(".bin", StringComparison.Ordinal) ? file[5..^4] : file;
+
+    public IReadOnlyList<string> WhisperModelChoices { get; } = DependencyUpdater.WhisperModels.Select(ModelLabel).ToList();
+
+    /// <summary>
+    /// The speech model the captions are transcribed with, for the box on the Subtitles tab. Choosing one
+    /// makes it the model in the settings; when its file has not been downloaded yet, the download starts.
+    /// </summary>
+    public string WhisperModelChoice
+    {
+        get => ModelLabel(AppSettings.Current.WhisperModel);
+        set
+        {
+            var file = DependencyUpdater.WhisperModels.FirstOrDefault(m => ModelLabel(m) == value);
+            if (file is null || file == AppSettings.Current.WhisperModel)
+                return;
+
+            SaveView(settings => settings.WhisperModel = file);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(CaptionHint));
+            OnPropertyChanged(nameof(WhisperModelStatus));
+            if (!File.Exists(DependencyUpdater.WhisperModelPath) && DownloadWhisperModelCommand.CanExecute(file))
+                DownloadWhisperModelCommand.Execute(file);
+            else if (PreviewSubtitles)
+                RefreshLiveCaptionsSoon();
+        }
+    }
+
+    public string WhisperModelStatus =>
+        File.Exists(DependencyUpdater.WhisperModelPath) ? "downloaded" : "not downloaded yet: it is fetched when chosen";
 
     /// <summary>Downloads a speech model into the models folder.</summary>
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
@@ -433,6 +518,7 @@ public partial class MainViewModel
         IsProgressIndeterminate = true;
         var outcome = await DependencyUpdater.DownloadWhisperModelAsync(model, new Progress<string>(ReportStatus), cancellationToken);
         OnPropertyChanged(nameof(CaptionHint));
+        OnPropertyChanged(nameof(WhisperModelStatus));
         return outcome;
     });
 

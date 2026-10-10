@@ -109,6 +109,10 @@ public static class ThemeManager
 
     private static bool WindowsUsesLightApps()
     {
+        // A self-contained copy does not read the registry: it is dark unless its own settings say otherwise.
+        if (AppPaths.IsSelfContained)
+            return false;
+
         try
         {
             return Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme", 0) is 1;
@@ -126,6 +130,9 @@ public static class ThemeManager
     {
         try
         {
+            if (AppPaths.IsSelfContained)
+                throw new System.IO.IOException("The registry is not read by a self-contained copy.");
+
             // Stored as 0xAABBGGRR.
             if (Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\DWM", "AccentColor", null) is int value)
                 return Color.FromRgb((byte)(value & 0xFF), (byte)((value >> 8) & 0xFF), (byte)((value >> 16) & 0xFF));

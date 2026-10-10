@@ -1,10 +1,12 @@
 <Window x:Class="HandPegApp.SplashWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:HandPegApp"
         Title="HandPeg" Width="780" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
-    <StackPanel Margin="20">
+    <Grid>
+    <StackPanel x:Name="MainPanel" Margin="20">
         <TextBlock Text="HandPeg" FontSize="26" FontWeight="SemiBold" />
         <TextBlock Text="Drop a video to get started, pick up where you left off, or open a video with one of your style presets."
                    Foreground="{DynamicResource MutedTextBrush}" Margin="0,2,0,14" TextWrapping="Wrap" />
@@ -76,7 +78,58 @@
         <TextBlock x:Name="NoStylesText" Visibility="Collapsed" Foreground="{DynamicResource MutedTextBrush}" Margin="0,16,0,0" TextWrapping="Wrap"
                    Text="There are no style presets yet. Set up layers, colors or captions, then use Export Style Preset on the Summary tab: styles saved in the Styles folder appear here." />
 
+        <!-- The Social Sharing Squisher: a video dropped on a preset is squeezed under its size, here, without being opened -->
+        <StackPanel x:Name="SquisherPanel" Margin="0,18,0,0">
+            <TextBlock Text="Social Sharing Squisher" FontWeight="SemiBold" FontSize="14" />
+            <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,2,0,8"
+                       Text="Drop a video on a preset, or click one to choose a video: it is squeezed under that size as an .mp4, which you then drag straight out of this window. The presets are set under Settings, Startup Dialog." />
+            <ItemsControl x:Name="SquishList" Focusable="False">
+                <!-- One row, however many are shown: each preset gets an equal share of it, and its name is cut short when that is narrow. -->
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <UniformGrid Rows="1" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Button Height="54" Margin="0,0,6,0" Padding="8,4" HorizontalContentAlignment="Left" AllowDrop="True" Click="Squish_Click" ToolTip="{Binding Name}"
+                                DragEnter="DropTarget_DragEnter" DragLeave="DropTarget_DragLeave" DragOver="DropTarget_DragOver" Drop="Squish_Drop"
+                                AutomationProperties.Name="{Binding Name}">
+                            <StackPanel Orientation="Horizontal">
+                                <!-- The preset's icon: a few strokes of geometry, chosen with the preset -->
+                                <Path Width="26" Height="26" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.6" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Data="{Binding IconData}" />
+                                <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding SizeText}" Opacity="0.8" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Button>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" Margin="0,16,0,0" TextWrapping="Wrap"
                    Text="This window opens in Editor Mode. It can be switched off, and its styles chosen, under Settings, Interface." />
     </StackPanel>
+
+    <!-- What the window shrinks to while a video is squeezed: its picture, how far along it is, and afterwards the file to drag out -->
+    <DockPanel x:Name="SquishPanel" Margin="16" Visibility="Collapsed">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button x:Name="SquishFinishButton" Content="Finish" Padding="16,5" Margin="0,0,6,0" Visibility="Collapsed" Click="SquishFinish_Click"
+                    ToolTip="Done with this one: the squished file is cleared away and the window goes back to where it started, ready for another." />
+            <Button x:Name="SquishCloseButton" Content="Cancel" Padding="16,5" Click="SquishClose_Click" />
+        </StackPanel>
+        <TextBlock x:Name="SquishDetail" DockPanel.Dock="Bottom" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" TextAlignment="Center" Margin="0,4,0,0" MinHeight="32" />
+        <ProgressBar x:Name="SquishProgress" DockPanel.Dock="Bottom" Height="10" Minimum="0" Maximum="1" Margin="0,8,0,0" AutomationProperties.Name="Squish Progress" />
+        <TextBlock x:Name="SquishText" DockPanel.Dock="Bottom" FontWeight="SemiBold" TextAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,10,0,0" Text="Warming up the squisher..." />
+        <local:SquishView x:Name="SquishPicture" RenderTransformOrigin="0.5,0.5" Opacity="0" AutomationProperties.Name="Squished Video"
+                          PreviewMouseLeftButtonDown="SquishPicture_PreviewMouseLeftButtonDown">
+            <local:SquishView.RenderTransform>
+                <ScaleTransform x:Name="SquishPictureScale" ScaleX="0.4" ScaleY="0.4" />
+            </local:SquishView.RenderTransform>
+        </local:SquishView>
+    </DockPanel>
+    </Grid>
 </Window>

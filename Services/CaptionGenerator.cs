@@ -10,7 +10,7 @@ using HandPegApp.Models;
 namespace HandPegApp.Services;
 
 /// <summary>One spoken word and when it is said, in seconds from the start of the analysed audio.</summary>
-public sealed record CaptionWord(string Text, double Start, double End);
+public readonly record struct CaptionWord(string Text, double Start, double End);
 
 /// <summary>
 /// Where the caption box sits on the output frame, for a caption file written for the whole frame instead of
@@ -84,15 +84,17 @@ public static partial class CaptionGenerator
     /// the stretches that have speech in them, which stops it writing words into the silences.
     /// </param>
     public static async Task<List<CaptionWord>> TranscribeAsync(
-        string wavPath, string modelPath, string language, string prompt, bool translate, string? vadModelPath, CancellationToken cancellationToken)
+        string wavPath, string modelPath, string language, string prompt, bool translate, string? vadModelPath, CancellationToken cancellationToken,
+        IProgress<double>? progress = null)
     {
         var useVad = !string.IsNullOrWhiteSpace(vadModelPath);
+        var said = 0;
 
         // -ojf: output JSON, full. -of: where to write it (whisper adds .json). -np: no progress chatter;
         // left out with voice activity detection, whose log is what says where the speech was.
-        var arguments = new List<string> { "-m", modelPath, "-f", wavPath, "-ojf", "-of", "" };
-        if (!useVad)
-            arguments.Add("-np");
+        // -pp: say how far along it is, which is what the progress bar shows. Its log is read as well: it says
+        // which processor or graphics card whisper is running on.
+        var arguments = new List<string> { "-m", modelPath, "-f", wavPath, "-ojf", "-of", "", "-pp" };
         if (!string.IsNullOrWhiteSpace(language))
             arguments.AddRange(["--language", language.Trim()]);
         if (!string.IsNullOrWhiteSpace(prompt))
@@ -111,6 +113,21 @@ public static partial class CaptionGenerator
         {
             if (string.IsNullOrWhiteSpace(line))
                 return;
+
+            // "whisper_print_progress_callback: progress =  35%"
+            if (Regex.Match(line, @"progress\s*=\s*(\d+)\s*%") is { Success: true } percent)
+            {
+                progress?.Report(Math.Clamp(int.Parse(percent.Groups[1].Value, CultureInfo.InvariantCulture), 0, 100));
+                return;
+            }
+
+            // What it runs on, for the log: a build with graphics card support says which card it found, or that it found none.
+            if (said < 6 && (line.Contains("gpu", StringComparison.OrdinalIgnoreCase) || line.Contains("vulkan", StringComparison.OrdinalIgnoreCase)
+                             || line.Contains("cuda", StringComparison.OrdinalIgnoreCase) || line.Contains("system_info", StringComparison.OrdinalIgnoreCase)))
+            {
+                said++;
+                AppLog.Write($"whisper: {line.Trim()}");
+            }
 
             if (useVad && VadSegmentRegex().Match(line) is { Success: true } stretch)
             {
@@ -282,7 +299,7 @@ public static partial class CaptionGenerator
     /// </param>
     public static void WriteAss(
         IReadOnlyList<CaptionWord> words, CaptionStyle style, int width, int height, double scale, string path, double timeOffset = 0,
-        CaptionFramePlacement? frame = null)
+        CaptionFramePlacement? frame = null, IReadOnlyList<List<CaptionWord>>? lines = null)
     {
         var fontSize = Math.Max((int)Math.Round(Math.Clamp(style.FontSize, 8, 400) * scale), 6);
         var outline = Math.Round(Math.Clamp(style.OutlineThickness, 0, 40) * scale, 1);
@@ -331,7 +348,8 @@ public static partial class CaptionGenerator
         ass.AppendLine("[Events]");
         ass.AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
 
-        var captions = Chunk(words, Math.Clamp(style.MaxWordsPerLine, 2, 5));
+        // Lines that are given are kept as they are (the cues of a subtitle track); words alone are grouped here.
+        IReadOnlyList<List<CaptionWord>> captions = lines ?? Lines(words, style);
         for (var c = 0; c < captions.Count; c++)
         {
             var caption = captions[c];
@@ -374,6 +392,9 @@ public static partial class CaptionGenerator
         // UTF-8 with a byte order mark, which is how libass recognises the encoding.
         File.WriteAllText(path, ass.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
     }
+
+    /// <summary>The words as the captions they are shown as, in a style: as many to a line as the style allows.</summary>
+    public static List<List<CaptionWord>> Lines(IReadOnlyList<CaptionWord> words, CaptionStyle style) => Chunk(words, Math.Clamp(style.MaxWordsPerLine, 2, 5));
 
     /// <summary>Groups the words into captions: so many at most, a new one after a pause or the end of a sentence.</summary>
     private static List<List<CaptionWord>> Chunk(IReadOnlyList<CaptionWord> words, int maxWords)

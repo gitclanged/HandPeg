@@ -623,9 +623,16 @@ public partial class MainViewModel
     /// <summary>The clip the keyframe controls work on.</summary>
     public Layer ActiveKeyLayer => KeyLayer is { } layer && (layer.IsMainVideo || Layers.Contains(layer)) && layer.IsPicture ? layer : _mainVideoRow;
 
+    /// <summary>The text layer that is selected, whose words and font the Text Settings panel edits; null when what is selected is not one.</summary>
+    public Layer? SelectedTextLayer => KeyLayer is { IsText: true } layer && Layers.Contains(layer) ? layer : null;
+
+    public bool IsTextLayerSelected => IsEditorMode && SelectedTextLayer is not null;
+
     partial void OnKeyLayerChanged(Layer? value)
     {
         OnPropertyChanged(nameof(ActiveKeyLayer));
+        OnPropertyChanged(nameof(SelectedTextLayer));
+        OnPropertyChanged(nameof(IsTextLayerSelected));
         RefreshSelectedKey();
     }
 

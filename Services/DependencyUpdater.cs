@@ -83,7 +83,42 @@ public static partial class DependencyUpdater
     [
         "ggml-tiny.en.bin", "ggml-base.en.bin", "ggml-small.en.bin", "ggml-medium.en.bin",
         "ggml-tiny.bin", "ggml-base.bin", "ggml-small.bin", "ggml-medium.bin",
+        "ggml-large-v3.bin", "ggml-large-v3-turbo.bin",
     ];
+
+    /// <summary>
+    /// The whisper.cpp builds that can be installed, the best for this computer first. whisper.cpp publishes
+    /// three kinds for 64-bit Windows: one that runs on an NVIDIA card (CUDA), one that uses OpenBLAS to go
+    /// faster on the processor, and a plain one. There is no published build for AMD or Intel graphics
+    /// (Vulkan), so on those the OpenBLAS build is the fastest there is to download; a Vulkan build made
+    /// elsewhere can still be set by hand in Settings (Tools), and is used on the graphics card as it is.
+    /// </summary>
+    public static IReadOnlyList<string> WhisperAssetNames { get; } = HasNvidiaCuda
+        ? ["whisper-cublas-12.4.0-bin-x64.zip", "whisper-bin-win-cuda-12.4.0-x64.zip", "whisper-blas-bin-x64.zip", WhisperAssetName]
+        : ["whisper-blas-bin-x64.zip", WhisperAssetName];
+
+    /// <summary>An NVIDIA driver with CUDA is installed: its runtime library is in the system folder.</summary>
+    private static bool HasNvidiaCuda
+    {
+        get
+        {
+            try
+            {
+                return File.Exists(Path.Combine(Environment.SystemDirectory, "nvcuda.dll"));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+    }
+
+    // How good a download is for a tool: lower is better. Only whisper has more than one to choose between.
+    private static int AssetRank(string tool, string? name)
+    {
+        var rank = tool == Whisper && name is not null ? WhisperAssetNames.ToList().IndexOf(name) : 0;
+        return rank < 0 ? int.MaxValue : rank;
+    }
 
     /// <summary>
     /// The voice activity detection model whisper.cpp uses to skip silence (Silero VAD, under 1 MB). Kept with
@@ -338,7 +373,7 @@ public static partial class DependencyUpdater
         Ffmpeg => name == FfmpegAssetName,
         YtDlp => name == YtDlpAssetName,
         Mpv => MpvAssetRegex().IsMatch(name),
-        _ => name == WhisperAssetName,
+        _ => name is not null && WhisperAssetNames.Contains(name),
     };
 
     /// <summary>Asks GitHub for the newest build of a tool. Throws when it cannot be reached or has none.</summary>
@@ -380,7 +415,8 @@ public static partial class DependencyUpdater
                     .FirstOrDefault()
                 : default;
             var isOlder = older.ValueKind == JsonValueKind.Object;
-            var asset = isOlder ? older : assets.FirstOrDefault(a => IsAssetFor(tool, a.GetProperty("name").GetString()));
+            var asset = isOlder ? older : assets.Where(a => IsAssetFor(tool, a.GetProperty("name").GetString()))
+                .OrderBy(a => AssetRank(tool, a.GetProperty("name").GetString())).FirstOrDefault();
             if (asset.ValueKind != JsonValueKind.Object)
                 continue;
 
@@ -390,7 +426,8 @@ public static partial class DependencyUpdater
             // builds share this release, so the older one's stamp also says which it is.
             var url = asset.GetProperty("browser_download_url").GetString()!;
             var updatedAt = asset.GetProperty("updated_at").GetString();
-            var stamp = isOlder ? $"{tag}|{updatedAt}|{assetName}" : $"{tag}|{updatedAt}";
+            // A whisper build other than the plain one says which it is too, so that a plain one already installed is offered the better one.
+            var stamp = isOlder || (tool == Whisper && assetName != WhisperAssetName) ? $"{tag}|{updatedAt}|{assetName}" : $"{tag}|{updatedAt}";
             var size = asset.TryGetProperty("size", out var sizeValue) && sizeValue.TryGetInt64(out var bytes) ? bytes : 0;
 
             var digest = asset.TryGetProperty("digest", out var digestValue) && digestValue.ValueKind == JsonValueKind.String

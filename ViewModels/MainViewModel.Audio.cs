@@ -94,7 +94,8 @@ public partial class MainViewModel
     public double TimelineAreaHeight => 20 + 4 * MasterTimelineHeight;
 
     /// <summary>Height in pixels of a track's time bar on the Layers tab: 26 at the default of 25.</summary>
-    public double LayerBarHeight => Math.Round(14 + 0.48 * LayerTrackHeight);
+    // The same reckoning as an audio row's height, so that the two sliders reach the same smallest and largest.
+    public double LayerBarHeight => Math.Round(46 + 2.16 * LayerTrackHeight);
 
     /// <summary>Height in pixels of one sound's row in the Audio tab: 100 at the default of 25.</summary>
     public double AudioTrackRowHeight => ShowWaveforms ? Math.Round(46 + 2.16 * AudioTrackHeight) : 64;
@@ -226,6 +227,8 @@ public partial class MainViewModel
         RefreshAudioRows();
         RefreshAnyKeys();
         OnPropertyChanged(nameof(ActiveKeyLayer));
+        OnPropertyChanged(nameof(SelectedTextLayer));
+        OnPropertyChanged(nameof(IsTextLayerSelected));
     }
 
     /// <summary>

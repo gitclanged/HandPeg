@@ -22,6 +22,10 @@ public static class AppUpdater
     /// </summary>
     public static Task<string?> CheckAndDownloadAsync() => Task.Run(async () =>
     {
+        // A self-contained copy is replaced by hand: the updater keeps its packages outside the program's folder.
+        if (AppPaths.IsSelfContained)
+            return (string?)null;
+
         try
         {
             var manager = new UpdateManager(new GithubSource(AppSettings.HandPegRepositoryUrl, accessToken: null, prerelease: false));

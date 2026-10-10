@@ -179,6 +179,10 @@ public sealed class MpvPlayer
             api.SetOption(mpv, Utf8(name), Utf8(value));
         }
 
+        // A self-contained copy keeps the renderer's compiled shaders in its own folder, not in %LocalAppData%\mpv.
+        if (AppPaths.IsSelfContained)
+            api.SetOption(mpv, Utf8("gpu-shader-cache-dir"), Utf8(Path.Combine(AppPaths.Cache, "mpv")));
+
         var started = api.Initialize(mpv);
         if (started < 0)
         {

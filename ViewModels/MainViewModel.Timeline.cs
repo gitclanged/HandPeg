@@ -36,8 +36,25 @@ public partial class MainViewModel
     // of JSON: the cuts, the layers, the audio edits. Twenty deep. Undo puts the last one back.
 
     private const int UndoDepth = 20;
-    private readonly List<(string What, string State)> _undo = [];
-    private readonly List<(string What, string State)> _redo = [];
+    // Each state is kept compressed (Brotli): the JSON of a timeline is mostly the same property names over
+    // and over, and shrinks to a small fraction. It is only made text again when it is stepped back to.
+    private readonly List<(string What, byte[] State)> _undo = [];
+    private readonly List<(string What, byte[] State)> _redo = [];
+
+    private static byte[] Pack(string state)
+    {
+        using var packed = new MemoryStream();
+        using (var brotli = new System.IO.Compression.BrotliStream(packed, System.IO.Compression.CompressionLevel.Fastest))
+            brotli.Write(System.Text.Encoding.UTF8.GetBytes(state));
+        return packed.ToArray();
+    }
+
+    private static string Unpack(byte[] state)
+    {
+        using var brotli = new System.IO.Compression.BrotliStream(new MemoryStream(state), System.IO.Compression.CompressionMode.Decompress);
+        using var reader = new StreamReader(brotli, System.Text.Encoding.UTF8);
+        return reader.ReadToEnd();
+    }
 
     private string CaptureTimeline() => JsonSerializer.Serialize(new TimelineSnapshot(
         Segments.Select(s => new SegmentState(s.Start.TotalMilliseconds, s.End.TotalMilliseconds, s.IsSkipped)).ToList(),
@@ -53,7 +70,7 @@ public partial class MainViewModel
         if (_isBackgroundWorker)
             return;
 
-        _undo.Add((what, CaptureTimeline()));
+        _undo.Add((what, Pack(CaptureTimeline())));
         if (_undo.Count > UndoDepth)
             _undo.RemoveAt(0);
         _redo.Clear();
@@ -63,7 +80,7 @@ public partial class MainViewModel
 
     public void Redo() => Step(_redo, _undo, "Redid");
 
-    private void Step(List<(string What, string State)> from, List<(string What, string State)> to, string verb)
+    private void Step(List<(string What, byte[] State)> from, List<(string What, byte[] State)> to, string verb)
     {
         if (from.Count == 0)
         {
@@ -73,8 +90,8 @@ public partial class MainViewModel
 
         var (what, state) = from[^1];
         from.RemoveAt(from.Count - 1);
-        to.Add((what, CaptureTimeline()));
-        RestoreTimeline(state);
+        to.Add((what, Pack(CaptureTimeline())));
+        RestoreTimeline(Unpack(state));
         Log($"{verb}: {what}");
     }
 
@@ -406,7 +423,7 @@ public partial class MainViewModel
         if (!_layerWaveforms.TryGetValue(path, out var drawing))
         {
             _layerWaveforms[path] = drawing = Waveforms.RenderAsync(
-                path, [0], Path.Combine(WaveformFolder, $"layer_{Guid.NewGuid():N}.png"), 1200, 60, "white", _shutdown.Token);
+                path, [0], Path.Combine(WaveformFolder, $"layer_{Guid.NewGuid():N}.png"), 1200, 60, "white", PictureToken(path));
         }
 
         try
@@ -418,6 +435,30 @@ public partial class MainViewModel
             // Not kept: the next clip of this file may have better luck.
             _layerWaveforms.Remove(path);
         }
+    }
+
+    // The background work that draws layers' pictures, by file: all of it hangs off one source (the session's),
+    // and each file's can be stopped on its own. It is, the moment no clip on the timeline uses the file any
+    // more: FFmpeg is not left decoding a long file for a clip that was dropped and taken off again.
+    private readonly Dictionary<string, CancellationTokenSource> _pictureWork = new(StringComparer.OrdinalIgnoreCase);
+
+    private CancellationToken PictureToken(string path)
+    {
+        if (!_pictureWork.TryGetValue(path, out var work))
+            _pictureWork[path] = work = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+        return work.Token;
+    }
+
+    /// <summary>Stops what is still being drawn of a file that no clip uses any more.</summary>
+    private void CancelStalePictureWork(string path)
+    {
+        if (path.Length == 0 || !_pictureWork.TryGetValue(path, out var work) || Layers.Any(l => string.Equals(l.ImagePath, path, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        _pictureWork.Remove(path);
+        if (_layerWaveforms.TryGetValue(path, out var drawing) && !drawing.IsCompleted)
+            _layerWaveforms.Remove(path);
+        work.Cancel();
     }
 
     // The pictures made of layers' files this session, by file: waveforms, and strips of frames. No more

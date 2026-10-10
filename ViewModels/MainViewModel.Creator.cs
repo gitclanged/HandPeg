@@ -302,6 +302,77 @@ public partial class MainViewModel
         return true;
     }
 
+    /// <summary>Adds words as a layer, in the middle of the frame, and selects it so that its Text Settings are shown.</summary>
+    [RelayCommand]
+    private void AddTextLayer()
+    {
+        var element = new Layer
+        {
+            Kind = LayerKind.Text,
+            Name = $"Text {Layers.Count(l => l.IsText) + 1}",
+            TextContent = "Your Text",
+            SizeWidth = 0.25,
+        };
+
+        // Its box is its words': as wide on the frame as they are at the font's size, and in the middle of it.
+        LayoutText(element, keepScale: false);
+        var (_, _, width, height) = element.GetOutputRect(FrameWidth, FrameHeight, SourceWidth, SourceHeight);
+        if (FrameWidth > 0 && FrameHeight > 0)
+            (element.PositionX, element.PositionY) = ((FrameWidth - width) / 2.0 / FrameWidth, (FrameHeight - height) / 2.0 / FrameHeight);
+
+        Checkpoint("add a text layer");
+        AttachLayer(element);
+        KeyLayer = element;
+        Log($"Added text layer {element.Name}: type its words under Text Settings");
+    }
+
+    /// <summary>
+    /// Measures a text layer's words again and makes its box theirs. The box keeps its middle where it was, and
+    /// the layer keeps how much it had been scaled: words set twice as large as their font's size stay twice as
+    /// large, whatever they now say. Its Scale keyframes are widths, so they are scaled by as much as the box.
+    /// </summary>
+    /// <param name="keepScale">False for a layer that is new: its box is exactly its words at the font's size.</param>
+    private void LayoutText(Layer layer, bool keepScale = true)
+    {
+        if (!layer.IsText)
+            return;
+
+        var (frameWidth, frameHeight) = (Math.Max(FrameWidth, 2), Math.Max(FrameHeight, 2));
+        var layout = TextLayout.Measure(layer);
+        var before = layer.GetOutputRect(frameWidth, frameHeight, SourceWidth, SourceHeight);
+        var (oldWidth, oldHeight) = (layer.ImageWidth, layer.ImageHeight);
+        var scale = keepScale && oldWidth > 0 ? layer.SizeWidth * frameWidth / oldWidth : 1;
+        if ((oldWidth, oldHeight) == (layout.Width, layout.Height) && keepScale)
+            return;
+
+        var copying = _copyingToTrack;
+        _copyingToTrack = true;
+        try
+        {
+            (layer.ImageWidth, layer.ImageHeight) = (layout.Width, layout.Height);
+            layer.FromCorner(() => layer.SizeWidth = Math.Clamp(layout.Width * scale / frameWidth, 0.01, 4));
+            if (keepScale)
+            {
+                var after = layer.GetOutputRect(frameWidth, frameHeight, SourceWidth, SourceHeight);
+                layer.PositionX += (before.Width - after.Width) / 2.0 / frameWidth;
+                layer.PositionY += (before.Height - after.Height) / 2.0 / frameHeight;
+
+                if (oldWidth > 0 && layer.HasKeys(KeyProperty.Scale))
+                {
+                    var grown = (double)layout.Width / oldWidth;
+                    layer.SetKeys(KeyProperty.Scale, layer.GetKeys(KeyProperty.Scale).Select(k => k with { Value = k.Value * grown }).ToList());
+                }
+            }
+        }
+        finally
+        {
+            _copyingToTrack = copying;
+        }
+    }
+
+    /// <summary>The fonts installed on this computer, for a text layer's font list.</summary>
+    public IReadOnlyList<string> SystemFonts => TextLayout.SystemFonts;
+
     /// <summary>Adds a video from a file as a layer: it plays alongside the main video, and starts again when it runs out.</summary>
     /// <param name="startSeconds">
     /// When on the timeline the layer appears. Placed at a moment, it plays once through from there; left at
@@ -670,6 +741,7 @@ public partial class MainViewModel
         Layers.RemoveAt(index);
         if (under)
             MainVideoIndex--;
+        CancelStalePictureWork(element.ImagePath);
     }
 
     /// <summary>Puts a layer into the list at a place of its own; one that goes in under the main video adds one to that count.</summary>
@@ -827,6 +899,13 @@ public partial class MainViewModel
                     _copyingToTrack = false;
                 }
             }
+        }
+
+        // Different words, or a different font: the box of every clip on the track is measured again.
+        if (source.IsText && Layer.IsTextShapeProperty(e.PropertyName))
+        {
+            foreach (var clip in GetTrackClips(source))
+                LayoutText(clip);
         }
 
         GenerateCommand();
@@ -1351,6 +1430,8 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowAdvancedFiltersTab));
         OnPropertyChanged(nameof(IsEditorMode));
         OnPropertyChanged(nameof(IsSourcePaneVisible));
+        OnPropertyChanged(nameof(IsTextLayerSelected));
+        OnPropertyChanged(nameof(ShowSubtitleImportRow));
         OnPropertyChanged(nameof(IsEncoderMode));
         OnPropertyChanged(nameof(ShowTimelineOptionsBelow));
         OnPropertyChanged(nameof(ShowPresetBarAtTop));

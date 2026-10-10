@@ -3,6 +3,70 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v2.5.0
+
+### Highlights
+- **Text layers.** Titles and labels typed in HandPeg, in any installed font, with color and outline. A text layer is placed, sized, turned, masked and keyframed like any other layer.
+- **Subtitle import and a Subtitle Editor.** `.srt` and `.vtt` files are read natively and drawn as captions in the caption style. The new Subtitle Editor shows every subtitle on its own timeline with a close-up preview: drag to retime, drag the dividers between words to time each word, split, add and delete.
+- **Social Sharing Squisher.** Drop a video on a preset in the startup dialog and it is squeezed under that size as an H.264 / AAC `.mp4`, then dragged straight out of the window into Discord, a browser or a folder.
+- **Lighter, drawn interface.** Time bars, keyframe diamonds and waveforms are drawn as shapes instead of built from controls and bitmaps. Layer and audio time bars zoom and pan together.
+- **Unified Layers and Audio tabs.** Both use the same row: name on the left, time bar in the middle, a compact control block on the right that moves into a flyout when the window is narrow.
+- **Saving.** Ctrl+S, Save As (Ctrl+Alt+S) and background autosave; none of them touches the undo history.
+- **Portable mode.** A `portable.txt` beside the program keeps everything in the program's own folder.
+
+### New
+- **Add Layer** menu on the Layers tab: Video, Image, Text, Region of Main Video. **Text Settings** panel for the selected text layer.
+- Import External Subtitles: `.srt`, `.vtt`, and image-based `.sup` / `.pgs` / VobSub (`.idx` + `.sub`), which can be retimed but not reworded.
+- Subtitle Editor: its own player showing only the captions, a zoomable timeline that scrolls under a fixed playhead, Global Offset (ms), Add Segment, Split, Add Word, Delete, and per-word timing dividers on the selected subtitle.
+- **Manual Edit** and **Caption Style Settings** on the caption layer's right-click menu. With no subtitle track yet, Manual Edit makes one from the transcribed captions.
+- Whisper **Model** box on the Subtitles tab (tiny to large-v3 and turbo, with `.en` variants); a model that is not downloaded is fetched when chosen.
+- Caption generation shows real progress instead of an endless bar.
+- The Whisper download picks the best published build for the computer: CUDA with an NVIDIA driver, otherwise OpenBLAS.
+- Squisher presets for Discord (three tiers), WhatsApp, email, GitHub, X, Bluesky, Microsoft Teams and Signal, each with a drawn icon. Settings → Startup Dialog sets the presets, their order, how many are shown, the size offset and an encoder preset override.
+- Squisher button and Autosave toggle in the Settings button's hover flyout, beside Queue and Video Combinator.
+- Ctrl + wheel zooms the layer and audio time bars; Shift + wheel or a middle-button drag moves along them. **Sync Master Timeline Stretch** in the Views menu makes the master timeline follow.
+- Mute button on each sound in Editor Mode, and **Show/hide muted tracks**.
+- Autosave (Settings → Behavior): writes `Name.autosave.hproj` in the background when the project has changed.
+- Portable mode: `portable.txt` beside `HandPeg.exe`, or `--portable`, keeps tools in `deps\`, working files in `temp\` and everything else under `data\`.
+- Scrollbar Thickness slider (Settings → Interface); the Settings window can be resized and every tab scrolls.
+
+### Changed
+- Editor Mode header is Project, mode switch and Settings. Queue and Video Combinator moved into the Settings flyout; Views moved to the playback bar, and the timeline checkboxes fold into it when the bar is narrow.
+- Layer rows are laid out like audio rows, and the Layer Height slider now reaches the same heights as the audio one. X and Y are set with drag-to-change value boxes; their sliders are gone.
+- In Editor Mode, audio rows show Mute, Duck, Voice, speed, gain and filters. The mode, codec and bitrate boxes remain in Encoder Mode. Mute is the same as Ignore / Drop: the sound is left out of the preview and the export.
+- The startup dialog no longer blocks the main window; a click on the main window puts it away.
+- Clicking anywhere on the master timeline moves the playhead there and scrubs while held.
+- Subtitles tab: Edit Captions replaces the Layout Pane button; Import External Subtitles and Edit Subtitles sit at the bottom (in Editor Mode, under Legacy Subtitle Settings).
+- The Source box and its Browse / Load button are side by side, so text is never hidden under the button.
+- Scrollbars are flat and thin, without arrow buttons.
+- Waveforms are 20 peak pairs per second drawn at the size shown, not bitmaps. Undo history is kept compressed.
+- Save As is Ctrl+Alt+S. Ctrl+Shift+S is taken system-wide by AMD's graphics software on many computers and never reaches HandPeg.
+
+### Fixed
+- Subtitle Editor preview breaking when its timeline was scrubbed.
+- Play in the Subtitle Editor doing nothing on the first click when the playhead was at the end.
+- The side panes lying over the player when the window was narrowed.
+- The Views button being squeezed out of a narrow playback bar.
+- A blank gap between the Source box's text and its button.
+
+### Compatibility
+- 2.2.0 projects open unchanged. Projects with text layers or a subtitle track open in 2.2.0 without them.
+- Encoding and style presets are unchanged.
+- On first launch the Squisher presets are added, and the startup dialog shows the first four.
+
+### Known limitations
+- Image-based subtitles are shown in the player and can be retimed, but are not written into the export.
+- There is no published Whisper build that uses AMD or Intel graphics, so on those computers transcription runs on the processor. A Vulkan build of `whisper.exe` set by hand in Settings → Tools is used as it is.
+- Whisper reports progress in steps of about 30 seconds of sound, so short clips go straight to done.
+- A straight double quote in a text layer is drawn as a typographic quote; one font, size and color per text layer.
+- The Squisher always makes H.264 / AAC, and lowers the picture height when the bitrate is very low. Its preset sizes are the services' limits as known when written and may need correcting.
+- Portable mode skips update checks, and has not been audited for what yt-dlp and .NET themselves write outside the folder.
+- Subtitle edits are not on the undo stack.
+- No speed control on the main video; only the first audio stream of a video layer is used; opacity can't be keyframed.
+
+### Upgrading
+Installed copies update automatically.
+
 ## HandPeg v2.2.0
 
 ### Highlights

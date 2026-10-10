@@ -25,13 +25,19 @@ public enum LayerKind
 
     /// <summary>A sound from a file, with no picture: it has a place in time and nothing else.</summary>
     Audio,
+
+    /// <summary>Words typed in HandPeg (a title, a label), drawn in a font of the computer's. Placed, sized, turned and animated like a picture.</summary>
+    Text,
 }
 
 /// <summary>
 /// One point of a motion: a value at a moment, counted in seconds from where its clip begins, and how the
 /// clip moves on from it to the next keyframe.
 /// </summary>
-public sealed record Keyframe(double Time, double Value, EasingType Easing = EasingType.EaseInOut);
+/// <remarks>A value, not an object: a motion's keyframes lie side by side in their list, and none is a thing for the collector to follow.
+/// Read from JSON through its constructor, so that a keyframe saved without an easing gets the default one, as it always did.</remarks>
+[method: System.Text.Json.Serialization.JsonConstructor]
+public readonly record struct Keyframe(double Time, double Value, EasingType Easing = EasingType.EaseInOut);
 
 /// <summary>What of a layer can be animated with keyframes.</summary>
 public enum KeyProperty
@@ -81,6 +87,37 @@ public sealed partial class Layer : ObservableObject
 
     public bool IsImage => Kind == LayerKind.Image;
 
+    public bool IsText => Kind == LayerKind.Text;
+
+    /// <summary>One picture that does not change as time passes: an image from a file, or words.</summary>
+    public bool IsStill => IsImage || IsText;
+
+    // ----- Text -----
+    // A text layer's words and how they are drawn. Its box on the frame is the words' own: it is measured from
+    // them (see TextLayout), kept in ImageWidth and ImageHeight as a picture's size is, and gives the layer its shape.
+
+    /// <summary>The words. A line break starts a new line.</summary>
+    [ObservableProperty] private string _textContent = "";
+
+    /// <summary>The font, by the name Windows lists it under.</summary>
+    [ObservableProperty] private string _fontFamily = HandPegApp.Services.TextLayout.DefaultFont;
+
+    /// <summary>The font's size in pixels of the output frame, before the layer is scaled.</summary>
+    [ObservableProperty] private double _fontSize = HandPegApp.Services.TextLayout.DefaultSize;
+
+    /// <summary>The colour of the letters, as #RRGGBB.</summary>
+    [ObservableProperty] private string _fontColor = "#FFFFFF";
+
+    /// <summary>The colour of the line drawn around the letters, as #RRGGBB.</summary>
+    [ObservableProperty] private string _outlineColor = "#000000";
+
+    /// <summary>How thick that line is, in pixels at the font's set size; 0 for none.</summary>
+    [ObservableProperty] private int _outlineThickness = 2;
+
+    /// <summary>What of a text layer decides the size of its box: when one of these changes, the box is measured again.</summary>
+    public static bool IsTextShapeProperty(string? name) =>
+        name is nameof(TextContent) or nameof(FontFamily) or nameof(FontSize) or nameof(OutlineThickness);
+
     public bool IsVideoFile => Kind == LayerKind.VideoFile;
 
     /// <summary>A picture or a video that comes from a file of its own, not from the main video.</summary>
@@ -99,7 +136,7 @@ public sealed partial class Layer : ObservableObject
     public bool CarriesSound => HasAudio && (IsVideoFile || IsAudio);
 
     /// <summary>Something added by hand, which can be removed again: the captions, the main video and the background cannot.</summary>
-    public bool IsRemovable => Kind is LayerKind.Video or LayerKind.Image or LayerKind.VideoFile or LayerKind.Audio;
+    public bool IsRemovable => Kind is LayerKind.Video or LayerKind.Image or LayerKind.VideoFile or LayerKind.Audio or LayerKind.Text;
 
     /// <summary>A picture on the frame: everything but the background, which is the frame, and a sound.</summary>
     public bool IsPicture => !IsBackground && !IsAudio;
@@ -130,7 +167,7 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>What belongs to one clip alone, and is not copied to the others on its track when it changes.</summary>
     public static bool IsClipProperty(string? name) => name is nameof(StartTime) or nameof(Duration) or nameof(MediaOffset) or nameof(IsHidden)
-        or nameof(IsLoading) or nameof(Title) or nameof(Action) or nameof(GainDb)
+        or nameof(IsLoading) or nameof(Title) or nameof(Action) or nameof(IsMuted) or nameof(GainDb)
         or nameof(AudioOffset) or nameof(Name) or nameof(TrackId) or nameof(PositionXPercent) or nameof(PositionYPercent) or nameof(SizePercent)
         or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges) or KeysChanged
         or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(IsAnimated) or nameof(IsDeleted) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration) or nameof(Speed) or nameof(ClipSpeed);
@@ -199,6 +236,7 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Kept in the list but left out of the picture, and (for a video layer) out of the sound.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Action))]
+    [NotifyPropertyChangedFor(nameof(IsMuted))]
     private bool _isHidden;
 
     /// <summary>In the recycle bin: taken off the timeline, and kept so that it can be put back.</summary>
@@ -279,9 +317,17 @@ public sealed partial class Layer : ObservableObject
     /// <summary>The sound is left out, while a video layer's picture stays. (A sound clip is simply hidden.)</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Action))]
+    [NotifyPropertyChangedFor(nameof(IsMuted))]
     private bool _isSoundMuted;
 
     /// <summary>Mixed in, or left out. For a sound clip that is the same as hiding it; a video layer keeps its picture.</summary>
+    /// <summary>Muted: left out of the mix. For the Mute button of its row in Editor Mode; the same as its Action being Ignore / Drop.</summary>
+    public bool IsMuted
+    {
+        get => Action == AudioTrack.Drop;
+        set => Action = value ? AudioTrack.Drop : MixIntoFirstTrack;
+    }
+
     public string Action
     {
         get => (IsAudio ? IsHidden : IsSoundMuted) ? AudioTrack.Drop : MixIntoFirstTrack;
@@ -667,7 +713,8 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>The keyframe nearest a moment, or null when the property has none.</summary>
-    public Keyframe? GetNearestKey(KeyProperty property, double time) => _keys[(int)property].MinBy(k => Math.Abs(k.Time - time));
+    public Keyframe? GetNearestKey(KeyProperty property, double time) =>
+        _keys[(int)property].Count == 0 ? null : _keys[(int)property].MinBy(k => Math.Abs(k.Time - time));
 
     /// <summary>Moves a whole motion: every keyframe of the property by the same amount.</summary>
     public void OffsetKeys(KeyProperty property, double by)
@@ -841,7 +888,8 @@ public sealed partial class Layer : ObservableObject
         set => SizeWidth = Math.Clamp(value, 1, 400) / 100.0;
     }
 
-    public bool IsUsable => !IsLoading && !IsHidden && !IsDeleted && !IsAudio && SizeWidth > 0 && (IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
+    public bool IsUsable => !IsLoading && !IsHidden && !IsDeleted && !IsAudio && SizeWidth > 0
+        && (IsText ? !string.IsNullOrWhiteSpace(TextContent) : IsFile ? ImagePath.Length > 0 : SourceWidth > 0 && SourceHeight > 0);
 
     /// <summary>The source rectangle in pixels of a source of the given size.</summary>
     public (int X, int Y, int Width, int Height) GetSourceRect(int sourceWidth, int sourceHeight) =>
@@ -868,7 +916,7 @@ public sealed partial class Layer : ObservableObject
     /// <summary>The height that keeps the layer's own shape at a given width: the source rectangle's, or the picture's.</summary>
     private int GetProportionalHeight(int width, int sourceWidth, int sourceHeight)
     {
-        if (IsFile)
+        if (IsFile || IsText)
             return ImageWidth > 0 && ImageHeight > 0 ? Math.Max(Even((double)width * ImageHeight / ImageWidth), 2) : width;
 
         var (_, _, cutWidth, cutHeight) = GetSourceRect(sourceWidth > 0 ? sourceWidth : 1920, sourceHeight > 0 ? sourceHeight : 1080);
@@ -894,6 +942,12 @@ public sealed partial class Layer : ObservableObject
         ImagePath = ImagePath,
         ImageWidth = ImageWidth,
         ImageHeight = ImageHeight,
+        TextContent = TextContent,
+        FontFamily = FontFamily,
+        FontSize = FontSize,
+        FontColor = FontColor,
+        OutlineColor = OutlineColor,
+        OutlineThickness = OutlineThickness,
         CornerRadius = CornerRadius,
         Opacity = Opacity,
         SourceX = SourceX,
@@ -979,6 +1033,14 @@ public sealed partial class Layer : ObservableObject
             ImagePath = state.ImagePath,
             ImageWidth = state.ImageWidth,
             ImageHeight = state.ImageHeight,
+            TextContent = state.TextContent ?? "",
+            FontFamily = string.IsNullOrWhiteSpace(state.FontFamily) ? HandPegApp.Services.TextLayout.DefaultFont : state.FontFamily,
+            FontSize = double.IsFinite(state.FontSize) && state.FontSize > 0
+                ? Math.Clamp(state.FontSize, HandPegApp.Services.TextLayout.SmallestSize, HandPegApp.Services.TextLayout.LargestSize)
+                : HandPegApp.Services.TextLayout.DefaultSize,
+            FontColor = string.IsNullOrWhiteSpace(state.FontColor) ? "#FFFFFF" : state.FontColor,
+            OutlineColor = string.IsNullOrWhiteSpace(state.OutlineColor) ? "#000000" : state.OutlineColor,
+            OutlineThickness = Math.Clamp(state.OutlineThickness, 0, HandPegApp.Services.TextLayout.LargestOutline),
             CornerRadius = Math.Clamp(state.CornerRadius, 0, 50),
             Opacity = Math.Clamp(state.Opacity, 0, 100),
             LockAspectRatio = state.LockAspectRatio,
@@ -1062,6 +1124,14 @@ public sealed class LayerState
     public string ImagePath { get; set; } = "";
     public int ImageWidth { get; set; }
     public int ImageHeight { get; set; }
+
+    // A text layer's words and font. Files from before there were text layers have none of these, and get the defaults.
+    public string TextContent { get; set; } = "";
+    public string FontFamily { get; set; } = HandPegApp.Services.TextLayout.DefaultFont;
+    public double FontSize { get; set; } = HandPegApp.Services.TextLayout.DefaultSize;
+    public string FontColor { get; set; } = "#FFFFFF";
+    public string OutlineColor { get; set; } = "#000000";
+    public int OutlineThickness { get; set; } = 2;
 
     public int CornerRadius { get; set; }
     public int Opacity { get; set; } = 100;

@@ -10,7 +10,7 @@ public sealed record InfoRow(string Label, string Value);
 /// One part of an audio track that was cut up on the timeline: from where to where in the track's own time,
 /// and whether it has been silenced.
 /// </summary>
-public sealed record AudioPiece(double Start, double End, bool Muted);
+public readonly record struct AudioPiece(double Start, double End, bool Muted);
 
 /// <summary>An audio stream of the source and what to do with it in the output.</summary>
 public sealed partial class AudioTrack : ObservableObject
@@ -67,7 +67,30 @@ public sealed partial class AudioTrack : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsReencoded))]
     [NotifyPropertyChangedFor(nameof(HasOwnFormat))]
+    [NotifyPropertyChangedFor(nameof(IsMuted))]
     private string _action = Reencode;
+
+    // What the track was doing before it was muted, to go back to.
+    private string? _actionBeforeMute;
+
+    /// <summary>
+    /// Muted: left out of the mix. It is the same thing as Ignore / Drop, under the name Editor Mode gives it,
+    /// where a sound is either heard or not and how it is encoded is not a question asked of each track.
+    /// </summary>
+    public bool IsMuted
+    {
+        get => Action == Drop;
+        set
+        {
+            if (value == IsMuted)
+                return;
+
+            if (value)
+                (_actionBeforeMute, Action) = (Action, Drop);
+            else
+                Action = _actionBeforeMute is { } before && before != Drop && Actions.Contains(before) ? before : Reencode;
+        }
+    }
 
     /// <summary>Whether its codec and bitrate can be chosen: while it is re-encoded.</summary>
     public bool HasOwnFormat => IsReencoded;

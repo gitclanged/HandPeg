@@ -405,6 +405,35 @@ public sealed class AppSettings
     /// <summary>Asks whether to save the project when HandPeg is closed with changes that have not been saved.</summary>
     public bool PromptToSaveOnExit { get; set; } = true;
 
+    // ----- The Social Sharing Squisher, on the startup dialog -----
+
+    /// <summary>Whether the startup dialog has its Squisher section.</summary>
+    public bool ShowSquisher { get; set; } = true;
+
+    /// <summary>The sizes a video can be squeezed under, each a target on the startup dialog.</summary>
+    public List<SquishPreset> SquisherPresets { get; set; } = SquishPreset.Defaults();
+
+    /// <summary>How many of the presets, from the top of the list, the startup dialog shows.</summary>
+    public int SquisherPresetCount { get; set; } = 4;
+
+    /// <summary>How thick scrollbars are, everywhere in HandPeg, in pixels: 4 (a hairline) to 16 (as Windows draws them).</summary>
+    public double ScrollbarThickness { get; set; } = 10;
+
+    /// <summary>Megabytes kept in hand below a preset's size when the bitrate is worked out.</summary>
+    public double SquisherOffsetMb { get; set; } = 1.5;
+
+    /// <summary>Use <see cref="SquisherEncoderPreset"/> in place of the encoder's most careful preset.</summary>
+    public bool SquisherManualPreset { get; set; }
+
+    /// <summary>The encoder preset used while the override is on: "medium", "p5", "balanced"...</summary>
+    public string SquisherEncoderPreset { get; set; } = "medium";
+
+    /// <summary>Writes the open project to "Name.autosave.hproj" every so often, in the background.</summary>
+    public bool AutosaveEnabled { get; set; }
+
+    /// <summary>How many minutes pass between autosaves.</summary>
+    public int AutosaveMinutes { get; set; } = 5;
+
     /// <summary>Opens the Edit Layout pane by itself as soon as there is a layout to edit.</summary>
     public bool AutoOpenLayoutPane { get; set; }
 
@@ -539,6 +568,7 @@ public sealed class AppSettings
     public AppSettings Clone()
     {
         var copy = (AppSettings)MemberwiseClone();
+        copy.SquisherPresets = SquisherPresets.Select(p => p.Clone()).ToList();
         copy.SmartRules = SmartRules.Select(r => new SmartRule { Type = r.Type, Path = r.Path, Preset = r.Preset }).ToList();
         copy.ModeProfiles = new(ModeProfiles);
         copy.SplashStylePresets = [.. SplashStylePresets];
@@ -619,6 +649,18 @@ public sealed class AppSettings
                     settings.ShowSourcePane = true;
                     foreach (var profile in settings.ModeProfiles.Values)
                         profile.ShowSourcePane = true;
+                }
+
+                // The Squisher began with one preset; the others came after. Settings saved in between hold just
+                // that one, untouched: they get the full set. A list that was edited is left as it is.
+                if (settings.ViewDefaultsVersion < 4)
+                {
+                    settings.ViewDefaultsVersion = 4;
+                    if (settings.SquisherPresets is not { Count: > 0 }
+                        || settings.SquisherPresets is [{ Name: "Discord (Non-Nitro)", TargetSizeMb: 20 or 25, Icon: "squish" or null }])
+                    {
+                        settings.SquisherPresets = SquishPreset.Defaults();
+                    }
                 }
 
                 // Starting in a set mode, whatever was in use when HandPeg was last closed.

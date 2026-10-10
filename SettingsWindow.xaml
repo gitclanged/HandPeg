@@ -2,7 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:HandPegApp"
-        Title="HandPeg Settings" Width="820" Height="780" ResizeMode="NoResize"
+        xmlns:services="clr-namespace:HandPegApp.Services"
+        Title="HandPeg Settings" Width="820" Height="780" MinWidth="620" MinHeight="420" ResizeMode="CanResizeWithGrip"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <Window.Resources>
@@ -114,6 +115,14 @@
             <TabItem Header="Interface">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
                 <StackPanel>
+                    <TextBlock Text="Appearance" Style="{StaticResource SectionTitle}" />
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,10"
+                                ToolTip="How thick scrollbars are, everywhere in HandPeg: from 4 pixels, a hairline, to 16, as Windows draws them. They change as the slider is moved.">
+                        <TextBlock Text="Scrollbar Thickness:" VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <Slider x:Name="ScrollbarSlider" Width="200" Minimum="4" Maximum="16" TickFrequency="1" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding ScrollbarThickness}" ValueChanged="ScrollbarSlider_ValueChanged" AutomationProperties.Name="Scrollbar Thickness" />
+                        <TextBlock Text="{Binding Value, ElementName=ScrollbarSlider, StringFormat={}{0:0} px}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
                     <TextBlock Text="Mode" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
                                Text="Encoder Mode is the lean front end for converting and trimming; Editor Mode adds layers, captions and the full timeline. The button beside the gear switches between them. Each mode keeps its own copy of the layout options on this tab and on the Timeline tab: what you set here is set for the mode you are in now." />
@@ -354,6 +363,13 @@
                               ToolTip="Every video that is opened starts as a vertical one: a tall frame with the picture across its middle over a blurred copy of itself. The same as ticking Vertical Video on the Summary tab." />
                     <CheckBox Content="Prompt to save before closing" IsChecked="{Binding PromptToSaveOnExit}"
                               ToolTip="When HandPeg is closed while the open video has cuts, layers or settings that were not saved as a project, asks whether to save them first." />
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
+                        <CheckBox Content="Enable Autosave" IsChecked="{Binding AutosaveEnabled}" VerticalAlignment="Center" AutomationProperties.Name="Enable Autosave"
+                                  ToolTip="Writes the open project to a file beside it named after it (Name.autosave.hproj) every so often, when it has changed. Written in the background; the project itself, and what can be undone, are left as they are." />
+                        <TextBlock Text="Interval (minutes):" VerticalAlignment="Center" Margin="18,0,8,0" />
+                        <TextBox Width="48" Padding="4,2" VerticalAlignment="Center" Text="{Binding AutosaveMinutes}" IsEnabled="{Binding AutosaveEnabled}" AutomationProperties.Name="Autosave Interval"
+                                 ToolTip="How many minutes pass between autosaves: 1 to 120." />
+                    </StackPanel>
                     <CheckBox Content="Fall back to the software encoder when a hardware encode fails" IsChecked="{Binding AutoFallbackToSoftware}"
                               ToolTip="If an encode or queue job fails on a hardware encoder, it is tried once more with libx264 (or libx265 for HEVC, SVT-AV1 for AV1)." />
                 </StackPanel>
@@ -449,6 +465,76 @@
                         </DataGrid.Columns>
                     </DataGrid>
                 </DockPanel>
+            </TabItem>
+
+            <!-- The startup dialog's Social Sharing Squisher: its presets, and how it works out and encodes to a size. -->
+            <TabItem Header="Startup Dialog">
+                <StackPanel>
+                    <TextBlock Text="Social Sharing Squisher" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="A video dropped on one of these in the startup dialog is squeezed under its size as an H.264 / AAC .mp4, which can then be dragged straight out of the dialog (into Discord, a browser, a folder)." />
+                    <CheckBox Content="Show the Squisher in the startup dialog" IsChecked="{Binding ShowSquisher}" AutomationProperties.Name="Show Squisher" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                                ToolTip="How many of the presets below the startup dialog shows: the first so many, from the top. Use the arrows on a preset to move it up or down the list.">
+                        <TextBlock Text="Presets shown:" VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <Slider x:Name="SquishCountSlider" Width="200" Minimum="1" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding SquisherPresetCount}" AutomationProperties.Name="Squisher Presets Shown" />
+                        <TextBlock Text="{Binding Value, ElementName=SquishCountSlider, StringFormat={}{0:0}}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <Grid Margin="0,8,0,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="240" />
+                            <ColumnDefinition Width="110" />
+                            <ColumnDefinition Width="110" />
+                            <ColumnDefinition Width="120" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Preset" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Grid.Column="1" Text="Target (MB)" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Grid.Column="2" Text="Audio (kb/s)" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Grid.Column="3" Text="Icon" Foreground="{DynamicResource MutedTextBrush}" />
+                    </Grid>
+                    <ItemsControl x:Name="SquishPresetList" Focusable="False">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="240" />
+                                        <ColumnDefinition Width="110" />
+                                        <ColumnDefinition Width="110" />
+                                        <ColumnDefinition Width="120" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" Padding="4,2" AutomationProperties.Name="Squisher Preset Name" />
+                                    <TextBox Grid.Column="1" Text="{Binding TargetSizeMb}" Margin="0,0,8,0" Padding="4,2" AutomationProperties.Name="Squisher Target Size" />
+                                    <TextBox Grid.Column="2" Text="{Binding AudioKbps}" Margin="0,0,8,0" Padding="4,2" AutomationProperties.Name="Squisher Audio Bitrate" />
+                                    <ComboBox Grid.Column="3" Margin="0,0,8,0" ItemsSource="{x:Static services:SquishPreset.Icons}" SelectedItem="{Binding Icon}" AutomationProperties.Name="Squisher Preset Icon" />
+                                    <StackPanel Grid.Column="4" Orientation="Horizontal">
+                                        <Button Content="&#xE74A;" FontFamily="Segoe MDL2 Assets" Padding="8,3" Margin="0,0,3,0" Click="MoveSquishPresetUp_Click" AutomationProperties.Name="Move Preset Up" ToolTip="Move up the list: shown earlier on the startup dialog." />
+                                        <Button Content="&#xE74B;" FontFamily="Segoe MDL2 Assets" Padding="8,3" Margin="0,0,8,0" Click="MoveSquishPresetDown_Click" AutomationProperties.Name="Move Preset Down" ToolTip="Move down the list." />
+                                        <Button Content="Remove" Padding="10,2" Click="RemoveSquishPreset_Click" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <Button Content="Add Preset" Padding="12,4" Click="AddSquishPreset_Click" />
+                        <Button Content="Restore Defaults" Padding="12,4" Margin="6,0,0,0" Click="RestoreSquishPresets_Click"
+                                ToolTip="Puts back the presets HandPeg starts with: Discord, WhatsApp, email, GitHub, X, Bluesky, Teams and Signal, each with its upload limit." />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,14,0,2"
+                                ToolTip="Megabytes kept in hand below a preset's size when the bitrate is worked out: what the container adds, and what an encoder overshoots by. Video bitrate = (((target - offset) x 8192) / seconds) - audio bitrate.">
+                        <TextBlock Text="Target Size Offset (MB):" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox Width="60" Padding="4,2" Text="{Binding SquisherOffsetMb}" AutomationProperties.Name="Target Size Offset" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                        <CheckBox Content="Manual Encoder Preset Override:" IsChecked="{Binding SquisherManualPreset}" VerticalAlignment="Center" AutomationProperties.Name="Manual Encoder Preset Override"
+                                  ToolTip="Off, the Squisher uses each encoder's most careful preset (p7 for NVENC, veryslow for QuickSync and libx264, quality for AMF), which keeps the most detail at a tight bitrate and takes the longest. On, the preset named here is used instead: the name has to be one the encoder in use knows." />
+                        <TextBox Width="110" Margin="8,0,0,0" Padding="4,2" Text="{Binding SquisherEncoderPreset}" IsEnabled="{Binding SquisherManualPreset}" AutomationProperties.Name="Squisher Encoder Preset" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource Hint}" Margin="0,10,0,0"
+                               Text="The encoder is chosen for you: NVENC, then QuickSync, then AMF, then libx264. Whether the startup dialog opens at all, and which style presets it shows, is under Interface." />
+                </StackPanel>
             </TabItem>
 
             <TabItem Header="Keyboard Shortcuts">

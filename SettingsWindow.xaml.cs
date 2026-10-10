@@ -14,6 +14,72 @@ namespace HandPegApp;
 public partial class SettingsWindow : Window
 {
     private readonly AppSettings _settings = AppSettings.Current.Clone();
+    private readonly System.Collections.ObjectModel.ObservableCollection<SquishPreset> _squishPresets;
+
+    private void AddSquishPreset_Click(object sender, RoutedEventArgs e)
+    {
+        var preset = new SquishPreset { Name = "New Preset", TargetSizeMb = 10, AudioKbps = 96 };
+        _settings.SquisherPresets.Add(preset);
+        _squishPresets.Add(preset);
+    }
+
+    private static IEnumerable<TabItem> FindTabs(DependencyObject root)
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
+        {
+            if (child is TabControl tabs)
+            {
+                foreach (var tab in tabs.Items.OfType<TabItem>())
+                    yield return tab;
+                yield break;
+            }
+
+            foreach (var tab in FindTabs(child))
+                yield return tab;
+        }
+    }
+
+    private void ScrollbarSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (IsLoaded)
+            Application.Current.Resources["GlobalScrollBarThickness"] = Math.Clamp(e.NewValue, 4, 16);
+    }
+
+    private void MoveSquishPresetUp_Click(object sender, RoutedEventArgs e) => MoveSquishPreset(sender, -1);
+
+    private void MoveSquishPresetDown_Click(object sender, RoutedEventArgs e) => MoveSquishPreset(sender, 1);
+
+    // The order of the list is the order on the startup dialog, which shows only the first few.
+    private void MoveSquishPreset(object sender, int by)
+    {
+        if (sender is not FrameworkElement { DataContext: SquishPreset preset })
+            return;
+
+        var (from, to) = (_squishPresets.IndexOf(preset), _squishPresets.IndexOf(preset) + by);
+        if (from < 0 || to < 0 || to >= _squishPresets.Count)
+            return;
+
+        _squishPresets.Move(from, to);
+        _settings.SquisherPresets.RemoveAt(from);
+        _settings.SquisherPresets.Insert(to, preset);
+    }
+
+    private void RestoreSquishPresets_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.SquisherPresets = SquishPreset.Defaults();
+        _squishPresets.Clear();
+        foreach (var preset in _settings.SquisherPresets)
+            _squishPresets.Add(preset);
+    }
+
+    private void RemoveSquishPreset_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: SquishPreset preset })
+        {
+            _settings.SquisherPresets.Remove(preset);
+            _squishPresets.Remove(preset);
+        }
+    }
     private readonly MainViewModel _viewModel;
 
     public SettingsWindow(MainViewModel viewModel)
@@ -21,6 +87,23 @@ public partial class SettingsWindow : Window
         InitializeComponent();
         _viewModel = viewModel;
         DataContext = _settings;
+
+        // The Squisher's presets: the same objects as in the copy of the settings being edited, listed so that rows can come and go.
+        _squishPresets = new System.Collections.ObjectModel.ObservableCollection<SquishPreset>(_settings.SquisherPresets);
+        SquishPresetList.ItemsSource = _squishPresets;
+
+        // Every tab scrolls when the window is too short for it: a tab whose content is not already in a scroller is put in one.
+        foreach (var tab in FindTabs(this))
+        {
+            if (tab.Content is UIElement content and not ScrollViewer)
+            {
+                tab.Content = null;
+                tab.Content = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Content = content, Focusable = false };
+            }
+        }
+
+        // The scrollbars follow the slider as it moves; closed without saving, they go back to what is saved.
+        Closed += (_, _) => Application.Current.Resources["GlobalScrollBarThickness"] = Math.Clamp(AppSettings.Current.ScrollbarThickness, 4, 16);
 
         // Nothing is installed while an encode, a preview or a transcription is using the tools.
         Dependencies.AppIsBusy = viewModel.IsBusy;

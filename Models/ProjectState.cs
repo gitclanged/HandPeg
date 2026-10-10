@@ -29,6 +29,9 @@ public sealed class ProjectState
     public bool ChapterMarkers { get; set; } = true;
     public bool ChaptersAtCuts { get; set; }
 
+    /// <summary>The imported or hand-made subtitle track; null when there is none.</summary>
+    public SubtitleTrackData? Subtitles { get; set; }
+
     /// <summary>Kept here as well as in the settings, because a preset only carries it when the user opted in.</summary>
     public string TargetFileSize { get; set; } = "";
 

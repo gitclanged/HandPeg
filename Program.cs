@@ -11,10 +11,15 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
-        Velopack.VelopackApp.Build().Run();
+        // A self-contained copy (portable.txt, --portable) is not an installed one: it has no installer to answer,
+        // and nothing from an earlier build elsewhere on the computer to bring over. It stays in its folder.
+        if (!Services.AppPaths.IsSelfContained)
+        {
+            Velopack.VelopackApp.Build().Run();
 
-        // Before anything reads a setting: what an earlier build kept beside the program is brought over.
-        Services.DataMigration.Run();
+            // Before anything reads a setting: what an earlier build kept beside the program is brought over.
+            Services.DataMigration.Run();
+        }
 
         var app = new App();
         app.InitializeComponent();

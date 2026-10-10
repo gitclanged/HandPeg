@@ -1,5 +1,6 @@
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using HandPegApp.Models;
 using HandPegApp.Services;
 
@@ -111,6 +112,7 @@ public partial class MainViewModel
         WebOptimized = WebOptimized,
         ChapterMarkers = ChapterMarkers,
         ChaptersAtCuts = ChaptersAtCuts,
+        Subtitles = CaptureSubtitles(),
         TargetFileSize = TargetFileSize,
         Settings = CaptureSettings(name),
         AudioTracks = CaptureAudioTracks(),
@@ -144,6 +146,7 @@ public partial class MainViewModel
         WebOptimized = state.WebOptimized;
         ChapterMarkers = state.ChapterMarkers;
         ChaptersAtCuts = state.ChaptersAtCuts;
+        ApplySubtitles(state.Subtitles);
 
         SelectedPreset = null;
         ApplyPreset(state.Settings);
@@ -270,12 +273,109 @@ public partial class MainViewModel
         }
     }
 
+    /// <summary>Ctrl+S, or Ctrl+Shift+S when <paramref name="choosePlace"/>: the window does the saving, since it may have to ask where.</summary>
+    public event Action<bool>? SaveRequested;
+
+    [RelayCommand]
+    private void SaveProjectNow() => SaveRequested?.Invoke(false);
+
+    [RelayCommand]
+    private void SaveProjectAs() => SaveRequested?.Invoke(true);
+
+    /// <summary>Autosave, for the quick switch in the Settings button's flyout: the same setting as in Settings, Behavior.</summary>
+    public bool AutosaveEnabled
+    {
+        get => AppSettings.Current.AutosaveEnabled;
+        set
+        {
+            if (value == AppSettings.Current.AutosaveEnabled)
+                return;
+
+            SaveView(settings => settings.AutosaveEnabled = value);
+            OnPropertyChanged();
+            StatusText = value
+                ? $"Autosave on: every {Math.Clamp(AppSettings.Current.AutosaveMinutes, 1, 120)} minutes, to a file named after the project."
+                : "Autosave off.";
+        }
+    }
+
+    /// <summary>The setting may have been changed in the Settings window: whatever shows it is told to look again.</summary>
+    public void RefreshAutosave() => OnPropertyChanged(nameof(AutosaveEnabled));
+
+    /// <summary>The Layers and Audio lists are too narrow for a row to hold its controls and a time bar of any use: the controls are in a flyout from each row instead. Editor Mode only.</summary>
+    [ObservableProperty] private bool _compactTrackControls;
+
+    /// <summary>The master timeline is stretched and scrolled with the layer and audio time bars when they are zoomed; off, it always shows the whole sequence.</summary>
+    [ObservableProperty] private bool _syncMasterTimeline;
+
+    /// <summary>The file the open project was last saved to or opened from; empty for work that has never been saved.</summary>
+    public string CurrentProjectPath { get; private set; } = "";
+
+    /// <summary>
+    /// Saves the project to a file of the user's choosing (Save As), which is from then on where Save puts it.
+    /// Like every save, it leaves the undo history alone: what was done before the save can still be undone after it.
+    /// </summary>
+    public string SaveProjectTo(string path)
+    {
+        try
+        {
+            ProjectStore.SaveTo(CaptureState(Path.GetFileNameWithoutExtension(path)), path);
+            CurrentProjectPath = path;
+            MarkSaved();
+            RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
+            return StatusText = $"Project saved: {path}";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return StatusText = $"Could not save the project: {ex.Message}";
+        }
+    }
+
+    // What the project looked like when it was last autosaved: nothing is written while nothing has changed.
+    private string _autosavedFingerprint = "";
+    private bool _autosaving;
+
+    /// <summary>
+    /// Writes the project to its autosave file ("Name.autosave.hproj") if it has changed since the last time.
+    /// The state is gathered here, on the UI thread, which takes a moment; making JSON of it and writing the
+    /// file happen on the thread pool, so the window is never held up by the disk. The project itself is not
+    /// touched, it does not count as saved, and the undo history stays as it is.
+    /// </summary>
+    public async Task AutosaveAsync()
+    {
+        if (_isBackgroundWorker || _autosaving || !HasSource)
+            return;
+
+        var fingerprint = Fingerprint();
+        if (fingerprint == _autosavedFingerprint || !HasUnsavedChanges)
+            return;
+
+        var name = CurrentProjectPath.Length > 0 ? Path.GetFileNameWithoutExtension(CurrentProjectPath) : Path.GetFileNameWithoutExtension(SourcePath.Trim().Trim('"'));
+        var path = ProjectStore.AutosavePath(CurrentProjectPath, name);
+        var state = CaptureState(Path.GetFileNameWithoutExtension(path));
+        _autosaving = true;
+        try
+        {
+            await Task.Run(() => ProjectStore.SaveTo(state, path));
+            _autosavedFingerprint = fingerprint;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            AppLog.Write($"Autosave to {path} failed", ex);
+        }
+        finally
+        {
+            _autosaving = false;
+        }
+    }
+
     /// <summary>Saves the current state as a project and returns a line for the status bar.</summary>
     public string SaveProject(string name)
     {
         try
         {
             var path = ProjectStore.Save(CaptureState(name.Trim()));
+            CurrentProjectPath = path;
             MarkSaved();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
             return StatusText = $"Project saved: {Path.GetFileNameWithoutExtension(path)}";
@@ -292,6 +392,9 @@ public partial class MainViewModel
         try
         {
             state = ProjectStore.Load(filePath);
+
+            // An autosave is opened as work that has no file yet: Save then asks where, and the autosave is not overwritten by hand.
+            CurrentProjectPath = Path.GetFileNameWithoutExtension(filePath).EndsWith(ProjectStore.AutosaveSuffix, StringComparison.OrdinalIgnoreCase) ? "" : filePath;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException)
         {

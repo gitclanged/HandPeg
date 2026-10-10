@@ -23,6 +23,39 @@ public static class AppPaths
 
     private const string PortableDataFolder = "HandPegData";
 
+    /// <summary>A file of this name beside the program makes the copy self-contained: everything it reads and writes is in its own folder.</summary>
+    public const string PortableSentinel = "portable.txt";
+
+    /// <summary>The same, asked for on the command line.</summary>
+    public const string PortableArgument = "--portable";
+
+    // The program's own folder, when this copy is self-contained; null otherwise. Found first: the rest follows from it.
+    private static readonly string? LocalRoot = FindLocalRoot();
+
+    /// <summary>
+    /// True for a self-contained copy (portable.txt beside the program, or --portable). Its tools are in
+    /// "deps" and its working files in "temp", both beside the program, and everything else under "data":
+    /// settings, presets, projects, caches, logs. Nothing of it is in %AppData%, %LocalAppData% or %TEMP%,
+    /// and it neither looks for updates nor reads the registry for the Windows theme.
+    /// </summary>
+    public static bool IsSelfContained => LocalRoot is not null;
+
+    private static string? FindLocalRoot()
+    {
+        try
+        {
+            var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
+            return File.Exists(Path.Combine(folder, PortableSentinel))
+                   || Environment.GetCommandLineArgs().Skip(1).Any(a => a.Equals(PortableArgument, StringComparison.OrdinalIgnoreCase))
+                ? folder
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
     // One folder holding everything (portable, or the override), or null when installed.
     private static readonly string? SingleRoot = FindSingleRoot();
 
@@ -60,7 +93,7 @@ public static class AppPaths
         ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppName + "-Data");
 
     /// <summary>FFmpeg, yt-dlp, whisper.cpp and the speech models, a folder each.</summary>
-    public static string Deps { get; } = Path.Combine(DataRoot, "deps");
+    public static string Deps { get; } = Path.Combine(LocalRoot ?? DataRoot, "deps");
 
     public static string Cache { get; } = Path.Combine(DataRoot, "cache");
 
@@ -70,8 +103,8 @@ public static class AppPaths
     public static string Logs { get; } = Path.Combine(DataRoot, "logs");
 
     /// <summary>Working files of the running sessions: removed when each closes, and at the next start if it could not.</summary>
-    public static string Temp { get; } = SingleRoot is null
-        ? Path.Combine(Path.GetTempPath(), AppName)
+    public static string Temp { get; } = LocalRoot is not null ? Path.Combine(LocalRoot, "temp")
+        : SingleRoot is null ? Path.Combine(Path.GetTempPath(), AppName)
         : Path.Combine(SingleRoot, "temp");
 
     private static string? FindSingleRoot()
@@ -79,6 +112,13 @@ public static class AppPaths
         var chosen = Environment.GetEnvironmentVariable(DataFolderVariable);
         if (!string.IsNullOrWhiteSpace(chosen))
             return Path.GetFullPath(chosen.Trim().Trim('"'));
+
+        // Self-contained: the installer's locator is not even asked, since asking is itself a look outside this folder.
+        if (LocalRoot is not null)
+        {
+            IsPortable = true;
+            return Path.Combine(LocalRoot, "data");
+        }
 
         try
         {
