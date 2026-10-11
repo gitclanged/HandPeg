@@ -135,6 +135,20 @@ public partial class MainViewModel
             return;
         }
 
+        // There are subtitles on the timeline already, and whatever was done to them by hand would go with them: asked first.
+        if (HasSubtitleCues)
+        {
+            var answer = System.Windows.MessageBox.Show(
+                System.Windows.Application.Current?.MainWindow!,
+                "Generating new captions will overwrite your existing subtitle track and discard any manual timing or text edits. Do you want to proceed?",
+                "Generate Captions", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.No);
+            if (answer != System.Windows.MessageBoxResult.Yes)
+            {
+                StatusText = "Generate Captions cancelled: the subtitle track is as it was.";
+                return;
+            }
+        }
+
         await ConvertCaptionsToCuesAsync();
         SyncEditorCaptions();
     }

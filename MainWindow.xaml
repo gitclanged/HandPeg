@@ -2437,19 +2437,6 @@
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0" IsEnabled="{Binding CaptionOptionsEnabled}">
                                 <Button Content="Caption Style Settings" Click="CaptionStyle_Click"
                                         ToolTip="Font, colors, outline, words per line and the animation." />
-                                <!--
-                                    Editor Mode: captions are made once, onto the timeline, and are from then on what is
-                                    there to be seen, edited and exported. This is the one button that makes them.
-                                -->
-                                <Button Margin="6,0,0,0" Padding="14,5" Command="{Binding GenerateCaptionsCommand}" AutomationProperties.Name="Generate Captions"
-                                        Background="{DynamicResource AccentBrush}" Foreground="{DynamicResource OnAccentBrush}" FontWeight="SemiBold"
-                                        Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
-                                        ToolTip="Transcribes the speech with the model chosen above and puts the captions on the timeline as subtitles. From then on they are part of the project: shown in the player, edited in the Subtitle Editor, saved with the project, and exported exactly as they stand. Nothing is transcribed again unless this is pressed again, which replaces what is there.">
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="&#xE8D4;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" FontWeight="Normal" />
-                                        <TextBlock Text="Generate Captions" Margin="8,0,0,0" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                </Button>
                                 <ToggleButton Content="Preview Subtitles" Margin="6,0,0,0" IsChecked="{Binding PreviewSubtitles}" Visibility="Collapsed" AutomationProperties.Name="Preview Subtitles"
                                               ToolTip="Draws the captions over the picture in the player, in the style and the box they have: the words are transcribed the first time, which takes a moment. Change the style, or move the box, and the preview follows. The player draws them itself, so playback stays smooth; the box's rounded or soft edges and its mask are only in the export and in Render Preview." />
                                 <Button Content="Edit Captions" Margin="6,0,0,0" Click="EditSubtitles_Click" AutomationProperties.Name="Edit Captions"
@@ -2458,6 +2445,19 @@
                                         ToolTip="The captions as a layer: opacity, rounded or soft edges, and a drop shadow. The same layer is listed under Layers on the Filters tab." />
                                 <Button Content="Reset Position" Margin="6,0,0,0" Command="{Binding ResetCaptionLayerCommand}"
                                         ToolTip="Puts the caption box back in the lower part of the frame." />
+                                <!--
+                                    Editor Mode: captions are made once, onto the timeline, and are from then on what is
+                                    there to be seen, edited and exported. This is the one button that makes them.
+                                -->
+                                <Button Margin="14,0,0,0" Padding="14,5" Command="{Binding GenerateCaptionsCommand}" AutomationProperties.Name="Generate Captions"
+                                        Background="{DynamicResource AccentBrush}" Foreground="{DynamicResource OnAccentBrush}" FontWeight="SemiBold"
+                                        Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
+                                        ToolTip="Transcribes the speech with the model chosen above and puts the captions on the timeline as subtitles. From then on they are part of the project: shown in the player, edited in the Subtitle Editor, saved with the project, and exported exactly as they stand. Nothing is transcribed again unless this is pressed again, which replaces what is there.">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE8D4;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" FontWeight="Normal" />
+                                        <TextBlock Text="Generate Captions" Margin="8,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
                                 <TextBlock Text="{Binding CaptionStyleSummary}" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                             </StackPanel>
                             <TextBlock Text="{Binding CaptionHint}" Foreground="{DynamicResource WarningTextBrush}" Margin="0,12,0,0" TextWrapping="Wrap" />
@@ -2520,7 +2520,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Save As:" Style="{StaticResource FieldLabel}" />
-                <TextBox Grid.Column="1" VerticalContentAlignment="Center"
+                <TextBox Grid.Column="1" VerticalContentAlignment="Center" AutomationProperties.Name="Destination Path"
                          Text="{Binding DestinationPath, UpdateSourceTrigger=PropertyChanged}" />
                 <Button Grid.Column="2" Content="Browse..." Margin="6,0,0,0" Click="BrowseDestination_Click" />
                 <StackPanel Grid.Column="4" Orientation="Horizontal">

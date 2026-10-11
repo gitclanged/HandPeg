@@ -169,6 +169,9 @@ public partial class MainWindow : Window
         {
             StyleLibrary.EnsureBuiltIns();
 
+            // Off this thread and not waited for: last week's proxies and last session's leftovers go.
+            ProxyCache.SweepInBackground();
+
             // No window opens over the program at launch any more: it starts straight into its workspace. What
             // the launch window offered is offered while a file is dragged in instead, and its targets are made
             // now, once everything else is up and idle.

@@ -150,6 +150,49 @@ public static class ProxyCache
         }
     }
 
+    /// <summary>
+    /// Clears out what nothing will use again, on a thread of its own, when HandPeg starts: proxies that have
+    /// not been used for a week (their projects are forgotten, and they would only crowd the cache's limit),
+    /// timeline proxies (each is of one session's timeline, and no later session can use it), and whatever a
+    /// crash or a kill left half made. Nothing waits for it.
+    /// </summary>
+    public static void SweepInBackground(int staleDays = 7) => _ = Task.Run(() =>
+    {
+        try
+        {
+            if (!Directory.Exists(Folder))
+                return;
+
+            var (removed, freed, cutoff) = (0, 0L, DateTime.UtcNow.AddDays(-Math.Max(staleDays, 1)));
+            foreach (var file in new DirectoryInfo(Folder).GetFiles())
+            {
+                var leftover = file.Name.StartsWith("timeline_", StringComparison.OrdinalIgnoreCase) || file.Name.StartsWith("making_", StringComparison.OrdinalIgnoreCase)
+                               || file.Name.EndsWith(".render.mp4", StringComparison.OrdinalIgnoreCase) || file.Name.EndsWith(".part.mp4", StringComparison.OrdinalIgnoreCase);
+                var stale = file.LastAccessTimeUtc < cutoff && file.LastWriteTimeUtc < cutoff;
+                if (!leftover && !stale)
+                    continue;
+
+                try
+                {
+                    var size = file.Length;
+                    file.Delete();
+                    (removed, freed) = (removed + 1, freed + size);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // In use by another HandPeg that is running: left for the next sweep.
+                }
+            }
+
+            if (removed > 0)
+                AppLog.Write($"Proxy cache: swept {removed} stale or leftover file{(removed == 1 ? "" : "s")}, {freed / 1048576.0:0.0} MB freed.");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write("The proxy cache could not be swept", ex);
+        }
+    });
+
     /// <summary>Each encoder's fastest sensible setting, at a quality of about CRF 28; the cap on the bitrate is added for all of them alike.</summary>
     private static string EncoderArguments(string encoder, bool low) => encoder switch
     {

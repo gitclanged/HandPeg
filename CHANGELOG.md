@@ -3,6 +3,60 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v2.6.0
+
+### Highlights
+- **Proxies.** In Editor Mode the player shows light, silent copies of the main video and of every video layer, made in the background on the graphics card. Seeking and scrubbing a project with several videos is immediate. Exports always read the originals.
+- **Preview Quality tiers.** High (the originals), Medium (720-line proxies) and Low (360-line proxies), in the Views menu.
+- **Timeline Proxy.** The whole composed timeline rendered once into a single file that the player plays in place of composing live. It renders itself when the timeline is left alone, and is discarded the moment anything is edited.
+- **Captions are part of the project.** Generate Captions transcribes once and puts the captions on the timeline. From then on they are what is shown, edited, saved and exported; nothing is transcribed again behind your back.
+- **Starts straight into the workspace.** The startup dialog is gone. Drag a file over an empty window and drop targets appear: style or encoding presets, and the Social Squisher's.
+- **Encoder Mode stands apart.** No Live Preview, no Layers tab, no caption preview; a Recent Editor Files list opens the editor's files there.
+
+### New
+- Drag-and-drop overlay over an empty window, with a larger row of style presets (Editor Mode) or encoding presets (Encoder Mode) and a smaller row of Social Squisher presets. Settings → Drag & Drop Overlay sets how many of each are shown and their order.
+- Proxies for the main video and every video layer: 720 lines, capped at 4 Mbit/s, an I-frame every 15 frames, no audio. Encoded with NVENC, QuickSync or AMF where available, otherwise libx264. Progress shows on the status bar.
+- Preview Quality in the Views menu. Low makes 360-line proxies capped at 2 Mbit/s.
+- Render Timeline Proxy in the Views menu, sized and capped by the preview quality.
+- Settings → Performance: Enable Editor Proxies, Proxy Cache Size Limit (MB, default 4096), Auto-Render Timeline Proxy with an idle time in seconds (default 60), Clear Proxy Cache on Exit.
+- Generate Captions button (Editor Mode), with a confirmation before it replaces an existing subtitle track.
+- Recent Editor Files on the Summary tab in Encoder Mode.
+- Startup Window Size (Settings → Interface): Default Size, Remember Last Size, Launch Maximized.
+- A project file (`.hproj`) pasted into the Source box opens the project.
+- Proxies unused for a week, and leftovers of earlier sessions, are cleared from the cache at startup.
+- Twenty-four more Social Squisher status lines.
+
+### Changed
+- Editor Mode has no "Generate Auto-Captions" checkbox and no "Preview Subtitles" toggle. Captions show whenever the subtitle track has words. Encoder Mode keeps the checkbox and still transcribes at export.
+- An Editor Mode export draws only the subtitles on the timeline. With none there, the export has no captions.
+- "Render Preview" is replaced by Render Timeline Proxy.
+- Scrubbing sends fast seeks at most 30 times a second while dragging and one exact seek on release.
+- The player no longer takes dropped files itself, so a drop anywhere on the window goes where HandPeg puts it.
+- The Social Squisher opens directly at its compact size when started from the overlay, and its presets fill their row.
+- The Settings flyout lists Autosave first, with its checkbox at the right; all rows are left-aligned.
+
+### Fixed
+- Dropping a file on a preset doing nothing (the embedded player was taking the drop).
+- The player staying bright while the rest of the window dimmed.
+- Seek lag on projects with several videos.
+- Proxy files several times larger than their source.
+
+### Compatibility
+- 2.5.0 projects open unchanged. A project saved with Auto-Captions on but no subtitle track opens in Editor Mode without captions until Generate Captions is pressed.
+- Projects saved in 2.6.0 open in 2.5.0; their subtitle track is kept, and Auto-Captions follows what was saved.
+- Proxies made by earlier builds are not reused and are removed by the startup sweep after a week.
+
+### Known limitations
+- Subtitle edits are not on the undo stack.
+- Medium and Low timeline proxies are encoded twice (render, then cap), which is fast but not free.
+- The timeline proxy is discarded by any change to the project, including encoder settings that do not change the picture.
+- There is still no published Whisper build for AMD or Intel graphics; transcription runs on the processor there.
+- Image-based subtitles are preview-only.
+- Switching modes keeps the same video open in both.
+
+### Upgrading
+Installed copies update automatically.
+
 ## HandPeg v2.5.0
 
 ### Highlights
