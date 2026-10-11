@@ -61,7 +61,9 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        var building = System.Diagnostics.Stopwatch.StartNew();
         InitializeComponent();
+        var built = building.ElapsedMilliseconds;
         DataContext = _viewModel;
 
         // Asked for even when already handled: the slider itself answers a press beside its playhead (it moves
@@ -159,14 +161,22 @@ public partial class MainWindow : Window
         _shuttleTimer.Tick += (_, _) => ShuttleBack();
 
         // The player starts once there is a surface for it to draw on, away from the UI thread.
+        // And not before the window has been drawn (_shellDrawn): the workspace is on screen first, and the
+        // video canvas hooks in after it.
         VideoView.SurfaceReady += () => _ = EnsurePlayerAsync();
-        Loaded += (_, _) => _ = EnsurePlayerAsync();
 
         // Once the window has been drawn, so the launch window opens over the program rather than over nothing.
         // (ContentRendered is raised once, when the window has actually been drawn; waiting for the dispatcher
         // to fall idle instead could be put off indefinitely by a player that is busy.)
         ContentRendered += (_, _) =>
         {
+            // How long the launch took, for the log: from the process starting to the window being on screen.
+            var sinceStart = (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalMilliseconds;
+            AppLog.Write(FormattableString.Invariant($"Startup: window drawn {sinceStart:0} ms after the process started (window built in {built} ms)."));
+
+            _shellDrawn = true;
+            Dispatcher.BeginInvoke(() => _ = EnsurePlayerAsync(), System.Windows.Threading.DispatcherPriority.Loaded);
+
             StyleLibrary.EnsureBuiltIns();
 
             // Off this thread and not waited for: last week's proxies and last session's leftovers go.
@@ -176,7 +186,11 @@ public partial class MainWindow : Window
             // the launch window offered is offered while a file is dragged in instead, and its targets are made
             // now, once everything else is up and idle.
             Dispatcher.BeginInvoke(BuildDropTargets, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            Dispatcher.BeginInvoke(RealizeTabsWhenIdle, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         };
+
+        // A tab other than the first may be the one that is open.
+        RealizeTab(SettingsTabs.SelectedItem);
     }
 
     /// <summary>
@@ -939,7 +953,7 @@ public partial class MainWindow : Window
         var file = files[0];
 
         // Dropped on the layers, with a video open: the files become layers of it, at the moment they were dropped on.
-        if (_viewModel.HasSource && LayersList.IsVisible)
+        if (_viewModel.HasSource && LayersList is { IsVisible: true })
         {
             var at = e.GetPosition(LayersList);
             if (at.X >= 0 && at.Y >= 0 && at.X <= LayersList.ActualWidth && at.Y <= LayersList.ActualHeight)
@@ -951,7 +965,7 @@ public partial class MainWindow : Window
         }
 
         // Dropped on the Audio tab, with a video open: the files' sound goes onto the timeline, at the moment it was dropped on.
-        if (_viewModel.HasSource && AudioPanel.IsVisible)
+        if (_viewModel.HasSource && AudioPanel is { IsVisible: true })
         {
             var at = e.GetPosition(AudioPanel);
             if (at.X >= 0 && at.Y >= 0 && at.X <= AudioPanel.ActualWidth && at.Y <= AudioPanel.ActualHeight)
@@ -1103,6 +1117,7 @@ public partial class MainWindow : Window
 
     private MpvPlayer? _mpv;
     private bool _startingPlayer;
+    private bool _shellDrawn;
 
     // What to open once the player exists: a video loaded before it had started, or the one a reload is bringing back.
     private (string Path, long StartMs, bool Paused)? _pendingMedia;
@@ -1138,7 +1153,7 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task EnsurePlayerAsync()
     {
-        if (_mpv is not null || _startingPlayer)
+        if (_mpv is not null || _startingPlayer || !_shellDrawn)
             return;
 
         var surface = VideoView.SurfaceHandle;
@@ -2616,8 +2631,77 @@ public partial class MainWindow : Window
 
     private double _audioOptionsWidth;
 
+    // ----- Tabs that are built when they are first wanted -----
+
+    // The named parts of the Audio and Layers tabs that this file uses: the tabs are made from templates, so
+    // these are found in them when they are made. The two that are asked about from outside their tab (is a
+    // file being dropped on it, what is selected in it) may not be there yet; the rest are only reached from
+    // their own tab's events.
+    private DockPanel? AudioPanel;
+    private Grid AudioOptionsHost = null!;
+    private StackPanel AudioOptionsInline = null!;
+    private System.Windows.Controls.Primitives.ToggleButton AudioOptionsButton = null!;
+    private ListBox? LayersList;
+    private WrapPanel LayerAddBar = null!;
+    private StackPanel KeyBarInline = null!;
+    private System.Windows.Controls.Primitives.ToggleButton AddLayerButton = null!, KeyBarButton = null!;
+
+    /// <summary>
+    /// Makes what is in a tab whose content was left as a template, which is every tab but Summary: once, and
+    /// it then stays as any tab's content does. Only the Summary tab is made with the window.
+    /// </summary>
+    private void RealizeTab(object? item)
+    {
+        if (item is not TabItem { Tag: DataTemplate template } tab)
+            return;
+
+        tab.Tag = null;
+        var content = template.LoadContent();
+        if (content is FrameworkElement root && root.FindName(nameof(AudioOptionsHost)) is Grid host)
+        {
+            AudioOptionsHost = host;
+            AudioOptionsInline = (StackPanel)root.FindName(nameof(AudioOptionsInline));
+            AudioOptionsButton = (System.Windows.Controls.Primitives.ToggleButton)root.FindName(nameof(AudioOptionsButton));
+            AudioPanel = (DockPanel)root.FindName(nameof(AudioPanel));
+        }
+        else if (content is FrameworkElement layers && layers.FindName(nameof(LayerAddBar)) is WrapPanel bar)
+        {
+            LayerAddBar = bar;
+            KeyBarInline = (StackPanel)layers.FindName(nameof(KeyBarInline));
+            KeyBarButton = (System.Windows.Controls.Primitives.ToggleButton)layers.FindName(nameof(KeyBarButton));
+            AddLayerButton = (System.Windows.Controls.Primitives.ToggleButton)layers.FindName(nameof(AddLayerButton));
+            LayersList = (ListBox)layers.FindName(nameof(LayersList));
+        }
+
+        tab.Content = content;
+    }
+
+    // Raised by every list and box inside the tabs as well: only the tabs' own selection is of interest.
+    private void SettingsTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ReferenceEquals(e.OriginalSource, SettingsTabs))
+            RealizeTab(SettingsTabs.SelectedItem);
+    }
+
+    /// <summary>
+    /// Makes the tabs nobody has opened yet, one at a time and only while nothing else is wanted of this
+    /// thread, so that the first click on any of them finds it ready.
+    /// </summary>
+    private void RealizeTabsWhenIdle()
+    {
+        var next = SettingsTabs.Items.OfType<TabItem>().FirstOrDefault(tab => tab.Tag is DataTemplate);
+        if (next is null)
+            return;
+
+        RealizeTab(next);
+        Dispatcher.BeginInvoke(RealizeTabsWhenIdle, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+    }
+
     private void AudioOptionsHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
+        if (AudioPanel is null)
+            return;
+
         if (AudioOptionsInline.Visibility == Visibility.Visible && AudioOptionsInline.ActualWidth > 0)
             _audioOptionsWidth = Math.Max(_audioOptionsWidth, AudioOptionsInline.ActualWidth);
         if (_audioOptionsWidth <= 0)
@@ -3455,7 +3539,7 @@ public partial class MainWindow : Window
     // as its block picked on the timeline is.
     private void LayersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (LayersList.SelectedItem is Layer { IsPicture: true, IsCaptions: false } layer)
+        if (LayersList?.SelectedItem is Layer { IsPicture: true, IsCaptions: false } layer)
             _viewModel.KeyLayer = layer;
     }
 

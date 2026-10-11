@@ -12,6 +12,7 @@ Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 - **Captions are part of the project.** Generate Captions transcribes once and puts the captions on the timeline. From then on they are what is shown, edited, saved and exported; nothing is transcribed again behind your back.
 - **Starts straight into the workspace.** The startup dialog is gone. Drag a file over an empty window and drop targets appear: style or encoding presets, and the Social Squisher's.
 - **Encoder Mode stands apart.** No Live Preview, no Layers tab, no caption preview; a Recent Editor Files list opens the editor's files there.
+- **Sub-second start.** The window is on screen in well under a second. Only the Summary tab is built with the window; every other tab, the drag-and-drop targets and the video player come in after the first paint.
 
 ### New
 - Drag-and-drop overlay over an empty window, with a larger row of style presets (Editor Mode) or encoding presets (Encoder Mode) and a smaller row of Social Squisher presets. Settings → Drag & Drop Overlay sets how many of each are shown and their order.
@@ -25,6 +26,9 @@ Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 - A project file (`.hproj`) pasted into the Source box opens the project.
 - Proxies unused for a week, and leftovers of earlier sessions, are cleared from the cache at startup.
 - Twenty-four more Social Squisher status lines.
+- Lazy-loaded tabs: Video, Filters, Layers, Audio, Subtitles, Chapters and Command Preview are built when first opened, or one at a time while the window is idle, whichever comes first.
+- The drag-and-drop targets are built while the window is idle, and the player is started only after the window has been drawn.
+- The log records how long each launch took ("Startup: window drawn N ms after the process started").
 
 ### Changed
 - Editor Mode has no "Generate Auto-Captions" checkbox and no "Preview Subtitles" toggle. Captions show whenever the subtitle track has words. Encoder Mode keeps the checkbox and still transcribes at export.

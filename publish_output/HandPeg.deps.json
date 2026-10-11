@@ -1,0 +1,90 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0/win-x64",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {},
+    ".NETCoreApp,Version=v8.0/win-x64": {
+      "HandPeg/2.6.0": {
+        "dependencies": {
+          "CliWrap": "3.10.5",
+          "CommunityToolkit.Mvvm": "8.4.2",
+          "SharpCompress": "0.50.4",
+          "Velopack": "1.2.161"
+        },
+        "runtime": {
+          "HandPeg.dll": {}
+        }
+      },
+      "CliWrap/3.10.5": {
+        "runtime": {
+          "lib/net7.0/CliWrap.dll": {
+            "assemblyVersion": "3.10.5.0",
+            "fileVersion": "3.10.5.0"
+          }
+        }
+      },
+      "CommunityToolkit.Mvvm/8.4.2": {
+        "runtime": {
+          "lib/net8.0/CommunityToolkit.Mvvm.dll": {
+            "assemblyVersion": "8.4.0.0",
+            "fileVersion": "8.4.2.1"
+          }
+        }
+      },
+      "SharpCompress/0.50.4": {
+        "runtime": {
+          "lib/net8.0/SharpCompress.dll": {
+            "assemblyVersion": "0.50.4.0",
+            "fileVersion": "0.50.4.0"
+          }
+        }
+      },
+      "Velopack/1.2.161": {
+        "runtime": {
+          "lib/net8.0/Velopack.dll": {
+            "assemblyVersion": "1.2.0.0",
+            "fileVersion": "1.2.161.37590"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "HandPeg/2.6.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "CliWrap/3.10.5": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-L5SghZThsAVhV8ucwwW5FLMzKj1Ps57JB8DM2bEjpBNTyGi1EDjDO7Mi39Yx1FoXM2fZ1l9j39xqlPsZI1QCJQ==",
+      "path": "cliwrap/3.10.5",
+      "hashPath": "cliwrap.3.10.5.nupkg.sha512"
+    },
+    "CommunityToolkit.Mvvm/8.4.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-WadCzGEc2U+3e20avRLng4qNtt4zoOGWrdUISqJWrHe3/FSnrYjuM5Sb4yQb09LhkBXrrI4Zt3dLKgRMbItsrg==",
+      "path": "communitytoolkit.mvvm/8.4.2",
+      "hashPath": "communitytoolkit.mvvm.8.4.2.nupkg.sha512"
+    },
+    "SharpCompress/0.50.4": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-/hxjUR7DEX6mky8/LQXyrnrKioOL6D6veAID1EZpro+q4s02x5dHEYBV3qjEN6lDYYilDoQQ76BcmQj+lRx51w==",
+      "path": "sharpcompress/0.50.4",
+      "hashPath": "sharpcompress.0.50.4.nupkg.sha512"
+    },
+    "Velopack/1.2.161": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-OpHNacIumnkhaaX3ZlQ/TCR4YPOJvud2/PAOoWb6o+mIrLwIVA275I5wAgt4q/1O2VrJeDwR1qFQyqzG4lUArg==",
+      "path": "velopack/1.2.161",
+      "hashPath": "velopack.1.2.161.nupkg.sha512"
+    }
+  }
+}

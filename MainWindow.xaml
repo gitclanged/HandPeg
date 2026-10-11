@@ -995,7 +995,7 @@
         <ContentControl DockPanel.Dock="Top" Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0,0,0,10"
                         Visibility="{Binding ShowPresetBarAtTop, Converter={StaticResource BoolToVisibility}}" />
         <Grid>
-        <TabControl x:Name="SettingsTabs" Padding="16,8">
+        <TabControl x:Name="SettingsTabs" Padding="16,8" SelectionChanged="SettingsTabs_SelectionChanged">
             <TabItem Header="Summary">
                 <DockPanel>
                 <!-- Encoder Mode: the preset bar, here or above the tabs as the settings have it -->
@@ -1175,6 +1175,12 @@
             </TabItem>
 
             <TabItem Header="Video">
+                <!--
+                    Not built with the window: what is in a template is only made when it is asked for, which is
+                    when the tab is first opened or, failing that, once the window is up and idle (RealizeTab).
+                -->
+                <TabItem.Tag>
+                <DataTemplate>
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -1424,9 +1430,17 @@
                 </Grid>
                 </Grid>
                 </ScrollViewer>
+                </DataTemplate>
+                </TabItem.Tag>
             </TabItem>
             <!-- Everything that is done to the picture as a whole: the standard filters, the look, and the color grading. -->
             <TabItem Header="Filters" x:Name="AdvancedTab">
+                <!--
+                    Not built with the window: what is in a template is only made when it is asked for, which is
+                    when the tab is first opened or, failing that, once the window is up and idle (RealizeTab).
+                -->
+                <TabItem.Tag>
+                <DataTemplate>
                 <DockPanel IsEnabled="{Binding IsVideoReencoded}">
                     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,4,0,0">
                         <Button Content="Live Frame Preview" Click="LiveFramePreview_Click"
@@ -1456,12 +1470,17 @@
                         </StackPanel>
                     </ScrollViewer>
                 </DockPanel>
+                </DataTemplate>
+                </TabItem.Tag>
             </TabItem>
             <!--
                 Editor Mode only. The picture as a stack of layers: the list sits flush against the top of the tab,
                 and what adds to it and places the main video is underneath.
             -->
             <TabItem Header="Layers" x:Name="LayersTab" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
+                <!-- Not built with the window: made when the tab is first opened, or once the window is idle (RealizeTab). -->
+                <TabItem.Tag>
+                <DataTemplate>
                     <DockPanel IsEnabled="{Binding IsVideoReencoded}">
                         <!--
                             Everything below the layers in one panel: what adds a layer, and the editing tools.
@@ -1862,8 +1881,16 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
                     </DockPanel>
+                </DataTemplate>
+                </TabItem.Tag>
             </TabItem>
             <TabItem Header="Audio">
+                <!--
+                    Not built with the window: what is in a template is only made when it is asked for, which is
+                    when the tab is first opened or, failing that, once the window is up and idle (RealizeTab).
+                -->
+                <TabItem.Tag>
+                <DataTemplate>
                 <DockPanel x:Name="AudioPanel" Background="Transparent" AllowDrop="True"
                            ToolTipService.ShowDuration="6000">
                     <!--
@@ -2313,8 +2340,16 @@
                         </ListBox.ItemTemplate>
                     </ListBox>
                 </DockPanel>
+                </DataTemplate>
+                </TabItem.Tag>
             </TabItem>
             <TabItem Header="Subtitles">
+                <!--
+                    Not built with the window: what is in a template is only made when it is asked for, which is
+                    when the tab is first opened or, failing that, once the window is up and idle (RealizeTab).
+                -->
+                <TabItem.Tag>
+                <DataTemplate>
                 <DockPanel>
                     <!-- Encoder Mode's: there the tab opens on the source's own subtitle tracks, and this button shows the captions instead. -->
                     <ToggleButton DockPanel.Dock="Top" Content="Show Advanced (Auto-Captions)" IsChecked="{Binding ShowAutoCaptions}"
@@ -2464,20 +2499,30 @@
                         </StackPanel>
                     </Grid>
                 </DockPanel>
+                </DataTemplate>
+                </TabItem.Tag>
             </TabItem>
             <!-- Encoder Mode only: Editor Mode has these two boxes on its Video tab. -->
             <TabItem Header="Chapters" x:Name="ChaptersTab" Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}">
+                <!-- Not built with the window: made when the tab is first opened, or once the window is idle (RealizeTab). -->
+                <TabItem.Tag>
+                <DataTemplate>
                 <StackPanel>
                     <CheckBox Content="Create chapter markers" IsChecked="{Binding ChapterMarkers}"
                               ToolTip="Carries the source's chapters over. Only for uncut encodes: once sections are removed, the source's chapter times no longer fit." />
                     <CheckBox Content="Generate Chapters at Cut Points" IsChecked="{Binding ChaptersAtCuts}"
                               ToolTip="Gives the output one chapter per kept segment, so a player can jump from cut to cut." />
                 </StackPanel>
+                </DataTemplate>
+                </TabItem.Tag>
             </TabItem>
 
             <!-- Off by default; switched on in Settings for those who want to read or edit the FFmpeg command. -->
             <TabItem Header="Command Preview" x:Name="CommandPreviewTab"
                      Visibility="{Binding ShowCommandPreviewTab, Converter={StaticResource BoolToVisibility}}">
+                <!-- Not built with the window: made when the tab is first opened, or once the window is idle (RealizeTab). -->
+                <TabItem.Tag>
+                <DataTemplate>
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
                         <Button Content="Regenerate" Command="{Binding RegenerateCommandCommand}" />
@@ -2489,6 +2534,8 @@
                              VerticalScrollBarVisibility="Auto" Padding="8"
                              Text="{Binding CommandPreview, UpdateSourceTrigger=PropertyChanged}" />
                 </DockPanel>
+                </DataTemplate>
+                </TabItem.Tag>
             </TabItem>
         </TabControl>
 
