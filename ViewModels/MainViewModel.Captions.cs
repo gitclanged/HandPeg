@@ -13,7 +13,12 @@ public partial class MainViewModel
     // ----- Auto-captions -----
 
     /// <summary>Burn captions made from the spoken words into the picture.</summary>
-    [ObservableProperty] private bool _autoCaptions;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CaptionOptionsEnabled))]
+    private bool _autoCaptions;
+
+    /// <summary>Whether the caption options can be set: always in Editor Mode, where captions are made with a button; in Encoder Mode, while Auto-Captions is ticked.</summary>
+    public bool CaptionOptionsEnabled => IsEditorMode || AutoCaptions;
 
     // What captions listen to: one of the video's own audio tracks (when neither of these is set), a
     // separate audio file, or the voiceover recorded in the mixer pane.
@@ -177,7 +182,8 @@ public partial class MainViewModel
 
     /// <summary>The caption file the player is to draw over the picture, or an empty string for none.</summary>
     public string LiveCaptionsPath =>
-        IsSubtitleEditorOpen ? "" : PreviewSubtitles && _liveCaptionsPath.Length > 0 ? _liveCaptionsPath : LiveImageSubtitlePath;
+        // Encoder Mode has no timeline for captions to be seen on: they are made for its export, and not shown in its player.
+        IsSubtitleEditorOpen || IsEncoderMode ? "" : PreviewSubtitles && _liveCaptionsPath.Length > 0 ? _liveCaptionsPath : LiveImageSubtitlePath;
 
     private string _liveCaptionsPath = "";
     private int _liveCaptionsRun;
@@ -359,6 +365,11 @@ public partial class MainViewModel
             StatusText = $"Captions: {lines.Count} subtitle cue{(lines.Count == 1 ? "" : "s")} written.";
             return null;
         }
+
+        // Editor Mode exports what is on the timeline and nothing else: with no subtitles there, nothing is
+        // transcribed behind the user's back. Captions are made with Generate Captions, and then they are there.
+        if (IsEditorMode)
+            return "There are no captions on the timeline: press Generate Captions on the Subtitles tab first, or export without them.";
 
         var (words, problem) = await GetCaptionWordsAsync(ranges, cancellationToken);
         if (words is null)

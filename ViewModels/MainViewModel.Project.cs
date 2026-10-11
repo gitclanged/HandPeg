@@ -189,6 +189,9 @@ public partial class MainViewModel
         _redo.Clear();
         MarkSaved();
 
+        // Its captions are the ones that were saved with it, words, times and word timings: nothing is transcribed.
+        _ = SyncCaptionsAfterLoadAsync();
+
         // A project brings its videos with it. The timeline proxy first, when it is rendered by itself; then the
         // main video and every video layer get their own.
         if (AppSettings.Current.AutoRenderTimelineProxy && IsEditorMode)
@@ -524,6 +527,13 @@ public partial class MainViewModel
         (_proxyDone, _proxyTotal) = (0, 0);
     }
 
+    private async Task SyncCaptionsAfterLoadAsync()
+    {
+        for (var waited = 0; IsBusy && waited < 600; waited++)
+            await Task.Delay(100);
+        SyncEditorCaptions();
+    }
+
     // ----- The timeline proxy -----
     // The whole picture of the timeline, every layer composed, rendered once into a single silent file in the
     // proxy cache. While it stands, the player plays that file and composes nothing; only the sound is still
@@ -667,7 +677,7 @@ public partial class MainViewModel
             var percent = (int)Math.Clamp(Math.Round(lines * 100.0 / Math.Max(frameHeight, 2)), 10, 100);
             var command = BuildPreviewCommand(rendered, [(0, seconds)], percent, null);
 
-            AppLog.Write($"Timeline proxy: rendering {seconds:0.#} s of timeline at {percent}%.");
+            AppLog.Write($"Timeline proxy: rendering {seconds:0.#} s of timeline at {percent}% ({AppSettings.Current.PreviewQuality} quality).");
             if (!IsBusy)
                 StatusText = "Rendering Timeline Proxy...";
             var progress = new Progress<FfmpegProgress>(report =>
@@ -682,9 +692,17 @@ public partial class MainViewModel
 
             await Task.Run(() => FfmpegRunner.RunAsync(command, progress, work.Token), work.Token);
 
-            // Its sound is taken off (the streams are copied, which takes a moment): the proxy is a picture only.
+            // Its sound is taken off: the proxy is a picture only. At High the picture is kept as it was rendered
+            // (copied, which takes a moment). At Medium and Low it is brought under the tier's bitrate cap, with
+            // an I-frame every 15 frames like the videos' own proxies: lighter to decode and quick to seek.
+            var finish = AppSettings.Current.PreviewQuality switch
+            {
+                AppSettings.HighPreview => "-c copy",
+                AppSettings.LowPreview => "-c:v libx264 -preset veryfast -tune fastdecode -crf 30 -maxrate 2M -bufsize 4M -g 15 -pix_fmt yuv420p",
+                _ => "-c:v libx264 -preset veryfast -tune fastdecode -crf 28 -maxrate 4M -bufsize 8M -g 15 -pix_fmt yuv420p",
+            };
             await Task.Run(() => FfmpegRunner.RunAsync(
-                $"ffmpeg -hide_banner -y -i \"{rendered}\" -map 0:v:0 -c copy -an -movflags +faststart \"{silent}\"", new Progress<FfmpegProgress>(), work.Token), work.Token);
+                $"ffmpeg -hide_banner -y -i \"{rendered}\" -map 0:v:0 {finish} -an -movflags +faststart \"{silent}\"", new Progress<FfmpegProgress>(), work.Token), work.Token);
             done = !work.IsCancellationRequested && File.Exists(silent);
         }
         catch (OperationCanceledException)
@@ -771,6 +789,9 @@ public partial class MainViewModel
             StopProxies();
         else
             RefreshProxies();
+
+        OnPropertyChanged(nameof(CaptionOptionsEnabled));
+        SyncEditorCaptions();
 
         ProxiesChanged();
     }

@@ -1077,8 +1077,11 @@ public partial class MainWindow : Window
     // it browses for a file; with a path or a URL in it, it loads that.
     private void SourceAction_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(_viewModel.SourcePath))
+        var path = (_viewModel.SourcePath ?? "").Trim().Trim('"');
+        if (path.Length == 0)
             BrowseSource_Click(sender, e);
+        else if (path.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) && File.Exists(path))
+            _ = _viewModel.LoadProjectAsync(path);   // A project file in the Source box opens the project.
         else
             _viewModel.LoadSourceCommand.Execute(null);
     }
