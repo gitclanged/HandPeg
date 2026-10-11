@@ -12,7 +12,7 @@ namespace HandPegApp.Services;
 /// accent. Every brush is replaced in the application's resources, which everything refers to dynamically,
 /// so a change shows at once in every open window.
 /// </summary>
-public static class ThemeManager
+public static partial class ThemeManager
 {
     public const string FollowSystem = "Follow System";
     public const string Dark = "Dark";
@@ -92,8 +92,8 @@ public static class ThemeManager
             ApplyTitleBar(window);
     }
 
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
     /// <summary>Gives a window the dark or the light title bar, to match. For a window whose handle exists.</summary>
     public static void ApplyTitleBar(Window window)

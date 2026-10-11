@@ -18,7 +18,7 @@ public sealed record GpuAdapter(int Index, string Name)
 /// The graphics cards of this machine, asked of DXGI directly: there is no managed API for it, and the
 /// order DXGI lists them in is the order FFmpeg's Direct3D 11 decoder counts them in.
 /// </summary>
-public static class GpuAdapters
+public static partial class GpuAdapters
 {
     private static IReadOnlyList<GpuAdapter>? _found;
 
@@ -40,8 +40,8 @@ public static class GpuAdapters
         }
     }
 
-    [DllImport("dxgi.dll", ExactSpelling = true)]
-    private static extern int CreateDXGIFactory1(in Guid interfaceId, out IntPtr factory);
+    [LibraryImport("dxgi.dll")]
+    private static partial int CreateDXGIFactory1(in Guid interfaceId, out IntPtr factory);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int EnumAdaptersDelegate(IntPtr factory, uint index, out IntPtr adapter);

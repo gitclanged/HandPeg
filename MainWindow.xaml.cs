@@ -3698,8 +3698,8 @@ public partial class MainWindow : Window
 
         // Red for the crop, gold for a UI layer, so it is clear what is being drawn.
         var colour = mode == OverlayMode.DrawTarget ? Colors.Gold : Colors.Red;
-        CropRectangle.Stroke = new SolidColorBrush(colour);
-        CropRectangle.Fill = new SolidColorBrush(Color.FromArgb(0x18, colour.R, colour.G, colour.B));
+        CropRectangle.Stroke = Frozen(colour);
+        CropRectangle.Fill = Frozen(Color.FromArgb(0x18, colour.R, colour.G, colour.B));
 
         _viewModel.StatusText = mode switch
         {

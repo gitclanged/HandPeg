@@ -21,6 +21,11 @@ public static class Program
             Services.DataMigration.Run();
         }
 
+        // While this thread starts WPF, the settings and the presets are read on others: both are files to
+        // parse, neither needs this thread, and by the time the first window asks for them they are there.
+        _ = Task.Run(static () => Services.AppSettings.Current);
+        Services.PresetStore.LoadEarly();
+
         var app = new App();
         app.InitializeComponent();
         app.Run();

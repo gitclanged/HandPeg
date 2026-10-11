@@ -26,9 +26,6 @@ public static partial class SubtitleFiles
     public const string ImageCueText = "[image]";
 
     // "00:01:02,345 --> 00:01:04,000", with a comma or a point, and the hours left out as .vtt allows.
-    [GeneratedRegex(@"^\s*(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})\s*-->\s*(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})")]
-    private static partial Regex TimingRegex();
-
     [GeneratedRegex(@"<[^>]+>|\{\\[^}]*\}")]
     private static partial Regex MarkupRegex();
 
@@ -52,42 +49,149 @@ public static partial class SubtitleFiles
     /// </summary>
     public static List<SubtitleCue> ParseText(string content)
     {
+        // Read where it lies: no copy of the file with its line ends changed, no string for each line, and
+        // one builder for the words of every cue.
         var cues = new List<SubtitleCue>();
-        var lines = content.ReplaceLineEndings("\n").TrimStart('﻿').Split('\n');
-        for (var i = 0; i < lines.Length; i++)
+        var words = new StringBuilder();
+        var (open, start, end) = (false, 0.0, 0.0);
+        foreach (var line in content.AsSpan().TrimStart('\uFEFF').EnumerateLines())
         {
-            if (TimingRegex().Match(lines[i]) is not { Success: true } timing)
-                continue;
-
-            var words = new StringBuilder();
-            for (i++; i < lines.Length && lines[i].Trim().Length > 0; i++)
+            // A line of times begins a block, and ends the one before it in a file with no empty line between.
+            if (TryReadTiming(line, out var from, out var to))
             {
-                // A line of times straight after words is the next block, in a file with no empty line between.
-                if (TimingRegex().IsMatch(lines[i]))
-                {
-                    i--;
-                    break;
-                }
-
-                if (words.Length > 0)
-                    words.Append('\n');
-                words.Append(MarkupRegex().Replace(lines[i], "").Trim());
+                AddCue(cues, words, open, start, end);
+                (open, start, end) = (true, from, to);
+                continue;
             }
 
-            var (start, end) = (TimeOf(timing, 1), TimeOf(timing, 5));
-            if (end > start && words.Length > 0)
-                cues.Add(new SubtitleCue { Start = start, End = end, Text = System.Net.WebUtility.HtmlDecode(words.ToString()) });
+            if (!open)
+                continue;
+
+            if (line.Trim().IsEmpty)
+            {
+                AddCue(cues, words, open, start, end);
+                open = false;
+                continue;
+            }
+
+            if (words.Length > 0)
+                words.Append('\n');
+            AppendWithoutMarkup(words, line);
         }
 
+        AddCue(cues, words, open, start, end);
         return Numbered(cues);
     }
 
-    private static double TimeOf(Match match, int group)
+    private static void AddCue(List<SubtitleCue> cues, StringBuilder words, bool open, double start, double end)
     {
-        static int Part(Group g) => g.Success ? int.Parse(g.Value, CultureInfo.InvariantCulture) : 0;
-        var fraction = match.Groups[group + 3].Value.PadRight(3, '0');
-        return Part(match.Groups[group]) * 3600 + Part(match.Groups[group + 1]) * 60 + Part(match.Groups[group + 2])
-               + int.Parse(fraction, CultureInfo.InvariantCulture) / 1000.0;
+        if (open && end > start && words.Length > 0)
+            cues.Add(new SubtitleCue { Start = start, End = end, Text = System.Net.WebUtility.HtmlDecode(words.ToString()) });
+        words.Clear();
+    }
+
+    /// <summary>Adds a line without its tags (&lt;i&gt;, {\an8}) and without the space at its ends.</summary>
+    private static void AppendWithoutMarkup(StringBuilder words, ReadOnlySpan<char> line)
+    {
+        var (first, at) = (words.Length, 0);
+        foreach (var tag in MarkupRegex().EnumerateMatches(line))
+        {
+            words.Append(line[at..tag.Index]);
+            at = tag.Index + tag.Length;
+        }
+
+        words.Append(line[at..]);
+
+        var last = words.Length;
+        while (last > first && char.IsWhiteSpace(words[last - 1]))
+            last--;
+        words.Length = last;
+
+        var lead = first;
+        while (lead < words.Length && char.IsWhiteSpace(words[lead]))
+            lead++;
+        if (lead > first)
+            words.Remove(first, lead - first);
+    }
+
+    /// <summary>
+    /// A line of times: "00:01:02,500 --> 00:01:04,000", with a point for the comma and without the hours in
+    /// .vtt. Whatever follows the second time (.vtt's settings) is left alone.
+    /// </summary>
+    private static bool TryReadTiming(ReadOnlySpan<char> line, out double start, out double end)
+    {
+        end = 0;
+        var rest = line.TrimStart();
+        if (!TryReadTime(ref rest, out start))
+            return false;
+
+        rest = rest.TrimStart();
+        if (!rest.StartsWith("-->"))
+            return false;
+
+        rest = rest[3..].TrimStart();
+        return TryReadTime(ref rest, out end);
+    }
+
+    /// <summary>[hours:]minutes:seconds and up to three digits of a fraction, taken off the front of the text.</summary>
+    private static bool TryReadTime(ref ReadOnlySpan<char> text, out double seconds)
+    {
+        seconds = 0;
+        var a = ReadDigits(ref text, int.MaxValue, out var lengthA);
+        if (lengthA == 0 || text.IsEmpty || text[0] != ':')
+            return false;
+
+        text = text[1..];
+        var b = ReadDigits(ref text, int.MaxValue, out var lengthB);
+        if (lengthB == 0)
+            return false;
+
+        int hours, minutes, whole;
+        if (!text.IsEmpty && text[0] == ':')
+        {
+            text = text[1..];
+            var c = ReadDigits(ref text, int.MaxValue, out var lengthC);
+            if (lengthB > 2 || lengthC != 2)
+                return false;
+
+            (hours, minutes, whole) = (a, b, c);
+        }
+        else
+        {
+            if (lengthA > 2 || lengthB != 2)
+                return false;
+
+            (hours, minutes, whole) = (0, a, b);
+        }
+
+        if (text.IsEmpty || text[0] is not ('.' or ','))
+            return false;
+
+        text = text[1..];
+        var fraction = ReadDigits(ref text, 3, out var places);
+        if (places == 0)
+            return false;
+
+        for (; places < 3; places++)
+            fraction *= 10;
+
+        seconds = hours * 3600 + minutes * 60 + whole + fraction / 1000.0;
+        return true;
+    }
+
+    /// <summary>The number at the front of the text, of at most so many digits, taken off it.</summary>
+    private static int ReadDigits(ref ReadOnlySpan<char> text, int most, out int length)
+    {
+        var (value, read) = (0L, 0);
+        while (read < text.Length && read < most && char.IsAsciiDigit(text[read]))
+        {
+            value = Math.Min(value * 10 + (text[read] - '0'), int.MaxValue / 3600);
+            read++;
+        }
+
+        text = text[read..];
+        length = read;
+        return (int)value;
     }
 
     /// <summary>The cues in order of time, numbered from 1.</summary>

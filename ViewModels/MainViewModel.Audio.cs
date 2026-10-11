@@ -583,7 +583,7 @@ public partial class MainViewModel
     private void UpdateVoiceoverMix()
     {
         var total = SequenceSeconds;
-        if (!HasVoiceover || VoiceoverDuration <= 0 || total <= 0 || VoiceoverWaveform is not System.Windows.Media.Imaging.BitmapSource picture)
+        if (!HasVoiceover || VoiceoverDuration <= 0 || total <= 0 || VoiceoverWaveform is null)
         {
             (VoiceoverMixWaveform, VoiceoverMixStart, VoiceoverMixWidth) = (null, 0, 0);
             return;
@@ -594,10 +594,14 @@ public partial class MainViewModel
         if (to - from < 0.001)
             (from, to) = (0, 1);
 
-        var left = Math.Min((int)(from * picture.PixelWidth), picture.PixelWidth - 1);
-        var width = Math.Clamp((int)((to - from) * picture.PixelWidth), 1, picture.PixelWidth - left);
-        var kept = new System.Windows.Media.Imaging.CroppedBitmap(picture, new System.Windows.Int32Rect(left, 0, width, picture.PixelHeight));
-        kept.Freeze();
+        // The waveform is a drawing made from its peaks (not a bitmap to cut a strip out of): the part that
+        // is kept is drawn again from the peaks between the two ends of the trim.
+        var kept = Waveforms.Cut(VoiceoverWaveform, from, to, Math.Max((int)(1200 * (to - from)), 2), 120);
+        if (kept is null)
+        {
+            (VoiceoverMixWaveform, VoiceoverMixStart, VoiceoverMixWidth) = (null, 0, 0);
+            return;
+        }
 
         var start = OutputToSourceSeconds(VoiceoverStartSeconds);
         var end = Math.Max(OutputToSourceSeconds(VoiceoverStartSeconds + (to - from) * VoiceoverDuration), start);

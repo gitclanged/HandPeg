@@ -101,7 +101,9 @@ public partial class CaptionStyleDialog : Window
                 color = Colors.Gray;
 
             var brightness = (0.2126 * color.R + 0.7152 * color.G + 0.0722 * color.B) / 255;
-            button.Background = new SolidColorBrush(color);
+            var fill = new SolidColorBrush(color);
+            fill.Freeze();
+            button.Background = fill;
             button.Foreground = brightness > 0.55 ? Brushes.Black : Brushes.White;
             button.Content = value.ToUpperInvariant();
         }
