@@ -3,6 +3,28 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v2.6.1
+
+An optimization patch: nothing looks or works differently.
+
+### Highlights
+- **Sub-second boot enhancements.** The settings and presets (JSON) are read off the UI thread while the interface starts, and the hardware encoder probe and the dependency update check begin only after the window has been drawn. Measured on a published build: the window is on screen in about 490-510 ms, down from about 560-590 ms.
+- **Bare-metal efficiency.** `libmpv` is called through unmanaged function pointers, and its playback position updates no longer allocate. Subtitle parsing (`.srt`, `.vtt`) reads `Span<T>` in place, and waveform rendering borrows its buffers from `ArrayPool`, so the garbage collector has much less to do during playback, imports and waveform drawing.
+
+### Changed
+- Windows calls are generated at compile time (`LibraryImport`).
+- Every brush made in code is frozen; the palette brushes are frozen where they are declared.
+- Whisper's progress line is read with a source-generated regex.
+
+### Fixed
+- The voiceover's waveform was not drawn in the Master Mix View (Encoder Mode).
+
+### Compatibility
+- Projects, presets and settings are unchanged from 2.6.0.
+
+### Upgrading
+Installed copies update automatically.
+
 ## HandPeg v2.6.0
 
 ### Highlights
