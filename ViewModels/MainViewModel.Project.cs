@@ -189,7 +189,14 @@ public partial class MainViewModel
         _redo.Clear();
         MarkSaved();
 
-        // A project brings its videos with it: the main one and every video layer get their proxies.
+        // A project brings its videos with it. The timeline proxy first, when it is rendered by itself; then the
+        // main video and every video layer get their own.
+        if (AppSettings.Current.AutoRenderTimelineProxy && IsEditorMode)
+        {
+            _timelinePending = true;
+            _ = RenderTimelineProxyWhenIdleAsync();
+        }
+
         RefreshProxies();
         return GetLayoutAspectWarning() is { } warning ? $"{doneMessage}. {warning}" : doneMessage;
     });
@@ -323,7 +330,40 @@ public partial class MainViewModel
     private bool _proxyWorking;
     private int _proxyDone, _proxyTotal;
 
-    private bool ProxiesOn => !_isBackgroundWorker && IsEditorMode && AppSettings.Current.EnableEditorProxies;
+    private bool ProxiesOn => !_isBackgroundWorker && IsEditorMode && AppSettings.Current.EnableEditorProxies && AppSettings.Current.PreviewQuality != AppSettings.HighPreview;
+
+    // The Low tier's proxies are smaller ones, kept beside the Medium tier's.
+    private static bool LowPreview => AppSettings.Current.PreviewQuality == AppSettings.LowPreview;
+
+    public IReadOnlyList<string> PreviewQualityChoices { get; } =
+        ["High (Preview Render Quality)", "Medium (Editor Mode Quality)", "Low (Performance Quality)"];
+
+    /// <summary>
+    /// The preview's quality tier, for the Views menu. High shows the original files; Medium, 720-line proxies;
+    /// Low, 360-line ones. Changing it changes what the player and its graph read at once: the proxies of the
+    /// new tier are taken from the cache or made, and until they are there the originals are shown.
+    /// </summary>
+    public string PreviewQualityChoice
+    {
+        get => PreviewQualityChoices.First(c => c.StartsWith(AppSettings.Current.PreviewQuality, StringComparison.Ordinal));
+        set
+        {
+            var tier = value?.Split(' ')[0];
+            if (tier is not (AppSettings.HighPreview or AppSettings.MediumPreview or AppSettings.LowPreview) || tier == AppSettings.Current.PreviewQuality)
+                return;
+
+            SaveView(settings => settings.PreviewQuality = tier);
+            OnPropertyChanged();
+            AppLog.Write($"Preview quality: {tier}.");
+
+            // The proxies in use were another tier's.
+            StopProxies();
+            _proxies.Clear();
+            RefreshProxies();
+            ProxiesChanged();
+            StatusText = tier == AppSettings.HighPreview ? "Preview quality High: the player shows the original files." : $"Preview quality {tier}: the player shows {(tier == AppSettings.LowPreview ? "360" : "720")}-line proxies.";
+        }
+    }
 
     /// <summary>What the player is given for the open video: its proxy in Editor Mode, when proxies are on and it has one; the file itself otherwise.</summary>
     public string PreviewMediaPath => ProxiesOn && _proxies.TryGetValue(LocalMediaPath, out var proxy) && File.Exists(proxy) ? proxy : LocalMediaPath;
@@ -367,7 +407,7 @@ public partial class MainViewModel
             if (_proxies.ContainsKey(media) || !_proxyQueued.Add(media))
                 continue;
 
-            if (ProxyCache.Find(media) is { } ready)
+            if (ProxyCache.Find(media, LowPreview) is { } ready)
             {
                 _proxies[media] = ready;
                 _proxyQueued.Remove(media);
@@ -402,10 +442,17 @@ public partial class MainViewModel
         _proxyWorking = true;
         var work = _proxyWork = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
         var encoders = SocialSquisher.ChooseEncoders(VideoEncoders.Where(e => e.IsHardware).Select(e => e.Name).ToList());
+        var low = LowPreview;
         try
         {
             while (_proxyQueue.Count > 0 && !work.IsCancellationRequested && ProxiesOn)
             {
+                // The timeline proxy goes first: one file of everything is worth more to the player than each video's own.
+                while ((_timelineRendering || _timelinePending) && !work.IsCancellationRequested)
+                    await Task.Delay(300);
+                if (work.IsCancellationRequested)
+                    break;
+
                 var media = _proxyQueue.Dequeue();
                 var name = Path.GetFileName(media);
                 var which = _proxyTotal > 1 ? $" ({_proxyDone + 1} of {_proxyTotal})" : "";
@@ -426,7 +473,7 @@ public partial class MainViewModel
                 try
                 {
                     made = await Task.Run(() => ProxyCache.GenerateAsync(
-                        media, Math.Clamp(AppSettings.Current.ProxyCacheLimitMb, 512, 2_000_000) / 1024.0, encoders, progress, work.Token), work.Token);
+                        media, low, Math.Clamp(AppSettings.Current.ProxyCacheLimitMb, 512, 2_000_000) / 1024.0, encoders, progress, work.Token), work.Token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -475,6 +522,224 @@ public partial class MainViewModel
         _proxyQueue.Clear();
         _proxyQueued.Clear();
         (_proxyDone, _proxyTotal) = (0, 0);
+    }
+
+    // ----- The timeline proxy -----
+    // The whole picture of the timeline, every layer composed, rendered once into a single silent file in the
+    // proxy cache. While it stands, the player plays that file and composes nothing; only the sound is still
+    // mixed live. It is a picture of the timeline as it was when it was rendered, so the moment the timeline
+    // is anything else it is deleted and the player composes live again, at the preview quality chosen.
+
+    private string _timelineProxy = "", _timelineProxyPrint = "", _timelineRenderPrint = "";
+    private CancellationTokenSource? _timelineRender, _timelineIdle;
+    private bool _timelineRendering, _timelinePending;
+
+    /// <summary>There is a timeline proxy and it is the timeline as it now is: the player plays it. Editor Mode only.</summary>
+    public bool IsTimelineProxyActive => !_isBackgroundWorker && IsEditorMode && _timelineProxy.Length > 0 && File.Exists(_timelineProxy);
+
+    [RelayCommand]
+    private void RenderTimelineProxy() => _ = RenderTimelineProxyAsync(asked: true);
+
+    /// <summary>
+    /// Called whenever anything that goes into the output has changed (it is where the command is generated
+    /// again). A timeline proxy that no longer shows the timeline is deleted on the spot, one that is being
+    /// rendered of the old timeline is stopped, and the wait for the timeline to be left alone starts over.
+    /// </summary>
+    private void TimelineEdited()
+    {
+        if (_isBackgroundWorker)
+            return;
+
+        if (_timelineProxy.Length > 0 || _timelineRendering)
+        {
+            var print = Fingerprint();
+            if (_timelineProxy.Length > 0 && print != _timelineProxyPrint)
+                DropTimelineProxy();
+            if (_timelineRendering && print != _timelineRenderPrint)
+                _timelineRender?.Cancel();
+        }
+
+        RestartTimelineIdle();
+    }
+
+    private void DropTimelineProxy()
+    {
+        var file = _timelineProxy;
+        (_timelineProxy, _timelineProxyPrint) = ("", "");
+        AppLog.Write("Timeline proxy: invalidated by an edit, and deleted. The player composes live again.");
+
+        // The player lets go of the file first (it goes back to the videos themselves), and then the file goes.
+        ProxiesChanged();
+        _ = Task.Run(async () =>
+        {
+            for (var attempt = 0; attempt < 12; attempt++)
+            {
+                try
+                {
+                    if (File.Exists(file))
+                        File.Delete(file);
+                    return;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    await Task.Delay(250);
+                }
+            }
+        });
+    }
+
+    // The wait for the timeline to be left alone: started over by every edit.
+    private void RestartTimelineIdle()
+    {
+        _timelineIdle?.Cancel();
+        var settings = AppSettings.Current;
+        if (!IsEditorMode || !settings.AutoRenderTimelineProxy || !HasSource)
+            return;
+
+        var wait = _timelineIdle = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+        _ = WaitThenRenderAsync(TimeSpan.FromSeconds(Math.Clamp(settings.TimelineProxyIdleSeconds, 2, 86400)), wait.Token);
+    }
+
+    private async Task WaitThenRenderAsync(TimeSpan idle, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(idle, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        if (!IsTimelineProxyActive && !_timelineRendering)
+            await RenderTimelineProxyAsync(asked: false);
+    }
+
+    // After a project is opened: as soon as the opening is over.
+    private async Task RenderTimelineProxyWhenIdleAsync()
+    {
+        for (var waited = 0; IsBusy && waited < 1200; waited++)
+            await Task.Delay(100);
+        _timelinePending = false;
+        if (!IsBusy)
+            await RenderTimelineProxyAsync(asked: false);
+    }
+
+    /// <summary>
+    /// Renders the timeline proxy, in the background: the same graph an export compiles (from the original
+    /// files), at the size of the preview quality in use, with no sound. How far along it is goes to the
+    /// progress bar and the status line, as a video's own proxy does. An edit made meanwhile stops it.
+    /// </summary>
+    private async Task RenderTimelineProxyAsync(bool asked)
+    {
+        if (_isBackgroundWorker || !IsEditorMode || !HasSource || _timelineRendering)
+            return;
+
+        var seconds = SequenceSeconds;
+        if (IsBusy || seconds < 0.2)
+        {
+            if (asked)
+                StatusText = IsBusy ? "Wait for the running operation to finish, then render the timeline proxy." : "There is nothing on the timeline to render.";
+            else if (IsBusy)
+                RestartTimelineIdle();
+            return;
+        }
+
+        var print = Fingerprint();
+        if (IsTimelineProxyActive && print == _timelineProxyPrint)
+        {
+            if (asked)
+                StatusText = "The timeline proxy is up to date: the player is already playing it.";
+            return;
+        }
+
+        (_timelineRendering, _timelineRenderPrint) = (true, print);
+        var work = _timelineRender = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+        Directory.CreateDirectory(ProxyCache.Folder);
+        var rendered = Path.Combine(ProxyCache.Folder, $"timeline_{Guid.NewGuid():N}.render.mp4");
+        var silent = Path.Combine(ProxyCache.Folder, $"timeline_{Guid.NewGuid():N}.mp4");
+        var done = false;
+        try
+        {
+            // As tall as the preview quality's proxies are: 720 lines, 360 for Low, the frame itself for High.
+            var (_, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
+            var lines = AppSettings.Current.PreviewQuality switch { AppSettings.LowPreview => 360, AppSettings.HighPreview => frameHeight, _ => 720 };
+            var percent = (int)Math.Clamp(Math.Round(lines * 100.0 / Math.Max(frameHeight, 2)), 10, 100);
+            var command = BuildPreviewCommand(rendered, [(0, seconds)], percent, null);
+
+            AppLog.Write($"Timeline proxy: rendering {seconds:0.#} s of timeline at {percent}%.");
+            if (!IsBusy)
+                StatusText = "Rendering Timeline Proxy...";
+            var progress = new Progress<FfmpegProgress>(report =>
+            {
+                if (work.IsCancellationRequested || IsBusy || report.Position is not { } position)
+                    return;
+
+                var percentDone = Math.Clamp(position.TotalSeconds / seconds * 100, 0, 100);
+                (IsProgressIndeterminate, ProgressValue) = (false, percentDone);
+                StatusText = $"Rendering Timeline Proxy... {percentDone:0}%";
+            });
+
+            await Task.Run(() => FfmpegRunner.RunAsync(command, progress, work.Token), work.Token);
+
+            // Its sound is taken off (the streams are copied, which takes a moment): the proxy is a picture only.
+            await Task.Run(() => FfmpegRunner.RunAsync(
+                $"ffmpeg -hide_banner -y -i \"{rendered}\" -map 0:v:0 -c copy -an -movflags +faststart \"{silent}\"", new Progress<FfmpegProgress>(), work.Token), work.Token);
+            done = !work.IsCancellationRequested && File.Exists(silent);
+        }
+        catch (OperationCanceledException)
+        {
+            AppLog.Write("Timeline proxy: rendering stopped, the timeline was edited.");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write("Timeline proxy: it could not be rendered", ex);
+            if (!IsBusy)
+                StatusText = "The timeline proxy could not be rendered (see HandPeg.log). The player composes live.";
+        }
+        finally
+        {
+            _timelineRendering = false;
+            foreach (var leftover in done ? new[] { rendered } : [rendered, silent])
+            {
+                try
+                {
+                    if (File.Exists(leftover))
+                        File.Delete(leftover);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // Left for the cache's next trimming.
+                }
+            }
+        }
+
+        if (!done)
+            return;
+
+        // Edited while the last of it was being written: it is already out of date.
+        if (Fingerprint() != print)
+        {
+            try
+            {
+                File.Delete(silent);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+
+            RestartTimelineIdle();
+            return;
+        }
+
+        (_timelineProxy, _timelineProxyPrint) = (silent, print);
+        AppLog.Write($"Timeline proxy: ready ({new FileInfo(silent).Length / 1048576.0:0.0} MB); the player plays it and composes nothing.");
+        ProxiesChanged();
+        if (!IsBusy)
+        {
+            ProgressValue = 0;
+            StatusText = "Timeline Proxy Ready: the player is playing the flattened timeline. Any edit discards it.";
+        }
     }
 
     // ----- Encoder Mode stands apart from the editor -----

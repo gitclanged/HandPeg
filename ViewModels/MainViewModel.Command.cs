@@ -206,7 +206,7 @@ public partial class MainViewModel
     public string BuildLiveFilterGraph(double surfaceWidth, double surfaceHeight, long? audioFromMs = null) =>
         FilterGraphBuilder.BuildLiveGraph(
             CompileExportState(), surfaceWidth, surfaceHeight, audioFromMs / 1000.0,
-            mainAudioTrack: _mediaInfo is { Audio.Count: 0 } ? -1 : 0);
+            mainAudioTrack: _mediaInfo is { Audio.Count: 0 } ? -1 : 0, soundOnly: IsTimelineProxyActive);
 
     /// <summary>Render Preview's command: a short, small encode of the given stretches of the timeline.</summary>
     private string BuildPreviewCommand(string outputPath, List<(double Start, double End)> ranges, int percent, string? captionsPath) =>

@@ -421,11 +421,25 @@ public sealed class AppSettings
 
     // ----- Proxies: light copies of the editor's videos, for the player -----
 
+    public const string HighPreview = "High", MediumPreview = "Medium", LowPreview = "Low";
+
+    /// <summary>
+    /// What the editor's player is given to show. High: the original files, as an export reads them. Medium:
+    /// 720-line proxies. Low: 360-line proxies at half the bitrate, for hardware that needs it.
+    /// </summary>
+    public string PreviewQuality { get; set; } = MediumPreview;
+
     /// <summary>Editor Mode plays a small, quick-to-seek copy of each video in place of the original. Exports always read the original.</summary>
     public bool EnableEditorProxies { get; set; } = true;
 
     /// <summary>How large the proxy cache may grow, in megabytes, before the proxies used longest ago are deleted.</summary>
     public int ProxyCacheLimitMb { get; set; } = 4096;
+
+    /// <summary>Render the timeline proxy by itself once the timeline has been left alone for a while, and when a project is opened.</summary>
+    public bool AutoRenderTimelineProxy { get; set; } = true;
+
+    /// <summary>How many seconds the timeline has to be left alone before the timeline proxy is rendered by itself.</summary>
+    public int TimelineProxyIdleSeconds { get; set; } = 60;
 
     /// <summary>Empty the proxy cache whenever HandPeg is closed.</summary>
     public bool ClearProxyCacheOnExit { get; set; }

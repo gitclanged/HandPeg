@@ -370,7 +370,17 @@
                         <TextBox Width="84" Padding="4,2" VerticalAlignment="Center" MaxLength="7" Text="{Binding ProxyCacheLimitMb}" AutomationProperties.Name="Proxy Cache Size Limit"
                                  PreviewTextInput="DigitsOnly_PreviewTextInput" />
                     </StackPanel>
-                    <CheckBox Content="Clear Proxy Cache on Exit" IsChecked="{Binding ClearProxyCacheOnExit}" Margin="0,8,0,0" AutomationProperties.Name="Clear Proxy Cache on Exit"
+                    <TextBlock Text="Timeline Proxy" Style="{StaticResource SectionTitle}" Margin="0,14,0,0" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="A timeline proxy is the whole picture of the timeline, every layer composed, rendered once into a single silent file. While there is one, the player simply plays it, with the sound still mixed live, and scrubbing costs the same however many layers there are. It is thrown away the moment anything on the timeline is changed, and the player goes back to composing live. Render it from the Views menu, or let HandPeg do it when the timeline has been left alone." />
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                        <CheckBox Content="Auto-Render Timeline Proxy" IsChecked="{Binding AutoRenderTimelineProxy}" VerticalAlignment="Center" AutomationProperties.Name="Auto-Render Timeline Proxy"
+                                  ToolTip="Renders the timeline proxy by itself: when a project is opened (before the videos' own proxies), and whenever the timeline has not been edited for the time given here." />
+                        <TextBlock Text="Idle Time (Seconds):" VerticalAlignment="Center" Margin="18,0,8,0" />
+                        <TextBox Width="60" Padding="4,2" VerticalAlignment="Center" MaxLength="5" Text="{Binding TimelineProxyIdleSeconds}" IsEnabled="{Binding AutoRenderTimelineProxy}"
+                                 AutomationProperties.Name="Timeline Proxy Idle Time" PreviewTextInput="DigitsOnly_PreviewTextInput" />
+                    </StackPanel>
+                    <CheckBox Content="Clear Proxy Cache on Exit" IsChecked="{Binding ClearProxyCacheOnExit}" Margin="0,14,0,0" AutomationProperties.Name="Clear Proxy Cache on Exit"
                               ToolTip="Empties the proxy cache each time HandPeg is closed. The deleting is handed to a process of its own, so closing is not held up by it. With this off, proxies are kept and reused the next time the same video is opened." />
                 </StackPanel>
             </TabItem>

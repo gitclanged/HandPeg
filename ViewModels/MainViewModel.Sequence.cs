@@ -950,8 +950,33 @@ public partial class MainViewModel
     {
         get
         {
-            // The proxy, where there is one: the player shows that; everything that is exported reads LocalMediaPath.
-            var path = PreviewMediaPath;
+            // A timeline proxy is the whole sequence's picture in one file: that is played as it is, and the sound
+            // comes from the original, laid out along the sequence as ever.
+            if (HasSource && IsTimelineProxyActive)
+            {
+                var flat = _timelineProxy;
+                var sound = BuildPlayerSource(LocalMediaPath);
+                return $"edl://%{Encoding.UTF8.GetByteCount(flat)}%{flat};!new_stream;"
+                       + (sound.StartsWith("edl://", StringComparison.Ordinal) ? sound[6..] : $"%{Encoding.UTF8.GetByteCount(LocalMediaPath)}%{LocalMediaPath}");
+            }
+
+            // With no proxy in use the player is given the file (or its clips) as it is.
+            var picture = PreviewMediaPath;
+            if (!HasSource || string.Equals(picture, LocalMediaPath, StringComparison.OrdinalIgnoreCase))
+                return BuildPlayerSource(LocalMediaPath);
+
+            // A proxy has no sound. The player is given two streams laid out alike: the picture from the proxy
+            // and the sound from the original, so what is heard is the original's, every track of it.
+            static string Parts(string source, string file) =>
+                source.StartsWith("edl://", StringComparison.Ordinal) ? source[6..] : $"%{Encoding.UTF8.GetByteCount(file)}%{file}";
+            return $"edl://{Parts(BuildPlayerSource(picture), picture)};!new_stream;{Parts(BuildPlayerSource(LocalMediaPath), LocalMediaPath)}";
+        }
+    }
+
+    // The main video as the player plays it: the file itself while it is the whole sequence, or its clips set out along the sequence.
+    private string BuildPlayerSource(string path)
+    {
+        {
             if (!HasSource || IsMainWholeSequence)
                 return path;
 

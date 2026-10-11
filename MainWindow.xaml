@@ -346,6 +346,15 @@
                     <CheckBox Content="Keyframes" IsChecked="{Binding ShowKeyframesPane}" Margin="0,2"
                               ToolTip="The selected clip's keyframes on a timeline of their own, with the keyframe controls and its place, size and rotation at the playhead." />
                     <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,8,0,4" />
+                    <!-- What the editor's player shows: the originals, or proxies of one size or the other -->
+                    <StackPanel Margin="0,2,0,6" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="Preview Quality" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <ComboBox ItemsSource="{Binding PreviewQualityChoices}" SelectedItem="{Binding PreviewQualityChoice}" AutomationProperties.Name="Preview Quality"
+                                  ToolTip="High: the player reads the original files, as an export does; the truest picture and the heaviest. Medium: 720-line proxies, made in the background. Low: 360-line proxies at half the bitrate, for the smoothest scrubbing on slower hardware. Exports always read the originals, whatever is chosen here." />
+                    </StackPanel>
+                    <Button Content="Render Timeline Proxy" Command="{Binding RenderTimelineProxyCommand}" HorizontalAlignment="Left" Padding="12,4" Margin="0,0,0,8" AutomationProperties.Name="Render Timeline Proxy"
+                            Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Renders the whole picture of the timeline, every layer composed, into one silent file, which the player then plays in place of composing it live: scrubbing is as light as a single video. The sound is still mixed live. It is discarded the moment anything on the timeline is changed. Settings (Performance) can have it rendered by itself when the timeline is left alone." />
                     <CheckBox Content="Sync Master Timeline Stretch" IsChecked="{Binding SyncMasterTimeline}" Margin="0,2" AutomationProperties.Name="Sync Master Timeline Stretch"
                               Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
                               ToolTip="The layer and audio time bars are zoomed with Ctrl + wheel and moved along with Shift + wheel or a middle-button drag. On: the master timeline is stretched and moved with them. Off: it always shows the whole sequence." />
@@ -524,7 +533,7 @@
                     <Button Style="{StaticResource TransportButton}" Content="&#xE893;" Click="NextIFrame_Click"
                             ToolTip="Next I-Frame" AutomationProperties.Name="Next I-Frame" />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
-                            AutomationProperties.Name="Render Preview" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.Name="Render Preview" Visibility="Collapsed"
                             ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
                     <!-- Views: which panes are open, where each of them is, and whether clips show their keyframes. Encoder Mode's: Editor Mode has the button in the side panes' header. -->
                     <ToggleButton x:Name="ViewsButton" Content="&#xE8A9;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0"
@@ -849,7 +858,7 @@
                             <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Padding="9,6" Click="ReloadPlayer_Click"
                                     ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
                             <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Padding="9,6" Command="{Binding RenderPreviewCommand}"
-                                    AutomationProperties.Name="Render Preview" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
+                                    AutomationProperties.Name="Render Preview" Visibility="Collapsed"
                                     ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
                         </StackPanel>
                         <TextBlock Grid.Column="3" x:Name="PositionTextBlock" Text="{Binding PositionText}" Style="{StaticResource TimeText}" Margin="12,0"

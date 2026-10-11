@@ -21,22 +21,23 @@ public static class ProxyCache
     public static string Folder => Path.Combine(AppPaths.Cache, "proxies");
 
     /// <summary>Where the proxy of a file is, or would be.</summary>
-    public static string PathFor(string media)
+    /// <param name="low">The Low tier's proxy: 360 lines at half the bitrate, for hardware that needs it.</param>
+    public static string PathFor(string media, bool low = false)
     {
         var info = new FileInfo(media);
         var key = $"{info.FullName.ToLowerInvariant()}|{(info.Exists ? info.Length : 0)}|{(info.Exists ? info.LastWriteTimeUtc.Ticks : 0)}";
         var hash = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(key)))[..16].ToLowerInvariant();
         var name = string.Concat(Path.GetFileNameWithoutExtension(media).Where(c => char.IsLetterOrDigit(c) || c is '-' or '_').Take(40));
-        // "p2": the second make of proxy (capped bitrate). The first, uncapped ones are not taken for these.
-        return Path.Combine(Folder, $"{(name.Length > 0 ? name : "video")}_{hash}_p2.mp4");
+        // "p3": the third make of proxy (capped bitrate, no sound). Earlier makes are not taken for these.
+        return Path.Combine(Folder, $"{(name.Length > 0 ? name : "video")}_{hash}_{(low ? "p3low" : "p3")}.mp4");
     }
 
     /// <summary>The proxy of a file, when it has been made; it then counts as used just now. Null when there is none.</summary>
-    public static string? Find(string media)
+    public static string? Find(string media, bool low = false)
     {
         try
         {
-            var path = PathFor(media);
+            var path = PathFor(media, low);
             if (!File.Exists(path) || new FileInfo(path).Length == 0)
                 return null;
 
@@ -85,9 +86,9 @@ public static class ProxyCache
     /// <param name="progress">How far along it is, 0 to 100.</param>
     /// <param name="encoders">The H.264 encoders to try, best first: the hardware ones this computer has (NVENC, QuickSync, AMF), then libx264.</param>
     public static async Task<string?> GenerateAsync(
-        string media, double limitGb, IReadOnlyList<string> encoders, IProgress<double> progress, CancellationToken cancellationToken)
+        string media, bool low, double limitGb, IReadOnlyList<string> encoders, IProgress<double> progress, CancellationToken cancellationToken)
     {
-        var path = PathFor(media);
+        var path = PathFor(media, low);
         var making = Path.Combine(Folder, $"making_{Guid.NewGuid():N}.part.mp4");
         try
         {
@@ -106,15 +107,15 @@ public static class ProxyCache
 
             // The graphics card encodes it where one can (and decodes the original on the way); each encoder that
             // will not is followed by the next, down to libx264, which always will. Whichever does it, the
-            // bitrate is capped at 4 Mbit/s: a proxy is to be light before it is pretty. Every sound track is
-            // kept (as AAC), so that choosing a track in the player still chooses the same one.
+            // bitrate is capped (4 Mbit/s, or 2 for the Low tier): a proxy is to be light before it is pretty.
+            // A proxy has no sound at all (-an): what is heard in the player is always the original's.
             var order = encoders.Count > 0 ? encoders.ToList() : ["libx264"];
             for (var i = 0; i < order.Count; i++)
             {
                 var encoder = order[i];
                 var hardware = encoder != "libx264";
-                var command = $"ffmpeg -hide_banner -y {(hardware ? "-hwaccel auto " : "")}-i \"{media}\" -map 0:v:0 -map 0:a? -vf \"scale=-2:'min(720,ih)'\" "
-                              + $"{EncoderArguments(encoder)} -maxrate 4M -bufsize 8M -g 15 -pix_fmt yuv420p -c:a aac -b:a 128k -movflags +faststart \"{making}\"";
+                var command = $"ffmpeg -hide_banner -y {(hardware ? "-hwaccel auto " : "")}-i \"{media}\" -map 0:v:0 -an -vf \"scale=-2:'min({(low ? 360 : 720)},ih)'\" "
+                              + $"{EncoderArguments(encoder, low)} -maxrate {(low ? "2M -bufsize 4M" : "4M -bufsize 8M")} -g 15 -pix_fmt yuv420p -movflags +faststart \"{making}\"";
                 try
                 {
                     await FfmpegRunner.RunAsync(command, report, cancellationToken);
@@ -150,12 +151,12 @@ public static class ProxyCache
     }
 
     /// <summary>Each encoder's fastest sensible setting, at a quality of about CRF 28; the cap on the bitrate is added for all of them alike.</summary>
-    private static string EncoderArguments(string encoder) => encoder switch
+    private static string EncoderArguments(string encoder, bool low) => encoder switch
     {
         "h264_nvenc" => "-c:v h264_nvenc -preset p1 -rc vbr -cq 28 -b:v 0",
         // QuickSync's quality mode pays no heed to a cap on the bitrate, so it is given a bitrate to aim at instead.
-        "h264_qsv" => "-c:v h264_qsv -preset veryfast -b:v 3M",
-        "h264_amf" => "-c:v h264_amf -quality speed -rc vbr_peak -b:v 3M",
+        "h264_qsv" => $"-c:v h264_qsv -preset veryfast -b:v {(low ? "1500k" : "3M")}",
+        "h264_amf" => $"-c:v h264_amf -quality speed -rc vbr_peak -b:v {(low ? "1500k" : "3M")}",
         _ => "-c:v libx264 -preset veryfast -tune fastdecode -crf 28",
     };
 

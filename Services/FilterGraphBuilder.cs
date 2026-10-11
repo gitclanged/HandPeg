@@ -295,10 +295,12 @@ public static class FilterGraphBuilder
     /// leaves the sound out of the graph, and the player plays the main video's own as it is.
     /// </param>
     /// <param name="mainAudioTrack">Which of the main video's audio tracks the player plays, counted from 0; negative when it has none.</param>
-    public static string BuildLiveGraph(SequenceExportState state, double surfaceWidth, double surfaceHeight, double? audioFrom = null, int mainAudioTrack = 0)
+    /// <param name="soundOnly">The picture is not composed at all: the player has a flattened file of it open (the timeline proxy), and only the sound is mixed live.</param>
+    public static string BuildLiveGraph(
+        SequenceExportState state, double surfaceWidth, double surfaceHeight, double? audioFrom = null, int mainAudioTrack = 0, bool soundOnly = false)
     {
         var pass = new Pass(state);
-        var picture = pass.BuildLiveFilterGraph(surfaceWidth, surfaceHeight);
+        var picture = soundOnly ? "" : pass.BuildLiveFilterGraph(surfaceWidth, surfaceHeight);
         var sound = audioFrom is { } from ? pass.BuildLiveAudioGraph(Math.Max(from, 0), mainAudioTrack) : "";
         return picture.Length > 0 && sound.Length > 0 ? $"{picture};{sound}" : picture + sound;
     }
