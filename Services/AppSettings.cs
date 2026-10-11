@@ -416,6 +416,33 @@ public sealed class AppSettings
     /// <summary>How many of the presets, from the top of the list, the startup dialog shows.</summary>
     public int SquisherPresetCount { get; set; } = 4;
 
+    /// <summary>The files lately opened or put on the timeline in Editor Mode, newest first: offered in Encoder Mode's Summary tab.</summary>
+    public List<string> RecentEditorFiles { get; set; } = [];
+
+    // ----- Proxies: light copies of the editor's videos, for the player -----
+
+    /// <summary>Editor Mode plays a small, quick-to-seek copy of each video in place of the original. Exports always read the original.</summary>
+    public bool EnableEditorProxies { get; set; } = true;
+
+    /// <summary>How large the proxy cache may grow, in megabytes, before the proxies used longest ago are deleted.</summary>
+    public int ProxyCacheLimitMb { get; set; } = 4096;
+
+    /// <summary>Empty the proxy cache whenever HandPeg is closed.</summary>
+    public bool ClearProxyCacheOnExit { get; set; }
+
+    // ----- The window, when HandPeg starts -----
+    public const string DefaultWindowSize = "Default Size", RememberWindowSize = "Remember Last Size", MaximizedWindow = "Launch Maximized";
+
+    public static IReadOnlyList<string> StartupWindowSizes { get; } = [DefaultWindowSize, RememberWindowSize, MaximizedWindow];
+
+    /// <summary>How large the window is when HandPeg starts: as designed, as it was left, or maximized.</summary>
+    public string StartupWindowSize { get; set; } = DefaultWindowSize;
+
+    // The window as it was when HandPeg was last closed (its size while not maximized, and whether it was).
+    public double LastWindowWidth { get; set; }
+    public double LastWindowHeight { get; set; }
+    public bool LastWindowMaximized { get; set; }
+
     /// <summary>How thick scrollbars are, everywhere in HandPeg, in pixels: 4 (a hairline) to 16 (as Windows draws them).</summary>
     public double ScrollbarThickness { get; set; } = 10;
 

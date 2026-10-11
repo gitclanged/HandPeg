@@ -176,6 +176,7 @@ public partial class MainViewModel
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), $"HandPeg_output.{Container}")
                 : DestinationPath.Trim().Trim('"'),
             ExistingFiles = files,
+            PreviewPaths = GetLayerProxies(),
         };
     }
 

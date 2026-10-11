@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -187,6 +188,9 @@ public partial class MainViewModel
         _undo.Clear();
         _redo.Clear();
         MarkSaved();
+
+        // A project brings its videos with it: the main one and every video layer get their proxies.
+        RefreshProxies();
         return GetLayoutAspectWarning() is { } warning ? $"{doneMessage}. {warning}" : doneMessage;
     });
 
@@ -304,6 +308,239 @@ public partial class MainViewModel
 
     /// <summary>The Layers and Audio lists are too narrow for a row to hold its controls and a time bar of any use: the controls are in a flyout from each row instead. Editor Mode only.</summary>
     [ObservableProperty] private bool _compactTrackControls;
+
+    // ----- Proxies -----
+    // Every video of the editor's session (the main one, and each video layer) has an original, which is what
+    // is exported, and may have a proxy, which is what the player and its graph read. Proxies are made one at
+    // a time, in the background, whenever a video comes into the session: opened, added as a layer, or loaded
+    // with a project.
+
+    // Original file to its proxy, for the proxies that are ready.
+    private readonly Dictionary<string, string> _proxies = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<string> _proxyQueue = new();
+    private readonly HashSet<string> _proxyQueued = new(StringComparer.OrdinalIgnoreCase);
+    private CancellationTokenSource? _proxyWork;
+    private bool _proxyWorking;
+    private int _proxyDone, _proxyTotal;
+
+    private bool ProxiesOn => !_isBackgroundWorker && IsEditorMode && AppSettings.Current.EnableEditorProxies;
+
+    /// <summary>What the player is given for the open video: its proxy in Editor Mode, when proxies are on and it has one; the file itself otherwise.</summary>
+    public string PreviewMediaPath => ProxiesOn && _proxies.TryGetValue(LocalMediaPath, out var proxy) && File.Exists(proxy) ? proxy : LocalMediaPath;
+
+    /// <summary>The layers' proxies, for the player's graph. Empty outside Editor Mode, and for a background encode.</summary>
+    private Dictionary<string, string> GetLayerProxies()
+    {
+        var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!ProxiesOn)
+            return found;
+
+        foreach (var layer in Layers.Where(l => l.IsVideoFile && !l.IsLoading))
+        {
+            if (_proxies.TryGetValue(layer.ImagePath, out var proxy) && File.Exists(proxy))
+                found[layer.ImagePath] = proxy;
+        }
+
+        return found;
+    }
+
+    /// <summary>What the player should have open has changed (a proxy is ready, or the mode changed): the window has it look again.</summary>
+    public event Action? PlayerSourceChanged;
+
+    /// <summary>
+    /// Looks over the session's videos and sees to a proxy for each that has none: one already in the cache
+    /// is taken at once, the rest are queued to be made. Called whenever a video comes in. Does nothing in
+    /// Encoder Mode, or with proxies switched off.
+    /// </summary>
+    private void RefreshProxies()
+    {
+        if (!ProxiesOn)
+            return;
+
+        var videos = Layers.Where(l => l.IsVideoFile).Select(l => l.ImagePath).ToList();
+        if (HasSource && SourceWidth > 0)
+            videos.Insert(0, LocalMediaPath);
+
+        var took = false;
+        foreach (var media in videos.Where(m => m.Length > 0 && File.Exists(m)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (_proxies.ContainsKey(media) || !_proxyQueued.Add(media))
+                continue;
+
+            if (ProxyCache.Find(media) is { } ready)
+            {
+                _proxies[media] = ready;
+                _proxyQueued.Remove(media);
+                took = true;
+                continue;
+            }
+
+            _proxyQueue.Enqueue(media);
+            _proxyTotal++;
+        }
+
+        if (took)
+            ProxiesChanged();
+        if (!_proxyWorking && _proxyQueue.Count > 0)
+            _ = MakeProxiesAsync();
+    }
+
+    // A proxy came into use: the player goes over to it, and its graph is built again to read it.
+    private void ProxiesChanged()
+    {
+        PlayerSourceChanged?.Invoke();
+        LiveFilterInvalidated?.Invoke();
+    }
+
+    /// <summary>
+    /// Makes the queued proxies, one after another, off the UI thread. How far along the one in hand is goes
+    /// to the progress bar at the bottom of the window (when no other operation has it), and what is being
+    /// done to the status text beside it; when the last is done, the status text says so.
+    /// </summary>
+    private async Task MakeProxiesAsync()
+    {
+        _proxyWorking = true;
+        var work = _proxyWork = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+        var encoders = SocialSquisher.ChooseEncoders(VideoEncoders.Where(e => e.IsHardware).Select(e => e.Name).ToList());
+        try
+        {
+            while (_proxyQueue.Count > 0 && !work.IsCancellationRequested && ProxiesOn)
+            {
+                var media = _proxyQueue.Dequeue();
+                var name = Path.GetFileName(media);
+                var which = _proxyTotal > 1 ? $" ({_proxyDone + 1} of {_proxyTotal})" : "";
+                AppLog.Write($"Proxy: generating one for {name}.");
+                if (!IsBusy)
+                    StatusText = $"Generating Proxy{which}: {name}...";
+                var progress = new Progress<double>(percent =>
+                {
+                    // The bar and the status line are the running operation's while there is one; otherwise they show the proxy.
+                    if (work.IsCancellationRequested || IsBusy)
+                        return;
+
+                    (IsProgressIndeterminate, ProgressValue) = (false, percent);
+                    StatusText = $"Generating Proxy{which}: {name}... {percent:0}%";
+                });
+
+                string? made = null;
+                try
+                {
+                    made = await Task.Run(() => ProxyCache.GenerateAsync(
+                        media, Math.Clamp(AppSettings.Current.ProxyCacheLimitMb, 512, 2_000_000) / 1024.0, encoders, progress, work.Token), work.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                _proxyQueued.Remove(media);
+                _proxyDone++;
+                if (made is not null && !work.IsCancellationRequested)
+                {
+                    _proxies[media] = made;
+                    AppLog.Write($"Proxy: ready for {name}; the player shows it from now on.");
+                    ProxiesChanged();
+                }
+            }
+        }
+        finally
+        {
+            _proxyWorking = false;
+            if (!work.IsCancellationRequested && _proxyQueue.Count == 0)
+            {
+                var made = _proxyDone;
+                (_proxyDone, _proxyTotal) = (0, 0);
+                AppLog.Write("Proxy: all proxies for the session are generated.");
+                _ = AnnounceProxiesAsync(made);
+            }
+        }
+    }
+
+    // Said on the status line once nothing else is using it: an operation that is running has it until it is done.
+    private async Task AnnounceProxiesAsync(int made)
+    {
+        for (var waited = 0; IsBusy && waited < 600; waited++)
+            await Task.Delay(100);
+        if (IsBusy || _proxyWorking || made == 0)
+            return;
+
+        ProgressValue = 0;
+        StatusText = made == 1 ? "Proxies Generated: 1 video, ready for smooth scrubbing." : $"Proxies Generated: {made} videos, ready for smooth scrubbing.";
+    }
+
+    /// <summary>Stops making proxies and forgets what was queued: Encoder Mode has no use for them.</summary>
+    private void StopProxies()
+    {
+        _proxyWork?.Cancel();
+        _proxyQueue.Clear();
+        _proxyQueued.Clear();
+        (_proxyDone, _proxyTotal) = (0, 0);
+    }
+
+    // ----- Encoder Mode stands apart from the editor -----
+
+    // Whether Live Preview was on in Editor Mode, to put back on return: Encoder Mode plays the source as it is.
+    private bool? _editorLivePreview;
+
+    /// <summary>
+    /// Entering Encoder Mode: the player shows the source file itself, not the editor's composition (Live
+    /// Preview goes off, and its buttons are not there), and the layout pane closes. Back in Editor Mode, Live
+    /// Preview is as it was left.
+    /// </summary>
+    private void ApplyModePreview()
+    {
+        if (IsEncoderMode)
+        {
+            _editorLivePreview ??= LivePreview;
+            LivePreview = false;
+            IsArrangeActive = false;
+        }
+        else if (_editorLivePreview is { } was)
+        {
+            _editorLivePreview = null;
+            LivePreview = was;
+        }
+
+        // The proxy is the editor's: Encoder Mode plays the file itself, and no proxy is made there.
+        if (IsEncoderMode)
+            StopProxies();
+        else
+            RefreshProxies();
+
+        ProxiesChanged();
+    }
+
+    public ObservableCollection<string> RecentEditorFiles { get; } = new(AppSettings.Current.RecentEditorFiles.Where(File.Exists));
+
+    /// <summary>Notes a file that was opened or put on the timeline in Editor Mode. The dozen most recent are kept.</summary>
+    private void NoteEditorFile(string? path)
+    {
+        if (!IsEditorMode || _isBackgroundWorker || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return;
+
+        foreach (var same in RecentEditorFiles.Where(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)).ToList())
+            RecentEditorFiles.Remove(same);
+        RecentEditorFiles.Insert(0, path);
+        while (RecentEditorFiles.Count > 12)
+            RecentEditorFiles.RemoveAt(RecentEditorFiles.Count - 1);
+        SaveView(settings => settings.RecentEditorFiles = [.. RecentEditorFiles]);
+    }
+
+    /// <summary>For the Recent Editor Files box: choosing a file opens it as the source. Nothing stays chosen.</summary>
+    public string? SelectedRecentEditorFile
+    {
+        get => null;
+        set
+        {
+            if (value is { Length: > 0 } && File.Exists(value) && !IsBusy)
+            {
+                SourcePath = value;
+                LoadSourceCommand.Execute(null);
+            }
+
+            OnPropertyChanged();
+        }
+    }
 
     /// <summary>The master timeline is stretched and scrolled with the layer and audio time bars when they are zoomed; off, it always shows the whole sequence.</summary>
     [ObservableProperty] private bool _syncMasterTimeline;

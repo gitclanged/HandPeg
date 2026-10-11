@@ -123,6 +123,11 @@
                                 Value="{Binding ScrollbarThickness}" ValueChanged="ScrollbarSlider_ValueChanged" AutomationProperties.Name="Scrollbar Thickness" />
                         <TextBlock Text="{Binding Value, ElementName=ScrollbarSlider, StringFormat={}{0:0} px}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10"
+                                ToolTip="How large the window is when HandPeg starts. Default Size: as designed. Remember Last Size: as it was when HandPeg was last closed, maximized if it was. Launch Maximized: always filling the screen.">
+                        <TextBlock Text="Startup Window Size:" VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <ComboBox MinWidth="190" ItemsSource="{x:Static services:AppSettings.StartupWindowSizes}" SelectedItem="{Binding StartupWindowSize}" AutomationProperties.Name="Startup Window Size" />
+                    </StackPanel>
                     <TextBlock Text="Mode" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
                                Text="Encoder Mode is the lean front end for converting and trimming; Editor Mode adds layers, captions and the full timeline. The button beside the gear switches between them. Each mode keeps its own copy of the layout options on this tab and on the Timeline tab: what you set here is set for the mode you are in now." />
@@ -352,6 +357,24 @@
                 </StackPanel>
             </TabItem>
 
+            <!-- Proxies: the light copies the editor's player shows in place of heavy originals -->
+            <TabItem Header="Performance">
+                <StackPanel>
+                    <TextBlock Text="Editor Proxies" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="In Editor Mode, HandPeg can make a small copy of each video you open (720 lines, an I-frame every 15 frames) and play that in the player instead of the original. Seeking is then immediate, however large the original is. It is made in the background when a video is opened; the bar at the bottom of the window shows how far along it is. Exports never use it: they always read the original file. Encoder Mode never makes or uses one." />
+                    <CheckBox Content="Enable Editor Proxies" IsChecked="{Binding EnableEditorProxies}" AutomationProperties.Name="Enable Editor Proxies" />
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,2"
+                                ToolTip="How large the proxy cache may grow. Before a new proxy is made, the ones used longest ago are deleted until the cache is under this size.">
+                        <TextBlock Text="Proxy Cache Size Limit (MB):" VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <TextBox Width="84" Padding="4,2" VerticalAlignment="Center" MaxLength="7" Text="{Binding ProxyCacheLimitMb}" AutomationProperties.Name="Proxy Cache Size Limit"
+                                 PreviewTextInput="DigitsOnly_PreviewTextInput" />
+                    </StackPanel>
+                    <CheckBox Content="Clear Proxy Cache on Exit" IsChecked="{Binding ClearProxyCacheOnExit}" Margin="0,8,0,0" AutomationProperties.Name="Clear Proxy Cache on Exit"
+                              ToolTip="Empties the proxy cache each time HandPeg is closed. The deleting is handed to a process of its own, so closing is not held up by it. With this off, proxies are kept and reused the next time the same video is opened." />
+                </StackPanel>
+            </TabItem>
+
             <TabItem Header="Behavior">
                 <StackPanel>
                     <TextBlock Text="Presets and encoding" Style="{StaticResource SectionTitle}" />
@@ -468,15 +491,25 @@
             </TabItem>
 
             <!-- The startup dialog's Social Sharing Squisher: its presets, and how it works out and encodes to a size. -->
-            <TabItem Header="Startup Dialog">
+            <TabItem Header="Drag &amp; Drop Overlay">
                 <StackPanel>
+                    <TextBlock Text="Presets" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="While a file is dragged over HandPeg, its window dims and shows targets to drop it on: style presets in Editor Mode, encoding presets in Encoder Mode, and the Social Squisher's presets in both. Dropped anywhere else, the file opens as it always did." />
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,12"
+                                ToolTip="How many style presets (Editor Mode) or encoding presets (Encoder Mode) the overlay shows: the first so many. 0 shows none.">
+                        <TextBlock Text="Style / encoding presets shown:" VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <Slider x:Name="OverlayCountSlider" Width="200" Minimum="0" Maximum="8" TickFrequency="1" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding SplashPresetCount}" AutomationProperties.Name="Overlay Presets Shown" />
+                        <TextBlock Text="{Binding Value, ElementName=OverlayCountSlider, StringFormat={}{0:0}}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
                     <TextBlock Text="Social Sharing Squisher" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="A video dropped on one of these in the startup dialog is squeezed under its size as an H.264 / AAC .mp4, which can then be dragged straight out of the dialog (into Discord, a browser, a folder)." />
-                    <CheckBox Content="Show the Squisher in the startup dialog" IsChecked="{Binding ShowSquisher}" AutomationProperties.Name="Show Squisher" />
+                               Text="A video dropped on one of these is squeezed under its size as an H.264 / AAC .mp4, which can then be dragged straight out of the squisher's window (into Discord, a browser, a folder)." />
+                    <CheckBox Content="Show the Squisher presets in the overlay" IsChecked="{Binding ShowSquisher}" AutomationProperties.Name="Show Squisher" />
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
                                 ToolTip="How many of the presets below the startup dialog shows: the first so many, from the top. Use the arrows on a preset to move it up or down the list.">
-                        <TextBlock Text="Presets shown:" VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <TextBlock Text="Squisher presets shown:" VerticalAlignment="Center" Margin="0,0,10,0" />
                         <Slider x:Name="SquishCountSlider" Width="200" Minimum="1" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
                                 Value="{Binding SquisherPresetCount}" AutomationProperties.Name="Squisher Presets Shown" />
                         <TextBlock Text="{Binding Value, ElementName=SquishCountSlider, StringFormat={}{0:0}}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />

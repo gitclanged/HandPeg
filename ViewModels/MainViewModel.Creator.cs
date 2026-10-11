@@ -758,11 +758,16 @@ public partial class MainViewModel
     private void AttachLayer(Layer element)
     {
         Hook(element);
+        NoteEditorFile(element.ImagePath);
         var firstSound = element.IsAudio ? -1 : Layers.ToList().FindIndex(l => l.IsAudio);
         if (firstSound >= 0)
             Layers.Insert(firstSound, element);
         else
             Layers.Add(element);
+
+        // Now that it is one of the layers: a video among them gets its proxy.
+        if (element.IsVideoFile)
+            RefreshProxies();
     }
 
     /// <summary>Takes a layer into use: its changes are listened to, it is given a track when it has none, and from now on it grows about its middle.</summary>
@@ -1430,6 +1435,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowAdvancedFiltersTab));
         OnPropertyChanged(nameof(IsEditorMode));
         OnPropertyChanged(nameof(IsSourcePaneVisible));
+        ApplyModePreview();
         OnPropertyChanged(nameof(IsTextLayerSelected));
         OnPropertyChanged(nameof(ShowSubtitleImportRow));
         OnPropertyChanged(nameof(IsEncoderMode));

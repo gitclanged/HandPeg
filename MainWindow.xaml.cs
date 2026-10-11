@@ -66,6 +66,18 @@ public partial class MainWindow : Window
 
         // Asked for even when already handled: the slider itself answers a press beside its playhead (it moves
         // the playhead there) and marks it handled, which would keep it from this window altogether.
+        ApplyStartupWindowSize();
+        // Asked for even when already handled: the window's own drag handlers mark these events handled
+        // (that is how they refuse a drop over a text box), which would keep them from the overlay.
+        AddHandler(PreviewDragEnterEvent, new DragEventHandler((_, e) => ShowDropOverlay(e)), handledEventsToo: true);
+        AddHandler(PreviewDragOverEvent, new DragEventHandler((_, e) => ShowDropOverlay(e)), handledEventsToo: true);
+        AddHandler(PreviewDragLeaveEvent, new DragEventHandler((_, e) => LeaveDropOverlay(e)), handledEventsToo: true);
+        AddHandler(PreviewDropEvent, new DragEventHandler((_, _) => Dispatcher.BeginInvoke(HideDropOverlay)), handledEventsToo: true);
+        _scrubPace.Tick += ScrubPace_Tick;
+
+        // A proxy became ready, or the mode changed: the player goes over to what it should now have open.
+        _viewModel.PlayerSourceChanged += () => Dispatcher.BeginInvoke(() => SyncPlayerSource());
+        _dropLeave.Tick += (_, _) => HideDropOverlay();
         _settingsFlyoutClose.Tick += SettingsFlyoutClose_Tick;
         _autosave.Tick += Autosave_Tick;
         _autosave.Start();
@@ -156,7 +168,11 @@ public partial class MainWindow : Window
         ContentRendered += (_, _) =>
         {
             StyleLibrary.EnsureBuiltIns();
-            ShowLaunchWindow();
+
+            // No window opens over the program at launch any more: it starts straight into its workspace. What
+            // the launch window offered is offered while a file is dragged in instead, and its targets are made
+            // now, once everything else is up and idle.
+            Dispatcher.BeginInvoke(BuildDropTargets, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         };
     }
 
@@ -176,7 +192,7 @@ public partial class MainWindow : Window
     private SplashWindow? _launchWindow;
 
     /// <summary>Opens the launch window, whatever the settings say about showing it at startup: it is also where the Social Squisher is.</summary>
-    private void OpenLaunchWindow()
+    private void OpenLaunchWindow(bool startHidden = false)
     {
         if (_launchWindow is not null)
         {
@@ -190,6 +206,7 @@ public partial class MainWindow : Window
         {
             Owner = this,
             AvailableEncoders = () => _viewModel.VideoEncoders.Where(encoder => encoder.IsHardware).Select(encoder => encoder.Name).ToList(),
+            Opacity = startHidden ? 0 : 1,
         };
 
         // Not while it is squishing a video, or holding the result: that is only closed with its own button.
@@ -251,6 +268,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
+        RememberWindowSize();
         if (!AppSettings.Current.PromptToSaveOnExit || !_viewModel.HasUnsavedChanges)
             return;
 
@@ -290,6 +308,10 @@ public partial class MainWindow : Window
 
         // The most recent downloads stay, so the same URL loads without downloading again.
         YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize);
+
+        // Handed to a process of its own, which is not waited for: closing takes no longer for it.
+        if (AppSettings.Current.ClearProxyCacheOnExit)
+            ProxyCache.ClearInBackground();
     }
 
     // ----- Hotkeys -----
@@ -518,6 +540,184 @@ public partial class MainWindow : Window
 
     private readonly System.Windows.Threading.DispatcherTimer _settingsFlyoutClose = new() { Interval = TimeSpan.FromMilliseconds(260) };
 
+    // ----- The window's size at startup -----
+
+    private void ApplyStartupWindowSize()
+    {
+        var settings = AppSettings.Current;
+        switch (settings.StartupWindowSize)
+        {
+            case AppSettings.MaximizedWindow:
+                WindowState = WindowState.Maximized;
+                break;
+            case AppSettings.RememberWindowSize when settings.LastWindowWidth >= MinWidth && settings.LastWindowHeight >= MinHeight:
+                // No larger than the screen it opens on, should that be a smaller one than it was left on.
+                Width = Math.Min(settings.LastWindowWidth, SystemParameters.VirtualScreenWidth);
+                Height = Math.Min(settings.LastWindowHeight, SystemParameters.VirtualScreenHeight);
+                WindowStartupLocation = WindowStartupLocation.CenterScreen;
+                if (settings.LastWindowMaximized)
+                    WindowState = WindowState.Maximized;
+                break;
+        }
+    }
+
+    /// <summary>Notes how the window was left, for "Remember Last Size": its size while not maximized, and whether it was.</summary>
+    private void RememberWindowSize()
+    {
+        var settings = AppSettings.Current;
+        var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, ActualWidth, ActualHeight) : RestoreBounds;
+        if (bounds.IsEmpty || bounds.Width < MinWidth || bounds.Height < MinHeight)
+            return;
+
+        (settings.LastWindowWidth, settings.LastWindowHeight, settings.LastWindowMaximized) = (Math.Round(bounds.Width), Math.Round(bounds.Height), WindowState == WindowState.Maximized);
+        try
+        {
+            settings.SaveAsCurrent();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Not remembered this time.
+        }
+    }
+
+    // ----- The drop overlay: targets for a file that is being dragged in -----
+
+    private bool _dropTargetsBuilt;
+    private string _dropTargetsMode = "";
+
+    /// <summary>
+    /// Makes the overlay's targets for the mode in use: style presets in Editor Mode, encoding presets in
+    /// Encoder Mode, and the Social Squisher's presets in both. Their background is the accent colour,
+    /// toned down, so that a whole screen of them does not shout.
+    /// </summary>
+    private void BuildDropTargets()
+    {
+        var settings = AppSettings.Current;
+        var count = Math.Clamp(settings.SplashPresetCount, 0, 8);
+        var presets = _viewModel.IsEditorMode
+            ? StyleFile.ForLaunch().Take(count).Select(style => new DropTargetItem(style.Name, DropTargetItem.StyleIcon, style)).ToList()
+            : _viewModel.Presets.Take(count).Select(preset => new DropTargetItem(preset.Name, DropTargetItem.EncodeIcon, preset)).ToList();
+        var squish = settings.ShowSquisher
+            ? settings.SquisherPresets.Where(p => p.TargetSizeMb > 0).Take(Math.Clamp(settings.SquisherPresetCount, 1, 12)).Select(p => new DropTargetItem(p.Name, p.IconData, p)).ToList()
+            : [];
+        (DropPresetList.ItemsSource, DropSquishList.ItemsSource) = (presets, squish);
+        DropPresetTitle.Text = _viewModel.IsEditorMode ? "Open with a style preset" : "Open with an encoder preset";
+        DropPresetSection.Visibility = presets.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        DropSquishSection.Visibility = squish.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        var accent = (FindResource("AccentBrush") as SolidColorBrush)?.Color ?? Colors.SteelBlue;
+        var grey = (byte)((accent.R + accent.G + accent.B) / 3);
+        byte Mute(byte channel) => (byte)(channel * 0.55 + grey * 0.30 + 20);
+        var muted = new SolidColorBrush(Color.FromRgb(Mute(accent.R), Mute(accent.G), Mute(accent.B)));
+        muted.Freeze();
+        Resources["DropTargetBrush"] = muted;
+        (_dropTargetsBuilt, _dropTargetsMode) = (true, _viewModel.IsEditorMode ? "editor" : "encoder");
+    }
+
+    // A drag "leaves" every element it passes out of, on its way to the next one inside the window, and where
+    // the pointer is said to be at that moment cannot be relied on at the window's edge. So leaving only
+    // starts a short wait: the drag is still in the window if it is heard from again before the wait is out.
+    private readonly System.Windows.Threading.DispatcherTimer _dropLeave = new() { Interval = TimeSpan.FromMilliseconds(140) };
+
+    private void ShowDropOverlay(DragEventArgs e)
+    {
+        _dropLeave.Stop();
+        if (DropOverlay.Visibility == Visibility.Visible || !e.Data.GetDataPresent(DataFormats.FileDrop))
+            return;
+
+        // Only into an empty window. With a video or a project open, a file dragged in is on its way to the
+        // timeline, the layers or the audio tab, and nothing is put in its way.
+        if (_viewModel.HasSource || _viewModel.IsBusy)
+            return;
+
+        // The mode may have changed, or the presets: they are made again, which is seven buttons' work.
+        BuildDropTargets();
+        DropOverlay.Visibility = Visibility.Visible;
+
+        // The player is a native window, which WPF cannot draw over: it would stay bright in the middle of the
+        // dimmed window. It is hidden for as long as the overlay is up.
+        VideoView.Visibility = Visibility.Hidden;
+    }
+
+    // A file that leaves the window takes the overlay with it, a moment later (see above).
+    private void LeaveDropOverlay(DragEventArgs e)
+    {
+        _dropLeave.Stop();
+        _dropLeave.Start();
+    }
+
+    private void HideDropOverlay()
+    {
+        _dropLeave.Stop();
+        DropOverlay.Visibility = Visibility.Collapsed;
+        VideoView.Visibility = Visibility.Visible;
+    }
+
+    private void DropTarget_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void DropTarget_DragEnter(object sender, DragEventArgs e)
+    {
+        if (sender is UIElement target)
+            target.Opacity = 0.7;
+    }
+
+    private void DropTarget_DragLeave(object sender, DragEventArgs e)
+    {
+        if (sender is UIElement target)
+            target.Opacity = 1;
+    }
+
+    /// <summary>A file let go on a target: opened with that style, opened and given that encoding preset, or squished for that preset.</summary>
+    private void DropTarget_Drop(object sender, DragEventArgs e)
+    {
+        if (sender is UIElement target)
+            target.Opacity = 1;
+        e.Handled = true;
+        if (sender is FrameworkElement { DataContext: DropTargetItem item })
+            RouteDrop(item, e);
+    }
+
+    private void RouteDrop(DropTargetItem item, DragEventArgs e)
+    {
+        HideDropOverlay();
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } files || !File.Exists(files[0]))
+            return;
+
+        var file = files[0];
+        AppLog.Write($"Dropped {Path.GetFileName(file)} on the overlay target {item.Name}.");
+        switch (item.Target)
+        {
+            case StyleFile style:
+                _ = _viewModel.LoadFileWithStyleAsync(file, style.Path);
+                break;
+            case EncodingPreset preset:
+                _ = LoadWithPresetAsync(file, preset);
+                break;
+            case SquishPreset squish:
+                // Straight to the processing square: the window is not shown opening and then shrinking.
+                OpenLaunchWindow(startHidden: true);
+                var window = _launchWindow;
+                Dispatcher.BeginInvoke(() => window?.StartSquish(file, squish, instant: true), System.Windows.Threading.DispatcherPriority.Loaded);
+                break;
+        }
+    }
+
+    // Opens the file as the Source pane would, and once it is open applies the encoding preset to it.
+    private async Task LoadWithPresetAsync(string file, EncodingPreset preset)
+    {
+        _viewModel.SourcePath = file;
+        _viewModel.LoadSourceCommand.Execute(null);
+        await Task.Delay(300);
+        for (var waited = 0; _viewModel.IsBusy && waited < 600; waited++)
+            await Task.Delay(100);
+        if (_viewModel.Presets.Contains(preset))
+            _viewModel.SelectedPreset = preset;
+    }
+
     // ----- Fitting -----
 
     private void PlayerArea_SizeChanged(object sender, SizeChangedEventArgs e) => ClampSideColumn();
@@ -714,6 +914,15 @@ public partial class MainWindow : Window
 
     private void Window_PreviewDrop(object sender, DragEventArgs e)
     {
+        // Let go on one of the overlay's targets: that target has it. (This handler takes every file dropped on
+        // the window before any element sees it, which is why the targets' own Drop was never reached.)
+        if (DropOverlay.Visibility == Visibility.Visible && (e.OriginalSource as FrameworkElement)?.DataContext is DropTargetItem item)
+        {
+            e.Handled = true;
+            RouteDrop(item, e);
+            return;
+        }
+
         if (e.Data.GetDataPresent(DataFormats.FileDrop))
             Window_Drop(sender, e);
     }
@@ -1484,9 +1693,59 @@ public partial class MainWindow : Window
             }
         }
 
-        // While the thumb is being dragged the player jumps from I-frame to I-frame, which it can do as
-        // fast as the pointer moves; the exact frame follows when the thumb is let go.
-        PlayerSeek((long)e.NewValue, exact: !_isScrubbing);
+        // While the thumb is being dragged the player jumps from I-frame to I-frame, and is asked to no more
+        // than thirty times a second; the exact frame follows when the thumb is let go.
+        if (_isScrubbing)
+            QueueScrubSeek((long)e.NewValue);
+        else
+            PlayerSeek((long)e.NewValue, exact: true);
+    }
+
+
+    // ----- Scrubbing: fast seeks, paced -----
+    // A drag of the playhead is a stream of positions, far more of them than a player with several videos to
+    // decode can answer. Each is a fast seek (to the nearest I-frame, never frame-exact), and they are paced:
+    // the first goes at once, and after it at most one every 33 ms, always to the newest position. Whatever
+    // came in between is never sent. Letting go sends one exact seek to where the playhead was left.
+
+    private readonly System.Windows.Threading.DispatcherTimer _scrubPace = new(System.Windows.Threading.DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(33) };
+    private long _scrubWanted = -1, _scrubSent = -1;
+    private int _scrubSeeks, _scrubAsked;
+    private DateTime _scrubBegan;
+
+    private void QueueScrubSeek(long positionMs)
+    {
+        _scrubWanted = positionMs;
+        _scrubAsked++;
+        if (_scrubPace.IsEnabled)
+            return;
+
+        SendScrubSeek();
+        _scrubPace.Start();
+    }
+
+    private void ScrubPace_Tick(object? sender, EventArgs e)
+    {
+        if (!_isScrubbing || _scrubWanted == _scrubSent)
+            _scrubPace.Stop();
+        else
+            SendScrubSeek();
+    }
+
+    private void SendScrubSeek()
+    {
+        _scrubSent = _scrubWanted;
+        _scrubSeeks++;
+        PlayerSeek(_scrubSent, exact: false);
+    }
+
+    /// <summary>The end of a scrub: the pacing stops, and what it came to is noted in the log.</summary>
+    private void EndScrubPacing()
+    {
+        _scrubPace.Stop();
+        if (_scrubAsked > 0)
+            AppLog.Write($"Scrub: {_scrubAsked} positions over {(DateTime.UtcNow - _scrubBegan).TotalMilliseconds:0} ms, {_scrubSeeks} fast seeks sent, then one exact seek.");
+        (_scrubAsked, _scrubSeeks, _scrubWanted, _scrubSent) = (0, 0, -1, -1);
     }
 
     /// <summary>
@@ -1523,6 +1782,7 @@ public partial class MainWindow : Window
     private void TimelineSlider_DragStarted(object sender, DragStartedEventArgs e)
     {
         _isScrubbing = true;
+        (_scrubBegan, _scrubAsked, _scrubSeeks) = (DateTime.UtcNow, 0, 0);
 
         // Dragged while it plays: the layers' sound comes out of the graph for as long as the drag lasts.
         if (LiveGraphHasSound)
@@ -1532,6 +1792,9 @@ public partial class MainWindow : Window
     private void TimelineSlider_DragCompleted(object sender, DragCompletedEventArgs e)
     {
         _isScrubbing = false;
+        EndScrubPacing();
+
+        // Let go (and a click on the timeline is a press let go at once): the exact frame, straight away.
         PlayerSeek((long)TimelineSlider.Value);
 
         // And goes back in, from where the thumb was let go, if it is still playing.
@@ -4157,4 +4420,14 @@ public partial class MainWindow : Window
         new(Math.Clamp(point.X, area.Left, area.Right), Math.Clamp(point.Y, area.Top, area.Bottom));
 
     private static int Even(double value) => Math.Max((int)Math.Round(value / 2) * 2, 0);
+}
+
+/// <summary>One target of the drop overlay: a preset to drop a file on, with the icon it is drawn with.</summary>
+public sealed record DropTargetItem(string Name, string IconData, object Target)
+{
+    /// <summary>A card with a header: a style.</summary>
+    public const string StyleIcon = "M 3,5 H 23 V 21 H 3 Z M 3,10 H 23 M 7,14 H 15 M 7,17 H 12";
+
+    /// <summary>Sliders: an encoding preset.</summary>
+    public const string EncodeIcon = "M 3,7 H 23 M 3,13 H 23 M 3,19 H 23 M 8,5 V 9 M 17,11 V 15 M 11,17 V 21";
 }

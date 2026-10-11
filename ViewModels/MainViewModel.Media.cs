@@ -91,6 +91,8 @@ public partial class MainViewModel
 
         // A caption preview is of the video it was made for.
         PreviewSubtitles = false;
+        NoteEditorFile(LocalMediaPath);
+        RefreshProxies();
 
         foreach (var stream in info?.Subtitles ?? [])
         {

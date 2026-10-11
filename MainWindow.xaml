@@ -510,7 +510,7 @@
                 </DockPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                     <ToggleButton Content="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0" IsChecked="{Binding LivePreview}"
-                              AutomationProperties.Name="Enable Live Preview"
+                              AutomationProperties.Name="Enable Live Preview" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
                               ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is." />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Margin="3,0,14,0" Click="ReloadPlayer_Click"
                             ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
@@ -524,7 +524,7 @@
                     <Button Style="{StaticResource TransportButton}" Content="&#xE893;" Click="NextIFrame_Click"
                             ToolTip="Next I-Frame" AutomationProperties.Name="Next I-Frame" />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
-                            AutomationProperties.Name="Render Preview"
+                            AutomationProperties.Name="Render Preview" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
                     <!-- Views: which panes are open, where each of them is, and whether clips show their keyframes. Encoder Mode's: Editor Mode has the button in the side panes' header. -->
                     <ToggleButton x:Name="ViewsButton" Content="&#xE8A9;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0"
@@ -599,20 +599,39 @@
                                 Margin="0,4,0,0" MouseLeave="SettingsFlyout_MouseLeave">
                             <StackPanel MinWidth="180">
                                 <StackPanel.Resources>
-                                    <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <!-- A row of a menu: its words start at the left, where the ordinary button would put them in the middle. -->
+                                    <Style TargetType="Button">
                                         <Setter Property="Background" Value="Transparent" />
                                         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
                                         <Setter Property="HorizontalContentAlignment" Value="Left" />
                                         <Setter Property="Padding" Value="10,6" />
                                         <Setter Property="Margin" Value="0,1" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border x:Name="row" Background="{TemplateBinding Background}" CornerRadius="3" Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" RecognizesAccessKey="True" />
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="row" Property="Background" Value="{DynamicResource ControlHoverBrush}" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
                                     </Style>
                                 </StackPanel.Resources>
+                                <!-- Autosave first: its name on the left like the rest, its box at the right-hand end of the row -->
+                                <DockPanel Margin="10,5,8,6" Background="Transparent"
+                                           ToolTip="Writes the open project to a file named after it (Name.autosave.hproj) every few minutes, in the background. The interval is in Settings, Behavior.">
+                                    <CheckBox DockPanel.Dock="Right" IsChecked="{Binding AutosaveEnabled}" Margin="12,0,0,0" VerticalAlignment="Center" AutomationProperties.Name="Autosave" />
+                                    <TextBlock Text="Autosave" Foreground="{DynamicResource TextBrush}" VerticalAlignment="Center" />
+                                </DockPanel>
                                 <Button Content="{Binding QueueButtonText}" Click="FlyoutQueue_Click" AutomationProperties.Name="Queue"
                                         ToolTip="Show the batch queue. The number is how many jobs are waiting." />
                                 <Button Content="Social Squisher" Click="FlyoutSquisher_Click" AutomationProperties.Name="Social Squisher"
                                         ToolTip="Opens the startup dialog with the Social Sharing Squisher: drop a video on a preset to squeeze it under that size." />
-                                <CheckBox Content="Autosave" IsChecked="{Binding AutosaveEnabled}" Margin="10,6,10,4" Foreground="{DynamicResource TextBrush}" AutomationProperties.Name="Autosave"
-                                          ToolTip="Writes the open project to a file named after it (Name.autosave.hproj) every few minutes, in the background. The interval is in Settings, Behavior." />
                                 <Button Content="Video Combinator" Click="FlyoutCombinator_Click" AutomationProperties.Name="Video Combinator"
                                         ToolTip="Video Combinator: join up to five videos into one, stitched as they are or re-encoded with a transition" />
                             </StackPanel>
@@ -825,12 +844,12 @@
                         <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="10,0,0,0"
                                     Visibility="{Binding ShowSimplePlayback, Converter={StaticResource BoolToVisibility}}">
                             <ToggleButton Content="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="9,6" Margin="3,0" IsChecked="{Binding LivePreview}"
-                                  AutomationProperties.Name="Enable Live Preview"
+                                  AutomationProperties.Name="Enable Live Preview" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
                                   ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is." />
                             <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Padding="9,6" Click="ReloadPlayer_Click"
                                     ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
                             <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Padding="9,6" Command="{Binding RenderPreviewCommand}"
-                                    AutomationProperties.Name="Render Preview"
+                                    AutomationProperties.Name="Render Preview" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
                                     ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
                         </StackPanel>
                         <TextBlock Grid.Column="3" x:Name="PositionTextBlock" Text="{Binding PositionText}" Style="{StaticResource TimeText}" Margin="12,0"
@@ -975,6 +994,13 @@
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0,0,0,10"
                                     Visibility="{Binding ShowPresetBarInSummary, Converter={StaticResource BoolToVisibility}}" />
                 </Border>
+                <!-- Encoder Mode's: the files lately worked on in Editor Mode, to open one here without looking for it again -->
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10"
+                            Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}">
+                    <TextBlock Text="Recent Editor Files:" Style="{StaticResource FieldLabel}" Margin="0,0,10,0" />
+                    <ComboBox MinWidth="380" MaxWidth="640" ItemsSource="{Binding RecentEditorFiles}" SelectedItem="{Binding SelectedRecentEditorFile}" AutomationProperties.Name="Recent Editor Files"
+                              ToolTip="Videos, pictures and sounds lately opened or put on the timeline in Editor Mode. Choosing one opens it here as the source." />
+                </StackPanel>
                 <Grid Grid.IsSharedSizeScope="True">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -2526,6 +2552,68 @@
             </StackPanel>
             <Button Grid.Column="3" Content="Cancel" Margin="8,0,0,0" Padding="12,3" Command="{Binding CancelCommand}" />
         </Grid>
+        </Grid>
+
+        <!--
+            The drop overlay: while a file is dragged over the window, the window dims and offers targets to
+            drop it on (style or encoding presets, by the mode, and the Social Squisher's). Only the targets
+            take the drop; the dimming does not, so a file let go anywhere else lands on what is under it, as
+            it always did. Filled from code, after the window is up: nothing of it is on the way to starting.
+        -->
+        <Grid x:Name="DropOverlay" Grid.RowSpan="99" Grid.ColumnSpan="99" Panel.ZIndex="999" Visibility="Collapsed">
+            <Grid.Resources>
+                <DataTemplate x:Key="DropTargetSmall">
+                    <Button Height="60" MinWidth="110" Margin="4" Padding="8,3" HorizontalAlignment="Stretch" AllowDrop="True" Background="{DynamicResource DropTargetBrush}" Focusable="False" FontSize="11.5"
+                            DragEnter="DropTarget_DragEnter" DragLeave="DropTarget_DragLeave" DragOver="DropTarget_DragOver" Drop="DropTarget_Drop"
+                            AutomationProperties.Name="{Binding Name}">
+                        <StackPanel>
+                            <Path Width="26" Height="26" Stretch="None" HorizontalAlignment="Center" StrokeThickness="1.5" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Data="{Binding IconData}" />
+                            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" TextAlignment="Center" Margin="0,2,0,0" />
+                        </StackPanel>
+                    </Button>
+                </DataTemplate>
+                <DataTemplate x:Key="DropTargetTemplate">
+                    <Button Height="112" Width="232" Margin="6" Padding="12,6" FontSize="14" AllowDrop="True" Background="{DynamicResource DropTargetBrush}" Focusable="False"
+                            DragEnter="DropTarget_DragEnter" DragLeave="DropTarget_DragLeave" DragOver="DropTarget_DragOver" Drop="DropTarget_Drop"
+                            AutomationProperties.Name="{Binding Name}">
+                        <StackPanel>
+                            <Path Width="26" Height="26" Stretch="None" HorizontalAlignment="Center" StrokeThickness="1.6" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Data="{Binding IconData}" />
+                            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" TextAlignment="Center" Margin="0,4,0,0" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Button>
+                </DataTemplate>
+            </Grid.Resources>
+            <Rectangle Fill="#C8000000" IsHitTestVisible="False" />
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <!-- The first and larger choice: open the file, with a preset. Which kind of preset is the mode's. -->
+                <Border x:Name="DropPresetSection" BorderBrush="#60FFFFFF" BorderThickness="1" CornerRadius="10" Background="#38000000" Padding="16,10,16,12" HorizontalAlignment="Stretch">
+                <StackPanel>
+                <TextBlock x:Name="DropPresetTitle" Text="Open with a style preset" Foreground="White" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" IsHitTestVisible="False" />
+                <ItemsControl x:Name="DropPresetList" Focusable="False" ItemTemplate="{StaticResource DropTargetTemplate}" HorizontalAlignment="Center">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                </ItemsControl>
+                </StackPanel>
+                </Border>
+                <!-- The second, smaller: do not open it at all, squeeze it for somewhere. -->
+                <Border x:Name="DropSquishSection" BorderBrush="#60FFFFFF" BorderThickness="1" CornerRadius="10" Background="#38000000" Padding="14,8,14,10" Margin="0,32,0,0" HorizontalAlignment="Stretch">
+                <StackPanel>
+                <TextBlock Text="Social Sharing Squisher" Foreground="White" FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,4" IsHitTestVisible="False" />
+                <ItemsControl x:Name="DropSquishList" Focusable="False" ItemTemplate="{StaticResource DropTargetSmall}" HorizontalAlignment="Stretch">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <UniformGrid Rows="1" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                </ItemsControl>
+                </StackPanel>
+                </Border>
+            </StackPanel>
         </Grid>
     </Grid>
 </Window>

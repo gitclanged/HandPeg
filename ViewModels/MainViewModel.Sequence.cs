@@ -950,7 +950,8 @@ public partial class MainViewModel
     {
         get
         {
-            var path = LocalMediaPath;
+            // The proxy, where there is one: the player shows that; everything that is exported reads LocalMediaPath.
+            var path = PreviewMediaPath;
             if (!HasSource || IsMainWholeSequence)
                 return path;
 

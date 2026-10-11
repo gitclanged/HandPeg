@@ -256,6 +256,9 @@ public sealed record SequenceExportState
     /// builder leaves out a mask or a LUT whose file is missing, and asks this instead of the disk.
     /// </summary>
     public IReadOnlySet<string> ExistingFiles { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The proxies of the layers' videos, by original file: what the player's graph reads in their place. An export's graph never looks here.</summary>
+    public IReadOnlyDictionary<string, string> PreviewPaths { get; init; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>A finished export command, and which of the lists FFmpeg reads beside it the command refers to.</summary>
@@ -1954,7 +1957,9 @@ public static class FilterGraphBuilder
                 // way in (so the start of the layer's video is skipped), or not there yet (so it is held back).
                 // At a speed other than 1 the clip covers its file that many times as fast: how far into the file it
                 // is, is worked out in the file's own seconds, and its frames are then given the timeline's.
-                chain.Append($"movie='{EscapeFilterPath(layer.ImagePath)}':loop=0,setpts=N/FRAME_RATE/TB");
+                // For the player, the layer's proxy where it has one (lighter to decode, the same length and rate); for an export, always its file.
+                var layerFile = _buildingLiveGraph && S.PreviewPaths.TryGetValue(layer.ImagePath, out var proxy) ? proxy : layer.ImagePath;
+                chain.Append($"movie='{EscapeFilterPath(layerFile)}':loop=0,setpts=N/FRAME_RATE/TB");
                 var speed = GetSpeed(layer);
                 var retimed = IsRetimed(speed);
                 var into = (startSeconds - layer.StartTime) * speed + layer.MediaOffset;
