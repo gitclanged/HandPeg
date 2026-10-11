@@ -1321,9 +1321,11 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private bool _liveGraphLogged;
+
     private void OpenInPlayer(string path, long startMs, bool paused)
     {
-        _playerSource = path;
+        (_playerSource, _liveGraphLogged) = (path, false);
         if (_mpv is not { } player)
         {
             _pendingMedia = (path, startMs, paused);
@@ -1460,6 +1462,12 @@ public partial class MainWindow : Window
 
         (_liveGraph, _liveAudioFromMs) = (graph, hasSound ? from : null);
         var problem = player.SetFilterGraph(graph);
+        if (graph.Length > 0 && problem is null && !_liveGraphLogged)
+        {
+            // Once for each file that is opened: that Live Preview is running, for the log.
+            _liveGraphLogged = true;
+            AppLog.Write($"Live Preview: the filter graph is running in the player ({graph.Length} characters).");
+        }
         if (graph.Length == 0)
             player.SetFiltering(false);
         if (problem is not null)

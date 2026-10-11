@@ -415,6 +415,7 @@ public partial class MainViewModel
                 _proxies[media] = ready;
                 _proxyQueued.Remove(media);
                 took = true;
+                AppLog.Write($"Proxy: found in the cache for {Path.GetFileName(media)}, nothing is generated; the player shows it.");
                 continue;
             }
 
@@ -483,6 +484,11 @@ public partial class MainViewModel
                     break;
                 }
 
+                // Stopped while it was being made (another video or project was opened): the queue and the
+                // counts belong to the next session by now, and are left alone.
+                if (work.IsCancellationRequested)
+                    break;
+
                 _proxyQueued.Remove(media);
                 _proxyDone++;
                 if (made is not null && !work.IsCancellationRequested)
@@ -495,13 +501,17 @@ public partial class MainViewModel
         }
         finally
         {
-            _proxyWorking = false;
-            if (!work.IsCancellationRequested && _proxyQueue.Count == 0)
+            // Only while this is still the run in hand: one that was stopped has been replaced, or will be.
+            if (ReferenceEquals(_proxyWork, work))
             {
-                var made = _proxyDone;
-                (_proxyDone, _proxyTotal) = (0, 0);
-                AppLog.Write("Proxy: all proxies for the session are generated.");
-                _ = AnnounceProxiesAsync(made);
+                _proxyWorking = false;
+                if (!work.IsCancellationRequested && _proxyQueue.Count == 0)
+                {
+                    var made = _proxyDone;
+                    (_proxyDone, _proxyTotal) = (0, 0);
+                    AppLog.Write("Proxy: all proxies for the session are generated.");
+                    _ = AnnounceProxiesAsync(made);
+                }
             }
         }
     }
@@ -521,10 +531,78 @@ public partial class MainViewModel
     /// <summary>Stops making proxies and forgets what was queued: Encoder Mode has no use for them.</summary>
     private void StopProxies()
     {
+        // Cancelling ends the FFmpeg that is encoding one, at once. The run it belonged to is let go of here
+        // (it finds that out and touches nothing more), so that another can start straight away.
+        var wasWorking = _proxyWorking;
         _proxyWork?.Cancel();
+        (_proxyWork, _proxyWorking) = (null, false);
         _proxyQueue.Clear();
         _proxyQueued.Clear();
         (_proxyDone, _proxyTotal) = (0, 0);
+        if (wasWorking)
+        {
+            AppLog.Write("Proxy: generation stopped, and its FFmpeg ended.");
+            if (!IsBusy)
+                ProgressValue = 0;
+        }
+    }
+
+    /// <summary>
+    /// Another video or project is being opened: whatever was being made for the preview of the one before
+    /// is stopped, and its FFmpeg processes ended at once. Proxies that were finished stay in the cache, the
+    /// timeline proxy among them, for the next time that video or project is opened.
+    /// </summary>
+    private void StopPreviewWork()
+    {
+        if (_isBackgroundWorker)
+            return;
+
+        StopProxies();
+        _proxies.Clear();
+
+        _timelineIdle?.Cancel();
+        _timelinePending = false;
+        if (_timelineRendering)
+        {
+            _timelineRender?.Cancel();
+            (_timelineRender, _timelineRendering) = (null, false);
+            AppLog.Write("Timeline proxy: rendering stopped, another video or project is being opened.");
+            if (!IsBusy)
+                ProgressValue = 0;
+        }
+
+        if (_timelineProxy.Length > 0)
+        {
+            AppLog.Write("Timeline proxy: left in the cache for the next time this timeline is opened.");
+            (_timelineProxy, _timelineProxyPrint) = ("", "");
+        }
+    }
+
+    /// <summary>
+    /// Where the timeline proxy of a timeline is kept: named after the timeline itself (everything a project
+    /// saves), the preview quality, and the size and date of each file on it. The same timeline, opened
+    /// again, finds its proxy; anything else about it, and it is another file.
+    /// </summary>
+    private string TimelineProxyPath(string print)
+    {
+        var invariant = System.Globalization.CultureInfo.InvariantCulture;
+        var text = new System.Text.StringBuilder(print).Append('|').Append(AppSettings.Current.PreviewQuality);
+        foreach (var file in Layers.Select(l => l.ImagePath).Prepend(LocalMediaPath).Where(f => !string.IsNullOrWhiteSpace(f)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var info = new FileInfo(file.Trim().Trim('"'));
+                if (info.Exists)
+                    text.Append('|').Append(info.Length.ToString(invariant)).Append(':').Append(info.LastWriteTimeUtc.Ticks.ToString(invariant));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                // Not a file that can be asked: the path, which is in the project, has to do.
+            }
+        }
+
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text.ToString()));
+        return Path.Combine(ProxyCache.Folder, $"timeline_{Convert.ToHexString(hash, 0, 8).ToLowerInvariant()}.mp4");
     }
 
     private async Task SyncCaptionsAfterLoadAsync()
@@ -663,11 +741,22 @@ public partial class MainViewModel
             return;
         }
 
+        // Rendered before, of this very timeline (in this session or an earlier one): it is there to be played.
+        var silent = TimelineProxyPath(print);
+        if (ProxyCache.Touch(silent))
+        {
+            (_timelineProxy, _timelineProxyPrint) = (silent, print);
+            AppLog.Write($"Timeline proxy: found in the cache ({new FileInfo(silent).Length / 1048576.0:0.0} MB), nothing is rendered; the player plays it.");
+            ProxiesChanged();
+            if (!IsBusy)
+                StatusText = "Timeline Proxy Ready (from the cache): the player is playing the flattened timeline. Any edit discards it.";
+            return;
+        }
+
         (_timelineRendering, _timelineRenderPrint) = (true, print);
         var work = _timelineRender = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
         Directory.CreateDirectory(ProxyCache.Folder);
         var rendered = Path.Combine(ProxyCache.Folder, $"timeline_{Guid.NewGuid():N}.render.mp4");
-        var silent = Path.Combine(ProxyCache.Folder, $"timeline_{Guid.NewGuid():N}.mp4");
         var done = false;
         try
         {
@@ -707,7 +796,8 @@ public partial class MainViewModel
         }
         catch (OperationCanceledException)
         {
-            AppLog.Write("Timeline proxy: rendering stopped, the timeline was edited.");
+            if (ReferenceEquals(_timelineRender, work))
+                AppLog.Write("Timeline proxy: rendering stopped, the timeline was edited.");
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
@@ -717,7 +807,11 @@ public partial class MainViewModel
         }
         finally
         {
-            _timelineRendering = false;
+            // A render that was stopped for another video or project has been let go of already.
+            var current = ReferenceEquals(_timelineRender, work);
+            if (current)
+                _timelineRendering = false;
+            done &= current;
             foreach (var leftover in done ? new[] { rendered } : [rendered, silent])
             {
                 try
@@ -749,6 +843,10 @@ public partial class MainViewModel
             RestartTimelineIdle();
             return;
         }
+
+        // It counts towards the limit of the cache like any proxy; the oldest go to make room for it.
+        var limit = Math.Clamp(AppSettings.Current.ProxyCacheLimitMb, 512, 2_000_000) / 1024.0;
+        _ = Task.Run(() => ProxyCache.Trim(limit, silent));
 
         (_timelineProxy, _timelineProxyPrint) = (silent, print);
         AppLog.Write($"Timeline proxy: ready ({new FileInfo(silent).Length / 1048576.0:0.0} MB); the player plays it and composes nothing.");
@@ -915,6 +1013,9 @@ public partial class MainViewModel
         try
         {
             state = ProjectStore.Load(filePath);
+
+            // The project that was open is being left: what was being made for its preview stops now.
+            StopPreviewWork();
 
             // An autosave is opened as work that has no file yet: Save then asks where, and the autosave is not overwritten by hand.
             CurrentProjectPath = Path.GetFileNameWithoutExtension(filePath).EndsWith(ProjectStore.AutosaveSuffix, StringComparison.OrdinalIgnoreCase) ? "" : filePath;

@@ -1631,6 +1631,9 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Clears per-source state when a different source is loaded.</summary>
     private void ResetForNewSource()
     {
+        // Proxies still being made of the video that was open are of no use to this one.
+        StopPreviewWork();
+
         Segments.Clear();
         PendingStartMs = null;
         PositionMs = 0;

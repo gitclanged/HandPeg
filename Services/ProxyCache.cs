@@ -51,6 +51,23 @@ public static class ProxyCache
     }
 
     /// <summary>Brings the folder under its limit: the proxies used longest ago go first. One is never deleted: the one about to be used.</summary>
+    /// <summary>Whether a file of the cache is there, and whole; when it is, it counts as used just now.</summary>
+    public static bool Touch(string path)
+    {
+        try
+        {
+            if (!File.Exists(path) || new FileInfo(path).Length == 0)
+                return false;
+
+            File.SetLastAccessTimeUtc(path, DateTime.UtcNow);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
     public static void Trim(double limitGb, string? keep = null)
     {
         try
@@ -89,6 +106,11 @@ public static class ProxyCache
         string media, bool low, double limitGb, IReadOnlyList<string> encoders, IProgress<double> progress, CancellationToken cancellationToken)
     {
         var path = PathFor(media, low);
+
+        // Made already (by an earlier session, or while this was waiting its turn): nothing is encoded.
+        if (Find(media, low) is { } ready)
+            return ready;
+
         var making = Path.Combine(Folder, $"making_{Guid.NewGuid():N}.part.mp4");
         try
         {
@@ -166,8 +188,12 @@ public static class ProxyCache
             var (removed, freed, cutoff) = (0, 0L, DateTime.UtcNow.AddDays(-Math.Max(staleDays, 1)));
             foreach (var file in new DirectoryInfo(Folder).GetFiles())
             {
-                var leftover = file.Name.StartsWith("timeline_", StringComparison.OrdinalIgnoreCase) || file.Name.StartsWith("making_", StringComparison.OrdinalIgnoreCase)
-                               || file.Name.EndsWith(".render.mp4", StringComparison.OrdinalIgnoreCase) || file.Name.EndsWith(".part.mp4", StringComparison.OrdinalIgnoreCase);
+                // Half-made files, and the timeline proxies of builds that named them at random (32 letters
+                // where there are now 16), which nothing can find again. A timeline proxy named after its
+                // timeline is kept like any other proxy: opening that timeline again finds it.
+                var leftover = file.Name.StartsWith("making_", StringComparison.OrdinalIgnoreCase)
+                               || file.Name.EndsWith(".render.mp4", StringComparison.OrdinalIgnoreCase) || file.Name.EndsWith(".part.mp4", StringComparison.OrdinalIgnoreCase)
+                               || (file.Name.StartsWith("timeline_", StringComparison.OrdinalIgnoreCase) && Path.GetFileNameWithoutExtension(file.Name).Length != "timeline_".Length + 16);
                 var stale = file.LastAccessTimeUtc < cutoff && file.LastWriteTimeUtc < cutoff;
                 if (!leftover && !stale)
                     continue;

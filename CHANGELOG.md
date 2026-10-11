@@ -3,6 +3,29 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v2.6.3
+
+A hotfix for the proxy cache.
+
+### Fixed
+- **Timeline proxies were rendered again every time.** A timeline proxy was given a random name, so nothing could find it again, and the clean-up at startup removed every one of them. It is now named after its timeline (the project as saved, the preview quality, and the size and date of each file on it): opening the same project again finds it in the cache and plays it at once, with nothing rendered. The startup clean-up keeps them; only an edit to the timeline discards one.
+- **Proxy work carried on after another video or project was opened.** Opening a video or a project now stops whatever was being made for the one before, and ends its FFmpeg process at once: the proxy of each video, and the timeline proxy. Nothing half-made is left in the cache.
+- Changing the preview quality while a proxy was being generated could leave the new tier's proxies waiting and never made.
+- A proxy that is already in the cache is never encoded again, even when it was queued before it appeared there.
+
+### Changed
+- Timeline proxies count towards the Proxy Cache Size Limit, and the oldest files go to make room for a new one.
+- The log says when a proxy was found in the cache, when generation was stopped, and (once for each file opened) that Live Preview's filter graph is running in the player.
+
+### Live Preview
+- The report that Live Preview had stopped rendering after the launch optimizations was looked into and could not be reproduced: with a plain video and with a project, in the debug and the published build, the filter graph reaches the player and is drawn. No change was made to the player for it. If it still happens, HandPeg.log now shows whether the graph was running ("Live Preview: the filter graph is running in the player") or what the player said was wrong with it ("Player: ...").
+
+### Compatibility
+- Projects, presets and settings are unchanged. Timeline proxies made by earlier builds cannot be found again and are removed at the next start.
+
+### Upgrading
+Installed copies update automatically.
+
 ## HandPeg v2.6.1
 
 An optimization patch: nothing looks or works differently.
