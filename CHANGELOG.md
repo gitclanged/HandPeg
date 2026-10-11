@@ -17,6 +17,7 @@ An optimization patch: nothing looks or works differently.
 - Whisper's progress line is read with a source-generated regex.
 
 ### Fixed
+- **First-run setup.** Hardware encoders (NVENC, QuickSync, AMF) could stay missing from the setup window's encoder list until HandPeg was restarted: after "Use an Existing FFmpeg...", and after an install pass that ended without reporting anything newly installed. The list is now filled as soon as an FFmpeg is there, however it got there.
 - The voiceover's waveform was not drawn in the Master Mix View (Encoder Mode).
 
 ### Compatibility

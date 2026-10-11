@@ -42,6 +42,14 @@ public partial class FirstRunWindow : Window
         FillEncoders([]);
         Loaded += (_, _) => _ = ProbeEncodersAsync();
         Dependencies.Changed += () => _ = ProbeEncodersAsync();
+
+        // And whenever an install pass ends, however it ended: one that was cancelled or failed part of the way
+        // may still have left an FFmpeg behind, and the encoders are asked of whichever FFmpeg is there now.
+        Dependencies.RunningChanged += () =>
+        {
+            if (!Dependencies.IsRunning)
+                _ = ProbeEncodersAsync();
+        };
         Closed += (_, _) => _probeCancellation.Cancel();
         UpdateEncoderPanel();
 
@@ -136,18 +144,37 @@ public partial class FirstRunWindow : Window
         UpdateEncoderPanel();
     }
 
+    // The FFmpeg the encoders were last asked of, and which asking is the latest: it is asked again only when
+    // the FFmpeg is another one, and an answer that a later asking has overtaken is dropped.
+    private string _probedFfmpeg = "";
+    private int _probeRun;
+
     private async Task ProbeEncodersAsync()
     {
-        if (!File.Exists(DependencyUpdater.FfmpegPath))
+        var ffmpeg = DependencyUpdater.FfmpegPath;
+        if (!File.Exists(ffmpeg))
         {
+            (_probedFfmpeg, _probeRun) = ("", _probeRun + 1);
+            FillEncoders([]);
             EncoderStatusText.Text = "Hardware encoders are looked for once FFmpeg is installed (below).";
             return;
         }
 
+        // The same file as last time (its path, size and date): what was found then still holds.
+        var file = new FileInfo(ffmpeg);
+        var identity = FormattableString.Invariant($"{file.FullName}|{file.Length}|{file.LastWriteTimeUtc.Ticks}");
+        if (identity == _probedFfmpeg)
+            return;
+
+        _probedFfmpeg = identity;
+        var run = ++_probeRun;
         EncoderStatusText.Text = "Checking hardware encoders...";
         try
         {
             var (hardware, _) = await EncoderProber.ProbeAsync(_probeCancellation.Token);
+            if (run != _probeRun)
+                return;
+
             FillEncoders(hardware);
             EncoderStatusText.Text = hardware.Count switch
             {
@@ -161,7 +188,9 @@ public partial class FirstRunWindow : Window
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            EncoderStatusText.Text = "Hardware encoders could not be checked.";
+            // Not kept as asked: the next change of tools tries again.
+            if (run == _probeRun)
+                (_probedFfmpeg, EncoderStatusText.Text) = ("", "Hardware encoders could not be checked.");
         }
     }
 
@@ -215,6 +244,9 @@ public partial class FirstRunWindow : Window
         }
 
         _ = Dependencies.RefreshAsync();
+
+        // The FFmpeg that was pointed at is the one in use from here on: its encoders are asked for now.
+        _ = ProbeEncodersAsync();
     }
 
     private void Start_Click(object sender, RoutedEventArgs e)
