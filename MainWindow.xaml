@@ -2349,10 +2349,10 @@
 
                         <!-- Advanced: captions transcribed from the audio by whisper.cpp and drawn into the picture -->
                         <StackPanel Visibility="{Binding ShowAutoCaptions, Converter={StaticResource BoolToVisibility}}">
-                            <CheckBox Content="Generate Auto-Captions" IsChecked="{Binding AutoCaptions}" Margin="0,0,0,6"
-                                      ToolTip="Transcribes the speech with whisper.cpp when an encode or Render Preview starts, and draws the words into the picture as animated captions." />
+                            <CheckBox Content="Generate Auto-Captions" IsChecked="{Binding AutoCaptions}" Margin="0,0,0,6" AutomationProperties.Name="Generate Auto-Captions"
+                                      ToolTip="Draws captions into the exported picture. With a subtitle track (made by Generate Captions, imported, or edited by hand), the track is what is drawn, exactly as it stands. Without one, the speech is transcribed with whisper.cpp when the export starts. Cleared, the export has no captions; a subtitle track is kept for when it is ticked again." />
                             <!-- Analysis audio source: one of the video's own tracks, or a separate file -->
-                            <Grid IsEnabled="{Binding AutoCaptions}">
+                            <Grid IsEnabled="{Binding CaptionOptionsEnabled}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="*" MaxWidth="620" />
@@ -2392,14 +2392,14 @@
                                         IsEnabled="{Binding CaptionUseExternalAudio}" />
                             </Grid>
                             <!-- Which speech model listens: larger ones hear better and take longer. Chosen here, downloaded when needed. -->
-                            <StackPanel Orientation="Horizontal" IsEnabled="{Binding AutoCaptions}" Margin="0,6,0,0">
+                            <StackPanel Orientation="Horizontal" IsEnabled="{Binding CaptionOptionsEnabled}" Margin="0,6,0,0">
                                 <TextBlock Text="Model:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
                                 <ComboBox MinWidth="130" ItemsSource="{Binding WhisperModelChoices}" SelectedItem="{Binding WhisperModelChoice}" AutomationProperties.Name="Whisper Model"
                                           ToolTip="The whisper speech model the captions are transcribed with: tiny is the fastest and roughest, large-v3 the best and slowest, turbo nearly as good as large and several times faster. The .en models are for English only. A model that has not been downloaded yet is fetched when it is chosen." />
                                 <TextBlock Text="{Binding WhisperModelStatus}" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                             </StackPanel>
                             <!-- How whisper is asked to listen -->
-                            <Grid IsEnabled="{Binding AutoCaptions}" Margin="0,6,0,0">
+                            <Grid IsEnabled="{Binding CaptionOptionsEnabled}" Margin="0,6,0,0">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="Auto" />
@@ -2417,10 +2417,23 @@
                                 <TextBox Grid.Column="4" Margin="0,4" Text="{Binding WhisperPrompt, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Whisper Prompt"
                                          ToolTip="Names, game terms and spellings to expect (--prompt), for example: Overwatch, Kiriko, ult. Whisper is more likely to write them that way." />
                             </Grid>
-                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0" IsEnabled="{Binding AutoCaptions}">
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0" IsEnabled="{Binding CaptionOptionsEnabled}">
                                 <Button Content="Caption Style Settings" Click="CaptionStyle_Click"
                                         ToolTip="Font, colors, outline, words per line and the animation." />
-                                <ToggleButton Content="Preview Subtitles" Margin="6,0,0,0" IsChecked="{Binding PreviewSubtitles}" AutomationProperties.Name="Preview Subtitles"
+                                <!--
+                                    Editor Mode: transcribes now, into a subtitle track that can be seen and edited before
+                                    the export, which then draws that track instead of transcribing again.
+                                -->
+                                <Button Margin="6,0,0,0" Padding="14,5" Command="{Binding GenerateCaptionsCommand}" AutomationProperties.Name="Generate Captions"
+                                        Background="{DynamicResource AccentBrush}" Foreground="{DynamicResource OnAccentBrush}" FontWeight="SemiBold"
+                                        Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
+                                        ToolTip="Transcribes the speech now, with the model chosen above, into a subtitle track, and ticks Generate Auto-Captions. The track is shown in the player, can be edited in the Subtitle Editor, and is saved with the project. Exports and queued jobs draw it exactly as it stands and never transcribe again; pressing this again replaces it.">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE8D4;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" FontWeight="Normal" />
+                                        <TextBlock Text="Generate Captions" Margin="8,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                                <ToggleButton Content="Preview Subtitles" Margin="6,0,0,0" IsChecked="{Binding PreviewSubtitles}" Visibility="Collapsed" AutomationProperties.Name="Preview Subtitles"
                                               ToolTip="Draws the captions over the picture in the player, in the style and the box they have: the words are transcribed the first time, which takes a moment. Change the style, or move the box, and the preview follows. The player draws them itself, so playback stays smooth; the box's rounded or soft edges and its mask are only in the export and in Render Preview." />
                                 <Button Content="Edit Captions" Margin="6,0,0,0" Click="EditSubtitles_Click" AutomationProperties.Name="Edit Captions"
                                         ToolTip="Opens the Subtitle Editor: every caption on a timeline, to retime by dragging and to reword. The first time, the captions are transcribed and become a subtitle track that is yours to edit." />

@@ -122,6 +122,50 @@ public partial class MainViewModel
         NotifySubtitlesChanged();
     }
 
+    /// <summary>
+    /// Generate Captions (Editor Mode): transcribes the speech now and puts the captions on the timeline as the
+    /// subtitle track, replacing what was there, and switches captions on. From then on the track is what is
+    /// shown, edited, saved and exported: an export draws it as it stands and never transcribes again.
+    /// </summary>
+    [RelayCommand]
+    private async Task GenerateCaptionsAsync()
+    {
+        if (!HasSource)
+        {
+            StatusText = "Load a video first: there is nothing to make captions from.";
+            return;
+        }
+
+        await ConvertCaptionsToCuesAsync();
+        if (HasTextCues && !AutoCaptions)
+            AutoCaptions = true;
+        SyncEditorCaptions();
+    }
+
+    /// <summary>
+    /// Editor Mode: the player shows the subtitle track while captions are switched on and there is a track to
+    /// show. Nothing is transcribed for this; without a track, the captions are only made when the video is exported.
+    /// </summary>
+    private void SyncEditorCaptions()
+    {
+        if (!IsEditorMode || _isBackgroundWorker)
+            return;
+
+        if (AutoCaptions && HasTextCues && HasSource)
+        {
+            if (IsBusy)
+                return;
+            if (PreviewSubtitles)
+                RefreshLiveCaptionsSoon();
+            else
+                PreviewSubtitles = true;
+        }
+        else if (PreviewSubtitles)
+        {
+            PreviewSubtitles = false;
+        }
+    }
+
     private void NotifySubtitlesChanged()
     {
         OnPropertyChanged(nameof(HasSubtitleCues));
@@ -129,6 +173,8 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(SubtitleTrackSummary));
         OnPropertyChanged(nameof(CaptionHint));
         TimelineChanged?.Invoke();
+        if (!IsBusy)
+            SyncEditorCaptions();
     }
 
     /// <summary>

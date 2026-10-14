@@ -13,7 +13,12 @@ public partial class MainViewModel
     // ----- Auto-captions -----
 
     /// <summary>Burn captions made from the spoken words into the picture.</summary>
-    [ObservableProperty] private bool _autoCaptions;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CaptionOptionsEnabled))]
+    private bool _autoCaptions;
+
+    /// <summary>Whether the caption options can be set: always in Editor Mode, where Generate Captions uses them too; in Encoder Mode, while Auto-Captions is ticked.</summary>
+    public bool CaptionOptionsEnabled => IsEditorMode || AutoCaptions;
 
     // What captions listen to: one of the video's own audio tracks (when neither of these is set), a
     // separate audio file, or the voiceover recorded in the mixer pane.
@@ -116,6 +121,7 @@ public partial class MainViewModel
             IsArrangeActive = false;
         else if (value)
             OpenLayoutPaneIfWanted();
+        SyncEditorCaptions();
     }
 
     /// <summary>The caption box on an output frame of the given size, in pixels, with even sides as a video frame needs.</summary>
@@ -177,7 +183,8 @@ public partial class MainViewModel
 
     /// <summary>The caption file the player is to draw over the picture, or an empty string for none.</summary>
     public string LiveCaptionsPath =>
-        IsSubtitleEditorOpen ? "" : PreviewSubtitles && _liveCaptionsPath.Length > 0 ? _liveCaptionsPath : LiveImageSubtitlePath;
+        // Encoder Mode has no timeline for captions to be seen on: they are made for its export, and not shown in its player.
+        IsSubtitleEditorOpen || IsEncoderMode ? "" : PreviewSubtitles && _liveCaptionsPath.Length > 0 ? _liveCaptionsPath : LiveImageSubtitlePath;
 
     private string _liveCaptionsPath = "";
     private int _liveCaptionsRun;
@@ -293,9 +300,12 @@ public partial class MainViewModel
                 return $"The speech model {AppSettings.Current.WhisperModel} is not downloaded yet: see Settings (Tools).";
             if (VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput)
                 return "Captions are drawn into the picture, so they need a video encoder other than Copy (Video tab).";
+            var when = IsEditorMode
+                ? "The words are transcribed when the video is exported, or now with Generate Captions, to see and edit them first."
+                : "The words are transcribed when you press Start Encode or Render Preview.";
             if (!File.Exists(DependencyUpdater.VadModelPath))
-                return "The words are transcribed when you press Start Encode or Render Preview. Silence detection (VAD) is not installed, so quiet stretches may get words that were never said: see Settings (Tools).";
-            return "The words are transcribed when you press Start Encode or Render Preview.";
+                return $"{when} Silence detection (VAD) is not installed, so quiet stretches may get words that were never said: see Settings (Tools).";
+            return when;
         }
     }
 
