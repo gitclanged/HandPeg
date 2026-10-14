@@ -13,7 +13,9 @@ public static class StyleLibrary
 {
     // Raised when the built-in styles change, so that the new ones are written out.
     // 3: the HUD masks are one mask of the whole frame per game, traced from screenshots.
-    private const int Version = 3;
+    // 4: three or four layers a game; the other pieces are extras in the mask.
+    // 5: Overwatch's health piece takes in the name and perk line under the bar.
+    private const int Version = 5;
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 

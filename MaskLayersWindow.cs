@@ -13,12 +13,20 @@ namespace HandPegApp;
 /// Layers from a Mask: a mask of the whole frame, white over a game's HUD, taken apart into one layer per HUD
 /// element. Every patch the mask shows is found; patches closer together than the distance set are one
 /// element, so a row of separately traced ability icons becomes one layer and not one each. The pieces are
-/// shown over a still of the video as they will be cut, numbered, before anything is added. Built in code.
+/// shown over a still of the video as they will be cut, numbered, before anything is added; a click on one
+/// leaves it out or takes it back. Pieces that a layer already cuts out start left out, so the same window
+/// adds the pieces a preset did not (an ultimate meter, say). Built in code.
 /// </summary>
 public sealed class MaskLayersWindow : Window
 {
     private readonly MainViewModel _viewModel;
     private readonly List<Rect> _islands;
+    private readonly List<Rect> _existing;
+
+    // Where pieces were clicked: a piece with an odd number of clicks in it is the other way round from how it started.
+    private readonly List<Point> _toggles = [];
+    private List<Rect> _all = [];
+    private List<bool> _included = [];
     private readonly double _width, _height;
     private readonly Image _still = new() { Stretch = Stretch.Fill };
     private readonly PieceSurface _surface;
@@ -37,12 +45,13 @@ public sealed class MaskLayersWindow : Window
     public bool ReplaceExisting => _replace.IsChecked == true;
 
     /// <summary>Null when the mask cannot be read, or shows nothing: the window is then not shown.</summary>
-    public static MaskLayersWindow? Open(MainViewModel viewModel, string maskPath) =>
-        MaskStore.FindIslands(maskPath) is { Count: > 0 } islands ? new MaskLayersWindow(viewModel, maskPath, islands) : null;
+    /// <param name="existing">The areas layers already cut out of the video, as fractions of the frame.</param>
+    public static MaskLayersWindow? Open(MainViewModel viewModel, string maskPath, List<Rect> existing) =>
+        MaskStore.FindIslands(maskPath) is { Count: > 0 } islands ? new MaskLayersWindow(viewModel, maskPath, islands, existing) : null;
 
-    private MaskLayersWindow(MainViewModel viewModel, string maskPath, List<Rect> islands)
+    private MaskLayersWindow(MainViewModel viewModel, string maskPath, List<Rect> islands, List<Rect> existing)
     {
-        (_viewModel, _islands) = (viewModel, islands);
+        (_viewModel, _islands, _existing) = (viewModel, islands, existing);
         (_width, _height) = viewModel.SourceWidth > 0 && viewModel.SourceHeight > 0 ? (viewModel.SourceWidth, viewModel.SourceHeight) : (1920.0, 1080.0);
 
         Title = $"Layers from a Mask: {Path.GetFileName(maskPath)}";
@@ -74,6 +83,11 @@ public sealed class MaskLayersWindow : Window
         }
 
         _surface = new PieceSurface(_width, _height);
+        _surface.Clicked += at =>
+        {
+            _toggles.Add(at);
+            Regroup();
+        };
         var frame = new Grid { Width = _width, Height = _height, Background = Brushes.Black };
         frame.Children.Add(_still);
         frame.Children.Add(mask);
@@ -83,7 +97,8 @@ public sealed class MaskLayersWindow : Window
         var help = new TextBlock
         {
             Text = "Every patch the mask shows is found, and those closer together than the distance below are one HUD element: one layer each, all sharing this mask. "
-                   + "Raise the distance until each element is one numbered box (a row of ability icons traced one by one, say), and lower it if two elements have run together.",
+                   + "Raise the distance until each element is one numbered box (a row of ability icons traced one by one, say), and lower it if two elements have run together. "
+                   + "Click a box to leave it out, or to take it back: pieces a layer already cuts out start left out.",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -99,7 +114,9 @@ public sealed class MaskLayersWindow : Window
 
         _vertical.IsChecked = viewModel.FrameHeight > viewModel.FrameWidth;
         _vertical.ToolTip = "Makes the frame tall, with the video across its middle and the HUD elements enlarged above and below it. Cleared, each element is laid back where it was cut from.";
-        _replace.ToolTip = "Takes away the layers already cut from the video (into the recycle bin, so Undo brings them back), for a mask that is to replace them.";
+        _replace.ToolTip = "Takes away the layers already cut from the video (into the recycle bin, so Undo brings them back), for a mask that is to replace them. Every piece then starts included.";
+        _replace.Checked += (_, _) => Regroup();
+        _replace.Unchecked += (_, _) => Regroup();
 
         var cancel = new Button { Content = "Cancel", MinWidth = 88, Margin = new Thickness(6, 0, 0, 0), IsCancel = true };
         _add.Click += (_, _) => DialogResult = Pieces.Count > 0;
@@ -133,10 +150,21 @@ public sealed class MaskLayersWindow : Window
 
     private void Regroup()
     {
-        Pieces = MaskStore.GroupIslands(_islands, _join.Value / 2560, _width / _height);
+        _all = MaskStore.GroupIslands(_islands, _join.Value / 2560, _width / _height);
+        _included = _all.Select(piece =>
+        {
+            // Left out to begin with when a layer already cuts most of it out (and its layers are not being replaced).
+            var covered = !ReplaceExisting && _existing.Any(area => Rect.Intersect(area, piece) is { IsEmpty: false } overlap
+                                                                     && overlap.Width * overlap.Height > 0.5 * piece.Width * piece.Height);
+            var clicks = _toggles.Count(point => piece.Contains(point));
+            return covered == (clicks % 2 == 1);
+        }).ToList();
+
+        Pieces = _all.Where((_, i) => _included[i]).ToList();
         _joinText.Text = $"{_join.Value:0} px";
         _add.Content = Pieces.Count == 1 ? "Add 1 Layer" : $"Add {Pieces.Count} Layers";
-        _surface.Show(Pieces);
+        _add.IsEnabled = Pieces.Count > 0;
+        _surface.Show(_all, _included);
     }
 
     private async Task LoadStillAsync()
@@ -158,17 +186,32 @@ public sealed class MaskLayersWindow : Window
         }
     }
 
-    /// <summary>The pieces over the still, as numbered boxes, in the source's pixels; lines are sized to stay thin when scaled.</summary>
+    /// <summary>
+    /// The pieces over the still, as numbered boxes (solid when they are to be added, grey and dashed when left
+    /// out), in the source's pixels; lines are sized to stay thin when scaled. A click is passed on as a point
+    /// in fractions of the frame.
+    /// </summary>
     private sealed class PieceSurface(double width, double height) : FrameworkElement
     {
         private static readonly Brush Line = Frozen(Color.FromRgb(0xFF, 0xD0, 0x40));
+        private static readonly Brush Skipped = Frozen(Color.FromArgb(0xC0, 0xA0, 0xA0, 0xA0));
         private static readonly Brush LabelBack = Frozen(Color.FromArgb(0xD0, 0, 0, 0));
         private List<Rect> _pieces = [];
+        private List<bool> _included = [];
 
-        public void Show(List<Rect> pieces)
+        public event Action<Point>? Clicked;
+
+        public void Show(List<Rect> pieces, List<bool> included)
         {
-            (_pieces, Width, Height) = (pieces, width, height);
+            (_pieces, _included, Width, Height) = (pieces, included, width, height);
+            Cursor = System.Windows.Input.Cursors.Hand;
             InvalidateVisual();
+        }
+
+        protected override void OnMouseLeftButtonUp(System.Windows.Input.MouseButtonEventArgs e)
+        {
+            var at = e.GetPosition(this);
+            Clicked?.Invoke(new Point(at.X / width, at.Y / height));
         }
 
         protected override void OnRender(DrawingContext dc)
@@ -177,13 +220,18 @@ public sealed class MaskLayersWindow : Window
                 ? TransformToAncestor(window).TransformBounds(new Rect(0, 0, 1, 1)).Width
                 : 1;
             var px = scale > 0 ? 1 / scale : 1;
+            // Something to click on everywhere: a click in a box toggles it.
+            dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, width, height));
             var pen = new Pen(Line, 2 * px);
-            for (var i = 0; i < _pieces.Count; i++)
+            var skippedPen = new Pen(Skipped, 1.5 * px) { DashStyle = DashStyles.Dash };
+            for (int i = 0, number = 0; i < _pieces.Count; i++)
             {
+                var included = i < _included.Count && _included[i];
                 var box = new Rect(_pieces[i].X * width, _pieces[i].Y * height, _pieces[i].Width * width, _pieces[i].Height * height);
-                dc.DrawRectangle(null, pen, box);
-                var label = new FormattedText($"{i + 1}  {MaskStore.PlaceName(_pieces[i])}", CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
-                    new Typeface("Segoe UI Semibold"), 12 * px, Brushes.White, 1);
+                dc.DrawRectangle(null, included ? pen : skippedPen, box);
+                var text = included ? $"{++number}  {MaskStore.PlaceName(_pieces[i])}" : "left out";
+                var label = new FormattedText(text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
+                    new Typeface("Segoe UI Semibold"), 12 * px, included ? Brushes.White : Skipped, 1);
                 var at = new Point(box.X, Math.Max(box.Y - label.Height - 2 * px, 0));
                 dc.DrawRectangle(LabelBack, null, new Rect(at.X, at.Y, label.Width + 6 * px, label.Height));
                 dc.DrawText(label, new Point(at.X + 3 * px, at.Y));

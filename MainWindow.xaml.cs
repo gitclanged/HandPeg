@@ -3316,6 +3316,8 @@ public partial class MainWindow : Window
             Add("Blur Settings...", () => BlurSettings_Click(row, new RoutedEventArgs()));
         if (layer.IsVideo)
             Add("Draw Target", () => _viewModel.DrawTargetCommand.Execute(layer));
+        if (layer is { UsesFrameMask: true, CustomMask: true } && File.Exists(layer.MaskPath.Trim().Trim('"')))
+            Add("Add More Pieces of This Mask...", () => AddLayersFromMask(layer.MaskPath.Trim().Trim('"')));
 
         if (layer.IsMainVideo)
         {
@@ -3623,7 +3625,9 @@ public partial class MainWindow : Window
             maskPath = dialog.FileName;
         }
 
-        if (MaskLayersWindow.Open(_viewModel, maskPath) is not { } window)
+        // The areas already cut out of the video: pieces of the mask that one of them covers start left out.
+        var existing = _viewModel.Layers.Where(l => l.IsVideo && !l.IsDeleted).Select(l => new Rect(l.SourceX, l.SourceY, l.SourceWidth, l.SourceHeight)).ToList();
+        if (MaskLayersWindow.Open(_viewModel, maskPath, existing) is not { } window)
         {
             _viewModel.StatusText = "That mask shows nothing to make layers of, or it could not be read: it should be white (or painted, on transparency) where the HUD is.";
             return;

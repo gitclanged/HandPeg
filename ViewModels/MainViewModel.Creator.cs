@@ -681,8 +681,8 @@ public partial class MainViewModel
         // The main video in front of the pieces cut from it: it is what is being watched.
         MainVideoIndex = Layers.Count(l => !l.IsAudio);
         StatusText = vertical
-            ? $"Added {game.Pieces.Count} layers for {game.Name}, laid out above and below the video. Check each against your video: right-click a layer and choose Redraw / Modify Mask to correct it."
-            : $"Added {game.Pieces.Count} layers for {game.Name}. They sit where the HUD is by default: check each against your video, and correct its area with Draw Target or its outline with Draw Custom Shape (Mask).";
+            ? $"Added {game.MainPieces.Count()} layers for {game.Name}, laid out above and below the video. Check each against your video: right-click a layer and choose Redraw / Modify Mask to correct it."
+            : $"Added {game.MainPieces.Count()} layers for {game.Name}. They sit where the HUD is by default: check each against your video, and correct its area with Draw Target or its outline with Draw Custom Shape (Mask).";
     }
 
     /// <summary>
