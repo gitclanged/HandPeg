@@ -130,6 +130,41 @@ public sealed class AppSettings
     /// <summary>File name of the speech model auto-captions use, in the models folder.</summary>
     public string WhisperModel { get; set; } = "ggml-base.en.bin";
 
+    // ----- How whisper listens: the Auto-Captions tab. The defaults are whisper.cpp's own. -----
+
+    /// <summary>The spoken language a new window starts with, as whisper names it (en, es...), or auto. A preset or a project sets its own.</summary>
+    public string WhisperDefaultLanguage { get; set; } = "en";
+
+    /// <summary>Beam search: how many candidate sentences whisper follows at once, 1 to 16. More is more careful and slower.</summary>
+    public int WhisperBeamSize { get; set; } = 5;
+
+    /// <summary>How many candidates whisper keeps when it samples, 1 to 16.</summary>
+    public int WhisperBestOf { get; set; } = 5;
+
+    /// <summary>The sampling temperature, 0 to 1: 0 always takes the likeliest word.</summary>
+    public double WhisperTemperature { get; set; }
+
+    /// <summary>When a stretch fails to decode, whisper tries it again at a higher temperature.</summary>
+    public bool WhisperTemperatureFallback { get; set; } = true;
+
+    /// <summary>Silence detection (VAD): whisper is handed only the stretches with speech in them, when its model is installed.</summary>
+    public bool UseVad { get; set; } = true;
+
+    /// <summary>How sure the detector has to be that a sound is speech, 0 to 1. Higher leaves more out.</summary>
+    public double VadThreshold { get; set; } = 0.5;
+
+    /// <summary>Speech shorter than this, in milliseconds, is taken for noise.</summary>
+    public int VadMinSpeechMs { get; set; } = 250;
+
+    /// <summary>A silence has to last this long, in milliseconds, to end a stretch of speech.</summary>
+    public int VadMinSilenceMs { get; set; } = 100;
+
+    /// <summary>Milliseconds kept on either side of a stretch of speech, so that words are not clipped.</summary>
+    public int VadSpeechPadMs { get; set; } = 30;
+
+    /// <summary>The caption style a new window starts with; null for the built-in one. A preset or a project sets its own.</summary>
+    public HandPegApp.Models.CaptionStyle? DefaultCaptionStyle { get; set; }
+
     /// <summary>Preset applied to a newly loaded video when no smart rule matches. Blank for none.</summary>
     public string DefaultPreset { get; set; } = "";
 
@@ -211,8 +246,11 @@ public sealed class AppSettings
 
     // ----- Launch -----
 
-    /// <summary>How many style presets the launch window offers as buttons, 1 to 5. 0 switches the launch window off. It is only shown in Editor Mode.</summary>
+    /// <summary>How many style presets the drag-and-drop overlay offers in Editor Mode, from the top of <see cref="SplashStylePresets"/>: 0 to 8.</summary>
     public int SplashPresetCount { get; set; } = 3;
+
+    /// <summary>How many encoding presets the drag-and-drop overlay offers in Encoder Mode, from the top of <see cref="OverlayEncodingPresets"/>: 0 to 8.</summary>
+    public int OverlayEncodingPresetCount { get; set; } = 3;
 
     /// <summary>How many frames are taken from a video layer's file for the strip its block on the timeline is drawn with: 1 to 25.</summary>
     public int LayerThumbnailCount { get; set; } = 8;
@@ -305,8 +343,11 @@ public sealed class AppSettings
         }
     }
 
-    /// <summary>The style presets shown as buttons in the launch window, by file name. Empty for the most recent ones.</summary>
+    /// <summary>The style presets the drag-and-drop overlay offers, by file name, in the order they are shown. Empty for the most recent ones.</summary>
     public List<string> SplashStylePresets { get; set; } = [];
+
+    /// <summary>The encoding presets the drag-and-drop overlay offers in Encoder Mode, by name, in the order they are shown. Empty for the first ones in the preset list.</summary>
+    public List<string> OverlayEncodingPresets { get; set; } = [];
 
     // What a freshly started window begins with. Unlike the settings above these are only starting points:
     // the boxes they stand for are on the main window and can be changed there for the session.
@@ -585,6 +626,8 @@ public sealed class AppSettings
         copy.SmartRules = SmartRules.Select(r => new SmartRule { Type = r.Type, Path = r.Path, Preset = r.Preset }).ToList();
         copy.ModeProfiles = new(ModeProfiles);
         copy.SplashStylePresets = [.. SplashStylePresets];
+        copy.OverlayEncodingPresets = [.. OverlayEncodingPresets];
+        copy.DefaultCaptionStyle = DefaultCaptionStyle?.Clone();
         return copy;
     }
 

@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using HandPegApp.Models;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
 using Microsoft.Win32;
@@ -64,6 +65,70 @@ public partial class SettingsWindow : Window
         _settings.SquisherPresets.Insert(to, preset);
     }
 
+    // ----- The drop overlay's presets: two ordered lists, as the Squisher's is -----
+
+    private List<string> _allStyles = [], _allEncodings = [];
+    private System.Collections.ObjectModel.ObservableCollection<string> _overlayStyles = [], _overlayEncodings = [];
+
+    // Which list a button belongs to, by the name it carries: the styles' or the encoding presets'.
+    private (System.Collections.ObjectModel.ObservableCollection<string> List, List<string> All, ComboBox Add) OverlayListOf(object sender) =>
+        sender is FrameworkElement { Tag: "OverlayEncodingList" }
+            ? (_overlayEncodings, _allEncodings, OverlayEncodingAddBox)
+            : (_overlayStyles, _allStyles, OverlayStyleAddBox);
+
+    private void MoveOverlayPresetUp_Click(object sender, RoutedEventArgs e) => MoveOverlayPreset(sender, -1);
+
+    private void MoveOverlayPresetDown_Click(object sender, RoutedEventArgs e) => MoveOverlayPreset(sender, 1);
+
+    // The order of the list is the order on the overlay, which shows only the first so many.
+    private void MoveOverlayPreset(object sender, int by)
+    {
+        if (sender is not FrameworkElement { DataContext: string name })
+            return;
+
+        var list = OverlayListOf(sender).List;
+        var (from, to) = (list.IndexOf(name), list.IndexOf(name) + by);
+        if (from >= 0 && to >= 0 && to < list.Count)
+            list.Move(from, to);
+    }
+
+    private void RemoveOverlayPreset_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: string name })
+        {
+            OverlayListOf(sender).List.Remove(name);
+            RefreshOverlayAddBoxes();
+        }
+    }
+
+    private void AddOverlayPreset_Click(object sender, RoutedEventArgs e)
+    {
+        var (list, _, add) = OverlayListOf(sender);
+        if (add.SelectedItem is string name && !list.Contains(name))
+        {
+            list.Add(name);
+            RefreshOverlayAddBoxes();
+        }
+    }
+
+    // An empty list is the overlay's own choice: the most recent styles, or the first encoding presets.
+    private void ResetOverlayPresets_Click(object sender, RoutedEventArgs e)
+    {
+        OverlayListOf(sender).List.Clear();
+        RefreshOverlayAddBoxes();
+    }
+
+    // Each Add box offers what is not on its list yet.
+    private void RefreshOverlayAddBoxes()
+    {
+        foreach (var (list, all, add) in new[] { (_overlayStyles, _allStyles, OverlayStyleAddBox), (_overlayEncodings, _allEncodings, OverlayEncodingAddBox) })
+        {
+            var left = all.Where(name => !list.Contains(name)).ToList();
+            add.ItemsSource = left;
+            add.SelectedItem = left.FirstOrDefault();
+        }
+    }
+
     // A box for a whole number takes digits and nothing else.
     private void DigitsOnly_PreviewTextInput(object sender, System.Windows.Input.TextCompositionEventArgs e) => e.Handled = !e.Text.All(char.IsDigit);
 
@@ -84,6 +149,66 @@ public partial class SettingsWindow : Window
         }
     }
     private readonly MainViewModel _viewModel;
+
+    /// <summary>One entry of a drop-down whose saved value is not what it shows: an encoder by its FFmpeg name, or blank for the built-in default.</summary>
+    public sealed record Choice(string Name, string Display)
+    {
+        public override string ToString() => Display;
+    }
+
+    // ----- About -----
+
+    private void Link_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            ErrorText.Text = $"The page could not be opened: {ex.Message}";
+        }
+
+        e.Handled = true;
+    }
+
+    /// <summary>Check for Updates: asks now, and says here what came of it. The main window offers the restart once this window is closed.</summary>
+    private async void CheckForUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        CheckUpdateButton.IsEnabled = false;
+        UpdateStatusText.Text = "Checking...";
+        var (result, detail) = await AppUpdater.CheckNowAsync();
+        UpdateStatusText.Text = result switch
+        {
+            AppUpdater.CheckResult.UpToDate => $"HandPeg {detail} is the newest release.",
+            AppUpdater.CheckResult.Ready => $"HandPeg {detail} is downloaded. It goes in when HandPeg is restarted: use Restart to Update in the main window, or just close HandPeg.",
+            AppUpdater.CheckResult.Available => $"HandPeg {detail} is available. This copy does not update itself: get it from {AppUpdater.ReleasesPage}",
+            _ => $"The check could not be made: {detail}",
+        };
+        CheckUpdateButton.IsEnabled = true;
+    }
+
+    // ----- Auto-Captions: the style captions start with -----
+
+    private void DefaultCaptionStyle_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new CaptionStyleDialog(_settings.DefaultCaptionStyle ?? new CaptionStyle()) { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            _settings.DefaultCaptionStyle = dialog.EditedStyle;
+            ShowDefaultCaptionStyle();
+        }
+    }
+
+    private void ResetDefaultCaptionStyle_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.DefaultCaptionStyle = null;
+        ShowDefaultCaptionStyle();
+    }
+
+    private void ShowDefaultCaptionStyle() => DefaultCaptionStyleText.Text = _settings.DefaultCaptionStyle is { } style
+        ? $"{style.FontName} {style.FontSize}, {style.Animation}, up to {style.MaxWordsPerLine} words"
+        : "the built-in style";
 
     public SettingsWindow(MainViewModel viewModel)
     {
@@ -118,24 +243,36 @@ public partial class SettingsWindow : Window
 
         YtDlpDefaultText.Text = $"Default: {AppSettings.DefaultYtDlpReleaseUrl}";
         FfmpegDefaultText.Text = $"Default: {AppSettings.DefaultFfmpegReleaseUrl}";
-        HandPegUpdateText.Text = $"Updates itself from {AppSettings.HandPegRepositoryUrl} when it was installed with its installer.";
+
+        // About: which HandPeg this is, and whether it is a copy that can update itself.
+        AboutText.Text = $"Version {AppUpdater.CurrentVersion}  ·  " + (AppPaths.IsSelfContained
+            ? "self-contained copy: it keeps everything beside the program, and is updated by replacing its folder."
+            : "updates itself from its GitHub releases when it was put in by the installer; a check is made each time it starts.");
+        RepositoryLink.NavigateUri = new Uri(AppSettings.HandPegRepositoryUrl);
+        RepositoryLink.Inlines.Add(AppSettings.HandPegRepositoryUrl);
+        if (AppUpdater.ReadyVersion is { } ready)
+            UpdateStatusText.Text = $"HandPeg {ready} is downloaded and goes in when HandPeg is restarted.";
         WhisperDefaultText.Text = $"Default: {AppSettings.DefaultWhisperReleaseUrl}";
 
         // Two-way choices stored as a flag each.
 
         TimeFormatBox.SelectedIndex = _settings.ShowTimesAsFrames ? 1 : 0;
-        SplashBox.SelectedIndex = Math.Clamp(_settings.SplashPresetCount, 0, 5);
         DefaultModeBox.ItemsSource = AppSettings.DefaultModes;
         if (!AppSettings.DefaultModes.Contains(_settings.DefaultMode))
             _settings.DefaultMode = AppSettings.LastUsedMode;
         DefaultModeBox.SelectedItem = _settings.DefaultMode;
         CurrentModeText.Text = $"You are in {_settings.UiMode} now.";
 
-        // The styles the launch window can show, with the ones picked for it selected.
-        var styles = StyleFile.All();
-        SplashStyleList.ItemsSource = styles;
-        foreach (var style in styles.Where(s => _settings.SplashStylePresets.Contains(s.FileName, StringComparer.OrdinalIgnoreCase)))
-            SplashStyleList.SelectedItems.Add(style);
+        // What the drop overlay offers, in order: the lists start as the overlay stands now, the picked ones or
+        // the ones it falls back on, so that what is seen here is what it shows.
+        _allStyles = StyleFile.All().Select(s => s.Name).ToList();
+        _allEncodings = viewModel.Presets.Select(p => p.Name).ToList();
+        var styles = _settings.SplashStylePresets.Select(Path.GetFileNameWithoutExtension).OfType<string>().Where(_allStyles.Contains).Distinct().ToList();
+        _overlayStyles = new(styles.Count > 0 ? styles : _allStyles.Take(8));
+        var encodings = _settings.OverlayEncodingPresets.Where(_allEncodings.Contains).Distinct().ToList();
+        _overlayEncodings = new(encodings.Count > 0 ? encodings : _allEncodings.Take(8));
+        (OverlayStyleList.ItemsSource, OverlayEncodingList.ItemsSource) = (_overlayStyles, _overlayEncodings);
+        RefreshOverlayAddBoxes();
 
         // A model saved under a name that is no longer offered still shows, so it is not silently replaced.
         var models = DependencyUpdater.WhisperModels.ToList();
@@ -162,8 +299,26 @@ public partial class SettingsWindow : Window
         WhisperModelBox.ItemsSource = models;
         WhisperModelBox.SelectedItem = _settings.WhisperModel;
 
-        // The Automation tab shows the view model's rules, and the choices of its two drop-down columns.
-        AutomationPanel.DataContext = viewModel;
+        // What whisper can be told is spoken; a language saved under a name no longer offered is English again.
+        DefaultLanguageBox.ItemsSource = MainViewModel.KnownWhisperLanguages;
+        if (!MainViewModel.KnownWhisperLanguages.Contains(_settings.WhisperDefaultLanguage))
+            _settings.WhisperDefaultLanguage = "en";
+        DefaultLanguageBox.SelectedItem = _settings.WhisperDefaultLanguage;
+        ShowDefaultCaptionStyle();
+
+        // The encoders a new window can start with: the ones found on this computer, and whichever was saved,
+        // found or not (a hardware encoder is only listed once the check for it has finished).
+        var video = viewModel.VideoEncoders.Where(e => e.Family != EncoderFamily.Copy).Select(e => new Choice(e.Name, e.DisplayName)).ToList();
+        if (_settings.DefaultVideoEncoder.Length > 0 && video.All(c => c.Name != _settings.DefaultVideoEncoder))
+            video.Add(new Choice(_settings.DefaultVideoEncoder, _settings.DefaultVideoEncoder));
+        DefaultVideoBox.ItemsSource = video.Prepend(new Choice("", "Built-in default (Copy)")).ToList();
+        DefaultAudioBox.ItemsSource = AudioTrack.AllCodecs.Select(c => new Choice(c, c)).Prepend(new Choice("", "Built-in default (Copy)")).ToList();
+        DefaultBitrateBox.ItemsSource = AudioTrack.AllBitrates.Select(b => new Choice(b, b)).Prepend(new Choice("", "Built-in default")).ToList();
+        (DefaultVideoBox.SelectedValue, DefaultAudioBox.SelectedValue, DefaultBitrateBox.SelectedValue) =
+            (_settings.DefaultVideoEncoder, _settings.DefaultAudioEncoder, _settings.DefaultAudioBitrate);
+
+        // The automation rows show the view model's rules, and the choices of the grid's two drop-down columns.
+        DefaultPresetRow.DataContext = RulesGrid.DataContext = viewModel;
         RuleTypeColumn.ItemsSource = SmartRule.Types;
         PresetColumn.ItemsSource = viewModel.PresetNames;
 
@@ -269,6 +424,11 @@ public partial class SettingsWindow : Window
             {
                 case TextBlock block:
                     text.Append(block.Text).Append(' ');
+                    break;
+
+                // A line written in parts (a shortcut's key, then what it does) keeps its words in its runs.
+                case System.Windows.Documents.Run run:
+                    text.Append(run.Text).Append(' ');
                     break;
                 case ContentControl { Content: string content }:
                     text.Append(content).Append(' ');
@@ -504,8 +664,8 @@ public partial class SettingsWindow : Window
 
 
         _settings.ShowTimesAsFrames = TimeFormatBox.SelectedIndex == 1;
-        _settings.SplashPresetCount = Math.Max(SplashBox.SelectedIndex, 0);
-        _settings.SplashStylePresets = SplashStyleList.SelectedItems.OfType<StyleFile>().Select(s => s.FileName).ToList();
+        _settings.SplashStylePresets = _overlayStyles.Select(name => name + StyleFile.Extension).ToList();
+        _settings.OverlayEncodingPresets = [.. _overlayEncodings];
 
         // The smart rules and the default preset are edited on the Automation tab, which saves them as they
         // change. This copy was made when the window opened; take theirs as they are now.

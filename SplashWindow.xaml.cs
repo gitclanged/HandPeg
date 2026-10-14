@@ -42,12 +42,22 @@ public sealed record StyleFile(string Path)
         }
     }
 
-    /// <summary>The ones the launch window shows: those picked in the settings, or failing that the most recent, up to the number set.</summary>
+    /// <summary>
+    /// The ones the drop overlay offers, in order: those picked in the settings, in the order they were put in,
+    /// or failing that the most recent; up to the number set.
+    /// </summary>
     public static List<StyleFile> ForLaunch()
     {
-        var (all, settings) = (All(), AppSettings.Current);
-        var picked = all.Where(s => settings.SplashStylePresets.Contains(s.FileName, StringComparer.OrdinalIgnoreCase)).ToList();
-        return (picked.Count > 0 ? picked : all).Take(Math.Clamp(settings.SplashPresetCount, 0, 5)).ToList();
+        var settings = AppSettings.Current;
+        return Picked(All(), settings.SplashStylePresets).Take(Math.Clamp(settings.SplashPresetCount, 0, 8)).ToList();
+    }
+
+    /// <summary>The styles named in a saved list, in its order and leaving out any whose file has gone; all of them, most recent first, when it names none that are there.</summary>
+    public static List<StyleFile> Picked(List<StyleFile> all, IEnumerable<string> names)
+    {
+        var picked = names.Select(name => all.FirstOrDefault(s => string.Equals(s.FileName, name, StringComparison.OrdinalIgnoreCase)))
+            .OfType<StyleFile>().Distinct().ToList();
+        return picked.Count > 0 ? picked : all;
     }
 }
 

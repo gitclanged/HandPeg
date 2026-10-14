@@ -34,9 +34,12 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task CheckForHandPegUpdateAsync()
     {
-        if (await AppUpdater.CheckAndDownloadAsync() is not { } version)
-            return;
+        if (await AppUpdater.CheckAndDownloadAsync() is { } version)
+            ShowUpdateNotice(version);
+    }
 
+    private void ShowUpdateNotice(string version)
+    {
         UpdateNoticeText.Text = $"HandPeg {version} is ready.";
         UpdateNotice.Visibility = Visibility.Visible;
     }
@@ -601,10 +604,9 @@ public partial class MainWindow : Window
     private void BuildDropTargets()
     {
         var settings = AppSettings.Current;
-        var count = Math.Clamp(settings.SplashPresetCount, 0, 8);
         var presets = _viewModel.IsEditorMode
-            ? StyleFile.ForLaunch().Take(count).Select(style => new DropTargetItem(style.Name, DropTargetItem.StyleIcon, style)).ToList()
-            : _viewModel.Presets.Take(count).Select(preset => new DropTargetItem(preset.Name, DropTargetItem.EncodeIcon, preset)).ToList();
+            ? StyleFile.ForLaunch().Select(style => new DropTargetItem(style.Name, DropTargetItem.StyleIcon, style)).ToList()
+            : OverlayEncodingPresets().Select(preset => new DropTargetItem(preset.Name, DropTargetItem.EncodeIcon, preset)).ToList();
         var squish = settings.ShowSquisher
             ? settings.SquisherPresets.Where(p => p.TargetSizeMb > 0).Take(Math.Clamp(settings.SquisherPresetCount, 1, 12)).Select(p => new DropTargetItem(p.Name, p.IconData, p)).ToList()
             : [];
@@ -620,6 +622,18 @@ public partial class MainWindow : Window
         muted.Freeze();
         Resources["DropTargetBrush"] = muted;
         (_dropTargetsBuilt, _dropTargetsMode) = (true, _viewModel.IsEditorMode ? "editor" : "encoder");
+    }
+
+    /// <summary>
+    /// The encoding presets the overlay offers in Encoder Mode: those picked in the settings, in their order,
+    /// or failing that the first in the preset list; up to the number set.
+    /// </summary>
+    private List<Models.EncodingPreset> OverlayEncodingPresets()
+    {
+        var settings = AppSettings.Current;
+        var picked = settings.OverlayEncodingPresets.Select(name => _viewModel.Presets.FirstOrDefault(p => p.Name == name))
+            .OfType<Models.EncodingPreset>().Distinct().ToList();
+        return (picked.Count > 0 ? picked : _viewModel.Presets.ToList()).Take(Math.Clamp(settings.OverlayEncodingPresetCount, 0, 8)).ToList();
     }
 
     // A drag "leaves" every element it passes out of, on its way to the next one inside the window, and where
@@ -1070,6 +1084,10 @@ public partial class MainWindow : Window
             _viewModel.OnSettingsSaved();
             _mpv?.SetHardwareAcceleration(AppSettings.Current.PlayerHardwareAcceleration);
         }
+
+        // Check for Updates, in that window, may have brought a release in: it is offered here as one found at startup is.
+        if (AppUpdater.ReadyVersion is { } update)
+            ShowUpdateNotice(update);
 
         // The player may just have been installed from the dependency list.
         _ = EnsurePlayerAsync();
