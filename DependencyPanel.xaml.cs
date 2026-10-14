@@ -73,15 +73,39 @@ public partial class DependencyPanel : UserControl
         ToolList.ItemsSource = _tools;
         ModelList.ItemsSource = _models;
 
-        Loaded += (_, _) => _ = RefreshAsync();
-
-        // Its window is closing: a download left running would go on swapping tools in behind the main window.
-        Unloaded += (_, _) =>
+        Loaded += (_, _) =>
         {
-            _cancellation?.Cancel();
-            _refreshCancellation?.Cancel();
+            _ = RefreshAsync();
+
+            // Its window closing stops a download: left running, it would go on swapping tools in behind the main
+            // window. Not merely being hidden: a tab switched away from unloads the panel, and an update started
+            // from elsewhere in the window (the General tab's Update Dependencies) carries on meanwhile.
+            if (!_watchingWindow && Window.GetWindow(this) is { } window)
+            {
+                _watchingWindow = true;
+                window.Closed += (_, _) => CancelAll();
+            }
         };
+        OverallBar.ValueChanged += (_, e) => ProgressChanged?.Invoke(e.NewValue);
     }
+
+    private bool _watchingWindow;
+
+    /// <summary>Stops a download and a check that are running. For a host whose window closes before the panel was ever shown.</summary>
+    public void CancelAll()
+    {
+        _cancellation?.Cancel();
+        _refreshCancellation?.Cancel();
+    }
+
+    /// <summary>Raised with what the panel says under its list (and whether it is a problem): for a host that shows it elsewhere.</summary>
+    public event Action<string, bool>? MessageShown;
+
+    /// <summary>Raised with how far an install pass has got, 0 to 1.</summary>
+    public event Action<double>? ProgressChanged;
+
+    // Whether the list has been read from the disk and the network at least once.
+    private bool _refreshed;
 
     /// <summary>Raised when an install pass has changed what is installed.</summary>
     public event Action? Changed;
@@ -174,6 +198,7 @@ public partial class DependencyPanel : UserControl
     /// </summary>
     public async Task RefreshAsync()
     {
+        _refreshed = true;
         _refreshCancellation?.Cancel();
         var cancellation = _refreshCancellation = new CancellationTokenSource();
         var token = cancellation.Token;
@@ -305,14 +330,35 @@ public partial class DependencyPanel : UserControl
     {
         MessageText.Text = text;
         MessageText.SetResourceReference(ForegroundProperty, isProblem ? "WarningTextBrush" : "MutedTextBrush");
+        MessageShown?.Invoke(text, isProblem);
     }
 
     // ----- Installing -----
 
-    private async void Install_Click(object sender, RoutedEventArgs e)
+    private async void Install_Click(object sender, RoutedEventArgs e) => await InstallAsync();
+
+    /// <summary>
+    /// Install / Update All Dependencies: installs what is missing and replaces what has a newer release, with
+    /// the speech models that are ticked; a tool with a path of the user's own is left alone. What happens is
+    /// said in the panel's message line (and through <see cref="MessageShown"/>). Nothing while an encode is running.
+    /// </summary>
+    public async Task InstallAsync()
     {
-        if (_isRunning || _appIsBusy)
+        if (_isRunning)
             return;
+
+        if (_appIsBusy)
+        {
+            ShowMessage("An encode, preview or transcription is running. Dependencies can be installed or updated once it has finished.", isProblem: false);
+            return;
+        }
+
+        // Asked for before the panel was ever shown: what is there, and what each tool is, is read first.
+        if (!_refreshed)
+        {
+            ShowMessage("Checking what is installed...", isProblem: false);
+            await RefreshAsync();
+        }
 
         _refreshCancellation?.Cancel();
         _isRunning = true;

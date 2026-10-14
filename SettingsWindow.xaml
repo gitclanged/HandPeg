@@ -71,8 +71,18 @@
                     <StackPanel Style="{StaticResource Row}">
                         <Button x:Name="CheckUpdateButton" Content="Check for Updates" Click="CheckForUpdates_Click" AutomationProperties.Name="Check for HandPeg Updates"
                                 ToolTip="Looks now for a newer release of HandPeg itself. A copy put in by the installer downloads it, and it goes in at the next restart. A self-contained copy, or one run from a build folder, is told whether there is a newer release and where to get it." />
+                        <Button x:Name="UpdateDependenciesButton" Content="Update Dependencies" Margin="6,0,0,0" Click="UpdateDependencies_Click" AutomationProperties.Name="Update Dependencies"
+                                ToolTip="Installs whatever HandPeg needs that is missing, and replaces FFmpeg, libmpv, yt-dlp and whisper.cpp with newer releases where there are any, from the update URLs on the Tools &amp; Backup tab. A tool with a path of your own is left alone. The same as Install / Update All Dependencies there." />
                         <TextBlock x:Name="UpdateStatusText" VerticalAlignment="Center" Margin="14,0,0,0" TextWrapping="Wrap" MaxWidth="640" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
+                    <StackPanel x:Name="DependencyStatusRow" Style="{StaticResource Row}" Visibility="Collapsed">
+                        <ProgressBar x:Name="DependencyProgress" Width="160" Height="8" Minimum="0" Maximum="1" VerticalAlignment="Center" />
+                        <TextBlock x:Name="DependencyStatusText" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" MaxWidth="640" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,6">
+                        <Hyperlink Click="ManageDependencies_Click" Foreground="{DynamicResource AccentBrush}" AutomationProperties.Name="Manage Dependencies">Manage Dependencies...</Hyperlink>
+                        <Run Text="  what is installed, speech models, your own tool paths and the update URLs (Tools &amp; Backup tab)." />
+                    </TextBlock>
 
                     <TextBlock Text="Appearance" Style="{StaticResource SectionTitle}" />
                     <StackPanel Style="{StaticResource Row}">

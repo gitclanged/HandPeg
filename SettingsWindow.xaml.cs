@@ -188,6 +188,48 @@ public partial class SettingsWindow : Window
         CheckUpdateButton.IsEnabled = true;
     }
 
+    // ----- Dependencies, from the General tab -----
+
+    /// <summary>Update Dependencies: the dependency panel's Install / Update All, run from here, its progress shown under the button.</summary>
+    private async void UpdateDependencies_Click(object sender, RoutedEventArgs e)
+    {
+        if (Dependencies.IsRunning)
+            return;
+
+        (UpdateDependenciesButton.IsEnabled, DependencyStatusRow.Visibility, DependencyProgress.Value) = (false, Visibility.Visible, 0);
+        try
+        {
+            await Dependencies.InstallAsync();
+        }
+        finally
+        {
+            UpdateDependenciesButton.IsEnabled = true;
+        }
+    }
+
+    private void ShowDependencyMessage(string text, bool isProblem)
+    {
+        DependencyStatusText.Text = text;
+        DependencyStatusText.SetResourceReference(TextBlock.ForegroundProperty, isProblem ? "WarningTextBrush" : "MutedTextBrush");
+    }
+
+    /// <summary>Manage Dependencies: the tab with the full list, the tool paths and the update URLs, scrolled to the list.</summary>
+    private void ManageDependencies_Click(object sender, RoutedEventArgs e)
+    {
+        // A search that hides the tab is let go of first.
+        if (SearchBox.Text.Length > 0)
+            SearchBox.Text = "";
+
+        DependencyObject? at = Dependencies;
+        while (at is not null and not TabItem)
+            at = LogicalTreeHelper.GetParent(at);
+        if (at is TabItem tab)
+        {
+            SettingsTabs.SelectedItem = tab;
+            Dispatcher.BeginInvoke(() => Dependencies.BringIntoView(), System.Windows.Threading.DispatcherPriority.Loaded);
+        }
+    }
+
     // ----- Auto-Captions: the style captions start with -----
 
     private void DefaultCaptionStyle_Click(object sender, RoutedEventArgs e)
@@ -235,6 +277,11 @@ public partial class SettingsWindow : Window
 
         // Nothing is installed while an encode, a preview or a transcription is using the tools.
         Dependencies.AppIsBusy = viewModel.IsBusy;
+
+        // Update Dependencies on the General tab shows what the panel says, and how far it has got, under its button.
+        Dependencies.MessageShown += ShowDependencyMessage;
+        Dependencies.ProgressChanged += value => DependencyProgress.Value = value;
+        Closed += (_, _) => Dependencies.CancelAll();
         Dependencies.Changed += () =>
         {
             viewModel.OnDependenciesChanged();
