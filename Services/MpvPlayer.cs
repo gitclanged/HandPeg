@@ -443,6 +443,12 @@ public sealed class MpvPlayer
             return null;
 
         _hasGraph = graph.Length > 0;
+
+        // HANDPEG_LOG_GRAPH=1: each graph is written to the log in full before mpv is given it, so that one the
+        // player cannot run (or that takes it down) can be read afterwards.
+        if (LogGraphs && graph.Length > 0)
+            AppLog.Write($"Live graph ({graph.Length} characters): {graph}");
+
         var result = SetProperty("lavfi-complex", graph);
 
         if (graph.Length == 0)
@@ -475,6 +481,8 @@ public sealed class MpvPlayer
 
     private bool _hasGraph;
     private bool _awaitingFirstFrame;
+
+    private static readonly bool LogGraphs = Environment.GetEnvironmentVariable("HANDPEG_LOG_GRAPH") == "1";
 
     /// <summary>
     /// Ends the player. mpv is asked to quit; the thread reading its events then releases it, so nothing here

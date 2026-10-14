@@ -2215,12 +2215,10 @@ public static class FilterGraphBuilder
                 if (layer.MaskInvert)
                     source.Append(",geq=lum='255-lum(X,Y)'");
 
-                // Grown or shrunk: blurred by as much as the edge is to move, then cut where the blur reaches that
-                // far, outside the old edge to grow it and inside to shrink it (a step blurred by sigma is at 16% a
-                // sigma outside its edge, and at 84% a sigma inside). The cut keeps a short ramp, so the edge stays smooth.
-                var grow = (int)Math.Round(Math.Clamp(layer.MaskGrow, -Layer.MaskGrowLimit, Layer.MaskGrowLimit) * pixelScale);
-                if (grow != 0)
-                    source.Append($",gblur=sigma={Math.Abs(grow)},geq=lum='clip((lum(X,Y)-{(grow > 0 ? 40 : 215)})*6+128,0,255)'");
+                // Grown or shrunk by so many pixels: one pass of dilation (or erosion) moves the edge out (or in) by one.
+                var grow = layer.MaskGrow == 0 ? 0 : Math.Max((int)Math.Round(Math.Abs(Math.Clamp(layer.MaskGrow, -Layer.MaskGrowLimit, Layer.MaskGrowLimit)) * pixelScale), 1);
+                for (var pass = 0; pass < grow; pass++)
+                    source.Append(layer.MaskGrow > 0 ? ",dilation" : ",erosion");
             }
 
             // Cropped: each edge is black for as far in as it is cut.
@@ -2231,10 +2229,23 @@ public static class FilterGraphBuilder
                 source.Append($",geq=lum='lum(X,Y)*gte(X,{left})*lt(X,{width - right})*gte(Y,{top})*lt(Y,{height - bottom})'");
             }
 
-            // Soft edges: the mask's own outline, and the crop's, fade out over the Soft Edge width.
-            if (layer.Feather)
-                source.Append($",gblur=sigma={Number(Math.Max(Math.Clamp(layer.FeatherRadius, 1, 100) * pixelScale / 2, 0.5))}");
+            // Soft edges: the mask's own outline, and the crop's, fade out over the Soft Edge width. A box blur run
+            // twice, as wide as a Gaussian of half the Soft Edge would be: gblur takes libmpv down when its result is
+            // blended into a layer's transparency (the export's FFmpeg does not mind, but the player must run the same graph).
+            if (layer.Feather && BoxRadius(Math.Clamp(layer.FeatherRadius, 1, 100) * pixelScale / 2, width, height) is > 0 and var radius)
+                source.Append($",boxblur=luma_radius={radius}:luma_power=2");
             return source.ToString();
+        }
+
+        /// <summary>
+        /// The radius of a box blur that, run twice, spreads as far as a Gaussian of the given sigma: two passes of
+        /// a box of radius r have a variance of ((2r + 1)^2 - 1) / 6. Held to what boxblur accepts for a picture of
+        /// this size (no more than half its shorter side); 0 for no blur at all.
+        /// </summary>
+        private static int BoxRadius(double sigma, int width, int height)
+        {
+            var radius = (int)Math.Round((Math.Sqrt(6 * sigma * sigma + 1) - 1) / 2);
+            return Math.Clamp(radius, 0, Math.Max(Math.Min(width, height) / 2 - 1, 0));
         }
 
         /// <summary>How a mask picture is turned into grey: its transparency, or its brightness.</summary>
