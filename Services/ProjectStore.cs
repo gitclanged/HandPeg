@@ -136,6 +136,7 @@ public sealed class ProjectClip
     public double[]? KeysY { get; set; }
     public double[]? KeysScale { get; set; }
     public double[]? KeysRotation { get; set; }
+    public double[]? KeysOpacity { get; set; }
 
     // How the clip moves on from each of those keyframes, in the same order, as the number of its EasingType.
     // Left out while every one of them is Linear, which is also what a project from before easing reads as:
@@ -144,6 +145,7 @@ public sealed class ProjectClip
     public int[]? EaseY { get; set; }
     public int[]? EaseScale { get; set; }
     public int[]? EaseRotation { get; set; }
+    public int[]? EaseOpacity { get; set; }
 }
 
 /// <summary>
@@ -309,10 +311,12 @@ public static class ProjectStore
         KeysY = Flatten(layer.KeysY),
         KeysScale = Flatten(layer.KeysScale),
         KeysRotation = Flatten(layer.KeysRotation),
+        KeysOpacity = Flatten(layer.KeysOpacity),
         EaseX = Easings(layer.KeysX),
         EaseY = Easings(layer.KeysY),
         EaseScale = Easings(layer.KeysScale),
         EaseRotation = Easings(layer.KeysRotation),
+        EaseOpacity = Easings(layer.KeysOpacity),
     };
 
     /// <summary>A track's shared look: one of its clips with everything that is a clip's own taken out.</summary>
@@ -321,7 +325,7 @@ public static class ProjectStore
         var look = Copy(layer);
         (look.StartTime, look.Duration, look.MediaOffset, look.IsHidden, look.AudioOffset, look.TrackId, look.Speed) = (0, 0, 0, false, 0, 0, 1);
         (look.PositionX, look.PositionY, look.SizeWidth, look.SizeHeight) = (0, 0, 0, 0);
-        (look.KeysX, look.KeysY, look.KeysScale, look.KeysRotation) = (null, null, null, null);
+        (look.KeysX, look.KeysY, look.KeysScale, look.KeysRotation, look.KeysOpacity) = (null, null, null, null, null);
         return look;
     }
 
@@ -334,6 +338,7 @@ public static class ProjectStore
         layer.Speed = clip.Speed > 0 ? clip.Speed : 1;
         (layer.PositionX, layer.PositionY, layer.SizeWidth, layer.SizeHeight) = (At(0), At(1), At(2), At(3));
         (layer.KeysX, layer.KeysY, layer.KeysScale, layer.KeysRotation) = (Unflatten(clip.KeysX, clip.EaseX), Unflatten(clip.KeysY, clip.EaseY), Unflatten(clip.KeysScale, clip.EaseScale), Unflatten(clip.KeysRotation, clip.EaseRotation));
+        layer.KeysOpacity = Unflatten(clip.KeysOpacity, clip.EaseOpacity);
         return layer;
     }
 

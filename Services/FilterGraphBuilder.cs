@@ -322,6 +322,9 @@ public static class FilterGraphBuilder
     private const double SamePlace = 0.00001;
     private const double SameAngle = 0.01;
 
+    // Opacity is kept in whole percent: keyframes less than one apart hold it still.
+    private const double SameOpacity = 0.5;
+
     /// <summary>
     /// Takes the keyframes off every property of a layer that they do not change, leaving the property at
     /// the one value they hold. For a copy of a layer that is being prepared for a
@@ -338,7 +341,7 @@ public static class FilterGraphBuilder
                 continue;
 
             var (low, high) = (keys.Min(k => k.Value), keys.Max(k => k.Value));
-            if (high - low >= (property == KeyProperty.Rotation ? SameAngle : SamePlace))
+            if (high - low >= property switch { KeyProperty.Rotation => SameAngle, KeyProperty.Opacity => SameOpacity, _ => SamePlace })
                 continue;
 
             var value = keys[0].Value;
@@ -1883,7 +1886,7 @@ public static class FilterGraphBuilder
 
         /// <summary>Whether a layer hides everything under the rectangle it covers: solid, square-cornered, unturned, with nothing keyed or masked out.</summary>
         private bool IsOpaque(Layer layer) =>
-            layer.Opacity >= 100 && !layer.ChromaKey && !(layer.CustomMask && Exists(layer.MaskPath.Trim().Trim('"'))) && !layer.IsCropped
+            layer.Opacity >= 100 && !layer.HasKeys(KeyProperty.Opacity) && !layer.ChromaKey && !(layer.CustomMask && Exists(layer.MaskPath.Trim().Trim('"'))) && !layer.IsCropped
             && layer.CornerRadius == 0 && !layer.Feather && Math.Abs(layer.Rotation % 360) < 0.05;
 
         /// <summary>The size of the picture once it has been turned: the box its corners then reach, in even pixels.</summary>
@@ -2033,7 +2036,7 @@ public static class FilterGraphBuilder
             }
 
             var opacity = Math.Clamp(layer.Opacity, 0, 100) / 100.0;
-            if (opacity < 1)
+            if (opacity < 1 && motion.Opacity is null)
                 chain.Append($",lutyuv=a=val*{Number(opacity)}");
 
             // A still picture is one frame, and one frame cannot change shape as time passes: it is made into a
@@ -2047,6 +2050,13 @@ public static class FilterGraphBuilder
                 else
                     chain.Append($"[{name}_still{s}];{tick}crop=2:2:0:0,format=yuva420p,lutyuv=a=0,scale={width}:{height}:flags=neighbor[{name}_clock{s}];"
                                  + $"[{name}_clock{s}][{name}_still{s}]overlay=format=auto,format=yuva420p");
+            }
+
+            // Fading by keyframes: only the transparency is worked out again for each frame, on the frame's own time.
+            if (motion.Opacity is { } fade)
+            {
+                chain.Append($",format=yuva420p,split[{name}_op{s}][{name}_opa_in{s}];[{name}_opa_in{s}]alphaextract,geq=lum='lum(X,Y)*clip({fade},0,1)'[{name}_opa{s}];"
+                             + $"[{name}_op{s}][{name}_opa{s}]alphamerge");
             }
 
             // Turned about its middle, into a box large enough for its corners; what the box adds is transparent.
@@ -2255,7 +2265,8 @@ public static class FilterGraphBuilder
         /// </summary>
         /// <param name="clipStart">Where the clip begins on that picture's clock, in seconds.</param>
         /// <param name="scale">What a value is multiplied by: the frame's width or height in pixels, or 1.</param>
-        private static string KeyExpression(IReadOnlyList<Keyframe> keys, double clipStart, double scale)
+        /// <param name="time">What the clock is called where the expression is used: t in most filters, T in geq.</param>
+        private static string KeyExpression(IReadOnlyList<Keyframe> keys, double clipStart, double scale, string time = "t")
         {
             var text = new StringBuilder(16 + keys.Count * 36);
             text.Append(Number(keys[0].Value * scale));
@@ -2270,9 +2281,9 @@ public static class FilterGraphBuilder
 
                 // Two keyframes at the same moment are a jump.
                 if (length < 0.001)
-                    text.Append("*gte(t,").Append(Number(from)).Append(')');
+                    text.Append($"*gte({time},").Append(Number(from)).Append(')');
                 else
-                    text.Append('*').Append(FormatEasing($"clip((t{(from < 0 ? '+' : '-')}{Number(Math.Abs(from))})/{Number(length)},0,1)", keys[i - 1].Easing));
+                    text.Append('*').Append(FormatEasing($"clip(({time}{(from < 0 ? '+' : '-')}{Number(Math.Abs(from))})/{Number(length)},0,1)", keys[i - 1].Easing));
             }
 
             return text.ToString();
@@ -2283,12 +2294,13 @@ public static class FilterGraphBuilder
         /// <param name="Width">Its width in pixels, as an expression.</param>
         /// <param name="Angle">Degrees it is turned, as an expression.</param>
         /// <param name="LargestWidth">The widest it gets, as a fraction of the frame: what it is built at, so that it is only ever scaled down.</param>
-        private readonly record struct Motion(string? X, string? Y, string? Width, string? Angle, double LargestWidth)
+        /// <param name="Opacity">How solid it is, 0 to 1, as an expression of the frame's time (T, for geq).</param>
+        private readonly record struct Motion(string? X, string? Y, string? Width, string? Angle, double LargestWidth, string? Opacity = null)
         {
-            public bool Any => X is not null || Y is not null || Width is not null || Angle is not null;
+            public bool Any => X is not null || Y is not null || Width is not null || Angle is not null || Opacity is not null;
 
             /// <summary>Whether the picture itself changes from frame to frame, not only where it is laid.</summary>
-            public bool Reshapes => Width is not null || Angle is not null;
+            public bool Reshapes => Width is not null || Angle is not null || Opacity is not null;
         }
 
         /// <param name="from">Where on the sequence the stretch being composed begins: its clock starts there.</param>
@@ -2301,7 +2313,8 @@ public static class FilterGraphBuilder
             string? Of(KeyProperty property, double scale) => layer.HasKeys(property) ? KeyExpression(layer.GetKeys(property), start, scale) : null;
             return new Motion(
                 Of(KeyProperty.X, frameWidth), Of(KeyProperty.Y, frameHeight), Of(KeyProperty.Scale, frameWidth), layer.HasFilters ? Of(KeyProperty.Rotation, 1) : null,
-                layer.HasKeys(KeyProperty.Scale) ? layer.GetKeys(KeyProperty.Scale).Max(k => k.Value) : 0);
+                layer.HasKeys(KeyProperty.Scale) ? layer.GetKeys(KeyProperty.Scale).Max(k => k.Value) : 0,
+                layer.HasKeys(KeyProperty.Opacity) && layer.IsPicture ? KeyExpression(layer.GetKeys(KeyProperty.Opacity), start, 0.01, "T") : null);
         }
 
 

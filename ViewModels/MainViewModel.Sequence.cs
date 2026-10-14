@@ -548,7 +548,7 @@ public partial class MainViewModel
         }
 
         var main = _mainVideoRow;
-        if (Layer.GetKeyProperty(e.PropertyName) is { } property and not KeyProperty.Rotation)
+        if (Layer.GetKeyProperty(e.PropertyName) is { } property and not (KeyProperty.Rotation or KeyProperty.Opacity))
         {
             // Set in the row, or by a keyframe: carried over to the zoom and offsets.
             _syncingMainRow = true;
@@ -783,7 +783,7 @@ public partial class MainViewModel
     }
 
     // The order matters for the main video, whose corner is worked out from its size.
-    private static readonly KeyProperty[] KeyOrder = [KeyProperty.Scale, KeyProperty.X, KeyProperty.Y, KeyProperty.Rotation];
+    private static readonly KeyProperty[] KeyOrder = [KeyProperty.Scale, KeyProperty.X, KeyProperty.Y, KeyProperty.Rotation, KeyProperty.Opacity];
 
     partial void OnPositionMsChanged(double value)
     {

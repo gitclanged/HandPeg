@@ -53,6 +53,9 @@ public enum KeyProperty
 
     /// <summary>Degrees it is turned clockwise.</summary>
     Rotation,
+
+    /// <summary>How solid it is: 100 is solid, 0 is not there.</summary>
+    Opacity,
 }
 
 /// <summary>
@@ -170,7 +173,7 @@ public sealed partial class Layer : ObservableObject
         or nameof(IsLoading) or nameof(Title) or nameof(Action) or nameof(IsMuted) or nameof(GainDb)
         or nameof(AudioOffset) or nameof(Name) or nameof(TrackId) or nameof(PositionXPercent) or nameof(PositionYPercent) or nameof(SizePercent)
         or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges) or KeysChanged
-        or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(IsAnimated) or nameof(IsDeleted) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration) or nameof(Speed) or nameof(ClipSpeed);
+        or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(AnimatesOpacity) or nameof(IsAnimated) or nameof(IsDeleted) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration) or nameof(Speed) or nameof(ClipSpeed);
 
     // When the layer is on screen, in seconds of the source's own time.
 
@@ -470,20 +473,21 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Two keyframes closer together than this are the same one: about half a frame.</summary>
     public const double KeyTolerance = 0.02;
 
-    private readonly List<Keyframe>[] _keys = [[], [], [], []];
+    private readonly List<Keyframe>[] _keys = [[], [], [], [], []];
 
     public IReadOnlyList<Keyframe> GetKeys(KeyProperty property) => _keys[(int)property];
 
     public bool HasKeys(KeyProperty property) => _keys[(int)property].Count > 0;
 
     /// <summary>Whether anything about the layer is animated.</summary>
-    public bool IsAnimated => _keys[0].Count + _keys[1].Count + _keys[2].Count + _keys[3].Count > 0;
+    public bool IsAnimated => _keys.Any(k => k.Count > 0);
 
     // For the diamonds of the layer's row.
     public bool AnimatesX => HasKeys(KeyProperty.X);
     public bool AnimatesY => HasKeys(KeyProperty.Y);
     public bool AnimatesScale => HasKeys(KeyProperty.Scale);
     public bool AnimatesRotation => HasKeys(KeyProperty.Rotation);
+    public bool AnimatesOpacity => HasKeys(KeyProperty.Opacity);
 
     /// <summary>Every moment that has a keyframe of any kind, for the marks on the clip's block.</summary>
     public IEnumerable<double> KeyTimes => _keys.SelectMany(k => k).Select(k => k.Time).Distinct().Order();
@@ -494,6 +498,7 @@ public sealed partial class Layer : ObservableObject
         KeyProperty.X => PositionX,
         KeyProperty.Y => PositionY,
         KeyProperty.Scale => SizeWidth,
+        KeyProperty.Opacity => Opacity,
         _ => Rotation,
     };
 
@@ -504,6 +509,7 @@ public sealed partial class Layer : ObservableObject
             case KeyProperty.X: PositionX = value; break;
             case KeyProperty.Y: PositionY = value; break;
             case KeyProperty.Scale: SizeWidth = value; break;
+            case KeyProperty.Opacity: Opacity = (int)Math.Round(Math.Clamp(value, 0, 100)); break;
             default: Rotation = value; break;
         }
     }
@@ -515,6 +521,7 @@ public sealed partial class Layer : ObservableObject
         nameof(PositionY) => KeyProperty.Y,
         nameof(SizeWidth) => KeyProperty.Scale,
         nameof(Rotation) => KeyProperty.Rotation,
+        nameof(Opacity) => KeyProperty.Opacity,
         _ => null,
     };
 
@@ -674,7 +681,7 @@ public sealed partial class Layer : ObservableObject
     {
         foreach (var property in Enum.GetValues<KeyProperty>())
         {
-            if (property == KeyProperty.Rotation && !HasFilters)
+            if (property == KeyProperty.Rotation && !HasFilters || property == KeyProperty.Opacity && !IsPicture)
                 continue;
 
             var (list, value) = (_keys[(int)property], GetValue(property));
@@ -756,6 +763,7 @@ public sealed partial class Layer : ObservableObject
             KeyProperty.X => nameof(AnimatesX),
             KeyProperty.Y => nameof(AnimatesY),
             KeyProperty.Scale => nameof(AnimatesScale),
+            KeyProperty.Opacity => nameof(AnimatesOpacity),
             _ => nameof(AnimatesRotation),
         });
         OnPropertyChanged(nameof(IsAnimated));
@@ -781,6 +789,7 @@ public sealed partial class Layer : ObservableObject
         SetKeys(KeyProperty.Y, state?.KeysY);
         SetKeys(KeyProperty.Scale, state?.KeysScale);
         SetKeys(KeyProperty.Rotation, state?.KeysRotation);
+        SetKeys(KeyProperty.Opacity, state?.KeysOpacity);
     }
 
     // ----- Ducking -----
@@ -1065,6 +1074,7 @@ public sealed partial class Layer : ObservableObject
         KeysY = KeysOrNull(_keys[(int)KeyProperty.Y]),
         KeysScale = KeysOrNull(_keys[(int)KeyProperty.Scale]),
         KeysRotation = KeysOrNull(_keys[(int)KeyProperty.Rotation]),
+        KeysOpacity = KeysOrNull(_keys[(int)KeyProperty.Opacity]),
     };
 
     /// <summary>How far a mask can be grown or shrunk, in pixels.</summary>
@@ -1294,6 +1304,7 @@ public sealed class LayerState
 
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public List<Keyframe>? KeysRotation { get; set; }
+    public List<Keyframe>? KeysOpacity { get; set; }
 
     // Pixel values from presets saved by earlier versions. Read for conversion, never written.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
