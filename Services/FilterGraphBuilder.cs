@@ -579,20 +579,37 @@ public static class FilterGraphBuilder
             var ffmpeg = S.FfmpegExecutable;
             var args = new List<string> { ffmpeg, "-hide_banner", "-y" };
 
-            if (HardwareDecoding && !copyVideo)
-                args.Add(S.HardwareDecodeArguments.TrimEnd());
+            // With cuts made by filters the file is opened wound forward to what is kept, once for each run of
+            // kept stretches that lie close together in it (see PlanCutInputs); otherwise it is opened once.
+            var cutInputs = cutWithFilters ? PlanCutInputs(segments, tracks) : null;
+            var hardware = HardwareDecoding && !copyVideo ? S.HardwareDecodeArguments : "";
 
-            if (cutWithDemuxer)
+            if (cutInputs is not null)
             {
-                _usesCutsFile = true;
-                args.Add($"-f concat -safe 0 -i {Quote(CutsFilePath)}");
+                foreach (var (origin, length) in cutInputs.Inputs)
+                {
+                    var seek = origin > 0.001 ? $"-ss {Number(origin)} " : "";
+                    args.Add($"{hardware}{seek}-t {Number(length)} -i {Quote(input)}");
+                }
             }
             else
             {
-                args.Add($"-i {Quote(input)}");
+                if (hardware.Length > 0)
+                    args.Add(hardware.TrimEnd());
+
+                if (cutWithDemuxer)
+                {
+                    _usesCutsFile = true;
+                    args.Add($"-f concat -safe 0 -i {Quote(CutsFilePath)}");
+                }
+                else
+                {
+                    args.Add($"-i {Quote(input)}");
+                }
             }
 
-            // One chapter per kept segment, read from a metadata file given as a second input.
+            // One chapter per kept segment, read from a metadata file given as the input after the video's.
+            var videoInputs = cutInputs?.Inputs.Count ?? 1;
             var chaptersFromCuts = ChaptersAtCuts && segments.Count > 0 && !animated;
             if (chaptersFromCuts)
             {
@@ -603,8 +620,8 @@ public static class FilterGraphBuilder
             int? voiceoverInput = null;
             if (voiceover is not null)
             {
-                // Input 0 is the video; the chapters file, when there is one, is input 1.
-                voiceoverInput = chaptersFromCuts ? 2 : 1;
+                // After the video's inputs, and the chapters file when there is one.
+                voiceoverInput = videoInputs + (chaptersFromCuts ? 1 : 0);
                 args.Add($"-i {Quote(voiceover)}");
             }
 
@@ -628,9 +645,10 @@ public static class FilterGraphBuilder
             // somewhere other than its start, that is ducked under a voice, or that has layer sound to take in, is
             // made ready first, each track on a chain of its own; what follows then works from that instead of
             // from the input. Not with cuts made by the demuxer, which copies packets: no filter can be put
-            // in front of those.
+            // in front of those. Nor with cuts read from openings of the file wound forward to them: each kept
+            // stretch then has its sound made ready on its own (AppendSegmentAudio).
             var preparedAudio = new Dictionary<int, string[]>();
-            if (!cutWithDemuxer)
+            if (!cutWithDemuxer && cutInputs is null)
             {
 
                 // Auto-duck. The voices are mixed into one signal, and each ducked sound gets a copy of it to be
@@ -744,12 +762,25 @@ public static class FilterGraphBuilder
                 {
                     var range = $"start={Seconds(segments[i].Start)}:end={Seconds(segments[i].End)}";
                     var suffix = i.ToString(CultureInfo.InvariantCulture);
+
+                    // The opening of the file this stretch is read from, and how far into the file it begins: its
+                    // frames count from there.
+                    var (opening, origin) = cutInputs is null ? (0, 0.0) : (cutInputs.InputOf[i], cutInputs.Inputs[cutInputs.InputOf[i]].Origin);
                     var chain = new List<string>();
                     if (FrameEngine)
                     {
                         // The engine composes this stretch of the sequence on a clock that starts at 0. Burned-in
                         // subtitles are placed by the main video's own time, which the clock is set to while they are drawn.
-                        chain.AddRange(BuildVideoFilters(suffix, segments[i].Start.TotalSeconds, segments[i].End.TotalSeconds));
+                        _inputOrigin = origin;
+                        try
+                        {
+                            chain.AddRange(BuildVideoFilters(suffix, segments[i].Start.TotalSeconds, segments[i].End.TotalSeconds));
+                        }
+                        finally
+                        {
+                            _inputOrigin = 0;
+                        }
+
                         if (burnFilters.Count > 0)
                         {
                             chain.Add($"setpts=PTS{Signed(segments[i].Start.TotalSeconds - MainShift)}/TB");
@@ -759,8 +790,11 @@ public static class FilterGraphBuilder
                     }
                     else
                     {
-                        // Burned-in subtitles are placed by timestamp, so they must be drawn before the timestamps are reset.
+                        // Burned-in subtitles are placed by timestamp, so they must be drawn before the timestamps are
+                        // reset. The cut is placed by the file's own time, which a wound-forward opening is given back first.
                         var frameFilters = BuildVideoFilters(suffix);
+                        if (origin > 0.001)
+                            chain.Add($"setpts=PTS{Signed(origin)}/TB");
                         chain.Add($"trim={range}");
                         if (burnFilters.Count > 0)
                         {
@@ -778,8 +812,15 @@ public static class FilterGraphBuilder
                     if (framerate is not null)
                         chain.Add($"fps=fps={framerate}");
 
-                    graph.Add($"[0:v:0]{string.Join(",", chain)}[v{i}]");
+                    graph.Add($"[{opening}:v:0]{string.Join(",", chain)}[v{i}]");
                     concatInputs.Append($"[v{i}]");
+
+                    if (cutInputs is not null)
+                    {
+                        foreach (var label in AppendSegmentAudio(graph, tracks, layerAudio, opening, origin, segments[i].Start.TotalSeconds, segments[i].End.TotalSeconds, suffix))
+                            concatInputs.Append(label);
+                        continue;
+                    }
 
                     foreach (var track in tracks)
                     {
@@ -858,7 +899,7 @@ public static class FilterGraphBuilder
             }
 
             // Source chapter times no longer line up once sections have been removed.
-            args.Add(chaptersFromCuts ? "-map_chapters 1"
+            args.Add(chaptersFromCuts ? $"-map_chapters {videoInputs}"
                 : ChapterMarkers && segments.Count == 0 && !animated ? "-map_chapters 0"
                 : "-map_chapters -1");
 
@@ -867,6 +908,276 @@ public static class FilterGraphBuilder
 
             args.Add(Quote(output));
             return WithOpenClDevice(string.Join(" ", args));
+        }
+
+        // ----- Cuts read from openings of the file wound forward to them -----
+
+        /// <summary>Kept stretches further apart than this in the file (seconds) get an opening each; closer ones share one, read through.</summary>
+        private const double CutJoinGap = 10;
+
+        /// <summary>
+        /// The most openings of the file one export makes. Each holds some 50 MB while it waits its turn (measured on
+        /// a 1440p60 HEVC recording: 20 openings, 1.3 GB in all; 40, 2.2 GB), where reading through a gap instead
+        /// costs a minute of decoding for every ten of the recording.
+        /// </summary>
+        private const int MaxCutInputs = 24;
+
+        /// <summary>
+        /// How an export with cuts opens the file. <see cref="Inputs"/> are the openings in input order, each wound
+        /// forward to <c>Origin</c> seconds into the file and read for <c>Length</c> seconds; <see cref="InputOf"/>
+        /// says which opening each kept stretch is read from.
+        /// </summary>
+        private sealed record CutPlan(List<(double Origin, double Length)> Inputs, int[] InputOf);
+
+        /// <summary>
+        /// Opens the file for an export with cuts once for each run of kept stretches that lie close together in
+        /// it, wound forward (-ss before -i) to the first moment the run needs and read no further than its last
+        /// (-t). FFmpeg then finds that moment through the file's index instead of decoding everything before it:
+        /// with the whole file as one input, a stretch near the end of a recording hours long began to encode only
+        /// after everything before it had been decoded, which was half an hour.
+        ///
+        /// A run is stretches that follow each other forwards in the file, fewer than <see cref="CutJoinGap"/>
+        /// seconds apart: one opening serves them all and the gaps between are read through. A stretch whose
+        /// picture comes before the one ahead of it gets an opening of its own, or the frames between would be held
+        /// in memory until it was its turn. Past <see cref="MaxCutInputs"/> openings, the neighbours with the least
+        /// between them are joined. Null when the file's length is not known: it is then read from the start.
+        /// </summary>
+        private CutPlan? PlanCutInputs(IReadOnlyList<ExportSegment> segments, IReadOnlyList<ExportAudioTrack> tracks)
+        {
+            if (!HasSource || MainMediaSeconds <= 0)
+                return null;
+
+            var heard = tracks.Where(t => !t.IsSilentBase).ToList();
+            var inputOf = new int[segments.Count];
+            var runs = new List<(double Origin, double End, double PictureStart, double PictureEnd)>();
+            for (var i = 0; i < segments.Count; i++)
+            {
+                var (from, to) = (segments[i].Start.TotalSeconds, segments[i].End.TotalSeconds);
+                var seen = GetSeenMain(from, to);
+
+                // What the stretch needs of the file: the picture (in the Layer Engine wherever the main video's clips
+                // take it from; otherwise the stretch is the file's own time) and every track's sound, slip and all.
+                var picture = FrameEngine ? seen.ConvertAll(p => (Start: p.Source, End: p.Source + p.To - p.From)) : [(Start: from, End: to)];
+                var needs = picture.Concat(heard.SelectMany(t => TrackParts(t, seen, from)).Select(p => (Start: p.Start, End: p.Start + p.Span))).ToList();
+                if (needs.Count == 0)
+                {
+                    // Nothing of the file: it is given an opening below, of which it reads one frame.
+                    inputOf[i] = -1;
+                    continue;
+                }
+
+                var (start, end) = (Math.Max(needs.Min(n => n.Start), 0), needs.Max(n => n.End));
+                var (pictureStart, pictureEnd) = picture.Count > 0 ? (picture.Min(p => p.Start), picture.Max(p => p.End)) : (start, start);
+                if (runs.Count > 0 && runs[^1] is var run && start >= run.Origin && pictureStart >= run.PictureEnd - 0.05 && start <= run.End + CutJoinGap)
+                    runs[^1] = (run.Origin, Math.Max(run.End, end), run.PictureStart, Math.Max(run.PictureEnd, pictureEnd));
+                else
+                    runs.Add((start, end, pictureStart, pictureEnd));
+                inputOf[i] = runs.Count - 1;
+            }
+
+            if (runs.Count == 0)
+                runs.Add((0, 1, 0, 0));
+
+            // Too many openings: the two neighbours with the least between them become one, as long as the second
+            // goes on forwards from the first.
+            while (runs.Count > MaxCutInputs)
+            {
+                var (best, gap) = (-1, double.MaxValue);
+                for (var j = 0; j + 1 < runs.Count; j++)
+                {
+                    var (a, b) = (runs[j], runs[j + 1]);
+                    if (b.Origin >= a.Origin && b.PictureStart >= a.PictureEnd - 0.05 && b.Origin - a.End < gap)
+                        (best, gap) = (j, b.Origin - a.End);
+                }
+
+                if (best < 0)
+                    break;
+
+                var (first, second) = (runs[best], runs[best + 1]);
+                runs[best] = (first.Origin, Math.Max(first.End, second.End), first.PictureStart, Math.Max(first.PictureEnd, second.PictureEnd));
+                runs.RemoveAt(best + 1);
+                for (var i = 0; i < inputOf.Length; i++)
+                {
+                    if (inputOf[i] > best)
+                        inputOf[i]--;
+                }
+            }
+
+            // A stretch that needs nothing of the file shares the opening of the one before it, or else the one after.
+            for (var i = 0; i < inputOf.Length; i++)
+            {
+                if (inputOf[i] >= 0)
+                    continue;
+
+                var near = Enumerable.Range(0, i).Reverse().Concat(Enumerable.Range(i + 1, inputOf.Length - i - 1)).FirstOrDefault(j => inputOf[j] >= 0, -1);
+                inputOf[i] = near >= 0 ? inputOf[near] : 0;
+            }
+
+            // A second over: the cuts themselves are made exactly by the filters.
+            return new CutPlan(runs.ConvertAll(r => (r.Origin, r.End - r.Origin + 1)), inputOf);
+        }
+
+        /// <summary>
+        /// Where a track's sound for a stretch of the sequence comes from in the file, part by part: the moment of
+        /// the file it starts at, how long it lasts, and how far into the stretch it is laid. The main video's clips
+        /// decide what of the file is heard where, as they do for its picture; a track slipped later plays what the
+        /// file had that much earlier, and before the file begins there is silence.
+        /// </summary>
+        private static List<(double Start, double Span, double Lead)> TrackParts(ExportAudioTrack track, List<(double From, double To, double Source)> seen, double from)
+        {
+            var parts = new List<(double Start, double Span, double Lead)>();
+            foreach (var (a, b, source) in seen)
+            {
+                var (start, span, lead) = (source - track.Offset, b - a, a - from);
+                if (start < 0)
+                    (lead, span, start) = (lead - start, span + start, 0);
+                if (span > 0.001)
+                    parts.Add((start, span, lead));
+            }
+
+            return parts;
+        }
+
+        /// <summary>
+        /// The sound of one kept stretch, for the concat filter: every track exactly as long as the stretch and
+        /// counted from 0, read from the opening of the file the stretch has. Each track as the export has it without
+        /// cuts: its silenced parts, its slip, laid where the main video's clips put it, ducked under the voices when
+        /// it is set to duck, and the sound of the layers mixed into the first track. (A ducking compressor starts
+        /// afresh at each stretch, which differs from one run over the whole by a fraction of a second at most.)
+        /// </summary>
+        /// <param name="input">The opening the stretch is read from, which begins <paramref name="origin"/> seconds into the file.</param>
+        /// <param name="from">Where the stretch begins on the sequence, and (<paramref name="to"/>) where it ends.</param>
+        /// <returns>Each track's label, in the order of <paramref name="tracks"/>.</returns>
+        private List<string> AppendSegmentAudio(
+            List<string> graph, List<ExportAudioTrack> tracks, List<Layer> layerAudio, int input, double origin, double from, double to, string s)
+        {
+            var length = to - from;
+            var seen = GetSeenMain(from, to);
+
+            // Only the layers that sound somewhere in this stretch.
+            var layers = layerAudio.Where(l => LayerAudioStart(l) < to - 0.01 && (l.Duration <= 0.001 || LayerAudioStart(l) + l.Duration > from + 0.01)).ToList();
+
+            // Auto-duck, as without cuts: the voices are mixed into one signal, and each ducked sound gets a copy of it.
+            bool IsDucked(ExportAudioTrack track) => track is { AutoDuck: true, IsVoice: false } && !track.IsSilentBase;
+            var ducked = tracks.Count(IsDucked) + layers.Count(l => l is { AutoDuck: true, IsVoice: false });
+            var keys = new Queue<string>();
+            if (ducked > 0)
+            {
+                var voices = tracks.Where(t => t.IsVoice && !t.IsSilentBase)
+                    .Select(t => PlaceSegmentTrack(graph, t, seen, input, origin, from, length, $"dvsrc{t.Index}_{s}") + "anull")
+                    .Concat(layers.Where(l => l.IsVoice).Select(l => BuildLayerAudio(l, from)))
+                    .ToList();
+                if (voices.Count > 0)
+                {
+                    for (var n = 0; n < voices.Count; n++)
+                        graph.Add($"{voices[n]},aresample=48000,apad[dvoice{n}_{s}]");
+
+                    var key = $"[dvoice0_{s}]";
+                    if (voices.Count > 1)
+                    {
+                        key = $"[dkey_{s}]";
+                        graph.Add($"{string.Concat(voices.Select((_, n) => $"[dvoice{n}_{s}]"))}amix=inputs={voices.Count}:normalize=0{key}");
+                    }
+
+                    if (ducked == 1)
+                    {
+                        keys.Enqueue(key);
+                    }
+                    else
+                    {
+                        var copies = Enumerable.Range(0, ducked).Select(n => $"[dkey{n}_{s}]").ToList();
+                        graph.Add($"{key}asplit={ducked}{string.Concat(copies)}");
+                        copies.ForEach(keys.Enqueue);
+                    }
+                }
+            }
+
+            // The compressor ends its output early, most of a second before the end of what it was given (seen with
+            // FFmpeg 8): the sound is given endless silence after it, and what comes out is cut to the stretch.
+            string Duck(string source, string name)
+            {
+                graph.Add($"{source}apad[{name}_in]");
+                graph.Add($"[{name}_in]{keys.Dequeue()}{DuckFilter},atrim=end={Number(length)}[{name}]");
+                return $"[{name}]";
+            }
+
+            var labels = new List<string>(tracks.Count);
+            for (var k = 0; k < tracks.Count; k++)
+            {
+                var track = tracks[k];
+                var label = PlaceSegmentTrack(graph, track, seen, input, origin, from, length, $"aplace{track.Index}_{s}");
+                if (keys.Count > 0 && IsDucked(track))
+                    label = Duck(label, $"aduck{track.Index}_{s}");
+
+                // The layers' sound goes into the first track, which decides how long the mix is.
+                if (k == 0 && layers.Count > 0)
+                {
+                    for (var n = 0; n < layers.Count; n++)
+                    {
+                        if (keys.Count > 0 && layers[n] is { AutoDuck: true, IsVoice: false })
+                        {
+                            Duck(BuildLayerAudio(layers[n], from) + ",", $"alayer{n}_{s}");
+                        }
+                        else
+                        {
+                            graph.Add($"{BuildLayerAudio(layers[n], from)}[alayer{n}_{s}]");
+                        }
+                    }
+
+                    graph.Add($"{label}{string.Concat(layers.Select((_, n) => $"[alayer{n}_{s}]"))}amix=inputs={layers.Count + 1}:duration=first:normalize=0[amixed{track.Index}_{s}]");
+                    label = $"[amixed{track.Index}_{s}]";
+                }
+
+                labels.Add(label);
+            }
+
+            return labels;
+        }
+
+        /// <summary>
+        /// One track's sound for a kept stretch, from an opening of the file that begins <paramref name="origin"/>
+        /// seconds into it: silenced where it was silenced, slipped, and laid where the main video's clips are in the
+        /// stretch, with silence round them. Exactly <paramref name="length"/> seconds long.
+        /// </summary>
+        private string PlaceSegmentTrack(
+            List<string> graph, ExportAudioTrack track, List<(double From, double To, double Source)> seen, int input, double origin, double from, double length, string tag)
+        {
+            var whole = Number(length);
+            var parts = track.IsSilentBase ? [] : TrackParts(track, seen, from);
+            if (parts.Count == 0)
+            {
+                graph.Add($"anullsrc=r=48000:cl=stereo:d={whole}[{tag}]");
+                return $"[{tag}]";
+            }
+
+            // One channel coming out with silence first is made two-channel (see PlaceMainAudio), and so are parts
+            // that are mixed.
+            var stereo = track.IsMono ? ",aformat=channel_layouts=stereo" : "";
+            var placed = new List<string>(parts.Count);
+            for (var j = 0; j < parts.Count; j++)
+            {
+                var (start, span, lead) = parts[j];
+                var at = start - origin;
+
+                // The silenced stretches are in the track's own time, the file's; the opening's clock is behind it by its origin.
+                var muted = track.MutedSpans.Where(m => m.End > start && m.Start < start + span)
+                    .Select(m => $"volume=0:enable='between(t,{Number(m.Start - origin)},{Number(m.End - origin)})',");
+                var piece = $"[{input}:a:{track.Index}]{string.Concat(muted)}atrim={(at > 0.0005 ? $"start={Number(at)}:" : "")}end={Number(at + span)},asetpts=PTS-STARTPTS"
+                            + (lead > 0.001 ? $",adelay={(int)Math.Round(lead * 1000)}:all=1" : "")
+                            + (lead > 0.001 || parts.Count > 1 ? stereo : "");
+                if (parts.Count == 1)
+                {
+                    graph.Add($"{piece},apad=whole_dur={whole}[{tag}]");
+                    return $"[{tag}]";
+                }
+
+                graph.Add($"{piece}[{tag}_p{j}]");
+                placed.Add($"[{tag}_p{j}]");
+            }
+
+            // The mix is given a clock of its own, counted from its samples (see PlaceMainAudio).
+            graph.Add($"{string.Concat(placed)}amix=inputs={placed.Count}:normalize=0:dropout_transition=0,asetpts=N/SR/TB,apad=whole_dur={whole}[{tag}]");
+            return $"[{tag}]";
         }
 
         /// <summary>
