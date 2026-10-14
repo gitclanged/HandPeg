@@ -136,6 +136,10 @@ public partial class MainViewModel
             return;
         }
 
+        // whisper.cpp and the speech model are fetched the first time captions are asked for.
+        if (!await RequireCaptionToolsAsync("Generate Captions"))
+            return;
+
         // There are subtitles on the timeline already, and whatever was done to them by hand would go with them: asked first.
         if (HasSubtitleCues)
         {
@@ -430,7 +434,13 @@ public partial class MainViewModel
     /// already transcribed) and turns each caption into a cue, which can then be edited. From then on the
     /// captions are made of the cues, and nothing is transcribed again until the track is removed.
     /// </summary>
-    public Task ConvertCaptionsToCuesAsync() => RunOperationAsync(async cancellationToken =>
+    public async Task ConvertCaptionsToCuesAsync()
+    {
+        if (await RequireCaptionToolsAsync("Transcribing the captions"))
+            await TranscribeToCuesAsync();
+    }
+
+    private Task TranscribeToCuesAsync() => RunOperationAsync(async cancellationToken =>
     {
         var (words, problem) = await GetCaptionWordsAsync([], cancellationToken);
         if (words is null)

@@ -1158,7 +1158,19 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
-    private Task LoadSourceAsync() => RunOperationAsync(async cancellationToken =>
+    private async Task LoadSourceAsync()
+    {
+        // A web address is fetched by yt-dlp, which is downloaded the first time one is loaded.
+        if (Uri.TryCreate(SourcePath.Trim().Trim('"'), UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            && !await RequireAsync("Downloading a video", [DependencyUpdater.YtDlp, DependencyUpdater.Ffmpeg], []))
+        {
+            return;
+        }
+
+        await LoadSourceNowAsync();
+    }
+
+    private Task LoadSourceNowAsync() => RunOperationAsync(async cancellationToken =>
     {
         var source = SourcePath.Trim().Trim('"');
         if (source.Length == 0)
@@ -1464,7 +1476,14 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
-    private Task StartEncodeAsync() => RunOperationAsync(async cancellationToken =>
+    private async Task StartEncodeAsync()
+    {
+        // FFmpeg, and for captions that are still to be heard whisper and its model: fetched now if they never were.
+        if (await RequireForCommandAsync("Start Encode"))
+            await RunEncodeAsync();
+    }
+
+    private Task RunEncodeAsync() => RunOperationAsync(async cancellationToken =>
     {
         if (string.IsNullOrWhiteSpace(CommandPreview))
             return "There is no command to run.";

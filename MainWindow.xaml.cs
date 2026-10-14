@@ -116,6 +116,9 @@ public partial class MainWindow : Window
         _viewModel.PreviewRendered += ShowPreview;
         _viewModel.AskOverwrite = AskOverwrite;
         _viewModel.Confirm = (title, message, confirm) => new ConfirmDialog(title, message, confirm) { Owner = this }.ShowDialog() == true;
+
+        // A tool that was never downloaded is offered at the moment something needs it.
+        _viewModel.DependenciesNeeded = request => Task.FromResult(new DependencyPromptWindow(request) { Owner = this }.ShowDialog() == true);
         _viewModel.Choose = (title, message, first, second) =>
         {
             var dialog = new ConfirmDialog(title, message, first, second) { Owner = this };

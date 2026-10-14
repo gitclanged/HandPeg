@@ -67,6 +67,10 @@
                         <DataTrigger Binding="{Binding Status}" Value="Encoding">
                             <Setter TargetName="progress" Property="Visibility" Value="Visible" />
                         </DataTrigger>
+                        <!-- The step before the encode, for a job whose captions are made when it runs -->
+                        <DataTrigger Binding="{Binding Status}" Value="Transcribing">
+                            <Setter TargetName="progress" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
                         <DataTrigger Binding="{Binding Status}" Value="Complete">
                             <Setter TargetName="status" Property="Foreground" Value="#6CCB5F" />
                         </DataTrigger>
