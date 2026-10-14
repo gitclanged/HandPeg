@@ -807,6 +807,60 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private bool _customMask;
     [ObservableProperty] private string _maskPath = "";
 
+    /// <summary>
+    /// The mask picture is of the whole source frame, not of this layer: the layer takes the part of it that
+    /// lies under its own cut-out, as it takes the picture. One mask then serves every piece cut from the
+    /// video, and moving a piece's cut-out keeps the mask where it is on the frame. Pieces cut from the video only.
+    /// </summary>
+    [ObservableProperty] private bool _maskFrame;
+
+    /// <summary>Grows what the mask shows by about so many pixels (above 0), or shrinks it (below 0).</summary>
+    [ObservableProperty] private int _maskGrow;
+
+    /// <summary>The mask shows where its picture is black instead of where it is white.</summary>
+    [ObservableProperty] private bool _maskInvert;
+
+    /// <summary>
+    /// The outlines the mask was drawn from, as text (see <see cref="Services.MaskStore"/>), in fractions of the
+    /// source frame; empty for a mask that was not drawn here. Kept so that they can be opened and changed again.
+    /// </summary>
+    [ObservableProperty] private string _maskShapes = "";
+
+    // Crop: how much of each edge of the layer is cut away, as fractions of its width or height. What is cut
+    // away is see-through, and the rest stays exactly where it was.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CropLeftPercent))]
+    private double _cropLeft;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CropRightPercent))]
+    private double _cropRight;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CropTopPercent))]
+    private double _cropTop;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CropBottomPercent))]
+    private double _cropBottom;
+
+    // The crop as percentages, for the sliders and the number boxes beside them.
+    public double CropLeftPercent { get => Math.Round(CropLeft * 100, 1); set => CropLeft = Crop(value / 100); }
+    public double CropRightPercent { get => Math.Round(CropRight * 100, 1); set => CropRight = Crop(value / 100); }
+    public double CropTopPercent { get => Math.Round(CropTop * 100, 1); set => CropTop = Crop(value / 100); }
+    public double CropBottomPercent { get => Math.Round(CropBottom * 100, 1); set => CropBottom = Crop(value / 100); }
+
+    /// <summary>Some of an edge is cut away.</summary>
+    public bool IsCropped => CropLeft + CropRight + CropTop + CropBottom > 0.0005;
+
+    /// <summary>The mask is taken from the frame: a piece cut from the video, with a mask of the whole frame.</summary>
+    public bool UsesFrameMask => MaskFrame && IsVideo;
+
+    /// <summary>Takes the mask off and puts back every mask setting as a new layer has it.</summary>
+    public void ResetMask() =>
+        (CustomMask, MaskPath, MaskFrame, MaskGrow, MaskInvert, MaskShapes, CropLeft, CropRight, CropTop, CropBottom, CornerRadius, Feather, FeatherRadius) =
+        (false, "", false, 0, false, "", 0, 0, 0, 0, 0, false, 12);
+
     /// <summary>Only a piece of the video has a place in the source to be marked.</summary>
     public bool IsVideo => Kind == LayerKind.Video;
 
@@ -970,6 +1024,14 @@ public sealed partial class Layer : ObservableObject
         ChromaBlend = ChromaBlend,
         CustomMask = CustomMask,
         MaskPath = MaskPath,
+        MaskFrame = MaskFrame,
+        MaskGrow = MaskGrow,
+        MaskInvert = MaskInvert,
+        MaskShapes = MaskShapes,
+        CropLeft = CropLeft,
+        CropRight = CropRight,
+        CropTop = CropTop,
+        CropBottom = CropBottom,
         StartTime = StartTime,
         Duration = Duration,
         MediaOffset = MediaOffset,
@@ -1005,6 +1067,12 @@ public sealed partial class Layer : ObservableObject
         KeysRotation = KeysOrNull(_keys[(int)KeyProperty.Rotation]),
     };
 
+    /// <summary>How far a mask can be grown or shrunk, in pixels.</summary>
+    public const int MaskGrowLimit = 40;
+
+    /// <summary>A saved crop, held to what leaves something of the layer: at most 95% from one edge.</summary>
+    private static double Crop(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 0.95) : 0;
+
     /// <summary>Takes the look of a saved layer (style, mask, key, filters, turning) and leaves place, size and timing as they are.</summary>
     public void ApplyLook(LayerState? state)
     {
@@ -1014,6 +1082,8 @@ public sealed partial class Layer : ObservableObject
         (ChromaKey, ChromaColor) = (state.ChromaKey, string.IsNullOrWhiteSpace(state.ChromaColor) ? "#00FF00" : state.ChromaColor);
         (ChromaSimilarity, ChromaBlend) = (Math.Clamp(state.ChromaSimilarity, 0.01, 1), Math.Clamp(state.ChromaBlend, 0, 1));
         (CustomMask, MaskPath, IsHidden) = (state.CustomMask, state.MaskPath ?? "", state.IsHidden);
+        (MaskFrame, MaskGrow, MaskInvert, MaskShapes) = (state.MaskFrame, Math.Clamp(state.MaskGrow, -MaskGrowLimit, MaskGrowLimit), state.MaskInvert, state.MaskShapes ?? "");
+        (CropLeft, CropRight, CropTop, CropBottom) = (Crop(state.CropLeft), Crop(state.CropRight), Crop(state.CropTop), Crop(state.CropBottom));
         (Rotation, FlipHorizontal, FlipVertical) = (Math.Clamp(state.Rotation, -360, 360), state.FlipHorizontal, state.FlipVertical);
         (FilterContrast, FilterBrightness, FilterSaturation) = (Math.Clamp(state.FilterContrast, 0, 2), Math.Clamp(state.FilterBrightness, -1, 1), Math.Clamp(state.FilterSaturation, 0, 3));
         (FilterGamma, FilterHue, FilterSharpen) = (Math.Clamp(state.FilterGamma, 0.1, 3), Math.Clamp(state.FilterHue, -180, 180), Math.Clamp(state.FilterSharpen, 0, 1));
@@ -1055,6 +1125,14 @@ public sealed partial class Layer : ObservableObject
             ChromaBlend = Math.Clamp(state.ChromaBlend, 0, 1),
             CustomMask = state.CustomMask,
             MaskPath = state.MaskPath ?? "",
+            MaskFrame = state.MaskFrame,
+            MaskGrow = Math.Clamp(state.MaskGrow, -MaskGrowLimit, MaskGrowLimit),
+            MaskInvert = state.MaskInvert,
+            MaskShapes = state.MaskShapes ?? "",
+            CropLeft = Crop(state.CropLeft),
+            CropRight = Crop(state.CropRight),
+            CropTop = Crop(state.CropTop),
+            CropBottom = Crop(state.CropBottom),
             StartTime = Math.Max(state.StartTime, 0),
             Duration = Math.Max(state.Duration, 0),
             MediaOffset = Math.Max(state.MediaOffset, 0),
@@ -1160,6 +1238,14 @@ public sealed class LayerState
     public double ChromaBlend { get; set; } = 0.05;
     public bool CustomMask { get; set; }
     public string MaskPath { get; set; } = "";
+    public bool MaskFrame { get; set; }
+    public int MaskGrow { get; set; }
+    public bool MaskInvert { get; set; }
+    public string? MaskShapes { get; set; }
+    public double CropLeft { get; set; }
+    public double CropRight { get; set; }
+    public double CropTop { get; set; }
+    public double CropBottom { get; set; }
 
     public double StartTime { get; set; }
     public double Duration { get; set; }

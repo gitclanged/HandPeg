@@ -185,20 +185,108 @@
         <!-- The mask -->
         <StackPanel x:Name="MaskPanel" Visibility="Collapsed">
             <CheckBox Content="Use a mask" IsChecked="{Binding CustomMask}"
-                      ToolTip="Cuts the layer to a shape: a black-and-white picture stretched over the layer, which shows where the picture is white and is see-through where it is black." />
+                      ToolTip="Cuts the layer to a shape: a black-and-white picture, which shows where it is white and is see-through where it is black." />
             <DockPanel Margin="0,6,0,0">
                 <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Click="BrowseMask_Click" />
                 <TextBox Text="{Binding MaskPath, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center" AutomationProperties.Name="Track Mask File"
-                         ToolTip="A .png or .jpg in black and white. It is stretched to the size of the layer." />
+                         ToolTip="A .png or .jpg in black and white: of the whole video frame, or stretched to the size of the layer." />
             </DockPanel>
-            <TextBlock Text="Ready-made shapes:" Margin="0,12,0,4" />
+            <CheckBox x:Name="MaskFrameBox" Content="The mask is of the whole video frame" IsChecked="{Binding MaskFrame}" Margin="0,6,0,0" AutomationProperties.Name="Mask Covers the Whole Frame"
+                      ToolTip="Ticked, the mask is a picture of the whole frame, white over every HUD element at once: this layer takes the part of it under its own area, as it takes the picture, so one mask serves every piece cut from the video, and redrawing a piece's area keeps the mask where it is. Cleared, the mask is stretched over the layer." />
+            <StackPanel x:Name="FrameMaskButtons" Orientation="Horizontal" Margin="0,8,0,0">
+                <Button Content="Draw Custom Shape..." Padding="12,4" Click="DrawShape_Click" AutomationProperties.Name="Draw Custom Shape"
+                        ToolTip="Opens a still of the video at the playhead: click around a HUD element, point by point, to draw its outline; the lines join up, and clicking the first point closes the shape. Draw as many shapes as you like. They become a mask of the whole frame, for this layer or for every piece cut from the video." />
+                <Button x:Name="ShareMaskButton" Content="Use This Mask for All Cut-out Layers" Padding="12,4" Margin="6,0,0,0" Click="ShareMask_Click" AutomationProperties.Name="Use Mask for All Cut-out Layers"
+                        ToolTip="Gives every layer cut from the video this mask of the whole frame: each one cuts its own part out of it, and stays a layer of its own." />
+            </StackPanel>
+            <TextBlock Text="Ready-made shapes (stretched over the layer):" Margin="0,12,0,4" />
             <StackPanel Orientation="Horizontal">
                 <Button Content="Soft Rectangle" Padding="12,4" Tag="Soft" Click="Shape_Click" ToolTip="A rectangle whose edges fade out all the way round." />
                 <Button Content="Ellipse" Padding="12,4" Margin="6,0,0,0" Tag="Ellipse" Click="Shape_Click" ToolTip="A circle or oval with a soft edge: a round radar, an ultimate meter." />
                 <Button Content="Slant" Padding="12,4" Margin="6,0,0,0" Tag="Slant" Click="Shape_Click" ToolTip="A bar leaning to the right, as slanted health bars do." />
                 <Button Content="No Mask" Padding="12,4" Margin="6,0,0,0" Click="NoMask_Click" ToolTip="Takes the mask off: the layer is its whole rectangle again." />
             </StackPanel>
-            <TextBlock Text="The outline of the layer itself:" Margin="0,14,0,2" />
+
+            <TextBlock Text="Mask options:" Margin="0,14,0,2" />
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Grow / Shrink:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="-40" Maximum="40" VerticalAlignment="Center"
+                    Value="{Binding MaskGrow}" AutomationProperties.Name="Mask Grow" local:NumericInput.Default="0"
+                    ToolTip="Grows what the mask shows outwards (to the right), to take in a glow or a border round a HUD element, or shrinks it inwards (to the left), to trim one off. In pixels of the finished video." />
+            <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding MaskGrow, StringFormat={}{0:0}}"
+                         AutomationProperties.Name="Mask Grow Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0"
+                         local:NumericInput.Minimum="-40" local:NumericInput.Maximum="40" />
+                <TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
+            </StackPanel>
+        </Grid>
+            <CheckBox Content="Invert mask" IsChecked="{Binding MaskInvert}" Margin="0,4,0,0" AutomationProperties.Name="Invert Mask"
+                      ToolTip="The layer shows where the mask is black instead of where it is white." />
+
+            <TextBlock Text="Crop (cuts away the edges of the layer; the rest stays where it is):" Margin="0,14,0,2" TextWrapping="Wrap" />
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Left:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="95" VerticalAlignment="Center"
+                    Value="{Binding CropLeftPercent}" AutomationProperties.Name="Crop Left" local:NumericInput.Default="0"
+                    ToolTip="How much of the layer's left edge is cut away, as a percentage of its width. Use it to take out a part of a HUD piece you do not want, such as an empty ability slot." />
+            <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CropLeftPercent, StringFormat={}{0:0}}"
+                         AutomationProperties.Name="Crop Left Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="1"
+                         local:NumericInput.Minimum="0" local:NumericInput.Maximum="95" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
+            </StackPanel>
+            <TextBlock Grid.Row="1" Text="Right:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="95" VerticalAlignment="Center"
+                    Value="{Binding CropRightPercent}" AutomationProperties.Name="Crop Right" local:NumericInput.Default="0"
+                    ToolTip="How much of the layer's right edge is cut away, as a percentage of its width." />
+            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CropRightPercent, StringFormat={}{0:0}}"
+                         AutomationProperties.Name="Crop Right Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="1"
+                         local:NumericInput.Minimum="0" local:NumericInput.Maximum="95" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
+            </StackPanel>
+            <TextBlock Grid.Row="2" Text="Top:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="95" VerticalAlignment="Center"
+                    Value="{Binding CropTopPercent}" AutomationProperties.Name="Crop Top" local:NumericInput.Default="0"
+                    ToolTip="How much of the layer's top edge is cut away, as a percentage of its height." />
+            <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CropTopPercent, StringFormat={}{0:0}}"
+                         AutomationProperties.Name="Crop Top Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="1"
+                         local:NumericInput.Minimum="0" local:NumericInput.Maximum="95" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
+            </StackPanel>
+            <TextBlock Grid.Row="3" Text="Bottom:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="3" Grid.Column="1" Minimum="0" Maximum="95" VerticalAlignment="Center"
+                    Value="{Binding CropBottomPercent}" AutomationProperties.Name="Crop Bottom" local:NumericInput.Default="0"
+                    ToolTip="How much of the layer's bottom edge is cut away, as a percentage of its height." />
+            <StackPanel Grid.Row="3" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CropBottomPercent, StringFormat={}{0:0}}"
+                         AutomationProperties.Name="Crop Bottom Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="1"
+                         local:NumericInput.Minimum="0" local:NumericInput.Maximum="95" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
+            </StackPanel>
+        </Grid>
+
+            <TextBlock Text="Outline:" Margin="0,14,0,2" />
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
@@ -212,19 +300,26 @@
             <TextBlock Grid.Row="0" Text="Corner Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center"
                     Value="{Binding CornerRadius}" AutomationProperties.Name="Mask Corner Radius" local:NumericInput.Default="0"
-                    ToolTip="Rounds the corners, as a percentage of the layer's shorter side." />
-            <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CornerRadius, StringFormat={}{0:0}}"
-                     AutomationProperties.Name="Mask Corner Radius Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0"
-                     local:NumericInput.Minimum="0" local:NumericInput.Maximum="50" />
+                    ToolTip="Rounds the corners of the layer's rectangle, as a percentage of its shorter side." />
+            <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding CornerRadius, StringFormat={}{0:0}}"
+                         AutomationProperties.Name="Mask Corner Radius Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0"
+                         local:NumericInput.Minimum="0" local:NumericInput.Maximum="50" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
+            </StackPanel>
             <TextBlock Grid.Row="1" Text="Soft Edge:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <Slider Grid.Row="1" Grid.Column="1" Minimum="1" Maximum="80" VerticalAlignment="Center"
                     Value="{Binding FeatherRadius}" AutomationProperties.Name="Mask Soft Edge" local:NumericInput.Default="12"
                     ToolTip="How wide the soft edge is, in pixels, while Soft Edges is ticked." />
-            <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FeatherRadius, StringFormat={}{0:0}}"
-                     AutomationProperties.Name="Mask Soft Edge Value" local:NumericInput.Default="12" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0"
-                     local:NumericInput.Minimum="1" local:NumericInput.Maximum="80" />
+            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBox Style="{StaticResource ValueBox}" Width="56" Margin="8,0,0,0" Text="{Binding FeatherRadius, StringFormat={}{0:0}}"
+                         AutomationProperties.Name="Mask Soft Edge Value" local:NumericInput.Default="12" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0"
+                         local:NumericInput.Minimum="1" local:NumericInput.Maximum="80" />
+                <TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Width="18" Foreground="{DynamicResource MutedTextBrush}" />
+            </StackPanel>
         </Grid>
-            <CheckBox Content="Soft Edges" IsChecked="{Binding Feather}" Margin="0,6,0,0" ToolTip="Lets the edges of the layer fade out over the width set above." />
+            <CheckBox Content="Soft Edges" IsChecked="{Binding Feather}" Margin="0,6,0,0" AutomationProperties.Name="Soft Edges"
+                      ToolTip="Lets the edges fade out over the width set above: the mask's outline and the crop's when there is a mask, otherwise the edges of the layer itself." />
             <Button x:Name="RedrawButton" Content="Redraw Area on Video..." Padding="12,5" Margin="0,14,0,0" HorizontalAlignment="Left" Click="Redraw_Click"
                     ToolTip="Closes this window and lets you drag a new rectangle on the video: what this layer cuts out of it. Use it when the game's HUD sits a little differently in your recording." />
         </StackPanel>

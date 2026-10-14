@@ -202,23 +202,10 @@ public partial class MainViewModel
     /// </summary>
     private static void EmbedMasks(StylePreset style)
     {
+        var masks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var layer in StyleLayers(style))
-        {
-            var path = layer.MaskPath.Trim().Trim('"');
-            if (!layer.CustomMask || path.Length == 0 || !File.Exists(path))
-                continue;
-
-            try
-            {
-                var name = Path.GetFileName(path);
-                (style.Masks ??= [])[name] = Convert.ToBase64String(File.ReadAllBytes(path));
-                layer.MaskPath = name;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Left as a path: the style still works on this machine.
-            }
-        }
+            MaskStore.Pack(layer, masks);
+        style.Masks = masks.Count > 0 ? masks : null;
     }
 
     /// <summary>Everything in a style that can carry a mask: its layers, the main video, and the caption box.</summary>
@@ -240,20 +227,8 @@ public partial class MainViewModel
 
         foreach (var layer in StyleLayers(style))
         {
-            if (!masks.TryGetValue(layer.MaskPath, out var encoded))
-                continue;
-
-            try
-            {
-                Directory.CreateDirectory(AppPaths.Masks);
-                var path = Path.Combine(AppPaths.Masks, Path.GetFileName(layer.MaskPath));
-                File.WriteAllBytes(path, Convert.FromBase64String(encoded));
-                layer.MaskPath = path;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException)
-            {
-                StatusText = $"The mask {layer.MaskPath} could not be unpacked: {ex.Message}";
-            }
+            if (MaskStore.Unpack(layer, masks) is { } problem)
+                StatusText = problem;
         }
     }
 

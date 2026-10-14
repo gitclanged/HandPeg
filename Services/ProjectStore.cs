@@ -39,6 +39,13 @@ public sealed class ProjectFile
 
     /// <summary>Everything that is not on the timeline: the frame, the encoders, the filters, the caption style.</summary>
     public EncodingPreset Settings { get; set; } = new();
+
+    /// <summary>
+    /// The mask pictures the layers use, each as Base64 under the name the layers give it: carried inside the
+    /// project, so that the file is all another machine needs of them. Absent when no layer has a mask.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, string>? Masks { get; set; }
 }
 
 public sealed class ProjectSource
@@ -243,17 +250,18 @@ public static class ProjectStore
 
     public static string Serialize(ProjectState state) => JsonSerializer.Serialize(ToFile(state), JsonOptions);
 
-    public static ProjectState Load(string filePath) => Deserialize(File.ReadAllText(filePath));
+    /// <param name="unpackMasks">Write the masks the project carries into the masks folder and point its layers at them: when it is being opened, not when it is only being listed.</param>
+    public static ProjectState Load(string filePath, bool unpackMasks = true) => Deserialize(File.ReadAllText(filePath), unpackMasks);
 
     /// <summary>Reads a project from its text. Anything that is not a format 2 project is refused, with the reason.</summary>
-    public static ProjectState Deserialize(string json)
+    public static ProjectState Deserialize(string json, bool unpackMasks = false)
     {
         var file = JsonSerializer.Deserialize<ProjectFile>(json, JsonOptions) ?? throw new InvalidDataException("The project file is empty.");
         if (file.Format != ProjectFile.FormatName)
             throw new InvalidDataException("This is not a HandPeg 2.0 project. Projects saved by earlier versions cannot be opened.");
         if (file.Version != ProjectFile.CurrentVersion)
             throw new InvalidDataException($"This project is in format {file.Version}; this version of HandPeg reads format {ProjectFile.CurrentVersion}.");
-        return FromFile(file);
+        return FromFile(file, unpackMasks);
     }
 
     /// <summary>Whether a piece of JSON says it is a project of the format this version reads.</summary>
@@ -329,6 +337,16 @@ public static class ProjectStore
         return layer;
     }
 
+    /// <summary>Everything in a project file that can carry a mask: each track's look, the main video's, and the caption box.</summary>
+    private static IEnumerable<LayerState> MaskedLooks(ProjectFile file)
+    {
+        foreach (var track in file.Sequence.Tracks)
+            yield return track.Look;
+        yield return file.Sequence.Main.Look;
+        if (file.Settings.CaptionLayer is { } captions)
+            yield return captions;
+    }
+
     private static ProjectFile ToFile(ProjectState state)
     {
         var settings = state.Settings;
@@ -348,7 +366,7 @@ public static class ProjectStore
         var rest = JsonSerializer.Deserialize<EncodingPreset>(JsonSerializer.Serialize(settings))!;
         (rest.Name, rest.Layers, rest.MainLayer, rest.MainVideoIndex, rest.BackgroundHidden, rest.AudioTracks) = ("", [], null, 0, false, []);
 
-        return new ProjectFile
+        var file = new ProjectFile
         {
             Format = ProjectFile.FormatName,
             Version = ProjectFile.CurrentVersion,
@@ -394,10 +412,27 @@ public static class ProjectStore
             },
             Settings = rest,
         };
+
+        // The looks are the file's own copies: they are pointed at the masks carried with them, not at the disk.
+        var masks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var look in MaskedLooks(file))
+            MaskStore.Pack(look, masks);
+        file.Masks = masks.Count > 0 ? masks : null;
+        return file;
     }
 
-    private static ProjectState FromFile(ProjectFile file)
+    private static ProjectState FromFile(ProjectFile file, bool unpackMasks)
     {
+        // The masks the project carries go into the masks folder, and its layers are pointed at them there.
+        if (unpackMasks && file.Masks is { Count: > 0 } masks)
+        {
+            foreach (var look in MaskedLooks(file))
+            {
+                if (MaskStore.Unpack(look, masks) is { } problem)
+                    AppLog.Write(problem);
+            }
+        }
+
         var sequence = file.Sequence;
         var settings = file.Settings;
         settings.Name = file.Name;
@@ -446,7 +481,7 @@ public static class ProjectStore
         {
             try
             {
-                var state = Load(file.FullName);
+                var state = Load(file.FullName, unpackMasks: false);
                 var isUrl = Uri.TryCreate(state.SourcePath, UriKind.Absolute, out var uri) && !uri.IsFile;
                 entries.Add(new ProjectEntry(
                     file.FullName,

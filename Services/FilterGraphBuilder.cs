@@ -1883,7 +1883,7 @@ public static class FilterGraphBuilder
 
         /// <summary>Whether a layer hides everything under the rectangle it covers: solid, square-cornered, unturned, with nothing keyed or masked out.</summary>
         private bool IsOpaque(Layer layer) =>
-            layer.Opacity >= 100 && !layer.ChromaKey && !(layer.CustomMask && Exists(layer.MaskPath.Trim().Trim('"')))
+            layer.Opacity >= 100 && !layer.ChromaKey && !(layer.CustomMask && Exists(layer.MaskPath.Trim().Trim('"'))) && !layer.IsCropped
             && layer.CornerRadius == 0 && !layer.Feather && Math.Abs(layer.Rotation % 360) < 0.05;
 
         /// <summary>The size of the picture once it has been turned: the box its corners then reach, in even pixels.</summary>
@@ -2006,13 +2006,17 @@ public static class FilterGraphBuilder
             // made once and held, not worked out again for every frame.
             var masks = new List<string>();
             var sources = new StringBuilder();
-            if (layer.CustomMask && layer.HasMask && Exists(layer.MaskPath.Trim().Trim('"')))
+            var maskFile = layer.CustomMask && layer.HasMask ? layer.MaskPath.Trim().Trim('"') : "";
+            var hasMask = maskFile.Length > 0 && Exists(maskFile);
+            if (hasMask || layer.IsCropped)
             {
-                sources.Append($";movie='{EscapeFilterPath(layer.MaskPath)}',scale={width}:{height},format=gray,trim=end_frame=1,loop=loop=-1:size=1[{name}_cmask{s}]");
+                sources.Append(';').Append(BuildMaskSource(layer, hasMask ? maskFile : null, width, height, _liveScale))
+                    .Append($",trim=end_frame=1,loop=loop=-1:size=1[{name}_cmask{s}]");
                 masks.Add($"[{name}_cmask{s}]");
             }
 
-            if (BuildLayerMask(layer, width, height, _liveScale) is { } shape)
+            // With a mask, Soft Edges softens the mask's outline (above), and the rectangle only has its corners rounded.
+            if (BuildLayerMask(layer, width, height, _liveScale, softEdge: !hasMask) is { } shape)
             {
                 sources.Append($";color=c=black:s={width}x{height}:r=1,format=gray,geq=lum='255*{shape}',trim=end_frame=1,loop=loop=-1:size=1[{name}_smask{s}]");
                 masks.Add($"[{name}_smask{s}]");
@@ -2161,11 +2165,11 @@ public static class FilterGraphBuilder
         /// It measures how far a pixel is inside a rounded rectangle: zero on the edge, rising inwards. Rounded
         /// corners cut the picture off at that edge; a feather lets it fade in over its width instead.
         /// </summary>
-        private static string? BuildLayerMask(Layer element, int width, int height, double pixelScale = 1)
+        private static string? BuildLayerMask(Layer element, int width, int height, double pixelScale = 1, bool softEdge = true)
         {
             var limit = Math.Max(Math.Min(width, height) / 2 - 1, 1);
             var corner = Math.Min((int)Math.Round(Math.Clamp(element.CornerRadius, 0, 50) / 100.0 * Math.Min(width, height)), limit);
-            var feather = element.Feather ? Math.Clamp((int)Math.Round(element.FeatherRadius * pixelScale), 1, limit) : 0;
+            var feather = softEdge && element.Feather ? Math.Clamp((int)Math.Round(element.FeatherRadius * pixelScale), 1, limit) : 0;
             if (corner == 0 && feather == 0)
                 return null;
 
@@ -2173,6 +2177,50 @@ public static class FilterGraphBuilder
             var radius = Math.Max(corner, feather);
             var ramp = Math.Max(feather, 1);
             return $"clip(({radius}.5-hypot(max({radius}-X,0)+max(X-(W-1-{radius}),0),max({radius}-Y,0)+max(Y-(H-1-{radius}),0)))/{ramp},0,1)";
+        }
+
+        /// <summary>
+        /// A layer's mask as a grey picture the size of the layer, white where it shows. From its file: for a
+        /// mask of the whole frame, the part under the layer's cut-out, cut as the picture is; then grown or
+        /// shrunk, and turned inside out. Then the cropped edges are cut away, and the outline softened. With no
+        /// file, the crop alone. It is one picture, worked out once: none of this is done again for each frame.
+        /// </summary>
+        private static string BuildMaskSource(Layer layer, string? file, int width, int height, double pixelScale)
+        {
+            var source = new StringBuilder();
+            if (file is null)
+            {
+                source.Append($"color=c=white:s={width}x{height}:r=1,format=gray");
+            }
+            else
+            {
+                source.Append($"movie='{EscapeFilterPath(file)}',format=gray");
+                if (layer.UsesFrameMask)
+                    source.Append($",crop=iw*{Fraction(layer.SourceWidth)}:ih*{Fraction(layer.SourceHeight)}:iw*{Fraction(layer.SourceX)}:ih*{Fraction(layer.SourceY)}");
+                source.Append($",scale={width}:{height}");
+                if (layer.MaskInvert)
+                    source.Append(",geq=lum='255-lum(X,Y)'");
+
+                // Grown or shrunk: blurred by as much as the edge is to move, then cut where the blur reaches that
+                // far, outside the old edge to grow it and inside to shrink it (a step blurred by sigma is at 16% a
+                // sigma outside its edge, and at 84% a sigma inside). The cut keeps a short ramp, so the edge stays smooth.
+                var grow = (int)Math.Round(Math.Clamp(layer.MaskGrow, -Layer.MaskGrowLimit, Layer.MaskGrowLimit) * pixelScale);
+                if (grow != 0)
+                    source.Append($",gblur=sigma={Math.Abs(grow)},geq=lum='clip((lum(X,Y)-{(grow > 0 ? 40 : 215)})*6+128,0,255)'");
+            }
+
+            // Cropped: each edge is black for as far in as it is cut.
+            if (layer.IsCropped)
+            {
+                var (left, right) = ((int)Math.Round(layer.CropLeft * width), (int)Math.Round(layer.CropRight * width));
+                var (top, bottom) = ((int)Math.Round(layer.CropTop * height), (int)Math.Round(layer.CropBottom * height));
+                source.Append($",geq=lum='lum(X,Y)*gte(X,{left})*lt(X,{width - right})*gte(Y,{top})*lt(Y,{height - bottom})'");
+            }
+
+            // Soft edges: the mask's own outline, and the crop's, fade out over the Soft Edge width.
+            if (layer.Feather)
+                source.Append($",gblur=sigma={Number(Math.Max(Math.Clamp(layer.FeatherRadius, 1, 100) * pixelScale / 2, 0.5))}");
+            return source.ToString();
         }
 
         private static string Fraction(double value) => Math.Clamp(value, 0, 1).ToString("0.#####", CultureInfo.InvariantCulture);

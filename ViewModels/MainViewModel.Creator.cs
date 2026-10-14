@@ -754,6 +754,25 @@ public partial class MainViewModel
             MainVideoIndex++;
     }
 
+    /// <summary>
+    /// Gives every other layer cut from the video the mask of the whole frame that this one has (its picture,
+    /// its drawn outlines, whether it is turned inside out, how far it is grown). Each then takes its own part of
+    /// it and stays a layer of its own; their crops and outlines are their own and are left as they are.
+    /// </summary>
+    /// <returns>How many layers were given it.</returns>
+    public int ShareFrameMask(Layer from)
+    {
+        var count = 0;
+        foreach (var layer in Layers.Where(l => l.IsVideo && !l.IsDeleted && !ReferenceEquals(l, from)))
+        {
+            (layer.CustomMask, layer.MaskPath, layer.MaskFrame, layer.MaskShapes) = (true, from.MaskPath, true, from.MaskShapes);
+            (layer.MaskInvert, layer.MaskGrow) = (from.MaskInvert, from.MaskGrow);
+            count++;
+        }
+
+        return count;
+    }
+
     /// <summary>Adds a layer to the list: a picture above the other pictures, a sound after everything.</summary>
     private void AttachLayer(Layer element)
     {

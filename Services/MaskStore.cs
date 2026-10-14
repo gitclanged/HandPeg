@@ -1,0 +1,228 @@
+using System.Globalization;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using HandPegApp.Models;
+
+namespace HandPegApp.Services;
+
+/// <summary>
+/// Mask pictures: carried inside the files that have to stand on their own (a style preset, a project), and
+/// drawn from shapes. A carried mask is kept under a name made from its content, so two different masks that
+/// share a file name never take each other's place, and one mask used by several layers is carried once.
+///
+/// A drawn mask is a set of closed outlines, each a list of points given as fractions of the source frame,
+/// written as text: "x,y x,y x,y" for an outline, outlines separated by ";". The picture is drawn from that
+/// text, white inside the outlines and black outside, and the layer keeps the text, so the outlines can be
+/// opened and changed again, and the picture drawn again when it is missing.
+/// </summary>
+public static class MaskStore
+{
+    // ----- Carried inside a file -----
+
+    /// <summary>
+    /// Adds the mask a layer uses to the set being written, and has the layer name it by its key. A layer
+    /// without a mask file is left as it is.
+    /// </summary>
+    public static void Pack(LayerState layer, Dictionary<string, string> masks)
+    {
+        var path = (layer.MaskPath ?? "").Trim().Trim('"');
+        if (!layer.CustomMask || path.Length == 0 || !File.Exists(path))
+            return;
+
+        try
+        {
+            var bytes = File.ReadAllBytes(path);
+            var key = KeyFor(path, bytes);
+            masks.TryAdd(key, Convert.ToBase64String(bytes));
+            layer.MaskPath = key;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Left as a path: the file still works on this machine.
+        }
+    }
+
+    /// <summary>
+    /// Writes a carried mask into the masks folder and points the layer at it there. A file of that name that
+    /// already holds the same picture is used as it is; one that holds another picture is left alone, and this
+    /// one is written beside it under its content's name. A name the set does not carry is left as it is.
+    /// </summary>
+    /// <returns>Null, or why the mask could not be written.</returns>
+    public static string? Unpack(LayerState layer, IReadOnlyDictionary<string, string> masks)
+    {
+        if (string.IsNullOrEmpty(layer.MaskPath) || !masks.TryGetValue(layer.MaskPath, out var encoded))
+            return null;
+
+        try
+        {
+            var bytes = Convert.FromBase64String(encoded);
+            Directory.CreateDirectory(AppPaths.Masks);
+            var path = Path.Combine(AppPaths.Masks, Path.GetFileName(layer.MaskPath));
+            if (File.Exists(path) && !File.ReadAllBytes(path).AsSpan().SequenceEqual(bytes))
+                path = Path.Combine(AppPaths.Masks, KeyFor(path, bytes));
+            if (!File.Exists(path))
+                File.WriteAllBytes(path, bytes);
+            layer.MaskPath = path;
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException)
+        {
+            return $"The mask {layer.MaskPath} could not be unpacked: {ex.Message}";
+        }
+    }
+
+    /// <summary>The name a mask is carried under: its file's name, with the first bytes of its content's hash.</summary>
+    private static string KeyFor(string path, byte[] bytes)
+    {
+        var hash = Convert.ToHexString(SHA256.HashData(bytes), 0, 4).ToLowerInvariant();
+        var stem = Path.GetFileNameWithoutExtension(path);
+        if (!stem.EndsWith("_" + hash, StringComparison.Ordinal))
+            stem += "_" + hash;
+        return stem + Path.GetExtension(path);
+    }
+
+    // ----- Drawn from outlines -----
+
+    /// <summary>The outlines in a mask's text, each with at least three points. Points that cannot be read are skipped.</summary>
+    public static List<List<Point>> ParseShapes(string? text)
+    {
+        var shapes = new List<List<Point>>();
+        foreach (var outline in (text ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var points = new List<Point>();
+            foreach (var pair in outline.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var parts = pair.Split(',');
+                if (parts.Length == 2
+                    && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x)
+                    && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y)
+                    && double.IsFinite(x) && double.IsFinite(y))
+                {
+                    points.Add(new Point(Math.Clamp(x, -1, 2), Math.Clamp(y, -1, 2)));
+                }
+            }
+
+            if (points.Count >= 3)
+                shapes.Add(points);
+        }
+
+        return shapes;
+    }
+
+    /// <summary>Outlines as a mask's text, each point to five places.</summary>
+    public static string FormatShapes(IEnumerable<IReadOnlyList<Point>> shapes) =>
+        string.Join(";", shapes.Where(s => s.Count >= 3).Select(s => string.Join(" ", s.Select(p =>
+            string.Create(CultureInfo.InvariantCulture, $"{Math.Round(p.X, 5)},{Math.Round(p.Y, 5)}")))));
+
+    /// <summary>How large a drawn mask is made for a source of this size: at least 1920 wide and at most 3840, in the source's shape.</summary>
+    public static (int Width, int Height) SizeFor(int sourceWidth, int sourceHeight)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0)
+            return (2560, 1440);
+
+        var width = Math.Clamp(sourceWidth, 1920, 3840);
+        return (width, Math.Max((int)Math.Round(width * (double)sourceHeight / sourceWidth), 2));
+    }
+
+    /// <summary>
+    /// The picture for a mask's outlines, drawn into the masks folder if it is not there yet: white inside,
+    /// black outside, with smooth edges. Needs the UI thread. Null when there are no outlines.
+    /// </summary>
+    public static string? Render(string shapesText, int width, int height)
+    {
+        var shapes = ParseShapes(shapesText);
+        if (shapes.Count == 0)
+            return null;
+
+        var text = FormatShapes(shapes);
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{text}|{width}x{height}")), 0, 6).ToLowerInvariant();
+        var path = Path.Combine(AppPaths.Masks, $"shape_{hash}.png");
+        if (File.Exists(path))
+            return path;
+
+        // Overlapping outlines add up rather than cancel: the mask is everything inside any of them.
+        var geometry = new StreamGeometry { FillRule = FillRule.Nonzero };
+        using (var context = geometry.Open())
+        {
+            foreach (var shape in shapes)
+            {
+                context.BeginFigure(new Point(shape[0].X * width, shape[0].Y * height), true, true);
+                context.PolyLineTo(shape.Skip(1).Select(p => new Point(p.X * width, p.Y * height)).ToList(), true, true);
+            }
+        }
+
+        geometry.Freeze();
+        var visual = new DrawingVisual();
+        using (var context = visual.RenderOpen())
+        {
+            context.DrawRectangle(Brushes.Black, null, new Rect(0, 0, width, height));
+            context.DrawGeometry(Brushes.White, null, geometry);
+        }
+
+        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(visual);
+
+        // Grey is all a mask needs, and a quarter of the size.
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(new FormatConvertedBitmap(bitmap, PixelFormats.Gray8, null, 0)));
+        Directory.CreateDirectory(AppPaths.Masks);
+        var part = path + ".part";
+        using (var file = File.Create(part))
+            encoder.Save(file);
+        File.Move(part, path, overwrite: true);
+        return path;
+    }
+
+    // ----- Outlines for the built-in shapes, as fractions of a 16:9 frame -----
+
+    // The frame the built-in outlines are measured on: the shapes are worked out in its pixels, so that a
+    // circle is round and a corner is as round across as it is down, and then given as fractions of it.
+    private const double FrameWidth = 1920, FrameHeight = 1080;
+
+    /// <summary>A rectangle with rounded corners, the radius in pixels of a 1920 x 1080 frame.</summary>
+    public static List<Point> RoundedRectangle(double x, double y, double width, double height, double radius = 8)
+    {
+        var (left, top, w, h) = (x * FrameWidth, y * FrameHeight, width * FrameWidth, height * FrameHeight);
+        var r = Math.Clamp(radius, 0, Math.Min(w, h) / 2);
+        var points = new List<Point>();
+        void Corner(double cx, double cy, double from)
+        {
+            for (var i = 0; i <= 6; i++)
+            {
+                var angle = (from + i * 15) * Math.PI / 180;
+                points.Add(Fraction(cx + r * Math.Cos(angle), cy + r * Math.Sin(angle)));
+            }
+        }
+
+        Corner(left + w - r, top + r, 270);
+        Corner(left + w - r, top + h - r, 0);
+        Corner(left + r, top + h - r, 90);
+        Corner(left + r, top + r, 180);
+        return points;
+    }
+
+    /// <summary>An ellipse through the edges of a box given as fractions of the frame.</summary>
+    public static List<Point> Ellipse(double x, double y, double width, double height, int steps = 48)
+    {
+        var (cx, cy) = ((x + width / 2) * FrameWidth, (y + height / 2) * FrameHeight);
+        var (rx, ry) = (width / 2 * FrameWidth, height / 2 * FrameHeight);
+        return Enumerable.Range(0, steps)
+            .Select(i => Fraction(cx + rx * Math.Cos(2 * Math.PI * i / steps), cy + ry * Math.Sin(2 * Math.PI * i / steps)))
+            .ToList();
+    }
+
+    /// <summary>A bar leaning to the right inside a box: its top edge starts a slant's width in, its bottom edge stops that far short.</summary>
+    public static List<Point> Slant(double x, double y, double width, double height, double lean = 0.1) =>
+    [
+        new(x + width * lean, y), new(x + width, y), new(x + width * (1 - lean), y + height), new(x, y + height),
+    ];
+
+    /// <summary>A polygon through points given in pixels of a 1920 x 1080 frame.</summary>
+    public static List<Point> Polygon(params (double X, double Y)[] pixels) => pixels.Select(p => Fraction(p.X, p.Y)).ToList();
+
+    private static Point Fraction(double x, double y) => new(Math.Round(x / FrameWidth, 5), Math.Round(y / FrameHeight, 5));
+}

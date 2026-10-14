@@ -38,6 +38,8 @@ public partial class MainViewModel
             }
         }
 
+        EnsureDrawnMasks();
+
         // One copy of each layer, however many of the lists below it is in.
         var copies = new Dictionary<Layer, Layer>(ReferenceEqualityComparer.Instance);
         Layer Snapshot(Layer layer)
@@ -402,4 +404,28 @@ public partial class MainViewModel
         choice.LastIndexOf('(') is >= 0 and var open ? choice[(open + 1)..].TrimEnd(')') : choice.ToLowerInvariant();
 
     private static string Number(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// A drawn mask whose picture has gone (the masks folder was emptied, or the project came without it) is
+    /// drawn again from the outlines the layer keeps. Only on the UI thread, which is where it can be drawn.
+    /// </summary>
+    private void EnsureDrawnMasks()
+    {
+        if (System.Windows.Application.Current?.Dispatcher.CheckAccess() != true)
+            return;
+
+        foreach (var layer in Layers.Where(l => l.CustomMask && l.MaskShapes.Length > 0 && !File.Exists(l.MaskPath.Trim().Trim('"'))))
+        {
+            try
+            {
+                var (width, height) = MaskStore.SizeFor(SourceWidth, SourceHeight);
+                if (MaskStore.Render(layer.MaskShapes, width, height) is { } path)
+                    layer.MaskPath = path;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                AppLog.Write($"The drawn mask of {layer.Name} could not be drawn again", ex);
+            }
+        }
+    }
 }
