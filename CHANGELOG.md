@@ -43,7 +43,7 @@ HandPeg 3.0 is rebuilt on 2.5.0, with the parts of 2.6 that worked kept and the 
 
 ### Compatibility
 - Projects from 2.5 and 2.6 open unchanged. Projects saved by unreleased test builds after 2.6.3 (format 3) cannot be opened.
-- Projects saved by 3.0 that use masks open in 2.5 and 2.6, which ignore the new mask options.
+- Projects saved by 3.0 open in 2.5 and 2.6, but without their masks, which those versions cannot unpack.
 - Settings and presets carry over. Settings that belonged to proxies are ignored.
 - The built-in HUD style presets are written again, replacing earlier copies of the same names.
 
