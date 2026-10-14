@@ -14,7 +14,8 @@ HandPeg 3.0 is rebuilt on 2.5.0, with the parts of 2.6 that worked kept and the 
 - **Mask options:** grow or shrink the mask, invert it, crop any edge of a layer (what is cropped is see-through, the rest stays where it is), and Soft Edges now softens a mask's own outline. A mask can be a PNG with transparency: what is painted shows, what is see-through is cut away.
 - **Layers from a Mask:** a mask of the whole frame is taken apart into one layer per HUD element. Patches closer together than a distance you set are one element, so ability icons traced one by one make a single layer. The pieces are shown on a still of the video before they are added.
 - **Opacity keyframes:** layers can fade in and out, keyed like position, size and rotation.
-- **Built-in HUD presets traced from the games:** Overwatch, Apex Legends, Marvel Rivals and The Finals, each with one mask traced round its HUD, laid out for vertical video. Counter-Strike 2 is kept as it was.
+- **Built-in HUD presets traced from the games:** Overwatch, Apex Legends, Marvel Rivals and The Finals, each with one mask traced round its HUD and three or four layers, one per section of the HUD (Overwatch: Killfeed, Health & Name, Abilities & Ammo), laid out for vertical video. The other pieces (an ultimate meter, a portrait, the objective) are in the mask too: right-click a HUD layer and choose **Add More Pieces of This Mask** to add them. Counter-Strike 2 is kept as it was.
+- **Live audio preview:** every audio track of a video is heard while it plays, not only the first, mixed with the layers' sound, and as the export will have it: silenced stretches, slips, ducking under the voice tracks, each track's gain and filters, and the fades. Changing any of them is heard straight away.
 - **Projects and style presets carry their masks**, so one file is all another computer needs.
 
 ### New
@@ -35,6 +36,7 @@ HandPeg 3.0 is rebuilt on 2.5.0, with the parts of 2.6 that worked kept and the 
 - Generate Captions asks before replacing a subtitle track that is already there.
 
 ### Fixed
+- Dropping a video on a style preset in the drag-and-drop overlay closed HandPeg (the player crashed on the HUD masks' soft edge).
 - Exports in Editor Mode failing with "press Generate Captions first" when captions were on but nothing had been transcribed (2.6).
 - Files dropped over the player being taken by the player instead of HandPeg.
 - First-run setup not listing hardware encoders until a restart after choosing an existing FFmpeg.
