@@ -85,6 +85,102 @@ public static class MaskStore
         return stem + Path.GetExtension(path);
     }
 
+    // ----- Read as a mask -----
+
+    // Whether each picture has transparency, by its path, size and date: a picture is looked at once.
+    private static readonly Dictionary<string, bool> AlphaKnown = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether a mask picture is to be read by its transparency rather than its brightness: it has an alpha
+    /// channel, and some of it is actually see-through. Such a mask shows the layer where the picture is painted,
+    /// in any colour, and cuts it away where the picture is transparent. A picture without transparency is read
+    /// as black and white. False for a file that cannot be read.
+    /// </summary>
+    public static bool UsesAlpha(string path)
+    {
+        try
+        {
+            var file = new FileInfo(path);
+            if (!file.Exists)
+                return false;
+
+            var key = $"{file.FullName}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
+            lock (AlphaKnown)
+            {
+                if (AlphaKnown.TryGetValue(key, out var known))
+                    return known;
+            }
+
+            var found = HasTransparency(file.FullName);
+            lock (AlphaKnown)
+                AlphaKnown[key] = found;
+            return found;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException or FileFormatException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasTransparency(string path)
+    {
+        using var stream = File.OpenRead(path);
+        var frame = BitmapDecoder.Create(stream, BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad).Frames[0];
+        var format = frame.Format;
+        if (format != PixelFormats.Bgra32 && format != PixelFormats.Pbgra32 && format != PixelFormats.Rgba64 && format != PixelFormats.Prgba64
+            && format != PixelFormats.Rgba128Float && format != PixelFormats.Prgba128Float)
+        {
+            return false;
+        }
+
+        var pixels = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
+        var stride = pixels.PixelWidth * 4;
+        var row = new byte[stride];
+        for (var y = 0; y < pixels.PixelHeight; y++)
+        {
+            pixels.CopyPixels(new Int32Rect(0, y, pixels.PixelWidth, 1), row, stride, 0);
+            for (var x = 3; x < stride; x += 4)
+            {
+                if (row[x] < 250)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A mask picture as grey levels, white where it shows, read as <see cref="UsesAlpha"/> says, and made small
+    /// enough to look over quickly: at most so many pixels across. For finding the separate pieces in a mask.
+    /// </summary>
+    public static (byte[] Pixels, int Width, int Height)? ReadGrey(string path, int largest = 960)
+    {
+        try
+        {
+            var alpha = UsesAlpha(path);
+            using var stream = File.OpenRead(path);
+            BitmapSource frame = BitmapDecoder.Create(stream, BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad).Frames[0];
+            if (frame.PixelWidth > largest)
+            {
+                var scale = (double)largest / frame.PixelWidth;
+                frame = new TransformedBitmap(frame, new ScaleTransform(scale, scale));
+            }
+
+            var bgra = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
+            var (width, height) = (bgra.PixelWidth, bgra.PixelHeight);
+            var raw = new byte[width * height * 4];
+            bgra.CopyPixels(raw, width * 4, 0);
+            var grey = new byte[width * height];
+            for (int i = 0, j = 0; i < grey.Length; i++, j += 4)
+                grey[i] = alpha ? raw[j + 3] : (byte)((raw[j] * 29 + raw[j + 1] * 150 + raw[j + 2] * 77) >> 8);
+            return (grey, width, height);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException or FileFormatException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     // ----- Drawn from outlines -----
 
     /// <summary>The outlines in a mask's text, each with at least three points. Points that cannot be read are skipped.</summary>

@@ -69,10 +69,15 @@ public partial class MainViewModel
                 files.Add(name);
         }
 
+        // And which of the masks are read by their transparency: painted shows, see-through is cut away.
+        var alphaMasks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var layer in stack.Append(caption))
         {
             Note(layer.MaskPath);
             Note(layer.FilterLut);
+            var mask = layer.MaskPath.Trim().Trim('"');
+            if (layer.CustomMask && files.Contains(mask) && MaskStore.UsesAlpha(mask))
+                alphaMasks.Add(mask);
         }
 
         Note(CaptionsFilePath);
@@ -178,6 +183,7 @@ public partial class MainViewModel
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), $"HandPeg_output.{Container}")
                 : DestinationPath.Trim().Trim('"'),
             ExistingFiles = files,
+            AlphaMasks = alphaMasks,
         };
     }
 

@@ -189,7 +189,7 @@
             <DockPanel Margin="0,6,0,0">
                 <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Click="BrowseMask_Click" />
                 <TextBox Text="{Binding MaskPath, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center" AutomationProperties.Name="Track Mask File"
-                         ToolTip="A .png or .jpg in black and white: of the whole video frame, or stretched to the size of the layer." />
+                         ToolTip="A .png or .jpg in black and white (white shows), or a .png with transparency (what is painted shows, in any colour, and what is see-through is cut away): of the whole video frame, or stretched to the size of the layer." />
             </DockPanel>
             <CheckBox x:Name="MaskFrameBox" Content="The mask is of the whole video frame" IsChecked="{Binding MaskFrame}" Margin="0,6,0,0" AutomationProperties.Name="Mask Covers the Whole Frame"
                       ToolTip="Ticked, the mask is a picture of the whole frame, white over every HUD element at once: this layer takes the part of it under its own area, as it takes the picture, so one mask serves every piece cut from the video, and redrawing a piece's area keeps the mask where it is. Cleared, the mask is stretched over the layer." />

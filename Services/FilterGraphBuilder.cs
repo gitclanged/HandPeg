@@ -256,6 +256,9 @@ public sealed record SequenceExportState
     /// builder leaves out a mask or a LUT whose file is missing, and asks this instead of the disk.
     /// </summary>
     public IReadOnlySet<string> ExistingFiles { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The mask pictures that are read by their transparency, not their brightness (see <see cref="MaskStore.UsesAlpha"/>).</summary>
+    public IReadOnlySet<string> AlphaMasks { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>A finished export command, and which of the lists FFmpeg reads beside it the command refers to.</summary>
@@ -2013,7 +2016,7 @@ public static class FilterGraphBuilder
             var hasMask = maskFile.Length > 0 && Exists(maskFile);
             if (hasMask || layer.IsCropped)
             {
-                sources.Append(';').Append(BuildMaskSource(layer, hasMask ? maskFile : null, width, height, _liveScale))
+                sources.Append(';').Append(BuildMaskSource(layer, hasMask ? maskFile : null, hasMask && S.AlphaMasks.Contains(maskFile), width, height, _liveScale))
                     .Append($",trim=end_frame=1,loop=loop=-1:size=1[{name}_cmask{s}]");
                 masks.Add($"[{name}_cmask{s}]");
             }
@@ -2195,7 +2198,8 @@ public static class FilterGraphBuilder
         /// shrunk, and turned inside out. Then the cropped edges are cut away, and the outline softened. With no
         /// file, the crop alone. It is one picture, worked out once: none of this is done again for each frame.
         /// </summary>
-        private static string BuildMaskSource(Layer layer, string? file, int width, int height, double pixelScale)
+        /// <param name="fromAlpha">The picture is read by its transparency: painted shows, see-through is cut away.</param>
+        private static string BuildMaskSource(Layer layer, string? file, bool fromAlpha, int width, int height, double pixelScale)
         {
             var source = new StringBuilder();
             if (file is null)
@@ -2204,7 +2208,7 @@ public static class FilterGraphBuilder
             }
             else
             {
-                source.Append($"movie='{EscapeFilterPath(file)}',format=gray");
+                source.Append($"movie='{EscapeFilterPath(file)}',{MaskReader(fromAlpha)}");
                 if (layer.UsesFrameMask)
                     source.Append($",crop=iw*{Fraction(layer.SourceWidth)}:ih*{Fraction(layer.SourceHeight)}:iw*{Fraction(layer.SourceX)}:ih*{Fraction(layer.SourceY)}");
                 source.Append($",scale={width}:{height}");
@@ -2232,6 +2236,9 @@ public static class FilterGraphBuilder
                 source.Append($",gblur=sigma={Number(Math.Max(Math.Clamp(layer.FeatherRadius, 1, 100) * pixelScale / 2, 0.5))}");
             return source.ToString();
         }
+
+        /// <summary>How a mask picture is turned into grey: its transparency, or its brightness.</summary>
+        private static string MaskReader(bool fromAlpha) => fromAlpha ? "format=rgba,alphaextract" : "format=gray";
 
         private static string Fraction(double value) => Math.Clamp(value, 0, 1).ToString("0.#####", CultureInfo.InvariantCulture);
 
@@ -2346,7 +2353,7 @@ public static class FilterGraphBuilder
             if (CaptionLayer.CustomMask && Exists(maskPath))
             {
                 layer += $",format=yuva420p,split[cap_pic][cap_a_in];[cap_a_in]alphaextract[cap_a0];"
-                         + $"movie='{EscapeFilterPath(maskPath)}',scale={width}:{height},format=gray,trim=end_frame=1,loop=loop=-1:size=1[cap_mask];"
+                         + $"movie='{EscapeFilterPath(maskPath)}',{MaskReader(S.AlphaMasks.Contains(maskPath))},scale={width}:{height},trim=end_frame=1,loop=loop=-1:size=1[cap_mask];"
                          + "[cap_a0][cap_mask]blend=all_mode=multiply:shortest=1[cap_a1];[cap_pic][cap_a1]alphamerge";
             }
 
