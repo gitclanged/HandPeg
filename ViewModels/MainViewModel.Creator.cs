@@ -659,7 +659,7 @@ public partial class MainViewModel
 
     /// <summary>
     /// Takes a game's HUD apart: one layer per piece, each cut out of the video where that piece sits and laid
-    /// back in the same place, with a mask for the pieces that are not rectangles. From there each can be moved.
+    /// back in the same place, all sharing the game's mask of the whole frame. From there each can be moved.
     /// </summary>
     /// <param name="vertical">Lays the pieces out for a tall frame, above and below the video, and makes the frame tall; otherwise each piece is laid back where it was cut from.</param>
     public void AddHudLayers(HudGame game, bool vertical = false)
@@ -682,7 +682,7 @@ public partial class MainViewModel
         MainVideoIndex = Layers.Count(l => !l.IsAudio);
         StatusText = vertical
             ? $"Added {game.Pieces.Count} layers for {game.Name}, laid out above and below the video. Check each against your video: right-click a layer and choose Redraw / Modify Mask to correct it."
-            : $"Added {game.Pieces.Count} layers for {game.Name}. They sit where the HUD is by default: check each against your video and correct it with Draw Target.";
+            : $"Added {game.Pieces.Count} layers for {game.Name}. They sit where the HUD is by default: check each against your video, and correct its area with Draw Target or its outline with Draw Custom Shape (Mask).";
     }
 
     // ----- Stream copy -----

@@ -6,7 +6,7 @@ using HandPegApp.Models;
 
 namespace HandPegApp.Services;
 
-/// <summary>The outline a piece of a game's HUD is cut to.</summary>
+/// <summary>The ready-made shapes a layer can be cut to, stretched over the layer: see <see cref="HudLibrary.EnsureMask"/>.</summary>
 public enum HudShape
 {
     /// <summary>A plain rectangle with slightly rounded corners.</summary>
@@ -22,65 +22,124 @@ public enum HudShape
     Soft,
 }
 
-/// <summary>One piece of a game's HUD: what it is, and where it sits on a 16:9 frame, as fractions of the frame.</summary>
-public sealed record HudPiece(string Name, double X, double Y, double Width, double Height, HudShape Shape = HudShape.Panel);
+/// <summary>
+/// One piece of a game's HUD: what it is, and the outlines of what it shows, as fractions of a 16:9 frame. The
+/// area the piece is cut from is worked out from them: the box round its outlines, with a little room spare.
+/// </summary>
+public sealed record HudPiece(string Name, IReadOnlyList<List<Point>> Shapes)
+{
+    // Room left round the outlines, so that a soft edge has somewhere to fade: about 8 pixels of a 1440-line frame.
+    private const double MarginX = 8 / 2560.0, MarginY = 8 / 1440.0;
+
+    public double X => Math.Max(Shapes.SelectMany(s => s).Min(p => p.X) - MarginX, 0);
+    public double Y => Math.Max(Shapes.SelectMany(s => s).Min(p => p.Y) - MarginY, 0);
+    public double Width => Math.Min(Shapes.SelectMany(s => s).Max(p => p.X) + MarginX, 1) - X;
+    public double Height => Math.Min(Shapes.SelectMany(s => s).Max(p => p.Y) + MarginY, 1) - Y;
+}
 
 /// <summary>A game, and the pieces its HUD is taken apart into.</summary>
 public sealed record HudGame(string Name, IReadOnlyList<HudPiece> Pieces)
 {
     public string Summary => string.Join(", ", Pieces.Select(p => p.Name));
+
+    /// <summary>Every piece's outlines together, as a mask's text: the one mask of the whole frame all the game's layers share.</summary>
+    public string MaskShapes => MaskStore.FormatShapes(Pieces.SelectMany(p => p.Shapes));
 }
 
 /// <summary>
 /// Where the HUD of some popular shooters sits at 16:9 with the default HUD settings, piece by piece, so that
 /// each piece can become a layer of its own and be moved about the frame on its own.
 ///
-/// The rectangles are starting points. They were set down from the games' default layouts, not measured
-/// against a recording, and a game's HUD moves with its settings (HUD scale, safe area, radar size) and with
-/// its updates: each layer made from them is meant to be checked against the video and corrected with Draw Target.
+/// Each piece is its outlines, traced on a 2560 x 1440 screenshot of the game and written here in that frame's
+/// pixels. All of a game's outlines together make one mask of the whole frame, which every piece's layer shares
+/// and cuts its own part out of. A game's HUD still moves with its settings (HUD scale, minimap size, safe
+/// area) and its updates: the areas can be redrawn on the video, and the outlines opened and changed with Draw
+/// Custom Shape. A killfeed that the screenshot could not show is placed where the game puts it.
 /// </summary>
 public static class HudLibrary
 {
+    // The frame the outlines are written in.
+    private const double W = 2560, H = 1440;
+
+    private static Point P(double x, double y) => new(Math.Round(x / W, 5), Math.Round(y / H, 5));
+
+    /// <summary>A polygon through points given as x, y, x, y... in pixels of the 2560 x 1440 frame.</summary>
+    private static List<Point> Poly(params double[] xy) => Enumerable.Range(0, xy.Length / 2).Select(i => P(xy[2 * i], xy[2 * i + 1])).ToList();
+
+    /// <summary>A rectangle from one corner to the other, with its corners rounded by so many pixels.</summary>
+    private static List<Point> Box(double left, double top, double right, double bottom, double radius = 6) =>
+        MaskStore.RoundedRectangle(left / W, top / H, (right - left) / W, (bottom - top) / H, radius * 1080 / H);
+
+    /// <summary>A circle about a centre.</summary>
+    private static List<Point> Round(double x, double y, double radius) =>
+        MaskStore.Ellipse((x - radius) / W, (y - radius) / H, 2 * radius / W, 2 * radius / H);
+
+    private static HudPiece Piece(string name, params List<Point>[] shapes) => new(name, shapes);
+
     public static IReadOnlyList<HudGame> Games { get; } =
     [
         new("Overwatch",
         [
-            new("Killfeed", 0.75, 0.05, 0.24, 0.25, HudShape.Soft),
-            new("Health & Portrait", 0.02, 0.80, 0.25, 0.18, HudShape.Soft),
-            new("Abilities & Weapon", 0.75, 0.80, 0.23, 0.18, HudShape.Soft),
-            new("Ultimate", 0.45, 0.85, 0.10, 0.12, HudShape.Ellipse),
+            Piece("Objective", Box(1016, 64, 1544, 152), Round(1280, 104, 58)),
+            // Room for three kills under the team kill count.
+            Piece("Killfeed", Box(2310, 34, 2520, 86), Box(1826, 98, 2524, 292)),
+            Piece("Portrait", Poly(28, 1232, 76, 1196, 140, 1186, 204, 1196, 252, 1232, 232, 1312, 140, 1390, 48, 1312)),
+            Piece("Health", Box(252, 1182, 612, 1284, 4)),
+            // The meter alone: not the frame a weapon skin may draw round it.
+            Piece("Ultimate", Round(1280, 1240, 80)),
+            Piece("Abilities", Box(1930, 1204, 2234, 1370)),
+            Piece("Weapon & Ammo", Box(2240, 1228, 2472, 1330), Round(2445, 1191, 34)),
         ]),
+        // As HandPeg 2.5 had it, not yet traced from a screenshot.
         new("Counter-Strike 2",
         [
-            new("Radar", 0.008, 0.015, 0.150, 0.265, HudShape.Ellipse),
-            new("Health & Armor", 0.010, 0.930, 0.220, 0.062),
-            new("Ammo", 0.800, 0.930, 0.192, 0.062),
-            new("Killfeed", 0.720, 0.050, 0.272, 0.200),
-            new("Score & Timer", 0.360, 0.000, 0.280, 0.072),
-            new("Weapons", 0.870, 0.560, 0.122, 0.340),
+            Piece("Radar", Box(20, 22, 404, 404, 8)),
+            Piece("Score & Timer", Box(920, 0, 1640, 104, 4)),
+            Piece("Killfeed", Box(1840, 72, 2540, 360, 4)),
+            Piece("Health & Armor", Box(26, 1340, 590, 1430, 4)),
+            Piece("Ammo", Box(2048, 1340, 2540, 1430, 4)),
         ]),
         new("Apex Legends",
         [
-            new("Minimap", 0.027, 0.045, 0.140, 0.250, HudShape.Panel),
-            new("Health & Shield", 0.030, 0.850, 0.245, 0.120, HudShape.Slant),
-            new("Abilities", 0.440, 0.880, 0.120, 0.100),
-            new("Weapons & Ammo", 0.760, 0.830, 0.220, 0.140, HudShape.Slant),
-            new("Killfeed", 0.720, 0.100, 0.272, 0.200),
-            new("Squad Status", 0.800, 0.020, 0.190, 0.065),
+            Piece("Minimap", Box(69, 65, 427, 425, 6)),
+            Piece("Squad Status", Box(2000, 26, 2500, 120, 4)),
+            Piece("Killfeed", Box(1840, 140, 2500, 400, 4)),
+            Piece("Health & Shield", Poly(14, 1248, 38, 1210, 522, 1210, 504, 1268, 548, 1268, 592, 1340, 574, 1378, 118, 1378, 66, 1330, 66, 1286, 40, 1274)),
+            Piece("Items", Poly(628, 1290, 882, 1290, 846, 1376, 600, 1376), Box(668, 1376, 702, 1410, 4), Box(800, 1376, 834, 1410, 4)),
+            Piece("Tactical", Poly(1250, 1204, 1302, 1204, 1372, 1330, 1356, 1370, 1206, 1370, 1188, 1330), Box(1262, 1374, 1300, 1410, 4)),
+            Piece("Gear",
+                Poly(1760, 1294, 1850, 1294, 1810, 1372, 1722, 1372), Poly(1892, 1296, 1982, 1296, 1942, 1372, 1856, 1372),
+                Box(1744, 1376, 1794, 1410, 4), Box(1886, 1376, 1920, 1410, 4)),
+            Piece("Weapons & Ammo", Poly(2050, 1270, 2482, 1270, 2496, 1292, 2450, 1374, 2006, 1374, 2006, 1356)),
         ]),
         new("Marvel Rivals",
         [
-            new("Health", 0.300, 0.870, 0.225, 0.085, HudShape.Slant),
-            new("Ultimate", 0.462, 0.835, 0.076, 0.135, HudShape.Ellipse),
-            new("Abilities", 0.700, 0.820, 0.270, 0.150, HudShape.Slant),
-            new("Killfeed", 0.740, 0.080, 0.250, 0.200),
-            new("Objective", 0.360, 0.020, 0.280, 0.095),
+            Piece("Objective", Box(920, 20, 1640, 150)),
+            Piece("Killfeed", Box(1880, 110, 2530, 400, 4)),
+            Piece("Hero", Poly(52, 1258, 128, 1188, 264, 1188, 264, 1300, 250, 1380, 68, 1380)),
+            Piece("Ammo", Box(256, 1312, 482, 1364, 4)),
+            Piece("Health", Poly(1210, 1292, 1350, 1292, 1350, 1334, 1532, 1334, 1532, 1382, 1028, 1382, 1028, 1334, 1210, 1334)),
+            Piece("Abilities", Box(1918, 1230, 2302, 1406)),
+            Piece("Ultimate", Poly(2338, 1260, 2510, 1254, 2470, 1378, 2422, 1378, 2422, 1408, 2382, 1408, 2382, 1378, 2306, 1380)),
+        ]),
+        new("The Finals",
+        [
+            Piece("Compass & Timer", Box(1000, 6, 1560, 66, 4), Box(1232, 60, 1328, 114, 4)),
+            Piece("Killfeed", Box(1860, 70, 2530, 330, 4)),
+            Piece("Health & Team", Box(86, 1122, 404, 1176, 4), Box(86, 1208, 500, 1374, 4)),
+            Piece("Weapon & Gadgets", Box(2018, 1148, 2474, 1382)),
         ]),
     ];
 
     /// <summary>
-    /// A game's HUD as layers: one per piece, each cut out of the video where that piece sits, with a mask for
-    /// the pieces that are not plain rectangles.
+    /// The mask of a game's whole frame: every piece's outlines, white on black. Drawn into the masks folder
+    /// the first time it is asked for. Needs the UI thread.
+    /// </summary>
+    public static string? EnsureFrameMask(HudGame game) => MaskStore.Render(game.MaskShapes, 2560, 1440);
+
+    /// <summary>
+    /// A game's HUD as layers: one per piece, each cut out of the video where that piece sits, all sharing the
+    /// game's mask of the whole frame (each takes its own part of it), with a slightly softened edge.
     /// </summary>
     /// <param name="vertical">
     /// Lays the pieces out for a tall (9:16) frame with the video across its middle: what was in the top half of
@@ -89,28 +148,25 @@ public static class HudLibrary
     /// </param>
     public static List<LayerState> BuildLayers(HudGame game, bool vertical)
     {
-        var states = game.Pieces.Select(piece =>
+        string? mask = null;
+        try
         {
-            var state = new LayerState
-            {
-                Name = $"{game.Name}: {piece.Name}",
-                Kind = LayerKind.Video,
-                SourceX = piece.X, SourceY = piece.Y, SourceWidth = piece.Width, SourceHeight = piece.Height,
-                PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
-                CornerRadius = piece.Shape == HudShape.Panel ? 6 : 0,
-            };
+            mask = EnsureFrameMask(game);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Without their mask the pieces are plain rectangles, which still works.
+        }
 
-            try
-            {
-                if (EnsureMask(piece.Shape) is { } mask)
-                    (state.CustomMask, state.MaskPath) = (true, mask);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Without its mask the piece is a plain rectangle, which still works.
-            }
-
-            return state;
+        var shapes = game.MaskShapes;
+        var states = game.Pieces.Select(piece => new LayerState
+        {
+            Name = $"{game.Name}: {piece.Name}",
+            Kind = LayerKind.Video,
+            SourceX = piece.X, SourceY = piece.Y, SourceWidth = piece.Width, SourceHeight = piece.Height,
+            PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
+            CustomMask = mask is not null, MaskPath = mask ?? "", MaskFrame = mask is not null, MaskShapes = mask is null ? null : shapes,
+            Feather = mask is not null, FeatherRadius = 4,
         }).ToList();
 
         if (vertical)
