@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Text.Json;
 using CliWrap;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -82,6 +83,7 @@ public partial class MainViewModel
         }
 
         var images = SubtitleFiles.IsImageFile(path);
+        Checkpoint("import subtitles");
         SetSubtitleTrack(cues, path, images, 0);
         Log($"Imported {cues.Count} subtitle cue{(cues.Count == 1 ? "" : "s")} from {Path.GetFileName(path)}{(images ? " (image-based: timing only)" : "")}");
 
@@ -106,6 +108,7 @@ public partial class MainViewModel
         if (!HasSubtitleCues)
             return;
 
+        Checkpoint("remove the subtitle track");
         SetSubtitleTrack([], "", false, 0);
         RefreshSubtitlePreview();
         StatusText = "Subtitle track removed.";
@@ -184,8 +187,27 @@ public partial class MainViewModel
         }
     }
 
+    // The subtitles as the last undo step left them. The Subtitle Editor changes cues in place and says so
+    // afterwards (CommitSubtitleEdits): what it changed is told apart from what was there by comparing with this.
+    private string _committedSubtitles = "null";
+
+    /// <summary>
+    /// Makes an undo step of the edits made to the cues in place since the last step: one that brings back the
+    /// cues as they were then. Nothing when nothing was changed.
+    /// </summary>
+    private void CheckpointSubtitleEdits()
+    {
+        var now = JsonSerializer.Serialize(CaptureSubtitles());
+        if (now == _committedSubtitles)
+            return;
+
+        Checkpoint("edit the subtitles", CaptureSnapshot() with { Subtitles = JsonSerializer.Deserialize<SubtitleTrackData?>(_committedSubtitles) });
+        _committedSubtitles = now;
+    }
+
     private void NotifySubtitlesChanged()
     {
+        _committedSubtitles = JsonSerializer.Serialize(CaptureSubtitles());
         OnPropertyChanged(nameof(HasSubtitleCues));
         OnPropertyChanged(nameof(HasTextCues));
         OnPropertyChanged(nameof(SubtitleTrackSummary));
@@ -201,6 +223,8 @@ public partial class MainViewModel
     /// </summary>
     public void CommitSubtitleEdits()
     {
+        CheckpointSubtitleEdits();
+
         // A picture track's cues stay in the file's order: that is how they are matched to its pictures.
         if (!SubtitlesAreImages)
         {
@@ -460,6 +484,7 @@ public partial class MainViewModel
         if (cues.Count == 0)
             return "No speech was found to make subtitles of.";
 
+        Checkpoint("generate captions");
         SetSubtitleTrack(SubtitleFiles.Numbered(cues), "", false, 0);
         return $"Made {cues.Count} subtitle cues from the auto-captions: they can now be edited, and the captions are drawn from them.";
     });
@@ -467,6 +492,8 @@ public partial class MainViewModel
     /// <summary>Adds a cue by hand. The first one makes the track; its words are drawn as captions, so captions are switched on for them.</summary>
     public SubtitleCue AddSubtitleCue(double start, double end, string text)
     {
+        CheckpointSubtitleEdits();
+        Checkpoint("add a subtitle");
         var cue = new SubtitleCue { Index = SubtitleCues.Count + 1, Start = Math.Max(start, 0), End = Math.Max(end, start + 0.1), Text = text };
         SubtitleCues.Add(cue);
         if (!AutoCaptions)
@@ -477,8 +504,13 @@ public partial class MainViewModel
 
     public void RemoveSubtitleCue(SubtitleCue cue)
     {
-        if (SubtitleCues.Remove(cue))
-            NotifySubtitlesChanged();
+        if (!SubtitleCues.Contains(cue))
+            return;
+
+        CheckpointSubtitleEdits();
+        Checkpoint("delete a subtitle");
+        SubtitleCues.Remove(cue);
+        NotifySubtitlesChanged();
     }
 
     /// <summary>
@@ -491,6 +523,8 @@ public partial class MainViewModel
         if (SubtitlesAreImages || !SubtitleCues.Contains(cue) || at <= cue.Start + 0.05 || at >= cue.End - 0.05)
             return null;
 
+        CheckpointSubtitleEdits();
+        Checkpoint("split a subtitle");
         var (words, breaks) = (cue.GetWords(), cue.GetBreaks());
         var share = (at - cue.Start) / (cue.End - cue.Start);
         var second = new SubtitleCue { Start = Math.Round(at, 3), End = cue.End, Text = cue.Text };
@@ -516,6 +550,9 @@ public partial class MainViewModel
         var (words, breaks) = (cue.GetWords(), cue.GetBreaks().ToList());
         if (SubtitlesAreImages || words.Length < 2 || word < 0 || word >= words.Length)
             return false;
+
+        CheckpointSubtitleEdits();
+        Checkpoint("delete a word");
 
         // The boundary that goes is the one after the word, or before it when it is the last.
         breaks.RemoveAt(Math.Min(word, breaks.Count - 1));

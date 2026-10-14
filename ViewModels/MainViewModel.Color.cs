@@ -389,6 +389,9 @@ public partial class MainViewModel
 
     public void ApplyStyle(StylePreset preset, bool layout, bool color, bool blur, bool subtitles)
     {
+        if (layout || subtitles)
+            Checkpoint("apply a style preset");
+
         _activeStyle = preset;
         var applied = new List<string>();
 

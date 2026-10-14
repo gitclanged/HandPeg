@@ -9,7 +9,8 @@ namespace HandPegApp.ViewModels;
 /// <summary>The timeline as Undo keeps it: the cuts, the layers and what was done to the audio. Nothing else, and no pictures.</summary>
 public sealed record TimelineSnapshot(
     List<SegmentState> Segments, List<LayerState> Layers, int MainVideoIndex, List<AudioEditState> Audio, bool AudioLinked,
-    LayerState? MainLayer = null, bool BackgroundHidden = false, List<MainPiece>? MainPieces = null, List<DeletedClip>? Bin = null);
+    LayerState? MainLayer = null, bool BackgroundHidden = false, List<MainPiece>? MainPieces = null, List<DeletedClip>? Bin = null,
+    SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null);
 
 /// <summary>What was done to one audio track on the timeline: how far it was slipped, and its pieces.</summary>
 public sealed record AudioEditState(int Index, double Offset, List<AudioPiece> Pieces);
@@ -56,12 +57,27 @@ public partial class MainViewModel
         return reader.ReadToEnd();
     }
 
-    private string CaptureTimeline() => JsonSerializer.Serialize(new TimelineSnapshot(
+    private string CaptureTimeline() => JsonSerializer.Serialize(CaptureSnapshot());
+
+    private TimelineSnapshot CaptureSnapshot() => new(
         Segments.Select(s => new SegmentState(s.Start.TotalMilliseconds, s.End.TotalMilliseconds, s.IsSkipped)).ToList(),
         Layers.Select(l => l.ToState()).ToList(),
         MainVideoIndex,
         AudioTracks.Select(t => new AudioEditState(t.Index, t.OffsetSeconds, [.. t.Pieces])).ToList(),
-        AudioLinked, _mainVideoRow.ToState(), _backgroundRow.IsHidden, [.. _mainPieces], RecycleBin.Select(i => i.Clip).ToList()));
+        AudioLinked, _mainVideoRow.ToState(), _backgroundRow.IsHidden, [.. _mainPieces], RecycleBin.Select(i => i.Clip).ToList(),
+        CaptureSubtitles(), CaptionLayer.ToState(), CaptionStyle.Clone());
+
+    /// <summary>Puts an undo step on the stack that brings back the state given, which may be other than the present one.</summary>
+    private void Checkpoint(string what, TimelineSnapshot before)
+    {
+        if (_isBackgroundWorker)
+            return;
+
+        _undo.Add((what, Pack(JsonSerializer.Serialize(before))));
+        if (_undo.Count > UndoDepth)
+            _undo.RemoveAt(0);
+        _redo.Clear();
+    }
 
     /// <summary>Call before changing the timeline: what it looks like now can then be brought back with Undo.</summary>
     /// <param name="what">The change about to be made, in a word or two, for the status bar.</param>
@@ -89,6 +105,15 @@ public partial class MainViewModel
         }
 
         var (what, state) = from[^1];
+
+        // The Subtitle Editor holds the cues it shows: a step that changes them waits until it is closed.
+        if (IsSubtitleEditorOpen && JsonSerializer.Deserialize<TimelineSnapshot>(Unpack(state)) is { } target
+            && JsonSerializer.Serialize(target.Subtitles) != JsonSerializer.Serialize(CaptureSubtitles()))
+        {
+            StatusText = $"Close the Subtitle Editor first: {what} changes the subtitles.";
+            return;
+        }
+
         from.RemoveAt(from.Count - 1);
         to.Add((what, Pack(CaptureTimeline())));
         RestoreTimeline(Unpack(state));
@@ -122,6 +147,20 @@ public partial class MainViewModel
         }
 
         AudioLinked = snapshot.AudioLinked;
+
+        // The subtitles, the caption box and its style, each only where it differs: a step that did not touch
+        // them leaves the caption preview as it is.
+        if (JsonSerializer.Serialize(snapshot.Subtitles) != JsonSerializer.Serialize(CaptureSubtitles()))
+        {
+            ApplySubtitles(snapshot.Subtitles);
+            RefreshSubtitlePreview();
+        }
+
+        if (snapshot.CaptionLayer is { } caption && JsonSerializer.Serialize(caption) != JsonSerializer.Serialize(CaptionLayer.ToState()))
+            SetCaptionLayer(caption);
+        if (snapshot.CaptionStyle is { } style && JsonSerializer.Serialize(style) != JsonSerializer.Serialize(CaptionStyle))
+            SetCaptionStyle(style.Clone());
+
         RefreshLayerRows();
         GenerateCommand();
         ApplyKeyframes();

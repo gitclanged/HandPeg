@@ -3311,7 +3311,7 @@ public partial class MainWindow : Window
         if (layer.HasMask)
             Add(layer is { IsVideo: true, CustomMask: true } ? "Redraw / Modify Mask..." : "Custom Mask...", () => OpenLayerTool(layer, LayerTool.Mask));
         if (layer.HasStyle)
-            Add("Properties...", () => new LayerPropertiesDialog { Owner = this, DataContext = layer }.ShowDialog());
+            Add("Properties...", () => ShowLayerProperties(layer));
         if (layer.IsBackground)
             Add("Blur Settings...", () => BlurSettings_Click(row, new RoutedEventArgs()));
         if (layer.IsVideo)
@@ -3817,6 +3817,10 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Marking a layer's area again is a step of Undo.
+        if (mode == OverlayMode.DrawTarget && _viewModel.DrawTargetLayer is { } target)
+            _viewModel.Checkpoint($"redraw the area of {target.Name}");
+
         _dragStart = ClampTo(area, point);
         CropCanvas.CaptureMouse();
     }
@@ -4039,6 +4043,7 @@ public partial class MainWindow : Window
             ToolTip = "Drag to move. Drag the corner handle to resize. Double-click to center.",
         };
         System.Windows.Automation.AutomationProperties.SetName(box, name);
+        box.DragStarted += (_, _) => _viewModel.Checkpoint($"move {name}");
         box.DragDelta += (_, e) => move(e.HorizontalChange / scale, e.VerticalChange / scale);
         box.MouseDoubleClick += (_, e) =>
         {
@@ -4048,6 +4053,7 @@ public partial class MainWindow : Window
             // The second press of a double-click also starts a drag. It is called off first: the box is
             // about to jump out from under the pointer, and a drag would carry it straight back.
             box.CancelDrag();
+            _viewModel.Checkpoint($"center {name}");
             reset();
             e.Handled = true;
         };
@@ -4078,6 +4084,7 @@ public partial class MainWindow : Window
         if (AdornerLayer.GetAdornerLayer(box) is { } layer)
         {
             var adorner = new ResizeAdorner(box, (Style)FindResource("LayerGrip"), name);
+            adorner.ResizeStarted += (_, _) => _viewModel.Checkpoint($"resize {name}");
             adorner.ResizeDelta += (_, e) => resize(e.HorizontalChange / scale, e.VerticalChange / scale);
             layer.Add(adorner);
             _arrangeAdorners.Add(adorner);
@@ -4148,8 +4155,14 @@ public partial class MainWindow : Window
 
     private VoiceoverStudioDialog? _voiceoverStudio;
     /// <summary>The caption box as a layer: its opacity.</summary>
-    private void CaptionLayerStyle_Click(object sender, RoutedEventArgs e) =>
-        new LayerPropertiesDialog { Owner = this, DataContext = _viewModel.CaptionLayer }.ShowDialog();
+    private void CaptionLayerStyle_Click(object sender, RoutedEventArgs e) => ShowLayerProperties(_viewModel.CaptionLayer);
+
+    /// <summary>A layer's Properties dialog: what is changed in it is one step of Undo.</summary>
+    private void ShowLayerProperties(Layer layer)
+    {
+        _viewModel.Checkpoint($"change the look of {layer.Name}");
+        new LayerPropertiesDialog { Owner = this, DataContext = layer }.ShowDialog();
+    }
 
     private void LiveFramePreview_Click(object sender, RoutedEventArgs e)
     {
@@ -4185,7 +4198,10 @@ public partial class MainWindow : Window
     {
         var dialog = new CaptionStyleDialog(_viewModel.CaptionStyle) { Owner = this };
         if (dialog.ShowDialog() == true)
+        {
+            _viewModel.Checkpoint("change the caption style");
             _viewModel.SetCaptionStyle(dialog.EditedStyle);
+        }
     }
 
     // ----- Layout files -----
@@ -4420,7 +4436,7 @@ public partial class MainWindow : Window
     private void LayerProperties_Click(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement { DataContext: Layer element })
-            new LayerPropertiesDialog { Owner = this, DataContext = element }.ShowDialog();
+            ShowLayerProperties(element);
     }
 
     // ----- Timeline hover previews -----
