@@ -3,6 +3,53 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v3.0.0
+
+HandPeg 3.0 is rebuilt on 2.5.0, with the parts of 2.6 that worked kept and the heavy machinery behind them left out. It is meant to be a dependable editor for everyday cutting, captioning and vertical HUD layouts.
+
+### Highlights
+- **Captions work as they did in 2.5 again.** The Generate Auto-Captions checkbox is back in Editor Mode and is the on/off switch: ticked, the export has captions; cleared, it has none, and nothing stops an export. **Generate Captions** transcribes ahead of time into a subtitle track you can watch and edit; exports and queued jobs then draw that track exactly as it stands and never transcribe it again.
+- **HUD masks of the whole frame.** One black-and-white mask of the whole video frame, white over every HUD element, can serve every layer cut from the video: each layer takes its own part of it and stays a layer of its own. Redrawing a layer's area never shifts the mask.
+- **Draw Custom Shape.** Trace round a HUD element on a still of the video, point by point; the lines join up, and the shapes become a mask for one layer or for all of them.
+- **Mask options:** grow or shrink the mask, invert it, crop any edge of a layer (what is cropped is see-through, the rest stays where it is), and Soft Edges now softens a mask's own outline.
+- **Built-in HUD presets traced from the games:** Overwatch, Apex Legends, Marvel Rivals and The Finals, each with one mask traced round its HUD, laid out for vertical video. Counter-Strike 2 is kept as it was.
+- **Projects and style presets carry their masks**, so one file is all another computer needs.
+
+### New
+- Drag-and-drop overlay in place of the launch window: drag a file over an empty window and drop it on a style preset (Editor Mode), an encoding preset (Encoder Mode) or a Social Squisher preset.
+- Settings → Automation & Drop Targets: the overlay's style presets and encoding presets are ordered lists, like the Squisher's: move them up and down, remove them, add others, and choose how many are shown.
+- Settings window reorganized into seven tabs with search, including an Auto-Captions tab: default language and caption style, beam size, best-of, temperature and fallback, and silence-detection threshold and timings.
+- About and Check for Updates on the General tab of Settings.
+- When something needs a tool that was never downloaded (Start Encode, Add to Queue, Generate Captions, Edit Captions, loading a web address), it offers to download exactly that.
+- Queued jobs transcribe their captions when they run, not when they are added, so adding a job never waits for whisper. A job whose captions are a subtitle track is written at once, as the track stands.
+- Startup Window Size: Default Size, Remember Last Size or Launch Maximized.
+- A project file (`.hproj`) pasted into the Source box opens the project.
+
+### Changed
+- Scrubbing sends quick seeks at most 30 times a second while dragging and one exact seek on release.
+- Settings, presets and the window come up faster: tabs are built when first opened, and the encoder check and dependency update check start after the window is drawn.
+- Encoder Mode has no Live Preview and shows no captions in its player.
+- Generate Captions asks before replacing a subtitle track that is already there.
+
+### Fixed
+- Exports in Editor Mode failing with "press Generate Captions first" when captions were on but nothing had been transcribed (2.6).
+- Files dropped over the player being taken by the player instead of HandPeg.
+- First-run setup not listing hardware encoders until a restart after choosing an existing FFmpeg.
+- The trimmed voiceover not drawn in the Master Mix View.
+
+### Removed (from 2.6)
+- Proxies, Preview Quality, the timeline proxy and its auto-render, and the proxy cache settings: the player shows the original files again.
+- Recent Editor Files.
+
+### Compatibility
+- Projects from 2.5 and 2.6 open unchanged. Projects saved by unreleased test builds after 2.6.3 (format 3) cannot be opened.
+- Projects saved by 3.0 that use masks open in 2.5 and 2.6, which ignore the new mask options.
+- Settings and presets carry over. Settings that belonged to proxies are ignored.
+- The built-in HUD style presets are written again, replacing earlier copies of the same names.
+
+### Upgrading
+Installed copies update automatically.
+
 ## HandPeg v2.5.0
 
 ### Highlights

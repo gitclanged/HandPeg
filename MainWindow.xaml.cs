@@ -194,19 +194,6 @@ public partial class MainWindow : Window
         RealizeTab(SettingsTabs.SelectedItem);
     }
 
-    /// <summary>
-    /// Shows the launch window over this one, when it is switched on, and opens what was chosen in it:
-    /// a video, a video with a preset, or a project. Closing it without choosing is a blank project.
-    /// </summary>
-    private void ShowLaunchWindow()
-    {
-        // An Editor Mode thing: Encoder Mode goes straight to work.
-        if (AppSettings.Current is not { FirstRunComplete: true, SplashPresetCount: > 0, UiMode: AppSettings.EditorMode })
-            return;
-
-        OpenLaunchWindow();
-    }
-
     private SplashWindow? _launchWindow;
 
     /// <summary>Opens the launch window, whatever the settings say about showing it at startup: it is also where the Social Squisher is.</summary>
