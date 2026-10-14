@@ -39,7 +39,11 @@ public sealed record HudPiece(string Name, IReadOnlyList<List<Point>> Shapes, bo
 }
 
 /// <summary>A game, and the pieces its HUD is taken apart into.</summary>
-public sealed record HudGame(string Name, IReadOnlyList<HudPiece> Pieces)
+/// <param name="BundledMask">
+/// A mask picture of the whole frame shipped inside HandPeg (an embedded resource of this name, from the
+/// Resources folder), used in place of the outlines. The pieces' outlines then only say where each is cut from.
+/// </param>
+public sealed record HudGame(string Name, IReadOnlyList<HudPiece> Pieces, string? BundledMask = null)
 {
     public string Summary => string.Join(", ", Pieces.Where(p => !p.Optional).Select(p => p.Name))
         + (Pieces.Any(p => p.Optional) ? $"  (also in the mask: {string.Join(", ", Pieces.Where(p => p.Optional).Select(p => p.Name))})" : "");
@@ -59,7 +63,9 @@ public sealed record HudGame(string Name, IReadOnlyList<HudPiece> Pieces)
 /// pixels. All of a game's outlines together make one mask of the whole frame, which every piece's layer shares
 /// and cuts its own part out of. A game's HUD still moves with its settings (HUD scale, minimap size, safe
 /// area) and its updates: the areas can be redrawn on the video, and the outlines opened and changed with Draw
-/// Custom Shape. A killfeed that the screenshot could not show is placed where the game puts it.
+/// Custom Shape. A killfeed that the screenshot could not show is placed where the game puts it. A game may
+/// ship a mask picture instead (<see cref="HudGame.BundledMask"/>, Overwatch's): its pieces are then the boxes
+/// round their parts of that picture.
 /// </summary>
 public static class HudLibrary
 {
@@ -75,9 +81,8 @@ public static class HudLibrary
     private static List<Point> Box(double left, double top, double right, double bottom, double radius = 6) =>
         MaskStore.RoundedRectangle(left / W, top / H, (right - left) / W, (bottom - top) / H, radius * 1080 / H);
 
-    /// <summary>A circle about a centre.</summary>
-    private static List<Point> Round(double x, double y, double radius) =>
-        MaskStore.Ellipse((x - radius) / W, (y - radius) / H, 2 * radius / W, 2 * radius / H);
+    /// <summary>Where a piece lies in a game's mask picture (see <see cref="HudGame.BundledMask"/>): the box round what the picture shows of it.</summary>
+    private static List<Point> Area(double left, double top, double right, double bottom) => Poly(left, top, right, top, right, bottom, left, bottom);
 
     private static HudPiece Piece(string name, params List<Point>[] shapes) => new(name, shapes);
 
@@ -89,18 +94,15 @@ public static class HudLibrary
     // icons and the ammo beside them are one layer, not one each.
     public static IReadOnlyList<HudGame> Games { get; } =
     [
+        // A mask made by hand (Resources/overwatch_hud_mask.png); each piece is where its part of that picture lies.
         new("Overwatch",
         [
-            // Room for three kills under the team kill count.
-            Piece("Killfeed", Box(2310, 34, 2520, 86), Box(1826, 98, 2524, 292)),
-            // The health bar and the line under it (the player's name, or the perk prompt and its progress), as one piece.
-            Piece("Health & Name", Box(248, 1178, 606, 1356, 6)),
-            Piece("Abilities & Ammo", Box(1930, 1204, 2234, 1370), Box(2240, 1228, 2472, 1330), Round(2445, 1191, 34)),
-            // The meter alone: not the frame a weapon skin may draw round it.
-            Extra("Ultimate", Round(1280, 1240, 80)),
-            Extra("Portrait", Poly(28, 1232, 76, 1196, 140, 1186, 204, 1196, 252, 1232, 232, 1312, 140, 1390, 48, 1312)),
-            Extra("Objective", Box(1016, 64, 1544, 152), Round(1280, 104, 58)),
-        ]),
+            // The team kill count and the kills under it.
+            Piece("Killfeed", Area(1847, 39, 2520, 265)),
+            // The hero portrait, the health bar and the line under it (the player's name, or the perk prompt), as one piece.
+            Piece("Health & Name", Area(26, 1174, 592, 1385)),
+            Piece("Abilities & Ammo", Area(1933, 1207, 2487, 1343)),
+        ], BundledMask: "overwatch_hud_mask.png"),
         // As HandPeg 2.5 had it, not yet traced from a screenshot.
         new("Counter-Strike 2",
         [
@@ -145,10 +147,36 @@ public static class HudLibrary
     ];
 
     /// <summary>
-    /// The mask of a game's whole frame: every piece's outlines, white on black. Drawn into the masks folder
-    /// the first time it is asked for. Needs the UI thread.
+    /// The mask of a game's whole frame: the picture shipped for it, or else every piece's outlines, white on
+    /// black. Written into the masks folder the first time it is asked for. Needs the UI thread.
     /// </summary>
-    public static string? EnsureFrameMask(HudGame game) => MaskStore.Render(game.MaskShapes, 2560, 1440);
+    public static string? EnsureFrameMask(HudGame game) =>
+        game.BundledMask is { } name ? WriteBundledMask(name) : MaskStore.Render(game.MaskShapes, 2560, 1440);
+
+    /// <summary>
+    /// A mask picture shipped inside HandPeg, written into the masks folder under its name and the first bytes of
+    /// its content's hash: a later release with a changed picture writes it beside the old one, which the layers
+    /// of earlier projects go on using. Null when there is no such picture.
+    /// </summary>
+    private static string? WriteBundledMask(string name)
+    {
+        using var stream = typeof(HudLibrary).Assembly.GetManifestResourceStream($"HandPegApp.Masks.{name}");
+        if (stream is null)
+            return null;
+
+        using var memory = new MemoryStream();
+        stream.CopyTo(memory);
+        var bytes = memory.ToArray();
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes), 0, 4).ToLowerInvariant();
+        var path = Path.Combine(AppPaths.Masks, $"{Path.GetFileNameWithoutExtension(name)}_{hash}{Path.GetExtension(name)}");
+        if (!File.Exists(path))
+        {
+            Directory.CreateDirectory(AppPaths.Masks);
+            File.WriteAllBytes(path, bytes);
+        }
+
+        return path;
+    }
 
     /// <summary>
     /// A game's HUD as layers: one per piece, each cut out of the video where that piece sits, all sharing the
@@ -178,7 +206,8 @@ public static class HudLibrary
             Kind = LayerKind.Video,
             SourceX = piece.X, SourceY = piece.Y, SourceWidth = piece.Width, SourceHeight = piece.Height,
             PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
-            CustomMask = mask is not null, MaskPath = mask ?? "", MaskFrame = mask is not null, MaskShapes = mask is null ? null : shapes,
+            // A shipped picture has no outlines to open in Draw Custom Shape.
+            CustomMask = mask is not null, MaskPath = mask ?? "", MaskFrame = mask is not null, MaskShapes = mask is null || game.BundledMask is not null ? null : shapes,
             Feather = mask is not null, FeatherRadius = 4,
         }).ToList();
 

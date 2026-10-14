@@ -55,6 +55,11 @@
     <Page Include="App.xaml" />
   </ItemGroup>
 
+  <!-- Mask pictures shipped for the built-in HUD presets (HudGame.BundledMask), read with GetManifestResourceStream. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\overwatch_hud_mask.png" LogicalName="HandPegApp.Masks.overwatch_hud_mask.png" />
+  </ItemGroup>
+
   <!-- Published and packed output, when it is made inside the project folder. -->
   <ItemGroup>
     <Compile Remove="publish\**;Releases\**" />

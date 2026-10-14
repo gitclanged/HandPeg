@@ -5,54 +5,163 @@ Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 
 ## HandPeg v3.0.0
 
-HandPeg 3.0 is rebuilt on 2.5.0, with the parts of 2.6 that worked kept and the heavy machinery behind them left out. It is meant to be a dependable editor for everyday cutting, captioning and vertical HUD layouts.
+**HandPeg 3.0 is a rebuild, not 2.6.3 with more added.** The 2.6 series grew heavy machinery around the editor: proxies of every video, a rendered timeline proxy that had to be made, cached, found again and cleaned up, and captions kept as timeline data, which left Editor Mode exports refusing to run when nothing had been transcribed. 3.0 starts again from the 2.5.0 code base. It brings over the parts of 2.6 that worked, and the improvements that were being made after 2.6.3 but never released. It leaves the proxy machinery out, and adds HUD masks, live audio and fast cut exports. The aim is a dependable editor for everyday cutting, captioning and vertical HUD clips.
+
+Everything below is compared with **2.6.3**, the last release. The 2.6 code stays in the repository's history (tags `v2.6.0` to `v2.6.3`), and installed copies of 2.6.x update to 3.0 as usual.
 
 ### Highlights
-- **Captions work as they did in 2.5 again.** The Generate Auto-Captions checkbox is back in Editor Mode and is the on/off switch: ticked, the export has captions; cleared, it has none, and nothing stops an export. **Generate Captions** transcribes ahead of time into a subtitle track you can watch and edit; exports and queued jobs then draw that track exactly as it stands and never transcribe it again.
+- **Captions work as they did in 2.5 again.** The Generate Auto-Captions checkbox is back in Editor Mode and is the on/off switch: ticked, the export has captions; cleared, it has none, and nothing stops an export. **Generate Captions** still transcribes ahead of time into a subtitle track you can watch and edit; exports and queued jobs then draw that track exactly as it stands and never transcribe it again.
+- **Cut exports from long recordings start at once.** An export with cut segments opens the video wound forward to each kept stretch instead of decoding everything before it. Three clips from the last minutes of a 4.5-hour recording used to wait about 20 minutes before the first frame; they now export in under 40 seconds. Stretches close together share one reading of the file; widely spaced ones (up to 24) each get their own.
 - **HUD masks of the whole frame.** One black-and-white mask of the whole video frame, white over every HUD element, can serve every layer cut from the video: each layer takes its own part of it and stays a layer of its own. Redrawing a layer's area never shifts the mask.
 - **Draw Custom Shape.** Trace round a HUD element on a still of the video, point by point; the lines join up, and the shapes become a mask for one layer or for all of them.
 - **Mask options:** grow or shrink the mask, invert it, crop any edge of a layer (what is cropped is see-through, the rest stays where it is), and Soft Edges now softens a mask's own outline. A mask can be a PNG with transparency: what is painted shows, what is see-through is cut away.
-- **Layers from a Mask:** a mask of the whole frame is taken apart into one layer per HUD element. Patches closer together than a distance you set are one element, so ability icons traced one by one make a single layer. The pieces are shown on a still of the video before they are added.
+- **Layers from a Mask:** a mask of the whole frame is taken apart into one layer per HUD element. Patches closer together than a distance you set are one element, so ability icons traced one by one make a single layer. The pieces are shown on a still of the video before they are added. **Add More Pieces of This Mask** (right-click a layer) adds the ones not cut out yet.
 - **Opacity keyframes:** layers can fade in and out, keyed like position, size and rotation.
-- **Built-in HUD presets traced from the games:** Overwatch, Apex Legends, Marvel Rivals and The Finals, each with one mask traced round its HUD and three or four layers, one per section of the HUD (Overwatch: Killfeed, Health & Name, Abilities & Ammo), laid out for vertical video. The other pieces (an ultimate meter, a portrait, the objective) are in the mask too: right-click a HUD layer and choose **Add More Pieces of This Mask** to add them. Counter-Strike 2 is kept as it was.
+- **Built-in HUD presets for vertical video,** three or four layers each, one per section of the HUD. **Overwatch** uses a hand-made mask of its HUD: Killfeed, Health & Name (with the hero portrait), and Abilities & Ammo. **Apex Legends, Marvel Rivals and The Finals** are traced from the games, with their other pieces (a minimap, an objective) in the mask, ready for Add More Pieces of This Mask. Counter-Strike 2 is kept as it was.
 - **Live audio preview:** every audio track of a video is heard while it plays, not only the first, mixed with the layers' sound, and as the export will have it: silenced stretches, slips, ducking under the voice tracks, each track's gain and filters, and the fades. Changing any of them is heard straight away.
 - **Projects and style presets carry their masks**, so one file is all another computer needs.
-- **Cut exports from long recordings start at once.** An export with cut segments opens the video wound forward to each kept stretch instead of decoding everything before it: three clips from the last minutes of a 4.5-hour recording, which used to wait some 20 minutes before the first frame, now export in under 40 seconds. Stretches close together share one reading of the file; widely spaced ones (up to 24) each get their own.
 
-### New
-- Drag-and-drop overlay in place of the launch window: drag a file over an empty window and drop it on a style preset (Editor Mode), an encoding preset (Encoder Mode) or a Social Squisher preset.
-- Settings → Automation & Drop Targets: the overlay's style presets and encoding presets are ordered lists, like the Squisher's: move them up and down, remove them, add others, and choose how many are shown.
-- Settings window reorganized into seven tabs with search, including an Auto-Captions tab: default language and caption style, beam size, best-of, temperature and fallback, and silence-detection threshold and timings.
-- About, Check for Updates and **Update Dependencies** on the General tab of Settings, with a **Manage Dependencies** link to the full list (tool paths, update URLs, speech models) on the Tools & Backup tab.
-- When something needs a tool that was never downloaded (Start Encode, Add to Queue, Generate Captions, Edit Captions, loading a web address), it offers to download exactly that.
+### New since 2.6.3
+- **Settings** reorganized into seven tabs with search, including an Auto-Captions tab: default language and caption style, beam size, best-of, temperature and fallback, and silence-detection threshold and timings.
+- **About, Check for Updates and Update Dependencies** on the General tab of Settings, with a **Manage Dependencies** link to the full list (tool paths, update URLs, speech models) on the Tools & Backup tab.
+- When something needs a tool that was never downloaded (Start Encode, Add to Queue, Generate Captions, Edit Captions, loading a web address), HandPeg offers to download exactly that.
 - Queued jobs transcribe their captions when they run, not when they are added, so adding a job never waits for whisper. A job whose captions are a subtitle track is written at once, as the track stands.
-- Startup Window Size: Default Size, Remember Last Size or Launch Maximized.
-- A project file (`.hproj`) pasted into the Source box opens the project.
-- Undo now covers subtitle edits (in the Subtitle Editor and elsewhere), Generate Captions, importing and removing subtitles, the caption style and caption box, moving and resizing layers in the layout pane, layer properties, Draw Target and applying a style preset.
+- Undo covers subtitle edits (in the Subtitle Editor and elsewhere), Generate Captions, importing and removing subtitles, the caption style and caption box, moving and resizing layers in the layout pane, layer properties, Draw Target and applying a style preset.
+- First run preselects Editor Mode and the Minimal set of downloads.
 
-### Changed
-- Scrubbing sends quick seeks at most 30 times a second while dragging and one exact seek on release.
-- Settings, presets and the window come up faster: tabs are built when first opened, and the encoder check and dependency update check start after the window is drawn.
-- Encoder Mode has no Live Preview and shows no captions in its player.
-- Generate Captions asks before replacing a subtitle track that is already there.
+### Changed since 2.6.3
+- The player shows the original files again, as in 2.5: there are no proxies to wait for.
+- **Render Preview** is back in Editor Mode in place of Render Timeline Proxy: it encodes a few seconds at reduced size and plays them.
+- Editor Mode exports draw captions only while Generate Auto-Captions is ticked (see Highlights); in 2.6 they were drawn whenever the subtitle track had words.
+- The Overwatch HUD preset's layers are fitted to its new mask and have no extra pieces.
+
+### Kept from 2.6
+- The drag-and-drop overlay in place of the launch window: drag a file over an empty window and drop it on a style preset (Editor Mode), an encoding preset (Encoder Mode) or a Social Squisher preset. Settings orders both lists and sets how many are shown.
+- The Generate Captions button, which asks before replacing a subtitle track.
+- The quick start: tabs built when first opened, settings and presets read while the window starts, the encoder check after the window is drawn, and the 2.6.1 and 2.6.2 optimizations.
+- Scrubbing with quick seeks while dragging and one exact seek on release; the player leaving dropped files to HandPeg.
+- Startup Window Size, a project file pasted into the Source box opening the project, Encoder Mode without Live Preview, and the Social Squisher's status lines.
 
 ### Fixed
-- Dropping a video on a style preset in the drag-and-drop overlay closed HandPeg (the player crashed on the HUD masks' soft edge).
-- Exports in Editor Mode failing with "press Generate Captions first" when captions were on but nothing had been transcribed (2.6).
-- Files dropped over the player being taken by the player instead of HandPeg.
-- First-run setup not listing hardware encoders until a restart after choosing an existing FFmpeg.
-- The trimmed voiceover not drawn in the Master Mix View.
+- Exports in Editor Mode failing with "press Generate Captions first" when captions were on but nothing had been transcribed.
+- Dropping a video on a style preset in the drag-and-drop overlay could close HandPeg (the player crashed on a HUD mask's soft edge).
 - The large-v3 and large-v3-turbo speech models showed a 0 MB download size.
 
-### Removed (from 2.6)
-- Proxies, Preview Quality, the timeline proxy and its auto-render, and the proxy cache settings: the player shows the original files again.
-- Recent Editor Files.
+### Removed
+- Proxies of the main video and the video layers, and Preview Quality (High, Medium, Low).
+- The Timeline Proxy, its auto-render, and Render Timeline Proxy.
+- The proxy settings (Enable Editor Proxies, Proxy Cache Size Limit, Auto-Render Timeline Proxy, Clear Proxy Cache on Exit) and the proxy cache clean-up at startup.
+- Recent Editor Files (Encoder Mode).
 
 ### Compatibility
-- Projects from 2.5 and 2.6 open unchanged. Compatibility with older presets and projects is no longer promised where it would hold new features back. Projects saved by unreleased test builds after 2.6.3 (format 3) cannot be opened.
+- Projects from 2.5 and 2.6 open unchanged, with their subtitle track; the Generate Auto-Captions checkbox follows what was saved. Compatibility with older presets and projects is no longer promised where it would hold new features back.
 - Projects saved by 3.0 open in 2.5 and 2.6, but without their masks, which those versions cannot unpack.
-- Settings and presets carry over. Settings that belonged to proxies are ignored.
-- The built-in HUD style presets are written again, replacing earlier copies of the same names.
+- Settings and presets carry over. The proxy settings are ignored. Proxies made by 2.6 are no longer used: the folder `%LOCALAPPDATA%\HandPeg-Data\cache\proxies` can be deleted.
+- The built-in HUD style presets are written again at the first start, replacing earlier copies of the same names. Presets of your own are not touched.
+
+### Upgrading
+Installed copies update automatically.
+
+## HandPeg v2.6.3
+
+A hotfix for the proxy cache.
+
+### Fixed
+- **Timeline proxies were rendered again every time.** A timeline proxy was given a random name, so nothing could find it again, and the clean-up at startup removed every one of them. It is now named after its timeline (the project as saved, the preview quality, and the size and date of each file on it): opening the same project again finds it in the cache and plays it at once, with nothing rendered. The startup clean-up keeps them; only an edit to the timeline discards one.
+- **Proxy work carried on after another video or project was opened.** Opening a video or a project now stops whatever was being made for the one before, and ends its FFmpeg process at once: the proxy of each video, and the timeline proxy. Nothing half-made is left in the cache.
+- Changing the preview quality while a proxy was being generated could leave the new tier's proxies waiting and never made.
+- A proxy that is already in the cache is never encoded again, even when it was queued before it appeared there.
+
+### Changed
+- Timeline proxies count towards the Proxy Cache Size Limit, and the oldest files go to make room for a new one.
+- The log says when a proxy was found in the cache, when generation was stopped, and (once for each file opened) that Live Preview's filter graph is running in the player.
+
+### Live Preview
+- The report that Live Preview had stopped rendering after the launch optimizations was looked into and could not be reproduced: with a plain video and with a project, in the debug and the published build, the filter graph reaches the player and is drawn. No change was made to the player for it. If it still happens, HandPeg.log now shows whether the graph was running ("Live Preview: the filter graph is running in the player") or what the player said was wrong with it ("Player: ...").
+
+### Compatibility
+- Projects, presets and settings are unchanged. Timeline proxies made by earlier builds cannot be found again and are removed at the next start.
+
+### Upgrading
+Installed copies update automatically.
+
+## HandPeg v2.6.1
+
+An optimization patch: nothing looks or works differently.
+
+### Highlights
+- **Sub-second boot enhancements.** The settings and presets (JSON) are read off the UI thread while the interface starts, and the hardware encoder probe and the dependency update check begin only after the window has been drawn. Measured on a published build: the window is on screen in about 490-510 ms, down from about 560-590 ms.
+- **Bare-metal efficiency.** `libmpv` is called through unmanaged function pointers, and its playback position updates no longer allocate. Subtitle parsing (`.srt`, `.vtt`) reads `Span<T>` in place, and waveform rendering borrows its buffers from `ArrayPool`, so the garbage collector has much less to do during playback, imports and waveform drawing.
+
+### Changed
+- Windows calls are generated at compile time (`LibraryImport`).
+- Every brush made in code is frozen; the palette brushes are frozen where they are declared.
+- Whisper's progress line is read with a source-generated regex.
+
+### Fixed
+- **First-run setup.** Hardware encoders (NVENC, QuickSync, AMF) could stay missing from the setup window's encoder list until HandPeg was restarted: after "Use an Existing FFmpeg...", and after an install pass that ended without reporting anything newly installed. The list is now filled as soon as an FFmpeg is there, however it got there.
+- The voiceover's waveform was not drawn in the Master Mix View (Encoder Mode).
+
+### Compatibility
+- Projects, presets and settings are unchanged from 2.6.0.
+
+### Upgrading
+Installed copies update automatically.
+
+## HandPeg v2.6.0
+
+### Highlights
+- **Proxies.** In Editor Mode the player shows light, silent copies of the main video and of every video layer, made in the background on the graphics card. Seeking and scrubbing a project with several videos is immediate. Exports always read the originals.
+- **Preview Quality tiers.** High (the originals), Medium (720-line proxies) and Low (360-line proxies), in the Views menu.
+- **Timeline Proxy.** The whole composed timeline rendered once into a single file that the player plays in place of composing live. It renders itself when the timeline is left alone, and is discarded the moment anything is edited.
+- **Captions are part of the project.** Generate Captions transcribes once and puts the captions on the timeline. From then on they are what is shown, edited, saved and exported; nothing is transcribed again behind your back.
+- **Starts straight into the workspace.** The startup dialog is gone. Drag a file over an empty window and drop targets appear: style or encoding presets, and the Social Squisher's.
+- **Encoder Mode stands apart.** No Live Preview, no Layers tab, no caption preview; a Recent Editor Files list opens the editor's files there.
+- **Sub-second start.** The window is on screen in well under a second. Only the Summary tab is built with the window; every other tab, the drag-and-drop targets and the video player come in after the first paint.
+
+### New
+- Drag-and-drop overlay over an empty window, with a larger row of style presets (Editor Mode) or encoding presets (Encoder Mode) and a smaller row of Social Squisher presets. Settings → Drag & Drop Overlay sets how many of each are shown and their order.
+- Proxies for the main video and every video layer: 720 lines, capped at 4 Mbit/s, an I-frame every 15 frames, no audio. Encoded with NVENC, QuickSync or AMF where available, otherwise libx264. Progress shows on the status bar.
+- Preview Quality in the Views menu. Low makes 360-line proxies capped at 2 Mbit/s.
+- Render Timeline Proxy in the Views menu, sized and capped by the preview quality.
+- Settings → Performance: Enable Editor Proxies, Proxy Cache Size Limit (MB, default 4096), Auto-Render Timeline Proxy with an idle time in seconds (default 60), Clear Proxy Cache on Exit.
+- Generate Captions button (Editor Mode), with a confirmation before it replaces an existing subtitle track.
+- Recent Editor Files on the Summary tab in Encoder Mode.
+- Startup Window Size (Settings → Interface): Default Size, Remember Last Size, Launch Maximized.
+- A project file (`.hproj`) pasted into the Source box opens the project.
+- Proxies unused for a week, and leftovers of earlier sessions, are cleared from the cache at startup.
+- Twenty-four more Social Squisher status lines.
+- Lazy-loaded tabs: Video, Filters, Layers, Audio, Subtitles, Chapters and Command Preview are built when first opened, or one at a time while the window is idle, whichever comes first.
+- The drag-and-drop targets are built while the window is idle, and the player is started only after the window has been drawn.
+- The log records how long each launch took ("Startup: window drawn N ms after the process started").
+
+### Changed
+- Editor Mode has no "Generate Auto-Captions" checkbox and no "Preview Subtitles" toggle. Captions show whenever the subtitle track has words. Encoder Mode keeps the checkbox and still transcribes at export.
+- An Editor Mode export draws only the subtitles on the timeline. With none there, the export has no captions.
+- "Render Preview" is replaced by Render Timeline Proxy.
+- Scrubbing sends fast seeks at most 30 times a second while dragging and one exact seek on release.
+- The player no longer takes dropped files itself, so a drop anywhere on the window goes where HandPeg puts it.
+- The Social Squisher opens directly at its compact size when started from the overlay, and its presets fill their row.
+- The Settings flyout lists Autosave first, with its checkbox at the right; all rows are left-aligned.
+
+### Fixed
+- Dropping a file on a preset doing nothing (the embedded player was taking the drop).
+- The player staying bright while the rest of the window dimmed.
+- Seek lag on projects with several videos.
+- Proxy files several times larger than their source.
+
+### Compatibility
+- 2.5.0 projects open unchanged. A project saved with Auto-Captions on but no subtitle track opens in Editor Mode without captions until Generate Captions is pressed.
+- Projects saved in 2.6.0 open in 2.5.0; their subtitle track is kept, and Auto-Captions follows what was saved.
+- Proxies made by earlier builds are not reused and are removed by the startup sweep after a week.
+
+### Known limitations
+- Subtitle edits are not on the undo stack.
+- Medium and Low timeline proxies are encoded twice (render, then cap), which is fast but not free.
+- The timeline proxy is discarded by any change to the project, including encoder settings that do not change the picture.
+- There is still no published Whisper build for AMD or Intel graphics; transcription runs on the processor there.
+- Image-based subtitles are preview-only.
+- Switching modes keeps the same video open in both.
 
 ### Upgrading
 Installed copies update automatically.

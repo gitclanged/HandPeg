@@ -15,7 +15,8 @@ public static class StyleLibrary
     // 3: the HUD masks are one mask of the whole frame per game, traced from screenshots.
     // 4: three or four layers a game; the other pieces are extras in the mask.
     // 5: Overwatch's health piece takes in the name and perk line under the bar.
-    private const int Version = 5;
+    // 6: Overwatch's mask is a picture made by hand (Resources/overwatch_hud_mask.png), its pieces fitted to it.
+    private const int Version = 6;
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
