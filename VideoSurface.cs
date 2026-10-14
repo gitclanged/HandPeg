@@ -17,28 +17,30 @@ namespace HandPegApp;
 /// the main window. Where it is fully transparent, clicks fall through to what is underneath.
 /// </summary>
 [ContentProperty(nameof(Overlay))]
-public sealed class VideoSurface : HwndHost
+public sealed partial class VideoSurface : HwndHost
 {
     private const int WsChild = 0x40000000, WsVisible = 0x10000000, WsClipChildren = 0x02000000, WsClipSiblings = 0x04000000, SsBlackRect = 0x4;
     private const int GwlExStyle = -20, WsExNoActivate = 0x08000000, WsExToolWindow = 0x80;
     private const uint SwpNoZOrder = 0x4, SwpNoActivate = 0x10;
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateWindowEx(
+    [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    private static partial IntPtr CreateWindowEx(
         int exStyle, string className, string windowName, int style, int x, int y, int width, int height,
         IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);
 
-    [DllImport("user32.dll")]
-    private static extern bool DestroyWindow(IntPtr window);
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DestroyWindow(IntPtr window);
 
-    [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
 
-    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static partial IntPtr GetWindowLongPtr(IntPtr window, int index);
 
-    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static extern IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static partial IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
 
     private Window? _owner;
     private Window? _overlayWindow;

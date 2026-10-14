@@ -16,19 +16,138 @@ public sealed class MpvPlayer
 {
     // ----- The library -----
 
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr CreateFn();
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int InitializeFn(IntPtr mpv);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void DestroyFn(IntPtr mpv);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int SetStringFn(IntPtr mpv, byte[] name, byte[] value);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int CommandFn(IntPtr mpv, IntPtr[] arguments);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ObserveFn(IntPtr mpv, ulong userData, byte[] name, int format);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int RequestLogFn(IntPtr mpv, byte[] level);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr WaitEventFn(IntPtr mpv, double timeout);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr ErrorStringFn(int error);
+    /// <summary>
+    /// libmpv's functions, called through their addresses: no delegate, and no marshalling code made while the
+    /// program runs. (Not [LibraryImport]: that needs the library's name when HandPeg is compiled, and libmpv
+    /// is loaded from wherever it was downloaded to.) Text goes over as UTF-8 written into room on the stack,
+    /// or into a borrowed buffer when it is long, as a filter graph is.
+    /// </summary>
+    private sealed unsafe class Library(IntPtr handle)
+    {
+        private readonly delegate* unmanaged[Cdecl]<IntPtr> _create = (delegate* unmanaged[Cdecl]<IntPtr>)NativeLibrary.GetExport(handle, "mpv_create");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, int> _initialize = (delegate* unmanaged[Cdecl]<IntPtr, int>)NativeLibrary.GetExport(handle, "mpv_initialize");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, void> _destroy = (delegate* unmanaged[Cdecl]<IntPtr, void>)NativeLibrary.GetExport(handle, "mpv_terminate_destroy");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int> _setOption = (delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int>)NativeLibrary.GetExport(handle, "mpv_set_option_string");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int> _setProperty = (delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int>)NativeLibrary.GetExport(handle, "mpv_set_property_string");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, byte**, int> _command = (delegate* unmanaged[Cdecl]<IntPtr, byte**, int>)NativeLibrary.GetExport(handle, "mpv_command");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, int, int> _observe = (delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, int, int>)NativeLibrary.GetExport(handle, "mpv_observe_property");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, byte*, int> _requestLog = (delegate* unmanaged[Cdecl]<IntPtr, byte*, int>)NativeLibrary.GetExport(handle, "mpv_request_log_messages");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, double, Event*> _waitEvent = (delegate* unmanaged[Cdecl]<IntPtr, double, Event*>)NativeLibrary.GetExport(handle, "mpv_wait_event");
+        private readonly delegate* unmanaged[Cdecl]<int, byte*> _errorString = (delegate* unmanaged[Cdecl]<int, byte*>)NativeLibrary.GetExport(handle, "mpv_error_string");
 
-    private sealed record Library(
-        CreateFn Create, InitializeFn Initialize, DestroyFn Destroy, SetStringFn SetOption, SetStringFn SetProperty,
-        CommandFn Command, ObserveFn Observe, RequestLogFn RequestLog, WaitEventFn WaitEvent, ErrorStringFn ErrorString);
+        // Longer text than this is written into a borrowed buffer instead of onto the stack.
+        private const int OnStack = 512;
+
+        public IntPtr Create() => _create();
+
+        public int Initialize(IntPtr mpv) => _initialize(mpv);
+
+        public void Destroy(IntPtr mpv) => _destroy(mpv);
+
+        public int SetOption(IntPtr mpv, string name, string value) => SetText(_setOption, mpv, name, value);
+
+        public int SetProperty(IntPtr mpv, string name, string value) => SetText(_setProperty, mpv, name, value);
+
+        public Event* WaitEvent(IntPtr mpv, double timeout) => _waitEvent(mpv, timeout);
+
+        public string? ErrorString(int error) => Marshal.PtrToStringUTF8((IntPtr)_errorString(error));
+
+        public int Observe(IntPtr mpv, ulong id, string name, int format)
+        {
+            byte[]? borrowed = null;
+            try
+            {
+                fixed (byte* text = Encode(name, stackalloc byte[OnStack], ref borrowed))
+                    return _observe(mpv, id, text, format);
+            }
+            finally
+            {
+                Release(borrowed);
+            }
+        }
+
+        public int RequestLog(IntPtr mpv, string level)
+        {
+            byte[]? borrowed = null;
+            try
+            {
+                fixed (byte* text = Encode(level, stackalloc byte[OnStack], ref borrowed))
+                    return _requestLog(mpv, text);
+            }
+            finally
+            {
+                Release(borrowed);
+            }
+        }
+
+        /// <summary>A command and its arguments: one run of C strings, and a list of where each starts with a null at its end.</summary>
+        public int Command(IntPtr mpv, ReadOnlySpan<string> arguments)
+        {
+            var most = 0;
+            foreach (var argument in arguments)
+                most += Encoding.UTF8.GetMaxByteCount(argument.Length) + 1;
+
+            byte[]? borrowed = null;
+            Span<byte> room = stackalloc byte[OnStack];
+            if (most > OnStack)
+                room = borrowed = System.Buffers.ArrayPool<byte>.Shared.Rent(most);
+
+            var starts = stackalloc byte*[arguments.Length + 1];
+            try
+            {
+                fixed (byte* text = room)
+                {
+                    var at = 0;
+                    for (var i = 0; i < arguments.Length; i++)
+                    {
+                        starts[i] = text + at;
+                        at += Encoding.UTF8.GetBytes(arguments[i], room[at..]);
+                        room[at++] = 0;
+                    }
+
+                    starts[arguments.Length] = null;
+                    return _command(mpv, starts);
+                }
+            }
+            finally
+            {
+                Release(borrowed);
+            }
+        }
+
+        private static int SetText(delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int> function, IntPtr mpv, string name, string value)
+        {
+            byte[]? borrowedName = null, borrowedValue = null;
+            try
+            {
+                fixed (byte* nameText = Encode(name, stackalloc byte[128], ref borrowedName), valueText = Encode(value, stackalloc byte[OnStack], ref borrowedValue))
+                    return function(mpv, nameText, valueText);
+            }
+            finally
+            {
+                Release(borrowedName);
+                Release(borrowedValue);
+            }
+        }
+
+        /// <summary>The text as a C string, in the room given when it fits there and in a borrowed buffer when it does not.</summary>
+        private static Span<byte> Encode(string text, Span<byte> room, ref byte[]? borrowed)
+        {
+            var most = Encoding.UTF8.GetMaxByteCount(text.Length) + 1;
+            if (most > room.Length)
+                room = borrowed = System.Buffers.ArrayPool<byte>.Shared.Rent(most);
+
+            var length = Encoding.UTF8.GetBytes(text, room);
+            room[length] = 0;
+            return room;
+        }
+
+        private static void Release(byte[]? borrowed)
+        {
+            if (borrowed is not null)
+                System.Buffers.ArrayPool<byte>.Shared.Return(borrowed);
+        }
+    }
 
     private static readonly object LoadLock = new();
     private static Library? _library;
@@ -39,23 +158,16 @@ public sealed class MpvPlayer
     private static Library Load()
     {
         lock (LoadLock)
-        {
-            if (_library is not null)
-                return _library;
-
-            var handle = NativeLibrary.Load(DependencyUpdater.MpvPath);
-            T Get<T>(string name) where T : Delegate => Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(handle, name));
-            return _library = new Library(
-                Get<CreateFn>("mpv_create"), Get<InitializeFn>("mpv_initialize"), Get<DestroyFn>("mpv_terminate_destroy"),
-                Get<SetStringFn>("mpv_set_option_string"), Get<SetStringFn>("mpv_set_property_string"), Get<CommandFn>("mpv_command"),
-                Get<ObserveFn>("mpv_observe_property"), Get<RequestLogFn>("mpv_request_log_messages"), Get<WaitEventFn>("mpv_wait_event"),
-                Get<ErrorStringFn>("mpv_error_string"));
-        }
+            return _library ??= new Library(NativeLibrary.Load(DependencyUpdater.MpvPath));
     }
 
     // mpv's own numbers, from its client.h.
     private const int EventShutdown = 1, EventLogMessage = 2, EventEndFile = 7, EventFileLoaded = 8, EventPlaybackRestart = 21, EventPropertyChange = 22;
     private const int FormatFlag = 3, FormatDouble = 5;
+
+    // What each watched property is asked for under: its changes come back with the number, so that no name
+    // has to be read (and made into a string) for every frame that is shown.
+    private const ulong WatchTime = 1, WatchDuration = 2, WatchPause = 3, WatchEnd = 4;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Event
@@ -180,12 +292,12 @@ public sealed class MpvPlayer
                      ("profile", "fast"), ("vd-lavc-threads", "0"), ("framedrop", "vo"),
                  })
         {
-            api.SetOption(mpv, Utf8(name), Utf8(value));
+            api.SetOption(mpv, name, value);
         }
 
         // A self-contained copy keeps the renderer's compiled shaders in its own folder, not in %LocalAppData%\mpv.
         if (AppPaths.IsSelfContained)
-            api.SetOption(mpv, Utf8("gpu-shader-cache-dir"), Utf8(Path.Combine(AppPaths.Cache, "mpv")));
+            api.SetOption(mpv, "gpu-shader-cache-dir", Path.Combine(AppPaths.Cache, "mpv"));
 
         var started = api.Initialize(mpv);
         if (started < 0)
@@ -194,11 +306,11 @@ public sealed class MpvPlayer
             throw new InvalidOperationException($"libmpv could not be started: {player.Describe(started)}");
         }
 
-        api.RequestLog(mpv, Utf8("error"));
-        api.Observe(mpv, 0, Utf8("time-pos"), FormatDouble);
-        api.Observe(mpv, 0, Utf8("duration"), FormatDouble);
-        api.Observe(mpv, 0, Utf8("pause"), FormatFlag);
-        api.Observe(mpv, 0, Utf8("eof-reached"), FormatFlag);
+        api.RequestLog(mpv, "error");
+        api.Observe(mpv, WatchTime, "time-pos", FormatDouble);
+        api.Observe(mpv, WatchDuration, "duration", FormatDouble);
+        api.Observe(mpv, WatchPause, "pause", FormatFlag);
+        api.Observe(mpv, WatchEnd, "eof-reached", FormatFlag);
 
         new Thread(player.ReadEvents) { IsBackground = true, Name = "mpv events" }.Start();
         return player;
@@ -377,7 +489,7 @@ public sealed class MpvPlayer
         Command("quit");
     }
 
-    private int SetProperty(string name, string value) => _closing && name != "pause" ? 0 : _api.SetProperty(_mpv, Utf8(name), Utf8(value));
+    private int SetProperty(string name, string value) => _closing && name != "pause" ? 0 : _api.SetProperty(_mpv, name, value);
 
     private void Command(params string[] arguments)
     {
@@ -385,59 +497,47 @@ public sealed class MpvPlayer
         if (_closing && arguments is not ["quit"])
             return;
 
-        // A list of C strings with a null at the end.
-        var pointers = new IntPtr[arguments.Length + 1];
-        try
-        {
-            for (var i = 0; i < arguments.Length; i++)
-                pointers[i] = Marshal.StringToCoTaskMemUTF8(arguments[i]);
-            _api.Command(_mpv, pointers);
-        }
-        finally
-        {
-            foreach (var pointer in pointers)
-                Marshal.FreeCoTaskMem(pointer);
-        }
+        _api.Command(_mpv, arguments);
     }
 
-    private void ReadEvents()
+    // Read where mpv keeps them: an event is not copied out, and the position that arrives with every frame
+    // costs no memory at all.
+    private unsafe void ReadEvents()
     {
         while (true)
         {
-            var pointer = _api.WaitEvent(_mpv, 0.5);
-            var e = Marshal.PtrToStructure<Event>(pointer);
-            if (e.Id == EventShutdown)
+            var e = _api.WaitEvent(_mpv, 0.5);
+            if (e->Id == EventShutdown)
                 break;
 
             // Once closing, nothing is passed on: whoever was listening has moved to another player.
             if (_closing)
                 continue;
 
-            switch (e.Id)
+            switch (e->Id)
             {
-                case EventPropertyChange when e.Data != IntPtr.Zero:
-                    var property = Marshal.PtrToStructure<PropertyEvent>(e.Data);
-                    var name = Marshal.PtrToStringUTF8(property.Name);
-                    if (property.Data == IntPtr.Zero)
+                case EventPropertyChange when e->Data != IntPtr.Zero:
+                    var property = (PropertyEvent*)e->Data;
+                    if (property->Data == IntPtr.Zero)
                         break;
 
-                    if (property.Format == FormatDouble)
+                    if (property->Format == FormatDouble)
                     {
-                        var seconds = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(property.Data));
-                        if (name == "time-pos")
+                        var seconds = *(double*)property->Data;
+                        if (e->UserData == WatchTime)
                         {
                             PositionMs = (long)Math.Round(seconds * 1000);
                             TimeChanged?.Invoke(PositionMs);
                         }
-                        else if (name == "duration")
+                        else if (e->UserData == WatchDuration)
                             DurationChanged?.Invoke((long)Math.Round(seconds * 1000));
                     }
-                    else if (property.Format == FormatFlag)
+                    else if (property->Format == FormatFlag)
                     {
-                        var flag = Marshal.ReadInt32(property.Data) != 0;
-                        if (name == "pause")
+                        var flag = *(int*)property->Data != 0;
+                        if (e->UserData == WatchPause)
                             IsPaused = flag;
-                        else if (name == "eof-reached")
+                        else if (e->UserData == WatchEnd)
                             IsEnded = flag;
                         StateChanged?.Invoke();
                     }
@@ -469,9 +569,9 @@ public sealed class MpvPlayer
                     StateChanged?.Invoke();
                     break;
 
-                case EventLogMessage when e.Data != IntPtr.Zero:
-                    var log = Marshal.PtrToStructure<LogEvent>(e.Data);
-                    var text = $"{Marshal.PtrToStringUTF8(log.Prefix)}: {Marshal.PtrToStringUTF8(log.Text)?.Trim()}";
+                case EventLogMessage when e->Data != IntPtr.Zero:
+                    var log = (LogEvent*)e->Data;
+                    var text = $"{Marshal.PtrToStringUTF8(log->Prefix)}: {Marshal.PtrToStringUTF8(log->Text)?.Trim()}";
                     LastError = text;
                     ErrorLogged?.Invoke(text);
                     break;
@@ -481,9 +581,7 @@ public sealed class MpvPlayer
         _api.Destroy(_mpv);
     }
 
-    private string Describe(int error) => Marshal.PtrToStringUTF8(_api.ErrorString(error)) ?? $"error {error}";
-
-    private static byte[] Utf8(string text) => Encoding.UTF8.GetBytes(text + "\0");
+    private string Describe(int error) => _api.ErrorString(error) ?? $"error {error}";
 
     private static string Number(double value) => value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
 }

@@ -3,26 +3,29 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:sys="clr-namespace:System;assembly=System.Runtime"
              xmlns:local="clr-namespace:HandPegApp"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:po="http://schemas.microsoft.com/winfx/2006/xaml/presentation/options"
+             mc:Ignorable="po"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
         <!--
             The palette. These are the dark colours; ThemeManager replaces the brushes at startup and whenever
             the theme or the Windows accent changes, which is why everything refers to them dynamically.
         -->
-        <SolidColorBrush x:Key="InsetBrush" Color="#181818" />
-        <SolidColorBrush x:Key="OnAccentBrush" Color="#FFFFFF" />
-        <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#1E1E1E" />
-        <SolidColorBrush x:Key="PanelBrush" Color="#252525" />
-        <SolidColorBrush x:Key="ControlBrush" Color="#2D2D2D" />
-        <SolidColorBrush x:Key="ControlHoverBrush" Color="#3A3A3A" />
-        <SolidColorBrush x:Key="ControlBorderBrush" Color="#3F3F3F" />
-        <SolidColorBrush x:Key="TextBrush" Color="#FFFFFF" />
-        <SolidColorBrush x:Key="MutedTextBrush" Color="#A0A0A0" />
-        <SolidColorBrush x:Key="DisabledTextBrush" Color="#6A6A6A" />
-        <SolidColorBrush x:Key="AccentBrush" Color="#0078D7" />
-        <SolidColorBrush x:Key="AccentHoverBrush" Color="#1A8AE5" />
-        <SolidColorBrush x:Key="AccentPressedBrush" Color="#005A9E" />
-        <SolidColorBrush x:Key="WarningTextBrush" Color="#E0A040" />
+        <SolidColorBrush x:Key="InsetBrush" po:Freeze="True" Color="#181818" />
+        <SolidColorBrush x:Key="OnAccentBrush" po:Freeze="True" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="WindowBackgroundBrush" po:Freeze="True" Color="#1E1E1E" />
+        <SolidColorBrush x:Key="PanelBrush" po:Freeze="True" Color="#252525" />
+        <SolidColorBrush x:Key="ControlBrush" po:Freeze="True" Color="#2D2D2D" />
+        <SolidColorBrush x:Key="ControlHoverBrush" po:Freeze="True" Color="#3A3A3A" />
+        <SolidColorBrush x:Key="ControlBorderBrush" po:Freeze="True" Color="#3F3F3F" />
+        <SolidColorBrush x:Key="TextBrush" po:Freeze="True" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="MutedTextBrush" po:Freeze="True" Color="#A0A0A0" />
+        <SolidColorBrush x:Key="DisabledTextBrush" po:Freeze="True" Color="#6A6A6A" />
+        <SolidColorBrush x:Key="AccentBrush" po:Freeze="True" Color="#0078D7" />
+        <SolidColorBrush x:Key="AccentHoverBrush" po:Freeze="True" Color="#1A8AE5" />
+        <SolidColorBrush x:Key="AccentPressedBrush" po:Freeze="True" Color="#005A9E" />
+        <SolidColorBrush x:Key="WarningTextBrush" po:Freeze="True" Color="#E0A040" />
 
         <Style TargetType="Button">
             <Setter Property="Foreground" Value="{DynamicResource OnAccentBrush}" />
@@ -435,8 +438,8 @@
             pages when clicked. How thick they are is one number, set in Settings (Interface) and changed live.
         -->
         <sys:Double x:Key="GlobalScrollBarThickness">10</sys:Double>
-        <SolidColorBrush x:Key="ScrollThumbBrush" Color="#7C8794" Opacity="0.55" />
-        <SolidColorBrush x:Key="ScrollThumbHoverBrush" Color="#9AA6B4" Opacity="0.85" />
+        <SolidColorBrush x:Key="ScrollThumbBrush" po:Freeze="True" Color="#7C8794" Opacity="0.55" />
+        <SolidColorBrush x:Key="ScrollThumbHoverBrush" po:Freeze="True" Color="#9AA6B4" Opacity="0.85" />
 
         <Style x:Key="ScrollPageButton" TargetType="RepeatButton">
             <Setter Property="Focusable" Value="False" />

@@ -24,6 +24,8 @@
 
     <!-- 64-bit Intel/AMD only: that is what the tools and the player library HandPeg downloads are built for. -->
     <PlatformTarget>x64</PlatformTarget>
+    <!-- For the native calls: libmpv through function pointers, Windows through generated [LibraryImport] code. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <!--

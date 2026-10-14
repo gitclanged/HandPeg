@@ -35,6 +35,9 @@ public static partial class CaptionGenerator
     [GeneratedRegex(@"vad_segment_info: orig_start: ([\d.]+), orig_end: ([\d.]+), vad_start: ([\d.]+), vad_end: ([\d.]+)")]
     private static partial Regex VadSegmentRegex();
 
+    [GeneratedRegex(@"progress\s*=\s*(\d+)\s*%")]
+    private static partial Regex ProgressRegex();
+
     /// <summary>One stretch of speech: where it is in the audio, and where it is on the clock whisper counts by when it skips silence.</summary>
     private readonly record struct SpeechStretch(double OriginalStart, double OriginalEnd, double Start, double End);
 
@@ -115,7 +118,7 @@ public static partial class CaptionGenerator
                 return;
 
             // "whisper_print_progress_callback: progress =  35%"
-            if (Regex.Match(line, @"progress\s*=\s*(\d+)\s*%") is { Success: true } percent)
+            if (ProgressRegex().Match(line) is { Success: true } percent)
             {
                 progress?.Report(Math.Clamp(int.Parse(percent.Groups[1].Value, CultureInfo.InvariantCulture), 0, 100));
                 return;

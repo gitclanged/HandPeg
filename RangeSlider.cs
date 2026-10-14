@@ -52,7 +52,16 @@ public sealed class RangeSlider : Grid
             twoWay ? FrameworkPropertyMetadataOptions.BindsTwoWayByDefault : FrameworkPropertyMetadataOptions.None,
             (d, _) => ((RangeSlider)d).Place()));
 
-    private static Border Shade() => new() { Background = new SolidColorBrush(Color.FromArgb(0xB0, 0x10, 0x10, 0x10)), IsHitTestVisible = false };
+    private static readonly Brush ShadeBrush = MakeShadeBrush();
+
+    private static Brush MakeShadeBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromArgb(0xB0, 0x10, 0x10, 0x10));
+        brush.Freeze();
+        return brush;
+    }
+
+    private static Border Shade() => new() { Background = ShadeBrush, IsHitTestVisible = false };
 
     private static Thumb Handle(string name)
     {

@@ -27,7 +27,7 @@ public sealed class CaptionPreview : FrameworkElement
 
     protected override void OnRender(DrawingContext drawing)
     {
-        drawing.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(0x3A, 0x4A, 0x5A)), null, new Rect(RenderSize), 6, 6);
+        drawing.DrawRoundedRectangle(Backdrop, null, new Rect(RenderSize), 6, 6);
 
         var words = Sample.Take(Math.Clamp(_style.MaxWordsPerLine, 2, Sample.Length)).ToArray();
         var isPop = _style.Animation == CaptionStyle.TikTokPop;
@@ -67,8 +67,16 @@ public sealed class CaptionPreview : FrameworkElement
         drawing.Pop();
     }
 
-    private static SolidColorBrush Brush(string color, Color fallback) =>
-        new(TryParse(color, out var parsed) ? parsed : fallback);
+    private static readonly SolidColorBrush Backdrop = Frozen(Color.FromRgb(0x3A, 0x4A, 0x5A));
+
+    private static SolidColorBrush Brush(string color, Color fallback) => Frozen(TryParse(color, out var parsed) ? parsed : fallback);
+
+    private static SolidColorBrush Frozen(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
 
     /// <summary>Reads #RRGGBB.</summary>
     public static bool TryParse(string? text, out Color color)

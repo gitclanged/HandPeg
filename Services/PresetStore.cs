@@ -12,6 +12,15 @@ public static class PresetStore
 
     public static string FilePath => AppPaths.PresetsFile;
 
+    private static Task<List<EncodingPreset>>? _early;
+
+    /// <summary>Starts reading the presets away from the calling thread, for <see cref="TakeEarly"/> to hand over.</summary>
+    public static void LoadEarly() => _early = Task.Run(Load);
+
+    /// <summary>The presets that were read early, once; read now when none were.</summary>
+    public static List<EncodingPreset> TakeEarly() =>
+        Interlocked.Exchange(ref _early, null) is { } early ? early.GetAwaiter().GetResult() : Load();
+
     /// <summary>The saved presets. The first launch creates the file with the built-in ones.</summary>
     public static List<EncodingPreset> Load()
     {

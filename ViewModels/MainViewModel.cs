@@ -80,15 +80,20 @@ public partial class MainViewModel : ObservableObject
     public MainViewModel()
     {
         _videoEncoder = EncoderOption.Copy;
-        Presets = [.. PresetStore.Load()];
+        Presets = [.. PresetStore.TakeEarly()];
         Initialize();
 
         var missing = DependencyUpdater.GetMissing();
         if (missing.Count > 0)
             StatusText = $"Missing {string.Join(", ", missing)}. Open Settings (the gear button) to install them.";
 
-        _ = ProbeHardwareEncodersAsync();
-        _ = CheckDependencyUpdatesAsync();
+        // Neither is part of getting the window up: testing the encoders starts FFmpeg, looking for updates
+        // brings in the whole of networking. Both begin once the window has been laid out and drawn.
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(() =>
+        {
+            _ = ProbeHardwareEncodersAsync();
+            _ = CheckDependencyUpdatesAsync();
+        }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
     /// <summary>Creates a background instance that knows the same encoders and presets as <paramref name="owner"/>.</summary>

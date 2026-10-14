@@ -47,41 +47,33 @@ public static partial class Waveforms
         var inputs = string.Concat(trackIndexes.Select(index => $"[0:a:{index}]"));
         var mix = trackIndexes.Count > 1 ? $"amix=inputs={trackIndexes.Count}:normalize=0," : "";
 
-        var (lows, highs) = (new List<float>(4096), new List<float>(4096));
+        var peaks = new PeakReader();
+        var (lows, highs) = (peaks.Lows, peaks.Highs);
         var samples = PipeTarget.Create(async (stream, token) =>
         {
-            var buffer = new byte[32768];
-            var (held, count, low, high) = (0, 0, 0, 0);
-            int read;
-            while ((read = await stream.ReadAsync(buffer.AsMemory(held), token)) > 0)
+            // Borrowed, and given back: what FFmpeg writes passes through the same room for every waveform.
+            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(32768);
+            try
             {
-                var have = held + read;
-                var whole = have & ~1;
-                for (var i = 0; i < whole; i += 2)
+                var held = 0;
+                int read;
+                while ((read = await stream.ReadAsync(buffer.AsMemory(held), token)) > 0)
                 {
-                    var sample = (int)(short)(buffer[i] | buffer[i + 1] << 8);
-                    if (sample < low)
-                        low = sample;
-                    if (sample > high)
-                        high = sample;
-                    if (++count == SamplesPerPeak)
-                    {
-                        lows.Add(low / 32768f);
-                        highs.Add(high / 32768f);
-                        (count, low, high) = (0, 0, 0);
-                    }
+                    var have = held + read;
+                    var whole = have & ~1;
+                    peaks.Add(buffer.AsSpan(0, whole));
+
+                    // Half a sample at the end of what was read waits for its other half.
+                    held = have - whole;
+                    if (held > 0)
+                        buffer[0] = buffer[whole];
                 }
 
-                // Half a sample at the end of what was read waits for its other half.
-                held = have - whole;
-                if (held > 0)
-                    buffer[0] = buffer[whole];
+                peaks.Finish();
             }
-
-            if (count > 0)
+            finally
             {
-                lows.Add(low / 32768f);
-                highs.Add(high / 32768f);
+                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
             }
         });
 
@@ -101,12 +93,59 @@ public static partial class Waveforms
         return picture;
     }
 
+    /// <summary>Reduces 16-bit samples, as they arrive, to the lowest and highest of every so many.</summary>
+    private sealed class PeakReader
+    {
+        public readonly List<float> Lows = new(4096), Highs = new(4096);
+        private int _count, _low, _high;
+
+        public void Add(ReadOnlySpan<byte> bytes)
+        {
+            // Read as the numbers they are (little-endian, as this processor is) rather than put together byte by byte.
+            foreach (var sample in System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(bytes))
+            {
+                if (sample < _low)
+                    _low = sample;
+                if (sample > _high)
+                    _high = sample;
+                if (++_count == SamplesPerPeak)
+                    Finish();
+            }
+        }
+
+        public void Finish()
+        {
+            if (_count == 0)
+                return;
+
+            Lows.Add(_low / 32768f);
+            Highs.Add(_high / 32768f);
+            (_count, _low, _high) = (0, 0, 0);
+        }
+    }
+
+    /// <summary>
+    /// A stretch of a waveform as a waveform of its own, between two fractions of its length: what is left of
+    /// a sound once it has been trimmed. Null for a picture that is not one of these waveforms.
+    /// </summary>
+    public static ImageSource? Cut(ImageSource? picture, double from, double to, int width, int height)
+    {
+        if (DataOf(picture) is not { Count: > 0 } whole)
+            return null;
+
+        var data = whole.Slice(from, to);
+        var cut = Draw(data, Math.Max(width, 2), Math.Max(height, 2));
+        Peaks.AddOrUpdate(cut, data);
+        return cut;
+    }
+
     /// <summary>The peaks as a picture: one shape, a column for every so many pairs.</summary>
     private static ImageSource Draw(WaveformData data, double width, double height)
     {
         var columns = Math.Min(data.Count, MostColumns);
         var (step, middle) = (width / columns, height / 2);
-        var (tops, bottoms) = (new double[columns], new double[columns]);
+        var pool = System.Buffers.ArrayPool<double>.Shared;
+        var (tops, bottoms) = (pool.Rent(columns), pool.Rent(columns));
         for (var c = 0; c < columns; c++)
         {
             var (low, high) = data.Range((double)c / columns, (double)(c + 1) / columns);
@@ -122,14 +161,16 @@ public static partial class Waveforms
             path.BeginFigure(new Point(0, tops[0]), isFilled: true, isClosed: true);
             for (var c = 0; c < columns; c++)
                 path.LineTo(new Point((c + 0.5) * step, tops[c]), false, false);
-            path.LineTo(new Point(width, tops[^1]), false, false);
-            path.LineTo(new Point(width, bottoms[^1]), false, false);
+            path.LineTo(new Point(width, tops[columns - 1]), false, false);
+            path.LineTo(new Point(width, bottoms[columns - 1]), false, false);
             for (var c = columns - 1; c >= 0; c--)
                 path.LineTo(new Point((c + 0.5) * step, bottoms[c]), false, false);
             path.LineTo(new Point(0, bottoms[0]), false, false);
         }
 
         outline.Freeze();
+        pool.Return(tops);
+        pool.Return(bottoms);
 
         // The see-through rectangle gives the picture its full size: without it, it would be as tall as the loudest moment only.
         var drawing = new DrawingGroup();
@@ -427,6 +468,14 @@ public sealed class WaveformData(float[] lows, float[] highs, Brush fill)
 
     /// <summary>The colour it is drawn in.</summary>
     public Brush Fill { get; } = fill;
+
+    /// <summary>The peaks between two fractions of its length (0 to 1), at least one of them.</summary>
+    public WaveformData Slice(double from, double to)
+    {
+        var first = Math.Clamp((int)(from * highs.Length), 0, highs.Length - 1);
+        var last = Math.Clamp((int)Math.Ceiling(to * highs.Length), first + 1, highs.Length);
+        return new WaveformData(lows[first..last], highs[first..last], Fill);
+    }
 
     /// <summary>The lowest and the highest sample between two points of the sound, each a fraction of its length (0 to 1).</summary>
     public (float Low, float High) Range(double from, double to)
