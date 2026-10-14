@@ -22,7 +22,7 @@ HandPeg 3.0 is rebuilt on 2.5.0, with the parts of 2.6 that worked kept and the 
 - Drag-and-drop overlay in place of the launch window: drag a file over an empty window and drop it on a style preset (Editor Mode), an encoding preset (Encoder Mode) or a Social Squisher preset.
 - Settings → Automation & Drop Targets: the overlay's style presets and encoding presets are ordered lists, like the Squisher's: move them up and down, remove them, add others, and choose how many are shown.
 - Settings window reorganized into seven tabs with search, including an Auto-Captions tab: default language and caption style, beam size, best-of, temperature and fallback, and silence-detection threshold and timings.
-- About and Check for Updates on the General tab of Settings.
+- About, Check for Updates and **Update Dependencies** on the General tab of Settings, with a **Manage Dependencies** link to the full list (tool paths, update URLs, speech models) on the Tools & Backup tab.
 - When something needs a tool that was never downloaded (Start Encode, Add to Queue, Generate Captions, Edit Captions, loading a web address), it offers to download exactly that.
 - Queued jobs transcribe their captions when they run, not when they are added, so adding a job never waits for whisper. A job whose captions are a subtitle track is written at once, as the track stands.
 - Startup Window Size: Default Size, Remember Last Size or Launch Maximized.
@@ -41,6 +41,7 @@ HandPeg 3.0 is rebuilt on 2.5.0, with the parts of 2.6 that worked kept and the 
 - Files dropped over the player being taken by the player instead of HandPeg.
 - First-run setup not listing hardware encoders until a restart after choosing an existing FFmpeg.
 - The trimmed voiceover not drawn in the Master Mix View.
+- The large-v3 and large-v3-turbo speech models showed a 0 MB download size.
 
 ### Removed (from 2.6)
 - Proxies, Preview Quality, the timeline proxy and its auto-render, and the proxy cache settings: the player shows the original files again.
