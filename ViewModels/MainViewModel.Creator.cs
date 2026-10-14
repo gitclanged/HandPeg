@@ -1430,6 +1430,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowAdvancedFiltersTab));
         OnPropertyChanged(nameof(IsEditorMode));
         OnPropertyChanged(nameof(IsSourcePaneVisible));
+        ApplyModePreview();
         OnPropertyChanged(nameof(IsTextLayerSelected));
         OnPropertyChanged(nameof(ShowSubtitleImportRow));
         OnPropertyChanged(nameof(IsEncoderMode));

@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -304,6 +305,31 @@ public partial class MainViewModel
 
     /// <summary>The Layers and Audio lists are too narrow for a row to hold its controls and a time bar of any use: the controls are in a flyout from each row instead. Editor Mode only.</summary>
     [ObservableProperty] private bool _compactTrackControls;
+
+    // ----- Encoder Mode stands apart from the editor -----
+
+    // Whether Live Preview was on in Editor Mode, to put back on return: Encoder Mode plays the source as it is.
+    private bool? _editorLivePreview;
+
+    /// <summary>
+    /// Entering Encoder Mode: the player shows the source file itself, not the editor's composition (Live
+    /// Preview goes off, and its buttons are not there), and the layout pane closes. Back in Editor Mode, Live
+    /// Preview is as it was left.
+    /// </summary>
+    private void ApplyModePreview()
+    {
+        if (IsEncoderMode)
+        {
+            _editorLivePreview ??= LivePreview;
+            LivePreview = false;
+            IsArrangeActive = false;
+        }
+        else if (_editorLivePreview is { } was)
+        {
+            _editorLivePreview = null;
+            LivePreview = was;
+        }
+    }
 
     /// <summary>The master timeline is stretched and scrolled with the layer and audio time bars when they are zoomed; off, it always shows the whole sequence.</summary>
     [ObservableProperty] private bool _syncMasterTimeline;

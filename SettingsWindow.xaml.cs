@@ -64,6 +64,9 @@ public partial class SettingsWindow : Window
         _settings.SquisherPresets.Insert(to, preset);
     }
 
+    // A box for a whole number takes digits and nothing else.
+    private void DigitsOnly_PreviewTextInput(object sender, System.Windows.Input.TextCompositionEventArgs e) => e.Handled = !e.Text.All(char.IsDigit);
+
     private void RestoreSquishPresets_Click(object sender, RoutedEventArgs e)
     {
         _settings.SquisherPresets = SquishPreset.Defaults();

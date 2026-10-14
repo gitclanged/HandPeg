@@ -161,7 +161,11 @@ public sealed class MpvPlayer
                      ("wid", window.ToInt64().ToString(System.Globalization.CultureInfo.InvariantCulture)),
                      ("config", "no"), ("terminal", "no"), ("osc", "no"), ("osd-level", "0"),
                      ("input-default-bindings", "no"), ("input-vo-keyboard", "no"), ("input-cursor", "no"), ("cursor-autohide", "no"),
-                     ("idle", "yes"), ("force-window", "yes"), ("keep-open", "yes"), ("pause", "yes"),
+                     ("idle", "yes"), ("force-window", "yes"), ("drag-and-drop", "no"),
+
+                     // While it is being sent from place to place, speed comes before fidelity: frames may be dropped on
+                     // the way to an exact position, and the decoder may cut corners. The picture it rests on is whole.
+                     ("hr-seek-framedrop", "yes"), ("vd-lavc-fast", "yes"), ("keep-open", "yes"), ("pause", "yes"),
 
                      // gpu-next: the renderer built on libplacebo, which keeps its compiled shaders between runs.
                      // The older one is named after it, for a libmpv that was built without.

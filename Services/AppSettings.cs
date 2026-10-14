@@ -416,6 +416,19 @@ public sealed class AppSettings
     /// <summary>How many of the presets, from the top of the list, the startup dialog shows.</summary>
     public int SquisherPresetCount { get; set; } = 4;
 
+    // ----- The window, when HandPeg starts -----
+    public const string DefaultWindowSize = "Default Size", RememberWindowSize = "Remember Last Size", MaximizedWindow = "Launch Maximized";
+
+    public static IReadOnlyList<string> StartupWindowSizes { get; } = [DefaultWindowSize, RememberWindowSize, MaximizedWindow];
+
+    /// <summary>How large the window is when HandPeg starts: as designed, as it was left, or maximized.</summary>
+    public string StartupWindowSize { get; set; } = DefaultWindowSize;
+
+    // The window as it was when HandPeg was last closed (its size while not maximized, and whether it was).
+    public double LastWindowWidth { get; set; }
+    public double LastWindowHeight { get; set; }
+    public bool LastWindowMaximized { get; set; }
+
     /// <summary>How thick scrollbars are, everywhere in HandPeg, in pixels: 4 (a hairline) to 16 (as Windows draws them).</summary>
     public double ScrollbarThickness { get; set; } = 10;
 

@@ -113,7 +113,17 @@ public partial class SplashWindow : Window
         "Destroying video quality...", "Taking out pixels...", "Generating banding...", "Rounding off the details...",
         "Asking the encoder nicely...", "Deleting every other pixel...", "Smearing the gradients...", "Counting bits, twice...",
         "Making it worse, on purpose...", "Squeezing harder...", "Flattening the dark bits...", "Negotiating with the bitrate...",
+        "Converting 4K to potato...", "Deleting every 3rd pixel...", "Bribing the encoder...", "Downloading more RAM...",
+        "Applying cinematic blockiness...", "Making it fit on a floppy...", "Reticulating splines...", "Optimizing for dial-up...",
+        "Starving the bitrate...", "Folding the video in half...", "Sanding off the sharp edges...", "Teaching pixels to share...",
+        "Replacing detail with vibes...", "Compressing the compression...", "Laundering the color depth...", "Turning gradients into stairs...",
+        "Evicting high frequencies...", "Feeding frames to the shredder...", "Consulting the macroblock oracle...", "Putting the video on a diet...",
+        "Rounding 60 fps down to enough...", "Hiding the artifacts in the shadows...", "Convincing it that 480p is plenty...", "Wringing out the last kilobits...",
     ];
+
+    /// <summary>Starts squishing a video for a preset, as dropping it on the preset in this window would: for a drop made elsewhere (the main window's overlay).</summary>
+    /// <param name="instant">The window goes to its processing square at once, with no shrinking shown: for a drop on the overlay, which opened it only for this.</param>
+    public void StartSquish(string file, SquishPreset preset, bool instant = false) => _ = SquishAsync(file, preset, instant);
 
     public static readonly DependencyProperty ShrinkProperty = DependencyProperty.Register(
         nameof(Shrink), typeof(double), typeof(SplashWindow), new PropertyMetadata(0.0, (d, _) => ((SplashWindow)d).ApplyShrink()));
@@ -162,7 +172,7 @@ public partial class SplashWindow : Window
             _ = SquishAsync(file, preset);
     }
 
-    private async Task SquishAsync(string file, SquishPreset preset)
+    private async Task SquishAsync(string file, SquishPreset preset, bool instant = false)
     {
         if (IsSquishing)
             return;
@@ -178,7 +188,15 @@ public partial class SplashWindow : Window
         (MainPanel.Visibility, SquishPanel.Visibility) = (Visibility.Collapsed, Visibility.Visible);
         Title = $"Squishing for {preset.Name}";
         var ease = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut };
-        BeginAnimation(ShrinkProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(380)) { EasingFunction = ease });
+        if (instant)
+        {
+            Shrink = 1;
+            Opacity = 1;
+        }
+        else
+        {
+            BeginAnimation(ShrinkProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(380)) { EasingFunction = ease });
+        }
 
         var random = new Random();
         void NextText(object? sender, EventArgs e) => SquishText.Text = SquishTexts[random.Next(SquishTexts.Length)];
