@@ -11,7 +11,9 @@ HandPeg 3.0 is rebuilt on 2.5.0, with the parts of 2.6 that worked kept and the 
 - **Captions work as they did in 2.5 again.** The Generate Auto-Captions checkbox is back in Editor Mode and is the on/off switch: ticked, the export has captions; cleared, it has none, and nothing stops an export. **Generate Captions** transcribes ahead of time into a subtitle track you can watch and edit; exports and queued jobs then draw that track exactly as it stands and never transcribe it again.
 - **HUD masks of the whole frame.** One black-and-white mask of the whole video frame, white over every HUD element, can serve every layer cut from the video: each layer takes its own part of it and stays a layer of its own. Redrawing a layer's area never shifts the mask.
 - **Draw Custom Shape.** Trace round a HUD element on a still of the video, point by point; the lines join up, and the shapes become a mask for one layer or for all of them.
-- **Mask options:** grow or shrink the mask, invert it, crop any edge of a layer (what is cropped is see-through, the rest stays where it is), and Soft Edges now softens a mask's own outline.
+- **Mask options:** grow or shrink the mask, invert it, crop any edge of a layer (what is cropped is see-through, the rest stays where it is), and Soft Edges now softens a mask's own outline. A mask can be a PNG with transparency: what is painted shows, what is see-through is cut away.
+- **Layers from a Mask:** a mask of the whole frame is taken apart into one layer per HUD element. Patches closer together than a distance you set are one element, so ability icons traced one by one make a single layer. The pieces are shown on a still of the video before they are added.
+- **Opacity keyframes:** layers can fade in and out, keyed like position, size and rotation.
 - **Built-in HUD presets traced from the games:** Overwatch, Apex Legends, Marvel Rivals and The Finals, each with one mask traced round its HUD, laid out for vertical video. Counter-Strike 2 is kept as it was.
 - **Projects and style presets carry their masks**, so one file is all another computer needs.
 
@@ -24,6 +26,7 @@ HandPeg 3.0 is rebuilt on 2.5.0, with the parts of 2.6 that worked kept and the 
 - Queued jobs transcribe their captions when they run, not when they are added, so adding a job never waits for whisper. A job whose captions are a subtitle track is written at once, as the track stands.
 - Startup Window Size: Default Size, Remember Last Size or Launch Maximized.
 - A project file (`.hproj`) pasted into the Source box opens the project.
+- Undo now covers subtitle edits (in the Subtitle Editor and elsewhere), Generate Captions, importing and removing subtitles, the caption style and caption box, moving and resizing layers in the layout pane, layer properties, Draw Target and applying a style preset.
 
 ### Changed
 - Scrubbing sends quick seeks at most 30 times a second while dragging and one exact seek on release.
@@ -42,7 +45,7 @@ HandPeg 3.0 is rebuilt on 2.5.0, with the parts of 2.6 that worked kept and the 
 - Recent Editor Files.
 
 ### Compatibility
-- Projects from 2.5 and 2.6 open unchanged. Projects saved by unreleased test builds after 2.6.3 (format 3) cannot be opened.
+- Projects from 2.5 and 2.6 open unchanged. Compatibility with older presets and projects is no longer promised where it would hold new features back. Projects saved by unreleased test builds after 2.6.3 (format 3) cannot be opened.
 - Projects saved by 3.0 open in 2.5 and 2.6, but without their masks, which those versions cannot unpack.
 - Settings and presets carry over. Settings that belonged to proxies are ignored.
 - The built-in HUD style presets are written again, replacing earlier copies of the same names.
