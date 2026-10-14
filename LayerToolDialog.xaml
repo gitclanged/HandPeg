@@ -199,6 +199,9 @@
                 <Button x:Name="ShareMaskButton" Content="Use This Mask for All Cut-out Layers" Padding="12,4" Margin="6,0,0,0" Click="ShareMask_Click" AutomationProperties.Name="Use Mask for All Cut-out Layers"
                         ToolTip="Gives every layer cut from the video this mask of the whole frame: each one cuts its own part out of it, and stays a layer of its own." />
             </StackPanel>
+            <Button x:Name="MaskLayersButton" Content="Make Layers from This Mask..." Padding="12,4" Margin="0,6,0,0" HorizontalAlignment="Left" Click="MaskLayers_Click"
+                    AutomationProperties.Name="Make Layers from This Mask"
+                    ToolTip="Takes this mask of the whole frame apart into one layer per HUD element it shows (patches close together are one element), all sharing the mask." />
             <TextBlock Text="Ready-made shapes (stretched over the layer):" Margin="0,12,0,4" />
             <StackPanel Orientation="Horizontal">
                 <Button Content="Soft Rectangle" Padding="12,4" Tag="Soft" Click="Shape_Click" ToolTip="A rectangle whose edges fade out all the way round." />

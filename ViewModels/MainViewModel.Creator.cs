@@ -685,6 +685,50 @@ public partial class MainViewModel
             : $"Added {game.Pieces.Count} layers for {game.Name}. They sit where the HUD is by default: check each against your video, and correct its area with Draw Target or its outline with Draw Custom Shape (Mask).";
     }
 
+    /// <summary>
+    /// Layers from a Mask: one layer per piece of a mask of the whole frame, each cut out of the video where
+    /// the piece is and sharing the mask, laid back where it was or out for a tall frame. One step of Undo.
+    /// </summary>
+    /// <param name="replace">Takes the layers already cut from the video away first (into the recycle bin).</param>
+    public void AddMaskLayers(string maskPath, IReadOnlyList<System.Windows.Rect> pieces, bool vertical, bool replace)
+    {
+        if (pieces.Count == 0)
+            return;
+
+        Checkpoint("add layers from a mask");
+        using var whole = DeferCommand();
+        if (replace)
+        {
+            foreach (var old in Layers.Where(l => l.IsVideo && !l.IsDeleted).ToList())
+                MoveToBin(old);
+        }
+
+        if (vertical && !UseVerticalResolution)
+            UseVerticalResolution = true;
+
+        // Named after where they are, and numbered where two would have the same name.
+        var names = pieces.Select(MaskStore.PlaceName).ToList();
+        var states = pieces.Select((piece, i) => new LayerState
+        {
+            Name = names.Count(n => n == names[i]) > 1 ? $"{names[i]} {names.Take(i + 1).Count(n => n == names[i])}" : names[i],
+            Kind = LayerKind.Video,
+            SourceX = piece.X, SourceY = piece.Y, SourceWidth = piece.Width, SourceHeight = piece.Height,
+            PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
+            CustomMask = true, MaskPath = maskPath, MaskFrame = true, Feather = true, FeatherRadius = 4,
+        }).ToList();
+        if (vertical)
+            HudLibrary.LayOutVertically(states);
+
+        foreach (var state in states)
+            AttachLayer(Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight));
+
+        if (CurrentSourceAspect > 0)
+            _layoutSourceAspect = CurrentSourceAspect;
+        FrameEngine = true;
+        MainVideoIndex = Layers.Count(l => !l.IsAudio);
+        StatusText = $"Added {states.Count} layer{(states.Count == 1 ? "" : "s")} from the mask, one for each HUD element it shows. Ctrl+Z takes them away again.";
+    }
+
     // ----- Stream copy -----
 
     /// <summary>

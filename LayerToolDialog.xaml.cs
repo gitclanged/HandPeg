@@ -71,7 +71,7 @@ public partial class LayerToolDialog : Window
                 RedrawButton.Visibility = layer.IsVideo ? Visibility.Visible : Visibility.Collapsed;
 
                 // A mask of the whole frame belongs to a piece cut from the video: other layers have no place in the frame to take it from.
-                MaskFrameBox.Visibility = FrameMaskButtons.Visibility = layer.IsVideo ? Visibility.Visible : Visibility.Collapsed;
+                MaskFrameBox.Visibility = FrameMaskButtons.Visibility = MaskLayersButton.Visibility = layer.IsVideo ? Visibility.Visible : Visibility.Collapsed;
                 break;
         }
     }
@@ -133,6 +133,19 @@ public partial class LayerToolDialog : Window
         (_layer.CustomMask, _layer.MaskPath, _layer.MaskFrame, _layer.MaskShapes) = (true, path, true, window.Shapes);
         if (window.ForAllLayers)
             ShareMask();
+    }
+
+    private void MaskLayers_Click(object sender, RoutedEventArgs e)
+    {
+        var path = _layer.MaskPath.Trim().Trim('"');
+        if (!_layer.CustomMask || !File.Exists(path))
+        {
+            _viewModel.StatusText = "Choose or draw a mask of the whole frame first.";
+            return;
+        }
+
+        if (Owner is MainWindow main)
+            main.AddLayersFromMask(path, this);
     }
 
     private void ShareMask_Click(object sender, RoutedEventArgs e)

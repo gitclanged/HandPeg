@@ -1510,11 +1510,13 @@
                                                 ToolTip="Words: a title or a label. Its words, font and colors are set under Text Settings while the layer is selected." />
                                         <Button Content="Region of Main Video" Tag="Region" Click="AddLayerMenu_Click"
                                                 ToolTip="A piece of the source video (a minimap, an ammo counter) lifted onto the frame. Mark it with Draw Target." />
+                                        <Button Content="HUD Layers from a Mask..." Tag="MaskLayers" Click="AddLayerMenu_Click"
+                                                ToolTip="Choose a mask of the whole frame, white (or painted, on transparency) over the HUD: one layer is made for each HUD element it shows, all sharing the mask." />
                                     </StackPanel>
                                 </Border>
                             </Popup>
                             <Button Content="HUD Masks" Padding="12,5" Margin="6,2,0,2" Click="HudMasks_Click"
-                                    ToolTip="Takes a game's HUD apart into layers (killfeed, health, radar, abilities), each cut out with its own mask, so each can be moved on its own. For Overwatch 2, Counter-Strike 2, Apex Legends and Marvel Rivals." />
+                                    ToolTip="Takes a game's HUD apart into layers (killfeed, health, abilities, ultimate), all sharing one mask traced round the game's HUD, so each can be moved on its own. For Overwatch, Apex Legends, Marvel Rivals, The Finals and Counter-Strike 2, or from a mask of your own." />
                             <!-- The editing tools, as icons: each works on whatever block is selected on a time bar -->
                             <Button Content="[" FontFamily="Consolas" FontWeight="Bold" FontSize="14" Padding="11,5" Margin="18,0,4,0" Command="{Binding AddStartPointCommand}"
                                     AutomationProperties.Name="Add Start Point" ToolTip="Add Start Point (I): a new cut segment of the main video begins at the playhead." />

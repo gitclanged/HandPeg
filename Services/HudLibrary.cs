@@ -170,7 +170,7 @@ public static class HudLibrary
         }).ToList();
 
         if (vertical)
-            LayOutVertically(game, states);
+            LayOutVertically(states);
         return states;
     }
 
@@ -179,7 +179,7 @@ public static class HudLibrary
     /// one below, each as large as the row's width and the room above or below allow, in the left-to-right
     /// order the pieces have on screen.
     /// </summary>
-    private static void LayOutVertically(HudGame game, List<LayerState> states)
+    public static void LayOutVertically(List<LayerState> states)
     {
         // The share of the frame's height the video takes; a piece's height is its width times this, per unit of its own shape.
         const double band = 81.0 / 256, gap = 0.02, margin = 0.03, largest = 3.2;
@@ -187,7 +187,7 @@ public static class HudLibrary
 
         foreach (var above in new[] { true, false })
         {
-            var row = game.Pieces.Select((piece, index) => (Piece: piece, State: states[index]))
+            var row = states.Select(state => (Piece: (X: state.SourceX, Y: state.SourceY, Width: state.SourceWidth, Height: state.SourceHeight), State: state))
                 .Where(p => (p.Piece.Y + p.Piece.Height / 2 < 0.5) == above).OrderBy(p => p.Piece.X).ToList();
             if (row.Count == 0)
                 continue;

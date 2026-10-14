@@ -181,6 +181,107 @@ public static class MaskStore
         }
     }
 
+    // ----- The separate pieces of a mask -----
+
+    /// <summary>
+    /// The islands of a mask of the whole frame: each patch that shows, apart from the rest, as the box round
+    /// it in fractions of the frame. Specks of a few pixels are left out. Null when the picture cannot be read.
+    /// </summary>
+    public static List<Rect>? FindIslands(string path)
+    {
+        if (ReadGrey(path) is not var (pixels, width, height))
+            return null;
+
+        var seen = new bool[pixels.Length];
+        var islands = new List<Rect>();
+        var stack = new Stack<int>();
+        var smallest = Math.Max(6, width * height / 50_000);
+        for (var start = 0; start < pixels.Length; start++)
+        {
+            if (seen[start] || pixels[start] < 128)
+                continue;
+
+            // Everything that touches it, corners included, is the same island.
+            var (left, top, right, bottom, count) = (int.MaxValue, int.MaxValue, -1, -1, 0);
+            seen[start] = true;
+            stack.Push(start);
+            while (stack.Count > 0)
+            {
+                var at = stack.Pop();
+                var (x, y) = (at % width, at / width);
+                (left, top, right, bottom, count) = (Math.Min(left, x), Math.Min(top, y), Math.Max(right, x), Math.Max(bottom, y), count + 1);
+                for (var dy = -1; dy <= 1; dy++)
+                {
+                    for (var dx = -1; dx <= 1; dx++)
+                    {
+                        var (nx, ny) = (x + dx, y + dy);
+                        if (nx < 0 || ny < 0 || nx >= width || ny >= height)
+                            continue;
+
+                        var next = ny * width + nx;
+                        if (!seen[next] && pixels[next] >= 128)
+                        {
+                            seen[next] = true;
+                            stack.Push(next);
+                        }
+                    }
+                }
+            }
+
+            if (count >= smallest)
+                islands.Add(new Rect((double)left / width, (double)top / height, (right - left + 1.0) / width, (bottom - top + 1.0) / height));
+        }
+
+        return islands;
+    }
+
+    /// <summary>
+    /// Islands joined into pieces: two that come closer than the distance given (a fraction of the frame's width,
+    /// across or down) are one piece, so that a row of separately traced ability icons is one layer, not one
+    /// each. In reading order: top to bottom, then left to right. Each piece's box has a little room spare.
+    /// </summary>
+    public static List<Rect> GroupIslands(IReadOnlyList<Rect> islands, double join, double aspect = 16.0 / 9)
+    {
+        var (joinX, joinY) = (Math.Max(join, 0), Math.Max(join, 0) * aspect);
+        var pieces = islands.ToList();
+        for (var merged = true; merged;)
+        {
+            merged = false;
+            for (var i = 0; i < pieces.Count && !merged; i++)
+            {
+                for (var j = i + 1; j < pieces.Count; j++)
+                {
+                    var (a, b) = (pieces[i], pieces[j]);
+                    var gapX = Math.Max(0, Math.Max(a.Left - b.Right, b.Left - a.Right));
+                    var gapY = Math.Max(0, Math.Max(a.Top - b.Bottom, b.Top - a.Bottom));
+                    if (gapX <= joinX && gapY <= joinY)
+                    {
+                        pieces[i] = Rect.Union(a, b);
+                        pieces.RemoveAt(j);
+                        merged = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Room for a soft edge: about 8 pixels of a 1440-line frame.
+        const double roomX = 8 / 2560.0, roomY = 8 / 1440.0;
+        return pieces
+            .Select(r => new Rect(new Point(Math.Max(r.Left - roomX, 0), Math.Max(r.Top - roomY, 0)), new Point(Math.Min(r.Right + roomX, 1), Math.Min(r.Bottom + roomY, 1))))
+            .OrderBy(r => Math.Round(r.Top * 8)).ThenBy(r => r.Left)
+            .ToList();
+    }
+
+    /// <summary>A name for a piece from where it is on the frame: Top Left, Bottom Center...</summary>
+    public static string PlaceName(Rect piece)
+    {
+        var (x, y) = (piece.X + piece.Width / 2, piece.Y + piece.Height / 2);
+        var down = y < 1 / 3.0 ? "Top" : y < 2 / 3.0 ? "Middle" : "Bottom";
+        var across = x < 1 / 3.0 ? "Left" : x < 2 / 3.0 ? "Center" : "Right";
+        return $"{down} {across}";
+    }
+
     // ----- Drawn from outlines -----
 
     /// <summary>The outlines in a mask's text, each with at least three points. Points that cannot be read are skipped.</summary>

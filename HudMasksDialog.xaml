@@ -22,6 +22,8 @@
         <CheckBox x:Name="VerticalBox" Content="Lay out for vertical video" Margin="0,12,0,0"
                   ToolTip="Makes the frame tall, with the video across its middle and the pieces of the HUD enlarged above and below it. Cleared, each piece is laid back where it was cut from. The same layouts are among the style presets, where they can be dropped on from the launch window." />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Use My Own Mask..." MinWidth="110" Margin="0,0,18,0" Click="OwnMask_Click"
+                    ToolTip="Make the layers from a mask of the whole frame you made yourself (white, or painted on transparency, over each HUD element): one layer per element." />
             <Button x:Name="AddButton" Content="Add Layers" MinWidth="110" IsDefault="True" IsEnabled="False" Click="Add_Click" />
             <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
         </StackPanel>

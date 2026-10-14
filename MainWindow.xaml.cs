@@ -2168,7 +2168,12 @@ public partial class MainWindow : Window
     {
         // Offered the way the frame is now: a tall frame gets the tall layout.
         var dialog = new HudMasksDialog { Owner = this, Vertical = _viewModel.FrameHeight > _viewModel.FrameWidth };
-        if (dialog.ShowDialog() == true && dialog.Game is { } game)
+        if (dialog.ShowDialog() != true)
+            return;
+
+        if (dialog.UseOwnMask)
+            AddLayersFromMask();
+        else if (dialog.Game is { } game)
             _viewModel.AddHudLayers(game, dialog.Vertical);
     }
 
@@ -3592,7 +3597,41 @@ public partial class MainWindow : Window
             case "Image": AddImage_Click(sender, e); break;
             case "Text": _viewModel.AddTextLayerCommand.Execute(null); break;
             case "Region": _viewModel.AddLayerCommand.Execute(null); break;
+            case "MaskLayers": AddLayersFromMask(); break;
         }
+    }
+
+    /// <summary>
+    /// Layers from a Mask: a mask of the whole frame (chosen here when none is given) taken apart into one
+    /// layer per HUD element it shows, after the pieces have been looked at and joined as wanted.
+    /// </summary>
+    /// <param name="owner">The window it opens over: this one, or a dialog open over it.</param>
+    public void AddLayersFromMask(string? maskPath = null, Window? owner = null)
+    {
+        owner ??= this;
+        if (!_viewModel.HasSource)
+        {
+            _viewModel.StatusText = "Load a video first: the layers are cut out of it.";
+            return;
+        }
+
+        if (maskPath is null)
+        {
+            var dialog = new OpenFileDialog { Title = "Select a mask of the whole frame", Filter = "Images|*.png;*.jpg;*.jpeg;*.bmp|All files|*.*" };
+            if (dialog.ShowDialog(owner) != true)
+                return;
+            maskPath = dialog.FileName;
+        }
+
+        if (MaskLayersWindow.Open(_viewModel, maskPath) is not { } window)
+        {
+            _viewModel.StatusText = "That mask shows nothing to make layers of, or it could not be read: it should be white (or painted, on transparency) where the HUD is.";
+            return;
+        }
+
+        window.Owner = owner;
+        if (window.ShowDialog() == true)
+            _viewModel.AddMaskLayers(maskPath, window.Pieces, window.Vertical, window.ReplaceExisting);
     }
 
     // ----- Subtitles: importing a track, and the editor -----

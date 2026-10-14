@@ -120,18 +120,12 @@ public sealed class MaskDrawWindow : Window
         Content = root;
 
         PreviewKeyDown += Window_PreviewKeyDown;
+        SizeChanged += (_, _) => _surface.InvalidateVisual();
         Loaded += async (_, _) => await LoadStillAsync();
         Closed += (_, _) =>
         {
             _closing.Cancel();
-            try
-            {
-                File.Delete(_stillPath);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Left for the session's clean-up.
-            }
+            SourceStill.Delete(_stillPath);
         };
         ShowHelp();
     }
@@ -172,19 +166,7 @@ public sealed class MaskDrawWindow : Window
         _status.Text = "Taking a still of the video at the playhead...";
         try
         {
-            Directory.CreateDirectory(SessionPaths.Previews);
-            var ffmpeg = DependencyUpdater.IsFfmpegOverridden ? $"\"{DependencyUpdater.FfmpegPath}\"" : "ffmpeg";
-            var seconds = Math.Max(_viewModel.PositionMs / 1000, 0).ToString("0.###", CultureInfo.InvariantCulture);
-            await FfmpegRunner.RunAsync($"{ffmpeg} -hide_banner -y -ss {seconds} -i \"{source}\" -frames:v 1 -update 1 \"{_stillPath}\"",
-                new Progress<FfmpegProgress>(), _closing.Token);
-
-            var still = new BitmapImage();
-            still.BeginInit();
-            still.CacheOption = BitmapCacheOption.OnLoad;
-            still.UriSource = new Uri(_stillPath);
-            still.EndInit();
-            still.Freeze();
-            _still.Source = still;
+            _still.Source = await SourceStill.TakeAsync(source, _viewModel.PositionMs / 1000, _stillPath, _closing.Token);
             ShowHelp();
         }
         catch (OperationCanceledException)
