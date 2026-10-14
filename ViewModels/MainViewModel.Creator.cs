@@ -659,7 +659,7 @@ public partial class MainViewModel
 
     /// <summary>
     /// Takes a game's HUD apart: one layer per piece, each cut out of the video where that piece sits and laid
-    /// back in the same place, with a mask for the pieces that are not rectangles. From there each can be moved.
+    /// back in the same place, all sharing the game's mask of the whole frame. From there each can be moved.
     /// </summary>
     /// <param name="vertical">Lays the pieces out for a tall frame, above and below the video, and makes the frame tall; otherwise each piece is laid back where it was cut from.</param>
     public void AddHudLayers(HudGame game, bool vertical = false)
@@ -681,8 +681,52 @@ public partial class MainViewModel
         // The main video in front of the pieces cut from it: it is what is being watched.
         MainVideoIndex = Layers.Count(l => !l.IsAudio);
         StatusText = vertical
-            ? $"Added {game.Pieces.Count} layers for {game.Name}, laid out above and below the video. Check each against your video: right-click a layer and choose Redraw / Modify Mask to correct it."
-            : $"Added {game.Pieces.Count} layers for {game.Name}. They sit where the HUD is by default: check each against your video and correct it with Draw Target.";
+            ? $"Added {game.MainPieces.Count()} layers for {game.Name}, laid out above and below the video. Check each against your video: right-click a layer and choose Redraw / Modify Mask to correct it."
+            : $"Added {game.MainPieces.Count()} layers for {game.Name}. They sit where the HUD is by default: check each against your video, and correct its area with Draw Target or its outline with Draw Custom Shape (Mask).";
+    }
+
+    /// <summary>
+    /// Layers from a Mask: one layer per piece of a mask of the whole frame, each cut out of the video where
+    /// the piece is and sharing the mask, laid back where it was or out for a tall frame. One step of Undo.
+    /// </summary>
+    /// <param name="replace">Takes the layers already cut from the video away first (into the recycle bin).</param>
+    public void AddMaskLayers(string maskPath, IReadOnlyList<System.Windows.Rect> pieces, bool vertical, bool replace)
+    {
+        if (pieces.Count == 0)
+            return;
+
+        Checkpoint("add layers from a mask");
+        using var whole = DeferCommand();
+        if (replace)
+        {
+            foreach (var old in Layers.Where(l => l.IsVideo && !l.IsDeleted).ToList())
+                MoveToBin(old);
+        }
+
+        if (vertical && !UseVerticalResolution)
+            UseVerticalResolution = true;
+
+        // Named after where they are, and numbered where two would have the same name.
+        var names = pieces.Select(MaskStore.PlaceName).ToList();
+        var states = pieces.Select((piece, i) => new LayerState
+        {
+            Name = names.Count(n => n == names[i]) > 1 ? $"{names[i]} {names.Take(i + 1).Count(n => n == names[i])}" : names[i],
+            Kind = LayerKind.Video,
+            SourceX = piece.X, SourceY = piece.Y, SourceWidth = piece.Width, SourceHeight = piece.Height,
+            PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
+            CustomMask = true, MaskPath = maskPath, MaskFrame = true, Feather = true, FeatherRadius = 4,
+        }).ToList();
+        if (vertical)
+            HudLibrary.LayOutVertically(states);
+
+        foreach (var state in states)
+            AttachLayer(Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight));
+
+        if (CurrentSourceAspect > 0)
+            _layoutSourceAspect = CurrentSourceAspect;
+        FrameEngine = true;
+        MainVideoIndex = Layers.Count(l => !l.IsAudio);
+        StatusText = $"Added {states.Count} layer{(states.Count == 1 ? "" : "s")} from the mask, one for each HUD element it shows. Ctrl+Z takes them away again.";
     }
 
     // ----- Stream copy -----
@@ -754,20 +798,34 @@ public partial class MainViewModel
             MainVideoIndex++;
     }
 
+    /// <summary>
+    /// Gives every other layer cut from the video the mask of the whole frame that this one has (its picture,
+    /// its drawn outlines, whether it is turned inside out, how far it is grown). Each then takes its own part of
+    /// it and stays a layer of its own; their crops and outlines are their own and are left as they are.
+    /// </summary>
+    /// <returns>How many layers were given it.</returns>
+    public int ShareFrameMask(Layer from)
+    {
+        var count = 0;
+        foreach (var layer in Layers.Where(l => l.IsVideo && !l.IsDeleted && !ReferenceEquals(l, from)))
+        {
+            (layer.CustomMask, layer.MaskPath, layer.MaskFrame, layer.MaskShapes) = (true, from.MaskPath, true, from.MaskShapes);
+            (layer.MaskInvert, layer.MaskGrow) = (from.MaskInvert, from.MaskGrow);
+            count++;
+        }
+
+        return count;
+    }
+
     /// <summary>Adds a layer to the list: a picture above the other pictures, a sound after everything.</summary>
     private void AttachLayer(Layer element)
     {
         Hook(element);
-        NoteEditorFile(element.ImagePath);
         var firstSound = element.IsAudio ? -1 : Layers.ToList().FindIndex(l => l.IsAudio);
         if (firstSound >= 0)
             Layers.Insert(firstSound, element);
         else
             Layers.Add(element);
-
-        // Now that it is one of the layers: a video among them gets its proxy.
-        if (element.IsVideoFile)
-            RefreshProxies();
     }
 
     /// <summary>Takes a layer into use: its changes are listened to, it is given a track when it has none, and from now on it grows about its middle.</summary>

@@ -56,7 +56,7 @@ public partial class MainViewModel : ObservableObject
         nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
         nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips), nameof(IsEncoderMode),
         nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer), nameof(SelectedTextLayer), nameof(IsTextLayerSelected),
-        nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(IsSubtitleEditorOpen), nameof(ShowLegacySubtitles), nameof(ShowSubtitleImportRow), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(PreviewQualityChoice), nameof(SelectedRecentEditorFile), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
+        nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(IsSubtitleEditorOpen), nameof(ShowLegacySubtitles), nameof(ShowSubtitleImportRow), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
         nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName),
         nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
         nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowSourcePane), nameof(IsSourcePaneVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
@@ -1158,7 +1158,19 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
-    private Task LoadSourceAsync() => RunOperationAsync(async cancellationToken =>
+    private async Task LoadSourceAsync()
+    {
+        // A web address is fetched by yt-dlp, which is downloaded the first time one is loaded.
+        if (Uri.TryCreate(SourcePath.Trim().Trim('"'), UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            && !await RequireAsync("Downloading a video", [DependencyUpdater.YtDlp, DependencyUpdater.Ffmpeg], []))
+        {
+            return;
+        }
+
+        await LoadSourceNowAsync();
+    }
+
+    private Task LoadSourceNowAsync() => RunOperationAsync(async cancellationToken =>
     {
         var source = SourcePath.Trim().Trim('"');
         if (source.Length == 0)
@@ -1464,7 +1476,14 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
-    private Task StartEncodeAsync() => RunOperationAsync(async cancellationToken =>
+    private async Task StartEncodeAsync()
+    {
+        // FFmpeg, and for captions that are still to be heard whisper and its model: fetched now if they never were.
+        if (await RequireForCommandAsync("Start Encode"))
+            await RunEncodeAsync();
+    }
+
+    private Task RunEncodeAsync() => RunOperationAsync(async cancellationToken =>
     {
         if (string.IsNullOrWhiteSpace(CommandPreview))
             return "There is no command to run.";
@@ -1631,9 +1650,6 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Clears per-source state when a different source is loaded.</summary>
     private void ResetForNewSource()
     {
-        // Proxies still being made of the video that was open are of no use to this one.
-        StopPreviewWork();
-
         Segments.Clear();
         PendingStartMs = null;
         PositionMs = 0;
@@ -1725,9 +1741,6 @@ public partial class MainViewModel : ObservableObject
         UpdateProjectedOutput();
         OnPropertyChanged(nameof(CaptionHint));
         OnPropertyChanged(nameof(CopyBypassWarning));
-
-        // The flattened picture of the timeline, if there is one, is of the timeline as it was: any change ends it.
-        TimelineEdited();
 
         // So does Live Preview, which shows the settings, not the command.
         if (!_isBackgroundWorker)

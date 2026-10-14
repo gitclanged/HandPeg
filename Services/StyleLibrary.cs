@@ -12,7 +12,11 @@ namespace HandPegApp.Services;
 public static class StyleLibrary
 {
     // Raised when the built-in styles change, so that the new ones are written out.
-    private const int Version = 2;
+    // 3: the HUD masks are one mask of the whole frame per game, traced from screenshots.
+    // 4: three or four layers a game; the other pieces are extras in the mask.
+    // 5: Overwatch's health piece takes in the name and perk line under the bar.
+    // 6: Overwatch's mask is a picture made by hand (Resources/overwatch_hud_mask.png), its pieces fitted to it.
+    private const int Version = 6;
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -56,17 +60,12 @@ public static class StyleLibrary
     public static StylePreset Build(HudGame game)
     {
         var layers = HudLibrary.BuildLayers(game, vertical: true);
-        var masks = new Dictionary<string, string>();
+        var masks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var track = 0;
         foreach (var layer in layers)
         {
             layer.TrackId = ++track;
-            if (!layer.CustomMask || !File.Exists(layer.MaskPath))
-                continue;
-
-            var name = Path.GetFileName(layer.MaskPath);
-            masks[name] = Convert.ToBase64String(File.ReadAllBytes(layer.MaskPath));
-            layer.MaskPath = name;
+            MaskStore.Pack(layer, masks);
         }
 
         return new StylePreset

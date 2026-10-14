@@ -3,6 +3,65 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v3.0.0
+
+**HandPeg 3.0 is a rebuild, not 2.6.3 with more added.** The 2.6 series grew heavy machinery around the editor: proxies of every video, a rendered timeline proxy that had to be made, cached, found again and cleaned up, and captions kept as timeline data, which left Editor Mode exports refusing to run when nothing had been transcribed. 3.0 starts again from the 2.5.0 code base. It brings over the parts of 2.6 that worked, and the improvements that were being made after 2.6.3 but never released. It leaves the proxy machinery out, and adds HUD masks, live audio and fast cut exports. The aim is a dependable editor for everyday cutting, captioning and vertical HUD clips.
+
+Everything below is compared with **2.6.3**, the last release. The 2.6 code stays in the repository's history (tags `v2.6.0` to `v2.6.3`), and installed copies of 2.6.x update to 3.0 as usual.
+
+### Highlights
+- **Captions work as they did in 2.5 again.** The Generate Auto-Captions checkbox is back in Editor Mode and is the on/off switch: ticked, the export has captions; cleared, it has none, and nothing stops an export. **Generate Captions** still transcribes ahead of time into a subtitle track you can watch and edit; exports and queued jobs then draw that track exactly as it stands and never transcribe it again.
+- **Cut exports from long recordings start at once.** An export with cut segments opens the video wound forward to each kept stretch instead of decoding everything before it. Three clips from the last minutes of a 4.5-hour recording used to wait about 20 minutes before the first frame; they now export in under 40 seconds. Stretches close together share one reading of the file; widely spaced ones (up to 24) each get their own.
+- **HUD masks of the whole frame.** One black-and-white mask of the whole video frame, white over every HUD element, can serve every layer cut from the video: each layer takes its own part of it and stays a layer of its own. Redrawing a layer's area never shifts the mask.
+- **Draw Custom Shape.** Trace round a HUD element on a still of the video, point by point; the lines join up, and the shapes become a mask for one layer or for all of them.
+- **Mask options:** grow or shrink the mask, invert it, crop any edge of a layer (what is cropped is see-through, the rest stays where it is), and Soft Edges now softens a mask's own outline. A mask can be a PNG with transparency: what is painted shows, what is see-through is cut away.
+- **Layers from a Mask:** a mask of the whole frame is taken apart into one layer per HUD element. Patches closer together than a distance you set are one element, so ability icons traced one by one make a single layer. The pieces are shown on a still of the video before they are added. **Add More Pieces of This Mask** (right-click a layer) adds the ones not cut out yet.
+- **Opacity keyframes:** layers can fade in and out, keyed like position, size and rotation.
+- **Built-in HUD presets for vertical video,** three or four layers each, one per section of the HUD. **Overwatch** uses a hand-made mask of its HUD: Killfeed, Health & Name (with the hero portrait), and Abilities & Ammo. **Apex Legends, Marvel Rivals and The Finals** are traced from the games, with their other pieces (a minimap, an objective) in the mask, ready for Add More Pieces of This Mask. Counter-Strike 2 is kept as it was.
+- **Live audio preview:** every audio track of a video is heard while it plays, not only the first, mixed with the layers' sound, and as the export will have it: silenced stretches, slips, ducking under the voice tracks, each track's gain and filters, and the fades. Changing any of them is heard straight away.
+- **Projects and style presets carry their masks**, so one file is all another computer needs.
+
+### New since 2.6.3
+- **Settings** reorganized into seven tabs with search, including an Auto-Captions tab: default language and caption style, beam size, best-of, temperature and fallback, and silence-detection threshold and timings.
+- **About, Check for Updates and Update Dependencies** on the General tab of Settings, with a **Manage Dependencies** link to the full list (tool paths, update URLs, speech models) on the Tools & Backup tab.
+- When something needs a tool that was never downloaded (Start Encode, Add to Queue, Generate Captions, Edit Captions, loading a web address), HandPeg offers to download exactly that.
+- Queued jobs transcribe their captions when they run, not when they are added, so adding a job never waits for whisper. A job whose captions are a subtitle track is written at once, as the track stands.
+- Undo covers subtitle edits (in the Subtitle Editor and elsewhere), Generate Captions, importing and removing subtitles, the caption style and caption box, moving and resizing layers in the layout pane, layer properties, Draw Target and applying a style preset.
+- First run preselects Editor Mode and the Minimal set of downloads.
+
+### Changed since 2.6.3
+- The player shows the original files again, as in 2.5: there are no proxies to wait for.
+- **Render Preview** is back in Editor Mode in place of Render Timeline Proxy: it encodes a few seconds at reduced size and plays them.
+- Editor Mode exports draw captions only while Generate Auto-Captions is ticked (see Highlights); in 2.6 they were drawn whenever the subtitle track had words.
+- The Overwatch HUD preset's layers are fitted to its new mask and have no extra pieces.
+
+### Kept from 2.6
+- The drag-and-drop overlay in place of the launch window: drag a file over an empty window and drop it on a style preset (Editor Mode), an encoding preset (Encoder Mode) or a Social Squisher preset. Settings orders both lists and sets how many are shown.
+- The Generate Captions button, which asks before replacing a subtitle track.
+- The quick start: tabs built when first opened, settings and presets read while the window starts, the encoder check after the window is drawn, and the 2.6.1 and 2.6.2 optimizations.
+- Scrubbing with quick seeks while dragging and one exact seek on release; the player leaving dropped files to HandPeg.
+- Startup Window Size, a project file pasted into the Source box opening the project, Encoder Mode without Live Preview, and the Social Squisher's status lines.
+
+### Fixed
+- Exports in Editor Mode failing with "press Generate Captions first" when captions were on but nothing had been transcribed.
+- Dropping a video on a style preset in the drag-and-drop overlay could close HandPeg (the player crashed on a HUD mask's soft edge).
+- The large-v3 and large-v3-turbo speech models showed a 0 MB download size.
+
+### Removed
+- Proxies of the main video and the video layers, and Preview Quality (High, Medium, Low).
+- The Timeline Proxy, its auto-render, and Render Timeline Proxy.
+- The proxy settings (Enable Editor Proxies, Proxy Cache Size Limit, Auto-Render Timeline Proxy, Clear Proxy Cache on Exit) and the proxy cache clean-up at startup.
+- Recent Editor Files (Encoder Mode).
+
+### Compatibility
+- Projects from 2.5 and 2.6 open unchanged, with their subtitle track; the Generate Auto-Captions checkbox follows what was saved. Compatibility with older presets and projects is no longer promised where it would hold new features back.
+- Projects saved by 3.0 open in 2.5 and 2.6, but without their masks, which those versions cannot unpack.
+- Settings and presets carry over. The proxy settings are ignored. Proxies made by 2.6 are no longer used: the folder `%LOCALAPPDATA%\HandPeg-Data\cache\proxies` can be deleted.
+- The built-in HUD style presets are written again at the first start, replacing earlier copies of the same names. Presets of your own are not touched.
+
+### Upgrading
+Installed copies update automatically.
+
 ## HandPeg v2.6.3
 
 A hotfix for the proxy cache.

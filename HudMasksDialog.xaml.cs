@@ -27,8 +27,17 @@ public partial class HudMasksDialog : Window
     private void GameList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         AddButton.IsEnabled = Game is not null;
-        AddButton.Content = Game is { } game ? $"Add {game.Pieces.Count} Layers" : "Add Layers";
+        AddButton.Content = Game is { } game ? $"Add {game.MainPieces.Count()} Layers" : "Add Layers";
     }
 
+    /// <summary>Whether the layers are to be made from a mask of the user's own instead of a game's.</summary>
+    public bool UseOwnMask { get; private set; }
+
     private void Add_Click(object sender, RoutedEventArgs e) => DialogResult = Game is not null;
+
+    private void OwnMask_Click(object sender, RoutedEventArgs e)
+    {
+        UseOwnMask = true;
+        DialogResult = true;
+    }
 }

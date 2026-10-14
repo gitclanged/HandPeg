@@ -72,35 +72,51 @@ public partial class MainViewModel
             return null;
         }
 
-        // A caption file that was never made (a project queued in the background, say) cannot be copied.
-        if (CommandUsesCaptions(command) && !File.Exists(CaptionsFilePath))
-        {
-            StatusText = "Auto-captions have to be transcribed before this can be queued: load it and use Add to Queue.";
-            return null;
-        }
-
         // The cuts and chapters lists are rewritten whenever the settings change, so the job gets copies of its own.
+        CaptionJob? captions = null;
         try
         {
-            // The caption file likewise. The command names it the way a filter needs it written.
+            // The caption file likewise is the job's own: the command names it the way a filter needs it written.
+            // Nothing is listened to here. Captions that are a subtitle track's cues are written at once, being
+            // only written; ones that have to be heard are left to the job, which transcribes when it runs.
             if (CommandUsesCaptions(command))
             {
                 Directory.CreateDirectory(QueueFolder);
-                var copy = Path.Combine(QueueFolder, $"captions_{Guid.NewGuid():N}.ass");
-                File.Copy(CaptionsFilePath, copy);
-                command = command.Replace(FilterGraphBuilder.CaptionFilter(CaptionsFilePath), FilterGraphBuilder.CaptionFilter(copy), StringComparison.OrdinalIgnoreCase);
+                var own = Path.Combine(QueueFolder, $"captions_{Guid.NewGuid():N}.ass");
+                command = command.Replace(FilterGraphBuilder.CaptionFilter(CaptionsFilePath), FilterGraphBuilder.CaptionFilter(own), StringComparison.OrdinalIgnoreCase);
+
+                var ranges = GetCaptionRanges();
+                if (HasTextCues)
+                {
+                    var lines = GetCueCaptions(ranges);
+                    WriteCaptionFile(lines.SelectMany(l => l).ToList(), lines, own, 0, forPlayer: false);
+                }
+                else
+                {
+                    (captions, var problem) = CreateCaptionJob(ranges, own, CaptionTimeOffset);
+                    if (captions is null)
+                    {
+                        StatusText = problem ?? "The captions cannot be made.";
+                        return null;
+                    }
+                }
             }
 
             // The voiceover too: the next recording would otherwise replace it under the job.
             foreach (var shared in new[] { CutsFilePath, ChaptersFilePath, VoiceoverPath })
             {
-                if (shared.Length == 0 || !command.Contains(shared, StringComparison.OrdinalIgnoreCase) || !File.Exists(shared))
+                var heard = captions is not null && string.Equals(captions.AudioPath, shared, StringComparison.OrdinalIgnoreCase);
+                if (shared.Length == 0 || !File.Exists(shared) || !(heard || command.Contains(shared, StringComparison.OrdinalIgnoreCase)))
                     continue;
 
                 Directory.CreateDirectory(QueueFolder);
                 var copy = Path.Combine(QueueFolder, $"{Path.GetFileNameWithoutExtension(shared)}_{Guid.NewGuid():N}{Path.GetExtension(shared)}");
                 File.Copy(shared, copy);
                 command = command.Replace(shared, copy, StringComparison.OrdinalIgnoreCase);
+
+                // And it is that copy the job's captions are heard from.
+                if (heard)
+                    captions = captions! with { AudioPath = copy };
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -111,7 +127,7 @@ public partial class MainViewModel
 
         return new QueueJob(
             SourcePath.Trim().Trim('"'), DestinationPath.Trim().Trim('"'), Segments.Count, command,
-            TimeSpan.FromSeconds(GetOutputDuration()), CaptureState());
+            TimeSpan.FromSeconds(GetOutputDuration()), CaptureState()) { Captions = captions };
     }
 
     /// <summary>Starts following a job's status, so the queue count and buttons stay right as it runs.</summary>
@@ -126,41 +142,20 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Builds a job as <see cref="CreateQueueJob"/> does, first making the caption file when the command
-    /// draws one: a job carries its own copy of it, so it has to exist when the job is made.
+    /// Queues the current settings as a new job. While editing a job, this makes a second one. It happens at
+    /// once, whatever else is running: a job with captions to transcribe only notes that, and does it when it runs.
     /// </summary>
-    private async Task<QueueJob?> CreateQueueJobAsync()
-    {
-        if (!CommandUsesCaptions(CommandPreview))
-            return CreateQueueJob();
-
-        if (IsBusy)
-        {
-            StatusText = "This job needs its captions transcribed first: wait for the running operation to finish, then add it.";
-            return null;
-        }
-
-        QueueJob? job = null;
-        await RunOperationAsync(async cancellationToken =>
-        {
-            if (await PrepareCaptionsForEncodeAsync(CommandPreview, cancellationToken) is { } problem)
-                return problem;
-
-            job = CreateQueueJob();
-            return null;
-        });
-        return job;
-    }
-
-    /// <summary>Queues the current settings as a new job. While editing a job, this makes a second one.</summary>
     [RelayCommand]
     private async Task AddToQueueAsync()
     {
-        if (await CreateQueueJobAsync() is not { } job)
+        // What the job will need when it runs is asked for now, while somebody is there to say yes.
+        if (!await RequireForCommandAsync("Add to Queue") || CreateQueueJob() is not { } job)
             return;
 
         Queue.Add(Follow(job));
-        StatusText = $"Added to the queue: {Path.GetFileName(job.Target)}";
+        StatusText = job.GenerateCaptions
+            ? $"Added to the queue: {Path.GetFileName(job.Target)}. Its captions are transcribed when the job runs."
+            : $"Added to the queue: {Path.GetFileName(job.Target)}";
     }
 
     /// <summary>
@@ -213,7 +208,7 @@ public partial class MainViewModel
 
     /// <summary>Replaces the job being edited with the current settings, keeping its place in the queue.</summary>
     [RelayCommand(CanExecute = nameof(IsEditingQueuedJob))]
-    private async Task UpdateQueuedJobAsync()
+    private void UpdateQueuedJob()
     {
         if (EditingJob is not { } editing)
             return;
@@ -233,7 +228,7 @@ public partial class MainViewModel
             return;
         }
 
-        if (await CreateQueueJobAsync() is not { } job || !Queue.Contains(editing))
+        if (CreateQueueJob() is not { } job || !Queue.Contains(editing))
             return;
 
         // Cleared first: replacing the job would otherwise look like its removal.
@@ -254,15 +249,56 @@ public partial class MainViewModel
 
         while (!IsQueuePauseRequested && Queue.FirstOrDefault(j => j.Status == QueueJob.Pending) is { } job)
         {
-            job.Status = QueueJob.Encoding;
+            var name = Path.GetFileName(job.Target);
             job.Progress = 0;
             if (!job.Detail.StartsWith(FallbackNote, StringComparison.Ordinal))
                 job.Detail = "";
             IsProgressIndeterminate = true;
             SetTaskbarProgress(System.Windows.Shell.TaskbarItemProgressState.Normal);
 
+            // First the job's captions, when it has any to make: transcribed now, as it was set when it was
+            // queued, and written to the file its command draws. A failure here is the captions' and not the
+            // encoder's, so it is kept apart from the encode, whose failures may be retried in software.
+            if (job is { Captions: { } captions, CaptionsReady: false })
+            {
+                job.Status = QueueJob.Transcribing;
+                StatusText = $"[{name}] Transcribing...";
+                try
+                {
+                    var words = await HearCaptionsAsync(captions, cancellationToken, $"[{name}] Transcribing", percent =>
+                    {
+                        if (job.Status == QueueJob.Transcribing)
+                            job.Progress = percent;
+                    });
+                    CaptionGenerator.WriteAss(words, captions.Style, captions.Width, captions.Height, captions.TextScale, captions.AssPath, captions.TimeOffset);
+                    job.CaptionsReady = true;
+                }
+                catch (OperationCanceledException)
+                {
+                    // A cancelled job was not at fault: it goes back in line.
+                    job.Status = QueueJob.Pending;
+                    job.Progress = 0;
+                    SetTaskbarProgress(System.Windows.Shell.TaskbarItemProgressState.None);
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    job.Status = QueueJob.Failed;
+                    job.Detail = $"The captions could not be made: {ex.Message}";
+                    AppLog.Write($"Captions for the queued job {name} could not be made", ex);
+                    failed++;
+                    ProgressValue = 0;
+                    SetTaskbarProgress(System.Windows.Shell.TaskbarItemProgressState.None);
+                    continue;
+                }
+            }
+
+            job.Status = QueueJob.Encoding;
+            job.Progress = 0;
+            IsProgressIndeterminate = true;
+            StatusText = $"[{name}] Encoding...";
+
             var expected = job.ExpectedDuration;
-            var name = Path.GetFileName(job.Target);
             var progress = new Progress<FfmpegProgress>(report =>
             {
                 // Reports are posted, so a late one can arrive after its job has ended.

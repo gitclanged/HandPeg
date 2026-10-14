@@ -432,3 +432,7 @@ publish/
 Releases/
 bin/
 obj/
+
+# Build output and release archives made by hand: they belong on the Releases page, not in the repository
+publish_output/
+*.zip

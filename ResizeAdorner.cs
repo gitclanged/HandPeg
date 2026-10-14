@@ -18,11 +18,15 @@ internal sealed class ResizeAdorner : Adorner
     /// <summary>Raised while the handle is dragged, with the distance moved in screen units.</summary>
     public event DragDeltaEventHandler? ResizeDelta;
 
+    /// <summary>Raised when the handle starts to be dragged.</summary>
+    public event DragStartedEventHandler? ResizeStarted;
+
     public ResizeAdorner(UIElement adornedElement, Style gripStyle, string name) : base(adornedElement)
     {
         _grip = new Thumb { Style = gripStyle, Cursor = Cursors.SizeNWSE, ToolTip = "Drag to resize." };
         System.Windows.Automation.AutomationProperties.SetName(_grip, $"Resize {name}");
         _grip.DragDelta += (_, e) => ResizeDelta?.Invoke(this, e);
+        _grip.DragStarted += (_, e) => ResizeStarted?.Invoke(this, e);
         _visuals = new VisualCollection(this) { _grip };
     }
 

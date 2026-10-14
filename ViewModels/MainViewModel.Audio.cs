@@ -648,27 +648,6 @@ public partial class MainViewModel
             $"{verb} {info.DurationSeconds:0.0} s. Drag the handles to trim it; Starts At moves it along the finished video.");
     }
 
-    /// <summary>
-    /// The voiceover as it is to be used: the recording itself, or a copy cut to the trim handles when they
-    /// have been moved. Null when there is no voiceover.
-    /// </summary>
-    public async Task<string?> GetTrimmedVoiceoverAsync(CancellationToken cancellationToken)
-    {
-        if (!HasVoiceover || !File.Exists(VoiceoverPath))
-            return null;
-
-        var (start, end) = (Math.Max(VoiceoverTrimStart, 0), Math.Min(VoiceoverTrimEnd, VoiceoverDuration));
-        if (start < 0.05 && end > VoiceoverDuration - 0.05 || end - start < 0.1)
-            return VoiceoverPath;
-
-        var trimmed = Path.Combine(Path.GetDirectoryName(VoiceoverPath)!, "voiceover_trimmed.wav");
-        var ffmpeg = DependencyUpdater.IsFfmpegOverridden ? Quote(DependencyUpdater.FfmpegPath) : "ffmpeg";
-        await FfmpegRunner.RunAsync(
-            $"{ffmpeg} -hide_banner -y -ss {Number(start)} -to {Number(end)} -i {Quote(VoiceoverPath)} -c:a pcm_s16le {Quote(trimmed)}",
-            new Progress<FfmpegProgress>(), cancellationToken);
-        return trimmed;
-    }
-
     // ----- Smart playback -----
 
     /// <summary>While on, playback jumps over everything outside the cut segments, so what plays is what will be kept.</summary>

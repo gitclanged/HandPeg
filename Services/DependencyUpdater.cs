@@ -654,6 +654,8 @@ public static partial class DependencyUpdater
             _ when model.Contains("base", StringComparison.Ordinal) => 142,
             _ when model.Contains("small", StringComparison.Ordinal) => 466,
             _ when model.Contains("medium", StringComparison.Ordinal) => 1463,
+            _ when model.Contains("large-v3-turbo", StringComparison.Ordinal) => 1549,
+            _ when model.Contains("large", StringComparison.Ordinal) => 2952,
             _ => 0,
         };
         return megabytes * 1048576L;

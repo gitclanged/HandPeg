@@ -12,9 +12,9 @@
     <RootNamespace>HandPegApp</RootNamespace>
     <Product>HandPeg</Product>
     <AssemblyTitle>HandPeg</AssemblyTitle>
-    <Version>2.6.3</Version>
-    <AssemblyVersion>2.6.3.0</AssemblyVersion>
-    <FileVersion>2.6.3.0</FileVersion>
+    <Version>3.0.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
 
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>
@@ -53,6 +53,11 @@
   <ItemGroup>
     <ApplicationDefinition Remove="App.xaml" />
     <Page Include="App.xaml" />
+  </ItemGroup>
+
+  <!-- Mask pictures shipped for the built-in HUD presets (HudGame.BundledMask), read with GetManifestResourceStream. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\overwatch_hud_mask.png" LogicalName="HandPegApp.Masks.overwatch_hud_mask.png" />
   </ItemGroup>
 
   <!-- Published and packed output, when it is made inside the project folder. -->

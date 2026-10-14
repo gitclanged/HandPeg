@@ -34,9 +34,12 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task CheckForHandPegUpdateAsync()
     {
-        if (await AppUpdater.CheckAndDownloadAsync() is not { } version)
-            return;
+        if (await AppUpdater.CheckAndDownloadAsync() is { } version)
+            ShowUpdateNotice(version);
+    }
 
+    private void ShowUpdateNotice(string version)
+    {
         UpdateNoticeText.Text = $"HandPeg {version} is ready.";
         UpdateNotice.Visibility = Visibility.Visible;
     }
@@ -77,8 +80,6 @@ public partial class MainWindow : Window
         AddHandler(PreviewDropEvent, new DragEventHandler((_, _) => Dispatcher.BeginInvoke(HideDropOverlay)), handledEventsToo: true);
         _scrubPace.Tick += ScrubPace_Tick;
 
-        // A proxy became ready, or the mode changed: the player goes over to what it should now have open.
-        _viewModel.PlayerSourceChanged += () => Dispatcher.BeginInvoke(() => SyncPlayerSource());
         _dropLeave.Tick += (_, _) => HideDropOverlay();
         _settingsFlyoutClose.Tick += SettingsFlyoutClose_Tick;
         _autosave.Tick += Autosave_Tick;
@@ -115,6 +116,9 @@ public partial class MainWindow : Window
         _viewModel.PreviewRendered += ShowPreview;
         _viewModel.AskOverwrite = AskOverwrite;
         _viewModel.Confirm = (title, message, confirm) => new ConfirmDialog(title, message, confirm) { Owner = this }.ShowDialog() == true;
+
+        // A tool that was never downloaded is offered at the moment something needs it.
+        _viewModel.DependenciesNeeded = request => Task.FromResult(new DependencyPromptWindow(request) { Owner = this }.ShowDialog() == true);
         _viewModel.Choose = (title, message, first, second) =>
         {
             var dialog = new ConfirmDialog(title, message, first, second) { Owner = this };
@@ -179,9 +183,6 @@ public partial class MainWindow : Window
 
             StyleLibrary.EnsureBuiltIns();
 
-            // Off this thread and not waited for: last week's proxies and last session's leftovers go.
-            ProxyCache.SweepInBackground();
-
             // No window opens over the program at launch any more: it starts straight into its workspace. What
             // the launch window offered is offered while a file is dragged in instead, and its targets are made
             // now, once everything else is up and idle.
@@ -191,19 +192,6 @@ public partial class MainWindow : Window
 
         // A tab other than the first may be the one that is open.
         RealizeTab(SettingsTabs.SelectedItem);
-    }
-
-    /// <summary>
-    /// Shows the launch window over this one, when it is switched on, and opens what was chosen in it:
-    /// a video, a video with a preset, or a project. Closing it without choosing is a blank project.
-    /// </summary>
-    private void ShowLaunchWindow()
-    {
-        // An Editor Mode thing: Encoder Mode goes straight to work.
-        if (AppSettings.Current is not { FirstRunComplete: true, SplashPresetCount: > 0, UiMode: AppSettings.EditorMode })
-            return;
-
-        OpenLaunchWindow();
     }
 
     private SplashWindow? _launchWindow;
@@ -325,10 +313,6 @@ public partial class MainWindow : Window
 
         // The most recent downloads stay, so the same URL loads without downloading again.
         YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize);
-
-        // Handed to a process of its own, which is not waited for: closing takes no longer for it.
-        if (AppSettings.Current.ClearProxyCacheOnExit)
-            ProxyCache.ClearInBackground();
     }
 
     // ----- Hotkeys -----
@@ -610,10 +594,9 @@ public partial class MainWindow : Window
     private void BuildDropTargets()
     {
         var settings = AppSettings.Current;
-        var count = Math.Clamp(settings.SplashPresetCount, 0, 8);
         var presets = _viewModel.IsEditorMode
-            ? StyleFile.ForLaunch().Take(count).Select(style => new DropTargetItem(style.Name, DropTargetItem.StyleIcon, style)).ToList()
-            : _viewModel.Presets.Take(count).Select(preset => new DropTargetItem(preset.Name, DropTargetItem.EncodeIcon, preset)).ToList();
+            ? StyleFile.ForLaunch().Select(style => new DropTargetItem(style.Name, DropTargetItem.StyleIcon, style)).ToList()
+            : OverlayEncodingPresets().Select(preset => new DropTargetItem(preset.Name, DropTargetItem.EncodeIcon, preset)).ToList();
         var squish = settings.ShowSquisher
             ? settings.SquisherPresets.Where(p => p.TargetSizeMb > 0).Take(Math.Clamp(settings.SquisherPresetCount, 1, 12)).Select(p => new DropTargetItem(p.Name, p.IconData, p)).ToList()
             : [];
@@ -629,6 +612,18 @@ public partial class MainWindow : Window
         muted.Freeze();
         Resources["DropTargetBrush"] = muted;
         (_dropTargetsBuilt, _dropTargetsMode) = (true, _viewModel.IsEditorMode ? "editor" : "encoder");
+    }
+
+    /// <summary>
+    /// The encoding presets the overlay offers in Encoder Mode: those picked in the settings, in their order,
+    /// or failing that the first in the preset list; up to the number set.
+    /// </summary>
+    private List<Models.EncodingPreset> OverlayEncodingPresets()
+    {
+        var settings = AppSettings.Current;
+        var picked = settings.OverlayEncodingPresets.Select(name => _viewModel.Presets.FirstOrDefault(p => p.Name == name))
+            .OfType<Models.EncodingPreset>().Distinct().ToList();
+        return (picked.Count > 0 ? picked : _viewModel.Presets.ToList()).Take(Math.Clamp(settings.OverlayEncodingPresetCount, 0, 8)).ToList();
     }
 
     // A drag "leaves" every element it passes out of, on its way to the next one inside the window, and where
@@ -1080,6 +1075,10 @@ public partial class MainWindow : Window
             _mpv?.SetHardwareAcceleration(AppSettings.Current.PlayerHardwareAcceleration);
         }
 
+        // Check for Updates, in that window, may have brought a release in: it is offered here as one found at startup is.
+        if (AppUpdater.ReadyVersion is { } update)
+            ShowUpdateNotice(update);
+
         // The player may just have been installed from the dependency list.
         _ = EnsurePlayerAsync();
     }
@@ -1321,11 +1320,9 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private bool _liveGraphLogged;
-
     private void OpenInPlayer(string path, long startMs, bool paused)
     {
-        (_playerSource, _liveGraphLogged) = (path, false);
+        _playerSource = path;
         if (_mpv is not { } player)
         {
             _pendingMedia = (path, startMs, paused);
@@ -1462,12 +1459,6 @@ public partial class MainWindow : Window
 
         (_liveGraph, _liveAudioFromMs) = (graph, hasSound ? from : null);
         var problem = player.SetFilterGraph(graph);
-        if (graph.Length > 0 && problem is null && !_liveGraphLogged)
-        {
-            // Once for each file that is opened: that Live Preview is running, for the log.
-            _liveGraphLogged = true;
-            AppLog.Write($"Live Preview: the filter graph is running in the player ({graph.Length} characters).");
-        }
         if (graph.Length == 0)
             player.SetFiltering(false);
         if (problem is not null)
@@ -2177,7 +2168,12 @@ public partial class MainWindow : Window
     {
         // Offered the way the frame is now: a tall frame gets the tall layout.
         var dialog = new HudMasksDialog { Owner = this, Vertical = _viewModel.FrameHeight > _viewModel.FrameWidth };
-        if (dialog.ShowDialog() == true && dialog.Game is { } game)
+        if (dialog.ShowDialog() != true)
+            return;
+
+        if (dialog.UseOwnMask)
+            AddLayersFromMask();
+        else if (dialog.Game is { } game)
             _viewModel.AddHudLayers(game, dialog.Vertical);
     }
 
@@ -3315,11 +3311,13 @@ public partial class MainWindow : Window
         if (layer.HasMask)
             Add(layer is { IsVideo: true, CustomMask: true } ? "Redraw / Modify Mask..." : "Custom Mask...", () => OpenLayerTool(layer, LayerTool.Mask));
         if (layer.HasStyle)
-            Add("Properties...", () => new LayerPropertiesDialog { Owner = this, DataContext = layer }.ShowDialog());
+            Add("Properties...", () => ShowLayerProperties(layer));
         if (layer.IsBackground)
             Add("Blur Settings...", () => BlurSettings_Click(row, new RoutedEventArgs()));
         if (layer.IsVideo)
             Add("Draw Target", () => _viewModel.DrawTargetCommand.Execute(layer));
+        if (layer is { UsesFrameMask: true, CustomMask: true } && File.Exists(layer.MaskPath.Trim().Trim('"')))
+            Add("Add More Pieces of This Mask...", () => AddLayersFromMask(layer.MaskPath.Trim().Trim('"')));
 
         if (layer.IsMainVideo)
         {
@@ -3601,7 +3599,43 @@ public partial class MainWindow : Window
             case "Image": AddImage_Click(sender, e); break;
             case "Text": _viewModel.AddTextLayerCommand.Execute(null); break;
             case "Region": _viewModel.AddLayerCommand.Execute(null); break;
+            case "MaskLayers": AddLayersFromMask(); break;
         }
+    }
+
+    /// <summary>
+    /// Layers from a Mask: a mask of the whole frame (chosen here when none is given) taken apart into one
+    /// layer per HUD element it shows, after the pieces have been looked at and joined as wanted.
+    /// </summary>
+    /// <param name="owner">The window it opens over: this one, or a dialog open over it.</param>
+    public void AddLayersFromMask(string? maskPath = null, Window? owner = null)
+    {
+        owner ??= this;
+        if (!_viewModel.HasSource)
+        {
+            _viewModel.StatusText = "Load a video first: the layers are cut out of it.";
+            return;
+        }
+
+        if (maskPath is null)
+        {
+            var dialog = new OpenFileDialog { Title = "Select a mask of the whole frame", Filter = "Images|*.png;*.jpg;*.jpeg;*.bmp|All files|*.*" };
+            if (dialog.ShowDialog(owner) != true)
+                return;
+            maskPath = dialog.FileName;
+        }
+
+        // The areas already cut out of the video: pieces of the mask that one of them covers start left out.
+        var existing = _viewModel.Layers.Where(l => l.IsVideo && !l.IsDeleted).Select(l => new Rect(l.SourceX, l.SourceY, l.SourceWidth, l.SourceHeight)).ToList();
+        if (MaskLayersWindow.Open(_viewModel, maskPath, existing) is not { } window)
+        {
+            _viewModel.StatusText = "That mask shows nothing to make layers of, or it could not be read: it should be white (or painted, on transparency) where the HUD is.";
+            return;
+        }
+
+        window.Owner = owner;
+        if (window.ShowDialog() == true)
+            _viewModel.AddMaskLayers(maskPath, window.Pieces, window.Vertical, window.ReplaceExisting);
     }
 
     // ----- Subtitles: importing a track, and the editor -----
@@ -3786,6 +3820,10 @@ public partial class MainWindow : Window
             _dragStart = null;
             return;
         }
+
+        // Marking a layer's area again is a step of Undo.
+        if (mode == OverlayMode.DrawTarget && _viewModel.DrawTargetLayer is { } target)
+            _viewModel.Checkpoint($"redraw the area of {target.Name}");
 
         _dragStart = ClampTo(area, point);
         CropCanvas.CaptureMouse();
@@ -4009,6 +4047,7 @@ public partial class MainWindow : Window
             ToolTip = "Drag to move. Drag the corner handle to resize. Double-click to center.",
         };
         System.Windows.Automation.AutomationProperties.SetName(box, name);
+        box.DragStarted += (_, _) => _viewModel.Checkpoint($"move {name}");
         box.DragDelta += (_, e) => move(e.HorizontalChange / scale, e.VerticalChange / scale);
         box.MouseDoubleClick += (_, e) =>
         {
@@ -4018,6 +4057,7 @@ public partial class MainWindow : Window
             // The second press of a double-click also starts a drag. It is called off first: the box is
             // about to jump out from under the pointer, and a drag would carry it straight back.
             box.CancelDrag();
+            _viewModel.Checkpoint($"center {name}");
             reset();
             e.Handled = true;
         };
@@ -4048,6 +4088,7 @@ public partial class MainWindow : Window
         if (AdornerLayer.GetAdornerLayer(box) is { } layer)
         {
             var adorner = new ResizeAdorner(box, (Style)FindResource("LayerGrip"), name);
+            adorner.ResizeStarted += (_, _) => _viewModel.Checkpoint($"resize {name}");
             adorner.ResizeDelta += (_, e) => resize(e.HorizontalChange / scale, e.VerticalChange / scale);
             layer.Add(adorner);
             _arrangeAdorners.Add(adorner);
@@ -4118,8 +4159,14 @@ public partial class MainWindow : Window
 
     private VoiceoverStudioDialog? _voiceoverStudio;
     /// <summary>The caption box as a layer: its opacity.</summary>
-    private void CaptionLayerStyle_Click(object sender, RoutedEventArgs e) =>
-        new LayerPropertiesDialog { Owner = this, DataContext = _viewModel.CaptionLayer }.ShowDialog();
+    private void CaptionLayerStyle_Click(object sender, RoutedEventArgs e) => ShowLayerProperties(_viewModel.CaptionLayer);
+
+    /// <summary>A layer's Properties dialog: what is changed in it is one step of Undo.</summary>
+    private void ShowLayerProperties(Layer layer)
+    {
+        _viewModel.Checkpoint($"change the look of {layer.Name}");
+        new LayerPropertiesDialog { Owner = this, DataContext = layer }.ShowDialog();
+    }
 
     private void LiveFramePreview_Click(object sender, RoutedEventArgs e)
     {
@@ -4155,7 +4202,10 @@ public partial class MainWindow : Window
     {
         var dialog = new CaptionStyleDialog(_viewModel.CaptionStyle) { Owner = this };
         if (dialog.ShowDialog() == true)
+        {
+            _viewModel.Checkpoint("change the caption style");
             _viewModel.SetCaptionStyle(dialog.EditedStyle);
+        }
     }
 
     // ----- Layout files -----
@@ -4390,7 +4440,7 @@ public partial class MainWindow : Window
     private void LayerProperties_Click(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement { DataContext: Layer element })
-            new LayerPropertiesDialog { Owner = this, DataContext = element }.ShowDialog();
+            ShowLayerProperties(element);
     }
 
     // ----- Timeline hover previews -----

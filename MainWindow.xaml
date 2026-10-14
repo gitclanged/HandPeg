@@ -346,15 +346,6 @@
                     <CheckBox Content="Keyframes" IsChecked="{Binding ShowKeyframesPane}" Margin="0,2"
                               ToolTip="The selected clip's keyframes on a timeline of their own, with the keyframe controls and its place, size and rotation at the playhead." />
                     <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,8,0,4" />
-                    <!-- What the editor's player shows: the originals, or proxies of one size or the other -->
-                    <StackPanel Margin="0,2,0,6" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
-                        <TextBlock Text="Preview Quality" FontWeight="SemiBold" Margin="0,0,0,4" />
-                        <ComboBox ItemsSource="{Binding PreviewQualityChoices}" SelectedItem="{Binding PreviewQualityChoice}" AutomationProperties.Name="Preview Quality"
-                                  ToolTip="High: the player reads the original files, as an export does; the truest picture and the heaviest. Medium: 720-line proxies, made in the background. Low: 360-line proxies at half the bitrate, for the smoothest scrubbing on slower hardware. Exports always read the originals, whatever is chosen here." />
-                    </StackPanel>
-                    <Button Content="Render Timeline Proxy" Command="{Binding RenderTimelineProxyCommand}" HorizontalAlignment="Left" Padding="12,4" Margin="0,0,0,8" AutomationProperties.Name="Render Timeline Proxy"
-                            Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Renders the whole picture of the timeline, every layer composed, into one silent file, which the player then plays in place of composing it live: scrubbing is as light as a single video. The sound is still mixed live. It is discarded the moment anything on the timeline is changed. Settings (Performance) can have it rendered by itself when the timeline is left alone." />
                     <CheckBox Content="Sync Master Timeline Stretch" IsChecked="{Binding SyncMasterTimeline}" Margin="0,2" AutomationProperties.Name="Sync Master Timeline Stretch"
                               Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
                               ToolTip="The layer and audio time bars are zoomed with Ctrl + wheel and moved along with Shift + wheel or a middle-button drag. On: the master timeline is stretched and moved with them. Off: it always shows the whole sequence." />
@@ -533,7 +524,7 @@
                     <Button Style="{StaticResource TransportButton}" Content="&#xE893;" Click="NextIFrame_Click"
                             ToolTip="Next I-Frame" AutomationProperties.Name="Next I-Frame" />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
-                            AutomationProperties.Name="Render Preview" Visibility="Collapsed"
+                            AutomationProperties.Name="Render Preview" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
                     <!-- Views: which panes are open, where each of them is, and whether clips show their keyframes. Encoder Mode's: Editor Mode has the button in the side panes' header. -->
                     <ToggleButton x:Name="ViewsButton" Content="&#xE8A9;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0"
@@ -759,8 +750,12 @@
                         <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.SizePercent}" AutomationProperties.Name="Keyframe Scale"
                                  local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="400" />
                         <TextBlock Text="Rot &#176;" VerticalAlignment="Center" Margin="0,0,5,0" />
-                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,0,2" Text="{Binding ActiveKeyLayer.Rotation, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe Rotation"
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.Rotation, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe Rotation"
                                  local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-360" local:NumericInput.Maximum="360" />
+                        <TextBlock Text="Opacity %" VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,0,2" Text="{Binding ActiveKeyLayer.Opacity}" AutomationProperties.Name="Keyframe Opacity"
+                                 local:NumericInput.Default="100" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100"
+                                 ToolTip="How solid the clip is at the playhead. With keyframes enabled, changing it writes a keyframe, so the clip can fade in and out." />
                     </WrapPanel>
                 </StackPanel>
                 </ScrollViewer>
@@ -858,7 +853,7 @@
                             <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Padding="9,6" Click="ReloadPlayer_Click"
                                     ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
                             <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Padding="9,6" Command="{Binding RenderPreviewCommand}"
-                                    AutomationProperties.Name="Render Preview" Visibility="Collapsed"
+                                    AutomationProperties.Name="Render Preview" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
                                     ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
                         </StackPanel>
                         <TextBlock Grid.Column="3" x:Name="PositionTextBlock" Text="{Binding PositionText}" Style="{StaticResource TimeText}" Margin="12,0"
@@ -1003,13 +998,6 @@
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0,0,0,10"
                                     Visibility="{Binding ShowPresetBarInSummary, Converter={StaticResource BoolToVisibility}}" />
                 </Border>
-                <!-- Encoder Mode's: the files lately worked on in Editor Mode, to open one here without looking for it again -->
-                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10"
-                            Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}">
-                    <TextBlock Text="Recent Editor Files:" Style="{StaticResource FieldLabel}" Margin="0,0,10,0" />
-                    <ComboBox MinWidth="380" MaxWidth="640" ItemsSource="{Binding RecentEditorFiles}" SelectedItem="{Binding SelectedRecentEditorFile}" AutomationProperties.Name="Recent Editor Files"
-                              ToolTip="Videos, pictures and sounds lately opened or put on the timeline in Editor Mode. Choosing one opens it here as the source." />
-                </StackPanel>
                 <Grid Grid.IsSharedSizeScope="True">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -1522,11 +1510,13 @@
                                                 ToolTip="Words: a title or a label. Its words, font and colors are set under Text Settings while the layer is selected." />
                                         <Button Content="Region of Main Video" Tag="Region" Click="AddLayerMenu_Click"
                                                 ToolTip="A piece of the source video (a minimap, an ammo counter) lifted onto the frame. Mark it with Draw Target." />
+                                        <Button Content="HUD Layers from a Mask..." Tag="MaskLayers" Click="AddLayerMenu_Click"
+                                                ToolTip="Choose a mask of the whole frame, white (or painted, on transparency) over the HUD: one layer is made for each HUD element it shows, all sharing the mask." />
                                     </StackPanel>
                                 </Border>
                             </Popup>
                             <Button Content="HUD Masks" Padding="12,5" Margin="6,2,0,2" Click="HudMasks_Click"
-                                    ToolTip="Takes a game's HUD apart into layers (killfeed, health, radar, abilities), each cut out with its own mask, so each can be moved on its own. For Overwatch 2, Counter-Strike 2, Apex Legends and Marvel Rivals." />
+                                    ToolTip="Takes a game's HUD apart into layers (killfeed, health, abilities, ultimate), all sharing one mask traced round the game's HUD, so each can be moved on its own. For Overwatch, Apex Legends, Marvel Rivals, The Finals and Counter-Strike 2, or from a mask of your own." />
                             <!-- The editing tools, as icons: each works on whatever block is selected on a time bar -->
                             <Button Content="[" FontFamily="Consolas" FontWeight="Bold" FontSize="14" Padding="11,5" Margin="18,0,4,0" Command="{Binding AddStartPointCommand}"
                                     AutomationProperties.Name="Add Start Point" ToolTip="Add Start Point (I): a new cut segment of the main video begins at the playhead." />
@@ -2400,9 +2390,8 @@
 
                         <!-- Advanced: captions transcribed from the audio by whisper.cpp and drawn into the picture -->
                         <StackPanel Visibility="{Binding ShowAutoCaptions, Converter={StaticResource BoolToVisibility}}">
-                            <CheckBox Content="Generate Auto-Captions" IsChecked="{Binding AutoCaptions}" Margin="0,0,0,6"
-                                      Visibility="{Binding IsEncoderMode, Converter={StaticResource BoolToVisibility}}"
-                                      ToolTip="Transcribes the speech with whisper.cpp when an encode or Render Preview starts, and draws the words into the picture as animated captions." />
+                            <CheckBox Content="Generate Auto-Captions" IsChecked="{Binding AutoCaptions}" Margin="0,0,0,6" AutomationProperties.Name="Generate Auto-Captions"
+                                      ToolTip="Draws captions into the exported picture. With a subtitle track (made by Generate Captions, imported, or edited by hand), the track is what is drawn, exactly as it stands. Without one, the speech is transcribed with whisper.cpp when the export starts. Cleared, the export has no captions; a subtitle track is kept for when it is ticked again." />
                             <!-- Analysis audio source: one of the video's own tracks, or a separate file -->
                             <Grid IsEnabled="{Binding CaptionOptionsEnabled}">
                                 <Grid.ColumnDefinitions>
@@ -2481,13 +2470,13 @@
                                 <Button Content="Reset Position" Margin="6,0,0,0" Command="{Binding ResetCaptionLayerCommand}"
                                         ToolTip="Puts the caption box back in the lower part of the frame." />
                                 <!--
-                                    Editor Mode: captions are made once, onto the timeline, and are from then on what is
-                                    there to be seen, edited and exported. This is the one button that makes them.
+                                    Editor Mode: transcribes now, into a subtitle track that can be seen and edited before
+                                    the export, which then draws that track instead of transcribing again.
                                 -->
                                 <Button Margin="14,0,0,0" Padding="14,5" Command="{Binding GenerateCaptionsCommand}" AutomationProperties.Name="Generate Captions"
                                         Background="{DynamicResource AccentBrush}" Foreground="{DynamicResource OnAccentBrush}" FontWeight="SemiBold"
                                         Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
-                                        ToolTip="Transcribes the speech with the model chosen above and puts the captions on the timeline as subtitles. From then on they are part of the project: shown in the player, edited in the Subtitle Editor, saved with the project, and exported exactly as they stand. Nothing is transcribed again unless this is pressed again, which replaces what is there.">
+                                        ToolTip="Transcribes the speech now, with the model chosen above, into a subtitle track, and ticks Generate Auto-Captions. The track is shown in the player, can be edited in the Subtitle Editor, and is saved with the project. Exports and queued jobs draw it exactly as it stands and never transcribe again; pressing this again replaces it.">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="&#xE8D4;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" FontWeight="Normal" />
                                         <TextBlock Text="Generate Captions" Margin="8,0,0,0" VerticalAlignment="Center" />

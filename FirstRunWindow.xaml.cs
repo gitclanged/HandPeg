@@ -32,7 +32,9 @@ public partial class FirstRunWindow : Window
         AudioEncoderBox.SelectedItem = AudioTrack.AllCodecs.Contains(AppSettings.Current.DefaultAudioEncoder) ? AppSettings.Current.DefaultAudioEncoder : "aac";
         AudioBitrateBox.ItemsSource = AudioTrack.AllBitrates;
         AudioBitrateBox.SelectedItem = AudioTrack.AllBitrates.Contains(AppSettings.Current.DefaultAudioBitrate) ? AppSettings.Current.DefaultAudioBitrate : "192k";
-        (AppSettings.Current.UiMode == AppSettings.EditorMode ? EditorCard : EncoderCard).IsChecked = true;
+
+        // A first start suggests Editor Mode; opened again from the settings, it shows the mode in use.
+        (AppSettings.Current.FirstRunComplete && AppSettings.Current.UiMode != AppSettings.EditorMode ? EncoderCard : EditorCard).IsChecked = true;
 
         Dependencies.UseExistingFfmpegRequested += UseExistingFfmpeg;
 
@@ -83,14 +85,9 @@ public partial class FirstRunWindow : Window
     private string _wantedEncoder;
     private bool _fillingEncoders;
 
-    private void Mode_Checked(object sender, RoutedEventArgs e)
-    {
-        UpdateEncoderPanel();
-
-        // The mode suggests how much to fetch; either tier can still be picked for either mode.
-        if (EditorTier is not null && MinimalTier is not null)
-            (EditorCard.IsChecked == true ? EditorTier : MinimalTier).IsChecked = true;
-    }
+    // The mode does not choose how much is fetched: the Minimal tier stands until the other is picked, and
+    // whatever a tool turns out to need later is offered when it is first used (DependencyPromptWindow).
+    private void Mode_Checked(object sender, RoutedEventArgs e) => UpdateEncoderPanel();
 
     // The speech models the Editor tier fetches; the second is the one captions are then set to use.
     private const string TierBaseModel = "ggml-base.en.bin";

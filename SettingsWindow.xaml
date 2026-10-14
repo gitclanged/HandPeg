@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:HandPegApp"
         xmlns:services="clr-namespace:HandPegApp.Services"
-        Title="HandPeg Settings" Width="820" Height="780" MinWidth="620" MinHeight="420" ResizeMode="CanResizeWithGrip"
+        Title="HandPeg Settings" Width="980" Height="780" MinWidth="620" MinHeight="420" ResizeMode="CanResizeWithGrip"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <Window.Resources>
@@ -14,26 +14,38 @@
         <Style x:Key="SectionTitle" TargetType="TextBlock">
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="FontSize" Value="14" />
-            <Setter Property="Margin" Value="0,0,0,2" />
+            <Setter Property="Margin" Value="0,18,0,2" />
         </Style>
         <Style x:Key="Hint" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
             <Setter Property="TextWrapping" Value="Wrap" />
             <Setter Property="Margin" Value="0,0,0,8" />
         </Style>
+        <!-- A labelled row: a label, then what it sets, side by side -->
+        <Style x:Key="Row" TargetType="StackPanel">
+            <Setter Property="Orientation" Value="Horizontal" />
+            <Setter Property="Margin" Value="0,2,0,4" />
+        </Style>
+        <!-- A row whose box takes the width that is left: a path, an address -->
+        <Style x:Key="WideRow" TargetType="DockPanel">
+            <Setter Property="Margin" Value="0,2,0,2" />
+        </Style>
+        <Style x:Key="WideLabel" TargetType="TextBlock" BasedOn="{StaticResource FieldLabel}">
+            <Setter Property="Width" Value="140" />
+        </Style>
     </Window.Resources>
 
+    <!--
+        Every tab is one flat StackPanel: a section title, then the options under it, one element each. That is
+        the shape the search box walks (an option is a child of the tab's panel; see SearchBox_TextChanged), and
+        it keeps the window's tree shallow. A tab too tall for the window is put in a scroller by the code-behind.
+    -->
     <DockPanel Margin="14">
-        <Grid DockPanel.Dock="Bottom" Margin="0,12,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <Button DockPanel.Dock="Right" Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+            <Button DockPanel.Dock="Right" Content="Save" MinWidth="88" IsDefault="True" Click="Save_Click" />
             <TextBlock x:Name="ErrorText" Foreground="{DynamicResource WarningTextBrush}" VerticalAlignment="Center" TextWrapping="Wrap" />
-            <Button Grid.Column="1" Content="Save" MinWidth="88" IsDefault="True" Click="Save_Click" />
-            <Button Grid.Column="2" Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
-        </Grid>
+        </DockPanel>
 
         <!-- Type here to find an option: what does not match is hidden, on every tab -->
         <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
@@ -46,101 +58,69 @@
         </Grid>
 
         <TabControl x:Name="SettingsTabs">
-            <TabItem Header="Tools">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+
+            <!-- ===== General: how HandPeg looks, starts and looks after a project ===== -->
+            <TabItem Header="General">
                 <StackPanel>
-                    <!-- Installing and updating the tools -->
-                    <StackPanel>
-                        <TextBlock Text="Dependencies" Style="{StaticResource SectionTitle}" />
-                        <TextBlock Style="{StaticResource Hint}"
-                                   Text="Everything HandPeg downloads, and what is installed. Nothing ships with HandPeg itself. One button installs what is missing and replaces what has a newer release, using the update URLs as last saved; a tool with a path of your own under Tool paths is left alone." />
-                        <local:DependencyPanel x:Name="Dependencies" />
+                    <TextBlock Text="About HandPeg" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
+                    <TextBlock x:Name="AboutText" Style="{StaticResource Hint}" Margin="0,0,0,4" />
+                    <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,6">
+                        <Hyperlink x:Name="RepositoryLink" RequestNavigate="Link_RequestNavigate" Foreground="{DynamicResource AccentBrush}" />
+                        <Run Text="   Built on FFmpeg, libmpv, yt-dlp and whisper.cpp, which HandPeg downloads and does not ship." />
+                    </TextBlock>
+                    <StackPanel Style="{StaticResource Row}">
+                        <Button x:Name="CheckUpdateButton" Content="Check for Updates" Click="CheckForUpdates_Click" AutomationProperties.Name="Check for HandPeg Updates"
+                                ToolTip="Looks now for a newer release of HandPeg itself. A copy put in by the installer downloads it, and it goes in at the next restart. A self-contained copy, or one run from a build folder, is told whether there is a newer release and where to get it." />
+                        <Button x:Name="UpdateDependenciesButton" Content="Update Dependencies" Margin="6,0,0,0" Click="UpdateDependencies_Click" AutomationProperties.Name="Update Dependencies"
+                                ToolTip="Installs whatever HandPeg needs that is missing, and replaces FFmpeg, libmpv, yt-dlp and whisper.cpp with newer releases where there are any, from the update URLs on the Tools &amp; Backup tab. A tool with a path of your own is left alone. The same as Install / Update All Dependencies there." />
+                        <TextBlock x:Name="UpdateStatusText" VerticalAlignment="Center" Margin="14,0,0,0" TextWrapping="Wrap" MaxWidth="640" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
-
-                    <!-- whisper.cpp: the program and the models come with the list above; the model auto-captions use is chosen here -->
-                    <TextBlock Text="Auto-captions (whisper.cpp)" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="Auto-captions transcribe speech with whisper.cpp, installed by the button above. It also needs a speech model: larger ones are more accurate and slower. The .en models understand English only. Choosing one here ticks it in the list above when it has not been downloaded yet." />
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="Speech model:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="WhisperModelBox" MinWidth="200" Margin="0" SelectionChanged="WhisperModelBox_SelectionChanged"
-                                  AutomationProperties.Name="Speech Model" ToolTip="The model auto-captions use once you press Save." />
-
-                        <TextBlock x:Name="WhisperStatusText" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    <StackPanel x:Name="DependencyStatusRow" Style="{StaticResource Row}" Visibility="Collapsed">
+                        <ProgressBar x:Name="DependencyProgress" Width="160" Height="8" Minimum="0" Maximum="1" VerticalAlignment="Center" />
+                        <TextBlock x:Name="DependencyStatusText" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" MaxWidth="640" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
+                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,6">
+                        <Hyperlink Click="ManageDependencies_Click" Foreground="{DynamicResource AccentBrush}" AutomationProperties.Name="Manage Dependencies">Manage Dependencies...</Hyperlink>
+                        <Run Text="  what is installed, speech models, your own tool paths and the update URLs (Tools &amp; Backup tab)." />
+                    </TextBlock>
 
-                    <!-- Binary paths -->
-                    <TextBlock Text="Tool paths" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="Leave a field blank to use the copy HandPeg downloads. A path set here is used as is, and is never replaced by Install / Update All Dependencies." />
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <TextBlock Text="yt-dlp.exe:" Style="{StaticResource FieldLabel}" />
-                        <TextBox Grid.Column="1" x:Name="YtDlpPathBox" Margin="0,4"
-                                 Text="{Binding YtDlpPath, UpdateSourceTrigger=PropertyChanged}" />
-                        <Button Grid.Column="2" Content="Browse..." Margin="6,4,0,4" Tag="{Binding ElementName=YtDlpPathBox}" Click="Browse_Click" />
-
-                        <TextBlock Grid.Row="1" Text="ffmpeg.exe:" Style="{StaticResource FieldLabel}" />
-                        <TextBox Grid.Row="1" Grid.Column="1" x:Name="FfmpegPathBox" Margin="0,4"
-                                 Text="{Binding FfmpegPath, UpdateSourceTrigger=PropertyChanged}" />
-                        <Button Grid.Row="1" Grid.Column="2" Content="Browse..." Margin="6,4,0,4" Tag="{Binding ElementName=FfmpegPathBox}" Click="Browse_Click" />
-
-                        <TextBlock Grid.Row="2" Text="ffprobe.exe:" Style="{StaticResource FieldLabel}" />
-                        <TextBox Grid.Row="2" Grid.Column="1" x:Name="FfprobePathBox" Margin="0,4"
-                                 Text="{Binding FfprobePath, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="When blank, an ffprobe.exe next to a custom ffmpeg.exe is used if there is one." />
-                        <Button Grid.Row="2" Grid.Column="2" Content="Browse..." Margin="6,4,0,4" Tag="{Binding ElementName=FfprobePathBox}" Click="Browse_Click" />
-
-                        <TextBlock Grid.Row="3" Text="whisper.exe:" Style="{StaticResource FieldLabel}" />
-                        <TextBox Grid.Row="3" Grid.Column="1" x:Name="WhisperPathBox" Margin="0,4" AutomationProperties.Name="whisper.exe Path" TextChanged="WhisperPathBox_TextChanged"
-                                 Text="{Binding WhisperPath, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="Your own whisper.cpp program (whisper-cli.exe, or a GPU build), for auto-captions. When blank, the one HandPeg downloads is used." />
-                        <Button Grid.Row="3" Grid.Column="2" Content="Browse..." Margin="6,4,0,4" Tag="{Binding ElementName=WhisperPathBox}" Click="Browse_Click" />
-                    </Grid>
-
-                </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <TabItem Header="Interface">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
-                <StackPanel>
                     <TextBlock Text="Appearance" Style="{StaticResource SectionTitle}" />
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,10"
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Theme:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="ThemeBox" MinWidth="170" Margin="0" SelectedItem="{Binding Theme}" AutomationProperties.Name="Theme"
+                                  ToolTip="Dark, light, or whichever Windows is set to. Applied when you press Save." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}"
                                 ToolTip="How thick scrollbars are, everywhere in HandPeg: from 4 pixels, a hairline, to 16, as Windows draws them. They change as the slider is moved.">
-                        <TextBlock Text="Scrollbar Thickness:" VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <TextBlock Text="Scrollbar Thickness:" Style="{StaticResource FieldLabel}" />
                         <Slider x:Name="ScrollbarSlider" Width="200" Minimum="4" Maximum="16" TickFrequency="1" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
                                 Value="{Binding ScrollbarThickness}" ValueChanged="ScrollbarSlider_ValueChanged" AutomationProperties.Name="Scrollbar Thickness" />
                         <TextBlock Text="{Binding Value, ElementName=ScrollbarSlider, StringFormat={}{0:0} px}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10"
-                                ToolTip="How large the window is when HandPeg starts. Default Size: as designed. Remember Last Size: as it was when HandPeg was last closed, maximized if it was. Launch Maximized: always filling the screen.">
-                        <TextBlock Text="Startup Window Size:" VerticalAlignment="Center" Margin="0,0,10,0" />
-                        <ComboBox MinWidth="190" ItemsSource="{x:Static services:AppSettings.StartupWindowSizes}" SelectedItem="{Binding StartupWindowSize}" AutomationProperties.Name="Startup Window Size" />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Double-Click Resets To:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="ResetBox" MinWidth="190" Margin="0" SelectedItem="{Binding DoubleClickResetsTo}" AutomationProperties.Name="Double-Click Resets To"
+                                  ToolTip="Double-clicking a slider or a number box puts it back to a starting value: the one in the style preset that is in use (and the built-in default where the style has none, or none is in use), or always the built-in default." />
                     </StackPanel>
-                    <TextBlock Text="Mode" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="Encoder Mode is the lean front end for converting and trimming; Editor Mode adds layers, captions and the full timeline. The button beside the gear switches between them. Each mode keeps its own copy of the layout options on this tab and on the Timeline tab: what you set here is set for the mode you are in now." />
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+
+                    <TextBlock Text="Launch" Style="{StaticResource SectionTitle}" />
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="How large the window is when HandPeg starts. Default Size: as designed. Remember Last Size: as it was when HandPeg was last closed, maximized if it was. Launch Maximized: always filling the screen.">
+                        <TextBlock Text="Startup Window Size:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="190" Margin="0" ItemsSource="{x:Static services:AppSettings.StartupWindowSizes}" SelectedItem="{Binding StartupWindowSize}" AutomationProperties.Name="Startup Window Size" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Default Mode on Launch:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="DefaultModeBox" MinWidth="170" Margin="0" SelectedItem="{Binding DefaultMode}" AutomationProperties.Name="Default Mode on Launch"
                                   ToolTip="The mode HandPeg starts in: Encoder Mode, Editor Mode, or whichever was in use when it was last closed." />
                         <TextBlock x:Name="CurrentModeText" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
+                    <Button Content="Run First-Run Setup Again..." HorizontalAlignment="Left" Margin="0,4,0,0" Click="RunFirstRun_Click"
+                            ToolTip="Opens the welcome window to choose the theme and Encoder or Editor Mode again. Closes this window without saving its other changes." />
 
-                    <TextBlock Text="This mode starts with" Style="{StaticResource SectionTitle}" Margin="0,18,0,2" />
+                    <TextBlock Text="This mode starts with" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="What is ticked in the main window when HandPeg starts in this mode. Each can still be changed there for the session." />
+                               Text="Encoder Mode is the lean front end for converting and trimming; Editor Mode adds layers, captions and the full timeline. Each mode keeps its own copy of these, and of the layout options on the Timeline &amp; Player tab: what you set here is set for the mode you are in now. Each can still be changed in the main window for the session." />
                     <WrapPanel>
                         <CheckBox Content="Play only cut segments" IsChecked="{Binding StartWithPlayOnlySegments}" Margin="0,2,24,2" />
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding StartWithSnapToIFrames}" Margin="0,2,24,2" />
@@ -152,127 +132,33 @@
                                   ToolTip="Opens the Layout Pane beside the player as soon as there is a layout to edit." />
                         <CheckBox Content="Live Preview" IsChecked="{Binding LivePreview}" Margin="0,2,24,2" />
                     </WrapPanel>
+                    <CheckBox Content="Default to Vertical Video" IsChecked="{Binding DefaultVerticalVideo}"
+                              ToolTip="Every video that is opened starts as a vertical one: a tall frame with the picture across its middle over a blurred copy of itself. The same as ticking Vertical Video on the Summary tab." />
 
-                    <TextBlock Text="Launch window" Style="{StaticResource SectionTitle}" Margin="0,18,0,2" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="Opens over the main window when HandPeg starts in Editor Mode: a place to drop a video, a way back into a recent project, and style presets to drop a video on. It is not shown in Encoder Mode." />
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                        <TextBlock Text="Show Splash Screen on Launch:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="SplashBox" MinWidth="170" Margin="0" AutomationProperties.Name="Show Splash Screen on Launch"
-                                  ToolTip="How many style presets the launch window offers as buttons. Disabled goes straight to the main window.">
-                            <ComboBoxItem Content="Disabled" />
-                            <ComboBoxItem Content="Show 1 Style" />
-                            <ComboBoxItem Content="Show 2 Styles" />
-                            <ComboBoxItem Content="Show 3 Styles" />
-                            <ComboBoxItem Content="Show 4 Styles" />
-                            <ComboBoxItem Content="Show 5 Styles" />
-                        </ComboBox>
+                    <TextBlock Text="Projects and saving" Style="{StaticResource SectionTitle}" />
+                    <CheckBox Content="Prompt to save before closing" IsChecked="{Binding PromptToSaveOnExit}"
+                              ToolTip="When HandPeg is closed while the open video has cuts, layers or settings that were not saved as a project, asks whether to save them first." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <CheckBox Content="Enable Autosave" IsChecked="{Binding AutosaveEnabled}" VerticalAlignment="Center" AutomationProperties.Name="Enable Autosave"
+                                  ToolTip="Writes the open project to a file beside it named after it (Name.autosave.hproj) every so often, when it has changed. Written in the background; the project itself, and what can be undone, are left as they are." />
+                        <TextBlock Text="Interval (minutes):" VerticalAlignment="Center" Margin="18,0,8,0" />
+                        <TextBox Width="48" Padding="4,2" VerticalAlignment="Center" Text="{Binding AutosaveMinutes}" IsEnabled="{Binding AutosaveEnabled}" AutomationProperties.Name="Autosave Interval"
+                                 ToolTip="How many minutes pass between autosaves: 1 to 120." />
                     </StackPanel>
-                    <StackPanel>
-                        <TextBlock Text="Style presets shown as buttons (click to pick; none picked shows the most recent):" Margin="0,2,0,4" />
-                        <ListBox x:Name="SplashStyleList" SelectionMode="Multiple" Height="92" DisplayMemberPath="Name" AutomationProperties.Name="Launch Window Styles"
-                                 ToolTip="The style presets in the Styles folder. The ones selected here are the buttons of the launch window, up to the number set above." />
-                    </StackPanel>
-
-                    <TextBlock Text="Appearance and layout" Style="{StaticResource SectionTitle}" />
-                    <CheckBox Content="Use GPU acceleration in the video player" IsChecked="{Binding PlayerHardwareAcceleration}"
-                              ToolTip="The graphics card decodes the video as well as drawing it (Direct3D 11), which keeps high-resolution and high-frame-rate footage smooth and the processor free. With Live Preview on, the card still decodes and each frame is handed to the filters. Turn this off if the picture is green, garbled or stutters: the processor then decodes. Applied when you press Save." />
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,4">
-                        <TextBlock Text="Hardware Decode Adapter:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="DecodeAdapterBox" MinWidth="300" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Index"
-                                  SelectedValue="{Binding HardwareDecodeAdapter}" AutomationProperties.Name="Hardware Decode Adapter"
-                                  ToolTip="Which graphics card decodes the video for an encode, when Enable Hardware Decoding is ticked on the Video tab. Automatic leaves it to FFmpeg (-hwaccel auto). Choosing a card names it to FFmpeg (-hwaccel d3d11va -hwaccel_device and its number), so that a second card can take the decoding while the first one encodes or runs a game." />
-                    </StackPanel>
-                    <CheckBox Content="Show Command Preview Tab" IsChecked="{Binding ShowCommandPreviewTab}"
-                              ToolTip="Adds a tab showing the FFmpeg command that will run, which can also be edited by hand." />
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,4">
-                        <TextBlock Text="Preset Bar Location:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="PresetBarBox" MinWidth="220" Margin="0" SelectedItem="{Binding PresetBarLocation}" AutomationProperties.Name="Preset Bar Location"
-                                  ToolTip="Where the bar for choosing and saving presets is: at the top of the Summary tab, or above the tabs where it shows on every tab." />
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,4">
-                        <TextBlock Text="Theme:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="ThemeBox" MinWidth="170" Margin="0" SelectedItem="{Binding Theme}" AutomationProperties.Name="Theme"
-                                  ToolTip="Dark, light, or whichever Windows is set to. Applied when you press Save." />
-                        <Button Content="Run First-Run Setup Again..." Margin="24,0,0,0" Click="RunFirstRun_Click"
-                                ToolTip="Opens the welcome window to choose the theme and Encoder or Editor Mode again. Closes this window without saving its other changes." />
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
-                        <TextBlock Text="Double-Click Resets To:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="ResetBox" MinWidth="190" Margin="0" SelectedItem="{Binding DoubleClickResetsTo}" AutomationProperties.Name="Double-Click Resets To"
-                                  ToolTip="Double-clicking a slider or a number box puts it back to a starting value: the one in the style preset that is in use (and the built-in default where the style has none, or none is in use), or always the built-in default." />
-                    </StackPanel>
-                    <CheckBox Content="Notify when an encode finishes" IsChecked="{Binding NotifyOnEncodeComplete}"
-                              ToolTip="Sends a Windows notification when an encode, or the queue, has finished." />
-                    <CheckBox Content="Show color grading on the Filters tab" IsChecked="{Binding ShowAdvancedFiltersTab}"
-                              ToolTip="Shows colour correction (contrast, brightness, saturation, gamma) and sharpening on the Filters tab, in this mode. Values already set there keep applying while they are hidden." />
-
-                    <TextBlock Text="Render Preview" Style="{StaticResource SectionTitle}" Margin="0,16,0,2" />
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="Preview Resolution (%):" Style="{StaticResource FieldLabel}" />
-                        <TextBox Width="70" Text="{Binding PreviewResolutionPercent, UpdateSourceTrigger=PropertyChanged}"
-                                 AutomationProperties.Name="Preview Resolution" local:NumericInput.Default="50" local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="5" local:NumericInput.Maximum="100" local:NumericInput.Decimals="0"
-                                 ToolTip="Size of the preview compared with the real output. Smaller renders faster." />
-                        <TextBlock Text="Preview Duration (seconds):" Style="{StaticResource FieldLabel}" Margin="28,0,12,0" />
-                        <TextBox Width="70" Text="{Binding PreviewDurationSeconds, UpdateSourceTrigger=PropertyChanged}"
-                                 AutomationProperties.Name="Preview Duration" local:NumericInput.Default="3" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="60" local:NumericInput.Decimals="0" />
-                    </StackPanel>
-                </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <TabItem Header="Update URLs">
-                <StackPanel>
-                    <TextBlock Text="Update URLs" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="GitHub API release addresses. Leave blank for the defaults. Tools are downloaded and run from whatever these point at, so only use sources you trust." />
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <TextBlock Text="yt-dlp release:" Style="{StaticResource FieldLabel}" />
-                        <TextBox Grid.Column="1" Margin="0,4" Text="{Binding YtDlpReleaseUrl, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Grid.Row="1" Grid.Column="1" x:Name="YtDlpDefaultText" Style="{StaticResource Hint}" />
-
-                        <TextBlock Grid.Row="2" Text="FFmpeg release:" Style="{StaticResource FieldLabel}" />
-                        <TextBox Grid.Row="2" Grid.Column="1" Margin="0,4" Text="{Binding FfmpegReleaseUrl, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Grid.Row="3" Grid.Column="1" x:Name="FfmpegDefaultText" Style="{StaticResource Hint}" />
-
-                        <TextBlock Grid.Row="4" Text="HandPeg itself:" Style="{StaticResource FieldLabel}" />
-                        <TextBlock Grid.Row="4" Grid.Column="1" x:Name="HandPegUpdateText" Style="{StaticResource Hint}" Margin="0,8,0,8" />
-
-                        <CheckBox Grid.Row="5" Grid.Column="1" Margin="0,0,0,8" Content="Install FFmpeg 8.1 instead of the newest build (for older NVIDIA drivers)"
-                                  IsChecked="{Binding UseFfmpegForOlderNvidiaDrivers}"
-                                  ToolTip="Newer FFmpeg needs NVIDIA driver 610 or later for NVENC, which the GTX 10 series and older cards never get. HandPeg turns this on by itself when NVENC fails to start for that reason; the next FFmpeg update then installs the 8.1 build." />
-
-                        <TextBlock Grid.Row="6" Text="whisper.cpp releases:" Style="{StaticResource FieldLabel}" />
-                        <TextBox Grid.Row="6" Grid.Column="1" Margin="0,4" Text="{Binding WhisperReleaseUrl, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="One release, or a list of releases: the newest one that has whisper-bin-x64.zip is used." />
-                        <TextBlock Grid.Row="7" Grid.Column="1" x:Name="WhisperDefaultText" Style="{StaticResource Hint}" Margin="0" />
-                    </Grid>
                 </StackPanel>
             </TabItem>
 
-            <TabItem Header="Timeline">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+            <!-- ===== Timeline & Player: what is drawn along the time bars, and how the player plays ===== -->
+            <TabItem Header="Timeline &amp; Player">
                 <StackPanel>
-                    <TextBlock Text="Timeline" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="Timeline" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
                                Text="Whether waveforms are drawn, and whether a strip of pictures from the video is drawn along the timeline behind them. (How tall the timeline is, is the slider beside the volume in the main window.) The pictures are made in the background after each load, from the same sheet as the hover previews below." />
-                    <CheckBox Content="Show waveforms" IsChecked="{Binding ShowTimelineWaveform}" Margin="0,0,0,4"
+                    <CheckBox Content="Show waveforms" IsChecked="{Binding ShowTimelineWaveform}"
                               ToolTip="After each load, draws the mix of the active audio tracks behind the timeline, and each track's own waveform in the Audio tab. Applies to the next video you load." />
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <CheckBox Content="Show Timeline Thumbnails" IsChecked="{Binding ShowTimelineThumbnails}"
+                              ToolTip="Draws a strip of pictures from the video along the timeline, behind the waveform. On by default in Editor Mode. Applies to the next video you load." />
+                    <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Video Layer Thumbnail Count:" Style="{StaticResource FieldLabel}" />
                         <Slider Width="150" Minimum="1" Maximum="25" VerticalAlignment="Center"
                                 Value="{Binding LayerThumbnailCount}" AutomationProperties.Name="Video Layer Thumbnail Count" local:NumericInput.Default="8"
@@ -280,18 +166,8 @@
                         <TextBox Style="{StaticResource ValueBox}" Text="{Binding LayerThumbnailCount, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Video Layer Thumbnail Count Value"
                                  local:NumericInput.Default="8" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="25" />
                     </StackPanel>
-                    <CheckBox Content="Show Timeline Thumbnails" IsChecked="{Binding ShowTimelineThumbnails}"
-                              ToolTip="Draws a strip of pictures from the video along the timeline, behind the waveform. On by default in Editor Mode. Applies to the next video you load." />
-
-                    <TextBlock Text="Playback controls" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="A transport row centred under the player: reload player, previous I-frame, back one frame, play/pause, forward one frame, next I-frame and render preview, with a playback speed selector (0.25x to 2x) beside it." />
-                    <CheckBox Content="Show advanced playback controls" IsChecked="{Binding ShowAdvancedPlayback}" />
-
-                    <TextBlock Text="Time format" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="How times are shown and typed on the timeline, in the cut list and in the manual cut dialog." />
-                    <StackPanel Orientation="Horizontal">
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="How times are shown and typed on the timeline, in the cut list and in the manual cut dialog.">
                         <TextBlock Text="Sub-second Time Format:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="TimeFormatBox" MinWidth="250" Margin="0">
                             <ComboBoxItem Content="Milliseconds (HH:MM:SS.ms)" />
@@ -299,10 +175,10 @@
                         </ComboBox>
                     </StackPanel>
 
-                    <TextBlock Text="I-frames" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
+                    <TextBlock Text="I-frames" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
                                Text="I-frames are drawn as thin lines on the timeline. With snapping on, the thumb is pulled onto an I-frame when it is dragged close to one; magnetism sets how close." />
-                    <StackPanel Orientation="Horizontal">
+                    <StackPanel Style="{StaticResource Row}">
                         <CheckBox x:Name="SnapTimelineBox" Content="Snap timeline to I-frames" IsChecked="{Binding SnapTimelineToIFrames}" />
                         <TextBlock Text="Timeline Magnetism:" Style="{StaticResource FieldLabel}" Margin="28,0,8,0" />
                         <Slider x:Name="MagnetismSlider" Width="160" Minimum="1" Maximum="5"
@@ -316,12 +192,12 @@
                     <CheckBox Content="Auto-toggle timeline snapping with I-frame visibility" IsChecked="{Binding AutoToggleTimelineSnap}"
                               ToolTip="When on, ticking or clearing Show I-frames in the main window switches Snap timeline to I-frames with it. Snap cuts to I-frames is not affected." />
 
-                    <TextBlock Text="Hover previews" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
+                    <TextBlock Text="Hover previews" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
                                Text="A small picture of the video appears above the pointer as it moves along the timeline. The pictures are made in the background after each load; a long video spaces them further apart so one sheet covers all of it." />
-                    <WrapPanel>
-                        <CheckBox Content="Auto-generate hover previews on load" IsChecked="{Binding GenerateHoverPreviews}" />
-                        <TextBlock Text="Thumbnail Interval (seconds):" Style="{StaticResource FieldLabel}" Margin="28,0,8,0" />
+                    <CheckBox Content="Auto-generate hover previews on load" IsChecked="{Binding GenerateHoverPreviews}" />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Thumbnail Interval (seconds):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="70" Text="{Binding ThumbnailIntervalSeconds, UpdateSourceTrigger=PropertyChanged}"
                                  AutomationProperties.Name="Thumbnail Interval" local:NumericInput.Default="5" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="600" local:NumericInput.Decimals="0" />
                         <TextBlock Text="Hover Preview Scale:" Style="{StaticResource FieldLabel}" Margin="28,0,8,0" />
@@ -330,26 +206,47 @@
                                 ToolTip="How large the thumbnail is shown: 1 is as generated, 5 is four times that." />
                         <TextBox Style="{StaticResource ValueBox}" Text="{Binding HoverPreviewScale, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Hover Preview Scale Value"
                                  local:NumericInput.Default="1" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="5" />
-                    </WrapPanel>
+                    </StackPanel>
+
+                    <TextBlock Text="Player" Style="{StaticResource SectionTitle}" />
+                    <CheckBox Content="Use GPU acceleration in the video player" IsChecked="{Binding PlayerHardwareAcceleration}"
+                              ToolTip="The graphics card decodes the video as well as drawing it (Direct3D 11), which keeps high-resolution and high-frame-rate footage smooth and the processor free. With Live Preview on, the card still decodes and each frame is handed to the filters. Turn this off if the picture is green, garbled or stutters: the processor then decodes. Applied when you press Save." />
+                    <CheckBox Content="Show advanced playback controls" IsChecked="{Binding ShowAdvancedPlayback}"
+                              ToolTip="A transport row centred under the player: reload player, previous I-frame, back one frame, play/pause, forward one frame, next I-frame and render preview, with a playback speed selector (0.25x to 2x) beside it." />
+
+                    <TextBlock Text="Tabs and bars" Style="{StaticResource SectionTitle}" />
+                    <CheckBox Content="Show Command Preview Tab" IsChecked="{Binding ShowCommandPreviewTab}"
+                              ToolTip="Adds a tab showing the FFmpeg command that will run, which can also be edited by hand." />
+                    <CheckBox Content="Show color grading on the Filters tab" IsChecked="{Binding ShowAdvancedFiltersTab}"
+                              ToolTip="Shows colour correction (contrast, brightness, saturation, gamma) and sharpening on the Filters tab, in this mode. Values already set there keep applying while they are hidden." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Preset Bar Location:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="PresetBarBox" MinWidth="220" Margin="0" SelectedItem="{Binding PresetBarLocation}" AutomationProperties.Name="Preset Bar Location"
+                                  ToolTip="Where the bar for choosing and saving presets is: at the top of the Summary tab, or above the tabs where it shows on every tab." />
+                    </StackPanel>
                 </StackPanel>
-                </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="Downloads">
+            <!-- ===== Preview & Cache: rendered previews, and what is kept on disk ===== -->
+            <TabItem Header="Preview &amp; Cache">
                 <StackPanel>
-                    <TextBlock Text="SponsorBlock" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="Render Preview" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Parts of a video that yt-dlp cuts out of a download, using the community-maintained SponsorBlock database (--sponsorblock-remove). Applies to the next URL you load." />
-                    <CheckBox Content="Sponsor" IsChecked="{Binding SponsorBlockSponsor}" />
-                    <CheckBox Content="Intro" IsChecked="{Binding SponsorBlockIntro}" />
-                    <CheckBox Content="Outro" IsChecked="{Binding SponsorBlockOutro}" />
-                    <CheckBox Content="Self-promotion" IsChecked="{Binding SponsorBlockSelfPromo}" />
-                    <CheckBox Content="Interaction reminders (like, subscribe)" IsChecked="{Binding SponsorBlockInteraction}" />
+                               Text="Render Preview encodes a few seconds of the finished video from the playhead, exactly as the export will look, and plays it." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Preview Resolution (%):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="70" Text="{Binding PreviewResolutionPercent, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.Name="Preview Resolution" local:NumericInput.Default="50" local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="5" local:NumericInput.Maximum="100" local:NumericInput.Decimals="0"
+                                 ToolTip="Size of a rendered preview compared with the real output. Smaller renders faster." />
+                        <TextBlock Text="Preview Duration (seconds):" Style="{StaticResource FieldLabel}" Margin="28,0,12,0" />
+                        <TextBox Width="70" Text="{Binding PreviewDurationSeconds, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.Name="Preview Duration" local:NumericInput.Default="3" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="60" local:NumericInput.Decimals="0" />
+                    </StackPanel>
 
-                    <TextBlock Text="Download cache" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
+                    <TextBlock Text="Download cache" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
                                Text="Downloaded videos are kept in the cache folder so that loading the same URL again, with the same options, is instant. Only the most recently used ones are kept; older ones are deleted when HandPeg starts and closes." />
-                    <StackPanel Orientation="Horizontal">
+                    <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Download Cache Size (Files):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="70" Text="{Binding DownloadCacheSize, UpdateSourceTrigger=PropertyChanged}"
                                  AutomationProperties.Name="Download Cache Size" local:NumericInput.Default="5" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" local:NumericInput.Decimals="0" ToolTip="0 keeps nothing between sessions." />
@@ -357,79 +254,154 @@
                 </StackPanel>
             </TabItem>
 
-            <!-- Proxies: the light copies the editor's player shows in place of heavy originals -->
-            <TabItem Header="Performance">
+            <!-- ===== Export & Hardware: what an encode starts with, and which hardware does the work ===== -->
+            <TabItem Header="Export &amp; Hardware">
                 <StackPanel>
-                    <TextBlock Text="Editor Proxies" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="Default codecs" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="In Editor Mode, HandPeg can make a small copy of each video you open (720 lines, an I-frame every 15 frames) and play that in the player instead of the original. Seeking is then immediate, however large the original is. It is made in the background when a video is opened; the bar at the bottom of the window shows how far along it is. Exports never use it: they always read the original file. Encoder Mode never makes or uses one." />
-                    <CheckBox Content="Enable Editor Proxies" IsChecked="{Binding EnableEditorProxies}" AutomationProperties.Name="Enable Editor Proxies" />
-                    <StackPanel Orientation="Horizontal" Margin="0,8,0,2"
-                                ToolTip="How large the proxy cache may grow. Before a new proxy is made, the ones used longest ago are deleted until the cache is under this size.">
-                        <TextBlock Text="Proxy Cache Size Limit (MB):" VerticalAlignment="Center" Margin="0,0,10,0" />
-                        <TextBox Width="84" Padding="4,2" VerticalAlignment="Center" MaxLength="7" Text="{Binding ProxyCacheLimitMb}" AutomationProperties.Name="Proxy Cache Size Limit"
-                                 PreviewTextInput="DigitsOnly_PreviewTextInput" />
+                               Text="What the Video and Audio tabs start with when HandPeg is launched: first chosen in the first-run window. A preset or a project still sets its own. Applies the next time HandPeg starts." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Default Video Encoder:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DefaultVideoBox" MinWidth="300" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                  SelectedValue="{Binding DefaultVideoEncoder}" AutomationProperties.Name="Default Video Encoder"
+                                  ToolTip="The video encoder a new window starts with. Hardware encoders are listed once this computer has been checked for them; one that is no longer there falls back to the built-in default." />
                     </StackPanel>
-                    <TextBlock Text="Timeline Proxy" Style="{StaticResource SectionTitle}" Margin="0,14,0,0" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="A timeline proxy is the whole picture of the timeline, every layer composed, rendered once into a single silent file. While there is one, the player simply plays it, with the sound still mixed live, and scrubbing costs the same however many layers there are. It is thrown away the moment anything on the timeline is changed, and the player goes back to composing live. Render it from the Views menu, or let HandPeg do it when the timeline has been left alone." />
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
-                        <CheckBox Content="Auto-Render Timeline Proxy" IsChecked="{Binding AutoRenderTimelineProxy}" VerticalAlignment="Center" AutomationProperties.Name="Auto-Render Timeline Proxy"
-                                  ToolTip="Renders the timeline proxy by itself: when a project is opened (before the videos' own proxies), and whenever the timeline has not been edited for the time given here." />
-                        <TextBlock Text="Idle Time (Seconds):" VerticalAlignment="Center" Margin="18,0,8,0" />
-                        <TextBox Width="60" Padding="4,2" VerticalAlignment="Center" MaxLength="5" Text="{Binding TimelineProxyIdleSeconds}" IsEnabled="{Binding AutoRenderTimelineProxy}"
-                                 AutomationProperties.Name="Timeline Proxy Idle Time" PreviewTextInput="DigitsOnly_PreviewTextInput" />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Default Audio Codec:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DefaultAudioBox" MinWidth="200" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                  SelectedValue="{Binding DefaultAudioEncoder}" AutomationProperties.Name="Default Audio Codec"
+                                  ToolTip="The audio codec a new window starts with. Copy leaves the sound as it is, which nothing an edit does to it can then change." />
+                        <TextBlock Text="Bitrate:" Style="{StaticResource FieldLabel}" Margin="20,0,8,0" />
+                        <ComboBox x:Name="DefaultBitrateBox" MinWidth="150" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                  SelectedValue="{Binding DefaultAudioBitrate}" AutomationProperties.Name="Default Audio Bitrate" />
                     </StackPanel>
-                    <CheckBox Content="Clear Proxy Cache on Exit" IsChecked="{Binding ClearProxyCacheOnExit}" Margin="0,14,0,0" AutomationProperties.Name="Clear Proxy Cache on Exit"
-                              ToolTip="Empties the proxy cache each time HandPeg is closed. The deleting is handed to a process of its own, so closing is not held up by it. With this off, proxies are kept and reused the next time the same video is opened." />
-                </StackPanel>
-            </TabItem>
-
-            <TabItem Header="Behavior">
-                <StackPanel>
-                    <TextBlock Text="Presets and encoding" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="Smart rules and the default preset are on the Automation tab of this window." />
                     <CheckBox Content="Save the Target File Size with each preset" IsChecked="{Binding SaveTargetSizeInPresets}"
                               ToolTip="When on, Save Preset also stores the Target File Size set at the time, and applying that preset brings it back." />
-                    <CheckBox Content="Default to Vertical Video" IsChecked="{Binding DefaultVerticalVideo}"
-                              ToolTip="Every video that is opened starts as a vertical one: a tall frame with the picture across its middle over a blurred copy of itself. The same as ticking Vertical Video on the Summary tab." />
-                    <CheckBox Content="Prompt to save before closing" IsChecked="{Binding PromptToSaveOnExit}"
-                              ToolTip="When HandPeg is closed while the open video has cuts, layers or settings that were not saved as a project, asks whether to save them first." />
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
-                        <CheckBox Content="Enable Autosave" IsChecked="{Binding AutosaveEnabled}" VerticalAlignment="Center" AutomationProperties.Name="Enable Autosave"
-                                  ToolTip="Writes the open project to a file beside it named after it (Name.autosave.hproj) every so often, when it has changed. Written in the background; the project itself, and what can be undone, are left as they are." />
-                        <TextBlock Text="Interval (minutes):" VerticalAlignment="Center" Margin="18,0,8,0" />
-                        <TextBox Width="48" Padding="4,2" VerticalAlignment="Center" Text="{Binding AutosaveMinutes}" IsEnabled="{Binding AutosaveEnabled}" AutomationProperties.Name="Autosave Interval"
-                                 ToolTip="How many minutes pass between autosaves: 1 to 120." />
+
+                    <TextBlock Text="Hardware" Style="{StaticResource SectionTitle}" />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Hardware Decode Adapter:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DecodeAdapterBox" MinWidth="300" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Index"
+                                  SelectedValue="{Binding HardwareDecodeAdapter}" AutomationProperties.Name="Hardware Decode Adapter"
+                                  ToolTip="Which graphics card decodes the video for an encode, when Enable Hardware Decoding is ticked on the Video tab. Automatic leaves it to FFmpeg (-hwaccel auto). Choosing a card names it to FFmpeg (-hwaccel d3d11va -hwaccel_device and its number), so that a second card can take the decoding while the first one encodes or runs a game." />
                     </StackPanel>
                     <CheckBox Content="Fall back to the software encoder when a hardware encode fails" IsChecked="{Binding AutoFallbackToSoftware}"
                               ToolTip="If an encode or queue job fails on a hardware encoder, it is tried once more with libx264 (or libx265 for HEVC, SVT-AV1 for AV1)." />
+                    <CheckBox Content="Install FFmpeg 8.1 instead of the newest build (for older NVIDIA drivers)" IsChecked="{Binding UseFfmpegForOlderNvidiaDrivers}"
+                              ToolTip="Newer FFmpeg needs NVIDIA driver 610 or later for NVENC, which the GTX 10 series and older cards never get. HandPeg turns this on by itself when NVENC fails to start for that reason; the next FFmpeg update then installs the 8.1 build." />
+
+                    <TextBlock Text="When an encode finishes" Style="{StaticResource SectionTitle}" />
+                    <CheckBox Content="Notify when an encode finishes" IsChecked="{Binding NotifyOnEncodeComplete}"
+                              ToolTip="Sends a Windows notification when an encode, or the queue, has finished." />
+                </StackPanel>
+            </TabItem>
+
+            <!-- ===== Auto-Captions: how whisper.cpp listens, what counts as silence, and the style captions start with ===== -->
+            <TabItem Header="Auto-Captions">
+                <StackPanel>
+                    <TextBlock Text="Speech model" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Auto-captions transcribe speech with whisper.cpp, installed on the Tools &amp; Backup tab. It also needs a speech model: larger ones are more accurate and slower. The .en models understand English only. Choosing one here ticks it in the dependency list when it has not been downloaded yet." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Model Size:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="WhisperModelBox" MinWidth="200" Margin="0" SelectionChanged="WhisperModelBox_SelectionChanged"
+                                  AutomationProperties.Name="Speech Model" ToolTip="The model auto-captions use once you press Save: tiny is the fastest and roughest, large-v3 the best and slowest, turbo nearly as good as large and several times faster. The same choice as on the Subtitles tab." />
+                        <TextBlock x:Name="WhisperStatusText" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Default Language:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DefaultLanguageBox" MinWidth="90" Margin="0" SelectedItem="{Binding WhisperDefaultLanguage}" AutomationProperties.Name="Default Whisper Language"
+                                  ToolTip="The spoken language a new window starts with (--language). auto lets whisper detect it; the English-only .en models need en. The Subtitles tab overrides it for the video that is open, and a preset or a project brings its own. Applies the next time HandPeg starts." />
+                        <TextBlock Text="auto detects the language; a preset or a project sets its own" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+
+                    <TextBlock Text="Decoding" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="How whisper searches for the words. The values it comes with suit nearly everything; a larger beam is more careful and slower. An option left at its default is not passed to whisper at all, and one that an older whisper.exe of your own does not know is left out." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Beam Size:" Style="{StaticResource FieldLabel}" Margin="0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding WhisperBeamSize, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Whisper Beam Size"
+                                 local:NumericInput.Default="5" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="16" local:NumericInput.Decimals="0"
+                                 ToolTip="Beam search (--beam-size): how many candidate sentences are followed at once, 1 to 16. Default 5. 1 is the fastest and takes the first likely word every time." />
+                        <TextBlock Text="Best Of:" Style="{StaticResource FieldLabel}" Margin="24,0,0,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding WhisperBestOf, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Whisper Best Of"
+                                 local:NumericInput.Default="5" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="1" local:NumericInput.Maximum="16" local:NumericInput.Decimals="0"
+                                 ToolTip="How many candidates are kept when whisper samples (--best-of), 1 to 16. Default 5. Only matters once the temperature is above 0." />
+                        <TextBlock Text="Temperature:" Style="{StaticResource FieldLabel}" Margin="24,0,0,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding WhisperTemperature, StringFormat={}{0:0.##}}" AutomationProperties.Name="Whisper Temperature"
+                                 local:NumericInput.Default="0" local:NumericInput.DragStep="0.005" local:NumericInput.Minimum="0" local:NumericInput.Maximum="1" local:NumericInput.Decimals="2"
+                                 ToolTip="The sampling temperature (--temperature), 0 to 1. Default 0: always the likeliest word, and the same captions every time. Higher lets whisper choose more freely." />
+                    </StackPanel>
+                    <CheckBox Content="Temperature fallback" IsChecked="{Binding WhisperTemperatureFallback}" AutomationProperties.Name="Whisper Temperature Fallback"
+                              ToolTip="When a stretch fails to decode (it repeats itself, or whisper is unsure of it), it is tried again at a higher temperature. Off (--no-fallback) is faster, and can leave such a stretch garbled." />
+
+                    <TextBlock Text="Silence detection (VAD)" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Before transcribing, a small voice activity model (Silero, in the dependency list) finds the stretches with speech in them, and whisper is handed only those: it then has no silence to make words up for. Its threshold is how sure the model has to be that a sound is speech, from 0 to 1, not a loudness in decibels." />
+                    <CheckBox Content="Skip silence before transcribing" IsChecked="{Binding UseVad}" x:Name="UseVadBox" AutomationProperties.Name="Use Silence Detection"
+                              ToolTip="Used whenever the VAD model is installed and whisper.exe knows the option. Off, whisper listens to everything, and quiet stretches may get words that were never said." />
+                    <StackPanel Style="{StaticResource Row}" IsEnabled="{Binding IsChecked, ElementName=UseVadBox}">
+                        <TextBlock Text="Speech Threshold:" Style="{StaticResource FieldLabel}" Margin="0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding VadThreshold, StringFormat={}{0:0.##}}" AutomationProperties.Name="VAD Speech Threshold"
+                                 local:NumericInput.Default="0.5" local:NumericInput.DragStep="0.005" local:NumericInput.Minimum="0.05" local:NumericInput.Maximum="0.95" local:NumericInput.Decimals="2"
+                                 ToolTip="How sure the detector has to be that a sound is speech (--vad-threshold), 0.05 to 0.95. Default 0.5. Higher leaves out more: use it when noise or music is being captioned. Lower keeps more: use it when quiet speech is being missed." />
+                        <TextBlock Text="Min. Speech (ms):" Style="{StaticResource FieldLabel}" Margin="24,0,0,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding VadMinSpeechMs, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="VAD Minimum Speech"
+                                 local:NumericInput.Default="250" local:NumericInput.DragStep="5" local:NumericInput.Minimum="0" local:NumericInput.Maximum="5000" local:NumericInput.Decimals="0"
+                                 ToolTip="Speech shorter than this is taken for noise and left out (--vad-min-speech-duration-ms). Default 250." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}" IsEnabled="{Binding IsChecked, ElementName=UseVadBox}">
+                        <TextBlock Text="Min. Silence (ms):" Style="{StaticResource FieldLabel}" Margin="0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding VadMinSilenceMs, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="VAD Minimum Silence"
+                                 local:NumericInput.Default="100" local:NumericInput.DragStep="5" local:NumericInput.Minimum="0" local:NumericInput.Maximum="5000" local:NumericInput.Decimals="0"
+                                 ToolTip="A silence has to last this long to end a stretch of speech (--vad-min-silence-duration-ms). Default 100. Longer keeps short pauses inside one stretch." />
+                        <TextBlock Text="Padding (ms):" Style="{StaticResource FieldLabel}" Margin="24,0,0,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding VadSpeechPadMs, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="VAD Speech Padding"
+                                 local:NumericInput.Default="30" local:NumericInput.DragStep="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="2000" local:NumericInput.Decimals="0"
+                                 ToolTip="Kept on either side of each stretch of speech, so that the first and last sounds of a word are not clipped (--vad-speech-pad-ms). Default 30." />
+                    </StackPanel>
+
+                    <TextBlock Text="Remove Dead Air" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Remove Dead Air cuts the quiet stretches out of a video or a clip, found by loudness (FFmpeg's silencedetect), which is a different thing from the speech detection above. These are the values its dialog opens with; changing them there changes them here." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Silence Threshold (dB):" Style="{StaticResource FieldLabel}" Margin="0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding DeadAirThresholdDb, StringFormat={}{0:0.#}}" AutomationProperties.Name="Dead Air Silence Threshold"
+                                 local:NumericInput.Default="-35" local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="-80" local:NumericInput.Maximum="-10" local:NumericInput.Decimals="1"
+                                 ToolTip="Anything quieter than this counts as silence, -80 to -10 dB. Default -35. Closer to 0 cuts more: background noise then counts as silence too." />
+                        <TextBlock Text="Minimum Duration (s):" Style="{StaticResource FieldLabel}" Margin="24,0,0,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding DeadAirMinSeconds, StringFormat={}{0:0.#}}" AutomationProperties.Name="Dead Air Minimum Duration"
+                                 local:NumericInput.Default="1" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="0.2" local:NumericInput.Maximum="30" local:NumericInput.Decimals="1"
+                                 ToolTip="A silence has to last this long to be cut, 0.2 to 30 seconds. Default 1. Shorter cuts the pauses between sentences as well." />
+                    </StackPanel>
+
+                    <TextBlock Text="Default caption style" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="The font, colors, outline, words per line and animation captions start with when HandPeg is launched. A preset or a project still brings its own, and the Subtitles tab changes it for the video that is open. Applies the next time HandPeg starts." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <Button Content="Default Caption Style..." Click="DefaultCaptionStyle_Click" AutomationProperties.Name="Default Caption Style" />
+                        <Button Content="Use Built-in" Margin="6,0,0,0" Click="ResetDefaultCaptionStyle_Click" ToolTip="Back to the style HandPeg comes with: Arial 72, white with a yellow highlight, TikTok Pop, up to 3 words." />
+                        <TextBlock x:Name="DefaultCaptionStyleText" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
                 </StackPanel>
             </TabItem>
 
             <!--
-                Presets applied by themselves when a video is loaded. This tab is the main window's view model's,
-                not the copy of the settings the other tabs edit: it is saved as it is edited, without the Save button.
+                ===== Automation & Drop Targets: what happens to a video by itself, when it is loaded or dropped =====
+                The rules are the main window's view model's, not the copy of the settings the other tabs edit:
+                they are saved as they are edited, without the Save button.
             -->
-            <TabItem Header="Automation">
-                <DockPanel x:Name="AutomationPanel">
-                    <TextBlock DockPanel.Dock="Top" Text="Automation" Style="{StaticResource SectionTitle}" />
-                    <TextBlock DockPanel.Dock="Top" Style="{StaticResource Hint}"
+            <TabItem Header="Automation &amp; Drop Targets">
+                <StackPanel>
+                    <TextBlock Text="Automation" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
+                    <TextBlock Style="{StaticResource Hint}"
                                Text="Presets applied by themselves when a video is loaded. Folder rules win over keyword rules, which win over extension rules. Double-click a cell to edit it. Rules are saved as they are edited: Save and Cancel below do not affect them." />
-                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                    <StackPanel x:Name="DefaultPresetRow" Style="{StaticResource Row}">
                         <TextBlock Text="Global Default Preset:" Style="{StaticResource FieldLabel}" />
                         <ComboBox MinWidth="260" Margin="0" ItemsSource="{Binding DefaultPresetChoices}" SelectedItem="{Binding DefaultPresetChoice}"
                                   AutomationProperties.Name="Global Default Preset" ToolTip="Applied to a newly loaded video when no rule matches." />
                     </StackPanel>
-                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
-                        <Button Content="Add Folder Rule..." Click="AddFolderRule_Click" ToolTip="Videos in this folder, or a folder inside it, get the preset." />
-                        <Button Content="Add Keyword Rule" Margin="6,0,0,0" Click="AddKeywordRule_Click"
-                                ToolTip="Videos whose file name, path or web address contains the keyword get the preset. Upper and lower case are the same." />
-                        <Button Content="Add Extension Rule" Margin="6,0,0,0" Click="AddExtensionRule_Click" ToolTip="Videos of this file type, written as *.mkv, get the preset." />
-                        <Button Content="Remove Rule" Margin="6,0,0,0" Click="RemoveRule_Click" />
-                    </StackPanel>
-                    <DataGrid x:Name="RulesGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                    <DataGrid x:Name="RulesGrid" Height="190" Margin="0,4,0,0" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
                               CanUserResizeRows="False" CanUserReorderColumns="False" SelectionMode="Single" SelectionUnit="FullRow"
                               HeadersVisibility="Column" GridLinesVisibility="Horizontal" RowHeight="30"
                               Background="{DynamicResource ControlBrush}" RowBackground="{DynamicResource ControlBrush}"
@@ -497,66 +469,97 @@
                             </DataGridComboBoxColumn>
                         </DataGrid.Columns>
                     </DataGrid>
-                </DockPanel>
-            </TabItem>
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="Add Folder Rule..." Click="AddFolderRule_Click" ToolTip="Videos in this folder, or a folder inside it, get the preset." />
+                        <Button Content="Add Keyword Rule" Margin="6,0,0,0" Click="AddKeywordRule_Click"
+                                ToolTip="Videos whose file name, path or web address contains the keyword get the preset. Upper and lower case are the same." />
+                        <Button Content="Add Extension Rule" Margin="6,0,0,0" Click="AddExtensionRule_Click" ToolTip="Videos of this file type, written as *.mkv, get the preset." />
+                        <Button Content="Remove Rule" Margin="6,0,0,0" Click="RemoveRule_Click" />
+                    </StackPanel>
 
-            <!-- The startup dialog's Social Sharing Squisher: its presets, and how it works out and encodes to a size. -->
-            <TabItem Header="Drag &amp; Drop Overlay">
-                <StackPanel>
-                    <TextBlock Text="Presets" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="Drag &amp; drop overlay" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="While a file is dragged over HandPeg, its window dims and shows targets to drop it on: style presets in Editor Mode, encoding presets in Encoder Mode, and the Social Squisher's presets in both. Dropped anywhere else, the file opens as it always did." />
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,12"
-                                ToolTip="How many style presets (Editor Mode) or encoding presets (Encoder Mode) the overlay shows: the first so many. 0 shows none.">
-                        <TextBlock Text="Style / encoding presets shown:" VerticalAlignment="Center" Margin="0,0,10,0" />
+                               Text="While a file is dragged over an empty HandPeg window, the window dims and shows targets to drop it on: style presets in Editor Mode, encoding presets in Encoder Mode, and the Social Squisher's presets in both. Dropped anywhere else, the file opens as it always did." />
+                    <TextBlock Text="Style presets (Editor Mode)" FontWeight="SemiBold" Margin="0,4,0,2" />
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="How many of the style presets below the overlay shows in Editor Mode: the first so many, from the top. 0 shows none.">
+                        <TextBlock Text="Style presets shown:" Style="{StaticResource FieldLabel}" />
                         <Slider x:Name="OverlayCountSlider" Width="200" Minimum="0" Maximum="8" TickFrequency="1" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
-                                Value="{Binding SplashPresetCount}" AutomationProperties.Name="Overlay Presets Shown" />
+                                Value="{Binding SplashPresetCount}" AutomationProperties.Name="Overlay Style Presets Shown" />
                         <TextBlock Text="{Binding Value, ElementName=OverlayCountSlider, StringFormat={}{0:0}}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
+                    <ItemsControl x:Name="OverlayStyleList" Focusable="False" AutomationProperties.Name="Overlay Style Presets">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Margin="0,2">
+                                    <TextBlock Width="340" Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,8,0" />
+                                    <Button Content="&#xE74A;" FontFamily="Segoe MDL2 Assets" Padding="8,3" Margin="0,0,3,0" Tag="OverlayStyleList" Click="MoveOverlayPresetUp_Click" AutomationProperties.Name="Move Preset Up" ToolTip="Move up the list: shown earlier in the overlay." />
+                                    <Button Content="&#xE74B;" FontFamily="Segoe MDL2 Assets" Padding="8,3" Margin="0,0,8,0" Tag="OverlayStyleList" Click="MoveOverlayPresetDown_Click" AutomationProperties.Name="Move Preset Down" ToolTip="Move down the list." />
+                                    <Button Content="Remove" Padding="10,2" Tag="OverlayStyleList" Click="RemoveOverlayPreset_Click" ToolTip="Takes it off the overlay. The preset itself is not deleted." />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <ComboBox x:Name="OverlayStyleAddBox" MinWidth="260" Margin="0" AutomationProperties.Name="Overlay Style Presets To Add" ToolTip="A preset that is not on the list yet." />
+                        <Button Content="Add Preset" Padding="12,4" Margin="6,0,0,0" Tag="OverlayStyleList" Click="AddOverlayPreset_Click" />
+                        <Button Content="Use Most Recent" Padding="12,4" Margin="6,0,0,0" Tag="OverlayStyleList" Click="ResetOverlayPresets_Click" ToolTip="Empties the list: the overlay then offers the style presets saved most recently." />
+                    </StackPanel>
+                    <TextBlock Text="Encoding presets (Encoder Mode)" FontWeight="SemiBold" Margin="0,14,0,2" />
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="How many of the encoding presets below the overlay shows in Encoder Mode: the first so many, from the top. 0 shows none.">
+                        <TextBlock Text="Encoding presets shown:" Style="{StaticResource FieldLabel}" />
+                        <Slider x:Name="OverlayEncodingCountSlider" Width="200" Minimum="0" Maximum="8" TickFrequency="1" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding OverlayEncodingPresetCount}" AutomationProperties.Name="Overlay Encoding Presets Shown" />
+                        <TextBlock Text="{Binding Value, ElementName=OverlayEncodingCountSlider, StringFormat={}{0:0}}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <ItemsControl x:Name="OverlayEncodingList" Focusable="False" AutomationProperties.Name="Overlay Encoding Presets">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Margin="0,2">
+                                    <TextBlock Width="340" Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,8,0" />
+                                    <Button Content="&#xE74A;" FontFamily="Segoe MDL2 Assets" Padding="8,3" Margin="0,0,3,0" Tag="OverlayEncodingList" Click="MoveOverlayPresetUp_Click" AutomationProperties.Name="Move Preset Up" ToolTip="Move up the list: shown earlier in the overlay." />
+                                    <Button Content="&#xE74B;" FontFamily="Segoe MDL2 Assets" Padding="8,3" Margin="0,0,8,0" Tag="OverlayEncodingList" Click="MoveOverlayPresetDown_Click" AutomationProperties.Name="Move Preset Down" ToolTip="Move down the list." />
+                                    <Button Content="Remove" Padding="10,2" Tag="OverlayEncodingList" Click="RemoveOverlayPreset_Click" ToolTip="Takes it off the overlay. The preset itself is not deleted." />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <ComboBox x:Name="OverlayEncodingAddBox" MinWidth="260" Margin="0" AutomationProperties.Name="Overlay Encoding Presets To Add" ToolTip="A preset that is not on the list yet." />
+                        <Button Content="Add Preset" Padding="12,4" Margin="6,0,0,0" Tag="OverlayEncodingList" Click="AddOverlayPreset_Click" />
+                        <Button Content="Use First Presets" Padding="12,4" Margin="6,0,0,0" Tag="OverlayEncodingList" Click="ResetOverlayPresets_Click" ToolTip="Empties the list: the overlay then offers the first presets in the preset list." />
+                    </StackPanel>
+
                     <TextBlock Text="Social Sharing Squisher" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="A video dropped on one of these is squeezed under its size as an H.264 / AAC .mp4, which can then be dragged straight out of the squisher's window (into Discord, a browser, a folder)." />
+                               Text="A video dropped on one of these is squeezed under its size as an H.264 / AAC .mp4, which can then be dragged straight out of the squisher's window (into Discord, a browser, a folder). The encoder is chosen for you: NVENC, then QuickSync, then AMF, then libx264." />
                     <CheckBox Content="Show the Squisher presets in the overlay" IsChecked="{Binding ShowSquisher}" AutomationProperties.Name="Show Squisher" />
-                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
-                                ToolTip="How many of the presets below the startup dialog shows: the first so many, from the top. Use the arrows on a preset to move it up or down the list.">
-                        <TextBlock Text="Squisher presets shown:" VerticalAlignment="Center" Margin="0,0,10,0" />
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="How many of the presets below the overlay shows: the first so many, from the top. Use the arrows on a preset to move it up or down the list.">
+                        <TextBlock Text="Squisher presets shown:" Style="{StaticResource FieldLabel}" />
                         <Slider x:Name="SquishCountSlider" Width="200" Minimum="1" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
                                 Value="{Binding SquisherPresetCount}" AutomationProperties.Name="Squisher Presets Shown" />
                         <TextBlock Text="{Binding Value, ElementName=SquishCountSlider, StringFormat={}{0:0}}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
-                    <Grid Margin="0,8,0,2">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="240" />
-                            <ColumnDefinition Width="110" />
-                            <ColumnDefinition Width="110" />
-                            <ColumnDefinition Width="120" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Preset" Foreground="{DynamicResource MutedTextBrush}" />
-                        <TextBlock Grid.Column="1" Text="Target (MB)" Foreground="{DynamicResource MutedTextBrush}" />
-                        <TextBlock Grid.Column="2" Text="Audio (kb/s)" Foreground="{DynamicResource MutedTextBrush}" />
-                        <TextBlock Grid.Column="3" Text="Icon" Foreground="{DynamicResource MutedTextBrush}" />
-                    </Grid>
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                        <TextBlock Text="Preset" Width="240" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Text="Target (MB)" Width="110" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Text="Audio (kb/s)" Width="110" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Text="Icon" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
                     <ItemsControl x:Name="SquishPresetList" Focusable="False">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Grid Margin="0,2">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="240" />
-                                        <ColumnDefinition Width="110" />
-                                        <ColumnDefinition Width="110" />
-                                        <ColumnDefinition Width="120" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" Padding="4,2" AutomationProperties.Name="Squisher Preset Name" />
-                                    <TextBox Grid.Column="1" Text="{Binding TargetSizeMb}" Margin="0,0,8,0" Padding="4,2" AutomationProperties.Name="Squisher Target Size" />
-                                    <TextBox Grid.Column="2" Text="{Binding AudioKbps}" Margin="0,0,8,0" Padding="4,2" AutomationProperties.Name="Squisher Audio Bitrate" />
-                                    <ComboBox Grid.Column="3" Margin="0,0,8,0" ItemsSource="{x:Static services:SquishPreset.Icons}" SelectedItem="{Binding Icon}" AutomationProperties.Name="Squisher Preset Icon" />
-                                    <StackPanel Grid.Column="4" Orientation="Horizontal">
-                                        <Button Content="&#xE74A;" FontFamily="Segoe MDL2 Assets" Padding="8,3" Margin="0,0,3,0" Click="MoveSquishPresetUp_Click" AutomationProperties.Name="Move Preset Up" ToolTip="Move up the list: shown earlier on the startup dialog." />
-                                        <Button Content="&#xE74B;" FontFamily="Segoe MDL2 Assets" Padding="8,3" Margin="0,0,8,0" Click="MoveSquishPresetDown_Click" AutomationProperties.Name="Move Preset Down" ToolTip="Move down the list." />
-                                        <Button Content="Remove" Padding="10,2" Click="RemoveSquishPreset_Click" />
-                                    </StackPanel>
-                                </Grid>
+                                <StackPanel Orientation="Horizontal" Margin="0,2">
+                                    <TextBox Width="232" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" Padding="4,2" AutomationProperties.Name="Squisher Preset Name" />
+                                    <TextBox Width="102" Text="{Binding TargetSizeMb}" Margin="0,0,8,0" Padding="4,2" AutomationProperties.Name="Squisher Target Size" />
+                                    <TextBox Width="102" Text="{Binding AudioKbps}" Margin="0,0,8,0" Padding="4,2" AutomationProperties.Name="Squisher Audio Bitrate" />
+                                    <ComboBox Width="112" Margin="0,0,8,0" ItemsSource="{x:Static services:SquishPreset.Icons}" SelectedItem="{Binding Icon}" AutomationProperties.Name="Squisher Preset Icon" />
+                                    <Button Content="&#xE74A;" FontFamily="Segoe MDL2 Assets" Padding="8,3" Margin="0,0,3,0" Click="MoveSquishPresetUp_Click" AutomationProperties.Name="Move Preset Up" ToolTip="Move up the list: shown earlier in the overlay." />
+                                    <Button Content="&#xE74B;" FontFamily="Segoe MDL2 Assets" Padding="8,3" Margin="0,0,8,0" Click="MoveSquishPresetDown_Click" AutomationProperties.Name="Move Preset Down" ToolTip="Move down the list." />
+                                    <Button Content="Remove" Padding="10,2" Click="RemoveSquishPreset_Click" />
+                                </StackPanel>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
@@ -565,93 +568,114 @@
                         <Button Content="Restore Defaults" Padding="12,4" Margin="6,0,0,0" Click="RestoreSquishPresets_Click"
                                 ToolTip="Puts back the presets HandPeg starts with: Discord, WhatsApp, email, GitHub, X, Bluesky, Teams and Signal, each with its upload limit." />
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,14,0,2"
+                    <StackPanel Style="{StaticResource Row}" Margin="0,12,0,2"
                                 ToolTip="Megabytes kept in hand below a preset's size when the bitrate is worked out: what the container adds, and what an encoder overshoots by. Video bitrate = (((target - offset) x 8192) / seconds) - audio bitrate.">
-                        <TextBlock Text="Target Size Offset (MB):" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBlock Text="Target Size Offset (MB):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="60" Padding="4,2" Text="{Binding SquisherOffsetMb}" AutomationProperties.Name="Target Size Offset" />
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                    <StackPanel Style="{StaticResource Row}">
                         <CheckBox Content="Manual Encoder Preset Override:" IsChecked="{Binding SquisherManualPreset}" VerticalAlignment="Center" AutomationProperties.Name="Manual Encoder Preset Override"
                                   ToolTip="Off, the Squisher uses each encoder's most careful preset (p7 for NVENC, veryslow for QuickSync and libx264, quality for AMF), which keeps the most detail at a tight bitrate and takes the longest. On, the preset named here is used instead: the name has to be one the encoder in use knows." />
                         <TextBox Width="110" Margin="8,0,0,0" Padding="4,2" Text="{Binding SquisherEncoderPreset}" IsEnabled="{Binding SquisherManualPreset}" AutomationProperties.Name="Squisher Encoder Preset" />
                     </StackPanel>
-                    <TextBlock Style="{StaticResource Hint}" Margin="0,10,0,0"
-                               Text="The encoder is chosen for you: NVENC, then QuickSync, then AMF, then libx264. Whether the startup dialog opens at all, and which style presets it shows, is under Interface." />
                 </StackPanel>
             </TabItem>
 
-            <TabItem Header="Keyboard Shortcuts">
+            <!-- ===== Tools & Backup: the programs HandPeg downloads, where they come from, and getting settings in and out ===== -->
+            <TabItem Header="Tools &amp; Backup">
                 <StackPanel>
-                    <TextBlock Text="Keyboard shortcuts" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="Dependencies" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="The keys of the main window. They apply while no text box or drop-down has the focus: typing stays typing." />
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <TextBlock Grid.Row="0" Text="Space" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="0" Grid.Column="1" Text="Play / Pause" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="1" Text="Left / Right" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="1" Grid.Column="1" Text="Step back / forward one frame" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="2" Text="I" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="2" Grid.Column="1" Text="Add Start Point" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="3" Text="O" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="3" Grid.Column="1" Text="Add Stop Point" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="4" Text="S" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="4" Grid.Column="1" Text="Split the selected block at the playhead (Editor Mode)" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="5" Text="Delete" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="5" Grid.Column="1" Text="Delete the selected layer or cut segment; silence the selected part of an audio track (Editor Mode)" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="6" Text="Ctrl+Z" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="6" Grid.Column="1" Text="Undo the last change to the cuts, layers or audio" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="7" Text="Ctrl+Y" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="7" Grid.Column="1" Text="Redo" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="8" Text="Right-drag on the timeline" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="8" Grid.Column="1" Text="Mark a new cut segment" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="9" Text="Right-click a layer" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="9" Grid.Column="1" Text="Its menu: properties, split, trim, hide, duplicate, delete" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="10" Text="Double-click a slider or number" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="10" Grid.Column="1" Text="Put it back to its default" TextWrapping="Wrap" Margin="0,3" />
-                        <TextBlock Grid.Row="11" Text="Enter in the source box" FontFamily="Consolas" FontWeight="SemiBold" Margin="0,3,24,3" />
-                        <TextBlock Grid.Row="11" Grid.Column="1" Text="Load the path or URL" TextWrapping="Wrap" Margin="0,3" />
-                    </Grid>
-                </StackPanel>
-            </TabItem>
+                               Text="Everything HandPeg downloads, and what is installed. Nothing ships with HandPeg itself. One button installs what is missing and replaces what has a newer release, using the update URLs as last saved; a tool with a path of your own under Tool paths is left alone." />
+                    <local:DependencyPanel x:Name="Dependencies" />
 
-            <TabItem Header="Backup &amp; Export">
-                <StackPanel>
-                    <TextBlock Text="Settings and presets" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="Tool paths" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Export writes appsettings.json and presets.json into one .txt file (JSON inside), as they were last saved. Import replaces both with the ones in such a file, keeping the files it replaces beside them in the settings folder as .bak." />
+                               Text="Leave a field blank to use the copy HandPeg downloads. A path set here is used as is, and is never replaced by Install / Update All Dependencies." />
+                    <DockPanel Style="{StaticResource WideRow}">
+                        <TextBlock Text="yt-dlp.exe:" Style="{StaticResource WideLabel}" />
+                        <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=YtDlpPathBox}" Click="Browse_Click" />
+                        <TextBox x:Name="YtDlpPathBox" Text="{Binding YtDlpPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="yt-dlp.exe Path" />
+                    </DockPanel>
+                    <DockPanel Style="{StaticResource WideRow}">
+                        <TextBlock Text="ffmpeg.exe:" Style="{StaticResource WideLabel}" />
+                        <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=FfmpegPathBox}" Click="Browse_Click" />
+                        <TextBox x:Name="FfmpegPathBox" Text="{Binding FfmpegPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="ffmpeg.exe Path" />
+                    </DockPanel>
+                    <DockPanel Style="{StaticResource WideRow}">
+                        <TextBlock Text="ffprobe.exe:" Style="{StaticResource WideLabel}" />
+                        <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=FfprobePathBox}" Click="Browse_Click" />
+                        <TextBox x:Name="FfprobePathBox" Text="{Binding FfprobePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="ffprobe.exe Path"
+                                 ToolTip="When blank, an ffprobe.exe next to a custom ffmpeg.exe is used if there is one." />
+                    </DockPanel>
+                    <DockPanel Style="{StaticResource WideRow}">
+                        <TextBlock Text="whisper.exe:" Style="{StaticResource WideLabel}" />
+                        <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=WhisperPathBox}" Click="Browse_Click" />
+                        <TextBox x:Name="WhisperPathBox" AutomationProperties.Name="whisper.exe Path" TextChanged="WhisperPathBox_TextChanged"
+                                 Text="{Binding WhisperPath, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Your own whisper.cpp program (whisper-cli.exe, or a GPU build), for auto-captions. When blank, the one HandPeg downloads is used." />
+                    </DockPanel>
+
+                    <TextBlock Text="Update URLs" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="GitHub API release addresses. Leave blank for the defaults. Tools are downloaded and run from whatever these point at, so only use sources you trust." />
+                    <DockPanel Style="{StaticResource WideRow}">
+                        <TextBlock Text="yt-dlp release:" Style="{StaticResource WideLabel}" />
+                        <TextBox Text="{Binding YtDlpReleaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="yt-dlp Release URL" />
+                    </DockPanel>
+                    <TextBlock x:Name="YtDlpDefaultText" Style="{StaticResource Hint}" Margin="152,0,0,6" />
+                    <DockPanel Style="{StaticResource WideRow}">
+                        <TextBlock Text="FFmpeg release:" Style="{StaticResource WideLabel}" />
+                        <TextBox Text="{Binding FfmpegReleaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="FFmpeg Release URL" />
+                    </DockPanel>
+                    <TextBlock x:Name="FfmpegDefaultText" Style="{StaticResource Hint}" Margin="152,0,0,6" />
+                    <DockPanel Style="{StaticResource WideRow}">
+                        <TextBlock Text="whisper.cpp releases:" Style="{StaticResource WideLabel}" />
+                        <TextBox Text="{Binding WhisperReleaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="whisper.cpp Release URL"
+                                 ToolTip="One release, or a list of releases: the newest one that has whisper-bin-x64.zip is used." />
+                    </DockPanel>
+                    <TextBlock x:Name="WhisperDefaultText" Style="{StaticResource Hint}" Margin="152,0,0,6" />
+
+                    <TextBlock Text="SponsorBlock" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Parts of a video that yt-dlp cuts out of a download, using the community-maintained SponsorBlock database (--sponsorblock-remove). Applies to the next URL you load." />
+                    <WrapPanel>
+                        <CheckBox Content="Sponsor" IsChecked="{Binding SponsorBlockSponsor}" Margin="0,2,24,2" />
+                        <CheckBox Content="Intro" IsChecked="{Binding SponsorBlockIntro}" Margin="0,2,24,2" />
+                        <CheckBox Content="Outro" IsChecked="{Binding SponsorBlockOutro}" Margin="0,2,24,2" />
+                        <CheckBox Content="Self-promotion" IsChecked="{Binding SponsorBlockSelfPromo}" Margin="0,2,24,2" />
+                        <CheckBox Content="Interaction reminders (like, subscribe)" IsChecked="{Binding SponsorBlockInteraction}" Margin="0,2,24,2" />
+                    </WrapPanel>
+
+                    <TextBlock Text="Backup and export" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Export Settings writes appsettings.json and presets.json into one .txt file (JSON inside), as they were last saved; Import replaces both with the ones in such a file, keeping the files it replaces beside them in the settings folder as .bak. Export All Projects writes every project in the Projects folder into one file; Import Projects copies project files into that folder, unpacking an exported bundle and replacing nothing that is already there." />
                     <StackPanel Orientation="Horizontal">
                         <Button Content="Export Settings &amp; Presets" Click="ExportSettings_Click" />
                         <Button Content="Import Settings &amp; Presets" Margin="6,0,0,0" Click="ImportSettings_Click" />
-                    </StackPanel>
-
-                    <TextBlock Text="Projects" Style="{StaticResource SectionTitle}" Margin="0,22,0,2" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="Export writes every project in the Projects folder into one file, one entry per project. Import copies project files into that folder; several can be chosen at once, an exported bundle is unpacked, and nothing already there is replaced." />
-                    <StackPanel Orientation="Horizontal">
-                        <Button Content="Export All Projects" Click="ExportProjects_Click" />
+                        <Button Content="Export All Projects" Margin="18,0,0,0" Click="ExportProjects_Click" />
                         <Button Content="Import Projects" Margin="6,0,0,0" Click="ImportProjects_Click" />
                     </StackPanel>
-
-                    <TextBlock x:Name="ExportStatusText" Style="{StaticResource Hint}" Margin="0,16,0,0" />
+                    <TextBlock x:Name="ExportStatusText" Style="{StaticResource Hint}" Margin="0,8,0,0" />
                     <TextBlock Style="{StaticResource Hint}" Text="Layout files (Export Layout, Import Layout) are on the Summary tab of the main window." />
+
+                    <TextBlock Text="Keyboard shortcuts" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="The keys of the main window. They apply while no text box or drop-down has the focus: typing stays typing." />
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Space" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Play / Pause" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Left / Right" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Step back / forward one frame" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="I" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Add Start Point" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="O" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Add Stop Point" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="S" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Split the selected block at the playhead (Editor Mode)" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Delete" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Delete the selected layer or cut segment; silence the selected part of an audio track (Editor Mode)" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Ctrl+Z" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Undo the last change to the cuts, layers or audio" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Ctrl+Y" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Redo" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Ctrl+S" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Save the project" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Ctrl+Alt+S" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Save the project as a new file" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Right-drag on the timeline" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Mark a new cut segment" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Right-click a layer" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Its menu: properties, split, trim, hide, duplicate, delete" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Double-click a slider or number" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Put it back to its default" /></TextBlock>
+                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Enter in the source box" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Load the path or URL" /></TextBlock>
                 </StackPanel>
             </TabItem>
         </TabControl>

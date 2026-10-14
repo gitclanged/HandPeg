@@ -17,7 +17,7 @@ public partial class MainViewModel
     [NotifyPropertyChangedFor(nameof(CaptionOptionsEnabled))]
     private bool _autoCaptions;
 
-    /// <summary>Whether the caption options can be set: always in Editor Mode, where captions are made with a button; in Encoder Mode, while Auto-Captions is ticked.</summary>
+    /// <summary>Whether the caption options can be set: always in Editor Mode, where Generate Captions uses them too; in Encoder Mode, while Auto-Captions is ticked.</summary>
     public bool CaptionOptionsEnabled => IsEditorMode || AutoCaptions;
 
     // What captions listen to: one of the video's own audio tracks (when neither of these is set), a
@@ -57,13 +57,17 @@ public partial class MainViewModel
     // ----- How whisper is asked to listen -----
 
     /// <summary>The languages offered: "auto" lets whisper decide (not with the English-only .en models).</summary>
-    public IReadOnlyList<string> WhisperLanguages { get; } =
+    public IReadOnlyList<string> WhisperLanguages => KnownWhisperLanguages;
+
+    public static IReadOnlyList<string> KnownWhisperLanguages { get; } =
         ["auto", "en", "es", "fr", "de", "it", "pt", "nl", "pl", "sv", "tr", "ru", "uk", "ar", "hi", "ja", "ko", "zh"];
 
     /// <summary>Words, names and spellings to expect: whisper's initial prompt.</summary>
     [ObservableProperty] private string _whisperPrompt = "";
 
-    [ObservableProperty] private string _whisperLanguage = "en";
+    // Starts as the settings' default language; a preset or a project then sets its own.
+    [ObservableProperty]
+    private string _whisperLanguage = KnownWhisperLanguages.Contains(AppSettings.Current.WhisperDefaultLanguage) ? AppSettings.Current.WhisperDefaultLanguage : "en";
 
     /// <summary>Have whisper write English whatever language is spoken.</summary>
     [ObservableProperty] private bool _whisperTranslate;
@@ -121,6 +125,7 @@ public partial class MainViewModel
             IsArrangeActive = false;
         else if (value)
             OpenLayoutPaneIfWanted();
+        SyncEditorCaptions();
     }
 
     /// <summary>The caption box on an output frame of the given size, in pixels, with even sides as a video frame needs.</summary>
@@ -150,7 +155,7 @@ public partial class MainViewModel
 
     public bool ShowStandardSubtitles => !ShowAutoCaptions;
 
-    public CaptionStyle CaptionStyle { get; private set; } = new();
+    public CaptionStyle CaptionStyle { get; private set; } = AppSettings.Current.DefaultCaptionStyle?.Clone() ?? new();
 
     /// <summary>The style in a few words, shown beside the button that opens its dialog.</summary>
     public string CaptionStyleSummary =>
@@ -299,9 +304,12 @@ public partial class MainViewModel
                 return $"The speech model {AppSettings.Current.WhisperModel} is not downloaded yet: see Settings (Tools).";
             if (VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput)
                 return "Captions are drawn into the picture, so they need a video encoder other than Copy (Video tab).";
+            var when = IsEditorMode
+                ? "The words are transcribed when the video is exported, or now with Generate Captions, to see and edit them first."
+                : "The words are transcribed when you press Start Encode or Render Preview.";
             if (!File.Exists(DependencyUpdater.VadModelPath))
-                return "The words are transcribed when you press Start Encode or Render Preview. Silence detection (VAD) is not installed, so quiet stretches may get words that were never said: see Settings (Tools).";
-            return "The words are transcribed when you press Start Encode or Render Preview.";
+                return $"{when} Silence detection (VAD) is not installed, so quiet stretches may get words that were never said: see Settings (Tools).";
+            return when;
         }
     }
 
@@ -340,11 +348,18 @@ public partial class MainViewModel
                 : null;
         }
 
-        // What will be heard: the kept segments end to end, or everything.
-        // The voiceover was recorded against the finished timeline, so nothing is cut out of it.
-        var ranges = CaptionUseVoiceover ? [] : GetMergedSegments().Select(s => (s.Start.TotalSeconds, s.End.TotalSeconds)).ToList();
-        return await PrepareCaptionsAsync(ranges, CaptionsFilePath, timeOffset: CaptionUseVoiceover ? VoiceoverStartSeconds : 0, cancellationToken);
+        return await PrepareCaptionsAsync(GetCaptionRanges(), CaptionsFilePath, timeOffset: CaptionTimeOffset, cancellationToken);
     }
+
+    /// <summary>
+    /// What an encode's captions listen to: the kept segments end to end, or everything.
+    /// The voiceover was recorded against the finished timeline, so nothing is cut out of it.
+    /// </summary>
+    private List<(double Start, double End)> GetCaptionRanges() =>
+        CaptionUseVoiceover ? [] : GetMergedSegments().Select(s => (s.Start.TotalSeconds, s.End.TotalSeconds)).ToList();
+
+    /// <summary>Where an encode's captions start on the output's clock: with the voiceover, when that is what they are made from.</summary>
+    private double CaptionTimeOffset => CaptionUseVoiceover ? VoiceoverStartSeconds : 0;
 
     /// <summary>
     /// The pipeline: extract the audio that will be heard as a 16 kHz mono wave file, transcribe it with
@@ -366,11 +381,6 @@ public partial class MainViewModel
             return null;
         }
 
-        // Editor Mode exports what is on the timeline and nothing else: with no subtitles there, nothing is
-        // transcribed behind the user's back. Captions are made with Generate Captions, and then they are there.
-        if (IsEditorMode)
-            return "There are no captions on the timeline: press Generate Captions on the Subtitles tab first, or export without them.";
-
         var (words, problem) = await GetCaptionWordsAsync(ranges, cancellationToken);
         if (words is null)
             return problem;
@@ -391,6 +401,17 @@ public partial class MainViewModel
     /// <summary>The words that are spoken, transcribed with whisper.cpp (or as they were kept from the last time); or why they could not be.</summary>
     private async Task<(List<CaptionWord>? Words, string? Problem)> GetCaptionWordsAsync(List<(double Start, double End)> ranges, CancellationToken cancellationToken)
     {
+        var (job, problem) = CreateCaptionJob(ranges, assPath: "", timeOffset: 0);
+        return job is null ? (null, problem) : (await HearCaptionsAsync(job, cancellationToken), null);
+    }
+
+    /// <summary>
+    /// Everything a transcription takes, gathered now and without listening to anything: what is heard, how
+    /// whisper is set, and the style and size the words are written in. Run at once by an export; kept by a
+    /// queued job until it runs. Returns the reason instead when captions cannot be made from what is set.
+    /// </summary>
+    private (CaptionJob? Job, string? Problem) CreateCaptionJob(List<(double Start, double End)> ranges, string assPath, double timeOffset)
+    {
         if (!File.Exists(DependencyUpdater.WhisperPath))
             return (null, "Auto-captions need whisper.cpp: use Install / Update All Dependencies in Settings (Tools), or set the path to your own whisper.exe there.");
 
@@ -403,9 +424,13 @@ public partial class MainViewModel
         var trackIndex = 0;
         if (CaptionUseVoiceover)
         {
-            if (await GetTrimmedVoiceoverAsync(cancellationToken) is not { } voiceover)
+            if (!HasVoiceover || !File.Exists(VoiceoverPath))
                 return (null, "Auto-captions are set to the Recorded Voiceover Track, but there is no voiceover yet (Voiceover Studio, on the Audio tab).");
-            audioPath = voiceover;
+            audioPath = VoiceoverPath;
+
+            // The part of the recording between its trim handles is all that is heard, as it is all that is mixed in.
+            var (start, end) = (Math.Max(VoiceoverTrimStart, 0), Math.Min(VoiceoverTrimEnd, VoiceoverDuration));
+            ranges = start < 0.05 && end > VoiceoverDuration - 0.05 || end - start < 0.1 ? [] : [(start, end)];
         }
         else if (CaptionUseExternalAudio)
         {
@@ -423,16 +448,41 @@ public partial class MainViewModel
             trackIndex = CaptionAudioTrack?.Index ?? 0;
         }
 
-        var (language, prompt, translate) = (WhisperLanguage, WhisperPrompt.Trim(), WhisperTranslate);
+        // Written for the caption box, as an export draws it: see WriteCaptionFile.
+        var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
+        var (_, _, width, height) = GetCaptionRect(frameWidth, frameHeight);
+        var textScale = Math.Min(frameWidth, frameHeight) / 1080.0 * (height / (DefaultCaptionHeight * frameHeight));
+
+        // How whisper decodes and what counts as silence, from the settings as they are now.
+        return (new CaptionJob(audioPath, trackIndex, ranges, modelPath, WhisperLanguage, WhisperPrompt.Trim(), WhisperTranslate,
+            AppSettings.Current.UseVad, WhisperOptions.FromSettings(AppSettings.Current), CaptionStyle.Clone(), width, height, textScale, timeOffset, assPath), null);
+    }
+
+    /// <summary>
+    /// Listens: extracts what the job names as a 16 kHz mono wave file and has whisper.cpp find the words in
+    /// it, or takes them as they were kept from the last time the same thing was heard the same way.
+    /// </summary>
+    /// <param name="label">What the status bar calls the step: "Captions" for an export, the job's name for the queue.</param>
+    /// <param name="onPercent">Told how far through the sound whisper is, as well as the progress bar.</param>
+    private async Task<List<CaptionWord>> HearCaptionsAsync(CaptionJob job, CancellationToken cancellationToken, string label = "Captions", Action<double>? onPercent = null)
+    {
+        // A job that waited in the queue may find that what it was to use has gone since.
+        if (!File.Exists(DependencyUpdater.WhisperPath))
+            throw new InvalidOperationException("whisper.cpp is not installed any more: see Settings (Tools & Backup).");
+        if (!File.Exists(job.ModelPath))
+            throw new InvalidOperationException($"the speech model {Path.GetFileName(job.ModelPath)} is not there any more: download it in Settings (Tools & Backup).");
+        if (!File.Exists(job.AudioPath))
+            throw new InvalidOperationException($"the audio to transcribe was not found: {job.AudioPath}");
 
         // Voice activity detection: whisper is only handed the stretches with speech in them, so it has no
         // silence to make words up for. Used whenever its model is there and this whisper.exe knows the option.
-        var vadModel = File.Exists(DependencyUpdater.VadModelPath) && await CaptionGenerator.SupportsVadAsync(cancellationToken)
+        var vadModel = job.UseVad && File.Exists(DependencyUpdater.VadModelPath) && await CaptionGenerator.SupportsVadAsync(cancellationToken)
             ? DependencyUpdater.VadModelPath
             : null;
 
-        var key = $"{audioPath}|{trackIndex}|{File.GetLastWriteTimeUtc(audioPath).Ticks}|{modelPath}|{language}|{translate}|{prompt}|{vadModel is not null}|"
-                  + string.Join(",", ranges.Select(r => $"{r.Start:0.###}-{r.End:0.###}"));
+        // Words heard one way are not those heard another: the decoding and silence settings are part of what was heard.
+        var key = $"{job.AudioPath}|{job.TrackIndex}|{File.GetLastWriteTimeUtc(job.AudioPath).Ticks}|{job.ModelPath}|{job.Language}|{job.Translate}|{job.Prompt}|{vadModel is not null}|{job.Options}|"
+                  + string.Join(",", job.Ranges.Select(r => $"{r.Start:0.###}-{r.End:0.###}"));
         if (!_captionWords.TryGetValue(key, out var words))
         {
             Directory.CreateDirectory(_workFolder);
@@ -440,19 +490,20 @@ public partial class MainViewModel
             try
             {
                 IsProgressIndeterminate = true;
-                StatusText = "Captions: extracting the audio...";
+                StatusText = $"{label}: extracting the audio...";
                 await FfmpegRunner.RunAsync(
-                    CaptionGenerator.BuildExtractCommand(audioPath, trackIndex, ranges, wavPath), new Progress<FfmpegProgress>(), cancellationToken);
+                    CaptionGenerator.BuildExtractCommand(job.AudioPath, job.TrackIndex, job.Ranges, wavPath), new Progress<FfmpegProgress>(), cancellationToken);
 
-                StatusText = $"Captions: transcribing with {Path.GetFileName(modelPath)}{(vadModel is null ? "" : ", skipping silence")}...";
+                StatusText = $"{label}: transcribing with {Path.GetFileName(job.ModelPath)}{(vadModel is null ? "" : ", skipping silence")}...";
                 // Whisper says how far through the sound it is; the bar shows that, and no longer just that something is happening.
                 var heard = new Progress<double>(percent =>
                 {
                     IsProgressIndeterminate = false;
                     ProgressValue = percent;
+                    onPercent?.Invoke(percent);
                 });
                 words = await Task.Run(
-                    () => CaptionGenerator.TranscribeAsync(wavPath, modelPath, language, prompt, translate, vadModel, cancellationToken, heard), cancellationToken);
+                    () => CaptionGenerator.TranscribeAsync(wavPath, job.ModelPath, job.Language, job.Prompt, job.Translate, vadModel, cancellationToken, heard, job.Options), cancellationToken);
             }
             finally
             {
@@ -462,7 +513,7 @@ public partial class MainViewModel
             _captionWords[key] = words;
         }
 
-        return (words, null);
+        return words;
     }
 
     /// <summary>Writes the captions as an ASS file: for the caption box, which is how the export draws them, or for the whole frame, for a player.</summary>

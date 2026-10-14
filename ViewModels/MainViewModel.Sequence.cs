@@ -548,7 +548,7 @@ public partial class MainViewModel
         }
 
         var main = _mainVideoRow;
-        if (Layer.GetKeyProperty(e.PropertyName) is { } property and not KeyProperty.Rotation)
+        if (Layer.GetKeyProperty(e.PropertyName) is { } property and not (KeyProperty.Rotation or KeyProperty.Opacity))
         {
             // Set in the row, or by a keyframe: carried over to the zoom and offsets.
             _syncingMainRow = true;
@@ -783,7 +783,7 @@ public partial class MainViewModel
     }
 
     // The order matters for the main video, whose corner is worked out from its size.
-    private static readonly KeyProperty[] KeyOrder = [KeyProperty.Scale, KeyProperty.X, KeyProperty.Y, KeyProperty.Rotation];
+    private static readonly KeyProperty[] KeyOrder = [KeyProperty.Scale, KeyProperty.X, KeyProperty.Y, KeyProperty.Rotation, KeyProperty.Opacity];
 
     partial void OnPositionMsChanged(double value)
     {
@@ -950,33 +950,7 @@ public partial class MainViewModel
     {
         get
         {
-            // A timeline proxy is the whole sequence's picture in one file: that is played as it is, and the sound
-            // comes from the original, laid out along the sequence as ever.
-            if (HasSource && IsTimelineProxyActive)
-            {
-                var flat = _timelineProxy;
-                var sound = BuildPlayerSource(LocalMediaPath);
-                return $"edl://%{Encoding.UTF8.GetByteCount(flat)}%{flat};!new_stream;"
-                       + (sound.StartsWith("edl://", StringComparison.Ordinal) ? sound[6..] : $"%{Encoding.UTF8.GetByteCount(LocalMediaPath)}%{LocalMediaPath}");
-            }
-
-            // With no proxy in use the player is given the file (or its clips) as it is.
-            var picture = PreviewMediaPath;
-            if (!HasSource || string.Equals(picture, LocalMediaPath, StringComparison.OrdinalIgnoreCase))
-                return BuildPlayerSource(LocalMediaPath);
-
-            // A proxy has no sound. The player is given two streams laid out alike: the picture from the proxy
-            // and the sound from the original, so what is heard is the original's, every track of it.
-            static string Parts(string source, string file) =>
-                source.StartsWith("edl://", StringComparison.Ordinal) ? source[6..] : $"%{Encoding.UTF8.GetByteCount(file)}%{file}";
-            return $"edl://{Parts(BuildPlayerSource(picture), picture)};!new_stream;{Parts(BuildPlayerSource(LocalMediaPath), LocalMediaPath)}";
-        }
-    }
-
-    // The main video as the player plays it: the file itself while it is the whole sequence, or its clips set out along the sequence.
-    private string BuildPlayerSource(string path)
-    {
-        {
+            var path = LocalMediaPath;
             if (!HasSource || IsMainWholeSequence)
                 return path;
 

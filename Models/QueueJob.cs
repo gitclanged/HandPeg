@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using HandPegApp.Services;
 
 namespace HandPegApp.Models;
 
@@ -14,6 +15,9 @@ public sealed partial class QueueJob(
     public ProjectState State { get; } = state;
 
     public const string Pending = "Pending";
+
+    /// <summary>The job's captions are being transcribed: the step before its encode, for a job that has any to make.</summary>
+    public const string Transcribing = "Transcribing";
     public const string Encoding = "Encoding";
     public const string Complete = "Complete";
     public const string Failed = "Failed";
@@ -39,5 +43,17 @@ public sealed partial class QueueJob(
     /// <summary>Why the job failed, shown as a tooltip on its row.</summary>
     [ObservableProperty] private string _detail = "";
 
-    public bool CanRemove => Status != Encoding;
+    public bool CanRemove => Status is not (Encoding or Transcribing);
+
+    /// <summary>
+    /// The captions the job still has to make, with whisper's settings as they were when it was queued; null
+    /// when it draws none, or draws ones that were already written (a subtitle track's cues).
+    /// </summary>
+    public CaptionJob? Captions { get; init; }
+
+    /// <summary>Whether the job transcribes before it encodes.</summary>
+    public bool GenerateCaptions => Captions is not null;
+
+    /// <summary>The caption file has been written: a job that is run again (after a cancel, or on the software encoder) does not transcribe twice.</summary>
+    public bool CaptionsReady { get; set; }
 }

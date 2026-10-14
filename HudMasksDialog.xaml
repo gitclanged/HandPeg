@@ -6,7 +6,7 @@
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <StackPanel Margin="16">
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,10"
-                   Text="Takes a game's HUD apart into layers: each piece (the killfeed, the health bar, the radar) is cut out of the video with its own mask and becomes a layer of its own, so it can be moved and resized by itself. Made for arranging a 16:9 recording into a vertical frame." />
+                   Text="Takes a game's HUD apart into layers: each piece (the killfeed, the health bar, the ultimate) is cut out of the video and becomes a layer of its own, so it can be moved and resized by itself. All of them share one mask of the whole frame, traced round the game's HUD, and each takes its own part of it. Made for arranging a 16:9 recording into a vertical frame." />
         <ListBox x:Name="GameList" Height="150" SelectionChanged="GameList_SelectionChanged" AutomationProperties.Name="Games">
             <ListBox.ItemTemplate>
                 <DataTemplate>
@@ -18,10 +18,12 @@
             </ListBox.ItemTemplate>
         </ListBox>
         <TextBlock Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,10,0,0"
-                   Text="The positions are starting points for a 16:9 recording with the game's default HUD. HUD scale, settings and game updates move things: check each layer against your video, and use its Draw Target button to mark it exactly." />
+                   Text="The outlines were traced on a 16:9 recording with the game's default HUD. HUD scale, settings and game updates move things: check each layer against your video. Redraw Area on Video moves a piece's area (its mask stays put on the frame), and Draw Custom Shape, in its Mask window, changes the outlines." />
         <CheckBox x:Name="VerticalBox" Content="Lay out for vertical video" Margin="0,12,0,0"
                   ToolTip="Makes the frame tall, with the video across its middle and the pieces of the HUD enlarged above and below it. Cleared, each piece is laid back where it was cut from. The same layouts are among the style presets, where they can be dropped on from the launch window." />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Use My Own Mask..." MinWidth="110" Margin="0,0,18,0" Click="OwnMask_Click"
+                    ToolTip="Make the layers from a mask of the whole frame you made yourself (white, or painted on transparency, over each HUD element): one layer per element." />
             <Button x:Name="AddButton" Content="Add Layers" MinWidth="110" IsDefault="True" IsEnabled="False" Click="Add_Click" />
             <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
         </StackPanel>

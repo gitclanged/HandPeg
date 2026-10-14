@@ -38,6 +38,8 @@ public partial class MainViewModel
             }
         }
 
+        EnsureDrawnMasks();
+
         // One copy of each layer, however many of the lists below it is in.
         var copies = new Dictionary<Layer, Layer>(ReferenceEqualityComparer.Instance);
         Layer Snapshot(Layer layer)
@@ -67,10 +69,15 @@ public partial class MainViewModel
                 files.Add(name);
         }
 
+        // And which of the masks are read by their transparency: painted shows, see-through is cut away.
+        var alphaMasks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var layer in stack.Append(caption))
         {
             Note(layer.MaskPath);
             Note(layer.FilterLut);
+            var mask = layer.MaskPath.Trim().Trim('"');
+            if (layer.CustomMask && files.Contains(mask) && MaskStore.UsesAlpha(mask))
+                alphaMasks.Add(mask);
         }
 
         Note(CaptionsFilePath);
@@ -78,7 +85,11 @@ public partial class MainViewModel
         var tracks = GetOutputAudioTracks()
             .Select(t => new ExportAudioTrack(
                 t.Index, t.Title, t.Codec, t.Bitrate, t.IsPassthrough, t.Stream.Channels == 1, t.AutoDuck, t.IsVoice,
-                ReferenceEquals(t, _silentBase), t.HasProcessing, t.BuildEditChain(), t.GetFilterChain()))
+                ReferenceEquals(t, _silentBase), t.HasProcessing, t.BuildEditChain(), t.GetFilterChain())
+            {
+                Offset = t.OffsetSeconds,
+                MutedSpans = t.Pieces.Where(p => p.Muted).Select(p => (p.Start, p.End)).ToList(),
+            })
             .ToList();
 
         return new SequenceExportState
@@ -176,7 +187,7 @@ public partial class MainViewModel
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), $"HandPeg_output.{Container}")
                 : DestinationPath.Trim().Trim('"'),
             ExistingFiles = files,
-            PreviewPaths = GetLayerProxies(),
+            AlphaMasks = alphaMasks,
         };
     }
 
@@ -206,7 +217,7 @@ public partial class MainViewModel
     public string BuildLiveFilterGraph(double surfaceWidth, double surfaceHeight, long? audioFromMs = null) =>
         FilterGraphBuilder.BuildLiveGraph(
             CompileExportState(), surfaceWidth, surfaceHeight, audioFromMs / 1000.0,
-            mainAudioTrack: _mediaInfo is { Audio.Count: 0 } ? -1 : 0, soundOnly: IsTimelineProxyActive);
+            mainAudioTrack: _mediaInfo is { Audio.Count: 0 } ? -1 : 0);
 
     /// <summary>Render Preview's command: a short, small encode of the given stretches of the timeline.</summary>
     private string BuildPreviewCommand(string outputPath, List<(double Start, double End)> ranges, int percent, string? captionsPath) =>
@@ -403,4 +414,28 @@ public partial class MainViewModel
         choice.LastIndexOf('(') is >= 0 and var open ? choice[(open + 1)..].TrimEnd(')') : choice.ToLowerInvariant();
 
     private static string Number(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// A drawn mask whose picture has gone (the masks folder was emptied, or the project came without it) is
+    /// drawn again from the outlines the layer keeps. Only on the UI thread, which is where it can be drawn.
+    /// </summary>
+    private void EnsureDrawnMasks()
+    {
+        if (System.Windows.Application.Current?.Dispatcher.CheckAccess() != true)
+            return;
+
+        foreach (var layer in Layers.Where(l => l.CustomMask && l.MaskShapes.Length > 0 && !File.Exists(l.MaskPath.Trim().Trim('"'))))
+        {
+            try
+            {
+                var (width, height) = MaskStore.SizeFor(SourceWidth, SourceHeight);
+                if (MaskStore.Render(layer.MaskShapes, width, height) is { } path)
+                    layer.MaskPath = path;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                AppLog.Write($"The drawn mask of {layer.Name} could not be drawn again", ex);
+            }
+        }
+    }
 }

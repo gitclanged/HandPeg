@@ -23,6 +23,44 @@ public readonly record struct CaptionWord(string Text, double Start, double End)
 public sealed record CaptionFramePlacement(int X, int Y, int FrameWidth, int FrameHeight, double Opacity, double ShadowOffset, double ShadowOpacity);
 
 /// <summary>
+/// How whisper.cpp is asked to decode, and how its silence detection listens: what the Auto-Captions tab of
+/// the settings sets. The defaults are whisper's own, and an option left at its default is not written into
+/// the command at all, so settings nobody touched run whisper exactly as it ran before there were any.
+/// </summary>
+/// <param name="BeamSize">How many candidate sentences are followed at once (--beam-size).</param>
+/// <param name="BestOf">How many candidates are kept when sampling (--best-of).</param>
+/// <param name="Temperature">0 to 1: how freely words are chosen (--temperature).</param>
+/// <param name="TemperatureFallback">Try again at a higher temperature when a stretch fails to decode; off is --no-fallback.</param>
+/// <param name="VadThreshold">0 to 1: how sure the detector has to be that a sound is speech (--vad-threshold).</param>
+public readonly record struct WhisperOptions(
+    int BeamSize = 5, int BestOf = 5, double Temperature = 0, bool TemperatureFallback = true,
+    double VadThreshold = 0.5, int VadMinSpeechMs = 250, int VadMinSilenceMs = 100, int VadSpeechPadMs = 30)
+{
+    /// <summary>The options as the settings have them, each held to what whisper accepts.</summary>
+    public static WhisperOptions FromSettings(AppSettings settings) => new(
+        Math.Clamp(settings.WhisperBeamSize, 1, 16), Math.Clamp(settings.WhisperBestOf, 1, 16),
+        Math.Clamp(settings.WhisperTemperature, 0, 1), settings.WhisperTemperatureFallback,
+        Math.Clamp(settings.VadThreshold, 0.05, 0.95), Math.Clamp(settings.VadMinSpeechMs, 0, 5000),
+        Math.Clamp(settings.VadMinSilenceMs, 0, 5000), Math.Clamp(settings.VadSpeechPadMs, 0, 2000));
+}
+
+/// <summary>
+/// A transcription still to be done, and everything it takes to do it: what to listen to, how whisper is
+/// asked to listen (the model, the language, and the decoding and silence settings as they were when this
+/// was made), and how the words are then written. A queued job carries one, so that its captions are made
+/// when the job runs, from what was set when it was queued, whatever the window shows by then.
+/// </summary>
+/// <param name="Ranges">The stretches of the audio that are heard, joined end to end; none for all of it.</param>
+/// <param name="UseVad">Skip silence, when the detection model is installed and whisper.exe knows how.</param>
+/// <param name="Width">The caption box on the output frame, in pixels: the canvas the file is written for.</param>
+/// <param name="TextScale">What the style's sizes, given for a 1080-pixel frame, are multiplied by.</param>
+/// <param name="AssPath">Where the caption file is written: the file the job's command draws.</param>
+public sealed record CaptionJob(
+    string AudioPath, int TrackIndex, IReadOnlyList<(double Start, double End)> Ranges,
+    string ModelPath, string Language, string Prompt, bool Translate, bool UseVad, WhisperOptions Options,
+    CaptionStyle Style, int Width, int Height, double TextScale, double TimeOffset, string AssPath);
+
+/// <summary>
 /// The auto-captions pipeline, step by step: cut the audio that will be heard into a small speech-quality
 /// file, have whisper.cpp find the words and their times, and write them as an animated ASS subtitle file
 /// for FFmpeg to draw.
@@ -88,7 +126,7 @@ public static partial class CaptionGenerator
     /// </param>
     public static async Task<List<CaptionWord>> TranscribeAsync(
         string wavPath, string modelPath, string language, string prompt, bool translate, string? vadModelPath, CancellationToken cancellationToken,
-        IProgress<double>? progress = null)
+        IProgress<double>? progress = null, WhisperOptions? options = null)
     {
         var useVad = !string.IsNullOrWhiteSpace(vadModelPath);
         var said = 0;
@@ -106,6 +144,35 @@ public static partial class CaptionGenerator
             arguments.Add("--translate");
         if (useVad)
             arguments.AddRange(["--vad", "--vad-model", vadModelPath!]);
+
+        // Only what was moved off whisper's own default is said, and only to a whisper.exe that knows the option:
+        // an older build of the user's own is run as before rather than refused.
+        var (set, standard, help) = (options ?? new WhisperOptions(), new WhisperOptions(), await HelpAsync(cancellationToken));
+        void Option(string name, string value)
+        {
+            if (help.Contains(name, StringComparison.Ordinal))
+                arguments.AddRange([name, value]);
+        }
+
+        if (set.BeamSize != standard.BeamSize)
+            Option("--beam-size", set.BeamSize.ToString(CultureInfo.InvariantCulture));
+        if (set.BestOf != standard.BestOf)
+            Option("--best-of", set.BestOf.ToString(CultureInfo.InvariantCulture));
+        if (set.Temperature != standard.Temperature)
+            Option("--temperature", Number(set.Temperature));
+        if (!set.TemperatureFallback && help.Contains("--no-fallback", StringComparison.Ordinal))
+            arguments.Add("--no-fallback");
+        if (useVad)
+        {
+            if (set.VadThreshold != standard.VadThreshold)
+                Option("--vad-threshold", Number(set.VadThreshold));
+            if (set.VadMinSpeechMs != standard.VadMinSpeechMs)
+                Option("--vad-min-speech-duration-ms", set.VadMinSpeechMs.ToString(CultureInfo.InvariantCulture));
+            if (set.VadMinSilenceMs != standard.VadMinSilenceMs)
+                Option("--vad-min-silence-duration-ms", set.VadMinSilenceMs.ToString(CultureInfo.InvariantCulture));
+            if (set.VadSpeechPadMs != standard.VadSpeechPadMs)
+                Option("--vad-speech-pad-ms", set.VadSpeechPadMs.ToString(CultureInfo.InvariantCulture));
+        }
 
         var outputBase = Path.Combine(Path.GetDirectoryName(wavPath)!, Path.GetFileNameWithoutExtension(wavPath));
         var jsonPath = outputBase + ".json";
@@ -172,7 +239,7 @@ public static partial class CaptionGenerator
             File.Delete(jsonPath);
         }
 
-        return await TranscribeAsync(wavPath, modelPath, language, prompt, translate, vadModelPath: null, cancellationToken);
+        return await TranscribeAsync(wavPath, modelPath, language, prompt, translate, vadModelPath: null, cancellationToken, progress, options);
     }
 
     private static double Seconds(Group group) => double.Parse(group.Value, CultureInfo.InvariantCulture);
@@ -194,19 +261,23 @@ public static partial class CaptionGenerator
         return speech[^1].OriginalEnd;
     }
 
-    // Whether the whisper.exe in use knows --vad, by the program asked: older builds do not.
-    private static (string Program, bool Supported)? _vadSupport;
+    // What the whisper.exe in use says it understands (its --help), by the program asked: older builds know fewer options.
+    private static (string Program, string Help)? _help;
 
     /// <summary>Whether the whisper.exe in use can skip silence with a voice activity detection model. Asked of it once.</summary>
-    public static async Task<bool> SupportsVadAsync(CancellationToken cancellationToken)
+    public static async Task<bool> SupportsVadAsync(CancellationToken cancellationToken) =>
+        (await HelpAsync(cancellationToken)).Contains("--vad-model", StringComparison.Ordinal);
+
+    /// <summary>The options the whisper.exe in use lists, asked of it once; empty when it could not be asked.</summary>
+    private static async Task<string> HelpAsync(CancellationToken cancellationToken)
     {
         var path = DependencyUpdater.WhisperPath;
         if (!File.Exists(path))
-            return false;
+            return "";
 
         var program = $"{path}|{File.GetLastWriteTimeUtc(path).Ticks}";
-        if (_vadSupport is { } known && known.Program == program)
-            return known.Supported;
+        if (_help is { } known && known.Program == program)
+            return known.Help;
 
         try
         {
@@ -214,13 +285,13 @@ public static partial class CaptionGenerator
                 .WithArguments(["--help"])
                 .WithWorkingDirectory(Path.GetDirectoryName(path) ?? DependencyUpdater.ToolFolder(DependencyUpdater.Whisper))
                 .WithValidation(CommandResultValidation.None), cancellationToken);
-            var supported = (result.StandardOutput + result.StandardError).Contains("--vad-model", StringComparison.Ordinal);
-            _vadSupport = (program, supported);
-            return supported;
+            var help = result.StandardOutput + result.StandardError;
+            _help = (program, help);
+            return help;
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            return false;
+            return "";
         }
     }
 
