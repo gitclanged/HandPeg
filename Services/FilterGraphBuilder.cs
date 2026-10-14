@@ -26,6 +26,15 @@ public sealed record ExportAudioTrack(
     public List<string> BuildEditChain() => [.. EditChain];
 
     public List<string> GetFilterChain() => [.. FilterChain];
+
+    /// <summary>How far the track is slipped against the picture, in seconds (later when above 0). Live Preview lays the slip out itself.</summary>
+    public double Offset { get; init; }
+
+    /// <summary>The stretches silenced on the timeline, in the track's own seconds.</summary>
+    public IReadOnlyList<(double Start, double End)> MutedSpans { get; init; } = [];
+
+    /// <summary>Whether the track is played just as it is in the file: nothing silenced, no slip, no gain or processing.</summary>
+    public bool IsPlain => MutedSpans.Count == 0 && Math.Abs(Offset) < 0.001 && !HasProcessing;
 }
 
 /// <summary>
@@ -911,24 +920,26 @@ public static class FilterGraphBuilder
         }
 
         /// <summary>
-        /// The sound half of the live graph: the main video's audio track with the sound of the layers (video
-        /// layers that carry sound, and audio clips) mixed into it, from the player's audio track to its
-        /// speakers. Empty when no layer has sound left to play, and then the player is given no audio graph at
-        /// all: it plays the track as it is, with nothing in between.
+        /// The sound half of the live graph, from the player's audio tracks to its speakers: every audio track
+        /// of the video that is kept (not muted), with what the export does to it, and the sound of the layers
+        /// (video layers that carry sound, and audio clips), mixed. Empty when there is nothing to it but one
+        /// track played as it is: the player is then given no audio graph, and plays that track itself.
+        ///
+        /// Each track, as the export has it: its silenced stretches, its slip, ducked under the voices when it is
+        /// set to duck, then its own gain and processing (filters, EQ, compressor...). The fades in and out are
+        /// heard too. Not the cuts, which playback skips over by itself (Play Only Cut Segments), nor loudness
+        /// normalization, which holds seconds of sound back and would fall out of step with the picture.
         ///
         /// A layer's sound is read from its file inside the graph (amovie), as the export reads it, and mpv
         /// does not seek such a source: after every jump it begins again at its beginning. Nor does the mix look
         /// at time stamps; it adds up whatever samples arrive. So the sound is laid out from one moment, the one
-        /// playback starts at: every layer is cut and held back as that moment needs, the main video's track is
+        /// playback starts at: every layer is cut and held back as that moment needs, each track of the video is
         /// made to begin exactly there (aresample's first_pts drops what comes before it and fills in what is
-        /// missing), and all of them then start level. A jump to another moment needs the graph built again for
-        /// that moment, which is for whoever plays it to ask for.
-        ///
-        /// Left out, as they are from the rest of the preview: the cuts, the fades, each track's own filters,
-        /// auto-ducking and the voiceover.
+        /// missing), and all of them are then counted from that moment (asetpts) and start level. A jump to
+        /// another moment needs the graph built again for that moment, which is for whoever plays it to ask for.
         /// </summary>
         /// <param name="from">The moment playback starts from, in sequence seconds.</param>
-        /// <param name="mainTrack">Which of the main video's audio tracks the player plays, counted from 0; negative when it has none.</param>
+        /// <param name="mainTrack">Negative when the video has no sound of its own; otherwise every kept track is heard.</param>
         public string BuildLiveAudioGraph(double from, int mainTrack)
         {
             if (!HasSource)
@@ -936,31 +947,121 @@ public static class FilterGraphBuilder
 
             // Only what still has something to play: a clip that ended before this moment is not opened at all.
             var layers = GetLayerAudioSources().Where(l => l.Duration <= 0.001 || LayerAudioStart(l) + l.Duration > from + 0.05).ToList();
-            if (layers.Count == 0)
+            var tracks = mainTrack < 0 ? [] : GetOutputAudioTracks().Where(t => !t.IsSilentBase).ToList();
+            var fades = FadeIn || FadeOut;
+            if (layers.Count == 0 && !fades && tracks.Count <= 1 && tracks.All(t => t.IsPlain && !(t.AutoDuck && !t.IsVoice)))
                 return "";
 
-            // Every input in the one form, so that the mix has nothing to convert.
+            // Every input in the one form, and counted from the moment playback starts: what is mixed, and what is
+            // ducked under what, then lines up sample for sample.
             const string form = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+            const string fromHere = "asetpts=N/SR/TB";
+            var first = ((long)Math.Round(from * 48000)).ToString(CultureInfo.InvariantCulture);
             var graph = new List<string>();
-            if (mainTrack >= 0)
+            var inputs = new List<(string Name, bool Voice, bool Ducked, IReadOnlyList<string> Filters)>();
+
+            // Where the main video is not on the sequence the player plays a stand-in stretch of its file
+            // (see MainViewModel.PlayerSource), whose sound is not to be heard.
+            var gate = IsMainWholeSequence ? "" : $"volume=0:enable='not({FilterGraphBuilder.BuildMainGate(GetMainClips(), 0, SequenceSeconds)})',";
+            for (var k = 0; k < tracks.Count; k++)
             {
-                // Where the main video is not on the sequence the player plays a stand-in stretch of its file
-                // (see MainViewModel.PlayerSource), whose sound is not to be heard.
-                var gate = IsMainWholeSequence ? "" : $"volume=0:enable='not({FilterGraphBuilder.BuildMainGate(GetMainClips(), 0, SequenceSeconds)})',";
-                var first = ((long)Math.Round(from * 48000)).ToString(CultureInfo.InvariantCulture);
-                graph.Add($"[aid{(mainTrack + 1).ToString(CultureInfo.InvariantCulture)}]{gate}aresample=48000:async=1:first_pts={first},{form}[la_base]");
-            }
-            else
-            {
-                // No sound of the main video's own: silence to the end of the sequence, for the rest to be mixed into.
-                graph.Add($"anullsrc=r=48000:cl=stereo,atrim=end={Number(Math.Max(SequenceSeconds - from, 0.1))},asetpts=PTS+{Number(from)}/TB,{form}[la_base]");
+                var track = tracks[k];
+                var steps = new List<string>();
+
+                // Silenced where it was silenced on the timeline: the times are the track's own, as the player reads it.
+                foreach (var (start, end) in track.MutedSpans)
+                    steps.Add($"volume=0:enable='between(t,{Number(start)},{Number(end)})'");
+
+                // Slipped later: held back by as much. Slipped earlier: what comes before the moment it now plays
+                // at is dropped, and the rest moved up. (Slipped later, the first moments after a jump are silent:
+                // what would play there comes from before the point the player reads the track from.)
+                if (track.Offset > 0.001)
+                    steps.Add($"adelay={(int)Math.Round(track.Offset * 1000)}:all=1");
+                else if (track.Offset < -0.001)
+                    steps.Add($"atrim=start={Number(from - track.Offset)},asetpts=PTS-{Number(-track.Offset)}/TB");
+
+                graph.Add($"[aid{(track.Index + 1).ToString(CultureInfo.InvariantCulture)}]{gate}{string.Concat(steps.Select(step => step + ","))}"
+                          + $"aresample=48000:async=1:first_pts={first},{fromHere},{form}[lt{k}]");
+                inputs.Add(($"lt{k}", track.IsVoice, track.AutoDuck && !track.IsVoice, track.GetFilterChain()));
             }
 
+            if (tracks.Count == 0)
+            {
+                // No sound of the video's own: silence to the end of the sequence, for the rest to be mixed into.
+                graph.Add($"anullsrc=r=48000:cl=stereo,atrim=end={Number(Math.Max(SequenceSeconds - from, 0.1))},{form}[lt_base]");
+                inputs.Add(("lt_base", false, false, []));
+            }
+
+            // The layers bring their own gain and processing (see BuildLayerAudio).
             for (var n = 0; n < layers.Count; n++)
-                graph.Add($"{BuildLayerAudio(layers[n], from)},{form}[la_{n}]");
+            {
+                graph.Add($"{BuildLayerAudio(layers[n], from)},{fromHere},{form}[ll{n}]");
+                inputs.Add(($"ll{n}", layers[n].IsVoice, layers[n] is { AutoDuck: true, IsVoice: false }, []));
+            }
 
-            graph.Add($"[la_base]{string.Concat(layers.Select((_, n) => $"[la_{n}]"))}amix=inputs={layers.Count + 1}:duration=first:normalize=0:dropout_transition=0{LiveAudioOutput}");
+            // Auto-duck: the voices are mixed into one signal, which presses each ducked sound down while it is loud.
+            var voices = inputs.Where(i => i.Voice).ToList();
+            var ducked = inputs.Where(i => i.Ducked).ToList();
+            if (voices.Count > 0 && ducked.Count > 0)
+            {
+                var keys = new List<string>();
+                foreach (var voice in voices)
+                {
+                    graph.Add($"[{voice.Name}]asplit=2[{voice.Name}_hear][{voice.Name}_key]");
+                    keys.Add($"[{voice.Name}_key]");
+                    Rename(voice.Name, $"{voice.Name}_hear");
+                }
+
+                var key = keys[0];
+                if (keys.Count > 1)
+                {
+                    graph.Add($"{string.Concat(keys)}amix=inputs={keys.Count}:duration=longest:normalize=0[dkey]");
+                    key = "[dkey]";
+                }
+
+                if (ducked.Count > 1)
+                {
+                    graph.Add($"{key}asplit={ducked.Count}{string.Concat(ducked.Select((_, n) => $"[dkey{n}]"))}");
+                    for (var n = 0; n < ducked.Count; n++)
+                        Duck(ducked[n].Name, $"[dkey{n}]");
+                }
+                else
+                {
+                    Duck(ducked[0].Name, key);
+                }
+
+                // (A ducked sound is never a voice, so it still has the name it was given.)
+                void Duck(string name, string keyLabel)
+                {
+                    graph.Add($"[{name}]{keyLabel}{DuckFilter}[{name}_ducked]");
+                    Rename(name, $"{name}_ducked");
+                }
+            }
+
+            // Each track's own gain and processing, after the ducking, as in the export.
+            foreach (var input in inputs.Where(i => i.Filters.Count > 0).ToList())
+            {
+                graph.Add($"[{input.Name}]{string.Join(",", input.Filters)}[{input.Name}_fx]");
+                Rename(input.Name, $"{input.Name}_fx");
+            }
+
+            // The fades over the whole, on the sequence's clock: the mix is counted from the moment playback starts.
+            var finish = new List<string>();
+            if (FadeIn && from < FadeSeconds)
+                finish.Add($"volume='clip((t+{Number(from)})/{Number(FadeSeconds)},0,1)':eval=frame");
+            if (FadeOut && SequenceSeconds > FadeSeconds)
+                finish.Add($"volume='clip(({Number(SequenceSeconds)}-(t+{Number(from)}))/{Number(FadeSeconds)},0,1)':eval=frame");
+
+            // The first input sets how long the mix lasts: a track of the video, or the silence standing in for one.
+            var mix = inputs.Count == 1 ? $"[{inputs[0].Name}]anull" : $"{string.Concat(inputs.Select(i => $"[{i.Name}]"))}amix=inputs={inputs.Count}:duration=first:normalize=0:dropout_transition=0";
+            graph.Add($"{mix}{string.Concat(finish.Select(f => "," + f))}{LiveAudioOutput}");
             return string.Join(";", graph);
+
+            void Rename(string name, string to)
+            {
+                var at = inputs.FindIndex(i => i.Name == name);
+                inputs[at] = inputs[at] with { Name = to };
+            }
         }
 
         // What makes the live graph cheaper than the export's, while showing the same layers in the same places:

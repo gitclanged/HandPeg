@@ -85,7 +85,11 @@ public partial class MainViewModel
         var tracks = GetOutputAudioTracks()
             .Select(t => new ExportAudioTrack(
                 t.Index, t.Title, t.Codec, t.Bitrate, t.IsPassthrough, t.Stream.Channels == 1, t.AutoDuck, t.IsVoice,
-                ReferenceEquals(t, _silentBase), t.HasProcessing, t.BuildEditChain(), t.GetFilterChain()))
+                ReferenceEquals(t, _silentBase), t.HasProcessing, t.BuildEditChain(), t.GetFilterChain())
+            {
+                Offset = t.OffsetSeconds,
+                MutedSpans = t.Pieces.Where(p => p.Muted).Select(p => (p.Start, p.End)).ToList(),
+            })
             .ToList();
 
         return new SequenceExportState
