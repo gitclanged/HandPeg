@@ -44,6 +44,11 @@ public static partial class Waveforms
         if (!File.Exists(DependencyUpdater.FfmpegPath) || !File.Exists(mediaPath) || trackIndexes.Count == 0)
             return null;
 
+        // Read before, for this file as it is and these tracks: the peaks are taken from the cache.
+        var kind = "wave" + string.Join("-", trackIndexes);
+        if (PreviewCache.Timeline.ReadBytes(mediaPath, kind, ".peaks") is { } kept && ReadPeaks(kept) is var (keptLows, keptHighs))
+            return Picture(new WaveformData(keptLows, keptHighs, BrushOf(color)));
+
         var inputs = string.Concat(trackIndexes.Select(index => $"[0:a:{index}]"));
         var mix = trackIndexes.Count > 1 ? $"amix=inputs={trackIndexes.Count}:normalize=0," : "";
 
@@ -87,10 +92,38 @@ public static partial class Waveforms
         if (result.ExitCode != 0 || highs.Count == 0)
             return null;
 
-        var data = new WaveformData(lows.ToArray(), highs.ToArray(), BrushOf(color));
-        var picture = Draw(data, Math.Max(width, 2), Math.Max(height, 2));
-        Peaks.AddOrUpdate(picture, data);
-        return picture;
+        PreviewCache.Timeline.WriteBytes(mediaPath, kind, ".peaks", WritePeaks(lows, highs));
+        return Picture(new WaveformData(lows.ToArray(), highs.ToArray(), BrushOf(color)));
+
+        ImageSource Picture(WaveformData data)
+        {
+            var picture = Draw(data, Math.Max(width, 2), Math.Max(height, 2));
+            Peaks.AddOrUpdate(picture, data);
+            return picture;
+        }
+    }
+
+    // Peaks as they are kept on disk: how many pairs, then the lows, then the highs, as 32-bit floats.
+    private static byte[] WritePeaks(List<float> lows, List<float> highs)
+    {
+        var bytes = new byte[4 + highs.Count * 8];
+        BitConverter.TryWriteBytes(bytes.AsSpan(0, 4), highs.Count);
+        System.Runtime.InteropServices.MemoryMarshal.AsBytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(lows)).CopyTo(bytes.AsSpan(4));
+        System.Runtime.InteropServices.MemoryMarshal.AsBytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(highs)).CopyTo(bytes.AsSpan(4 + highs.Count * 4));
+        return bytes;
+    }
+
+    private static (float[] Lows, float[] Highs)? ReadPeaks(byte[] bytes)
+    {
+        if (bytes.Length < 4)
+            return null;
+
+        var count = BitConverter.ToInt32(bytes, 0);
+        if (count <= 0 || bytes.Length != 4 + count * 8L)
+            return null;
+
+        var floats = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(bytes.AsSpan(4));
+        return (floats[..count].ToArray(), floats[count..].ToArray());
     }
 
     /// <summary>Reduces 16-bit samples, as they arrive, to the lowest and highest of every so many.</summary>

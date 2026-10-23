@@ -6,6 +6,7 @@
         xmlns:vm="clr-namespace:HandPegApp.ViewModels"
         xmlns:local="clr-namespace:HandPegApp"
         xmlns:models="clr-namespace:HandPegApp.Models"
+        xmlns:views="clr-namespace:HandPegApp.Views"
         mc:Ignorable="d"
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel}"
         Title="HandPeg" Height="1030" Width="1280" MinHeight="800" MinWidth="1100"
@@ -341,6 +342,10 @@
                     <CheckBox Content="Source" IsChecked="{Binding ShowSourcePane}" Margin="0,2"
                               Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Source Pane"
                               ToolTip="The Source pane at the top of the side column: the box for a file path or a web address, and the download resolution. With it closed, a video is still opened by dropping it on the window." />
+                    <!-- Editor Mode's: what is dragged from it goes onto the timeline. -->
+                    <CheckBox Content="Media Browser" IsChecked="{Binding ShowMediaBrowser}" Margin="0,2"
+                              Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Media Browser Pane"
+                              ToolTip="The media browser in the side column: a folder's videos, sounds and pictures. Move the pointer across a video to see through it; drag files onto a layer track, after the main video, or onto the Audio tab." />
                     <CheckBox Content="Cut Segments" IsChecked="{Binding ShowCutSegmentsPane}" Margin="0,2"
                               ToolTip="The list of cut segments beside the player." />
                     <CheckBox Content="Keyframes" IsChecked="{Binding ShowKeyframesPane}" Margin="0,2"
@@ -563,9 +568,12 @@
                 pane and under it the Cut Segments pane. All three panes are shown and hidden from the Views menu.
                 In Encoder Mode, with neither of its two panes open, the column closes and the player has the width.
             -->
+            <!-- Rows: the header, the Source pane, the media browser, the border under it, the Keyframes and Cut Segments panes. -->
             <Grid Grid.Column="2" x:Name="SidePanes">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="0" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
@@ -684,7 +692,20 @@
             </Border>
 
             <!-- The panes themselves: one over the other, either way round, with a border between them to drag. -->
-            <Grid Grid.Row="2" x:Name="SidePaneStack" SizeChanged="SidePaneStack_SizeChanged">
+            <!--
+                The media browser (Editor Mode, Views menu): a folder's videos, sounds and pictures, to drag onto the
+                timeline. It shares the column's height with the Keyframes and Cut Segments panes, by the border under it.
+            -->
+            <Border Grid.Row="2" x:Name="MediaBrowserPanel" Style="{StaticResource Panel}" Margin="0,0,0,0"
+                    Visibility="{Binding IsMediaBrowserVisible, Converter={StaticResource BoolToVisibility}}">
+                <views:MediaBrowserPane x:Name="MediaBrowser" />
+            </Border>
+            <GridSplitter Grid.Row="3" x:Name="MediaBrowserSplitter" Height="2" Margin="0,4" HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                          ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" KeyboardIncrement="16" Visibility="Collapsed"
+                          Style="{StaticResource QuietSplitter}" Cursor="SizeNS" DragCompleted="MediaBrowserSplitter_DragCompleted"
+                          ToolTip="Drag to share the height between the media browser and the panes under it" AutomationProperties.Name="Resize media browser height" />
+
+            <Grid Grid.Row="4" x:Name="SidePaneStack" SizeChanged="SidePaneStack_SizeChanged">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -1469,7 +1490,16 @@
                 <!-- Not built with the window: made when the tab is first opened, or once the window is idle (RealizeTab). -->
                 <TabItem.Tag>
                 <DataTemplate>
-                    <DockPanel IsEnabled="{Binding IsVideoReencoded}">
+                    <!--
+                        Not switched off while the video is copied (Video tab: Copy): the cut tools and the main video's
+                        bar are what a stream copy is edited with. Only what adds layers needs the picture encoded.
+                    -->
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" Margin="0,0,0,6" Padding="10,6" CornerRadius="4" Background="{DynamicResource InsetBrush}"
+                                Visibility="{Binding IsVideoReencoded, Converter={StaticResource InverseBoolToVisibility}}">
+                            <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}"
+                                       Text="The video is copied as it is (Video tab: Copy), so layers, moves and splits of the main video are not rendered. Mark what to keep with [ and ] (or I and O), Split, Trim and Delete work on the cut segments. Choose a video encoder to edit with layers." />
+                        </Border>
                         <!--
                             Everything below the layers in one panel: what adds a layer, and the editing tools.
                             On one row when the window is wide enough; wrapping when it is not.
@@ -1479,7 +1509,7 @@
                                 One button adds a layer of any kind: it opens a menu of the kinds. Its icon is drawn
                                 from geometry: two sheets, one over the other, and a plus.
                             -->
-                            <ToggleButton x:Name="AddLayerButton" Padding="10,5" Margin="0,2,0,2" AutomationProperties.Name="Add Layer"
+                            <ToggleButton x:Name="AddLayerButton" Padding="10,5" Margin="0,2,0,2" AutomationProperties.Name="Add Layer" IsEnabled="{Binding IsVideoReencoded}"
                                           ToolTip="Add a layer: a video, an image, text, or a piece of the main video.">
                                 <StackPanel Orientation="Horizontal">
                                     <Path Width="18" Height="16" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
@@ -1515,7 +1545,7 @@
                                     </StackPanel>
                                 </Border>
                             </Popup>
-                            <Button Content="HUD Masks" Padding="12,5" Margin="6,2,0,2" Click="HudMasks_Click"
+                            <Button Content="HUD Masks" Padding="12,5" Margin="6,2,0,2" Click="HudMasks_Click" IsEnabled="{Binding IsVideoReencoded}"
                                     ToolTip="Takes a game's HUD apart into layers (killfeed, health, abilities, ultimate), all sharing one mask traced round the game's HUD, so each can be moved on its own. For Overwatch, Apex Legends, Marvel Rivals, The Finals and Counter-Strike 2, or from a mask of your own." />
                             <!-- The editing tools, as icons: each works on whatever block is selected on a time bar -->
                             <Button Content="[" FontFamily="Consolas" FontWeight="Bold" FontSize="14" Padding="11,5" Margin="18,0,4,0" Command="{Binding AddStartPointCommand}"
@@ -1607,6 +1637,7 @@
                             <TextBlock Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="14,0,18,0" />
                         </WrapPanel>
 
+
                         <!--
                             Text Settings: the words of the text layer that is selected (its row here, or its block on
                             the timeline), and how they are drawn. Not there while anything else is selected.
@@ -1667,13 +1698,44 @@
                                 </WrapPanel>
                             </Grid>
                         </GroupBox>
+                        <!-- Moves the time bars along the sequence while they are zoomed in (lined up with them from code) -->
+                        <ScrollBar DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,2,0,0" Visibility="Hidden"
+                                   Loaded="TimelineScroll_Loaded" Unloaded="TimelineScroll_Unloaded" Scroll="TimelineScroll_Scroll" AutomationProperties.Name="Timeline Scroll (Layers)" />
+
+                        <!--
+                            The timeline's view, shared by the Layers and Audio tabs: over the names, zoom out, the zoom,
+                            zoom in, fit the whole sequence, and snapping; over the time bars, the ruler (lined up with
+                            them from code). The wheel over the ruler zooms, Shift + wheel moves along.
+                        -->
+                        <Grid DockPanel.Dock="Top" Height="24" Margin="0,2,0,2">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" TextElement.FontSize="11">
+                                <Button Content="&#xE71F;" FontFamily="Segoe MDL2 Assets" Padding="7,3" Click="TimelineZoomOut_Click"
+                                        AutomationProperties.Name="Zoom Timeline Out (Layers)" ToolTip="Zoom out: the time bars show more of the sequence (- key, or the wheel over the ruler)." />
+                                <Slider Width="74" Margin="5,0" VerticalAlignment="Center" Minimum="0" Maximum="1" SmallChange="0.02" LargeChange="0.1"
+                                        Loaded="TimelineZoomSlider_Loaded" Unloaded="TimelineZoomSlider_Unloaded" ValueChanged="TimelineZoomSlider_ValueChanged"
+                                        AutomationProperties.Name="Timeline Zoom (Layers)" ToolTip="Timeline zoom: left shows the whole sequence, right a fraction of a second across." />
+                                <Button Content="&#xE8A3;" FontFamily="Segoe MDL2 Assets" Padding="7,3" Click="TimelineZoomIn_Click"
+                                        AutomationProperties.Name="Zoom Timeline In (Layers)" ToolTip="Zoom in: the time bars show less of the sequence, larger (= key, or the wheel over the ruler)." />
+                                <Button Content="&#xE9A6;" FontFamily="Segoe MDL2 Assets" Padding="7,3" Margin="4,0,0,0" Click="TimelineZoomFit_Click"
+                                        AutomationProperties.Name="Fit Timeline (Layers)" ToolTip="Fit: the time bars show the whole sequence, with room after its end to drop clips into (\ key)." />
+                                <ToggleButton Padding="6,3" Margin="4,0,0,0" IsChecked="{Binding SnapClips}" AutomationProperties.Name="Snap Clips (Layers)"
+                                              ToolTip="Snap: a dragged or dropped clip's edges catch on the edges of the other clips, the end of the sequence and the playhead. Hold Alt while dragging to place it freely.">
+                                    <Path Width="14" Height="13" Stretch="None" StrokeThickness="1.3" StrokeLineJoin="Round"
+                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                                          Data="M 2,1 L 2,7 A 5,5 0 0 0 12,7 L 12,1 L 9,1 L 9,7 A 2,2 0 0 1 5,7 L 5,1 Z M 2,4 L 5,4 M 9,4 L 12,4" />
+                                </ToggleButton>
+                            </StackPanel>
+                            <local:TimelineRuler Background="{DynamicResource InsetBrush}" Visibility="Hidden" Cursor="Hand" ClipToBounds="True"
+                                                 Loaded="TimelineRuler_Loaded" Unloaded="TimelineRuler_Unloaded" AutomationProperties.Name="Time Ruler (Layers)"
+                                                 ToolTip="Click or drag to move the playhead. The wheel zooms the time bars about the pointer; Shift + wheel, or a drag with the middle button, moves along. The shaded part after the end is room to drop or drag clips into." />
+                        </Grid>
 
                         <!--
                             One row per layer, the front one first: the caption box (while auto-captions are on), the layers
                             added by hand with the main video among them, and the blurred background at the bottom.
                             The main video is a row like the others, named after its file.
                         -->
-                        <ListBox ItemsSource="{Binding LayerRows}" x:Name="LayersList" SizeChanged="TrackList_SizeChanged" AllowDrop="True" SelectionChanged="LayersList_SelectionChanged"
+                        <ListBox ItemsSource="{Binding LayerRows}" x:Name="LayersList" SizeChanged="TrackList_SizeChanged" AllowDrop="True" SelectionChanged="LayersList_SelectionChanged" Grid.IsSharedSizeScope="True"
                                  VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling"
                                  VirtualizingPanel.ScrollUnit="Pixel" ScrollViewer.CanContentScroll="True"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="Layers">
@@ -1774,10 +1836,11 @@
                                         <Grid.ContextMenu>
                                             <ContextMenu />
                                         </Grid.ContextMenu>
+                                        <!-- The controls' column is as wide in every row, so that every time bar spans the same stretch of the screen. -->
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="232" />
                                             <ColumnDefinition Width="*" MinWidth="90" />
-                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="LayerControls" />
                                         </Grid.ColumnDefinitions>
 
                                         <!-- Left: the order buttons, the kind of thing it is, its name, and the arrow that folds its controls away -->
@@ -1793,8 +1856,9 @@
                                                         ToolTip="Move this layer down, towards the back: the layers above it are drawn over it."
                                                         Command="{Binding DataContext.MoveLayerDownCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}" />
                                             </StackPanel>
-                                            <ToggleButton x:Name="layerExpand" DockPanel.Dock="Right" IsChecked="True" Padding="6,4" Margin="6,0,0,0" FontFamily="Segoe MDL2 Assets" FontSize="10"
-                                                          AutomationProperties.Name="Show Layer Controls" ToolTip="Shows or folds away this layer's controls on the right, leaving more room for its time bar.">
+                                            <ToggleButton x:Name="layerExpand" DockPanel.Dock="Right" Padding="6,4" Margin="6,0,0,0" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                                          IsChecked="{Binding DataContext.LayerControlsShown, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                          AutomationProperties.Name="Show Layer Controls" ToolTip="Shows or folds away the layers' controls on the right, leaving more room for the time bars. Every row folds together, so the time bars stay lined up.">
                                                 <ToggleButton.Style>
                                                     <Style TargetType="ToggleButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
                                                         <Setter Property="Content" Value="&#xE76C;" />
@@ -2091,6 +2155,36 @@
                         </Border>
                     </Grid>
 
+                    <!-- Moves the time bars along the sequence while they are zoomed in (lined up with them from code) -->
+                    <ScrollBar DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,2,0,0" Visibility="Hidden"
+                               Loaded="TimelineScroll_Loaded" Unloaded="TimelineScroll_Unloaded" Scroll="TimelineScroll_Scroll" AutomationProperties.Name="Timeline Scroll (Audio)" />
+                    <!--
+                        The timeline's view, shared by the Layers and Audio tabs: over the names, zoom out, the zoom,
+                        zoom in, fit the whole sequence, and snapping; over the time bars, the ruler (lined up with
+                        them from code). The wheel over the ruler zooms, Shift + wheel moves along.
+                    -->
+                    <Grid DockPanel.Dock="Top" Height="24" Margin="0,8,0,0">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" TextElement.FontSize="11">
+                            <Button Content="&#xE71F;" FontFamily="Segoe MDL2 Assets" Padding="7,3" Click="TimelineZoomOut_Click"
+                                    AutomationProperties.Name="Zoom Timeline Out (Audio)" ToolTip="Zoom out: the time bars show more of the sequence (- key, or the wheel over the ruler)." />
+                            <Slider Width="74" Margin="5,0" VerticalAlignment="Center" Minimum="0" Maximum="1" SmallChange="0.02" LargeChange="0.1"
+                                    Loaded="TimelineZoomSlider_Loaded" Unloaded="TimelineZoomSlider_Unloaded" ValueChanged="TimelineZoomSlider_ValueChanged"
+                                    AutomationProperties.Name="Timeline Zoom (Audio)" ToolTip="Timeline zoom: left shows the whole sequence, right a fraction of a second across." />
+                            <Button Content="&#xE8A3;" FontFamily="Segoe MDL2 Assets" Padding="7,3" Click="TimelineZoomIn_Click"
+                                    AutomationProperties.Name="Zoom Timeline In (Audio)" ToolTip="Zoom in: the time bars show less of the sequence, larger (= key, or the wheel over the ruler)." />
+                            <Button Content="&#xE9A6;" FontFamily="Segoe MDL2 Assets" Padding="7,3" Margin="4,0,0,0" Click="TimelineZoomFit_Click"
+                                    AutomationProperties.Name="Fit Timeline (Audio)" ToolTip="Fit: the time bars show the whole sequence, with room after its end to drop clips into (\ key)." />
+                            <ToggleButton Padding="6,3" Margin="4,0,0,0" IsChecked="{Binding SnapClips}" AutomationProperties.Name="Snap Clips (Audio)"
+                                          ToolTip="Snap: a dragged or dropped clip's edges catch on the edges of the other clips, the end of the sequence and the playhead. Hold Alt while dragging to place it freely.">
+                                <Path Width="14" Height="13" Stretch="None" StrokeThickness="1.3" StrokeLineJoin="Round"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                                      Data="M 2,1 L 2,7 A 5,5 0 0 0 12,7 L 12,1 L 9,1 L 9,7 A 2,2 0 0 1 5,7 L 5,1 Z M 2,4 L 5,4 M 9,4 L 12,4" />
+                            </ToggleButton>
+                        </StackPanel>
+                        <local:TimelineRuler Background="{DynamicResource InsetBrush}" Visibility="Hidden" Cursor="Hand" ClipToBounds="True"
+                                             Loaded="TimelineRuler_Loaded" Unloaded="TimelineRuler_Unloaded" AutomationProperties.Name="Time Ruler (Audio)"
+                                             ToolTip="Click or drag to move the playhead. The wheel zooms the time bars about the pointer; Shift + wheel, or a drag with the middle button, moves along. The shaded part after the end is room to drop or drag clips into." />
+                    </Grid>
                     <!--
                         One list for every sound on the timeline: the video's own audio tracks, and after them the
                         sounds added from files. Every row is made from the one template below, whichever of the two
@@ -2104,7 +2198,7 @@
                         that is what keeps every row's timeline the same width. The names bound to are ones both
                         AudioTrack and Layer have.
                     -->
-                    <ListBox Margin="0,8,0,0" ItemsSource="{Binding AudioRows}" SizeChanged="TrackList_SizeChanged" AutomationProperties.Name="Audio Tracks" AllowDrop="True"
+                    <ListBox Margin="0,2,0,0" ItemsSource="{Binding AudioRows}" SizeChanged="TrackList_SizeChanged" AutomationProperties.Name="Audio Tracks" AllowDrop="True" Grid.IsSharedSizeScope="True"
                              VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling"
                              VirtualizingPanel.ScrollUnit="Pixel" ScrollViewer.CanContentScroll="True"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
@@ -2229,7 +2323,7 @@
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="232" />
                                         <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" SharedSizeGroup="AudioControls" />
                                     </Grid.ColumnDefinitions>
                                     <DockPanel VerticalAlignment="Center" Margin="0,0,10,0">
                                         <!-- Plays a track of the video on its own: the player switches to it, and back to the first track when pressed again -->

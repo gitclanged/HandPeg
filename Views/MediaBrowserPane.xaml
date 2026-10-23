@@ -1,0 +1,151 @@
+<UserControl x:Class="HandPegApp.Views.MediaBrowserPane"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:sys="clr-namespace:System;assembly=mscorlib"
+             IsVisibleChanged="Pane_IsVisibleChanged">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+        <SolidColorBrush x:Key="Shade" Color="#B0000000" />
+        <!-- How large a tile is, set from code for the view chosen -->
+        <sys:Double x:Key="TileWidth">200</sys:Double>
+        <sys:Double x:Key="TileHeight">112</sys:Double>
+
+        <!--
+            A tile: the picture (a frame of the video, which follows the pointer across it), the length in a corner,
+            a line along the bottom for where the pointer is, and the name under it.
+        -->
+        <DataTemplate x:Key="TileTemplate">
+            <StackPanel Width="{DynamicResource TileWidth}" Margin="3" Background="Transparent">
+                <Grid Height="{DynamicResource TileHeight}" Background="{DynamicResource InsetBrush}" ClipToBounds="True"
+                      MouseMove="Picture_MouseMove" MouseLeave="Picture_MouseLeave">
+                    <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Foreground="{DynamicResource MutedTextBrush}" />
+                    <Image Source="{Binding Shown}" Stretch="Uniform" />
+                    <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="3" Padding="4,1" CornerRadius="3" Background="{StaticResource Shade}">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Visible" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Info}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsScrubbing}" Value="True">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <TextBlock Text="{Binding Info}" FontSize="10.5" Foreground="White" />
+                    </Border>
+                    <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="3,3,3,6" Padding="4,1" CornerRadius="3" Background="{StaticResource Shade}"
+                            Visibility="{Binding IsScrubbing, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="{Binding HoverText}" FontSize="10.5" Foreground="White" />
+                    </Border>
+                    <Rectangle Height="3" VerticalAlignment="Bottom" HorizontalAlignment="Stretch" Fill="{DynamicResource AccentBrush}" RenderTransformOrigin="0,0.5"
+                               Visibility="{Binding IsScrubbing, Converter={StaticResource BoolToVisibility}}">
+                        <Rectangle.RenderTransform>
+                            <ScaleTransform ScaleX="{Binding HoverFraction}" />
+                        </Rectangle.RenderTransform>
+                    </Rectangle>
+                </Grid>
+                <!-- The path is the name's tooltip, not the picture's: over the picture it would hide the time being scrubbed. -->
+                <TextBlock Text="{Binding Name}" Margin="1,3,1,0" FontSize="11.5" TextTrimming="CharacterEllipsis" ToolTip="{Binding Path}" />
+            </StackPanel>
+        </DataTemplate>
+
+        <!-- A row of the list view: a small picture (which follows the pointer too), the name, and the length or size -->
+        <DataTemplate x:Key="RowTemplate">
+            <DockPanel Margin="1" Background="Transparent">
+                <Grid DockPanel.Dock="Left" Width="64" Height="36" Background="{DynamicResource InsetBrush}" ClipToBounds="True"
+                      MouseMove="Picture_MouseMove" MouseLeave="Picture_MouseLeave">
+                    <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Foreground="{DynamicResource MutedTextBrush}" />
+                    <Image Source="{Binding Shown}" Stretch="Uniform" />
+                    <Rectangle Height="2" VerticalAlignment="Bottom" HorizontalAlignment="Stretch" Fill="{DynamicResource AccentBrush}" RenderTransformOrigin="0,0.5"
+                               Visibility="{Binding IsScrubbing, Converter={StaticResource BoolToVisibility}}">
+                        <Rectangle.RenderTransform>
+                            <ScaleTransform ScaleX="{Binding HoverFraction}" />
+                        </Rectangle.RenderTransform>
+                    </Rectangle>
+                </Grid>
+                <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Path}" />
+                    <TextBlock FontSize="11" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="{Binding Info}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsScrubbing}" Value="True">
+                                        <Setter Property="Text" Value="{Binding HoverText}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </DockPanel>
+        </DataTemplate>
+
+        <ItemsPanelTemplate x:Key="TilePanel">
+            <WrapPanel />
+        </ItemsPanelTemplate>
+        <ItemsPanelTemplate x:Key="RowPanel">
+            <VirtualizingStackPanel />
+        </ItemsPanelTemplate>
+    </UserControl.Resources>
+
+    <DockPanel>
+        <!-- The title, and against the right edge the view chosen and Refresh -->
+        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+            <Button DockPanel.Dock="Right" Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="8,4" Margin="6,0,0,0" Click="Refresh_Click"
+                    AutomationProperties.Name="Refresh Media Browser" ToolTip="Reads the folder again." />
+            <ComboBox DockPanel.Dock="Right" x:Name="ViewBox" MinWidth="86" Margin="0" SelectionChanged="ViewBox_SelectionChanged"
+                      AutomationProperties.Name="Media Browser View" ToolTip="How the files are shown: as a list, or as tiles of three sizes. Move the pointer across a video's picture to see through it.">
+                <ComboBoxItem Content="List" />
+                <ComboBoxItem Content="Small" />
+                <ComboBoxItem Content="Medium" />
+                <ComboBoxItem Content="Large" />
+            </ComboBox>
+            <TextBlock Text="Media" FontWeight="SemiBold" VerticalAlignment="Center" />
+        </DockPanel>
+
+        <!-- The folder: up a level, the path (type one and press Enter), Browse inside the box as in the Source pane -->
+        <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Button Content="&#xE74A;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="8,0" Margin="0,0,4,0" Click="Up_Click"
+                    AutomationProperties.Name="Up One Folder" ToolTip="Up one folder (Backspace in the list)." />
+            <TextBox Grid.Column="1" x:Name="PathBox" VerticalContentAlignment="Center" Padding="6,5,4,5" KeyDown="PathBox_KeyDown"
+                     AutomationProperties.Name="Media Folder Path" ToolTip="The folder shown. Type or paste another and press Enter; leave it empty and press Enter for the drives." />
+            <Button Grid.Column="2" Style="{DynamicResource InFieldButton}" Content="Browse" Padding="12,0" Margin="-1,0,0,0" Click="Browse_Click"
+                    AutomationProperties.Name="Browse for Media Folder" ToolTip="Choose a folder." />
+        </Grid>
+
+        <TextBlock DockPanel.Dock="Bottom" x:Name="StatusText" Margin="0,4,0,0" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis"
+                   Text="Drag files onto the Layers or Audio tab; double-click a folder to open it." />
+
+        <!--
+            The files. Dragged out, they drop like files from Explorer: onto a layer track, after the main video, on
+            the Audio tab, or on the player. Double-click: a folder opens; a file is added at the playhead (or loaded,
+            when nothing is). Right-click for more.
+        -->
+        <ListBox x:Name="Items" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 ItemTemplate="{StaticResource TileTemplate}" ItemsPanel="{StaticResource TilePanel}"
+                 VirtualizingPanel.ScrollUnit="Pixel" AutomationProperties.Name="Media Files"
+                 PreviewMouseLeftButtonDown="Items_PreviewMouseLeftButtonDown" PreviewMouseMove="Items_PreviewMouseMove" PreviewMouseLeftButtonUp="Items_PreviewMouseLeftButtonUp"
+                 KeyDown="Items_KeyDown" ContextMenuOpening="Items_ContextMenuOpening">
+            <ListBox.ContextMenu>
+                <ContextMenu />
+            </ListBox.ContextMenu>
+            <ListBox.ItemContainerStyle>
+                <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                    <Setter Property="Padding" Value="1" />
+                    <EventSetter Event="MouseDoubleClick" Handler="Item_MouseDoubleClick" />
+                </Style>
+            </ListBox.ItemContainerStyle>
+        </ListBox>
+    </DockPanel>
+</UserControl>

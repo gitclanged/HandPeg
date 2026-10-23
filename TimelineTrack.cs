@@ -160,6 +160,13 @@ public sealed class TimelineTrack : TimelineBar
 
     private static readonly Pen SelectedOutline = Frozen(new Pen(Brushes.White, 1.5));
     private static readonly Brush LabelShade = FrozenBrush(Color.FromArgb(150, 0, 0, 0));
+
+    /// <summary>The room after the end of the sequence: darker, and where a clip dropped or dragged makes it longer.</summary>
+    internal static readonly Brush PastEndShade = FrozenBrush(Color.FromArgb(90, 0, 0, 0));
+    internal static readonly Pen EndLine = Frozen(new Pen(FrozenBrush(Color.FromArgb(150, 255, 255, 255)), 1));
+
+    /// <summary>How close, in pixels, a dragged edge has to come to something to snap to it.</summary>
+    public const double SnapPixels = 8;
     private static readonly Typeface LabelFace = new("Segoe UI");
 
     private (TimelineBlock Block, double PointerX, double Left, double Width, bool Resizing)? _drag;
@@ -172,6 +179,20 @@ public sealed class TimelineTrack : TimelineBar
     }
 
     public List<TimelineBlock> Blocks { get; } = [];
+
+    /// <summary>Where the sequence ends, in the bar's laid-out pixels (as the blocks are); what lies after it is shaded. NaN for no end drawn.</summary>
+    public double EndX { get; set; } = double.NaN;
+
+    /// <summary>How many of the bar's pixels a second of the sequence takes: what snapping measures in.</summary>
+    public double PixelsPerSecond { get; set; }
+
+    /// <summary>
+    /// The moments a dragged block's edges snap to, in seconds (the edges of the other clips, the playhead); null
+    /// for none. Asked once, when a drag begins. Holding Alt while dragging leaves them alone.
+    /// </summary>
+    public Func<IReadOnlyList<double>>? SnapTimes { get; set; }
+
+    private IReadOnlyList<double> _snapTimes = [];
 
     /// <summary>What is selected: the block that stands for it is outlined.</summary>
     public Func<object?, bool>? IsSelected { get; set; }
@@ -264,6 +285,15 @@ public sealed class TimelineTrack : TimelineBar
         DrawBackground(drawing);
         var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
+        // After the end of the sequence: the room a clip can be dropped or dragged into.
+        if (!double.IsNaN(EndX) && EndX - ViewOffsetX < ActualWidth)
+        {
+            var end = Math.Max(EndX - ViewOffsetX, 0);
+            drawing.DrawRectangle(PastEndShade, null, new Rect(end, 0, ActualWidth - end, ActualHeight));
+            if (EndX - ViewOffsetX >= 0)
+                drawing.DrawLine(EndLine, new Point(end + 0.5, 0), new Point(end + 0.5, ActualHeight));
+        }
+
         // The blocks are where the zoom puts them; the part of the bar that is seen is slid into view.
         drawing.PushTransform(new TranslateTransform(-ViewOffsetX, 0));
         foreach (var block in Blocks)
@@ -337,6 +367,27 @@ public sealed class TimelineTrack : TimelineBar
         }
 
         drawing.Pop();
+
+        // Where a file being dragged over the bar would land.
+        if (!double.IsNaN(_dropX) && _dropX >= -2 && _dropX <= ActualWidth + 2)
+            drawing.DrawRectangle(DropMarkBrush, null, new Rect(_dropX - 1.5, 0, 3, ActualHeight));
+    }
+
+    private static readonly Brush DropMarkBrush = FrozenBrush(Color.FromRgb(0x4F, 0xC3, 0xF7));
+    private double _dropX = double.NaN;
+
+    /// <summary>Where a file being dragged over the bar would land, in pixels from its left as it is seen; NaN for nowhere.</summary>
+    public double DropX
+    {
+        get => _dropX;
+        set
+        {
+            if (_dropX.Equals(value))
+                return;
+
+            _dropX = value;
+            InvalidateVisual();
+        }
     }
 
     /// <summary>
@@ -405,9 +456,14 @@ public sealed class TimelineTrack : TimelineBar
         if (block is { CanDrag: { } canDrag, Commit: not null })
         {
             if (!canDrag())
+            {
                 DragRefused?.Invoke(block.CannotDrag);
+            }
             else if (CaptureMouse())
+            {
                 _drag = (block, point.X, block.Left, block.Width, block.Resizable && point.X > block.Left + block.Width - EdgePixels);
+                _snapTimes = SnapTimes?.Invoke() ?? [];
+            }
         }
 
         e.Handled = true;
@@ -440,10 +496,38 @@ public sealed class TimelineTrack : TimelineBar
         // its clips reach, and the bars are drawn to the new length when it is let go.
         var moved = point.X - drag.PointerX;
         if (drag.Resizing)
-            drag.Block.Width = Math.Max(drag.Width + moved, 4);
+        {
+            var right = Snap(drag.Left + drag.Width + moved);
+            drag.Block.Width = Math.Max(right - drag.Left, 4);
+        }
         else
-            drag.Block.Left = drag.Block.MayStartBeforeZero ? drag.Left + moved : Math.Max(drag.Left + moved, 0);
+        {
+            // Either edge of a moved block snaps, whichever is the nearer to something.
+            var left = drag.Left + moved;
+            var (toLeft, toRight) = (Snap(left) - left, Snap(left + drag.Width) - (left + drag.Width));
+            left += Math.Abs(toLeft) <= Math.Abs(toRight) ? toLeft : toRight;
+            drag.Block.Left = drag.Block.MayStartBeforeZero ? left : Math.Max(left, 0);
+        }
+
         InvalidateVisual();
+    }
+
+    /// <summary>A point along the bar moved onto the nearest moment to snap to, when one is close enough; as it was otherwise, or while Alt is held.</summary>
+    private double Snap(double x)
+    {
+        if (PixelsPerSecond <= 0 || _snapTimes.Count == 0 || Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
+            return x;
+
+        var best = x;
+        var nearest = SnapPixels;
+        foreach (var time in _snapTimes)
+        {
+            var at = time * PixelsPerSecond;
+            if (Math.Abs(at - x) < nearest)
+                (best, nearest) = (at, Math.Abs(at - x));
+        }
+
+        return best;
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
@@ -473,6 +557,193 @@ public sealed class TimelineTrack : TimelineBar
         (_drag.Value.Block.Left, _drag.Value.Block.Width) = (_drag.Value.Left, _drag.Value.Width);
         _drag = null;
         DragEnded?.Invoke();
+    }
+
+    private static Brush FrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+}
+
+/// <summary>
+/// The time ruler over a tab's time bars: ticks and times for the stretch of the sequence the bars show, the end of
+/// the sequence (the room after it, where clips can be dropped and dragged, shaded), and the playhead. A press or
+/// a drag on it moves the playhead; the wheel zooms the bars about the pointer, and Shift + wheel or a drag with
+/// the middle button moves them along.
+/// </summary>
+public sealed class TimelineRuler : TimelineBar
+{
+    private static readonly Typeface Face = new("Segoe UI");
+    private static readonly Pen Tick = Frozen(new Pen(FrozenBrush(Color.FromArgb(150, 255, 255, 255)), 1));
+    private static readonly Pen MinorTick = Frozen(new Pen(FrozenBrush(Color.FromArgb(80, 255, 255, 255)), 1));
+    private static readonly Brush LabelBrush = FrozenBrush(Color.FromArgb(200, 255, 255, 255));
+
+    // Steps between labelled ticks, in seconds, with the step between the small ticks in between.
+    private static readonly (double Major, double Minor)[] Steps =
+    [
+        (0.05, 0.01), (0.1, 0.02), (0.2, 0.05), (0.5, 0.1), (1, 0.2), (2, 0.5), (5, 1), (10, 2), (15, 5), (30, 5), (60, 10),
+        (120, 30), (300, 60), (600, 120), (900, 300), (1800, 300), (3600, 600), (7200, 1800), (14400, 3600),
+    ];
+
+    private double _start, _span, _sequence;
+    private double? _panFrom;
+    private bool _seeking;
+
+    /// <summary>The ruler was pressed or dragged on: the playhead goes to this moment, in seconds.</summary>
+    public event Action<double>? SeekRequested;
+
+    /// <summary>The wheel was turned over it: zoom by a factor about a point (pixels from its left).</summary>
+    public event Action<double, double>? ZoomRequested;
+
+    /// <summary>Shift + wheel, or a middle-button drag: move along by so many pixels.</summary>
+    public event Action<double>? PanRequested;
+
+    /// <summary>Shows a stretch of the sequence: from <paramref name="start"/> seconds, <paramref name="span"/> seconds across, of a sequence <paramref name="sequence"/> seconds long.</summary>
+    public void Show(double start, double span, double sequence)
+    {
+        if (start == _start && span == _span && sequence == _sequence)
+            return;
+
+        (_start, _span, _sequence) = (start, span, sequence);
+        InvalidateVisual();
+    }
+
+    /// <summary>The moment at a point along the ruler.</summary>
+    public double TimeAt(double x) => ActualWidth > 0 ? _start + x / ActualWidth * _span : 0;
+
+    protected override void OnRender(DrawingContext drawing)
+    {
+        DrawBackground(drawing);
+        if (_span <= 0 || ActualWidth <= 0)
+            return;
+
+        var scale = ActualWidth / _span;
+        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+
+        var end = (_sequence - _start) * scale;
+        if (end < ActualWidth)
+        {
+            drawing.DrawRectangle(TimelineTrack.PastEndShade, null, new Rect(Math.Max(end, 0), 0, ActualWidth - Math.Max(end, 0), ActualHeight));
+            if (end >= 0)
+                drawing.DrawLine(TimelineTrack.EndLine, new Point(end + 0.5, 0), new Point(end + 0.5, ActualHeight));
+        }
+
+        // Labels at least this far apart, so that they never run into each other.
+        var (major, minor) = Steps.FirstOrDefault(step => step.Major * scale >= 84, Steps[^1]);
+        var bottom = ActualHeight;
+        var first = Math.Floor(_start / minor) * minor;
+        for (var i = 0; ; i++)
+        {
+            var time = first + i * minor;
+            var x = (time - _start) * scale;
+            if (x > ActualWidth)
+                break;
+            if (x < -1)
+                continue;
+
+            var isMajor = Math.Abs(time / major - Math.Round(time / major)) < 1e-6;
+            var top = isMajor ? bottom - 9 : bottom - 4;
+            drawing.DrawLine(isMajor ? Tick : MinorTick, new Point(Math.Round(x) + 0.5, top), new Point(Math.Round(x) + 0.5, bottom));
+            if (isMajor && time >= -1e-6)
+            {
+                var label = new FormattedText(Format(Math.Max(time, 0), major), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 10.5, LabelBrush, dpi);
+                drawing.DrawText(label, new Point(Math.Round(x) + 3, Math.Max(bottom - 9 - label.Height, 0)));
+            }
+        }
+    }
+
+    /// <summary>A moment as the ruler writes it: as precisely as its step needs, minutes and seconds, hours when there are any.</summary>
+    private static string Format(double seconds, double step)
+    {
+        var whole = (long)Math.Floor(seconds + 1e-6);
+        var (hours, minutes, rest) = (whole / 3600, whole / 60 % 60, whole % 60);
+        var text = hours > 0
+            ? string.Create(CultureInfo.InvariantCulture, $"{hours}:{minutes:00}:{rest:00}")
+            : string.Create(CultureInfo.InvariantCulture, $"{minutes}:{rest:00}");
+        if (step >= 1)
+            return text;
+
+        var fraction = seconds - whole;
+        return step >= 0.1
+            ? text + string.Create(CultureInfo.InvariantCulture, $".{(int)Math.Round(fraction * 10) % 10}")
+            : text + string.Create(CultureInfo.InvariantCulture, $".{(int)Math.Round(fraction * 100) % 100:00}");
+    }
+
+    protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
+    {
+        base.OnMouseLeftButtonDown(e);
+        if (!CaptureMouse())
+            return;
+
+        _seeking = true;
+        SeekRequested?.Invoke(TimeAt(e.GetPosition(this).X));
+        e.Handled = true;
+    }
+
+    protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseLeftButtonUp(e);
+        if (!_seeking)
+            return;
+
+        _seeking = false;
+        ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    protected override void OnMouseDown(MouseButtonEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.ChangedButton == MouseButton.Middle && CaptureMouse())
+        {
+            _panFrom = e.GetPosition(this).X;
+            Cursor = Cursors.ScrollWE;
+            e.Handled = true;
+        }
+    }
+
+    protected override void OnMouseUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.ChangedButton == MouseButton.Middle && _panFrom is not null)
+        {
+            _panFrom = null;
+            Cursor = null;
+            ReleaseMouseCapture();
+            e.Handled = true;
+        }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        var at = e.GetPosition(this).X;
+        if (_panFrom is { } from)
+        {
+            PanRequested?.Invoke(from - at);
+            _panFrom = at;
+        }
+        else if (_seeking)
+        {
+            SeekRequested?.Invoke(TimeAt(Math.Clamp(at, 0, ActualWidth)));
+        }
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        base.OnLostMouseCapture(e);
+        (_seeking, _panFrom) = (false, null);
+    }
+
+    protected override void OnMouseWheel(MouseWheelEventArgs e)
+    {
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+            PanRequested?.Invoke(-e.Delta);
+        else
+            ZoomRequested?.Invoke(Math.Pow(1.25, e.Delta / 120.0), e.GetPosition(this).X);
+        e.Handled = true;
     }
 
     private static Brush FrozenBrush(Color color)

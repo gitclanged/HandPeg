@@ -57,9 +57,9 @@ public partial class MainViewModel : ObservableObject
         nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips), nameof(IsEncoderMode),
         nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer), nameof(SelectedTextLayer), nameof(IsTextLayerSelected),
         nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(IsSubtitleEditorOpen), nameof(ShowLegacySubtitles), nameof(ShowSubtitleImportRow), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
-        nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName),
+        nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName), nameof(SnapClips), nameof(LayerControlsShown),
         nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
-        nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowSourcePane), nameof(IsSourcePaneVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
+        nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowSourcePane), nameof(IsSourcePaneVisible), nameof(ShowMediaBrowser), nameof(IsMediaBrowserVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
         nameof(RecentActions), nameof(HideDroppedTracks), nameof(HasSelectedKeyframe), nameof(SelectedKeyEasing), nameof(PreviewSubtitles),
     ];
 
@@ -1243,6 +1243,7 @@ public partial class MainViewModel : ObservableObject
             MergeAudioTracks = IsEditorMode;
         (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (settings.ShowCutSegmentsPane, settings.ShowKeyframesPane, settings.ShowClipKeyframes);
         ShowSourcePane = settings.ShowSourcePane;
+        ShowMediaBrowser = settings.ShowMediaBrowser;
         OnPropertyChanged(nameof(ModeButtonText));
 
         // The Layers tab draws the main video's clips with frames from it, which Encoder Mode has no use for.
@@ -1282,9 +1283,9 @@ public partial class MainViewModel : ObservableObject
             // The progress object is made here, on the UI thread, so its reports come back to it;
             // the download itself, and the handling of yt-dlp's output, run on the thread pool.
             var progress = new Progress<string>(ReportStatus);
-            var (resolution, subtitles, sponsorBlock) = (DownloadResolution, DownloadSubtitles, AppSettings.Current.SponsorBlockCategories);
+            var (resolution, subtitles, sponsorBlock, folder) = (DownloadResolution, DownloadSubtitles, AppSettings.Current.SponsorBlockCategories, AppSettings.Current.DownloadFolder);
             localPath = await Task.Run(
-                () => YtDlpDownloader.DownloadAsync(source, resolution, subtitles, sponsorBlock, progress, cancellationToken),
+                () => YtDlpDownloader.DownloadAsync(source, resolution, subtitles, sponsorBlock, folder, progress, cancellationToken),
                 cancellationToken);
         }
         else
@@ -1448,6 +1449,10 @@ public partial class MainViewModel : ObservableObject
         GenerateCommand();
         _ = ProbeHardwareEncodersAsync();
         _ = CheckDependencyUpdatesAsync();
+
+        // A cache made smaller, or switched off (which empties it), is brought to its new size.
+        PreviewCache.Timeline.QueueTrim();
+        PreviewCache.Browser.QueueTrim();
 
         var missing = DependencyUpdater.GetMissing();
         StatusText = missing.Count > 0

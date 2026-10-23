@@ -275,8 +275,12 @@ public partial class MainViewModel
     }
 
     /// <summary>Adds a picture from a file as a layer. Returns false when the file is not a readable image.</summary>
-    /// <param name="startSeconds">When on the timeline the layer appears; 0 with no length is the whole video.</param>
-    public bool AddImageLayer(string path, double startSeconds = 0)
+    /// <param name="startSeconds">
+    /// When on the timeline the layer appears; 0 with no length is the whole video. Placed after the end of the
+    /// sequence, it is given a few seconds of its own (a picture has no length), which the sequence grows to hold.
+    /// </param>
+    /// <param name="onTrack">The row it was dropped on: the main video's puts it in the main video's place, on a track of its own.</param>
+    public bool AddImageLayer(string path, double startSeconds = 0, Layer? onTrack = null)
     {
         if (ImageInfo.GetSize(path) is not { } size)
         {
@@ -296,11 +300,19 @@ public partial class MainViewModel
             PositionY = NextLayerY(),
             StartTime = Math.Round(Math.Max(startSeconds, 0), 2),
         };
+        if (element.StartTime >= SequenceSeconds - 0.05 && element.StartTime > 0.01)
+            element.Duration = PictureSeconds;
+        if (onTrack is { IsMainVideo: true } && FrameWidth > 0 && FrameHeight > 0)
+            FitInto(element, GetCenterRect());
+
         Checkpoint("add an image");
         AttachLayer(element);
         Log($"Added image layer {element.Name}");
         return true;
     }
+
+    /// <summary>How long a picture placed after the end of the sequence is shown for, in seconds.</summary>
+    private const double PictureSeconds = 5;
 
     /// <summary>Adds words as a layer, in the middle of the frame, and selects it so that its Text Settings are shown.</summary>
     [RelayCommand]
@@ -375,29 +387,90 @@ public partial class MainViewModel
 
     /// <summary>Adds a video from a file as a layer: it plays alongside the main video, and starts again when it runs out.</summary>
     /// <param name="startSeconds">
-    /// When on the timeline the layer appears. Placed at a moment, it plays once through from there; left at
-    /// the start, it runs for the whole video.
+    /// When on the timeline the layer appears. Placed at a moment, it plays once through from there, for as long
+    /// as the file lasts (the sequence grows to hold it); left at the start, it runs for the whole video.
     /// </param>
-    public async Task<bool> AddVideoLayerAsync(string path, double startSeconds = 0)
+    /// <param name="onTrack">
+    /// The row of the Layers tab the file was dropped on. A video track: the clip joins it, in its place and with
+    /// its look, so videos can follow each other on one row. The main video: the clip goes on a new track, sized and
+    /// placed as the main video is. Null, or anything else: a new track of its own, as any layer added.
+    /// </param>
+    public async Task<bool> AddVideoLayerAsync(string path, double startSeconds = 0, Layer? onTrack = null) =>
+        await AddVideoClipAsync(path, startSeconds, onTrack) is not null;
+
+    /// <summary>As <see cref="AddVideoLayerAsync"/>, and returns the clip once its file has been looked at; null when it could not be added.</summary>
+    /// <param name="playOnce">Plays once through even when placed at the very start (videos dropped together, one after another).</param>
+    public async Task<Layer?> AddVideoClipAsync(string path, double startSeconds, Layer? onTrack, bool playOnce = false)
     {
         // The block goes onto the timeline now, marked as loading: nothing is waited for before the drop is
         // answered. What the file is (its size, its length, whether it has sound) is found out afterwards.
-        var element = new Layer
+        var start = startSeconds > 0.01 ? Math.Round(startSeconds, 2) : 0;
+        Layer element;
+        var joins = onTrack is { IsVideoFile: true } && Layers.Contains(onTrack);
+        if (joins)
         {
-            Kind = LayerKind.VideoFile,
-            Name = Path.GetFileName(path),
-            ImagePath = path,
-            SizeWidth = 0.4,
-            PositionX = 0.05,
-            PositionY = NextLayerY(),
-            StartTime = startSeconds > 0.01 ? Math.Round(startSeconds, 2) : 0,
-            IsLoading = true,
-        };
+            // The track's look (place, size, filters, mask) with nothing of the clip it was copied from.
+            var state = onTrack!.ToState();
+            (state.Name, state.ImagePath, state.ImageWidth, state.ImageHeight, state.MediaDuration) = (Path.GetFileName(path), path, 0, 0, 0);
+            (state.HasAudio, state.AudioCodec, state.AudioChannels) = (false, "", "");
+            (state.StartTime, state.Duration, state.MediaOffset, state.Speed, state.AudioOffset) = (start, 0, 0, 1, 0);
+            (state.IsHidden, state.IsDeleted) = (false, false);
+            (state.KeysX, state.KeysY, state.KeysScale, state.KeysRotation, state.KeysOpacity) = (null, null, null, null, null);
+            element = Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
+            element.IsLoading = true;
+        }
+        else
+        {
+            element = new Layer
+            {
+                Kind = LayerKind.VideoFile,
+                Name = Path.GetFileName(path),
+                ImagePath = path,
+                SizeWidth = 0.4,
+                PositionX = 0.05,
+                PositionY = NextLayerY(),
+                StartTime = start,
+                IsLoading = true,
+            };
+        }
 
         Checkpoint("add a video layer");
-        AttachLayer(element);
+        if (joins)
+        {
+            // After the track's last clip in the list, which keeps the track's clips together.
+            Hook(element);
+            InsertLayer(Layers.IndexOf(GetTrackClips(onTrack!)[^1]) + 1, element);
+        }
+        else
+        {
+            AttachLayer(element);
+        }
+
         StatusText = $"Loading {element.Name}...";
-        return await CompleteVideoLayerAsync(element, startSeconds > 0.01);
+
+        // Dropped on the main video's row: it takes the main video's place, fitted inside it once its shape is known.
+        (int X, int Y, int Width, int Height)? box = onTrack is { IsMainVideo: true } && FrameWidth > 0 && FrameHeight > 0 ? GetCenterRect() : null;
+        return await CompleteVideoLayerAsync(element, playOnce || start > 0 || onTrack is not null, box) ? element : null;
+    }
+
+    /// <summary>Sizes and places a layer to fit inside a box of the frame (in the frame's pixels), in its middle, at its own shape.</summary>
+    private void FitInto(Layer element, (int X, int Y, int Width, int Height) box)
+    {
+        var (frameWidth, frameHeight) = ((double)FrameWidth, (double)FrameHeight);
+        if (element.ImageWidth <= 0 || element.ImageHeight <= 0 || box.Width <= 0 || box.Height <= 0)
+            return;
+
+        var width = (double)box.Width;
+        var height = width * element.ImageHeight / element.ImageWidth;
+        if (height > box.Height)
+            (width, height) = (box.Height * (double)element.ImageWidth / element.ImageHeight, box.Height);
+
+        element.FromCorner(() =>
+        {
+            element.SizeWidth = width / frameWidth;
+            element.PositionX = (box.X + (box.Width - width) / 2) / frameWidth;
+            element.PositionY = (box.Y + (box.Height - height) / 2) / frameHeight;
+        });
     }
 
     /// <summary>Notes what a clip's sound is in its file (its first audio stream's codec and channels), for its row's heading.</summary>
@@ -418,7 +491,8 @@ public partial class MainViewModel
     /// taken off the timeline again.
     /// </summary>
     /// <param name="playOnce">Whether the layer was placed at a moment: it then plays once through from there, when that fits.</param>
-    private async Task<bool> CompleteVideoLayerAsync(Layer element, bool playOnce)
+    /// <param name="fitInto">A box of the frame, in its pixels, that the layer is fitted inside once its shape is known; null to leave it where it is.</param>
+    private async Task<bool> CompleteVideoLayerAsync(Layer element, bool playOnce, (int X, int Y, int Width, int Height)? fitInto = null)
     {
         var path = element.ImagePath;
         MediaInfo? info = null;
@@ -448,11 +522,12 @@ public partial class MainViewModel
             (element.ImageWidth, element.ImageHeight) = (video.Width, video.Height);
             (element.HasAudio, element.MediaDuration) = (info.Audio.Count > 0, Math.Max(info.DurationSeconds, 0));
             DescribeSound(element, info);
-            if (playOnce && element.Duration <= 0.001)
-            {
-                var left = SequenceSeconds - element.StartTime;
-                element.Duration = info.DurationSeconds > 0.05 && info.DurationSeconds < left ? Math.Round(info.DurationSeconds, 2) : 0;
-            }
+
+            // Placed at a moment, it plays once through, all of it: past the end of the sequence, which grows.
+            if (playOnce && element.Duration <= 0.001 && info.DurationSeconds > 0.05)
+                element.Duration = Math.Round(info.DurationSeconds, 2);
+            if (fitInto is { } box)
+                FitInto(element, box);
 
             element.IsLoading = false;
             GenerateCommand();
@@ -494,8 +569,10 @@ public partial class MainViewModel
         };
         DescribeSound(element, info);
 
-        // Its block is as long as the sound is, unless that runs past the end of the video.
-        if (element.MediaDuration > 0.05 && element.StartTime + element.MediaDuration < SequenceSeconds)
+        // Its block is as long as the sound is, unless that runs past the end of the video. Dropped after the end,
+        // in the room there, it plays all of itself, and the sequence grows to hold it.
+        var afterEnd = element.StartTime > 0.01 && element.StartTime >= SequenceSeconds - 0.05;
+        if (element.MediaDuration > 0.05 && (afterEnd || element.StartTime + element.MediaDuration < SequenceSeconds))
             element.Duration = Math.Round(element.MediaDuration, 2);
         (element.IsVoice, element.Name) = (isVoice, name ?? element.Name);
         Checkpoint(isVoice ? "add a voiceover" : "add an audio clip");
@@ -856,8 +933,9 @@ public partial class MainViewModel
         {
             var layer = Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
 
-            // Two layers that came with the same track number but are different things are not one track.
-            if (Layers.FirstOrDefault(l => l.TrackId == layer.TrackId) is { } other && (other.Kind != layer.Kind || other.ImagePath != layer.ImagePath))
+            // Two layers that came with the same track number but are different kinds of thing are not one track.
+            // (Clips of different files of the same kind can be: videos one after another.)
+            if (Layers.FirstOrDefault(l => l.TrackId == layer.TrackId) is { } other && other.Kind != layer.Kind)
                 layer.TrackId = 0;
             AttachLayer(layer);
 
@@ -1240,6 +1318,15 @@ public partial class MainViewModel
             wanted = Math.Min(wanted, Math.Max(duration / FilmstripPictures, 0.2));
         var interval = Math.Max(wanted, duration / capacity);
 
+        // Made before, for this file as it is and at this spacing: taken from the cache.
+        var kind = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"sprite{interval:0.###}");
+        if (PreviewCache.Timeline.Find(videoPath, kind, ".jpg") is { } kept)
+        {
+            SpriteIntervalSeconds = interval;
+            SpriteSheetPath = kept;
+            return;
+        }
+
         var imagePath = Path.Combine(SpriteFolder, $"{Guid.NewGuid():N}.jpg");
         try
         {
@@ -1247,7 +1334,7 @@ public partial class MainViewModel
                 && !cancellation.IsCancellationRequested)
             {
                 SpriteIntervalSeconds = interval;
-                SpriteSheetPath = imagePath;
+                SpriteSheetPath = PreviewCache.Timeline.Keep(videoPath, kind, ".jpg", imagePath);
             }
         }
         catch (OperationCanceledException)
@@ -1493,6 +1580,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowAdvancedFiltersTab));
         OnPropertyChanged(nameof(IsEditorMode));
         OnPropertyChanged(nameof(IsSourcePaneVisible));
+        OnPropertyChanged(nameof(IsMediaBrowserVisible));
         ApplyModePreview();
         OnPropertyChanged(nameof(IsTextLayerSelected));
         OnPropertyChanged(nameof(ShowSubtitleImportRow));

@@ -116,9 +116,26 @@ public sealed class ProjectTrack
     public List<ProjectClip> Clips { get; set; } = [];
 }
 
+/// <summary>The file a clip plays, when it is not its track's: clips of different files can follow each other on one track.</summary>
+public sealed class ProjectClipFile
+{
+    public string Path { get; set; } = "";
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public double MediaDuration { get; set; }
+    public bool HasAudio { get; set; }
+    public string AudioCodec { get; set; } = "";
+    public string AudioChannels { get; set; } = "";
+}
+
 public sealed class ProjectClip
 {
     public string? Name { get; set; }
+
+    /// <summary>The clip's own file; null for the track's (its look's).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ProjectClipFile? File { get; set; }
+
     public double Start { get; set; }
     public double Duration { get; set; }
     public double Offset { get; set; }
@@ -295,9 +312,19 @@ public static class ProjectStore
 
     private static LayerState Copy(LayerState state) => JsonSerializer.Deserialize<LayerState>(JsonSerializer.Serialize(state))!;
 
-    private static ProjectClip ToClip(LayerState layer, string trackName) => new()
+    private static ProjectClip ToClip(LayerState layer, string trackName, LayerState? look = null) => new()
     {
         Name = layer.Name == trackName ? null : layer.Name,
+        File = look is null || string.Equals(look.ImagePath, layer.ImagePath, StringComparison.OrdinalIgnoreCase) ? null : new ProjectClipFile
+        {
+            Path = layer.ImagePath,
+            Width = layer.ImageWidth,
+            Height = layer.ImageHeight,
+            MediaDuration = layer.MediaDuration,
+            HasAudio = layer.HasAudio,
+            AudioCodec = layer.AudioCodec,
+            AudioChannels = layer.AudioChannels,
+        },
         Start = layer.StartTime,
         Duration = layer.Duration,
         Offset = layer.MediaOffset,
@@ -334,6 +361,12 @@ public static class ProjectStore
         var layer = Copy(look);
         double At(int index) => clip.Place.Length > index ? clip.Place[index] : 0;
         (layer.Name, layer.TrackId) = (clip.Name ?? look.Name, trackId);
+        if (clip.File is { } file)
+        {
+            (layer.ImagePath, layer.ImageWidth, layer.ImageHeight, layer.MediaDuration) = (file.Path, file.Width, file.Height, file.MediaDuration);
+            (layer.HasAudio, layer.AudioCodec, layer.AudioChannels) = (file.HasAudio, file.AudioCodec, file.AudioChannels);
+        }
+
         (layer.StartTime, layer.Duration, layer.MediaOffset, layer.IsHidden, layer.AudioOffset) = (clip.Start, clip.Duration, clip.Offset, clip.Hidden, clip.AudioOffset);
         layer.Speed = clip.Speed > 0 ? clip.Speed : 1;
         (layer.PositionX, layer.PositionY, layer.SizeWidth, layer.SizeHeight) = (At(0), At(1), At(2), At(3));
@@ -361,8 +394,8 @@ public static class ProjectStore
         var tracks = new List<ProjectTrack>();
         foreach (var layer in settings.Layers)
         {
-            if (tracks.Count > 0 && tracks[^1].Id == layer.TrackId && layer.TrackId > 0 && tracks[^1].Look.Kind == layer.Kind && tracks[^1].Look.ImagePath == layer.ImagePath)
-                tracks[^1].Clips.Add(ToClip(layer, tracks[^1].Look.Name));
+            if (tracks.Count > 0 && tracks[^1].Id == layer.TrackId && layer.TrackId > 0 && tracks[^1].Look.Kind == layer.Kind)
+                tracks[^1].Clips.Add(ToClip(layer, tracks[^1].Look.Name, tracks[^1].Look));
             else
                 tracks.Add(new ProjectTrack { Id = layer.TrackId, Look = ToLook(layer), Clips = { ToClip(layer, layer.Name) } });
         }

@@ -237,6 +237,10 @@ public partial class MainViewModel
     /// </summary>
     public bool SplitMain(double seconds)
     {
+        // A copied video is cut, not edited: the cut segments are what is split.
+        if (!IsVideoReencoded)
+            return SplitSegment(null, seconds);
+
         if (GetMainClipAt(seconds) is not { } clip || seconds - clip.Start < 0.05 || clip.End - seconds < 0.05)
         {
             StatusText = "The playhead is not inside the main video: move it to where the video should be split.";
@@ -700,6 +704,16 @@ public partial class MainViewModel
 
     /// <summary>Whether the Source pane is on screen: open, and in the mode that has it.</summary>
     public bool IsSourcePaneVisible => IsEditorMode && ShowSourcePane;
+
+    /// <summary>The media browser pane in the side column. Editor Mode's.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsMediaBrowserVisible))]
+    private bool _showMediaBrowser = AppSettings.Current.ShowMediaBrowser;
+
+    /// <summary>Whether the media browser is on screen: open, and in Editor Mode.</summary>
+    public bool IsMediaBrowserVisible => IsEditorMode && ShowMediaBrowser;
+
+    partial void OnShowMediaBrowserChanged(bool value) => SaveView(s => s.ShowMediaBrowser = value);
 
     /// <summary>Whether a clip's block on the timeline shows a diamond at each of its keyframes.</summary>
     [ObservableProperty] private bool _showClipKeyframes = AppSettings.Current.ShowClipKeyframes;

@@ -8,6 +8,9 @@ public static class YtDlpDownloader
     // Written into each download's folder: what was asked for, so the same request can reuse the file.
     private const string RequestFileName = "request.txt";
 
+    // Written instead of the file, when it was saved to the download folder: where it went.
+    private const string SavedFileName = "saved.txt";
+
     /// <summary>Downloads land in their own folder each, so the result is easy to find afterwards.</summary>
     public static string DownloadRoot => AppPaths.Downloads;
 
@@ -21,8 +24,12 @@ public static class YtDlpDownloader
     /// Downloads the URL with the local yt-dlp and returns the path of the resulting file. A download
     /// made earlier with the same options, and still in the cache, is returned without downloading again.
     /// </summary>
+    /// <param name="saveFolder">
+    /// A folder of the user's to save the file in, to keep; blank keeps it in the cache. Either way the cache
+    /// remembers the request, so loading the same URL again finds the file wherever it was saved.
+    /// </param>
     public static async Task<string> DownloadAsync(
-        string url, string resolution, bool downloadSubtitles, string sponsorBlockCategories,
+        string url, string resolution, bool downloadSubtitles, string sponsorBlockCategories, string saveFolder,
         IProgress<string> progress, CancellationToken cancellationToken)
     {
         // Everything that changes what yt-dlp would produce.
@@ -33,8 +40,20 @@ public static class YtDlpDownloader
             return cached;
         }
 
-        var directory = Path.Combine(DownloadRoot, Guid.NewGuid().ToString("N"));
+        var name = Guid.NewGuid().ToString("N");
+        var directory = Path.Combine(DownloadRoot, name);
         Directory.CreateDirectory(directory);
+
+        // Saved for keeps: yt-dlp works in a folder of its own inside the chosen one (so what it leaves behind
+        // is easy to tell apart), and the finished files are moved out of it, which on one drive is instant.
+        saveFolder = saveFolder.Trim().Trim('"');
+        var work = directory;
+        if (saveFolder.Length > 0)
+        {
+            Directory.CreateDirectory(saveFolder);
+            work = Path.Combine(saveFolder, $".handpeg-{name}");
+            Directory.CreateDirectory(work);
+        }
 
         // Embedded rather than left as loose files, so the subtitles show up as tracks of the download.
         string[] subtitleArguments = downloadSubtitles ? ["--write-subs", "--write-auto-subs", "--embed-subs"] : [];
@@ -42,40 +61,91 @@ public static class YtDlpDownloader
         // yt-dlp cuts the chosen SponsorBlock segments out of the file after downloading it.
         string[] sponsorBlockArguments = sponsorBlockCategories.Length > 0 ? ["--sponsorblock-remove", sponsorBlockCategories] : [];
 
-        string? lastError = null;
-        var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.YtDlpPath)
-            .WithArguments(args => args
-                .Add("-f").Add(BuildFormat(resolution))
-                .Add(subtitleArguments)
-                .Add(sponsorBlockArguments)
-                .Add("--no-playlist")
-                .Add("--newline")
-                .Add("--encoding").Add("utf-8")
-                .Add("--ffmpeg-location").Add(DependencyUpdater.FfmpegPath)
-                .Add("-P").Add(directory)
-                .Add("-o").Add("%(title).80B [%(id)s].%(ext)s")
-                .Add(url))
-            .WithValidation(CommandResultValidation.None)
-            .WithStandardOutputPipe(ProcessPipes.Lines(progress.Report))
-            .WithStandardErrorPipe(ProcessPipes.Lines(line =>
-            {
-                lastError = line;
-                progress.Report(line);
-            })),
-            cancellationToken);
+        string file;
+        try
+        {
+            string? lastError = null;
+            var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.YtDlpPath)
+                .WithArguments(args => args
+                    .Add("-f").Add(BuildFormat(resolution))
+                    .Add(subtitleArguments)
+                    .Add(sponsorBlockArguments)
+                    .Add("--no-playlist")
+                    .Add("--newline")
+                    .Add("--encoding").Add("utf-8")
+                    .Add("--ffmpeg-location").Add(DependencyUpdater.FfmpegPath)
+                    .Add("-P").Add(work)
+                    .Add("-o").Add("%(title).80B [%(id)s].%(ext)s")
+                    .Add(url))
+                .WithValidation(CommandResultValidation.None)
+                .WithStandardOutputPipe(ProcessPipes.Lines(progress.Report))
+                .WithStandardErrorPipe(ProcessPipes.Lines(line =>
+                {
+                    lastError = line;
+                    progress.Report(line);
+                })),
+                cancellationToken);
 
-        if (result.ExitCode != 0)
-            throw new InvalidOperationException(lastError ?? $"yt-dlp exited with code {result.ExitCode}.");
+            if (result.ExitCode != 0)
+                throw new InvalidOperationException(lastError ?? $"yt-dlp exited with code {result.ExitCode}.");
 
-        var file = FindMediaFile(directory)
+            file = FindMediaFile(work)
                    ?? throw new InvalidOperationException("yt-dlp finished without producing a file.");
 
-        // yt-dlp has exited, so the file should be complete. Make sure of it before anything opens it:
-        // a player given a file that is missing, empty or still being written has nothing to draw on.
-        await WaitUntilReadableAsync(file, cancellationToken);
+            // yt-dlp has exited, so the file should be complete. Make sure of it before anything opens it:
+            // a player given a file that is missing, empty or still being written has nothing to draw on.
+            await WaitUntilReadableAsync(file, cancellationToken);
+        }
+        catch when (!ReferenceEquals(work, directory))
+        {
+            // A failed or cancelled download leaves nothing behind in the user's folder.
+            TryDelete(work);
+            throw;
+        }
+
+        if (!ReferenceEquals(work, directory))
+        {
+            file = MoveOut(work, file, saveFolder);
+            File.WriteAllText(Path.Combine(directory, SavedFileName), file);
+        }
 
         File.WriteAllText(Path.Combine(directory, RequestFileName), request);
         return file;
+    }
+
+    /// <summary>
+    /// Moves what yt-dlp left in its working folder into the folder it was saved to, under a name no file there
+    /// has yet, and removes the working folder. Returns where the media file went.
+    /// </summary>
+    private static string MoveOut(string work, string file, string folder)
+    {
+        var moved = file;
+        foreach (var part in new DirectoryInfo(work).GetFiles().Where(f => f.Extension is not (".part" or ".ytdl")))
+        {
+            var target = Path.Combine(folder, part.Name);
+            for (var n = 2; File.Exists(target); n++)
+                target = Path.Combine(folder, $"{Path.GetFileNameWithoutExtension(part.Name)} ({n}){part.Extension}");
+
+            var isMedia = string.Equals(part.FullName, file, StringComparison.OrdinalIgnoreCase);
+            part.MoveTo(target);
+            if (isMedia)
+                moved = target;
+        }
+
+        TryDelete(work);
+        return moved;
+    }
+
+    private static void TryDelete(string folder)
+    {
+        try
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Left behind with a partial file in it: harmless, and in the user's own folder to delete.
+        }
     }
 
     /// <summary>
@@ -123,7 +193,13 @@ public static class YtDlpDownloader
             try
             {
                 var requestFile = Path.Combine(directory.FullName, RequestFileName);
-                if (File.Exists(requestFile) && File.ReadAllText(requestFile) == request && FindMediaFile(directory.FullName) is { } file)
+                if (!File.Exists(requestFile) || File.ReadAllText(requestFile) != request)
+                    continue;
+
+                // Saved to the download folder: found there, unless it has been moved or deleted since.
+                var savedFile = Path.Combine(directory.FullName, SavedFileName);
+                var file = File.Exists(savedFile) ? File.ReadAllText(savedFile).Trim() : FindMediaFile(directory.FullName);
+                if (file is not null && File.Exists(file))
                 {
                     // Used again, so it counts as recent when the cache is trimmed.
                     directory.LastWriteTime = DateTime.Now;

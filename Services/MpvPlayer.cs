@@ -430,8 +430,23 @@ public sealed class MpvPlayer
         }
     }
 
-    /// <param name="index">Which of the file's audio tracks, counted from 0.</param>
-    public void SetAudioTrack(int index) => SetProperty("aid", Number(index + 1));
+    /// <summary>
+    /// Has mpv play one of the file's audio tracks itself, while no graph mixes the sound. A graph with sound in
+    /// it takes the tracks it reads and leaves none selected once it goes, so the track is given again after it.
+    /// </summary>
+    /// <param name="index">Which of the file's audio tracks, counted from 0; negative for none.</param>
+    public void SetAudioTrack(int index)
+    {
+        var value = index < 0 ? "no" : Number(index + 1);
+        if (value == _audioTrack)
+            return;
+
+        _audioTrack = value;
+        SetProperty("aid", value);
+    }
+
+    // The track last given, or null once a graph with sound has taken the tracks over.
+    private string? _audioTrack;
 
     /// <summary>
     /// Gives mpv the filter graph to run on the picture, in FFmpeg's own syntax, from [vid1] to [vo]; an empty
@@ -450,6 +465,8 @@ public sealed class MpvPlayer
             AppLog.Write($"Live graph ({graph.Length} characters): {graph}");
 
         var result = SetProperty("lavfi-complex", graph);
+        if (graph.Contains("[ao]", StringComparison.Ordinal))
+            _audioTrack = null;
 
         if (graph.Length == 0)
         {

@@ -68,6 +68,8 @@ public sealed class ModeProfile
     public bool ShowCutSegmentsPane { get; set; }
     public bool ShowKeyframesPane { get; set; }
     public bool ShowSourcePane { get; set; }
+    public bool ShowMediaBrowser { get; set; }
+    public double MediaBrowserShare { get; set; }
     public bool ShowClipKeyframes { get; set; }
     public bool LayoutPaneOnLeft { get; set; }
     public bool SidePanesOnLeft { get; set; }
@@ -214,6 +216,41 @@ public sealed class AppSettings
 
     /// <summary>How many of the most recent yt-dlp downloads are kept between sessions.</summary>
     public int DownloadCacheSize { get; set; } = 5;
+
+    /// <summary>
+    /// Where a URL's download is saved, to keep; blank keeps downloads in the cache, where only the most recent
+    /// <see cref="DownloadCacheSize"/> are kept. Files saved here are never deleted by HandPeg.
+    /// </summary>
+    public string DownloadFolder { get; set; } = "";
+
+    // Preview caches (see PreviewCache)
+    /// <summary>Keeps the timeline's pictures of the videos loaded (hover sheet, strips of frames, waveforms, I-frames) on disk between sessions.</summary>
+    public bool CacheTimelinePreviews { get; set; } = true;
+
+    /// <summary>How large the timeline's cache may grow, in megabytes, before what was used longest ago is deleted.</summary>
+    public int TimelineCacheMegabytes { get; set; } = 1024;
+
+    /// <summary>Keeps the media browser's frames of each video on disk between sessions.</summary>
+    public bool CacheBrowserPreviews { get; set; } = true;
+
+    /// <summary>How large the media browser's cache may grow, in megabytes.</summary>
+    public int BrowserCacheMegabytes { get; set; } = 512;
+
+    // Media browser
+    /// <summary>How many frames are taken from each video in the media browser, for the picture that follows the pointer over its tile.</summary>
+    public int BrowserPreviewFrames { get; set; } = 15;
+
+    /// <summary>How tall those frames are made, in pixels.</summary>
+    public int BrowserPreviewHeight { get; set; } = 480;
+
+    /// <summary>A clip dragged or dropped on the time bars snaps to the edges of the others, the end of the sequence and the playhead.</summary>
+    public bool SnapClips { get; set; } = true;
+
+    /// <summary>The folder the media browser last showed.</summary>
+    public string BrowserFolder { get; set; } = "";
+
+    /// <summary>How the media browser shows its files: one of <c>MediaBrowserView</c>'s names (List, Small, Medium, Large).</summary>
+    public string BrowserView { get; set; } = "Medium";
 
     // Interface
     public bool ShowCommandPreviewTab { get; set; }
@@ -388,6 +425,12 @@ public sealed class AppSettings
     /// <summary>The Source pane at the top of the side column, in Editor Mode: Encoder Mode has the source in its top bar.</summary>
     public bool ShowSourcePane { get; set; } = true;
 
+    /// <summary>The media browser pane in the side column, in Editor Mode: a folder's videos to drag onto the timeline.</summary>
+    public bool ShowMediaBrowser { get; set; }
+
+    /// <summary>The media browser's share of the side column's height, beside the Keyframes and Cut Segments panes; 0 for half.</summary>
+    public double MediaBrowserShare { get; set; }
+
     /// <summary>Whether clips on the timeline show a diamond at each of their keyframes.</summary>
     public bool ShowClipKeyframes { get; set; } = true;
 
@@ -422,7 +465,7 @@ public sealed class AppSettings
     public void ResetPaneLayout()
     {
         (LayoutPaneOnLeft, SidePanesOnLeft, CutSegmentsOnTop, TimelineOnTop) = (false, false, false, false);
-        (SidePanesWidth, LayoutPaneWidth, KeyframesPaneHeight) = (0, 0, 0);
+        (SidePanesWidth, LayoutPaneWidth, KeyframesPaneHeight, MediaBrowserShare) = (0, 0, 0, 0);
         MasterTimelineHeight = DefaultMasterTimelineHeight(UiMode);
     }
 

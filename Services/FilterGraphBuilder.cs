@@ -309,6 +309,10 @@ public static class FilterGraphBuilder
         var pass = new Pass(state);
         var picture = pass.BuildLiveFilterGraph(surfaceWidth, surfaceHeight);
         var sound = audioFrom is { } from ? pass.BuildLiveAudioGraph(Math.Max(from, 0), mainAudioTrack) : "";
+
+        // A graph with no [vo] has mpv show no picture at all: sound alone still passes the video through.
+        if (picture.Length == 0 && sound.Length > 0 && !state.SourceHasNoVideo)
+            picture = "[vid1]null[vo]";
         return picture.Length > 0 && sound.Length > 0 ? $"{picture};{sound}" : picture + sound;
     }
 
@@ -1259,8 +1263,12 @@ public static class FilterGraphBuilder
             // Only what still has something to play: a clip that ended before this moment is not opened at all.
             var layers = GetLayerAudioSources().Where(l => l.Duration <= 0.001 || LayerAudioStart(l) + l.Duration > from + 0.05).ToList();
             var tracks = mainTrack < 0 ? [] : GetOutputAudioTracks().Where(t => !t.IsSilentBase).ToList();
-            var fades = FadeIn || FadeOut;
-            if (layers.Count == 0 && !fades && tracks.Count <= 1 && tracks.All(t => t.IsPlain && !(t.AutoDuck && !t.IsVoice)))
+
+            // Nothing that could be heard at all. Otherwise the sound always goes through the graph, even one plain
+            // track: once a graph has taken mpv's audio tracks, mpv does not give them back to plain playback, so a
+            // graph without sound after one with sound is silence (muting down to one track did exactly that).
+            // With every track muted, the graph plays silence rather than mpv playing a muted track.
+            if (layers.Count == 0 && mainTrack < 0)
                 return "";
 
             // Every input in the one form, and counted from the moment playback starts: what is mixed, and what is

@@ -288,6 +288,7 @@ public partial class SettingsWindow : Window
             UpdateWhisperStatus();
         };
 
+        ShowCacheUsage();
         YtDlpDefaultText.Text = $"Default: {AppSettings.DefaultYtDlpReleaseUrl}";
         FfmpegDefaultText.Text = $"Default: {AppSettings.DefaultFfmpegReleaseUrl}";
 
@@ -392,6 +393,36 @@ public partial class SettingsWindow : Window
         var dialog = new OpenFileDialog { Title = "Select the executable", Filter = "Programs|*.exe|All files|*.*" };
         if (dialog.ShowDialog(this) == true)
             target.Text = dialog.FileName;
+    }
+
+    /// <summary>Shows how much each preview cache holds now, beside its size limit.</summary>
+    private void ShowCacheUsage()
+    {
+        foreach (var (cache, text) in new[] { (PreviewCache.Timeline, TimelineCacheUsage), (PreviewCache.Browser, BrowserCacheUsage) })
+        {
+            var (bytes, files) = cache.Measure();
+            text.Text = files == 0 ? "Empty" : $"{PreviewCache.Describe(bytes)} in use";
+        }
+    }
+
+    private void ClearCache_Click(object sender, RoutedEventArgs e)
+    {
+        var cache = sender is Button { Tag: "Browser" } ? PreviewCache.Browser : PreviewCache.Timeline;
+        cache.Clear();
+        ShowCacheUsage();
+    }
+
+    private void BrowseFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: TextBox target })
+            return;
+
+        var current = target.Text.Trim().Trim('"');
+        var dialog = new OpenFolderDialog { Title = "Choose a folder" };
+        if (current.Length > 0 && Directory.Exists(current))
+            dialog.InitialDirectory = current;
+        if (dialog.ShowDialog(this) == true)
+            target.Text = dialog.FolderName;
     }
 
     /// <summary>
@@ -698,6 +729,15 @@ public partial class SettingsWindow : Window
                 return;
             }
         }
+
+        var downloads = _settings.DownloadFolder.Trim().Trim('"');
+        if (downloads.Length > 0 && !Path.IsPathFullyQualified(downloads))
+        {
+            ErrorText.Text = $"The download folder has to be a full path, such as D:\\Videos: {downloads}";
+            return;
+        }
+
+        _settings.DownloadFolder = downloads;
 
         foreach (var url in new[] { _settings.YtDlpReleaseUrl, _settings.FfmpegReleaseUrl, _settings.WhisperReleaseUrl })
         {

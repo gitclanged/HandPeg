@@ -243,6 +243,54 @@
                                  AutomationProperties.Name="Preview Duration" local:NumericInput.Default="3" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="60" local:NumericInput.Decimals="0" />
                     </StackPanel>
 
+                    <TextBlock Text="Timeline preview cache" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="What is made for the timeline of each video you load (the hover previews, the frames drawn on its blocks, its waveforms and its I-frame list) is kept on disk, so loading the same file again shows them at once instead of making them again. Past the size below, what was used longest ago is deleted. A file that has changed since is made again." />
+                    <CheckBox Content="Cache timeline previews" IsChecked="{Binding CacheTimelinePreviews}" AutomationProperties.Name="Cache Timeline Previews"
+                              ToolTip="Keep the timeline's pictures and waveforms of loaded videos between sessions. Off, they are made again every time a video is loaded." />
+                    <StackPanel Style="{StaticResource Row}" IsEnabled="{Binding CacheTimelinePreviews}">
+                        <TextBlock Text="Timeline Cache Size (MB):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="70" Text="{Binding TimelineCacheMegabytes, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Timeline Cache Size"
+                                 local:NumericInput.Default="1024" local:NumericInput.DragStep="2" local:NumericInput.Minimum="16" local:NumericInput.Maximum="65536" local:NumericInput.Decimals="0" />
+                        <TextBlock x:Name="TimelineCacheUsage" Style="{StaticResource FieldLabel}" Margin="16,0,12,0" Foreground="{DynamicResource MutedTextBrush}" />
+                        <Button Content="Clear" Padding="12,3" Tag="Timeline" Click="ClearCache_Click" AutomationProperties.Name="Clear Timeline Cache"
+                                ToolTip="Deletes everything in the timeline's cache now." />
+                    </StackPanel>
+
+                    <TextBlock Text="Media browser" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="The media browser pane (Editor Mode, Views menu) takes a few frames from each video in the folder it shows, for the picture that follows the pointer across a tile. They are made in the background, a few at a time, and kept in their own cache so the folder opens at once next time." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Frames per Video:" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="60" Text="{Binding BrowserPreviewFrames, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Media Browser Frames per Video"
+                                 local:NumericInput.Default="15" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="2" local:NumericInput.Maximum="40" local:NumericInput.Decimals="0"
+                                 ToolTip="How many frames are taken from each video, evenly spread over its length. More is smoother to scrub, and slower to make." />
+                        <TextBlock Text="Frame Height (pixels):" Style="{StaticResource FieldLabel}" Margin="28,0,12,0" />
+                        <TextBox Width="60" Text="{Binding BrowserPreviewHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Media Browser Frame Height"
+                                 local:NumericInput.Default="480" local:NumericInput.DragStep="2" local:NumericInput.Minimum="90" local:NumericInput.Maximum="1080" local:NumericInput.Decimals="0"
+                                 ToolTip="How tall each frame is made. Larger stays sharp in the large view, and takes more room in the cache." />
+                    </StackPanel>
+                    <CheckBox Content="Cache media browser previews" IsChecked="{Binding CacheBrowserPreviews}" AutomationProperties.Name="Cache Media Browser Previews"
+                              ToolTip="Keep the media browser's frames between sessions. Off, they are made again each session, and the ones made are let go when HandPeg closes." />
+                    <StackPanel Style="{StaticResource Row}" IsEnabled="{Binding CacheBrowserPreviews}">
+                        <TextBlock Text="Browser Cache Size (MB):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="70" Text="{Binding BrowserCacheMegabytes, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Media Browser Cache Size"
+                                 local:NumericInput.Default="512" local:NumericInput.DragStep="2" local:NumericInput.Minimum="16" local:NumericInput.Maximum="65536" local:NumericInput.Decimals="0" />
+                        <TextBlock x:Name="BrowserCacheUsage" Style="{StaticResource FieldLabel}" Margin="16,0,12,0" Foreground="{DynamicResource MutedTextBrush}" />
+                        <Button Content="Clear" Padding="12,3" Tag="Browser" Click="ClearCache_Click" AutomationProperties.Name="Clear Media Browser Cache"
+                                ToolTip="Deletes everything in the media browser's cache now." />
+                    </StackPanel>
+
+                    <TextBlock Text="Downloads" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Where a video loaded from a URL (YouTube and the rest) is saved. Left blank, downloads stay in the download cache below, where only the most recent are kept. Saved to a folder, they are yours to keep: HandPeg never deletes them there. Either way, loading the same URL again with the same options uses the file already downloaded." />
+                    <DockPanel Style="{StaticResource WideRow}">
+                        <TextBlock Text="Download folder:" Style="{StaticResource WideLabel}" />
+                        <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=DownloadFolderBox}" Click="BrowseFolder_Click" />
+                        <TextBox x:Name="DownloadFolderBox" Text="{Binding DownloadFolder, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Download Folder"
+                                 ToolTip="The folder downloads are saved in. Blank keeps them in the download cache." />
+                    </DockPanel>
+
                     <TextBlock Text="Download cache" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
                                Text="Downloaded videos are kept in the cache folder so that loading the same URL again, with the same options, is instant. Only the most recently used ones are kept; older ones are deleted when HandPeg starts and closes." />

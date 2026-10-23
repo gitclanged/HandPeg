@@ -192,8 +192,15 @@ public partial class MainViewModel
         foreach (var track in AudioTracks)
             track.IsSolo = ReferenceEquals(track, value);
         if (value is not null)
-            StatusText = $"Playing {value.Title} on its own. Press its button again to go back to the first track.";
+            StatusText = $"Playing {value.Title} on its own. Press its button again to stop.";
     }
+
+    /// <summary>
+    /// The audio track the player plays itself while no graph mixes the sound, counted from 0: the soloed one,
+    /// else the first that is not muted; -1 for none, when every track is muted.
+    /// </summary>
+    public int PlayerAudioTrack =>
+        SoloTrack?.Index ?? (_mediaInfo is null ? 0 : AudioTracks.FirstOrDefault(t => !t.IsDropped)?.Index ?? -1);
 
     // ----- The layers list -----
 

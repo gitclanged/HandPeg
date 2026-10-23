@@ -110,9 +110,23 @@ public partial class MainWindow : Window
         YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize);
         SessionPaths.DeleteAbandonedSessions();
 
+        // The preview caches, kept to their sizes (in the background, a few seconds from now).
+        PreviewCache.Timeline.QueueTrim();
+        PreviewCache.Browser.QueueTrim();
+
         _viewModel.Segments.CollectionChanged += (_, _) => RedrawSegments();
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         _viewModel.MediaLoaded += PlayMedia;
+
+        // The media browser: what it opens, and what it puts on the timeline at the playhead.
+        MediaBrowser.HasVideo = () => _viewModel.HasSource;
+        MediaBrowser.SuggestFolder = () => _viewModel.HasSource ? Path.GetDirectoryName(_viewModel.LocalMediaPath) : null;
+        MediaBrowser.LoadRequested += path => LoadDroppedFile(path);
+        MediaBrowser.AddRequested += (files, sound) =>
+        {
+            var at = _viewModel.PositionMs / 1000;
+            _ = sound ? AddDroppedAudioAsync([.. files], at) : AddDroppedLayersAsync([.. files], at, null);
+        };
         _viewModel.PreviewRendered += ShowPreview;
         _viewModel.AskOverwrite = AskOverwrite;
         _viewModel.Confirm = (title, message, confirm) => new ConfirmDialog(title, message, confirm) { Owner = this }.ShowDialog() == true;
@@ -406,6 +420,19 @@ public partial class MainWindow : Window
                 _viewModel.AddStopPointCommand.Execute(null);
                 break;
 
+            // The time bars: = and - zoom about the playhead, \ shows the whole timeline again.
+            case Key.OemPlus or Key.Add when _viewModel.HasSource:
+                ZoomAboutPlayhead(1.6);
+                break;
+
+            case Key.OemMinus or Key.Subtract when _viewModel.HasSource:
+                ZoomAboutPlayhead(1 / 1.6);
+                break;
+
+            case Key.Oem5 or Key.OemBackslash when _viewModel.HasSource:
+                FitTimeline();
+                break;
+
             default:
                 return;
         }
@@ -661,6 +688,7 @@ public partial class MainWindow : Window
     private void HideDropOverlay()
     {
         _dropLeave.Stop();
+        ClearDropMark();
         DropOverlay.Visibility = Visibility.Collapsed;
         VideoView.Visibility = Visibility.Visible;
     }
@@ -750,66 +778,6 @@ public partial class MainWindow : Window
         var width = Math.Max(Math.Min(wanted, room), SideColumn.MinWidth);
         if (Math.Abs(SideColumn.Width.Value - width) > 0.5 || !SideColumn.Width.IsAbsolute)
             SideColumn.Width = new GridLength(width);
-    }
-
-    // ----- The time bars' view: zoomed and moved along together -----
-    // Every layer and audio time bar shows the same stretch of the sequence. Ctrl + wheel over any of them
-    // zooms all of them about the pointer; Shift + wheel, or a drag with the middle button, moves them along.
-    // The master timeline follows when "Sync Master Timeline Stretch" is on in the Views menu.
-
-    private double _timelineZoom = 1, _timelineOffsetSeconds;
-
-    private void ClipTrack_ZoomRequested(TimelineTrack track, double factor, double x)
-    {
-        var seconds = _viewModel.DurationMs / 1000;
-        if (seconds <= 0 || track.ActualWidth <= 0)
-            return;
-
-        // The moment under the pointer stays under it.
-        var under = _timelineOffsetSeconds + x / (track.ActualWidth * _timelineZoom) * seconds;
-        _timelineZoom = Math.Clamp(_timelineZoom * factor, 1, 400);
-        _timelineOffsetSeconds = under - x / (track.ActualWidth * _timelineZoom) * seconds;
-        ApplyTimelineView();
-    }
-
-    private void ClipTrack_PanRequested(TimelineTrack track, double pixels)
-    {
-        var seconds = _viewModel.DurationMs / 1000;
-        if (seconds <= 0 || track.ActualWidth <= 0)
-            return;
-
-        _timelineOffsetSeconds += pixels / (track.ActualWidth * _timelineZoom) * seconds;
-        ApplyTimelineView();
-    }
-
-    private void ApplyTimelineView()
-    {
-        var seconds = _viewModel.DurationMs / 1000;
-        _timelineOffsetSeconds = Math.Clamp(_timelineOffsetSeconds, 0, Math.Max(seconds * (1 - 1 / _timelineZoom), 0));
-        foreach (var track in _clipTracks.ToList())
-            DrawTrack(track);
-        UpdateMasterStretch();
-        _viewModel.StatusText = _timelineZoom > 1.001
-            ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Time bars zoomed {_timelineZoom:0.#}x (Ctrl + wheel zooms, Shift + wheel or a middle-button drag moves along).")
-            : "Time bars show the whole sequence.";
-    }
-
-    private void MasterTimelineViewport_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateMasterStretch();
-
-    /// <summary>Stretches the master timeline to the time bars' zoom and slides it to their place, while that is switched on; otherwise it fills its place as it always did.</summary>
-    private void UpdateMasterStretch()
-    {
-        var seconds = _viewModel.DurationMs / 1000;
-        if (!_viewModel.SyncMasterTimeline || _timelineZoom <= 1.001 || seconds <= 0 || MasterTimelineViewport.ActualWidth <= 0)
-        {
-            (MasterTimelineContent.Width, MasterTimelineContent.HorizontalAlignment, MasterTimelineContent.Margin) = (double.NaN, HorizontalAlignment.Stretch, new Thickness(0));
-            return;
-        }
-
-        var width = MasterTimelineViewport.ActualWidth * _timelineZoom;
-        MasterTimelineContent.HorizontalAlignment = HorizontalAlignment.Left;
-        MasterTimelineContent.Width = width;
-        MasterTimelineContent.Margin = new Thickness(-_timelineOffsetSeconds / seconds * width, 0, 0, 0);
     }
 
     private void FlyoutSquisher_Click(object sender, RoutedEventArgs e)
@@ -922,6 +890,9 @@ public partial class MainWindow : Window
 
         e.Effects = DragDropEffects.Copy;
         e.Handled = true;
+
+        // Over the time bars: where the file would land is marked.
+        ShowDropMark(e);
     }
 
     private void Window_PreviewDrop(object sender, DragEventArgs e)
@@ -947,14 +918,17 @@ public partial class MainWindow : Window
         e.Handled = true;
         var file = files[0];
 
-        // Dropped on the layers, with a video open: the files become layers of it, at the moment they were dropped on.
+        ClearDropMark();
+
+        // Dropped on the layers, with a video open: the files become clips, at the moment they were dropped on, on
+        // the row they were dropped on (see FindDropPlace).
         if (_viewModel.HasSource && LayersList is { IsVisible: true })
         {
             var at = e.GetPosition(LayersList);
             if (at.X >= 0 && at.Y >= 0 && at.X <= LayersList.ActualWidth && at.Y <= LayersList.ActualHeight)
             {
-                var seconds = DropTime(e);
-                Dispatcher.BeginInvoke(() => _ = AddDroppedLayersAsync(files, seconds));
+                var (row, _, seconds) = FindDropPlace(e, LayersList);
+                Dispatcher.BeginInvoke(() => _ = AddDroppedLayersAsync(files, seconds, row));
                 return;
             }
         }
@@ -965,7 +939,7 @@ public partial class MainWindow : Window
             var at = e.GetPosition(AudioPanel);
             if (at.X >= 0 && at.Y >= 0 && at.X <= AudioPanel.ActualWidth && at.Y <= AudioPanel.ActualHeight)
             {
-                var seconds = DropTime(e);
+                var seconds = FindDropPlace(e, AudioPanel).Seconds;
                 Dispatcher.BeginInvoke(() => _ = AddDroppedAudioAsync(files, seconds));
                 return;
             }
@@ -993,18 +967,12 @@ public partial class MainWindow : Window
 
     private static readonly string[] ImageExtensions = [".png", ".jpg", ".jpeg"];
 
-    /// <summary>The moment a drop on the layers points at: where it fell along the time bars, or 0 beside them.</summary>
-    private double DropTime(DragEventArgs e)
-    {
-        if (_clipTracks.FirstOrDefault(t => t is { IsVisible: true, ActualWidth: > 0 }) is not { } track)
-            return 0;
-
-        var x = e.GetPosition(track).X;
-        return x > 0 && x <= track.ActualWidth ? x / track.ActualWidth * _viewModel.DurationMs / 1000 : 0;
-    }
-
-    /// <summary>Adds dropped files as layers: pictures as image layers, anything else as video layers.</summary>
-    private async Task AddDroppedLayersAsync(string[] files, double seconds)
+    /// <summary>
+    /// Adds dropped files as clips: pictures as image layers, anything else as video layers. On a video track they
+    /// join it; on the main video's row they take its place on a track of their own; elsewhere each starts a track.
+    /// Several videos dropped at once follow each other on one track, end to end, from the moment dropped on.
+    /// </summary>
+    private async Task AddDroppedLayersAsync(string[] files, double seconds, Layer? row)
     {
         Activate();
         if (!_viewModel.IsVideoReencoded)
@@ -1013,15 +981,28 @@ public partial class MainWindow : Window
             return;
         }
 
-        var added = 0;
+        var (added, at, videos) = (0, seconds, files.Count(f => File.Exists(f) && !ImageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant())));
         foreach (var file in files.Where(File.Exists))
         {
-            if (ImageExtensions.Contains(Path.GetExtension(file).ToLowerInvariant()) ? _viewModel.AddImageLayer(file, seconds) : await _viewModel.AddVideoLayerAsync(file, seconds))
-                added++;
+            if (ImageExtensions.Contains(Path.GetExtension(file).ToLowerInvariant()))
+            {
+                if (_viewModel.AddImageLayer(file, at, row))
+                    added++;
+                continue;
+            }
+
+            if (await _viewModel.AddVideoClipAsync(file, at, row, playOnce: videos > 1) is not { } clip)
+                continue;
+
+            added++;
+
+            // The next video goes on the same track, where this one ends.
+            if (clip.Duration > 0.001)
+                (row, at) = (clip, clip.StartTime + clip.Duration);
         }
 
         if (added > 1)
-            _viewModel.StatusText = $"Added {added} layers{(seconds > 0.01 ? $" at {TimeSpan.FromSeconds(seconds):g}" : "")}.";
+            _viewModel.StatusText = $"Added {added} clips from {TimeDisplay.Format(seconds)}.";
         ScheduleClipRedraw();
     }
 
@@ -1201,10 +1182,9 @@ public partial class MainWindow : Window
                 // Opening a file takes the graph off; it is given again, for this file.
                 _liveGraph = "";
                 player.SetAudioFilter(_viewModel.PlayerAudioFilter);
+                ApplyAudioTrack();
                 if (!SyncPlayerSource())
                     ApplyLiveFilter();
-                if (_viewModel.SoloTrack is not null)
-                    ApplySoloTrack();
             });
             player.ErrorLogged += text => OnUi(() => OnPlayerError(text));
 
@@ -1297,6 +1277,9 @@ public partial class MainWindow : Window
 
         StopShuttle();
         OpenInPlayer(_viewModel.PlayerSource, 0, paused: false);
+
+        // A new video is seen whole on the time bars.
+        FitTimeline(announce: false);
     }
 
     // What the player has open: the main video's file, or the sequence written out for it (see PlayerSource).
@@ -1445,7 +1428,11 @@ public partial class MainWindow : Window
         var hasSound = graph.Contains(FilterGraphBuilder.LiveAudioOutput, StringComparison.Ordinal);
         player.SetAudioFilter(hasSound ? "" : _viewModel.PlayerAudioFilter);
         if (graph == _liveGraph || (graph.Length > 0 && graph == _failedLiveGraph))
+        {
+            // A track muted or heard again changes which one the player plays, graph or no graph.
+            ApplyAudioTrack();
             return;
+        }
 
         if (hasSound && kept is not null && kept != now)
         {
@@ -1461,6 +1448,10 @@ public partial class MainWindow : Window
         var problem = player.SetFilterGraph(graph);
         if (graph.Length == 0)
             player.SetFiltering(false);
+
+        // Without sound in the graph the player plays a track of the file itself. After a graph that had sound
+        // it has none selected at all, so the track is given again.
+        ApplyAudioTrack();
         if (problem is not null)
         {
             OnPlayerError($"lavfi-complex: {problem}");
@@ -1512,15 +1503,22 @@ public partial class MainWindow : Window
 
     // ----- One audio track on its own -----
 
-    /// <summary>Has the player play the track chosen on the Audio tab, or the first one when none is.</summary>
-    private void ApplySoloTrack() => _mpv?.SetAudioTrack(_viewModel.SoloTrack?.Index ?? 0);
+    /// <summary>
+    /// Has the player play the track chosen on the Audio tab, or else the first one that is not muted (none when
+    /// all are), while no graph mixes the sound. mpv refuses a track change while a graph holds the tracks.
+    /// </summary>
+    private void ApplyAudioTrack()
+    {
+        if (_mpv is { } player && !LiveGraphHasSound)
+            player.SetAudioTrack(_viewModel.PlayerAudioTrack);
+    }
 
     private void OnSoloTrackChanged()
     {
         if (_mpv is null || !_viewModel.HasSource)
             return;
 
-        ApplySoloTrack();
+        ApplyAudioTrack();
 
         // A track played on its own is played without the layers' sound.
         ScheduleLiveFilter();
@@ -1555,9 +1553,13 @@ public partial class MainWindow : Window
 
     private void SeekToWaveformPoint(FrameworkElement waveform, MouseEventArgs e)
     {
-        // Setting the position moves the timeline, which seeks the player.
-        if (waveform.ActualWidth > 0)
-            _viewModel.PositionMs = Math.Clamp(e.GetPosition(waveform).X / waveform.ActualWidth, 0, 1) * _viewModel.DurationMs;
+        // Setting the position moves the timeline, which seeks the player. A track's row shows the time bars' view
+        // (it holds one); the master mix shows the whole sequence.
+        var x = e.GetPosition(waveform).X;
+        if (waveform is Border { Child: Grid grid } && grid.Children.OfType<TimelineTrack>().Any())
+            _viewModel.PositionMs = Math.Clamp(TimeAt(waveform, x) * 1000, 0, _viewModel.DurationMs);
+        else if (waveform.ActualWidth > 0)
+            _viewModel.PositionMs = Math.Clamp(x / waveform.ActualWidth, 0, 1) * _viewModel.DurationMs;
     }
 
     // ----- Playback / scrubbing -----
@@ -1863,7 +1865,7 @@ public partial class MainWindow : Window
                 KeyTimeline.PlayheadX = _viewModel.PositionMs / _viewModel.DurationMs * KeyTimeline.ActualWidth;
         }
 
-        if (e.PropertyName is nameof(MainViewModel.ShowCutSegmentsPane) or nameof(MainViewModel.ShowKeyframesPane))
+        if (e.PropertyName is nameof(MainViewModel.ShowCutSegmentsPane) or nameof(MainViewModel.ShowKeyframesPane) or nameof(MainViewModel.IsMediaBrowserVisible))
             UpdateSidePanes();
 
         // Each mode keeps its own arrangement of the panes, and its own bottom bar.
@@ -2400,7 +2402,33 @@ public partial class MainWindow : Window
         }
 
         LimitKeyframesPane();
+        UpdateMediaBrowserRows();
         Dispatcher.BeginInvoke(DrawKeyTimeline, System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    /// <summary>
+    /// The media browser's place in the side column: the whole of what is left under the Source pane while it is
+    /// alone, and its share of it (dragged with the border under it, remembered per mode) beside the other panes.
+    /// </summary>
+    private void UpdateMediaBrowserRows()
+    {
+        var rows = SidePanes.RowDefinitions;
+        var media = _viewModel.IsMediaBrowserVisible;
+        var others = _viewModel.ShowKeyframesPane || _viewModel.ShowCutSegmentsPane;
+        var share = AppSettings.Current.MediaBrowserShare is > 0.05 and < 0.95 and var kept ? kept : 0.5;
+        (rows[2].Height, rows[2].MinHeight) = media ? (new GridLength(others ? share : 1, GridUnitType.Star), 120) : (new GridLength(0), 0);
+        rows[4].Height = others || !media ? new GridLength(others && media ? 1 - share : 1, GridUnitType.Star) : GridLength.Auto;
+        MediaBrowserSplitter.Visibility = media && others ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // The border under the media browser was dragged: its share of the column is this mode's from now on.
+    private void MediaBrowserSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        var rows = SidePanes.RowDefinitions;
+        var (media, rest) = (rows[2].ActualHeight, rows[4].ActualHeight);
+        if (media + rest > 0)
+            _viewModel.SavePaneLayout(s => s.MediaBrowserShare = Math.Round(media / (media + rest), 3));
+        UpdateMediaBrowserRows();
     }
 
     // The header's buttons have changed width (the queue's count grew a digit), or have just come or gone with the mode.
@@ -2806,9 +2834,11 @@ public partial class MainWindow : Window
             track.DragEnded += ScheduleClipRedraw;
             track.ZoomRequested += ClipTrack_ZoomRequested;
             track.PanRequested += ClipTrack_PanRequested;
+            track.SnapTimes = SnapTimes;
         }
 
         DrawTrack(sender as TimelineTrack);
+        ScheduleChromeAlign();
     }
 
     private void ClipTrack_Unloaded(object sender, RoutedEventArgs e)
@@ -2823,7 +2853,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ClipTrack_Changed(object sender, SizeChangedEventArgs e) => DrawTrack(sender as TimelineTrack);
+    private void ClipTrack_Changed(object sender, SizeChangedEventArgs e)
+    {
+        DrawTrack(sender as TimelineTrack);
+        ScheduleChromeAlign();
+    }
 
     private void ClipTrack_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e) => DrawTrack(sender as TimelineTrack);
 
@@ -2838,7 +2872,7 @@ public partial class MainWindow : Window
 
         // On an audio track a click is also what moves the playhead, as it was before the track had blocks.
         if (block.Clip is AudioClip && e.ChangedButton == MouseButton.Left && e.Source is TimelineTrack { ActualWidth: > 0 } track)
-            _viewModel.PositionMs = Math.Clamp((e.GetPosition(track).X + track.ViewOffsetX) / (track.ActualWidth * _timelineZoom), 0, 1) * _viewModel.DurationMs;
+            _viewModel.PositionMs = Math.Clamp(TimeAt(track, e.GetPosition(track).X) * 1000, 0, _viewModel.DurationMs);
     }
 
     private void ClipTrack_DragRefused(string why) => _viewModel.StatusText = why;
@@ -2850,7 +2884,7 @@ public partial class MainWindow : Window
     private void ClipTrack_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (sender is TimelineTrack { ActualWidth: > 0 } track && _viewModel.DurationMs > 0)
-            _viewModel.PositionMs = Math.Clamp((e.GetPosition(track).X + track.ViewOffsetX) / (track.ActualWidth * _timelineZoom), 0, 1) * _viewModel.DurationMs;
+            _viewModel.PositionMs = Math.Clamp(TimeAt(track, e.GetPosition(track).X) * 1000, 0, _viewModel.DurationMs);
     }
 
     /// <summary>Redraws the bars once, however many things have just changed.</summary>
@@ -2865,6 +2899,8 @@ public partial class MainWindow : Window
             _clipRedrawQueued = false;
             foreach (var track in _clipTracks.ToList())
                 DrawTrack(track);
+            UpdateTimelineChrome();
+            UpdateMasterStretch();
         }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
@@ -2897,11 +2933,14 @@ public partial class MainWindow : Window
         if (!show || track.ActualWidth <= 0)
             return;
 
-        // The bar is laid out as wide as the zoom makes it, and the part of it that is seen is slid into view.
-        var width = track.ActualWidth * _timelineZoom;
-        var scale = width / seconds;
-        track.ViewOffsetX = _timelineOffsetSeconds * scale;
-        var perPixel = seconds / width;
+        // The bar is laid out at the view's scale (a second is so many pixels), and the part of it that is seen is
+        // slid into view. Past the end of the sequence it is shaded: room to drop or drag a clip into.
+        ClampView();
+        var scale = track.ActualWidth / Math.Max(ViewSpan, 1e-6);
+        var width = seconds * scale;
+        track.ViewOffsetX = _viewStart * scale;
+        (track.EndX, track.PixelsPerSecond) = (width, scale);
+        var perPixel = 1 / scale;
         var height = Math.Max(track.ActualHeight - 2, 4);
         switch (track.DataContext)
         {
@@ -2958,7 +2997,8 @@ public partial class MainWindow : Window
                     // The waveform is of the whole file: a block shows the part of it that its clip plays.
                     var filePixels = main.MediaDuration > 0 ? main.MediaDuration * scale : width;
                     AddClip(track, pieceLeft, pieceWidth, mainClips.Count > 1 ? "" : main.IsHidden ? $"{main.Name} (picture hidden)" : main.Name,
-                        main.IsHidden ? OffClipBrush : MainClipBrush, new MainClipRef(piece.Index), canDrag: () => true, resizable: true,
+                        main.IsHidden ? OffClipBrush : MainClipBrush, new MainClipRef(piece.Index), canDrag: () => _viewModel.IsVideoReencoded, resizable: true,
+                        cannotDrag: "The video is copied as it is (Video tab: Copy), so it cannot be moved or trimmed here: mark what to keep with [ and ] instead.",
                         frames: main.IsHidden ? null : BuildFrames(main.Filmstrip, _viewModel.SourceWidth, _viewModel.SourceHeight, piece.Offset, main.MediaDuration, 1, pieceWidth, height, scale),
                         peaks: WaveOf(mainWave, piece.Offset * scale, filePixels),
                         keys: ClipKeys(main, main.StartTime - piece.Start, scale),
@@ -3102,11 +3142,16 @@ public partial class MainWindow : Window
         if (seconds <= 0)
             return;
 
+        var span = ViewSpan;
         foreach (var track in _clipTracks)
         {
             if (!double.IsNaN(track.PlayheadX))
-                track.PlayheadX = _viewModel.PositionMs / 1000 * track.ActualWidth * _timelineZoom / seconds - track.ViewOffsetX;
+                track.PlayheadX = _viewModel.PositionMs / 1000 * track.ActualWidth / span - track.ViewOffsetX;
         }
+
+        foreach (var ruler in _rulers)
+            PlaceRulerPlayhead(ruler);
+        FollowPlayhead();
     }
 
     private bool IsSelected(object? clip) => clip is null ? _mainClipSelected && _selectedClip is null : Equals(clip, _selectedClip);

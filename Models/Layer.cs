@@ -168,8 +168,12 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Which track the clip is on. Clips with the same number share a row.</summary>
     [ObservableProperty] private int _trackId;
 
-    /// <summary>What belongs to one clip alone, and is not copied to the others on its track when it changes.</summary>
+    /// <summary>
+    /// What belongs to one clip alone, and is not copied to the others on its track when it changes. The file a
+    /// clip plays is its own too: clips of different files can follow each other on one track.
+    /// </summary>
     public static bool IsClipProperty(string? name) => name is nameof(StartTime) or nameof(Duration) or nameof(MediaOffset) or nameof(IsHidden)
+        or nameof(ImagePath) or nameof(ImageWidth) or nameof(ImageHeight) or nameof(HasAudio) or nameof(AudioCodec) or nameof(AudioChannels)
         or nameof(IsLoading) or nameof(Title) or nameof(Action) or nameof(IsMuted) or nameof(GainDb)
         or nameof(AudioOffset) or nameof(Name) or nameof(TrackId) or nameof(PositionXPercent) or nameof(PositionYPercent) or nameof(SizePercent)
         or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges) or KeysChanged

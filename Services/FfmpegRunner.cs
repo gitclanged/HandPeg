@@ -129,7 +129,8 @@ public static partial class FfmpegRunner
     /// does not work out (a format the card does not take, a driver that will not open eight decoders at
     /// once) the strip is made again by the processor.
     /// </summary>
-    public static async Task<bool> GenerateFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, CancellationToken cancellationToken)
+    /// <param name="height">How tall each frame is made, in pixels: 54 for a block on the timeline.</param>
+    public static async Task<bool> GenerateFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, CancellationToken cancellationToken, int height = 54)
     {
         if (!File.Exists(DependencyUpdater.FfmpegPath))
             return false;
@@ -142,7 +143,7 @@ public static partial class FfmpegRunner
         {
             foreach (var hardware in new[] { true, false })
             {
-                var problem = await RunFilmstripAsync(videoPath, imagePath, count, durationSeconds, hardware, cancellationToken);
+                var problem = await RunFilmstripAsync(videoPath, imagePath, count, durationSeconds, hardware, height, cancellationToken);
                 if (problem is null)
                     return true;
 
@@ -158,9 +159,10 @@ public static partial class FfmpegRunner
     }
 
     /// <summary>Makes the strip once. Null when it was written; otherwise what FFmpeg said.</summary>
-    private static async Task<string?> RunFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, bool hardware, CancellationToken cancellationToken)
+    private static async Task<string?> RunFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, bool hardware, int height, CancellationToken cancellationToken)
     {
-        count = Math.Clamp(count, 1, 25);
+        count = Math.Clamp(count, 1, 40);
+        height = Math.Clamp(height / 2 * 2, 16, 1080);
 
         // One frame from each of as many moments, evenly spread: the file is opened once per frame, already
         // wound forward to it, so that only that frame is decoded. Reading a long video from end to end for
@@ -187,7 +189,7 @@ public static partial class FfmpegRunner
         // Every frame the same height and the same pixel format, which is what setting them side by side asks.
         var graph = new StringBuilder();
         for (var i = 0; i < count; i++)
-            graph.Append(CultureInfo.InvariantCulture, $"[{i}:v:0]scale=-2:54,setsar=1,format=yuv420p[f{i}];");
+            graph.Append(CultureInfo.InvariantCulture, $"[{i}:v:0]scale=-2:{height},setsar=1,format=yuv420p[f{i}];");
         for (var i = 0; i < count; i++)
             graph.Append(CultureInfo.InvariantCulture, $"[f{i}]");
         graph.Append(count > 1 ? string.Create(CultureInfo.InvariantCulture, $"hstack=inputs={count}") : "null");
@@ -260,6 +262,10 @@ public static partial class FfmpegRunner
         if (!File.Exists(DependencyUpdater.FfprobePath))
             return [];
 
+        // Listed before, for this file as it is: a long recording takes minutes to go through.
+        if (PreviewCache.Timeline.ReadBytes(path, "iframes", ".bin") is { Length: > 0 } kept && kept.Length % sizeof(double) == 0)
+            return [.. System.Runtime.InteropServices.MemoryMarshal.Cast<byte, double>(kept)];
+
         var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfprobePath)
             .WithArguments(["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time",
                 "-of", "csv=p=0", "-skip_frame", "nokey", "-i", path])
@@ -274,6 +280,8 @@ public static partial class FfmpegRunner
         }
 
         iFrames.Sort();
+        if (result.ExitCode == 0 && iFrames.Count > 0)
+            PreviewCache.Timeline.WriteBytes(path, "iframes", ".bin", System.Runtime.InteropServices.MemoryMarshal.AsBytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(iFrames)));
         return iFrames;
     }
 

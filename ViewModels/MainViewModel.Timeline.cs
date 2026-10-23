@@ -32,6 +32,26 @@ public enum DeadAirMode
 // slipped and cut on its own, and the question of whether anything has changed since it was last saved.
 public partial class MainViewModel
 {
+    // ----- The time bars -----
+
+    /// <summary>Whether a dragged or dropped clip's edges catch on the other clips' edges, the end of the sequence and the playhead. Remembered.</summary>
+    [ObservableProperty] private bool _snapClips = AppSettings.Current.SnapClips;
+
+    partial void OnSnapClipsChanged(bool value)
+    {
+        AppSettings.Current.SnapClips = value;
+        try
+        {
+            AppSettings.Current.SaveAsCurrent();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>Whether the layers' controls are shown beside their time bars; folded away, every row's time bar is wider, all alike.</summary>
+    [ObservableProperty] private bool _layerControlsShown = true;
+
     // ----- Undo and redo -----
     // Before anything on the timeline is changed, the timeline as it is goes onto a stack, as a small piece
     // of JSON: the cuts, the layers, the audio edits. Twenty deep. Undo puts the last one back.
@@ -216,6 +236,11 @@ public partial class MainViewModel
     public bool TrimClip(object? clip, bool start, double seconds)
     {
         var total = SequenceSeconds;
+
+        // A copied video is cut, not edited: trimming it trims the cut segment under the playhead.
+        if (clip is Layer { IsMainVideo: true } && !IsVideoReencoded)
+            clip = Segments.FirstOrDefault(s => s.Start.TotalSeconds < seconds && s.End.TotalSeconds > seconds);
+
         switch (clip)
         {
             case Layer { IsMainVideo: true }:
@@ -584,13 +609,19 @@ public partial class MainViewModel
         {
             var path = Path.Combine(SpriteFolder, $"layer_{Guid.NewGuid():N}.jpg");
             var token = _shutdown.Token;
+            var kind = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"strip{count}");
 
             // Both the extraction and the reading of the picture happen away from the interface. The picture
             // is frozen there, before it is handed over: a bitmap made on one thread cannot be shown by
             // another until it is, and a frozen one is also the only kind WPF does not keep watching.
             var picture = await Task.Run(async () =>
             {
-                if (!await FfmpegRunner.GenerateFilmstripAsync(file, path, count, seconds, token))
+                // Made before, for this file as it is: taken from the cache.
+                if (PreviewCache.Timeline.Find(file, kind, ".jpg") is { } kept)
+                    path = kept;
+                else if (await FfmpegRunner.GenerateFilmstripAsync(file, path, count, seconds, token))
+                    path = PreviewCache.Timeline.Keep(file, kind, ".jpg", path);
+                else
                     return null;
 
                 // Read into memory, so that the file is not held open.

@@ -3,6 +3,28 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v3.1.0
+
+### Highlights
+- **A timeline you can scroll and zoom, with clips end to end.** The Layers and Audio tabs have a time ruler over their bars, zoom buttons and a zoom slider, Fit, and a scrollbar under the bars. The wheel over the ruler (or Ctrl + wheel over a bar) zooms about the pointer; Shift + wheel or a middle-button drag moves along; `=`, `-` and `\` zoom in, out and back to the whole sequence. The bars reach past the end of the sequence (that room is shaded), so a clip can be dropped or dragged after the last one, and the sequence grows to hold it. While a video plays zoomed in, the view turns the page with the playhead.
+- **Videos one after another.** Drop a video in the room after the main video, on the main video's row, and it starts where the main video ends, sized and placed as the main video is, on a track of its own. Drop more videos on that track (or several at once) and they follow each other end to end. A track can now hold clips of different files. A video placed at a moment plays all of itself, past the old end if need be.
+- **Snapping.** A dragged or dropped clip's edges catch on the other clips' edges, the end of the sequence and the playhead (the magnet button turns it off; hold Alt to place a clip freely). A file dragged over the bars shows where it will land.
+- **Media browser pane** (Editor Mode, Views menu): a folder's videos, sounds and pictures beside the player, with a path box, Up, Browse and Refresh, and List, Small, Medium or Large views. Move the pointer across a video's tile and it shows the frame at that point, like a small timeline of its own. Drag files from it onto a layer track, after the main video, onto the Audio tab or onto the player; double-click to add a file at the playhead (or load it when nothing is loaded); right-click for Load as Main Video, Add to Timeline, Add Sound and Show in Explorer. Each video's frames (15, 480 pixels tall, both set in Settings) are made in the background, only for the tiles on screen, and kept in a cache of their own.
+- **Live audio preview works with muted tracks.** Muting tracks down to one (or all of them) silenced the preview, Solo went silent after the mix had played, and with Live Preview off (always, in Encoder Mode) the player kept playing the first track even when it was muted. The preview now plays exactly the tracks that are not muted, whatever the number.
+
+### New
+- **Timeline preview cache** (Settings, Preview & Cache): the hover previews, the frames on the blocks, the waveforms and the I-frame list of every video loaded are kept on disk, so a video opened again shows them at once. Switch it off, set its size, see how much it holds, or clear it.
+- **Media browser cache**, with its own switch, size and Clear, and the browser's frames per video and frame height.
+- **Download folder** (Settings, Preview & Cache): videos loaded from a URL can be saved to a folder of your own, where HandPeg never deletes them. Loading the same URL again uses the file already there.
+
+### Fixed
+- In Editor Mode with the video encoder set to Copy, the whole Layers tab was switched off, so cut points could not be set. The cut tools ([ and ], Manual Cut Entry, Split, Trim, Delete, Remove Dead Air) now work while copying; Split and Trim act on the cut segments, and only adding layers needs the video encoded.
+- Files dropped on a zoomed timeline landed at the wrong moment, and the time bars of different rows could be different widths (each row's controls set its own), so clips on different rows did not line up in time. Every bar of a tab now spans the same stretch of the screen, and the arrow that folds the layers' controls away folds all rows together.
+- A sound dropped after the end of the sequence got no length.
+
+### Compatibility
+- Projects made by 3.1 with clips of different files on one track open in 3.0 with those clips' files missing (they show the track's first file). Projects from 3.0 open unchanged.
+
 ## HandPeg v3.0.0
 
 **HandPeg 3.0 is a rebuild, not 2.6.3 with more added.** The 2.6 series grew heavy machinery around the editor: proxies of every video, a rendered timeline proxy that had to be made, cached, found again and cleaned up, and captions kept as timeline data, which left Editor Mode exports refusing to run when nothing had been transcribed. 3.0 starts again from the 2.5.0 code base. It brings over the parts of 2.6 that worked, and the improvements that were being made after 2.6.3 but never released. It leaves the proxy machinery out, and adds HUD masks, live audio and fast cut exports. The aim is a dependable editor for everyday cutting, captioning and vertical HUD clips.
