@@ -45,6 +45,11 @@ public sealed partial class MediaBrowserItem : ObservableObject
     public MediaBrowserKind Kind { get; }
     public string Name { get; }
 
+    /// <summary>The file's size in bytes (0 for a folder), and when it was last changed: what the list can be sorted by.</summary>
+    public long Bytes { get; init; }
+
+    public DateTime Modified { get; init; }
+
     public bool IsFile => Kind is MediaBrowserKind.Video or MediaBrowserKind.Audio or MediaBrowserKind.Image;
     public bool IsVideo => Kind == MediaBrowserKind.Video;
 

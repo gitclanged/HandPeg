@@ -165,9 +165,10 @@ public partial class MainWindow
         _showingView = true;
         try
         {
+            var markers = _viewModel.Markers.Select(m => m.Seconds).ToList();
             foreach (var ruler in _rulers)
             {
-                ruler.Show(_viewStart, span, sequence);
+                ruler.Show(_viewStart, span, sequence, markers);
                 PlaceRulerPlayhead(ruler);
             }
 
@@ -229,6 +230,11 @@ public partial class MainWindow
         };
         ruler.ZoomRequested += (factor, x) => ZoomTimeline(factor, ruler.ActualWidth > 0 ? x / ruler.ActualWidth : 0.5);
         ruler.PanRequested += pixels => PanTimeline(ruler.ActualWidth > 0 ? pixels / ruler.ActualWidth * ViewSpan : 0);
+        ruler.MarkerMenuRequested += index =>
+        {
+            if (index < _viewModel.Markers.Count)
+                ShowMarkerMenu(ruler, _viewModel.Markers[index]);
+        };
         ruler.SizeChanged += (_, _) => PlaceRulerPlayhead(ruler);
         UpdateTimelineChrome();
     }
@@ -385,6 +391,7 @@ public partial class MainWindow
             times.AddRange([from, to]);
         }
 
+        times.AddRange(_viewModel.Markers.Select(m => m.Seconds));
         return times;
     }
 
@@ -482,5 +489,89 @@ public partial class MainWindow
         if (_dropMarkBar is { } bar)
             bar.DropX = double.NaN;
         _dropMarkBar = null;
+    }
+
+    // ----- Markers -----
+
+    private static readonly Brush MarkerLineBrush = FrozenMarkerLine();
+
+    private static Brush FrozenMarkerLine()
+    {
+        var brush = new SolidColorBrush(Color.FromArgb(150, 0x7C, 0xD9, 0x92));
+        brush.Freeze();
+        return brush;
+    }
+
+    /// <summary>The markers on the master timeline: a flag at the top and a faint line down, each answering a click (go there) and a right-click (its menu).</summary>
+    private void DrawTimelineMarkers()
+    {
+        MarkerCanvas.Children.Clear();
+        var (duration, width, height) = (_viewModel.DurationMs, MarkerCanvas.ActualWidth, MarkerCanvas.ActualHeight);
+        if (duration <= 0 || width <= 0)
+            return;
+
+        foreach (var marker in _viewModel.Markers)
+        {
+            var x = marker.Seconds * 1000 / duration * width;
+            var line = new System.Windows.Shapes.Rectangle { Width = 1, Height = Math.Max(height, 1), Fill = MarkerLineBrush, IsHitTestVisible = false };
+            Canvas.SetLeft(line, Math.Round(x));
+            MarkerCanvas.Children.Add(line);
+
+            var flag = new System.Windows.Shapes.Path
+            {
+                Data = TimelineRuler.MarkerFlag, Fill = TimelineRuler.MarkerBrush, Cursor = Cursors.Hand,
+                ToolTip = $"{marker.Name}  ({TimeDisplay.Format(marker.Seconds)})\nClick to go to it; right-click to rename or delete it.",
+            };
+            Canvas.SetLeft(flag, Math.Round(x) + 0.5);
+            Canvas.SetTop(flag, 0);
+            flag.MouseLeftButtonDown += (_, e) =>
+            {
+                _viewModel.PositionMs = marker.Seconds * 1000;
+                e.Handled = true;
+            };
+            flag.MouseRightButtonUp += (_, e) =>
+            {
+                ShowMarkerMenu(flag, marker);
+                e.Handled = true;
+            };
+            MarkerCanvas.Children.Add(flag);
+        }
+    }
+
+    /// <summary>A marker's menu: its name (typed in place), go to it, delete it, delete them all.</summary>
+    private void ShowMarkerMenu(FrameworkElement target, TimelineMarker marker)
+    {
+        var menu = new ContextMenu { PlacementTarget = target };
+        var renaming = false;
+        AddRenameItem(menu, marker.Name, name =>
+        {
+            // One step of Undo for the whole rename, taken at its first keystroke.
+            if (!renaming)
+            {
+                _viewModel.RenameMarkerStarted(marker);
+                renaming = true;
+            }
+
+            _viewModel.RenameMarker(marker, name);
+        });
+
+        void Add(string header, Action action)
+        {
+            var item = new MenuItem { Header = header };
+            item.Click += (_, _) => action();
+            menu.Items.Add(item);
+        }
+
+        Add($"Go to {marker.Name}", () => _viewModel.PositionMs = marker.Seconds * 1000);
+        Add("Delete Marker", () => _viewModel.RemoveMarker(_viewModel.Markers.FirstOrDefault(m => Math.Abs(m.Seconds - marker.Seconds) < 1e-6) ?? marker));
+        menu.Items.Add(new Separator());
+        Add("Delete All Markers", _viewModel.ClearMarkers);
+        menu.IsOpen = true;
+    }
+
+    private void OnMarkersChanged()
+    {
+        DrawTimelineMarkers();
+        UpdateTimelineChrome();
     }
 }

@@ -365,6 +365,17 @@ public partial class SettingsWindow : Window
         (DefaultVideoBox.SelectedValue, DefaultAudioBox.SelectedValue, DefaultBitrateBox.SelectedValue) =
             (_settings.DefaultVideoEncoder, _settings.DefaultAudioEncoder, _settings.DefaultAudioBitrate);
 
+        // The rest of the default encoding settings: each list leads with HandPeg's own default.
+        static List<Choice> With(string builtIn, IEnumerable<string> values) => [new Choice("", builtIn), .. values.Select(v => new Choice(v, v))];
+        DefaultContainerBox.ItemsSource = With("Built-in default (mp4)", viewModel.Containers);
+        DefaultRateControlBox.ItemsSource = With("Built-in default", viewModel.RateControls);
+        DefaultFramerateBox.ItemsSource = With("Built-in default (same as source)", viewModel.Framerates);
+        DefaultMergeBox.ItemsSource = new List<Choice> { new("", "As the mode starts"), new("on", "Mix into one track"), new("off", "Keep them apart") };
+        (DefaultContainerBox.SelectedValue, DefaultRateControlBox.SelectedValue, DefaultFramerateBox.SelectedValue, DefaultMergeBox.SelectedValue) =
+            (_settings.DefaultContainer, _settings.DefaultRateControl, _settings.DefaultFramerate, _settings.DefaultMergeAudio);
+        DefaultQualityBox.Text = _settings.DefaultQuality?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        FillDefaultEncoderPresets();
+
         // The automation rows show the view model's rules, and the choices of the grid's two drop-down columns.
         DefaultPresetRow.DataContext = RulesGrid.DataContext = viewModel;
         RuleTypeColumn.ItemsSource = SmartRule.Types;
@@ -393,6 +404,61 @@ public partial class SettingsWindow : Window
         var dialog = new OpenFileDialog { Title = "Select the executable", Filter = "Programs|*.exe|All files|*.*" };
         if (dialog.ShowDialog(this) == true)
             target.Text = dialog.FileName;
+    }
+
+    /// <summary>The encoder preset steps of the default encoder chosen, with the built-in default first.</summary>
+    private void FillDefaultEncoderPresets()
+    {
+        var chosen = DefaultVideoBox.SelectedValue as string ?? "";
+        var steps = _viewModel.EncoderPresetsFor(chosen);
+        var current = _settings.DefaultEncoderPreset;
+        DefaultEncoderPresetBox.ItemsSource = new List<Choice> { new("", "Built-in default") }.Concat(steps.Select(p => new Choice(p, p))).ToList();
+        DefaultEncoderPresetBox.SelectedValue = steps.Contains(current) ? current : "";
+        DefaultEncoderPresetBox.IsEnabled = steps.Count > 0;
+    }
+
+    private void DefaultVideoBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DefaultEncoderPresetBox is not null)
+            FillDefaultEncoderPresets();
+    }
+
+    private void UseCurrentEncoding_Click(object sender, RoutedEventArgs e)
+    {
+        var current = _viewModel.CurrentEncodingSettings();
+        (_settings.DefaultVideoEncoder, _settings.DefaultEncoderPreset, _settings.DefaultRateControl, _settings.DefaultTargetBitrate) =
+            (current.VideoEncoder, current.EncoderPreset, current.RateControl, current.TargetBitrate);
+        (_settings.DefaultQuality, _settings.DefaultFramerate, _settings.DefaultCustomFramerate, _settings.DefaultTenBit) =
+            (current.Quality, current.Framerate, current.CustomFramerate, current.TenBit);
+        (_settings.DefaultHardwareDecoding, _settings.DefaultContainer, _settings.DefaultWebOptimized) = (current.HardwareDecoding, current.Container ?? "", _viewModel.WebOptimized);
+        (_settings.DefaultOutputWidth, _settings.DefaultOutputHeight, _settings.DefaultVerticalVideo) = (current.OutputWidth, current.OutputHeight, current.UseVerticalResolution == true);
+        (_settings.DefaultAudioEncoder, _settings.DefaultAudioBitrate, _settings.DefaultMergeAudio, _settings.DefaultNormalizeAudio) =
+            (current.AudioEncoder == MainViewModel.CopyOption ? "" : current.AudioEncoder, current.AudioBitrate, current.MergeAudioTracks ? "on" : "off", current.NormalizeAudio);
+        RefreshEncodingDefaults();
+    }
+
+    private void ResetEncodingDefaults_Click(object sender, RoutedEventArgs e)
+    {
+        (_settings.DefaultVideoEncoder, _settings.DefaultEncoderPreset, _settings.DefaultRateControl, _settings.DefaultTargetBitrate) = ("", "", "", "");
+        (_settings.DefaultQuality, _settings.DefaultFramerate, _settings.DefaultCustomFramerate, _settings.DefaultTenBit) = (null, "", "", false);
+        (_settings.DefaultHardwareDecoding, _settings.DefaultContainer, _settings.DefaultWebOptimized) = (true, "", true);
+        (_settings.DefaultOutputWidth, _settings.DefaultOutputHeight, _settings.DefaultVerticalVideo) = ("", "", false);
+        (_settings.DefaultAudioEncoder, _settings.DefaultAudioBitrate, _settings.DefaultMergeAudio, _settings.DefaultNormalizeAudio) = ("", "", "", false);
+        RefreshEncodingDefaults();
+    }
+
+    /// <summary>Shows the default encoding settings again after they were changed from code (the window's copy of the settings is not observable).</summary>
+    private void RefreshEncodingDefaults()
+    {
+        var context = DataContext;
+        DataContext = null;
+        DataContext = context;
+        (DefaultVideoBox.SelectedValue, DefaultAudioBox.SelectedValue, DefaultBitrateBox.SelectedValue) =
+            (_settings.DefaultVideoEncoder, _settings.DefaultAudioEncoder, _settings.DefaultAudioBitrate);
+        (DefaultContainerBox.SelectedValue, DefaultRateControlBox.SelectedValue, DefaultFramerateBox.SelectedValue, DefaultMergeBox.SelectedValue) =
+            (_settings.DefaultContainer, _settings.DefaultRateControl, _settings.DefaultFramerate, _settings.DefaultMergeAudio);
+        DefaultQualityBox.Text = _settings.DefaultQuality?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        FillDefaultEncoderPresets();
     }
 
     /// <summary>Shows how much each preview cache holds now, beside its size limit.</summary>
@@ -728,6 +794,22 @@ public partial class SettingsWindow : Window
                 ErrorText.Text = $"File not found: {cleaned}";
                 return;
             }
+        }
+
+        // The default quality: a whole number from 0 to 51, or blank for the built-in one.
+        var quality = DefaultQualityBox.Text.Trim();
+        if (quality.Length == 0)
+        {
+            _settings.DefaultQuality = null;
+        }
+        else if (int.TryParse(quality, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var value) && value is >= 0 and <= 51)
+        {
+            _settings.DefaultQuality = value;
+        }
+        else
+        {
+            ErrorText.Text = $"The default quality has to be a whole number from 0 to 51, or blank: {quality}";
+            return;
         }
 
         var downloads = _settings.DownloadFolder.Trim().Trim('"');

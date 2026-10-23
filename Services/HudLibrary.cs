@@ -43,7 +43,12 @@ public sealed record HudPiece(string Name, IReadOnlyList<List<Point>> Shapes, bo
 /// A mask picture of the whole frame shipped inside HandPeg (an embedded resource of this name, from the
 /// Resources folder), used in place of the outlines. The pieces' outlines then only say where each is cut from.
 /// </param>
-public sealed record HudGame(string Name, IReadOnlyList<HudPiece> Pieces, string? BundledMask = null)
+/// <param name="VerticalStyle">
+/// A whole vertical style shipped inside HandPeg (an embedded resource of this name), made by hand in HandPeg and
+/// used as it is: its layers' places, sizes, crops and mask settings, the main video's zoom, the blur, the colour
+/// and the captions. Its layers' mask is the game's bundled one. Null to lay the pieces out by rule.
+/// </param>
+public sealed record HudGame(string Name, IReadOnlyList<HudPiece> Pieces, string? BundledMask = null, string? VerticalStyle = null)
 {
     public string Summary => string.Join(", ", Pieces.Where(p => !p.Optional).Select(p => p.Name))
         + (Pieces.Any(p => p.Optional) ? $"  (also in the mask: {string.Join(", ", Pieces.Where(p => p.Optional).Select(p => p.Name))})" : "");
@@ -94,15 +99,17 @@ public static class HudLibrary
     // icons and the ammo beside them are one layer, not one each.
     public static IReadOnlyList<HudGame> Games { get; } =
     [
-        // A mask made by hand (Resources/overwatch_hud_mask.png); each piece is where its part of that picture lies.
+        // A mask made by hand (Resources/overwatch_hud_mask.png, from the user's Photoshop cutout) and a vertical style
+        // made by hand in HandPeg (Resources/overwatch_vertical_style.json). Each piece is cut from where that style
+        // cuts it (its areas leave the 8-pixel margin the pieces add back).
         new("Overwatch",
         [
             // The team kill count and the kills under it.
-            Piece("Killfeed", Area(1847, 39, 2520, 265)),
+            Piece("Killfeed", Area(1688.31, 23.75, 2537.17, 383.35)),
             // The hero portrait, the health bar and the line under it (the player's name, or the perk prompt), as one piece.
-            Piece("Health & Name", Area(26, 1174, 592, 1385)),
-            Piece("Abilities & Ammo", Area(1933, 1207, 2487, 1343)),
-        ], BundledMask: "overwatch_hud_mask.png"),
+            Piece("Health & Name", Area(11.52, 1126.24, 644.31, 1410.90)),
+            Piece("Abilities & Ammo", Area(1871.17, 1111.01, 2552, 1432)),
+        ], BundledMask: "overwatch_hud_mask.png", VerticalStyle: "overwatch_vertical_style.json"),
         // As HandPeg 2.5 had it, not yet traced from a screenshot.
         new("Counter-Strike 2",
         [
@@ -154,6 +161,48 @@ public static class HudLibrary
         game.BundledMask is { } name ? WriteBundledMask(name) : MaskStore.Render(game.MaskShapes, 2560, 1440);
 
     /// <summary>
+    /// A game's vertical style made by hand (<see cref="HudGame.VerticalStyle"/>), its layers given the game's mask
+    /// as it is on this computer. Null for a game without one, or when it cannot be read.
+    /// </summary>
+    public static StylePreset? LoadVerticalStyle(HudGame game)
+    {
+        if (game.VerticalStyle is not { } name)
+            return null;
+
+        using var stream = typeof(HudLibrary).Assembly.GetManifestResourceStream($"HandPegApp.Styles.{name}");
+        if (stream is null)
+            return null;
+
+        StylePreset? style;
+        try
+        {
+            style = System.Text.Json.JsonSerializer.Deserialize<StylePreset>(stream);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+
+        string? mask = null;
+        try
+        {
+            mask = EnsureFrameMask(game);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        foreach (var layer in style?.Layout?.Layers ?? [])
+        {
+            // The style names its mask "{mask}": the game's own, wherever it was written.
+            if (layer.MaskPath == "{mask}")
+                (layer.CustomMask, layer.MaskPath, layer.MaskFrame) = (mask is not null, mask ?? "", mask is not null);
+        }
+
+        return style;
+    }
+
+    /// <summary>
     /// A mask picture shipped inside HandPeg, written into the masks folder under its name and the first bytes of
     /// its content's hash: a later release with a changed picture writes it beside the old one, which the layers
     /// of earlier projects go on using. Null when there is no such picture.
@@ -189,6 +238,10 @@ public static class HudLibrary
     /// </param>
     public static List<LayerState> BuildLayers(HudGame game, bool vertical)
     {
+        // A game with a vertical style made by hand: its layers, exactly.
+        if (vertical && LoadVerticalStyle(game) is { Layout.Layers: { Count: > 0 } made })
+            return made;
+
         string? mask = null;
         try
         {

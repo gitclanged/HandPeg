@@ -7,6 +7,7 @@
         xmlns:local="clr-namespace:HandPegApp"
         xmlns:models="clr-namespace:HandPegApp.Models"
         xmlns:views="clr-namespace:HandPegApp.Views"
+        xmlns:docking="clr-namespace:HandPegApp.Docking"
         mc:Ignorable="d"
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel}"
         Title="HandPeg" Height="1030" Width="1280" MinHeight="800" MinWidth="1100"
@@ -45,6 +46,7 @@
         </DataTemplate>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
         <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
+        <local:AllTrueToVisibilityConverter x:Key="AllTrueToVisibility" />
         <local:FractionToOffsetConverter x:Key="FractionToOffset" />
         <local:EncoderPresetLabelConverter x:Key="EncoderPresetLabel" />
         <local:DecibelToScaleConverter x:Key="DecibelToScale" />
@@ -243,10 +245,10 @@
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <!-- Player with timeline, splitter, settings tabs: the two star rows share what the splitter divides. -->
-            <RowDefinition Height="46*" MinHeight="290" />
+            <!-- The panes (MainDockHost), between the top bar and the bottom bar. -->
+            <RowDefinition Height="*" MinHeight="400" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="38*" MinHeight="220" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -283,8 +285,14 @@
                           ItemsSource="{Binding DownloadResolutions}"
                           SelectedItem="{Binding DownloadResolution}"
                           ToolTip="Maximum height requested from yt-dlp when the source is a URL." />
-                <Button Grid.Column="6" Content="Project" Margin="12,0,0,0" Click="OpenProjects_Click"
-                        ToolTip="Save the current source, cuts and settings as a project, or open a saved one." />
+                <StackPanel Grid.Column="6" Orientation="Horizontal" Margin="12,0,0,0">
+                    <ToggleButton x:Name="SidecarButtonTop" Content="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Click="Sidecar_Click"
+                                  AutomationProperties.Name="Side Window (Top Bar)"
+                                  ToolTip="Side Window: a second HandPeg window for panes, to put on another monitor. Drag any pane's tab out of the window (or right-click a tab, Move to Side Window) to put it there. Closing it puts its panes back." />
+                    <Button Content="&#xE8B7;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="6,0,0,0" Click="OpenProjects_Click"
+                            AutomationProperties.Name="Project"
+                            ToolTip="Project: save the current source, cuts and settings as a project, or open a saved one." />
+                </StackPanel>
                 <Button Grid.Column="7" Content="{Binding QueueButtonText}" Margin="6,0,0,0" MinWidth="86" Click="OpenQueue_Click"
                         ToolTip="Show the batch queue. The number is how many jobs are waiting." />
                 <StackPanel Grid.Column="8" Orientation="Horizontal">
@@ -356,17 +364,10 @@
                               ToolTip="The layer and audio time bars are zoomed with Ctrl + wheel and moved along with Shift + wheel or a middle-button drag. On: the master timeline is stretched and moved with them. Off: it always shows the whole sequence." />
                     <CheckBox Content="Keyframe diamonds on clips" IsChecked="{Binding ShowClipKeyframes}" Margin="0,2"
                               ToolTip="Draws a diamond on a clip's block at each of its keyframes." />
-                    <!-- Where the panes are. Each button says where its pane would go; the borders between panes are dragged to resize them. -->
-                    <TextBlock Text="Arrange" FontWeight="SemiBold" Margin="0,8,0,4"
-                               ToolTip="Each pane can be moved to the other side. A pane's title can also be dragged there, and the thin lines between panes are dragged to resize them." />
-                    <Button x:Name="MoveLayoutPaneButton" Tag="Layout" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
-                            Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Move Layout Pane" />
-                    <Button x:Name="MoveSidePanesButton" Tag="Side" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
-                            AutomationProperties.Name="Move Side Panes" />
-                    <Button x:Name="SwapSidePanesButton" Tag="Order" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
-                            AutomationProperties.Name="Swap Keyframes and Cut Segments" />
-                    <Button x:Name="MoveTimelineButton" Tag="Timeline" Click="MovePane_Click" Padding="10,4" Margin="0,2" HorizontalContentAlignment="Left"
-                            AutomationProperties.Name="Move Master Timeline" />
+                    <!-- Where the panes are: moved by dragging their tabs; this puts them back. -->
+                    <TextBlock Text="Arrange" FontWeight="SemiBold" Margin="0,8,0,4" />
+                    <TextBlock TextWrapping="Wrap" MaxWidth="250" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,4"
+                               Text="Drag a pane by its tab (its title, or the tab that comes up at its top-left corner) onto another pane, to a side of one, or out of the window into the side window. The borders between panes are dragged to resize them." />
                     <Button Content="Reset Panes Layout" Click="ResetPanesLayout_Click" Padding="10,4" Margin="0,8,0,0" HorizontalContentAlignment="Left"
                             AutomationProperties.Name="Reset Panes Layout"
                             ToolTip="Puts every pane back where this mode starts with it, at the size it starts with: the side panes on the right, the layout pane right of the video, the timeline underneath." />
@@ -374,60 +375,20 @@
             </Border>
         </Popup>
 
+
+
+
         <!--
-            Player area: video beside the side panes, with the timeline underneath both. That is where the panes
-            start out: which row and column each is in, and how large, is set from code (see ApplyPaneLayout),
-            because the panes can be moved: the side panes to the left of the player, the layout pane to the
-            left of the video, the timeline above the player, the two side panes over each other either way round.
+            The panes: the player, the playback controls, the master timeline, the layout, the side panes and the
+            settings tabs, each where the arrangement of this mode puts it (Docking/DockManager.cs): in this
+            window, or in the side window. Each is made here, in the library below, which is never shown, and
+            taken from there into its place when the window is laid out. A pane's tab is its title, where its
+            title was (a PaneTitleSlot); a pane with no title has one that comes up over its top-left corner.
         -->
-        <Grid Grid.Row="1" x:Name="PlayerArea" SizeChanged="PlayerArea_SizeChanged">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" MinWidth="520" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="400" MinWidth="200" />
-            </Grid.ColumnDefinitions>
+        <ContentControl Grid.Row="1" Grid.RowSpan="3" x:Name="MainDockHost" Focusable="False" />
 
-            <!--
-                The left cell: the player with its transport row, and beside it, while Edit Layout is on, the
-                layout pane. A splitter between the two; the splitter further right divides all of this from the cut list.
-            -->
-            <Grid x:Name="PlayerCell">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" MinWidth="520" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="0" />
-            </Grid.ColumnDefinitions>
-
-            <!-- Drag to share the space between the video and the layout -->
-            <GridSplitter Grid.Column="1" Grid.RowSpan="2" x:Name="LayoutSplitter" Width="2" Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Stretch"
-                          ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" KeyboardIncrement="24" Visibility="Collapsed"
-                          Style="{StaticResource QuietSplitter}" Cursor="SizeWE" DragCompleted="PaneSplitter_DragCompleted"
-                          ToolTip="Drag to resize the video and the layout" AutomationProperties.Name="Resize layout" />
-
-            <!-- Edit Layout: the output frame with its layers, to drag into place -->
-            <Border Grid.Column="2" Grid.RowSpan="2" x:Name="LayoutPane" Style="{StaticResource Panel}" Visibility="Collapsed">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="Layout" FontWeight="SemiBold" Margin="0,0,0,2" Background="Transparent" Cursor="SizeAll" Tag="Layout"
-                               MouseLeftButtonDown="PaneTitle_MouseLeftButtonDown" MouseMove="PaneTitle_MouseMove" MouseLeftButtonUp="PaneTitle_MouseLeftButtonUp"
-                               ToolTip="Drag this title to the other side of the video to move the pane there." />
-                    <TextBlock DockPanel.Dock="Top" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
-                               Text="Drag a layer to move it, its corner handle to resize it. Double-click to center." />
-                    <!-- The decorator gives the canvas an adorner layer of its own, where the resize handles are drawn. -->
-                    <AdornerDecorator ClipToBounds="True">
-                        <Canvas x:Name="LayoutCanvas" Background="{DynamicResource InsetBrush}" ClipToBounds="True" SizeChanged="LayoutCanvas_SizeChanged" />
-                    </AdornerDecorator>
-                </DockPanel>
-            </Border>
-
+        <Grid x:Name="PaneLibrary" Visibility="Collapsed">
+        <Grid x:Name="PlayerPane" MinWidth="320" MinHeight="180">
             <!-- Video player -->
             <Border x:Name="VideoBorder" Background="Black" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
                 <local:VideoSurface x:Name="VideoView">
@@ -436,19 +397,19 @@
                         can appear over the native video window. The crop canvas is only present while Interactive
                         Crop is on; its faint fill is what lets it receive the mouse (fully transparent pixels let clicks through).
                     -->
-                    <Grid>
+                    <Grid x:Name="PlayerOverlay">
                         <!--
                             Shown while no video is loaded, and solid, so it reads the same whatever is behind it.
                             This window lies over the player, so what is dropped on it is passed on to the main
                             window's own drop handling; a click opens Browse.
                         -->
                         <Grid x:Name="DropHint" Background="#FF0E0E0E" AllowDrop="True" Cursor="Hand"
-                              DragOver="Window_DragOver" Drop="Window_Drop" MouseLeftButtonUp="DropHint_MouseLeftButtonUp"
-                              AutomationProperties.Name="Drag and Drop Video File Here">
+                              DragEnter="DropHint_DragOver" DragOver="DropHint_DragOver" Drop="Window_Drop" MouseLeftButtonUp="DropHint_MouseLeftButtonUp"
+                              AutomationProperties.Name="Drag and Drop Files or Links">
                             <Rectangle Margin="36" RadiusX="14" RadiusY="14" Stroke="#66FFFFFF" StrokeThickness="2" StrokeDashArray="6 5" />
                             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                                 <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="54" Foreground="#88FFFFFF" HorizontalAlignment="Center" />
-                                <TextBlock Text="Drag &amp; Drop Video File Here" FontSize="26" FontWeight="SemiBold" Foreground="#AAFFFFFF"
+                                <TextBlock Text="Drag &amp; Drop Files or Links" FontSize="26" FontWeight="SemiBold" Foreground="#AAFFFFFF"
                                            HorizontalAlignment="Center" Margin="0,14,0,0" />
                                 <TextBlock Text="or click to browse, or paste a path or URL into the source box" FontSize="13" Foreground="#77FFFFFF"
                                            HorizontalAlignment="Center" Margin="0,6,0,0" />
@@ -470,15 +431,20 @@
                                 <Rectangle x:Name="CropRectangle" Stroke="Red" StrokeThickness="2" Fill="#18FF0000" IsHitTestVisible="False" />
                             </Canvas>
                         </AdornerDecorator>
+                        <!-- Safe Margins: the action-safe (90%) and title-safe (80%) areas of the picture as it is shown. Placed from code. -->
+                        <Canvas x:Name="SafeMarginsCanvas" IsHitTestVisible="False" Visibility="Collapsed" SizeChanged="SafeMarginsCanvas_SizeChanged">
+                            <Rectangle x:Name="ActionSafeRectangle" Stroke="#B0FFFFFF" StrokeThickness="1" StrokeDashArray="4 3" />
+                            <Rectangle x:Name="TitleSafeRectangle" Stroke="#B0FFD54F" StrokeThickness="1" StrokeDashArray="4 3" />
+                        </Canvas>
                     </Grid>
                 </local:VideoSurface>
             </Border>
-
+        </Grid>
             <!--
                 Advanced transport, centred under the player when switched on in Settings:
                 previous I-frame, back one frame, play/pause, forward one frame, next I-frame.
             -->
-            <Grid Grid.Row="1" x:Name="TransportRow" Margin="0,8,0,0" Visibility="{Binding ShowAdvancedPlayback, Converter={StaticResource BoolToVisibility}}">
+            <Grid Grid.Row="1" x:Name="TransportRow" Margin="0,8,0,0" SizeChanged="TransportRow_SizeChanged">
                 <!-- The buttons sit in the middle while there is room; in a narrow player they give way to the volume -->
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -513,336 +479,193 @@
                     </StackPanel>
                 </Grid>
                 </DockPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <!--
+                    The controls, each shown or not as chosen with the settings button at the right end (PlaybackControls,
+                    per mode). Wrapped onto a second line when there are more than the row has room for (see TransportRow_SizeChanged).
+                -->
+                <WrapPanel Grid.Column="1" x:Name="TransportCenter" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <WrapPanel.Resources>
+                        <Style x:Key="TextTransport" TargetType="Button" BasedOn="{StaticResource TransportButton}">
+                            <Setter Property="FontFamily" Value="Consolas" />
+                            <Setter Property="FontWeight" Value="Bold" />
+                            <Setter Property="Padding" Value="10,5" />
+                        </Style>
+                    </WrapPanel.Resources>
                     <ToggleButton Content="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0" IsChecked="{Binding LivePreview}"
-                              AutomationProperties.Name="Enable Live Preview" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
-                              ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is." />
-                    <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Margin="3,0,14,0" Click="ReloadPlayer_Click"
+                              AutomationProperties.Name="Enable Live Preview"
+                              ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is.">
+                        <ToggleButton.Visibility>
+                            <MultiBinding Converter="{StaticResource AllTrueToVisibility}">
+                                <Binding Path="IsEditorMode" />
+                                <Binding Path="PlaybackControls[LivePreview]" />
+                            </MultiBinding>
+                        </ToggleButton.Visibility>
+                    </ToggleButton>
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Margin="3,0,14,0" Click="ReloadPlayer_Click" Visibility="{Binding PlaybackControls[Reload], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
-                    <Button Style="{StaticResource TransportButton}" Content="&#xE892;" Click="PreviousIFrame_Click"
+                    <Button Style="{StaticResource TransportButton}" Content="&#xEB9E;" Tag="JumpStart" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[JumpStart], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Go to Start (Home)" AutomationProperties.Name="Go to Start" />
+                    <Button Style="{StaticResource TransportButton}" FontFamily="Segoe UI Symbol" FontSize="15" Padding="10,4" Content="&#x21E4;" Tag="PrevEdit" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PrevEdit], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Previous Edit Point: the nearest start or end of a clip or cut segment before the playhead (Up)" AutomationProperties.Name="Previous Edit Point" />
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE892;" Click="PreviousIFrame_Click" Visibility="{Binding PlaybackControls[PrevIFrame], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Previous I-Frame" AutomationProperties.Name="Previous I-Frame" />
-                    <Button Style="{StaticResource TransportButton}" Content="&#xE76B;" Click="StepBack_Click"
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE76B;" Click="StepBack_Click" Visibility="{Binding PlaybackControls[StepBack], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Step Back One Frame (Left)" AutomationProperties.Name="Step Back One Frame" />
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE768;" Tag="PlayReverse" Click="PlaybackControl_Click" RenderTransformOrigin="0.5,0.5" Visibility="{Binding PlaybackControls[PlayReverse], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Play Backwards (J; again for faster)" AutomationProperties.Name="Play Backwards">
+                        <Button.RenderTransform>
+                            <ScaleTransform ScaleX="-1" />
+                        </Button.RenderTransform>
+                    </Button>
                     <Button Style="{StaticResource PlayPauseButton}" Padding="20,7" Margin="3,0" Click="PlayPause_Click" />
-                    <Button Style="{StaticResource TransportButton}" Content="&#xE76C;" Click="StepForward_Click"
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE76C;" Click="StepForward_Click" Visibility="{Binding PlaybackControls[StepForward], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Step Forward One Frame (Right)" AutomationProperties.Name="Step Forward One Frame" />
-                    <Button Style="{StaticResource TransportButton}" Content="&#xE893;" Click="NextIFrame_Click"
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE893;" Click="NextIFrame_Click" Visibility="{Binding PlaybackControls[NextIFrame], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Next I-Frame" AutomationProperties.Name="Next I-Frame" />
+                    <Button Style="{StaticResource TransportButton}" FontFamily="Segoe UI Symbol" FontSize="15" Padding="10,4" Content="&#x21E5;" Tag="NextEdit" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[NextEdit], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Next Edit Point: the nearest start or end of a clip or cut segment after the playhead (Down)" AutomationProperties.Name="Next Edit Point" />
+                    <Button Style="{StaticResource TransportButton}" Content="&#xEB9D;" Tag="JumpEnd" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[JumpEnd], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Go to End (End)" AutomationProperties.Name="Go to End" />
+                    <ToggleButton Content="&#xE8EE;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0" IsChecked="{Binding LoopPlayback}" Visibility="{Binding PlaybackControls[Loop], Converter={StaticResource BoolToVisibility}}"
+                                  ToolTip="Loop Playback: at the end, playback starts again from the beginning: of the selected cut segment, or of the whole sequence." AutomationProperties.Name="Loop Playback" />
+                    <Button Style="{StaticResource TextTransport}" Content="[" Margin="14,0,3,0" Command="{Binding AddStartPointCommand}" Visibility="{Binding PlaybackControls[MarkIn], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Add Start Point (I): a new cut segment begins at the playhead." AutomationProperties.Name="Add Start Point (Playback Bar)" />
+                    <Button Style="{StaticResource TextTransport}" Content="]" Command="{Binding AddStopPointCommand}" Visibility="{Binding PlaybackControls[MarkOut], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Add Stop Point (O): the segment begun with the start point ends at the playhead." AutomationProperties.Name="Add Stop Point (Playback Bar)" />
+                    <Button Style="{StaticResource TextTransport}" Content="&#x2190;[" Tag="GoToIn" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[GoToIn], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Go to Start Point: the start point being set, or the start of the selected cut segment." AutomationProperties.Name="Go to Start Point" />
+                    <Button Style="{StaticResource TextTransport}" Content="]&#x2192;" Tag="GoToOut" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[GoToOut], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Go to Stop Point: the end of the selected cut segment." AutomationProperties.Name="Go to Stop Point" />
+                    <Button Style="{StaticResource TextTransport}" Content="[&#x25B6;]" Tag="PlayInOut" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PlayInOut], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Play Start to Stop: plays the selected cut segment (or from the start point being set to the playhead) and stops at its end." AutomationProperties.Name="Play Start to Stop" />
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE8C6;" Tag="Split" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[Split], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Split at Playhead (S): cuts the selected block in two at the playhead." AutomationProperties.Name="Split at Playhead (Playback Bar)" />
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE7C1;" Margin="14,0,3,0" Tag="AddMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[AddMarker], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Add Marker (M): a marker at the playhead. Right-click a marker (on the timeline or the ruler) to rename or delete it." AutomationProperties.Name="Add Marker" />
+                    <Button Style="{StaticResource TransportButton}" Tag="PrevMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PrevMarker], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Previous Marker (Ctrl+Shift+M)" AutomationProperties.Name="Previous Marker">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE76B;" FontSize="10" VerticalAlignment="Center" />
+                            <TextBlock Text="&#xE7C1;" />
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource TransportButton}" Tag="NextMarker" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[NextMarker], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Next Marker (Shift+M)" AutomationProperties.Name="Next Marker">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE7C1;" />
+                            <TextBlock Text="&#xE76C;" FontSize="10" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <ToggleButton Content="&#xE8B3;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="14,0,3,0" IsChecked="{Binding ShowSafeMargins}" Visibility="{Binding PlaybackControls[SafeMargins], Converter={StaticResource BoolToVisibility}}"
+                                  ToolTip="Safe Margins: outlines the action-safe (90%) and title-safe (80%) areas of the frame over the picture." AutomationProperties.Name="Safe Margins" />
+                    <Button Style="{StaticResource TransportButton}" Content="&#xE722;" Tag="ExportFrame" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[ExportFrame], Converter={StaticResource BoolToVisibility}}"
+                            ToolTip="Export Frame: saves the frame as it is shown (with Live Preview: as the layout makes it) as a PNG in the output's folder." AutomationProperties.Name="Export Frame" />
                     <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
-                            AutomationProperties.Name="Render Preview" Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
+                            AutomationProperties.Name="Render Preview"
+                            ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings.">
+                        <Button.Visibility>
+                            <MultiBinding Converter="{StaticResource AllTrueToVisibility}">
+                                <Binding Path="IsEditorMode" />
+                                <Binding Path="PlaybackControls[RenderPreview]" />
+                            </MultiBinding>
+                        </Button.Visibility>
+                    </Button>
                     <!-- Views: which panes are open, where each of them is, and whether clips show their keyframes. Encoder Mode's: Editor Mode has the button in the side panes' header. -->
                     <ToggleButton x:Name="ViewsButton" Content="&#xE8A9;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0"
                                   Visibility="{Binding IsEditorMode, Converter={StaticResource InverseBoolToVisibility}}"
                                   AutomationProperties.Name="Views and Panes"
                                   ToolTip="Views / Panes: show or hide the Layout, Cut Segments and Keyframes panes, move them around the player, and put them back where they started." />
-                </StackPanel>
-                <!-- Volume and speed, beside the transport buttons -->
-                <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                </WrapPanel>
+                <!-- The time, sound and speed, and at the end the settings button that chooses what the bar shows -->
+                <StackPanel Grid.Column="2" x:Name="TransportRight" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <TextBlock VerticalAlignment="Center" Margin="0,0,12,0" Style="{StaticResource TimeText}" Visibility="{Binding PlaybackControls[Timecode], Converter={StaticResource BoolToVisibility}}">
+                        <Run Text="{Binding PositionText, Mode=OneWay}" /><Run Text=" / " Foreground="{DynamicResource MutedTextBrush}" /><Run Text="{Binding DurationText, Mode=OneWay}" Foreground="{DynamicResource MutedTextBrush}" />
+                    </TextBlock>
+                    <ToggleButton FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="8,5" Margin="0,0,8,0" IsChecked="{Binding IsPlayerMuted}" Visibility="{Binding PlaybackControls[Mute], Converter={StaticResource BoolToVisibility}}"
+                                  AutomationProperties.Name="Mute Player">
+                        <ToggleButton.Style>
+                            <Style TargetType="ToggleButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
+                                <Setter Property="Content" Value="&#xE767;" />
+                                <Setter Property="ToolTip" Value="Mute the player (the export is not affected)." />
+                                <Style.Triggers>
+                                    <Trigger Property="IsChecked" Value="True">
+                                        <Setter Property="Content" Value="&#xE74F;" />
+                                        <Setter Property="ToolTip" Value="The player is muted. Click to hear it again." />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ToggleButton.Style>
+                    </ToggleButton>
                     <!-- How tall the master timeline is -->
-                    <TextBlock Text="&#xE1D8;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center"
-                               Foreground="{DynamicResource MutedTextBrush}" ToolTip="Timeline height" />
-                    <Slider Width="64" Margin="6,0,12,0" VerticalAlignment="Center" Minimum="1" Maximum="50" SmallChange="1" LargeChange="5"
-                            IsMoveToPointEnabled="True" Value="{Binding MasterTimelineHeight}" AutomationProperties.Name="Timeline Height"
-                            ToolTip="Timeline height: how tall the master timeline is, from a slim bar to room for a readable waveform. Double-click to reset." />
-                    <TextBlock Text="&#xE767;" FontFamily="Segoe MDL2 Assets" FontSize="15" VerticalAlignment="Center"
-                               Foreground="{DynamicResource MutedTextBrush}" ToolTip="Volume" />
-                    <Slider Width="64" Margin="6,0,8,0" VerticalAlignment="Center" Minimum="0" Maximum="100"
-                            SmallChange="5" LargeChange="20" IsMoveToPointEnabled="True" ToolTip="Volume. Double-click to reset."
-                            Value="{Binding Volume}" AutomationProperties.Name="Volume" local:NumericInput.Default="100" />
-                    <ComboBox MinWidth="64" Margin="0" ItemsSource="{Binding PlaybackSpeeds}" SelectedItem="{Binding PlaybackSpeed}"
-                              ToolTip="Playback Speed" AutomationProperties.Name="Playback Speed" />
-                </StackPanel>
-            </Grid>
-            </Grid>
-
-            <!-- Drag to change the width of the cut list -->
-            <GridSplitter Grid.Column="1" x:Name="SideSplitter" Width="2" Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Stretch"
-                          ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" KeyboardIncrement="24"
-                          Style="{StaticResource QuietSplitter}" Cursor="SizeWE" DragCompleted="PaneSplitter_DragCompleted"
-                          ToolTip="Drag to resize the side panes" AutomationProperties.Name="Resize side panes" />
-
-            <!--
-                The side column. In Editor Mode it starts with a row of buttons that is always there, the ones
-                Encoder Mode has in its top bar, and under it the Source pane. Then the side panes, the Keyframes
-                pane and under it the Cut Segments pane. All three panes are shown and hidden from the Views menu.
-                In Encoder Mode, with neither of its two panes open, the column closes and the player has the width.
-            -->
-            <!-- Rows: the header, the Source pane, the media browser, the border under it, the Keyframes and Cut Segments panes. -->
-            <Grid Grid.Column="2" x:Name="SidePanes">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="0" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-            </Grid.RowDefinitions>
-
-            <!--
-                Editor Mode's header: the buttons that open the other windows, as they are in Encoder Mode's top
-                bar, held against the right edge. It is not a pane: it cannot be closed or dragged off, and goes
-                where the side column goes. The buttons are always on the one row: the column is never narrower
-                than they are together (see UpdateSideColumnMinWidth).
-            -->
-            <StackPanel x:Name="EditorHeader" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,0,2" SizeChanged="EditorHeader_SizeChanged"
-                        Visibility="{Binding IsEditorMode, Converter={StaticResource BoolToVisibility}}">
-                <Button Content="Project" Margin="6,0,0,6" Click="OpenProjects_Click"
-                        ToolTip="Save the current source, cuts and settings as a project, or open a saved one." />
-                <!-- The mode in use, and the way to the other one. Each mode keeps its own interface settings. -->
-                <Button Margin="6,0,0,6" Padding="12,6" MinWidth="84" FontWeight="SemiBold" Click="ToggleMode_Click" AutomationProperties.Name="Switch Mode"
-                        ToolTip="Switches between Encoder Mode (the lean front end for converting and trimming) and Editor Mode (layers, captions, the full timeline). Each mode remembers its own layout: timeline height, which tabs show, the playback controls.">
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="&#xE8AB;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" FontWeight="Normal" />
-                        <TextBlock Text="{Binding ModeButtonText}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                    <StackPanel Orientation="Horizontal" Visibility="{Binding PlaybackControls[TimelineHeight], Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="&#xE1D8;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource MutedTextBrush}" ToolTip="Timeline height" />
+                        <Slider Width="64" Margin="6,0,12,0" VerticalAlignment="Center" Minimum="1" Maximum="50" SmallChange="1" LargeChange="5"
+                                IsMoveToPointEnabled="True" Value="{Binding MasterTimelineHeight}" AutomationProperties.Name="Timeline Height"
+                                ToolTip="Timeline height: how tall the master timeline is, from a slim bar to room for a readable waveform. Double-click to reset." />
                     </StackPanel>
-                </Button>
-                <!--
-                    Settings; and, while the pointer rests on it, a small flyout under it with the batch queue and
-                    the Video Combinator, which used to be buttons of this row.
-                -->
-                <Grid Margin="6,0,0,6" x:Name="SettingsHost" MouseEnter="SettingsHost_MouseEnter" MouseLeave="SettingsFlyout_MouseLeave">
-                    <Popup x:Name="SettingsFlyout" PlacementTarget="{Binding ElementName=SettingsHost}" Placement="Bottom" HorizontalOffset="-150" VerticalOffset="-2"
-                           AllowsTransparency="True" StaysOpen="True">
-                        <Border x:Name="SettingsFlyoutPanel" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="6"
-                                Margin="0,4,0,0" MouseLeave="SettingsFlyout_MouseLeave">
-                            <StackPanel MinWidth="180">
-                                <StackPanel.Resources>
-                                    <!-- A row of a menu: its words start at the left, where the ordinary button would put them in the middle. -->
-                                    <Style TargetType="Button">
-                                        <Setter Property="Background" Value="Transparent" />
-                                        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
-                                        <Setter Property="HorizontalContentAlignment" Value="Left" />
-                                        <Setter Property="Padding" Value="10,6" />
-                                        <Setter Property="Margin" Value="0,1" />
-                                        <Setter Property="Template">
-                                            <Setter.Value>
-                                                <ControlTemplate TargetType="Button">
-                                                    <Border x:Name="row" Background="{TemplateBinding Background}" CornerRadius="3" Padding="{TemplateBinding Padding}">
-                                                        <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" RecognizesAccessKey="True" />
-                                                    </Border>
-                                                    <ControlTemplate.Triggers>
-                                                        <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter TargetName="row" Property="Background" Value="{DynamicResource ControlHoverBrush}" />
-                                                        </Trigger>
-                                                    </ControlTemplate.Triggers>
-                                                </ControlTemplate>
-                                            </Setter.Value>
-                                        </Setter>
-                                    </Style>
-                                </StackPanel.Resources>
-                                <!-- Autosave first: its name on the left like the rest, its box at the right-hand end of the row -->
-                                <DockPanel Margin="10,5,8,6" Background="Transparent"
-                                           ToolTip="Writes the open project to a file named after it (Name.autosave.hproj) every few minutes, in the background. The interval is in Settings, Behavior.">
-                                    <CheckBox DockPanel.Dock="Right" IsChecked="{Binding AutosaveEnabled}" Margin="12,0,0,0" VerticalAlignment="Center" AutomationProperties.Name="Autosave" />
-                                    <TextBlock Text="Autosave" Foreground="{DynamicResource TextBrush}" VerticalAlignment="Center" />
-                                </DockPanel>
-                                <Button Content="{Binding QueueButtonText}" Click="FlyoutQueue_Click" AutomationProperties.Name="Queue"
-                                        ToolTip="Show the batch queue. The number is how many jobs are waiting." />
-                                <Button Content="Social Squisher" Click="FlyoutSquisher_Click" AutomationProperties.Name="Social Squisher"
-                                        ToolTip="Opens the startup dialog with the Social Sharing Squisher: drop a video on a preset to squeeze it under that size." />
-                                <Button Content="Video Combinator" Click="FlyoutCombinator_Click" AutomationProperties.Name="Video Combinator"
-                                        ToolTip="Video Combinator: join up to five videos into one, stitched as they are or re-encoded with a transition" />
-                            </StackPanel>
+                    <StackPanel Orientation="Horizontal" Visibility="{Binding PlaybackControls[Volume], Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="&#xE767;" FontFamily="Segoe MDL2 Assets" FontSize="15" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource MutedTextBrush}" ToolTip="Volume" />
+                        <Slider Width="64" Margin="6,0,8,0" VerticalAlignment="Center" Minimum="0" Maximum="100"
+                                SmallChange="5" LargeChange="20" IsMoveToPointEnabled="True" ToolTip="Volume. Double-click to reset."
+                                Value="{Binding Volume}" AutomationProperties.Name="Volume" local:NumericInput.Default="100" />
+                    </StackPanel>
+                    <ComboBox MinWidth="64" Margin="0" ItemsSource="{Binding PlaybackSpeeds}" SelectedItem="{Binding PlaybackSpeed}" Visibility="{Binding PlaybackControls[Speed], Converter={StaticResource BoolToVisibility}}"
+                              ToolTip="Playback Speed" AutomationProperties.Name="Playback Speed" />
+                    <!-- What the bar shows: every control it can have, to tick or not, kept for this mode -->
+                    <ToggleButton x:Name="PlaybackSettingsButton" Content="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="8,5" Margin="8,0,0,0"
+                                  AutomationProperties.Name="Playback Controls Settings"
+                                  ToolTip="Playback controls: choose what this bar shows (jump to start and end, edit points, loop, start and stop points, markers, safe margins, export frame, timecode, mute and more). Kept for this mode." />
+                    <Popup PlacementTarget="{Binding ElementName=PlaybackSettingsButton}" Placement="Top" HorizontalOffset="-300" VerticalOffset="-4" StaysOpen="False" AllowsTransparency="True"
+                           IsOpen="{Binding IsChecked, ElementName=PlaybackSettingsButton, Mode=TwoWay}" Opened="BinPopup_Opened" Closed="BinPopup_Closed" Tag="{Binding ElementName=PlaybackSettingsButton}">
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
+                            <DockPanel TextElement.Foreground="{DynamicResource TextBrush}">
+                                <TextBlock DockPanel.Dock="Top" Text="Playback controls" FontWeight="SemiBold" Margin="0,0,0,2" />
+                                <TextBlock DockPanel.Dock="Top" Text="What this bar shows, in this mode." Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,8" />
+                                <ItemsControl ItemsSource="{Binding PlaybackControls.Options}" Focusable="False">
+                                    <ItemsControl.GroupStyle>
+                                        <GroupStyle>
+                                            <GroupStyle.HeaderTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="{DynamicResource MutedTextBrush}" Margin="0,6,0,2" />
+                                                </DataTemplate>
+                                            </GroupStyle.HeaderTemplate>
+                                            <GroupStyle.Panel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel Orientation="Vertical" MaxHeight="420" />
+                                                </ItemsPanelTemplate>
+                                            </GroupStyle.Panel>
+                                        </GroupStyle>
+                                    </ItemsControl.GroupStyle>
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel Orientation="Vertical" MaxHeight="440" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <CheckBox Content="{Binding Label}" IsChecked="{Binding IsShown}" ToolTip="{Binding Tip}" Margin="0,2,20,2" MinWidth="190" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </DockPanel>
                         </Border>
                     </Popup>
-                    <Button Content="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="15" Padding="10,6"
-                            Click="OpenSettings_Click" ToolTip="Settings: dependencies, tool paths, update sources and automation. Rest the pointer here for the Queue and the Video Combinator."
-                            AutomationProperties.Name="Settings" />
-                    <!-- Badge: yt-dlp or FFmpeg is missing or has a newer release -->
-                    <Ellipse Width="11" Height="11" Fill="#FF8C00" Stroke="{DynamicResource WindowBackgroundBrush}" StrokeThickness="1.5"
-                             HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-4,-4,0" IsHitTestVisible="False"
-                             Visibility="{Binding IsDependencyUpdateAvailable, Converter={StaticResource BoolToVisibility}}"
-                             AutomationProperties.Name="Dependency update available" />
-                </Grid>
-            </StackPanel>
-
-            <!--
-                Source, in Editor Mode: one box as wide as the pane for a path or a URL, with the one button that
-                acts on it resting inside its right end. With the box empty the button browses for a file; with
-                something in it, it loads that.
-            -->
-            <Border Grid.Row="1" x:Name="SourcePane" Style="{StaticResource Panel}" Margin="0,0,0,8"
-                    Visibility="{Binding IsSourcePaneVisible, Converter={StaticResource BoolToVisibility}}">
-                <StackPanel>
-                    <!-- The pane's title, and against the right edge, level with it, the resolution asked of yt-dlp for a URL. -->
-                    <DockPanel Margin="0,0,0,6">
-                        <ComboBox DockPanel.Dock="Right" MinWidth="92" Margin="0" VerticalAlignment="Center" ItemsSource="{Binding DownloadResolutions}" SelectedItem="{Binding DownloadResolution}"
-                                  AutomationProperties.Name="Download Resolution" ToolTip="Maximum height requested from yt-dlp when the source is a URL." />
-                        <TextBlock DockPanel.Dock="Right" Text="Download Resolution:" VerticalAlignment="Center" Margin="12,0,8,0" Foreground="{DynamicResource MutedTextBrush}" />
-                        <TextBlock Text="Source" FontWeight="SemiBold" VerticalAlignment="Center" />
-                    </DockPanel>
-                    <Grid>
-                        <!--
-                            The box and its button are two columns: the box has all the width the button does not
-                            take, and ends where the button begins. Nothing lies over the text, so what is typed is
-                            seen right up to the button, whatever the button says and however wide that makes it.
-                        -->
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBox x:Name="SourcePaneBox" HorizontalAlignment="Stretch" VerticalContentAlignment="Center" Padding="6,6,4,6" KeyDown="SourcePaneBox_KeyDown"
-                                 Text="{Binding SourcePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Source URL or File Path"
-                                 ToolTip="Type or paste a path or URL and press Enter, or drop a video file anywhere on the window. A web address is downloaded with yt-dlp." />
-                        <Button x:Name="SourceActionButton" Grid.Column="1" Style="{StaticResource InFieldButton}" Content="{Binding SourceActionText}" HorizontalAlignment="Stretch" Margin="-1,0,0,0" Padding="12,0"
-                                Click="SourceAction_Click" AutomationProperties.Name="Browse or Load Source"
-                                ToolTip="Browse: opens the file browser, while the box is empty. Load: loads the path or URL in the box (Enter does the same)." />
-                    </Grid>
                 </StackPanel>
-            </Border>
-
-            <!-- The panes themselves: one over the other, either way round, with a border between them to drag. -->
-            <!--
-                The media browser (Editor Mode, Views menu): a folder's videos, sounds and pictures, to drag onto the
-                timeline. It shares the column's height with the Keyframes and Cut Segments panes, by the border under it.
-            -->
-            <Border Grid.Row="2" x:Name="MediaBrowserPanel" Style="{StaticResource Panel}" Margin="0,0,0,0"
-                    Visibility="{Binding IsMediaBrowserVisible, Converter={StaticResource BoolToVisibility}}">
-                <views:MediaBrowserPane x:Name="MediaBrowser" />
-            </Border>
-            <GridSplitter Grid.Row="3" x:Name="MediaBrowserSplitter" Height="2" Margin="0,4" HorizontalAlignment="Stretch" VerticalAlignment="Center"
-                          ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" KeyboardIncrement="16" Visibility="Collapsed"
-                          Style="{StaticResource QuietSplitter}" Cursor="SizeNS" DragCompleted="MediaBrowserSplitter_DragCompleted"
-                          ToolTip="Drag to share the height between the media browser and the panes under it" AutomationProperties.Name="Resize media browser height" />
-
-            <Grid Grid.Row="4" x:Name="SidePaneStack" SizeChanged="SidePaneStack_SizeChanged">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-            </Grid.RowDefinitions>
-
-            <!-- Drag to share the height between the two side panes -->
-            <GridSplitter Grid.Row="1" x:Name="SidePaneSplitter" Height="2" Margin="0,4" HorizontalAlignment="Stretch" VerticalAlignment="Center"
-                          ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" KeyboardIncrement="16"
-                          Style="{StaticResource QuietSplitter}" Cursor="SizeNS" DragCompleted="PaneSplitter_DragCompleted"
-                          ToolTip="Drag to resize the Keyframes and Cut Segments panes" AutomationProperties.Name="Resize side panes height" />
-
-            <!-- Keyframes: the selected clip's keyframes on a timeline of their own, and the clip as it is at the playhead. -->
-            <Border x:Name="KeyframesPane" Style="{StaticResource Panel}"
-                    Visibility="{Binding ShowKeyframesPane, Converter={StaticResource BoolToVisibility}}">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
-                <StackPanel>
-                    <DockPanel Margin="0,0,0,6">
-                        <TextBlock Text="Keyframes" FontWeight="SemiBold" Background="Transparent" Cursor="SizeAll" Tag="Keyframes"
-                                   MouseLeftButtonDown="PaneTitle_MouseLeftButtonDown" MouseMove="PaneTitle_MouseMove" MouseLeftButtonUp="PaneTitle_MouseLeftButtonUp"
-                                   ToolTip="Drag this title above or below the Cut Segments pane to swap the two, or across the player to move the side panes to its other side." />
-                        <TextBlock Text="{Binding ActiveKeyLayer.Name}" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis"
-                                   ToolTip="The clip whose keyframes are shown: the one last selected on the Layers tab, or the main video." />
-                    </DockPanel>
-                    <!-- The same span as the master timeline: a diamond at each keyframe, the clip's stretch shaded, the playhead. Drawn from code. -->
-                    <local:KeyTimelineBar x:Name="KeyTimeline" Height="34" Background="{DynamicResource InsetBrush}" ClipToBounds="True" Cursor="Hand"
-                            SizeChanged="KeyTimeline_SizeChanged" MouseLeftButtonDown="KeyTimeline_MouseLeftButtonDown" MouseMove="KeyTimeline_MouseMove" MouseLeftButtonUp="KeyTimeline_MouseLeftButtonUp"
-                            AutomationProperties.Name="Keyframe Timeline" ToolTip="The selected clip's keyframes. Click or drag to move the playhead; click a diamond to go to that keyframe." />
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
-                        <Button Content="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,0,4,0" Click="PreviousKeyframe_Click"
-                                AutomationProperties.Name="Previous Keyframe" ToolTip="Previous Keyframe: moves the playhead to the keyframe before it." />
-                        <Button Content="&#x2666;" FontSize="14" Padding="14,3" Margin="0,0,4,0" Click="ToggleKeyframe_Click" Foreground="Gold"
-                                AutomationProperties.Name="Add or Remove Keyframe" ToolTip="Add / Remove Keyframe: sets a keyframe at the playhead holding the clip's place, size and rotation as they are there; on a keyframe, removes it." />
-                        <Button Content="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,0,10,0" Click="NextKeyframe_Click"
-                                AutomationProperties.Name="Next Keyframe" ToolTip="Next Keyframe: moves the playhead to the keyframe after it." />
-                        <Button Content="Clear" Padding="10,4" Click="ClearKeyframes_Click" AutomationProperties.Name="Clear Keyframes"
-                                ToolTip="Removes every keyframe of this clip: it stays as it is at the playhead." />
-                    </StackPanel>
-                    <WrapPanel Margin="0,8,0,0">
-                        <CheckBox Content="Enable keyframes" IsChecked="{Binding KeyframesEnabled}" Margin="0,2,14,2"
-                                  ToolTip="On: moving, resizing or turning a clip (in the layout pane, or with the numbers) writes a keyframe. Off: a clip with keyframes takes its whole motion with it when it is moved." />
-                        <RadioButton Content="Create new on move" GroupName="KeyframeModePane" IsChecked="{Binding KeyframesCreate}" Margin="0,2,14,2" IsEnabled="{Binding KeyframesEnabled}"
-                                     ToolTip="A move sets a new keyframe at the playhead." />
-                        <RadioButton Content="Snap to nearest" GroupName="KeyframeModePane" IsChecked="{Binding KeyframesSnap}" Margin="0,2" IsEnabled="{Binding KeyframesEnabled}"
-                                     ToolTip="A move changes the keyframe nearest the playhead, and makes no new ones." />
-                    </WrapPanel>
-                    <!-- How the clip moves on from the keyframe the playhead is on, to the next one -->
-                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0" ToolTipService.ShowOnDisabled="True"
-                                ToolTip="Easing: how the clip gets from the selected keyframe to the next one. Linear moves at one speed; the others start or end slowly. The selected keyframe is the one the playhead is on: step onto one with the previous and next keyframe buttons.">
-                        <TextBlock Text="Easing:" VerticalAlignment="Center" Margin="0,0,8,0" />
-                        <ComboBox MinWidth="140" Margin="0" ItemsSource="{Binding EasingChoices}" DisplayMemberPath="Name" SelectedValuePath="Type"
-                                  SelectedValue="{Binding SelectedKeyEasing}" IsEnabled="{Binding HasSelectedKeyframe}" AutomationProperties.Name="Keyframe Easing" />
-                    </StackPanel>
-                    <!-- The clip as it is at the playhead: between two keyframes these run from one to the other as the playhead moves. -->
-                    <WrapPanel Margin="0,6,0,0" ToolTip="The clip at the playhead. Between keyframes the numbers follow the motion; changing one moves the clip (and, with keyframes enabled, writes a keyframe).">
-                        <TextBlock Text="X %" VerticalAlignment="Center" Margin="0,0,5,0" />
-                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.PositionXPercent, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe X"
-                                 local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
-                        <TextBlock Text="Y %" VerticalAlignment="Center" Margin="0,0,5,0" />
-                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.PositionYPercent, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe Y"
-                                 local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
-                        <TextBlock Text="Scale %" VerticalAlignment="Center" Margin="0,0,5,0" />
-                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.SizePercent}" AutomationProperties.Name="Keyframe Scale"
-                                 local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="400" />
-                        <TextBlock Text="Rot &#176;" VerticalAlignment="Center" Margin="0,0,5,0" />
-                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.Rotation, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe Rotation"
-                                 local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-360" local:NumericInput.Maximum="360" />
-                        <TextBlock Text="Opacity %" VerticalAlignment="Center" Margin="0,0,5,0" />
-                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,0,2" Text="{Binding ActiveKeyLayer.Opacity}" AutomationProperties.Name="Keyframe Opacity"
-                                 local:NumericInput.Default="100" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100"
-                                 ToolTip="How solid the clip is at the playhead. With keyframes enabled, changing it writes a keyframe, so the clip can fade in and out." />
-                    </WrapPanel>
-                </StackPanel>
-                </ScrollViewer>
-            </Border>
-
-            <!-- Cut segments: selecting one seeks the player to its start. -->
-            <Border Grid.Row="2" x:Name="CutSegmentsPane" Style="{StaticResource Panel}" Visibility="{Binding ShowCutSegmentsPane, Converter={StaticResource BoolToVisibility}}">
+            </Grid>
+            <!-- Edit Layout: the output frame with its layers, to drag into place -->
+            <Border Grid.Column="2" Grid.RowSpan="2" x:Name="LayoutPane" Style="{StaticResource Panel}">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="Cut Segments" FontWeight="SemiBold" Margin="0,0,0,8" Background="Transparent" Cursor="SizeAll" Tag="CutSegments"
-                               MouseLeftButtonDown="PaneTitle_MouseLeftButtonDown" MouseMove="PaneTitle_MouseMove" MouseLeftButtonUp="PaneTitle_MouseLeftButtonUp"
-                               ToolTip="Drag this title above or below the Keyframes pane to swap the two, or across the player to move the side panes to its other side." />
-                    <ListBox ItemsSource="{Binding Segments}" SelectedItem="{Binding SelectedSegment}"
-                             VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling"
-                             ScrollViewer.CanContentScroll="True">
-                        <ListBox.ItemContainerStyle>
-                            <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
-                                <Setter Property="ToolTip" Value="Click to jump to the start of this segment" />
-                                <EventSetter Event="PreviewMouseLeftButtonUp" Handler="SegmentItem_PreviewMouseLeftButtonUp" />
-                            </Style>
-                        </ListBox.ItemContainerStyle>
-                        <ListBox.ItemTemplate>
-                            <DataTemplate>
-                                <Grid x:Name="row" Background="Transparent">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <Grid.ContextMenu>
-                                        <ContextMenu>
-                                            <MenuItem Header="Skip / Restore" Click="SegmentSkip_Click" ToolTip="A skipped segment stays on the timeline, greyed out, and is left out of the output." />
-                                            <MenuItem Header="Delete" Click="SegmentDelete_Click" />
-                                        </ContextMenu>
-                                    </Grid.ContextMenu>
-                                    <TextBlock x:Name="segmentText" Text="{Binding Display}" Style="{StaticResource TimeText}" TextTrimming="CharacterEllipsis" />
-                                    <Button Grid.Column="1" Content="Remove" Padding="10,2" Margin="6,0,0,0"
-                                            Command="{Binding DataContext.RemoveSegmentCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
-                                            CommandParameter="{Binding}" />
-                                </Grid>
-                                <DataTemplate.Triggers>
-                                    <DataTrigger Binding="{Binding IsSkipped}" Value="True">
-                                        <Setter TargetName="segmentText" Property="Opacity" Value="0.45" />
-                                    </DataTrigger>
-                                    <!-- Flashes when snapping to I-frames has changed this segment's times. -->
-                                    <DataTrigger Binding="{Binding IsFlashing}" Value="True">
-                                        <Setter TargetName="row" Property="Background" Value="{DynamicResource AccentBrush}" />
-                                    </DataTrigger>
-                                </DataTemplate.Triggers>
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
+                    <docking:PaneTitleSlot DockPanel.Dock="Top" PaneId="Layout" Margin="0,0,0,2" HorizontalAlignment="Left" />
+                    <TextBlock DockPanel.Dock="Top" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
+                               Text="Drag a layer to move it, its corner handle to resize it. Double-click to center." />
+                    <!-- The decorator gives the canvas an adorner layer of its own, where the resize handles are drawn. -->
+                    <AdornerDecorator ClipToBounds="True">
+                        <Canvas x:Name="LayoutCanvas" Background="{DynamicResource InsetBrush}" ClipToBounds="True" SizeChanged="LayoutCanvas_SizeChanged" />
+                    </AdornerDecorator>
                 </DockPanel>
             </Border>
-            </Grid>
-            </Grid>
-
-            <!--
-                Drag to make the master timeline taller or shorter. What it changes is the timeline's height
-                setting (the slider beside the volume), so the two always agree; see TimelineSplitter_DragDelta.
-            -->
-            <GridSplitter Grid.Row="1" Grid.ColumnSpan="3" x:Name="TimelineSplitter" Height="2" Margin="0,4" HorizontalAlignment="Stretch" VerticalAlignment="Center"
-                          ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" KeyboardIncrement="8"
-                          Style="{StaticResource QuietSplitter}" Cursor="SizeNS"
-                          DragStarted="TimelineSplitter_DragStarted" DragDelta="TimelineSplitter_DragDelta" DragCompleted="TimelineSplitter_DragCompleted"
-                          PreviewKeyDown="TimelineSplitter_PreviewKeyDown"
-                          ToolTip="Drag to resize the master timeline" AutomationProperties.Name="Resize master timeline" />
-
             <!-- Timeline and cut controls -->
             <Border Grid.Row="2" Grid.ColumnSpan="3" x:Name="TimelinePane" Style="{StaticResource Panel}">
                 <StackPanel>
@@ -955,7 +778,9 @@
                                     PreviewMouseRightButtonDown="TimelineSlider_RightButtonDown" PreviewMouseRightButtonUp="TimelineSlider_RightButtonUp"
                                     LostMouseCapture="TimelineSlider_LostMouseCapture"
                                     ToolTipService.InitialShowDelay="1200"
-                                    ToolTip="Click or drag anywhere to scrub. Drag with the right mouse button to mark a new cut segment." />                            <!-- Thumbnail of the moment under the pointer, cut from the sheet made when the video loaded -->
+                                    ToolTip="Click or drag anywhere to scrub. Drag with the right mouse button to mark a new cut segment." />
+                            <!-- The markers, as small flags along the top: a click goes to one, a right-click renames or deletes it. Drawn from code. -->
+                            <Canvas x:Name="MarkerCanvas" Margin="5,0" ClipToBounds="False" VerticalAlignment="Stretch" SizeChanged="SegmentCanvas_SizeChanged" />                            <!-- Thumbnail of the moment under the pointer, cut from the sheet made when the video loaded -->
                             <Popup x:Name="PreviewPopup" PlacementTarget="{Binding ElementName=TimelineSlider}" Placement="Relative"
                                    AllowsTransparency="True" IsHitTestVisible="False" Focusable="False">
                                 <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}"
@@ -998,20 +823,235 @@
                     </StackPanel>
                 </StackPanel>
             </Border>
-        </Grid>
-
-        <!-- Drag (or focus and use the arrow keys) to trade space between the player and the settings -->
-        <GridSplitter Grid.Row="2" Height="2" Margin="0,4" HorizontalAlignment="Stretch" VerticalAlignment="Center"
-                      ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" KeyboardIncrement="24"
-                      Style="{StaticResource QuietSplitter}" Cursor="SizeNS"
-                      ToolTip="Drag to resize the player and the settings" AutomationProperties.Name="Resize player and settings" />
-
-        <!-- Presets and settings tabs -->
-        <DockPanel Grid.Row="3">
-        <ContentControl DockPanel.Dock="Top" Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0,0,0,10"
-                        Visibility="{Binding ShowPresetBarAtTop, Converter={StaticResource BoolToVisibility}}" />
-        <Grid>
-        <TabControl x:Name="SettingsTabs" Padding="16,8" SelectionChanged="SettingsTabs_SelectionChanged">
+            <!--
+                Editor Mode's header: the buttons that open the other windows, as they are in Encoder Mode's top
+                bar, held against the right edge. It is not a pane: it cannot be closed or dragged off, and goes
+                where the side column goes. The buttons are always on the one row: the column is never narrower
+                than they are together (see UpdateSideColumnMinWidth).
+            -->
+            <StackPanel x:Name="EditorHeader" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,0,2">
+                <!-- The side window: a second window for panes, for a second monitor -->
+                <ToggleButton x:Name="SidecarButton" Content="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="6,0,0,6" Click="Sidecar_Click"
+                              AutomationProperties.Name="Side Window"
+                              ToolTip="Side Window: a second HandPeg window for panes, to put on another monitor. Drag any pane's tab out of the window (or right-click a tab, Move to Side Window) to put it there. Closing it puts its panes back." />
+                <Button Content="&#xE8B7;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="6,0,0,6" Click="OpenProjects_Click"
+                        AutomationProperties.Name="Project"
+                        ToolTip="Project: save the current source, cuts and settings as a project, or open a saved one." />
+                <!-- The mode in use, and the way to the other one. Each mode keeps its own interface settings. -->
+                <Button Margin="6,0,0,6" Padding="12,6" MinWidth="84" FontWeight="SemiBold" Click="ToggleMode_Click" AutomationProperties.Name="Switch Mode"
+                        ToolTip="Switches between Encoder Mode (the lean front end for converting and trimming) and Editor Mode (layers, captions, the full timeline). Each mode remembers its own layout: timeline height, which tabs show, the playback controls.">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE8AB;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" FontWeight="Normal" />
+                        <TextBlock Text="{Binding ModeButtonText}" Margin="7,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <!--
+                    Settings; and, while the pointer rests on it, a small flyout under it with the batch queue and
+                    the Video Combinator, which used to be buttons of this row.
+                -->
+                <Grid Margin="6,0,0,6" x:Name="SettingsHost" MouseEnter="SettingsHost_MouseEnter" MouseLeave="SettingsFlyout_MouseLeave">
+                    <Popup x:Name="SettingsFlyout" PlacementTarget="{Binding ElementName=SettingsHost}" Placement="Bottom" HorizontalOffset="-150" VerticalOffset="-2"
+                           AllowsTransparency="True" StaysOpen="True">
+                        <Border x:Name="SettingsFlyoutPanel" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="6"
+                                Margin="0,4,0,0" MouseLeave="SettingsFlyout_MouseLeave">
+                            <StackPanel MinWidth="180">
+                                <StackPanel.Resources>
+                                    <!-- A row of a menu: its words start at the left, where the ordinary button would put them in the middle. -->
+                                    <Style TargetType="Button">
+                                        <Setter Property="Background" Value="Transparent" />
+                                        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                                        <Setter Property="HorizontalContentAlignment" Value="Left" />
+                                        <Setter Property="Padding" Value="10,6" />
+                                        <Setter Property="Margin" Value="0,1" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border x:Name="row" Background="{TemplateBinding Background}" CornerRadius="3" Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" RecognizesAccessKey="True" />
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="row" Property="Background" Value="{DynamicResource ControlHoverBrush}" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </StackPanel.Resources>
+                                <!-- Autosave first: its name on the left like the rest, its box at the right-hand end of the row -->
+                                <DockPanel Margin="10,5,8,6" Background="Transparent"
+                                           ToolTip="Writes the open project to a file named after it (Name.autosave.hproj) every few minutes, in the background. The interval is in Settings, Behavior.">
+                                    <CheckBox DockPanel.Dock="Right" IsChecked="{Binding AutosaveEnabled}" Margin="12,0,0,0" VerticalAlignment="Center" AutomationProperties.Name="Autosave" />
+                                    <TextBlock Text="Autosave" Foreground="{DynamicResource TextBrush}" VerticalAlignment="Center" />
+                                </DockPanel>
+                                <Button Content="{Binding QueueButtonText}" Click="FlyoutQueue_Click" AutomationProperties.Name="Queue"
+                                        ToolTip="Show the batch queue. The number is how many jobs are waiting." />
+                                <Button Content="Social Squisher" Click="FlyoutSquisher_Click" AutomationProperties.Name="Social Squisher"
+                                        ToolTip="Opens the startup dialog with the Social Sharing Squisher: drop a video on a preset to squeeze it under that size." />
+                                <Button Content="Video Combinator" Click="FlyoutCombinator_Click" AutomationProperties.Name="Video Combinator"
+                                        ToolTip="Video Combinator: join up to five videos into one, stitched as they are or re-encoded with a transition" />
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                    <Button Content="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="15" Padding="10,6"
+                            Click="OpenSettings_Click" ToolTip="Settings: dependencies, tool paths, update sources and automation. Rest the pointer here for the Queue and the Video Combinator."
+                            AutomationProperties.Name="Settings" />
+                    <!-- Badge: yt-dlp or FFmpeg is missing or has a newer release -->
+                    <Ellipse Width="11" Height="11" Fill="#FF8C00" Stroke="{DynamicResource WindowBackgroundBrush}" StrokeThickness="1.5"
+                             HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-4,-4,0" IsHitTestVisible="False"
+                             Visibility="{Binding IsDependencyUpdateAvailable, Converter={StaticResource BoolToVisibility}}"
+                             AutomationProperties.Name="Dependency update available" />
+                </Grid>
+            </StackPanel>
+            <!--
+                Source, in Editor Mode: one box as wide as the pane for a path or a URL, with the one button that
+                acts on it resting inside its right end. With the box empty the button browses for a file; with
+                something in it, it loads that.
+            -->
+            <Border Grid.Row="1" x:Name="SourcePane" Style="{StaticResource Panel}" Margin="0,0,0,8">
+                <StackPanel>
+                    <!-- The pane's title, and against the right edge, level with it, the resolution asked of yt-dlp for a URL. -->
+                    <DockPanel Margin="0,0,0,6">
+                        <ComboBox DockPanel.Dock="Right" MinWidth="92" Margin="0" VerticalAlignment="Center" ItemsSource="{Binding DownloadResolutions}" SelectedItem="{Binding DownloadResolution}"
+                                  AutomationProperties.Name="Download Resolution" ToolTip="Maximum height requested from yt-dlp when the source is a URL." />
+                        <TextBlock DockPanel.Dock="Right" Text="Download Resolution:" VerticalAlignment="Center" Margin="12,0,8,0" Foreground="{DynamicResource MutedTextBrush}" />
+                        <docking:PaneTitleSlot PaneId="Source" HorizontalAlignment="Left" />
+                    </DockPanel>
+                    <Grid>
+                        <!--
+                            The box and its button are two columns: the box has all the width the button does not
+                            take, and ends where the button begins. Nothing lies over the text, so what is typed is
+                            seen right up to the button, whatever the button says and however wide that makes it.
+                        -->
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="SourcePaneBox" HorizontalAlignment="Stretch" VerticalContentAlignment="Center" Padding="6,6,4,6" KeyDown="SourcePaneBox_KeyDown"
+                                 Text="{Binding SourcePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Source URL or File Path"
+                                 ToolTip="Type or paste a path or URL and press Enter, or drop a video file anywhere on the window. A web address is downloaded with yt-dlp." />
+                        <Button x:Name="SourceActionButton" Grid.Column="1" Style="{StaticResource InFieldButton}" Content="{Binding SourceActionText}" HorizontalAlignment="Stretch" Margin="-1,0,0,0" Padding="12,0"
+                                Click="SourceAction_Click" AutomationProperties.Name="Browse or Load Source"
+                                ToolTip="Browse: opens the file browser, while the box is empty. Load: loads the path or URL in the box (Enter does the same)." />
+                    </Grid>
+                </StackPanel>
+            </Border>
+            <!--
+                The media browser (Editor Mode, Views menu): a folder's videos, sounds and pictures, to drag onto the
+                timeline. It shares the column's height with the Keyframes and Cut Segments panes, by the border under it.
+            -->
+            <Border Grid.Row="2" x:Name="MediaBrowserPanel" Style="{StaticResource Panel}" Margin="0,0,0,0">
+                <views:MediaBrowserPane x:Name="MediaBrowser" />
+            </Border>
+            <!-- Keyframes: the selected clip's keyframes on a timeline of their own, and the clip as it is at the playhead. -->
+            <Border x:Name="KeyframesPane" Style="{StaticResource Panel}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                <StackPanel>
+                    <DockPanel Margin="0,0,0,6">
+                        <docking:PaneTitleSlot DockPanel.Dock="Left" PaneId="Keyframes" />
+                        <TextBlock Text="{Binding ActiveKeyLayer.Name}" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis"
+                                   ToolTip="The clip whose keyframes are shown: the one last selected on the Layers tab, or the main video." />
+                    </DockPanel>
+                    <!-- The same span as the master timeline: a diamond at each keyframe, the clip's stretch shaded, the playhead. Drawn from code. -->
+                    <local:KeyTimelineBar x:Name="KeyTimeline" Height="34" Background="{DynamicResource InsetBrush}" ClipToBounds="True" Cursor="Hand"
+                            SizeChanged="KeyTimeline_SizeChanged" MouseLeftButtonDown="KeyTimeline_MouseLeftButtonDown" MouseMove="KeyTimeline_MouseMove" MouseLeftButtonUp="KeyTimeline_MouseLeftButtonUp"
+                            AutomationProperties.Name="Keyframe Timeline" ToolTip="The selected clip's keyframes. Click or drag to move the playhead; click a diamond to go to that keyframe." />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
+                        <Button Content="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,0,4,0" Click="PreviousKeyframe_Click"
+                                AutomationProperties.Name="Previous Keyframe" ToolTip="Previous Keyframe: moves the playhead to the keyframe before it." />
+                        <Button Content="&#x2666;" FontSize="14" Padding="14,3" Margin="0,0,4,0" Click="ToggleKeyframe_Click" Foreground="Gold"
+                                AutomationProperties.Name="Add or Remove Keyframe" ToolTip="Add / Remove Keyframe: sets a keyframe at the playhead holding the clip's place, size and rotation as they are there; on a keyframe, removes it." />
+                        <Button Content="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,0,10,0" Click="NextKeyframe_Click"
+                                AutomationProperties.Name="Next Keyframe" ToolTip="Next Keyframe: moves the playhead to the keyframe after it." />
+                        <Button Content="Clear" Padding="10,4" Click="ClearKeyframes_Click" AutomationProperties.Name="Clear Keyframes"
+                                ToolTip="Removes every keyframe of this clip: it stays as it is at the playhead." />
+                    </StackPanel>
+                    <WrapPanel Margin="0,8,0,0">
+                        <CheckBox Content="Enable keyframes" IsChecked="{Binding KeyframesEnabled}" Margin="0,2,14,2"
+                                  ToolTip="On: moving, resizing or turning a clip (in the layout pane, or with the numbers) writes a keyframe. Off: a clip with keyframes takes its whole motion with it when it is moved." />
+                        <RadioButton Content="Create new on move" GroupName="KeyframeModePane" IsChecked="{Binding KeyframesCreate}" Margin="0,2,14,2" IsEnabled="{Binding KeyframesEnabled}"
+                                     ToolTip="A move sets a new keyframe at the playhead." />
+                        <RadioButton Content="Snap to nearest" GroupName="KeyframeModePane" IsChecked="{Binding KeyframesSnap}" Margin="0,2" IsEnabled="{Binding KeyframesEnabled}"
+                                     ToolTip="A move changes the keyframe nearest the playhead, and makes no new ones." />
+                    </WrapPanel>
+                    <!-- How the clip moves on from the keyframe the playhead is on, to the next one -->
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0" ToolTipService.ShowOnDisabled="True"
+                                ToolTip="Easing: how the clip gets from the selected keyframe to the next one. Linear moves at one speed; the others start or end slowly. The selected keyframe is the one the playhead is on: step onto one with the previous and next keyframe buttons.">
+                        <TextBlock Text="Easing:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <ComboBox MinWidth="140" Margin="0" ItemsSource="{Binding EasingChoices}" DisplayMemberPath="Name" SelectedValuePath="Type"
+                                  SelectedValue="{Binding SelectedKeyEasing}" IsEnabled="{Binding HasSelectedKeyframe}" AutomationProperties.Name="Keyframe Easing" />
+                    </StackPanel>
+                    <!-- The clip as it is at the playhead: between two keyframes these run from one to the other as the playhead moves. -->
+                    <WrapPanel Margin="0,6,0,0" ToolTip="The clip at the playhead. Between keyframes the numbers follow the motion; changing one moves the clip (and, with keyframes enabled, writes a keyframe).">
+                        <TextBlock Text="X %" VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.PositionXPercent, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe X"
+                                 local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+                        <TextBlock Text="Y %" VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.PositionYPercent, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe Y"
+                                 local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+                        <TextBlock Text="Scale %" VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.SizePercent}" AutomationProperties.Name="Keyframe Scale"
+                                 local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="400" />
+                        <TextBlock Text="Rot &#176;" VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,10,2" Text="{Binding ActiveKeyLayer.Rotation, StringFormat={}{0:0}}" AutomationProperties.Name="Keyframe Rotation"
+                                 local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-360" local:NumericInput.Maximum="360" />
+                        <TextBlock Text="Opacity %" VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0,2,0,2" Text="{Binding ActiveKeyLayer.Opacity}" AutomationProperties.Name="Keyframe Opacity"
+                                 local:NumericInput.Default="100" local:NumericInput.DragStep="0.25" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100"
+                                 ToolTip="How solid the clip is at the playhead. With keyframes enabled, changing it writes a keyframe, so the clip can fade in and out." />
+                    </WrapPanel>
+                </StackPanel>
+                </ScrollViewer>
+            </Border>
+            <!-- Cut segments: selecting one seeks the player to its start. -->
+            <Border Grid.Row="2" x:Name="CutSegmentsPane" Style="{StaticResource Panel}">
+                <DockPanel>
+                    <docking:PaneTitleSlot DockPanel.Dock="Top" PaneId="CutSegments" Margin="0,0,0,8" HorizontalAlignment="Left" />
+                    <ListBox ItemsSource="{Binding Segments}" SelectedItem="{Binding SelectedSegment}"
+                             VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling"
+                             ScrollViewer.CanContentScroll="True">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                <Setter Property="ToolTip" Value="Click to jump to the start of this segment" />
+                                <EventSetter Event="PreviewMouseLeftButtonUp" Handler="SegmentItem_PreviewMouseLeftButtonUp" />
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid x:Name="row" Background="Transparent">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="Skip / Restore" Click="SegmentSkip_Click" ToolTip="A skipped segment stays on the timeline, greyed out, and is left out of the output." />
+                                            <MenuItem Header="Delete" Click="SegmentDelete_Click" />
+                                        </ContextMenu>
+                                    </Grid.ContextMenu>
+                                    <TextBlock x:Name="segmentText" Text="{Binding Display}" Style="{StaticResource TimeText}" TextTrimming="CharacterEllipsis" />
+                                    <Button Grid.Column="1" Content="Remove" Padding="10,2" Margin="6,0,0,0"
+                                            Command="{Binding DataContext.RemoveSegmentCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                            CommandParameter="{Binding}" />
+                                </Grid>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding IsSkipped}" Value="True">
+                                        <Setter TargetName="segmentText" Property="Opacity" Value="0.45" />
+                                    </DataTrigger>
+                                    <!-- Flashes when snapping to I-frames has changed this segment's times. -->
+                                    <DataTrigger Binding="{Binding IsFlashing}" Value="True">
+                                        <Setter TargetName="row" Property="Background" Value="{DynamicResource AccentBrush}" />
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+        <!-- The preset bar above the tabs, as Settings may have it: a pane of its own. -->
+        <ContentControl x:Name="PresetBarPane" Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0,0,0,10" />
+        <TabControl x:Name="SettingsTabs" Padding="16,8">
             <TabItem Header="Summary">
                 <DockPanel>
                 <!-- Encoder Mode: the preset bar, here or above the tabs as the settings have it -->
@@ -1286,8 +1326,10 @@
                         <WrapPanel>
                             <CheckBox Content="Create chapter markers" IsChecked="{Binding ChapterMarkers}" Margin="0,2,24,2"
                                       ToolTip="Carries the source's chapters over. Only for uncut encodes: once sections are removed, the source's chapter times no longer fit." />
-                            <CheckBox Content="Generate Chapters at Cut Points" IsChecked="{Binding ChaptersAtCuts}" Margin="0,2,0,2"
+                            <CheckBox Content="Generate Chapters at Cut Points" IsChecked="{Binding ChaptersAtCuts}" Margin="0,2,24,2"
                                       ToolTip="Gives the output one chapter per kept segment, so a player can jump from cut to cut." />
+                            <CheckBox Content="Generate Chapters at Markers" IsChecked="{Binding ChaptersAtMarkers}" Margin="0,2,0,2"
+                                      ToolTip="Gives the output a chapter at each marker (M puts one at the playhead), named after it. Markers in removed stretches are left out; with Chapters at Cut Points as well, both kinds are there." />
                         </WrapPanel>
                     </GroupBox>
                     </StackPanel>
@@ -2595,6 +2637,8 @@
                               ToolTip="Carries the source's chapters over. Only for uncut encodes: once sections are removed, the source's chapter times no longer fit." />
                     <CheckBox Content="Generate Chapters at Cut Points" IsChecked="{Binding ChaptersAtCuts}"
                               ToolTip="Gives the output one chapter per kept segment, so a player can jump from cut to cut." />
+                    <CheckBox Content="Generate Chapters at Markers" IsChecked="{Binding ChaptersAtMarkers}"
+                              ToolTip="Gives the output a chapter at each marker (M puts one at the playhead), named after it. Markers in removed stretches are left out; with Chapters at Cut Points as well, both kinds are there." />
                 </StackPanel>
                 </DataTemplate>
                 </TabItem.Tag>
@@ -2621,9 +2665,7 @@
                 </TabItem.Tag>
             </TabItem>
         </TabControl>
-
         </Grid>
-        </DockPanel>
 
         <!--
             The bottom of the window: where the output goes, and the status bar under it. In Editor Mode, in a

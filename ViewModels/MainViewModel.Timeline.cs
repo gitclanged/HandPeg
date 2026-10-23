@@ -10,7 +10,7 @@ namespace HandPegApp.ViewModels;
 public sealed record TimelineSnapshot(
     List<SegmentState> Segments, List<LayerState> Layers, int MainVideoIndex, List<AudioEditState> Audio, bool AudioLinked,
     LayerState? MainLayer = null, bool BackgroundHidden = false, List<MainPiece>? MainPieces = null, List<DeletedClip>? Bin = null,
-    SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null);
+    SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null, List<TimelineMarker>? Markers = null);
 
 /// <summary>What was done to one audio track on the timeline: how far it was slipped, and its pieces.</summary>
 public sealed record AudioEditState(int Index, double Offset, List<AudioPiece> Pieces);
@@ -85,7 +85,7 @@ public partial class MainViewModel
         MainVideoIndex,
         AudioTracks.Select(t => new AudioEditState(t.Index, t.OffsetSeconds, [.. t.Pieces])).ToList(),
         AudioLinked, _mainVideoRow.ToState(), _backgroundRow.IsHidden, [.. _mainPieces], RecycleBin.Select(i => i.Clip).ToList(),
-        CaptureSubtitles(), CaptionLayer.ToState(), CaptionStyle.Clone());
+        CaptureSubtitles(), CaptionLayer.ToState(), CaptionStyle.Clone(), [.. Markers]);
 
     /// <summary>Puts an undo step on the stack that brings back the state given, which may be other than the present one.</summary>
     private void Checkpoint(string what, TimelineSnapshot before)
@@ -158,6 +158,7 @@ public partial class MainViewModel
         _mainPieces.AddRange(snapshot.MainPieces ?? []);
         InvalidateMainClips();
         SetBin(snapshot.Bin);
+        SetMarkers(snapshot.Markers);
         _backgroundRow.IsHidden = snapshot.BackgroundHidden;
         MainVideoIndex = Math.Clamp(snapshot.MainVideoIndex, 0, Layers.Count);
         foreach (var edit in snapshot.Audio)

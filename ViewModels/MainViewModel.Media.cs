@@ -57,6 +57,75 @@ public partial class MainViewModel
         track.Bitrate = AudioBitrate;
     }
 
+    /// <summary>
+    /// Puts the default encoding settings (Settings, Export &amp; Hardware) in place: at launch, and after a style preset
+    /// when they are set to override styles. Each blank one is left as it is. An encoding preset is never overridden:
+    /// with one selected, its settings stay.
+    /// </summary>
+    private void ApplyEncodingDefaults()
+    {
+        var settings = AppSettings.Current;
+        using var whole = DeferCommand();
+
+        // The encoder first: which preset steps and rate-control names exist depends on it.
+        if (settings.DefaultVideoEncoder.Length > 0 && VideoEncoders.FirstOrDefault(e => e.Name == settings.DefaultVideoEncoder) is { } encoder)
+            VideoEncoder = encoder;
+        if (EncoderPresets.Contains(settings.DefaultEncoderPreset))
+            EncoderPreset = settings.DefaultEncoderPreset;
+        if (RateControls.Contains(settings.DefaultRateControl))
+            RateControl = settings.DefaultRateControl;
+        if (settings.DefaultQuality is { } quality)
+            Crf = Math.Clamp(quality, 0, 51);
+        if (settings.DefaultTargetBitrate.Trim() is { Length: > 0 } bitrate)
+            TargetBitrate = bitrate;
+        if (Framerates.Contains(settings.DefaultFramerate))
+            (Framerate, CustomFramerate) = (settings.DefaultFramerate, settings.DefaultCustomFramerate);
+        (TenBit, HardwareDecoding) = (settings.DefaultTenBit && CanTenBit, settings.DefaultHardwareDecoding);
+        if (Containers.Contains(settings.DefaultContainer))
+            Container = settings.DefaultContainer;
+        WebOptimized = settings.DefaultWebOptimized;
+
+        // The size asked for, as typed, without one side being worked out from the other on the way.
+        if (settings.DefaultOutputWidth.Trim().Length > 0 || settings.DefaultOutputHeight.Trim().Length > 0)
+        {
+            _syncingDimensions = true;
+            try
+            {
+                (OutputWidth, OutputHeight) = (settings.DefaultOutputWidth.Trim(), settings.DefaultOutputHeight.Trim());
+            }
+            finally
+            {
+                _syncingDimensions = false;
+            }
+
+            if (OutputWidth.Length == 0 || OutputHeight.Length == 0)
+                RelinkDimensions();
+        }
+
+        if (AudioEncoders.Contains(settings.DefaultAudioEncoder))
+            AudioEncoder = settings.DefaultAudioEncoder;
+        if (AudioBitrates.Contains(settings.DefaultAudioBitrate))
+            AudioBitrate = settings.DefaultAudioBitrate;
+        if (settings.DefaultMergeAudio is "on" or "off")
+            MergeAudioTracks = settings.DefaultMergeAudio == "on";
+        NormalizeAudio = settings.DefaultNormalizeAudio;
+        ApplyAudioDefaultsToTracks();
+    }
+
+    /// <summary>After a style preset: the default encoding settings again, when they override styles and no encoding preset is in use.</summary>
+    private void ApplyEncodingDefaultsOverStyle()
+    {
+        var settings = AppSettings.Current;
+        if (!settings.DefaultsOverrideStyles || SelectedPreset is not null)
+            return;
+
+        ApplyEncodingDefaults();
+
+        // The style may have turned the frame tall or wide: the setting that says what every video starts as says otherwise.
+        if (UseVerticalResolution != settings.DefaultVerticalVideo)
+            UseVerticalResolution = settings.DefaultVerticalVideo;
+    }
+
     /// <summary>Takes over the result of inspecting a newly loaded source (null when it could not be inspected).</summary>
     private void SetMediaInfo(MediaInfo? info)
     {

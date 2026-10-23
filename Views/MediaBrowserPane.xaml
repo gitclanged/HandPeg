@@ -2,6 +2,7 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:sys="clr-namespace:System;assembly=mscorlib"
+             xmlns:docking="clr-namespace:HandPegApp.Docking"
              IsVisibleChanged="Pane_IsVisibleChanged">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
@@ -95,18 +96,39 @@
     </UserControl.Resources>
 
     <DockPanel>
-        <!-- The title, and against the right edge the view chosen and Refresh -->
+        <!-- The title, and against the right edge: what the files are sorted by, which way, how large they are shown, and Refresh -->
         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
-            <Button DockPanel.Dock="Right" Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="8,4" Margin="6,0,0,0" Click="Refresh_Click"
+            <Button DockPanel.Dock="Right" Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="8,4" Margin="8,0,0,0" Click="Refresh_Click"
                     AutomationProperties.Name="Refresh Media Browser" ToolTip="Reads the folder again." />
-            <ComboBox DockPanel.Dock="Right" x:Name="ViewBox" MinWidth="86" Margin="0" SelectionChanged="ViewBox_SelectionChanged"
-                      AutomationProperties.Name="Media Browser View" ToolTip="How the files are shown: as a list, or as tiles of three sizes. Move the pointer across a video's picture to see through it.">
-                <ComboBoxItem Content="List" />
-                <ComboBoxItem Content="Small" />
-                <ComboBoxItem Content="Medium" />
-                <ComboBoxItem Content="Large" />
+            <!-- How large the files are shown, as the timeline's height is set: the smallest few steps are a list, then tiles that grow. -->
+            <Slider DockPanel.Dock="Right" x:Name="SizeSlider" Width="70" Margin="6,0,0,0" VerticalAlignment="Center" Minimum="0" Maximum="100" SmallChange="2" LargeChange="10"
+                    IsMoveToPointEnabled="True" ValueChanged="SizeSlider_ValueChanged" AutomationProperties.Name="Media Browser Size"
+                    ToolTip="How large the files are shown: all the way left is a list, then tiles from small to large. Move the pointer across a video's picture to see through it." />
+            <TextBlock DockPanel.Dock="Right" Text="&#xE8B9;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Margin="10,0,0,0"
+                       Foreground="{DynamicResource MutedTextBrush}" ToolTip="Size" />
+            <ToggleButton DockPanel.Dock="Right" x:Name="SortDirectionButton" FontFamily="Segoe MDL2 Assets" FontSize="11" Padding="6,4" Margin="3,0,0,0"
+                          Checked="SortDirection_Changed" Unchecked="SortDirection_Changed" AutomationProperties.Name="Sort Descending">
+                <ToggleButton.Style>
+                    <Style TargetType="ToggleButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
+                        <Setter Property="Content" Value="&#xE74A;" />
+                        <Setter Property="ToolTip" Value="Ascending (A to Z, oldest, smallest first). Click for descending." />
+                        <Style.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter Property="Content" Value="&#xE74B;" />
+                                <Setter Property="ToolTip" Value="Descending (Z to A, newest, largest first). Click for ascending." />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </ToggleButton.Style>
+            </ToggleButton>
+            <ComboBox DockPanel.Dock="Right" x:Name="SortBox" MinWidth="78" Margin="0" SelectionChanged="SortBox_SelectionChanged"
+                      AutomationProperties.Name="Media Browser Sort" ToolTip="What the files are sorted by. Folders stay first.">
+                <ComboBoxItem Content="Name" />
+                <ComboBoxItem Content="Date" />
+                <ComboBoxItem Content="Size" />
+                <ComboBoxItem Content="Type" />
             </ComboBox>
-            <TextBlock Text="Media" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <docking:PaneTitleSlot PaneId="Media" HorizontalAlignment="Left" />
         </DockPanel>
 
         <!-- The folder: up a level, the path (type one and press Enter), Browse inside the box as in the Source pane -->

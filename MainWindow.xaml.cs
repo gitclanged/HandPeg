@@ -98,7 +98,7 @@ public partial class MainWindow : Window
             if (e.PropertyName == nameof(MainViewModel.SyncMasterTimeline))
                 UpdateMasterStretch();
         };
-        SidePanes.ClipToBounds = true;
+        InitializeDocking();
         Application.Current.Resources["GlobalScrollBarThickness"] = Math.Clamp(AppSettings.Current.ScrollbarThickness, 4, 16);
         TimelineSlider.AddHandler(PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler(TimelineSlider_PreviewMouseLeftButtonDown), handledEventsToo: true);
 
@@ -115,6 +115,8 @@ public partial class MainWindow : Window
         PreviewCache.Browser.QueueTrim();
 
         _viewModel.Segments.CollectionChanged += (_, _) => RedrawSegments();
+        _viewModel.MarkersChanged += OnMarkersChanged;
+        InitializePlaybackBar();
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         _viewModel.MediaLoaded += PlayMedia;
 
@@ -200,12 +202,9 @@ public partial class MainWindow : Window
             // No window opens over the program at launch any more: it starts straight into its workspace. What
             // the launch window offered is offered while a file is dragged in instead, and its targets are made
             // now, once everything else is up and idle.
-            Dispatcher.BeginInvoke(BuildDropTargets, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            Dispatcher.BeginInvoke(PrepareDropTargets, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             Dispatcher.BeginInvoke(RealizeTabsWhenIdle, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         };
-
-        // A tab other than the first may be the one that is open.
-        RealizeTab(SettingsTabs.SelectedItem);
     }
 
     private SplashWindow? _launchWindow;
@@ -288,8 +287,14 @@ public partial class MainWindow : Window
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
         RememberWindowSize();
+
+        // The side window's place and size are kept with the arrangement.
+        _viewModel.SavePaneLayout(s => s.DockLayout = _dock.Save());
         if (!AppSettings.Current.PromptToSaveOnExit || !_viewModel.HasUnsavedChanges)
+        {
+            _dock.Shutdown();
             return;
+        }
 
         string name;
         try
@@ -314,6 +319,9 @@ public partial class MainWindow : Window
                 e.Cancel = true;
                 break;
         }
+
+        if (!e.Cancel)
+            _dock.Shutdown();
     }
 
     private void MainWindow_Closed(object? sender, EventArgs e)
@@ -363,6 +371,13 @@ public partial class MainWindow : Window
                 Undo_Click(this, new RoutedEventArgs());
             else
                 Redo_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.M && _viewModel.HasSource && Keyboard.Modifiers is ModifierKeys.Shift or (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            _viewModel.GoToMarker(forward: Keyboard.Modifiers == ModifierKeys.Shift);
             e.Handled = true;
             return;
         }
@@ -418,6 +433,18 @@ public partial class MainWindow : Window
 
             case Key.O when _viewModel.AddStopPointCommand.CanExecute(null):
                 _viewModel.AddStopPointCommand.Execute(null);
+                break;
+
+            case Key.M when _viewModel.HasSource:
+                _viewModel.AddMarker();
+                break;
+
+            case Key.Home or Key.End when _viewModel.HasSource && focused is not (ItemsControl or ListBoxItem or Slider):
+                _viewModel.PositionMs = e.Key == Key.Home ? 0 : _viewModel.DurationMs;
+                break;
+
+            case Key.Up or Key.Down when _viewModel.HasSource && focused is not (ItemsControl or ListBoxItem or Slider or ScrollViewer):
+                GoToEditPoint(forward: e.Key == Key.Down);
                 break;
 
             // The time bars: = and - zoom about the playhead, \ shows the whole timeline again.
@@ -638,7 +665,38 @@ public partial class MainWindow : Window
         var muted = new SolidColorBrush(Color.FromRgb(Mute(accent.R), Mute(accent.G), Mute(accent.B)));
         muted.Freeze();
         Resources["DropTargetBrush"] = muted;
-        (_dropTargetsBuilt, _dropTargetsMode) = (true, _viewModel.IsEditorMode ? "editor" : "encoder");
+        (_dropTargetsBuilt, _dropTargetsMode) = (true, DropTargetsSignature());
+    }
+
+    /// <summary>
+    /// Makes the overlay's targets ahead of time, once the window is up and idle, and lays the overlay out while it
+    /// is still hidden (Hidden, not Collapsed, keeps it laid out), so that the first drag shows it at once.
+    /// </summary>
+    private void PrepareDropTargets()
+    {
+        BuildDropTargets();
+        if (DropOverlay.Visibility == Visibility.Collapsed)
+            DropOverlay.Visibility = Visibility.Hidden;
+    }
+
+    /// <summary>What the overlay's targets are made from: when this changes, they are made again.</summary>
+    private string DropTargetsSignature()
+    {
+        var settings = AppSettings.Current;
+        long styles;
+        try
+        {
+            styles = Directory.Exists(AppPaths.Styles) ? Directory.GetLastWriteTimeUtc(AppPaths.Styles).Ticks : 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            styles = 0;
+        }
+
+        return string.Join("|", _viewModel.IsEditorMode, styles, string.Join(",", settings.SplashStylePresets), settings.SplashPresetCount,
+            string.Join(",", settings.OverlayEncodingPresets), settings.OverlayEncodingPresetCount, string.Join(",", _viewModel.Presets.Select(p => p.Name)),
+            settings.ShowSquisher, settings.SquisherPresetCount, string.Join(",", settings.SquisherPresets.Select(p => $"{p.Name}:{p.TargetSizeMb}")),
+            (FindResource("AccentBrush") as SolidColorBrush)?.Color.ToString() ?? "");
     }
 
     /// <summary>
@@ -661,7 +719,7 @@ public partial class MainWindow : Window
     private void ShowDropOverlay(DragEventArgs e)
     {
         _dropLeave.Stop();
-        if (DropOverlay.Visibility == Visibility.Visible || !e.Data.GetDataPresent(DataFormats.FileDrop))
+        if (DropOverlay.Visibility == Visibility.Visible || !CanOpen(e.Data))
             return;
 
         // Only into an empty window. With a video or a project open, a file dragged in is on its way to the
@@ -669,8 +727,10 @@ public partial class MainWindow : Window
         if (_viewModel.HasSource || _viewModel.IsBusy)
             return;
 
-        // The mode may have changed, or the presets: they are made again, which is seven buttons' work.
-        BuildDropTargets();
+        // Made at launch, once the window was idle (see PrepareDropTargets): only made again when the mode or the
+        // presets have changed since.
+        if (DropTargetsSignature() != _dropTargetsMode)
+            BuildDropTargets();
         DropOverlay.Visibility = Visibility.Visible;
 
         // The player is a native window, which WPF cannot draw over: it would stay bright in the middle of the
@@ -689,13 +749,13 @@ public partial class MainWindow : Window
     {
         _dropLeave.Stop();
         ClearDropMark();
-        DropOverlay.Visibility = Visibility.Collapsed;
+        DropOverlay.Visibility = _dropTargetsBuilt ? Visibility.Hidden : Visibility.Collapsed;
         VideoView.Visibility = Visibility.Visible;
     }
 
     private void DropTarget_DragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Effects = CanOpen(e.Data) ? DragDropEffects.Copy : DragDropEffects.None;
         e.Handled = true;
     }
 
@@ -724,26 +784,39 @@ public partial class MainWindow : Window
     private void RouteDrop(DropTargetItem item, DragEventArgs e)
     {
         HideDropOverlay();
-        if (e.Data.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } files || !File.Exists(files[0]))
+
+        // A file, or a link, which is downloaded on the way: a style or an encoding preset is given to the video
+        // the link loads, and the Squisher squishes the download.
+        var (dropped, link) = Dragged(e.Data);
+        var source = dropped is not null && File.Exists(dropped) ? dropped : link;
+        if (source is null)
             return;
 
-        var file = files[0];
-        AppLog.Write($"Dropped {Path.GetFileName(file)} on the overlay target {item.Name}.");
+        AppLog.Write($"Dropped {(link is null ? Path.GetFileName(source) : "a link")} on the overlay target {item.Name}.");
         switch (item.Target)
         {
             case StyleFile style:
-                _ = _viewModel.LoadFileWithStyleAsync(file, style.Path);
+                _ = _viewModel.LoadFileWithStyleAsync(source, style.Path);
                 break;
             case EncodingPreset preset:
-                _ = LoadWithPresetAsync(file, preset);
+                _ = LoadWithPresetAsync(source, preset);
                 break;
             case SquishPreset squish:
-                // Straight to the processing square: the window is not shown opening and then shrinking.
-                OpenLaunchWindow(startHidden: true);
-                var window = _launchWindow;
-                Dispatcher.BeginInvoke(() => window?.StartSquish(file, squish, instant: true), System.Windows.Threading.DispatcherPriority.Loaded);
+                _ = SquishDroppedAsync(source, squish);
                 break;
         }
+    }
+
+    private async Task SquishDroppedAsync(string source, SquishPreset squish)
+    {
+        var file = MainViewModel.IsWebAddress(source) ? await _viewModel.DownloadLinkAsync(source) : source;
+        if (file is null)
+            return;
+
+        // Straight to the processing square: the window is not shown opening and then shrinking.
+        OpenLaunchWindow(startHidden: true);
+        var window = _launchWindow;
+        await Dispatcher.BeginInvoke(() => window?.StartSquish(file, squish, instant: true), System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     // Opens the file as the Source pane would, and once it is open applies the encoding preset to it.
@@ -759,26 +832,6 @@ public partial class MainWindow : Window
     }
 
     // ----- Fitting -----
-
-    private void PlayerArea_SizeChanged(object sender, SizeChangedEventArgs e) => ClampSideColumn();
-
-    /// <summary>
-    /// Keeps the side column inside the window. It has a width of its own (the one it was dragged to), which
-    /// a narrower window has no room for: it then takes what is left beside the player's least width, down to
-    /// its own least, and is given its width back when there is room again. It never lies over the player.
-    /// </summary>
-    private void ClampSideColumn()
-    {
-        if (SidePanes.Visibility != Visibility.Visible || PlayerArea.ActualWidth <= 0)
-            return;
-
-        var settings = AppSettings.Current;
-        var wanted = settings.SidePanesWidth > 0 ? settings.SidePanesWidth : DefaultSidePanesWidth;
-        var room = PlayerArea.ActualWidth - PlayerColumn.MinWidth - 10;
-        var width = Math.Max(Math.Min(wanted, room), SideColumn.MinWidth);
-        if (Math.Abs(SideColumn.Width.Value - width) > 0.5 || !SideColumn.Width.IsAbsolute)
-            SideColumn.Width = new GridLength(width);
-    }
 
     private void FlyoutSquisher_Click(object sender, RoutedEventArgs e)
     {
@@ -874,8 +927,72 @@ public partial class MainWindow : Window
 
     private void Window_DragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Effects = CanOpen(e.Data) ? DragDropEffects.Copy : DragDropEffects.None;
         e.Handled = true;
+    }
+
+    // The "Drag & Drop" hint lies over the player in a window of its own, which the main window's drag handlers do
+    // not hear: a file dragged onto it brings the overlay up from here. (The overlay hides the player, and the hint
+    // with it, so the rest of the drag is the main window's.)
+    private void DropHint_DragOver(object sender, DragEventArgs e)
+    {
+        ShowDropOverlay(e);
+        Window_DragOver(sender, e);
+    }
+
+    // The last drag asked about, and what it carries: a drag is asked about at every move.
+    private IDataObject? _draggedData;
+    private (string? File, string? Link) _dragged;
+
+    /// <summary>
+    /// What a drag carries that HandPeg can open: files (from Explorer, or the media browser), or a link (from a web
+    /// browser's address bar or page: any address yt-dlp may download, not only YouTube's).
+    /// </summary>
+    private (string? File, string? Link) Dragged(IDataObject data)
+    {
+        if (ReferenceEquals(data, _draggedData))
+            return _dragged;
+
+        _draggedData = data;
+        _dragged = data.GetDataPresent(DataFormats.FileDrop) && data.GetData(DataFormats.FileDrop) is string[] { Length: > 0 } files
+            ? (files[0], null)
+            : (null, DraggedLink(data));
+        return _dragged;
+    }
+
+    private bool CanOpen(IDataObject data) => Dragged(data) is { File: not null } or { Link: not null };
+
+    /// <summary>A web address a drag carries, in any of the forms browsers give one; null for none.</summary>
+    private static string? DraggedLink(IDataObject data)
+    {
+        foreach (var format in new[] { "UniformResourceLocatorW", "UniformResourceLocator", "text/x-moz-url", DataFormats.UnicodeText, DataFormats.Text })
+        {
+            string? text;
+            try
+            {
+                if (!data.GetDataPresent(format))
+                    continue;
+
+                text = data.GetData(format) switch
+                {
+                    string value => value,
+                    MemoryStream stream when format is "UniformResourceLocatorW" or "text/x-moz-url" => System.Text.Encoding.Unicode.GetString(stream.ToArray()),
+                    MemoryStream stream => System.Text.Encoding.Default.GetString(stream.ToArray()),
+                    _ => null,
+                };
+            }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or OutOfMemoryException or InvalidOperationException)
+            {
+                continue;
+            }
+
+            // The address is the first line (Firefox puts the page's title on the next one).
+            var first = text?.Split(['\r', '\n', '\0'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+            if (first is not null && MainViewModel.IsWebAddress(first))
+                return first;
+        }
+
+        return null;
     }
 
     // Files from Explorer are answered on the way down to whatever they are over, not on the way back up.
@@ -885,7 +1002,7 @@ public partial class MainWindow : Window
 
     private void Window_PreviewDragOver(object sender, DragEventArgs e)
     {
-        if (!e.Data.GetDataPresent(DataFormats.FileDrop))
+        if (!CanOpen(e.Data))
             return;
 
         e.Effects = DragDropEffects.Copy;
@@ -906,19 +1023,28 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (e.Data.GetDataPresent(DataFormats.FileDrop))
+        if (CanOpen(e.Data))
             Window_Drop(sender, e);
     }
 
     private void Window_Drop(object sender, DragEventArgs e)
     {
-        if (e.Data.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } files)
+        var (dropped, link) = Dragged(e.Data);
+        if (dropped is null && link is null)
             return;
 
         e.Handled = true;
-        var file = files[0];
-
         ClearDropMark();
+
+        // A link: opened as the video, or, dropped on the timeline with a video open, downloaded and put there.
+        if (link is not null)
+        {
+            DropLink(e, link);
+            return;
+        }
+
+        var files = e.Data.GetData(DataFormats.FileDrop) as string[] ?? [dropped!];
+        var file = files[0];
 
         // Dropped on the layers, with a video open: the files become clips, at the moment they were dropped on, on
         // the row they were dropped on (see FindDropPlace).
@@ -947,6 +1073,34 @@ public partial class MainWindow : Window
 
         // The dialog must not open inside the drop itself: Explorer waits, frozen, until the drop handler returns.
         Dispatcher.BeginInvoke(() => LoadDroppedFile(file));
+    }
+
+    /// <summary>
+    /// A link dropped on the window: on the Layers or Audio tab, with a video open, it is downloaded (yt-dlp) and put
+    /// there as a dropped file would be; anywhere else it is opened as the video, as if typed into the source box.
+    /// </summary>
+    private void DropLink(DragEventArgs e, string link)
+    {
+        foreach (var (scope, audio) in new (FrameworkElement? Scope, bool Audio)[] { (LayersList, false), (AudioPanel, true) })
+        {
+            if (!_viewModel.HasSource || scope is not { IsVisible: true })
+                continue;
+
+            var at = e.GetPosition(scope);
+            if (at.X < 0 || at.Y < 0 || at.X > scope.ActualWidth || at.Y > scope.ActualHeight)
+                continue;
+
+            var (row, _, seconds) = FindDropPlace(e, scope);
+            Dispatcher.BeginInvoke(async () =>
+            {
+                if (await _viewModel.DownloadLinkAsync(link) is not { } file)
+                    return;
+                await (audio ? AddDroppedAudioAsync([file], seconds) : AddDroppedLayersAsync([file], seconds, row));
+            });
+            return;
+        }
+
+        Dispatcher.BeginInvoke(() => LoadDroppedFile(link));
     }
 
     /// <summary>Adds the sound of dropped files to the timeline: audio files, or the audio of videos.</summary>
@@ -1171,6 +1325,8 @@ public partial class MainWindow : Window
             {
                 var wasPlaying = _viewModel.IsPlaying;
                 _viewModel.IsPlaying = player.IsPlaying;
+                if (wasPlaying && player.IsEnded)
+                    OnPlaybackEnded();
 
                 // The layers' sound is in the graph only while it plays: it comes in as playback starts, from
                 // where it starts, and goes again when it stops.
@@ -1191,6 +1347,7 @@ public partial class MainWindow : Window
             _mpv = player;
             (_liveGraph, _failedLiveGraph) = ("", null);
             player.SetVolume(_viewModel.Volume);
+            player.SetMute(_viewModel.IsPlayerMuted);
             player.SetSpeed(_viewModel.PlaybackRate);
 
             // A video may have been loaded while the player was still starting.
@@ -1661,6 +1818,9 @@ public partial class MainWindow : Window
         }
         else
         {
+            // Paused by hand: a Play Start to Stop under way is over.
+            if (!player.IsPaused)
+                _playUntilMs = null;
             player.SetPause(!player.IsPaused);
         }
     }
@@ -1678,6 +1838,10 @@ public partial class MainWindow : Window
         // Smart playback: the moment the player is outside every cut segment, it is sent on to the start of
         // the next one, so only what will be kept is played. After the last segment there is nothing to play.
         if (!PlayerIsPlaying)
+            return;
+
+        // Play Start to Stop, and Loop.
+        if (KeepPlaybackInRange(timeMs))
             return;
 
         var next = _viewModel.GetSegmentSkipTarget(timeMs, out var isPastLast);
@@ -1868,10 +2032,12 @@ public partial class MainWindow : Window
         if (e.PropertyName is nameof(MainViewModel.ShowCutSegmentsPane) or nameof(MainViewModel.ShowKeyframesPane) or nameof(MainViewModel.IsMediaBrowserVisible))
             UpdateSidePanes();
 
-        // Each mode keeps its own arrangement of the panes, and its own bottom bar.
+        // Each mode keeps its own arrangement of the panes (and of the side window), and its own bottom bar.
         if (e.PropertyName == nameof(MainViewModel.IsEditorMode))
         {
-            ApplyPaneLayout();
+            _dock.Load(AppSettings.Current.DockLayout);
+            (SidecarButton.IsChecked, SidecarButtonTop.IsChecked) = (_dock.IsSideOpen, _dock.IsSideOpen);
+            PlaceViewsPopup();
             UpdateBottomBar();
         }
 
@@ -1927,22 +2093,8 @@ public partial class MainWindow : Window
         if (e.PropertyName == nameof(MainViewModel.SpriteSheetPath))
             LoadSpriteSheet();
 
-        // Do not leave a tab showing that has just been hidden.
-        if (e.PropertyName == nameof(MainViewModel.ShowCommandPreviewTab)
-            && !_viewModel.ShowCommandPreviewTab && ReferenceEquals(SettingsTabs.SelectedItem, CommandPreviewTab))
-        {
-            SettingsTabs.SelectedIndex = 0;
-        }
-
         if (e.PropertyName == nameof(MainViewModel.IsEditorMode))
             UpdateBottomBar();
-
-        // Layers is Editor Mode's tab and Chapters is Encoder Mode's.
-        if (e.PropertyName == nameof(MainViewModel.IsEditorMode)
-            && ReferenceEquals(SettingsTabs.SelectedItem, _viewModel.IsEditorMode ? ChaptersTab : LayersTab))
-        {
-            SettingsTabs.SelectedIndex = 0;
-        }
     }
 
     private OverwriteDecision AskOverwrite(string path)
@@ -2001,6 +2153,8 @@ public partial class MainWindow : Window
 
         if (_viewModel.PendingStartMs is { } pendingStart)
             AddStripMark(pendingStart / duration * width, 2, Brushes.OrangeRed);
+
+        DrawTimelineMarkers();
     }
 
     /// <summary>Shades the timeline between two times, given in milliseconds.</summary>
@@ -2295,49 +2449,12 @@ public partial class MainWindow : Window
     // Moving a pane is giving it the other row or column of its grid (and that row or column its size);
     // nothing is taken out of the window or put back. The arrangement belongs to the mode in use.
 
-    private const double DefaultSidePanesWidth = 400;
-    private const double DefaultLayoutPaneWidth = 340;
-
     private static readonly GridLength Star = new(1, GridUnitType.Star);
 
-    // The outer grid's columns: whichever of the first and the last the side panes are in, and the player's.
-    private ColumnDefinition SideColumn => PlayerArea.ColumnDefinitions[AppSettings.Current.SidePanesOnLeft ? 0 : 2];
-    private ColumnDefinition PlayerColumn => PlayerArea.ColumnDefinitions[AppSettings.Current.SidePanesOnLeft ? 2 : 0];
-
-    // The inner grid's: the layout pane's, and the video's.
-    private ColumnDefinition LayoutColumn => PlayerCell.ColumnDefinitions[AppSettings.Current.LayoutPaneOnLeft ? 0 : 2];
-    private ColumnDefinition VideoColumn => PlayerCell.ColumnDefinitions[AppSettings.Current.LayoutPaneOnLeft ? 2 : 0];
-
-    /// <summary>Puts every pane in the row and column the settings have it in, at the size they have it at.</summary>
+    /// <summary>Lays the panes out again, as this mode's arrangement has them (see MainWindow.Docking.cs).</summary>
     private void ApplyPaneLayout()
     {
-        var settings = AppSettings.Current;
-
-        // The player and the side panes, side by side either way round.
-        var (sideAt, playerAt) = settings.SidePanesOnLeft ? (0, 2) : (2, 0);
-        Grid.SetColumn(SidePanes, sideAt);
-        Grid.SetColumn(PlayerCell, playerAt);
-        (PlayerColumn.Width, PlayerColumn.MinWidth) = (Star, 520);
-
-        // The master timeline under them, or over them.
-        ApplyTimelineRows();
-        var playerRow = settings.TimelineOnTop ? 2 : 0;
-        Grid.SetRow(PlayerCell, playerRow);
-        Grid.SetRow(SideSplitter, playerRow);
-        Grid.SetRow(SidePanes, playerRow);
-        Grid.SetRow(TimelinePane, settings.TimelineOnTop ? 0 : 2);
-
-        // The video and the layout pane, side by side either way round; the transport row stays under the video.
-        var (layoutAt, videoAt) = settings.LayoutPaneOnLeft ? (0, 2) : (2, 0);
-        Grid.SetColumn(LayoutPane, layoutAt);
-        Grid.SetColumn(VideoBorder, videoAt);
-        Grid.SetColumn(TransportRow, videoAt);
-        (VideoColumn.Width, VideoColumn.MinWidth) = (Star, 520);
-        LayoutColumn.MinWidth = 0;
-
-        UpdateSidePanes();
-        UpdateLayoutPane(announce: false);
-        UpdatePaneButtons();
+        _dock?.ScheduleRebuild();
         PlaceViewsPopup();
     }
 
@@ -2356,308 +2473,25 @@ public partial class MainWindow : Window
         (ViewsPopup.PlacementTarget, ViewsPopup.Placement, ViewsPopup.VerticalOffset) = (button, placement, offset);
     }
 
-    /// <summary>The rows of the player area: the player takes what height there is, the timeline what it needs.</summary>
-    private void ApplyTimelineRows()
-    {
-        var top = AppSettings.Current.TimelineOnTop;
-        var rows = PlayerArea.RowDefinitions;
-        (rows[0].Height, rows[1].Height, rows[2].Height) = top ? (GridLength.Auto, GridLength.Auto, Star) : (Star, GridLength.Auto, GridLength.Auto);
-    }
-
-    /// <summary>
-    /// Opens and closes the column of side panes with the panes in it: with neither the Keyframes pane nor the
-    /// Cut Segments pane showing, the column and its splitter go, and the player has the width. Not in Editor
-    /// Mode, where the column starts with the header and is always there.
-    /// </summary>
+    /// <summary>A side pane was shown or hidden: the panes are laid out again.</summary>
     private void UpdateSidePanes()
     {
-        var settings = AppSettings.Current;
-        var (keys, cuts) = (_viewModel.ShowKeyframesPane, _viewModel.ShowCutSegmentsPane);
-        var any = keys || cuts || _viewModel.IsEditorMode;
-
-        SidePanes.Visibility = SideSplitter.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
-        var width = settings.SidePanesWidth > 0 ? settings.SidePanesWidth : DefaultSidePanesWidth;
-        SideColumn.Width = any ? new GridLength(width) : new GridLength(0);
-        UpdateSideColumnMinWidth();
-
-        // The two panes over each other, either way round, with a border between them to drag. The Cut
-        // Segments pane takes the height that is left; the Keyframes pane is as tall as what is in it until
-        // it is dragged to a height of its own. A pane that is alone has the first row.
-        var both = keys && cuts;
-        var keysRow = both && settings.CutSegmentsOnTop ? 2 : 0;
-        var cutsRow = both && !settings.CutSegmentsOnTop ? 2 : 0;
-        Grid.SetRow(KeyframesPane, keysRow);
-        Grid.SetRow(CutSegmentsPane, cutsRow);
-        SidePaneSplitter.Visibility = both ? Visibility.Visible : Visibility.Collapsed;
-
-        var rows = SidePaneStack.RowDefinitions;
-        var keysHeight = both && settings.KeyframesPaneHeight > 0 ? new GridLength(settings.KeyframesPaneHeight) : GridLength.Auto;
-        foreach (var row in new[] { 0, 2 })
-        {
-            var holdsKeys = keys && row == keysRow;
-            var holdsCuts = cuts && row == cutsRow;
-            (rows[row].Height, rows[row].MinHeight) = holdsCuts ? (Star, both ? 70 : 0)
-                : holdsKeys ? (keysHeight, both ? 110 : 0)
-                : (keys && !cuts ? Star : GridLength.Auto, 0);
-        }
-
-        LimitKeyframesPane();
-        UpdateMediaBrowserRows();
+        _dock?.ScheduleRebuild();
         Dispatcher.BeginInvoke(DrawKeyTimeline, System.Windows.Threading.DispatcherPriority.Loaded);
-    }
-
-    /// <summary>
-    /// The media browser's place in the side column: the whole of what is left under the Source pane while it is
-    /// alone, and its share of it (dragged with the border under it, remembered per mode) beside the other panes.
-    /// </summary>
-    private void UpdateMediaBrowserRows()
-    {
-        var rows = SidePanes.RowDefinitions;
-        var media = _viewModel.IsMediaBrowserVisible;
-        var others = _viewModel.ShowKeyframesPane || _viewModel.ShowCutSegmentsPane;
-        var share = AppSettings.Current.MediaBrowserShare is > 0.05 and < 0.95 and var kept ? kept : 0.5;
-        (rows[2].Height, rows[2].MinHeight) = media ? (new GridLength(others ? share : 1, GridUnitType.Star), 120) : (new GridLength(0), 0);
-        rows[4].Height = others || !media ? new GridLength(others && media ? 1 - share : 1, GridUnitType.Star) : GridLength.Auto;
-        MediaBrowserSplitter.Visibility = media && others ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    // The border under the media browser was dragged: its share of the column is this mode's from now on.
-    private void MediaBrowserSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
-    {
-        var rows = SidePanes.RowDefinitions;
-        var (media, rest) = (rows[2].ActualHeight, rows[4].ActualHeight);
-        if (media + rest > 0)
-            _viewModel.SavePaneLayout(s => s.MediaBrowserShare = Math.Round(media / (media + rest), 3));
-        UpdateMediaBrowserRows();
-    }
-
-    // The header's buttons have changed width (the queue's count grew a digit), or have just come or gone with the mode.
-    private void EditorHeader_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateSideColumnMinWidth();
-
-    /// <summary>
-    /// How narrow the side column can be dragged. In Editor Mode it is never narrower than the header's row
-    /// of buttons, so that all of them stay on the one row and none is cut off; the border beside the player
-    /// stops there. The width is asked of the row itself: what the buttons need with nothing holding them in.
-    /// </summary>
-    private void UpdateSideColumnMinWidth()
-    {
-        const double least = 170;
-        if (SidePanes.Visibility != Visibility.Visible)
-        {
-            SideColumn.MinWidth = 0;
-            return;
-        }
-
-        var header = 0.0;
-        if (_viewModel.IsEditorMode && EditorHeader.Visibility == Visibility.Visible)
-        {
-            EditorHeader.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            header = Math.Ceiling(EditorHeader.DesiredSize.Width);
-        }
-
-        SideColumn.MinWidth = Math.Max(least, header);
-    }
-
-    private void SidePaneStack_SizeChanged(object sender, SizeChangedEventArgs e) => LimitKeyframesPane();
-
-    /// <summary>
-    /// Keeps the Keyframes pane inside the column while it shares it with the Cut Segments pane. It is as tall
-    /// as what is in it, and a row of that kind is given its height whether there is room or not: in a short
-    /// column its lower controls would be cut off. Held to the room there is, it scrolls instead.
-    /// </summary>
-    private void LimitKeyframesPane()
-    {
-        const double cutSegmentsLeast = 70, splitter = 10;
-        var both = _viewModel.ShowKeyframesPane && _viewModel.ShowCutSegmentsPane;
-        KeyframesPane.MaxHeight = both && SidePaneStack.ActualHeight > 0
-            ? Math.Max(SidePaneStack.ActualHeight - cutSegmentsLeast - splitter, 110)
-            : double.PositiveInfinity;
-    }
-
-    /// <summary>What the Arrange buttons of the Views menu say: where each pane would go.</summary>
-    private void UpdatePaneButtons()
-    {
-        var settings = AppSettings.Current;
-        MoveLayoutPaneButton.Content = settings.LayoutPaneOnLeft ? "Move Layout Pane to the Right of the Video" : "Move Layout Pane to the Left of the Video";
-        MoveSidePanesButton.Content = settings.SidePanesOnLeft ? "Move Side Panes to the Right" : "Move Side Panes to the Left";
-        SwapSidePanesButton.Content = settings.CutSegmentsOnTop ? "Put Keyframes above Cut Segments" : "Put Cut Segments above Keyframes";
-        MoveTimelineButton.Content = settings.TimelineOnTop ? "Move Master Timeline under the Player" : "Move Master Timeline above the Player";
-    }
-
-    /// <summary>Moves a pane to the other side, remembers it for this mode, and lays the panes out again.</summary>
-    /// <param name="pane">Layout, Side, Order (the two side panes over each other) or Timeline.</param>
-    /// <param name="to">Where to put it: true for left or top. Null for the other side from where it is.</param>
-    private void MovePane(string pane, bool? to = null)
-    {
-        var settings = AppSettings.Current;
-        var was = pane switch
-        {
-            "Layout" => settings.LayoutPaneOnLeft,
-            "Side" => settings.SidePanesOnLeft,
-            "Order" => settings.CutSegmentsOnTop,
-            _ => settings.TimelineOnTop,
-        };
-        var now = to ?? !was;
-        if (now == was)
-            return;
-
-        // The column a pane leaves is the video's or the player's from now on, and its width goes with the pane.
-        RememberPaneSizes();
-        _viewModel.SavePaneLayout(s =>
-        {
-            switch (pane)
-            {
-                case "Layout": s.LayoutPaneOnLeft = now; break;
-                case "Side": s.SidePanesOnLeft = now; break;
-                case "Order": s.CutSegmentsOnTop = now; break;
-                default: s.TimelineOnTop = now; break;
-            }
-        });
-
-        ApplyPaneLayout();
-        _viewModel.Log(pane switch
-        {
-            "Layout" => $"Moved the Layout pane to the {(now ? "left" : "right")} of the video",
-            "Side" => $"Moved the side panes to the {(now ? "left" : "right")} of the player",
-            "Order" => now ? "Moved Cut Segments above Keyframes" : "Moved Keyframes above Cut Segments",
-            _ => $"Moved the master timeline {(now ? "above" : "under")} the player",
-        });
-    }
-
-    private void MovePane_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is FrameworkElement { Tag: string pane })
-            MovePane(pane);
     }
 
     private void ResetPanesLayout_Click(object sender, RoutedEventArgs e)
     {
         _viewModel.ResetPaneLayout();
-
-        // The border between the player and the settings tabs goes back as well.
-        if (PlayerArea.Parent is Grid { RowDefinitions.Count: > 3 } root)
-            (root.RowDefinitions[1].Height, root.RowDefinitions[3].Height) = (new GridLength(46, GridUnitType.Star), new GridLength(38, GridUnitType.Star));
-
-        ApplyPaneLayout();
+        _dock.Reset();
         ViewsButton.IsChecked = false;
-    }
-
-    /// <summary>Takes the sizes the panes have on screen into the settings: they were dragged to them.</summary>
-    private void RememberPaneSizes()
-    {
-        var (side, layout) = (SidePanes.Visibility == Visibility.Visible ? SideColumn.ActualWidth : 0, LayoutPane.Visibility == Visibility.Visible ? LayoutColumn.ActualWidth : 0);
-        var keys = SidePaneSplitter.Visibility == Visibility.Visible && SidePaneStack.RowDefinitions[Grid.GetRow(KeyframesPane)].Height.IsAbsolute
-            ? SidePaneStack.RowDefinitions[Grid.GetRow(KeyframesPane)].ActualHeight
-            : 0;
-        _viewModel.SavePaneLayout(s =>
-        {
-            if (side > 0)
-                s.SidePanesWidth = Math.Round(side);
-            if (layout > 0)
-                s.LayoutPaneWidth = Math.Round(layout);
-            if (keys > 0)
-                s.KeyframesPaneHeight = Math.Round(keys);
-        });
-    }
-
-    // A border between two panes was dragged: the sizes it left them at are this mode's from now on.
-    private void PaneSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
-    {
-        RememberPaneSizes();
-        RedrawLayout();
-        DrawKeyTimeline();
     }
 
     // The border between the player and the master timeline. What it drags is the timeline's height setting,
     // the one the slider beside the volume sets: the timeline is as tall as that says, not as tall as a grid
     // row happens to be, so the row is put back to "as tall as its content" each time the splitter has sized it.
 
-    private double _timelineDragHeight;
-    private double _timelineDragStart;
-
-    private void TimelineSplitter_DragStarted(object sender, DragStartedEventArgs e) =>
-        (_timelineDragHeight, _timelineDragStart) = (_viewModel.MasterTimelineHeight, Mouse.GetPosition(this).Y);
-
-    private void TimelineSplitter_DragDelta(object sender, DragDeltaEventArgs e)
-    {
-        // Towards the player makes the timeline taller: up when it is under the player, down when it is over it.
-        var moved = Mouse.GetPosition(this).Y - _timelineDragStart;
-        var steps = (AppSettings.Current.TimelineOnTop ? moved : -moved) / 4;
-        _viewModel.MasterTimelineHeight = Math.Clamp(_timelineDragHeight + steps, 1, 50);
-        ApplyTimelineRows();
-    }
-
-    private void TimelineSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
-    {
-        ApplyTimelineRows();
-        _viewModel.Log(string.Create(CultureInfo.InvariantCulture, $"Timeline height {_viewModel.MasterTimelineHeight:0} of 50"));
-    }
-
-    // With the keyboard: the arrow keys change the same setting, a step at a time.
-    private void TimelineSplitter_PreviewKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key is not (Key.Up or Key.Down))
-            return;
-
-        var towardsPlayer = (e.Key == Key.Up) != AppSettings.Current.TimelineOnTop;
-        _viewModel.MasterTimelineHeight = Math.Clamp(_viewModel.MasterTimelineHeight + (towardsPlayer ? 1 : -1), 1, 50);
-        e.Handled = true;
-    }
-
     // Dragging a pane by its title: let go on the other side of what it is beside, and it moves there.
-
-    private Point? _paneDragFrom;
-
-    private void PaneTitle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not UIElement title || e.ClickCount > 1)
-            return;
-
-        _paneDragFrom = e.GetPosition(this);
-        title.CaptureMouse();
-        e.Handled = true;
-    }
-
-    private void PaneTitle_MouseMove(object sender, MouseEventArgs e)
-    {
-        if (_paneDragFrom is { } from && sender is FrameworkElement { IsMouseCaptured: true, Tag: string pane } && (e.GetPosition(this) - from).Length > 8)
-        {
-            _viewModel.StatusText = pane == "Layout"
-                ? "Let go on the other side of the video to move the Layout pane there."
-                : "Let go above or below the other side pane to swap them, or on the other side of the player to move both there.";
-        }
-    }
-
-    private void PaneTitle_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not FrameworkElement { IsMouseCaptured: true, Tag: string pane } title || _paneDragFrom is not { } from)
-            return;
-
-        title.ReleaseMouseCapture();
-        _paneDragFrom = null;
-        if ((e.GetPosition(this) - from).Length <= 8)
-            return;
-
-        if (pane == "Layout")
-        {
-            // Whichever half of the video-and-layout cell it was let go over.
-            MovePane("Layout", to: e.GetPosition(PlayerCell).X < PlayerCell.ActualWidth / 2);
-            return;
-        }
-
-        var inSide = e.GetPosition(SidePanes);
-        if (inSide.X >= 0 && inSide.X <= SidePanes.ActualWidth)
-        {
-            // Inside the side column: above or below the middle of its panes is where this pane goes.
-            var above = e.GetPosition(SidePaneStack).Y < SidePaneStack.ActualHeight / 2;
-            MovePane("Order", to: (pane == "CutSegments") == above);
-        }
-        else
-        {
-            // Outside it: the half of the player area it was let go over is the side the panes go to.
-            MovePane("Side", to: e.GetPosition(PlayerArea).X < PlayerArea.ActualWidth / 2);
-        }
-    }
 
     // ----- The Audio tab's checkboxes, folded into a button when the row is too narrow -----
 
@@ -2677,57 +2511,6 @@ public partial class MainWindow : Window
     private WrapPanel LayerAddBar = null!;
     private StackPanel KeyBarInline = null!;
     private System.Windows.Controls.Primitives.ToggleButton AddLayerButton = null!, KeyBarButton = null!;
-
-    /// <summary>
-    /// Makes what is in a tab whose content was left as a template, which is every tab but Summary: once, and
-    /// it then stays as any tab's content does. Only the Summary tab is made with the window.
-    /// </summary>
-    private void RealizeTab(object? item)
-    {
-        if (item is not TabItem { Tag: DataTemplate template } tab)
-            return;
-
-        tab.Tag = null;
-        var content = template.LoadContent();
-        if (content is FrameworkElement root && root.FindName(nameof(AudioOptionsHost)) is Grid host)
-        {
-            AudioOptionsHost = host;
-            AudioOptionsInline = (StackPanel)root.FindName(nameof(AudioOptionsInline));
-            AudioOptionsButton = (System.Windows.Controls.Primitives.ToggleButton)root.FindName(nameof(AudioOptionsButton));
-            AudioPanel = (DockPanel)root.FindName(nameof(AudioPanel));
-        }
-        else if (content is FrameworkElement layers && layers.FindName(nameof(LayerAddBar)) is WrapPanel bar)
-        {
-            LayerAddBar = bar;
-            KeyBarInline = (StackPanel)layers.FindName(nameof(KeyBarInline));
-            KeyBarButton = (System.Windows.Controls.Primitives.ToggleButton)layers.FindName(nameof(KeyBarButton));
-            AddLayerButton = (System.Windows.Controls.Primitives.ToggleButton)layers.FindName(nameof(AddLayerButton));
-            LayersList = (ListBox)layers.FindName(nameof(LayersList));
-        }
-
-        tab.Content = content;
-    }
-
-    // Raised by every list and box inside the tabs as well: only the tabs' own selection is of interest.
-    private void SettingsTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (ReferenceEquals(e.OriginalSource, SettingsTabs))
-            RealizeTab(SettingsTabs.SelectedItem);
-    }
-
-    /// <summary>
-    /// Makes the tabs nobody has opened yet, one at a time and only while nothing else is wanted of this
-    /// thread, so that the first click on any of them finds it ready.
-    /// </summary>
-    private void RealizeTabsWhenIdle()
-    {
-        var next = SettingsTabs.Items.OfType<TabItem>().FirstOrDefault(tab => tab.Tag is DataTemplate);
-        if (next is null)
-            return;
-
-        RealizeTab(next);
-        Dispatcher.BeginInvoke(RealizeTabsWhenIdle, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-    }
 
     private void AudioOptionsHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -3924,19 +3707,12 @@ public partial class MainWindow : Window
 
     // ----- The layout pane: arranging layers on the output frame -----
 
-    /// <summary>Opens or closes the pane beside the video, following the Layout Pane box.</summary>
+    /// <summary>Opens or closes the layout pane, following the Layout Pane box: it is shown or hidden where the arrangement has it.</summary>
     /// <param name="announce">Whether to say how the pane is used: when it has just been opened, not when the panes are laid out again.</param>
     private void UpdateLayoutPane(bool announce = true)
     {
-        var open = _viewModel.IsArrangeActive;
-        var opening = open && LayoutPane.Visibility != Visibility.Visible;
-        LayoutPane.Visibility = LayoutSplitter.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
-
-        // Closed, the column gives its width back to the video; opened, it has the width it was last dragged
-        // to (or the one it starts with), or less when the window is too narrow to spare that much.
-        var wanted = AppSettings.Current.LayoutPaneWidth > 0 ? AppSettings.Current.LayoutPaneWidth : DefaultLayoutPaneWidth;
-        LayoutColumn.Width = new GridLength(open ? Math.Min(wanted, Math.Max(PlayerCell.ActualWidth - 530, 160)) : 0);
-
+        var opening = _viewModel.IsArrangeActive && !LayoutPane.IsVisible;
+        _dock?.ScheduleRebuild();
         if (opening && announce)
             _viewModel.StatusText = "Drag the layers into place in the layout pane. Drag a corner handle to resize; double-click a layer to center it.";
 

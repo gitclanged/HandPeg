@@ -26,7 +26,8 @@ public partial class ReplaceVideoDialog : Window
         InitializeComponent();
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
 
-        IntroText.Text = $"Loading {Path.GetFileName(newVideo)} replaces it, with its cuts and settings. "
+        var name = Uri.TryCreate(newVideo, UriKind.Absolute, out var link) && link.Scheme is "http" or "https" ? $"the video at {link.Host}" : Path.GetFileName(newVideo);
+        IntroText.Text = $"Loading {name} replaces it, with its cuts and settings. "
                          + "Save them as a project first to come back to them later, or load the new video and discard them.";
         NameBox.Text = SuggestName(currentSource);
         Loaded += (_, _) => NameBox.SelectAll();

@@ -28,6 +28,10 @@ public sealed class ProjectState
     public bool WebOptimized { get; set; }
     public bool ChapterMarkers { get; set; } = true;
     public bool ChaptersAtCuts { get; set; }
+    public bool ChaptersAtMarkers { get; set; }
+
+    /// <summary>The markers on the timeline.</summary>
+    public List<TimelineMarker> Markers { get; set; } = [];
 
     /// <summary>The imported or hand-made subtitle track; null when there is none.</summary>
     public SubtitleTrackData? Subtitles { get; set; }

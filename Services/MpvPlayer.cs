@@ -378,6 +378,12 @@ public sealed class MpvPlayer
     /// <param name="volume">0 to 100.</param>
     public void SetVolume(int volume) => SetProperty("volume", Number(volume));
 
+    /// <summary>Silences the player, or lets it be heard again.</summary>
+    public void SetMute(bool muted) => SetProperty("mute", muted ? "yes" : "no");
+
+    /// <summary>Saves the frame on screen as a picture, as the filters make it but without the subtitles drawn over it.</summary>
+    public void SaveFrame(string path) => Command("screenshot-to-file", path, "video");
+
     public void SetSpeed(double speed) => SetProperty("speed", Number(speed));
 
     /// <summary>

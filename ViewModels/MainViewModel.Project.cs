@@ -17,6 +17,9 @@ public partial class MainViewModel
     public double SourceFrameRate => _mediaInfo?.Video?.FrameRate is > 0 and var rate ? rate : 30;
 
     /// <summary>The Dimensions, Filters, Video and Audio tabs as a preset.</summary>
+    /// <summary>The encode settings as they are now, as a preset (for Settings: "Use the Current Video and Audio Settings").</summary>
+    public EncodingPreset CurrentEncodingSettings() => CaptureSettings("");
+
     private EncodingPreset CaptureSettings(string name) => new()
     {
         Name = name,
@@ -113,6 +116,8 @@ public partial class MainViewModel
         WebOptimized = WebOptimized,
         ChapterMarkers = ChapterMarkers,
         ChaptersAtCuts = ChaptersAtCuts,
+        ChaptersAtMarkers = ChaptersAtMarkers,
+        Markers = [.. Markers],
         Subtitles = CaptureSubtitles(),
         TargetFileSize = TargetFileSize,
         Settings = CaptureSettings(name),
@@ -147,6 +152,8 @@ public partial class MainViewModel
         WebOptimized = state.WebOptimized;
         ChapterMarkers = state.ChapterMarkers;
         ChaptersAtCuts = state.ChaptersAtCuts;
+        ChaptersAtMarkers = state.ChaptersAtMarkers;
+        SetMarkers(state.Markers);
         ApplySubtitles(state.Subtitles);
 
         SelectedPreset = null;

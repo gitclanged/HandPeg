@@ -96,6 +96,12 @@ public abstract class TimelineBar : FrameworkElement
         pen.Freeze();
         return pen;
     }
+
+    protected static Geometry Frozen(Geometry geometry)
+    {
+        geometry.Freeze();
+        return geometry;
+    }
 }
 
 /// <summary>
@@ -590,6 +596,16 @@ public sealed class TimelineRuler : TimelineBar
     private double _start, _span, _sequence;
     private double? _panFrom;
     private bool _seeking;
+    private IReadOnlyList<double> _markers = [];
+
+    /// <summary>The colour markers are drawn in, here and on the master timeline.</summary>
+    public static readonly Brush MarkerBrush = FrozenBrush(Color.FromRgb(0x7C, 0xD9, 0x92));
+
+    /// <summary>A marker's flag: pointing down at its moment, 9 pixels wide.</summary>
+    public static readonly Geometry MarkerFlag = Frozen(Geometry.Parse("M -4.5,0 L 4.5,0 L 4.5,6 L 0,10 L -4.5,6 Z"));
+
+    /// <summary>A marker was right-clicked: which one (its index in the list shown), for its menu.</summary>
+    public event Action<int>? MarkerMenuRequested;
 
     /// <summary>The ruler was pressed or dragged on: the playhead goes to this moment, in seconds.</summary>
     public event Action<double>? SeekRequested;
@@ -600,14 +616,31 @@ public sealed class TimelineRuler : TimelineBar
     /// <summary>Shift + wheel, or a middle-button drag: move along by so many pixels.</summary>
     public event Action<double>? PanRequested;
 
-    /// <summary>Shows a stretch of the sequence: from <paramref name="start"/> seconds, <paramref name="span"/> seconds across, of a sequence <paramref name="sequence"/> seconds long.</summary>
-    public void Show(double start, double span, double sequence)
+    /// <summary>
+    /// Shows a stretch of the sequence: from <paramref name="start"/> seconds, <paramref name="span"/> seconds across,
+    /// of a sequence <paramref name="sequence"/> seconds long, with its markers (in seconds).
+    /// </summary>
+    public void Show(double start, double span, double sequence, IReadOnlyList<double> markers)
     {
-        if (start == _start && span == _span && sequence == _sequence)
+        if (start == _start && span == _span && sequence == _sequence && markers.SequenceEqual(_markers))
             return;
 
-        (_start, _span, _sequence) = (start, span, sequence);
+        (_start, _span, _sequence, _markers) = (start, span, sequence, [.. markers]);
         InvalidateVisual();
+    }
+
+    /// <summary>The marker within a few pixels of a point along the ruler, as its index; -1 for none.</summary>
+    private int MarkerNear(double x)
+    {
+        var (best, nearest) = (-1, 6.0);
+        for (var i = 0; i < _markers.Count && ActualWidth > 0 && _span > 0; i++)
+        {
+            var at = (_markers[i] - _start) / _span * ActualWidth;
+            if (Math.Abs(at - x) < nearest)
+                (best, nearest) = (i, Math.Abs(at - x));
+        }
+
+        return best;
     }
 
     /// <summary>The moment at a point along the ruler.</summary>
@@ -652,6 +685,18 @@ public sealed class TimelineRuler : TimelineBar
                 drawing.DrawText(label, new Point(Math.Round(x) + 3, Math.Max(bottom - 9 - label.Height, 0)));
             }
         }
+
+        // The markers: a flag at the top at each.
+        foreach (var marker in _markers)
+        {
+            var x = (marker - _start) * scale;
+            if (x < -6 || x > ActualWidth + 6)
+                continue;
+
+            drawing.PushTransform(new TranslateTransform(Math.Round(x) + 0.5, 0));
+            drawing.DrawGeometry(MarkerBrush, null, MarkerFlag);
+            drawing.Pop();
+        }
     }
 
     /// <summary>A moment as the ruler writes it: as precisely as its step needs, minutes and seconds, hours when there are any.</summary>
@@ -677,9 +722,21 @@ public sealed class TimelineRuler : TimelineBar
         if (!CaptureMouse())
             return;
 
+        // On a marker, exactly to it.
         _seeking = true;
-        SeekRequested?.Invoke(TimeAt(e.GetPosition(this).X));
+        var x = e.GetPosition(this).X;
+        SeekRequested?.Invoke(MarkerNear(x) is >= 0 and var marker ? _markers[marker] : TimeAt(x));
         e.Handled = true;
+    }
+
+    protected override void OnMouseRightButtonUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseRightButtonUp(e);
+        if (MarkerNear(e.GetPosition(this).X) is >= 0 and var marker)
+        {
+            MarkerMenuRequested?.Invoke(marker);
+            e.Handled = true;
+        }
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)

@@ -305,23 +305,84 @@
             <!-- ===== Export & Hardware: what an encode starts with, and which hardware does the work ===== -->
             <TabItem Header="Export &amp; Hardware">
                 <StackPanel>
-                    <TextBlock Text="Default codecs" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
+                    <TextBlock Text="Default encoding settings" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="What the Video and Audio tabs start with when HandPeg is launched: first chosen in the first-run window. A preset or a project still sets its own. Applies the next time HandPeg starts." />
+                               Text="What the Video and Audio tabs start with when HandPeg is launched (the encoder and audio codec were first chosen in the first-run window). Built-in default leaves HandPeg's own. An encoding preset always sets its own over these; a style preset does too, unless the box under them is ticked. A project brings back what it was saved with. Applies the next time HandPeg starts." />
                     <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Default Video Encoder:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="DefaultVideoBox" MinWidth="300" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
-                                  SelectedValue="{Binding DefaultVideoEncoder}" AutomationProperties.Name="Default Video Encoder"
-                                  ToolTip="The video encoder a new window starts with. Hardware encoders are listed once this computer has been checked for them; one that is no longer there falls back to the built-in default." />
+                        <TextBlock Text="Format:" Style="{StaticResource FieldLabel}" Width="120" />
+                        <ComboBox x:Name="DefaultContainerBox" MinWidth="120" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                  SelectedValue="{Binding DefaultContainer}" AutomationProperties.Name="Default Format" ToolTip="The container a new output is written as." />
+                        <CheckBox Content="Web optimized (fast start)" IsChecked="{Binding DefaultWebOptimized}" Margin="20,0,0,0" VerticalAlignment="Center"
+                                  ToolTip="For MP4 and MOV: the index goes at the front of the file, so it starts playing while it downloads." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Default Audio Codec:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="DefaultAudioBox" MinWidth="200" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                        <TextBlock Text="Video Encoder:" Style="{StaticResource FieldLabel}" Width="120" />
+                        <ComboBox x:Name="DefaultVideoBox" MinWidth="300" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                  SelectedValue="{Binding DefaultVideoEncoder}" SelectionChanged="DefaultVideoBox_SelectionChanged" AutomationProperties.Name="Default Video Encoder"
+                                  ToolTip="The video encoder a new window starts with. Hardware encoders are listed once this computer has been checked for them; one that is no longer there falls back to the built-in default." />
+                        <TextBlock Text="Preset:" Style="{StaticResource FieldLabel}" Margin="20,0,8,0" />
+                        <ComboBox x:Name="DefaultEncoderPresetBox" MinWidth="120" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                  SelectedValue="{Binding DefaultEncoderPreset}" AutomationProperties.Name="Default Encoder Preset"
+                                  ToolTip="Speed against quality, in the steps the encoder above has." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Rate Control:" Style="{StaticResource FieldLabel}" Width="120" />
+                        <ComboBox x:Name="DefaultRateControlBox" MinWidth="200" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                  SelectedValue="{Binding DefaultRateControl}" AutomationProperties.Name="Default Rate Control"
+                                  ToolTip="How the data is spent: a constant quality (CRF, CQ, CQP or ICQ, as the encoder calls it), or a bitrate held or averaged." />
+                        <TextBlock Text="Quality:" Style="{StaticResource FieldLabel}" Margin="20,0,8,0" />
+                        <TextBox x:Name="DefaultQualityBox" Width="54" AutomationProperties.Name="Default Quality"
+                                 local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="51" local:NumericInput.Decimals="0"
+                                 ToolTip="The constant-quality value: lower is better and larger. Blank for the built-in default (22)." />
+                        <TextBlock Text="Bitrate (kbps):" Style="{StaticResource FieldLabel}" Margin="20,0,8,0" />
+                        <TextBox Width="70" Text="{Binding DefaultTargetBitrate, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Default Target Bitrate"
+                                 ToolTip="The bitrate of the two bitrate modes. Blank for the built-in default (5000)." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Frame Rate:" Style="{StaticResource FieldLabel}" Width="120" />
+                        <ComboBox x:Name="DefaultFramerateBox" MinWidth="140" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                  SelectedValue="{Binding DefaultFramerate}" AutomationProperties.Name="Default Frame Rate" />
+                        <TextBox Width="60" Margin="8,0,0,0" Text="{Binding DefaultCustomFramerate, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Default Custom Frame Rate"
+                                 ToolTip="The frame rate when Custom is chosen, such as 90 or 59.94." />
+                        <CheckBox Content="10-bit" IsChecked="{Binding DefaultTenBit}" Margin="20,0,0,0" VerticalAlignment="Center"
+                                  ToolTip="Encodes in 10-bit colour where the encoder can (HEVC, AV1): smoother gradients, and less banding." />
+                        <CheckBox Content="Hardware decoding" IsChecked="{Binding DefaultHardwareDecoding}" Margin="20,0,0,0" VerticalAlignment="Center"
+                                  ToolTip="The graphics card decodes the source during an encode, which frees the processor for the filters." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Output Size:" Style="{StaticResource FieldLabel}" Width="120" />
+                        <TextBox Width="64" Text="{Binding DefaultOutputWidth, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Default Output Width"
+                                 ToolTip="Width in pixels. Blank keeps the source's (or works it out from the height)." />
+                        <TextBlock Text="&#x00D7;" Style="{StaticResource FieldLabel}" Margin="6,0,6,0" />
+                        <TextBox Width="64" Text="{Binding DefaultOutputHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Default Output Height"
+                                 ToolTip="Height in pixels. Blank keeps the source's (or works it out from the width)." />
+                        <CheckBox Content="Vertical video" IsChecked="{Binding DefaultVerticalVideo}" Margin="20,0,0,0" VerticalAlignment="Center"
+                                  ToolTip="Every video starts as a tall (9:16) one, made from the wide video." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Audio Codec:" Style="{StaticResource FieldLabel}" Width="120" />
+                        <ComboBox x:Name="DefaultAudioBox" MinWidth="160" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
                                   SelectedValue="{Binding DefaultAudioEncoder}" AutomationProperties.Name="Default Audio Codec"
                                   ToolTip="The audio codec a new window starts with. Copy leaves the sound as it is, which nothing an edit does to it can then change." />
                         <TextBlock Text="Bitrate:" Style="{StaticResource FieldLabel}" Margin="20,0,8,0" />
-                        <ComboBox x:Name="DefaultBitrateBox" MinWidth="150" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                        <ComboBox x:Name="DefaultBitrateBox" MinWidth="130" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
                                   SelectedValue="{Binding DefaultAudioBitrate}" AutomationProperties.Name="Default Audio Bitrate" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Audio Tracks:" Style="{StaticResource FieldLabel}" Width="120" />
+                        <ComboBox x:Name="DefaultMergeBox" MinWidth="200" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                  SelectedValue="{Binding DefaultMergeAudio}" AutomationProperties.Name="Default Mix Audio Tracks"
+                                  ToolTip="Whether the tracks of a video are mixed into one in the output. As each mode starts: Editor Mode mixes, Encoder Mode keeps them apart." />
+                        <CheckBox Content="Normalize audio" IsChecked="{Binding DefaultNormalizeAudio}" Margin="20,0,0,0" VerticalAlignment="Center"
+                                  ToolTip="Evens out the loudness to the EBU R128 standard." />
+                    </StackPanel>
+                    <CheckBox Content="Default encoding settings override style presets" IsChecked="{Binding DefaultsOverrideStyles}"
+                              ToolTip="When a style preset is applied (from the drop overlay, or the style list), these settings are put back afterwards wherever the style set something else, a tall frame for instance. An encoding preset always overrides these, ticked or not." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <Button Content="Use the Current Video and Audio Settings" Padding="12,4" Click="UseCurrentEncoding_Click"
+                                ToolTip="Fills the boxes above with what the Video and Audio tabs are set to now." />
+                        <Button Content="Reset to Built-in Defaults" Padding="12,4" Margin="8,0,0,0" Click="ResetEncodingDefaults_Click"
+                                ToolTip="Clears the boxes above: HandPeg's own defaults apply." />
                     </StackPanel>
                     <CheckBox Content="Save the Target File Size with each preset" IsChecked="{Binding SaveTargetSizeInPresets}"
                               ToolTip="When on, Save Preset also stores the Target File Size set at the time, and applying that preset brings it back." />

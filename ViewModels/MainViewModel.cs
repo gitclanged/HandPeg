@@ -15,7 +15,7 @@ public partial class MainViewModel : ObservableObject
 {
     private const string SameAsSource = "Same as source";
     private const string CustomOption = "Custom";
-    private const string CopyOption = "Copy (Stream Copy)";
+    public const string CopyOption = "Copy (Stream Copy)";
     private const string NoneOption = "None";
     private const string AutoOption = "Auto";
     private const string ConstantQuality = "Constant Quality (CQ)";
@@ -57,7 +57,7 @@ public partial class MainViewModel : ObservableObject
         nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips), nameof(IsEncoderMode),
         nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer), nameof(SelectedTextLayer), nameof(IsTextLayerSelected),
         nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(IsSubtitleEditorOpen), nameof(ShowLegacySubtitles), nameof(ShowSubtitleImportRow), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
-        nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName), nameof(SnapClips), nameof(LayerControlsShown),
+        nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName), nameof(SnapClips), nameof(LayerControlsShown), nameof(LoopPlayback), nameof(ShowSafeMargins), nameof(IsPlayerMuted),
         nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
         nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowSourcePane), nameof(IsSourcePaneVisible), nameof(ShowMediaBrowser), nameof(IsMediaBrowserVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
         nameof(RecentActions), nameof(HideDroppedTracks), nameof(HasSelectedKeyframe), nameof(SelectedKeyEasing), nameof(PreviewSubtitles),
@@ -144,6 +144,7 @@ public partial class MainViewModel : ObservableObject
 
         UpdateEncoderPresets();
         UpdateRateControlChoices();
+        ApplyEncodingDefaults();
 
         InitializeQueue();
         ApplyDisplaySettings();
@@ -166,6 +167,7 @@ public partial class MainViewModel : ObservableObject
             }
         };
         _mainVideoRow.PropertyChanged += OnMainRowChanged;
+        LoadPlaybackControls();
         AudioTracks.CollectionChanged += (_, _) => RefreshAudioRows();
         _backgroundRow.PropertyChanged += (_, _) => GenerateCommand();
         Layers.CollectionChanged += (_, _) => GenerateCommand();
@@ -1089,6 +1091,10 @@ public partial class MainViewModel : ObservableObject
             VideoEncoders.Add(EncoderOption.FromHardwareName(name));
         VideoEncoder = VideoEncoders.FirstOrDefault(e => e.Name == selected) ?? DefaultVideoEncoder;
 
+        // The default encoder preset is one of the hardware encoder's own steps, which exist now that it does.
+        if (selected == AppSettings.Current.DefaultVideoEncoder && EncoderPresets.Contains(AppSettings.Current.DefaultEncoderPreset))
+            EncoderPreset = AppSettings.Current.DefaultEncoderPreset;
+
         HardwareEncoderStatusText = supported.Count switch
         {
             0 => "No hardware encoders available on this system",
@@ -1161,13 +1167,37 @@ public partial class MainViewModel : ObservableObject
     private async Task LoadSourceAsync()
     {
         // A web address is fetched by yt-dlp, which is downloaded the first time one is loaded.
-        if (Uri.TryCreate(SourcePath.Trim().Trim('"'), UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
-            && !await RequireAsync("Downloading a video", [DependencyUpdater.YtDlp, DependencyUpdater.Ffmpeg], []))
-        {
+        if (IsWebAddress(SourcePath) && !await RequireAsync("Downloading a video", [DependencyUpdater.YtDlp, DependencyUpdater.Ffmpeg], []))
             return;
-        }
 
         await LoadSourceNowAsync();
+    }
+
+    /// <summary>Whether a source is a web address (http or https), which yt-dlp downloads, rather than a file.</summary>
+    public static bool IsWebAddress(string source) =>
+        Uri.TryCreate(source.Trim().Trim('"'), UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
+    /// <summary>
+    /// Downloads a web address with yt-dlp (or finds the file downloaded for it before), for a link dropped where a
+    /// file is wanted: on the timeline, or on a Squisher target. Returns the file; null when nothing came of it.
+    /// </summary>
+    public async Task<string?> DownloadLinkAsync(string url)
+    {
+        if (IsBusy || !await RequireAsync("Downloading a video", [DependencyUpdater.YtDlp, DependencyUpdater.Ffmpeg], []))
+            return null;
+
+        string? path = null;
+        await RunOperationAsync(async cancellationToken =>
+        {
+            IsProgressIndeterminate = true;
+            StatusText = "Starting yt-dlp...";
+            var progress = new Progress<string>(ReportStatus);
+            var (resolution, subtitles, sponsorBlock, folder) = (DownloadResolution, DownloadSubtitles, AppSettings.Current.SponsorBlockCategories, AppSettings.Current.DownloadFolder);
+            path = await Task.Run(() => YtDlpDownloader.DownloadAsync(url, resolution, subtitles, sponsorBlock, folder, progress, cancellationToken), cancellationToken);
+            return $"Downloaded {Path.GetFileName(path)}";
+        });
+
+        return path is not null && File.Exists(path) ? path : null;
     }
 
     private Task LoadSourceNowAsync() => RunOperationAsync(async cancellationToken =>
@@ -1199,7 +1229,16 @@ public partial class MainViewModel : ObservableObject
     /// <summary>
     /// Loads a file and gives it a style preset: what dropping a video on a style in the launch window does.
     /// </summary>
-    public Task LoadFileWithStyleAsync(string path, string stylePath) => RunOperationAsync(async cancellationToken =>
+    public async Task LoadFileWithStyleAsync(string path, string stylePath)
+    {
+        // A link dropped on a style is downloaded first, with yt-dlp, which may itself have to be downloaded.
+        if (IsWebAddress(path) && !await RequireAsync("Downloading a video", [DependencyUpdater.YtDlp, DependencyUpdater.Ffmpeg], []))
+            return;
+
+        await LoadFileWithStyleNowAsync(path, stylePath);
+    }
+
+    private Task LoadFileWithStyleNowAsync(string path, string stylePath) => RunOperationAsync(async cancellationToken =>
     {
         SourcePath = path;
         EditingJob = null;
@@ -1244,6 +1283,7 @@ public partial class MainViewModel : ObservableObject
         (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (settings.ShowCutSegmentsPane, settings.ShowKeyframesPane, settings.ShowClipKeyframes);
         ShowSourcePane = settings.ShowSourcePane;
         ShowMediaBrowser = settings.ShowMediaBrowser;
+        LoadPlaybackControls();
         OnPropertyChanged(nameof(ModeButtonText));
 
         // The Layers tab draws the main video's clips with frames from it, which Encoder Mode has no use for.
@@ -1664,6 +1704,7 @@ public partial class MainViewModel : ObservableObject
         _playerMediaSeconds = 0;
         _mainPieces.Clear();
         SetBin(null);
+        SetMarkers(null);
         InvalidateMainClips();
         _mainVideoRow.ApplyTiming(null);
         _mainVideoRow.MediaDuration = 0;

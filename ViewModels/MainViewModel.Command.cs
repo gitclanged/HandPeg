@@ -150,6 +150,7 @@ public partial class MainViewModel
             HasCutSegments = Segments.Count > 0,
             ChapterMarkers = ChapterMarkers,
             ChaptersAtCuts = ChaptersAtCuts,
+            ChaptersAtMarkers = ChaptersAtMarkers && Markers.Count > 0,
             CutsFilePath = CutsFilePath,
             ChaptersFilePath = ChaptersFilePath,
             SoftSubtitleStreams = SubtitleTracks.Where(t => t.Action == SubtitleTrack.SoftSub).Select(t => t.Index).ToList(),

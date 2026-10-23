@@ -751,6 +751,10 @@ public partial class MainViewModel
             AttachLayer(Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight));
         }
 
+        // A vertical style made by hand places its pieces round the video at its own zoom.
+        if (vertical && HudLibrary.LoadVerticalStyle(game)?.Layout is { CenterZoom: var zoom } && Math.Abs(zoom - 1) > 0.001)
+            CenterZoom = zoom;
+
         if (CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
         FrameEngine = true;
@@ -1131,6 +1135,22 @@ public partial class MainViewModel
     public bool HasEncoderPresets => EncoderPresets.Count > 0;
 
     /// <summary>Refills the preset list for the selected encoder, keeping the choice when the new list has it.</summary>
+    /// <summary>The preset steps an encoder has, by its FFmpeg name; none for one that has none, or is not known here.</summary>
+    public IReadOnlyList<string> EncoderPresetsFor(string encoderName)
+    {
+        if (VideoEncoders.FirstOrDefault(e => e.Name == encoderName) is not { } encoder)
+            return [];
+
+        return encoder.Family switch
+        {
+            EncoderFamily.Qsv => QsvPresets,
+            EncoderFamily.Amf => AmfPresets,
+            EncoderFamily.Nvenc => NvencPresets,
+            EncoderFamily.Software when encoder.Name is "libx264" or "libx265" => SoftwarePresets,
+            _ => [],
+        };
+    }
+
     private void UpdateEncoderPresets()
     {
         string[] presets = VideoEncoder.Family switch
@@ -1689,18 +1709,18 @@ public partial class MainViewModel
 
     private void WriteChaptersFile(List<CutSegment> segments)
     {
+        // Each chapter runs to the start of the next, the last to the end of the output.
         var lines = new List<string> { ";FFMETADATA1" };
-        var start = 0.0;
-        for (var i = 0; i < segments.Count; i++)
+        var chapters = BuildChapters(segments);
+        var total = GetOutputDuration();
+        for (var i = 0; i < chapters.Count; i++)
         {
-            // In the output the segments follow one another, so each chapter starts where the previous one ended.
-            var end = start + segments[i].Duration.TotalMilliseconds;
+            var end = i + 1 < chapters.Count ? chapters[i + 1].Start : Math.Max(total, chapters[i].Start + 0.001);
             lines.Add("[CHAPTER]");
             lines.Add("TIMEBASE=1/1000");
-            lines.Add($"START={(long)start}");
-            lines.Add($"END={(long)end}");
-            lines.Add($"title=Segment {i + 1}");
-            start = end;
+            lines.Add(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"START={(long)Math.Round(chapters[i].Start * 1000)}"));
+            lines.Add(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"END={(long)Math.Round(end * 1000)}"));
+            lines.Add($"title={EscapeMetadata(chapters[i].Title)}");
         }
 
         try

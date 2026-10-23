@@ -17,6 +17,15 @@ public sealed class InverseBoolToVisibilityConverter : System.Windows.Data.IValu
     public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) => throw new NotSupportedException();
 }
 
+/// <summary>Visible only while every value bound is true: for a control that is shown in one mode, and only when chosen.</summary>
+public sealed class AllTrueToVisibilityConverter : IMultiValueConverter
+{
+    public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture) =>
+        values.All(v => v is true) ? Visibility.Visible : Visibility.Collapsed;
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture) => throw new NotSupportedException();
+}
+
 public sealed class FractionToOffsetConverter : IMultiValueConverter
 {
     public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture) =>

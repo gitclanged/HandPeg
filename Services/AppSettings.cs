@@ -69,15 +69,9 @@ public sealed class ModeProfile
     public bool ShowKeyframesPane { get; set; }
     public bool ShowSourcePane { get; set; }
     public bool ShowMediaBrowser { get; set; }
-    public double MediaBrowserShare { get; set; }
+    public string? PlaybackControls { get; set; }
+    public string? DockLayout { get; set; }
     public bool ShowClipKeyframes { get; set; }
-    public bool LayoutPaneOnLeft { get; set; }
-    public bool SidePanesOnLeft { get; set; }
-    public bool CutSegmentsOnTop { get; set; }
-    public bool TimelineOnTop { get; set; }
-    public double SidePanesWidth { get; set; }
-    public double LayoutPaneWidth { get; set; }
-    public double KeyframesPaneHeight { get; set; }
 }
 
 /// <summary>
@@ -249,8 +243,13 @@ public sealed class AppSettings
     /// <summary>The folder the media browser last showed.</summary>
     public string BrowserFolder { get; set; } = "";
 
-    /// <summary>How the media browser shows its files: one of <c>MediaBrowserView</c>'s names (List, Small, Medium, Large).</summary>
-    public string BrowserView { get; set; } = "Medium";
+    /// <summary>How large the media browser's tiles are, 0 to 100: the smallest few are the list; 38 is about 200 pixels wide.</summary>
+    public int BrowserTileSize { get; set; } = 38;
+
+    /// <summary>What the media browser's files are sorted by: Name, Date, Size or Type.</summary>
+    public string BrowserSort { get; set; } = "Name";
+
+    public bool BrowserSortDescending { get; set; }
 
     // Interface
     public bool ShowCommandPreviewTab { get; set; }
@@ -428,35 +427,14 @@ public sealed class AppSettings
     /// <summary>The media browser pane in the side column, in Editor Mode: a folder's videos to drag onto the timeline.</summary>
     public bool ShowMediaBrowser { get; set; }
 
-    /// <summary>The media browser's share of the side column's height, beside the Keyframes and Cut Segments panes; 0 for half.</summary>
-    public double MediaBrowserShare { get; set; }
+    /// <summary>The controls the playback bar shows, by name (see PlaybackControlSet); null for the mode's defaults.</summary>
+    public string? PlaybackControls { get; set; }
+
+    /// <summary>Where every pane is, in the main window and the side window (Docking.DockLayoutState as JSON); null for where the mode starts them.</summary>
+    public string? DockLayout { get; set; }
 
     /// <summary>Whether clips on the timeline show a diamond at each of their keyframes.</summary>
     public bool ShowClipKeyframes { get; set; } = true;
-
-    // Where the panes are around the player, and how large: each mode keeps its own arrangement. False and 0
-    // are where a pane starts out, so settings from before the panes could be moved read as the usual layout.
-
-    /// <summary>The layout pane is to the left of the video instead of to its right.</summary>
-    public bool LayoutPaneOnLeft { get; set; }
-
-    /// <summary>The side panes (Keyframes, Cut Segments) are to the left of the player instead of to its right.</summary>
-    public bool SidePanesOnLeft { get; set; }
-
-    /// <summary>The Cut Segments pane is above the Keyframes pane instead of under it.</summary>
-    public bool CutSegmentsOnTop { get; set; }
-
-    /// <summary>The master timeline is above the player instead of under it.</summary>
-    public bool TimelineOnTop { get; set; }
-
-    /// <summary>How wide the side panes are, in pixels; 0 for the width they start with.</summary>
-    public double SidePanesWidth { get; set; }
-
-    /// <summary>How wide the layout pane is, in pixels; 0 for the width it starts with.</summary>
-    public double LayoutPaneWidth { get; set; }
-
-    /// <summary>How tall the Keyframes pane is, in pixels; 0 for as tall as what is in it.</summary>
-    public double KeyframesPaneHeight { get; set; }
 
     /// <summary>How tall the master timeline starts out in a mode, 1 to 50.</summary>
     public static int DefaultMasterTimelineHeight(string mode) => mode == EditorMode ? 17 : 1;
@@ -464,8 +442,7 @@ public sealed class AppSettings
     /// <summary>Reset Panes Layout: every pane back where the mode in use starts with it, at the size it starts with.</summary>
     public void ResetPaneLayout()
     {
-        (LayoutPaneOnLeft, SidePanesOnLeft, CutSegmentsOnTop, TimelineOnTop) = (false, false, false, false);
-        (SidePanesWidth, LayoutPaneWidth, KeyframesPaneHeight, MediaBrowserShare) = (0, 0, 0, 0);
+        DockLayout = null;
         MasterTimelineHeight = DefaultMasterTimelineHeight(UiMode);
     }
 
@@ -485,6 +462,36 @@ public sealed class AppSettings
     public string DefaultAudioEncoder { get; set; } = "";
 
     public string DefaultAudioBitrate { get; set; } = "";
+
+    // The rest of the default encoding settings (Settings, Export & Hardware), with the three above: what the Video and
+    // Audio tabs start with. A blank one leaves HandPeg's own default. An encoding preset applied afterwards always sets
+    // its own; a style preset does too, unless DefaultsOverrideStyles is on.
+    public string DefaultContainer { get; set; } = "";
+    public bool DefaultWebOptimized { get; set; } = true;
+    public string DefaultEncoderPreset { get; set; } = "";
+    public string DefaultRateControl { get; set; } = "";
+
+    /// <summary>The constant-quality value (CRF, CQ, CQP...); null for the built-in one.</summary>
+    public int? DefaultQuality { get; set; }
+
+    public string DefaultTargetBitrate { get; set; } = "";
+    public string DefaultFramerate { get; set; } = "";
+    public string DefaultCustomFramerate { get; set; } = "";
+    public bool DefaultTenBit { get; set; }
+
+    /// <summary>The output size asked for; either blank keeps the source's (or the frame's) own.</summary>
+    public string DefaultOutputWidth { get; set; } = "";
+
+    public string DefaultOutputHeight { get; set; } = "";
+
+    /// <summary>Whether the audio tracks are mixed into one: "" as each mode starts (Editor Mode mixes), "on" or "off".</summary>
+    public string DefaultMergeAudio { get; set; } = "";
+
+    public bool DefaultNormalizeAudio { get; set; }
+    public bool DefaultHardwareDecoding { get; set; } = true;
+
+    /// <summary>The default encoding settings are put back after a style preset is applied, where the style set something else (a vertical frame, say).</summary>
+    public bool DefaultsOverrideStyles { get; set; }
 
     /// <summary>Asks whether to save the project when HandPeg is closed with changes that have not been saved.</summary>
     public bool PromptToSaveOnExit { get; set; } = true;

@@ -77,36 +77,95 @@ public sealed partial class VideoSurface : HwndHost
         DestroyWindow(hwnd.Handle);
     }
 
+    /// <summary>
+    /// Makes the second window, or, when the player has been moved into another window (the side window), hands it
+    /// to that one: it follows whichever window the player is in.
+    /// </summary>
     private void CreateOverlay()
     {
-        if (_overlayWindow is not null || Overlay is null || Window.GetWindow(this) is not { } owner)
+        if (Overlay is null || Window.GetWindow(this) is not { } owner || ReferenceEquals(owner, _owner))
             return;
 
-        _owner = owner;
-        _overlayWindow = new Window
+        if (_owner is { } previous)
         {
-            Owner = owner,
-            Content = Overlay,
-            WindowStyle = WindowStyle.None,
-            AllowsTransparency = true,
-            Background = Brushes.Transparent,
-            ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false,
-            ShowActivated = false,
-            Focusable = false,
-            WindowStartupLocation = WindowStartupLocation.Manual,
-        };
-        _overlayWindow.SourceInitialized += (_, _) =>
-        {
-            var handle = new WindowInteropHelper(_overlayWindow).Handle;
-            SetWindowLongPtr(handle, GwlExStyle, new IntPtr(GetWindowLongPtr(handle, GwlExStyle).ToInt64() | WsExNoActivate | WsExToolWindow));
-        };
+            previous.LocationChanged -= Owner_Moved;
+            previous.SizeChanged -= Owner_Moved;
+            previous.StateChanged -= Owner_Moved;
+            previous.Closing -= Owner_Closing;
+            previous.Closed -= Owner_Closed;
+        }
 
-        owner.LocationChanged += (_, _) => PlaceOverlay();
-        owner.SizeChanged += (_, _) => PlaceOverlay();
-        owner.StateChanged += (_, _) => PlaceOverlay();
-        owner.Closed += (_, _) => _overlayWindow?.Close();
+        _owner = owner;
+        if (_overlayWindow is null)
+        {
+            _overlayWindow = new Window
+            {
+                Content = Overlay,
+                WindowStyle = WindowStyle.None,
+                AllowsTransparency = true,
+                Background = Brushes.Transparent,
+                ResizeMode = ResizeMode.NoResize,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                Focusable = false,
+                WindowStartupLocation = WindowStartupLocation.Manual,
+            };
+            var made = _overlayWindow;
+            made.SourceInitialized += (_, _) =>
+            {
+                var handle = new WindowInteropHelper(made).Handle;
+                SetWindowLongPtr(handle, GwlExStyle, new IntPtr(GetWindowLongPtr(handle, GwlExStyle).ToInt64() | WsExNoActivate | WsExToolWindow));
+            };
+
+            // Closed some other way than by this layer (with a window that owned it): the next one is made afresh.
+            made.Closed += (_, _) =>
+            {
+                made.Content = null;
+                if (ReferenceEquals(_overlayWindow, made))
+                    _overlayWindow = null;
+            };
+        }
+
+        // Owned by the window the player is in, so it stays above that one (and goes when the app goes).
+        _overlayWindow.Owner = owner;
+        owner.LocationChanged += Owner_Moved;
+        owner.SizeChanged += Owner_Moved;
+        owner.StateChanged += Owner_Moved;
+        owner.Closing += Owner_Closing;
+        owner.Closed += Owner_Closed;
+        _placed = default;
         PlaceOverlay();
+    }
+
+    private void Owner_Moved(object? sender, EventArgs e) => PlaceOverlay();
+
+    // A window closes the windows it owns: the side window lets go of this one first, as the player is handed back.
+    private void Owner_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (e.Cancel || _overlayWindow is not { } overlay || !ReferenceEquals(sender, _owner) || ReferenceEquals(sender, Application.Current?.MainWindow))
+            return;
+
+        overlay.Hide();
+        overlay.Owner = null;
+    }
+
+    // The side window closing with the player in it only hands the player back; the main window closing ends the app.
+    private void Owner_Closed(object? sender, EventArgs e)
+    {
+        if (!ReferenceEquals(sender, _owner))
+            return;
+
+        _owner = null;
+        if (Application.Current?.MainWindow is { } main && ReferenceEquals(sender, main))
+        {
+            _overlayWindow?.Close();
+            _overlayWindow = null;
+        }
+        else if (_overlayWindow is { } overlay && new WindowInteropHelper(overlay).Handle != IntPtr.Zero)
+        {
+            overlay.Hide();
+            overlay.Owner = null;
+        }
     }
 
     /// <summary>Puts the second window exactly over the native one, or hides it when that one cannot be seen.</summary>

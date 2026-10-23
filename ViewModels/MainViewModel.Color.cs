@@ -450,6 +450,9 @@ public partial class MainViewModel
             applied.Add("subtitle settings");
         }
 
+        // Settings may say the default encoding settings win over what a style sets (a tall frame, say).
+        ApplyEncodingDefaultsOverStyle();
+
         Log(applied.Count > 0 ? $"Applied style preset: {string.Join(", ", applied)}" : "Nothing was imported");
         if (GetLayoutAspectWarning() is { } warning)
             StatusText += " " + warning;

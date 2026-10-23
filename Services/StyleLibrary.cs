@@ -16,7 +16,8 @@ public static class StyleLibrary
     // 4: three or four layers a game; the other pieces are extras in the mask.
     // 5: Overwatch's health piece takes in the name and perk line under the bar.
     // 6: Overwatch's mask is a picture made by hand (Resources/overwatch_hud_mask.png), its pieces fitted to it.
-    private const int Version = 6;
+    // 7: Overwatch's vertical style is the user's own (Resources/overwatch_vertical_style.json), with their cleaner mask.
+    private const int Version = 7;
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -59,6 +60,16 @@ public static class StyleLibrary
     /// </summary>
     public static StylePreset Build(HudGame game)
     {
+        // Made by hand: the style as it is, with its mask packed in.
+        if (HudLibrary.LoadVerticalStyle(game) is { Layout.Layers: { Count: > 0 } } made)
+        {
+            var packed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var layer in made.Layout.Layers)
+                MaskStore.Pack(layer, packed);
+            made.Masks = packed.Count > 0 ? packed : null;
+            return made;
+        }
+
         var layers = HudLibrary.BuildLayers(game, vertical: true);
         var masks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var track = 0;

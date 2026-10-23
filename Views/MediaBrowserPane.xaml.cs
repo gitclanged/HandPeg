@@ -22,8 +22,10 @@ namespace HandPegApp.Views;
 /// </summary>
 public partial class MediaBrowserPane : UserControl
 {
-    // The views: how wide a tile's picture is (a row's, for the list).
-    private static readonly (string Name, double Width)[] ViewSizes = [("List", 64), ("Small", 128), ("Medium", 200), ("Large", 320)];
+    // The size slider: below this the files are a list; above it, tiles from the smallest width to the largest.
+    private const double ListBelow = 8, SmallestTile = 96, LargestTile = 420;
+
+    private static readonly string[] SortKeys = ["Name", "Date", "Size", "Type"];
 
     // A folder with more entries than this lists the first ones, and says so.
     private const int MostEntries = 3000;
@@ -36,6 +38,9 @@ public partial class MediaBrowserPane : UserControl
 
     private readonly ObservableCollection<MediaBrowserItem> _items = [];
     private readonly DispatcherTimer _visibleCheck = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    private readonly DispatcherTimer _sizeSettled = new() { Interval = TimeSpan.FromMilliseconds(300) };
+    private bool? _listView;
+    private double _tileWidth = 200;
     private readonly List<MediaBrowserItem> _queue = [];
     private readonly LinkedList<(MediaBrowserItem Item, IReadOnlyList<BitmapSource> Frames)> _strips = new();
     private CancellationTokenSource _listing = new();
@@ -59,9 +64,18 @@ public partial class MediaBrowserPane : UserControl
         };
         Items.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => ScheduleVisibleCheck()));
         Items.SizeChanged += (_, _) => ScheduleVisibleCheck();
+        _sizeSettled.Tick += (_, _) =>
+        {
+            _sizeSettled.Stop();
+            SharpenPictures();
+        };
 
-        var view = Array.FindIndex(ViewSizes, v => v.Name == AppSettings.Current.BrowserView);
-        ViewBox.SelectedIndex = view < 0 ? 2 : view;
+        var settings = AppSettings.Current;
+        var sort = Array.IndexOf(SortKeys, settings.BrowserSort);
+        SortBox.SelectedIndex = sort < 0 ? 0 : sort;
+        SortDirectionButton.IsChecked = settings.BrowserSortDescending;
+        SizeSlider.Value = Math.Clamp(settings.BrowserTileSize, 0, 100);
+        ApplySize(SizeSlider.Value);
     }
 
     /// <summary>A file was asked to be opened as the main video.</summary>
@@ -77,15 +91,7 @@ public partial class MediaBrowserPane : UserControl
     public Func<string?>? SuggestFolder { get; set; }
 
     // The height a tile's picture is decoded at, in real pixels.
-    private int PictureHeight
-    {
-        get
-        {
-            var (name, width) = ViewSizes[Math.Max(ViewBox.SelectedIndex, 0)];
-            var height = name == "List" ? 36 : Math.Round(width * 9 / 16);
-            return (int)Math.Ceiling(height * VisualTreeHelper.GetDpi(this).DpiScaleY);
-        }
-    }
+    private int PictureHeight => (int)Math.Ceiling((_listView == true ? 36 : Math.Round(_tileWidth * 9 / 16)) * VisualTreeHelper.GetDpi(this).DpiScaleY);
 
     // Opened the first time the pane is shown, not before: a hidden pane reads no folders.
     private void Pane_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -149,7 +155,7 @@ public partial class MediaBrowserPane : UserControl
         if (token.IsCancellationRequested)
             return;
 
-        foreach (var entry in entries)
+        foreach (var entry in Sorted(entries))
             _items.Add(entry);
 
         if (folder is not null)
@@ -180,7 +186,7 @@ public partial class MediaBrowserPane : UserControl
         {
             if (list.Count >= MostEntries)
                 return list;
-            list.Add(new MediaBrowserItem(sub.FullName, MediaBrowserKind.Folder, sub.Name));
+            list.Add(new MediaBrowserItem(sub.FullName, MediaBrowserKind.Folder, sub.Name) { Modified = sub.LastWriteTime });
         }
 
         foreach (var file in directory.EnumerateFiles().Where(Shown).OrderBy(f => f.Name, StringComparer.CurrentCultureIgnoreCase))
@@ -190,7 +196,7 @@ public partial class MediaBrowserPane : UserControl
             if (MediaBrowserItem.KindOf(file.Name) is not { } kind)
                 continue;
 
-            list.Add(new MediaBrowserItem(file.FullName, kind, file.Name) { Info = MediaBrowserItem.FormatSize(file.Length) });
+            list.Add(new MediaBrowserItem(file.FullName, kind, file.Name) { Info = MediaBrowserItem.FormatSize(file.Length), Bytes = file.Length, Modified = file.LastWriteTime });
         }
 
         return list;
@@ -227,24 +233,97 @@ public partial class MediaBrowserPane : UserControl
 
     private void Refresh_Click(object sender, RoutedEventArgs e) => _ = NavigateAsync(_folder);
 
-    // ----- The view -----
+    // ----- The view: its order and its size -----
 
-    private void ViewBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    /// <summary>The entries in the order chosen: drives and folders first (by name, or by date when sorting by date), then the files.</summary>
+    private static List<MediaBrowserItem> Sorted(IEnumerable<MediaBrowserItem> entries)
     {
-        var (name, width) = ViewSizes[Math.Max(ViewBox.SelectedIndex, 0)];
-        AppSettings.Current.BrowserView = name;
-        var list = name == "List";
+        var settings = AppSettings.Current;
+        var (key, descending) = (settings.BrowserSort, settings.BrowserSortDescending);
+        var comparer = StringComparer.CurrentCultureIgnoreCase;
+        var all = entries.ToList();
+        IEnumerable<MediaBrowserItem> Order(IEnumerable<MediaBrowserItem> items, bool files)
+        {
+            IOrderedEnumerable<MediaBrowserItem> ordered = (key, files) switch
+            {
+                ("Date", _) => descending ? items.OrderByDescending(i => i.Modified) : items.OrderBy(i => i.Modified),
+                ("Size", true) => descending ? items.OrderByDescending(i => i.Bytes) : items.OrderBy(i => i.Bytes),
+                ("Type", true) => descending
+                    ? items.OrderByDescending(i => Path.GetExtension(i.Name), comparer)
+                    : items.OrderBy(i => Path.GetExtension(i.Name), comparer),
+                _ => descending ? items.OrderByDescending(i => i.Name, comparer) : items.OrderBy(i => i.Name, comparer),
+            };
+            return ordered.ThenBy(i => i.Name, comparer);
+        }
+
+        return [.. Order(all.Where(i => !i.IsFile), files: false), .. Order(all.Where(i => i.IsFile), files: true)];
+    }
+
+    private void Resort()
+    {
+        var sorted = Sorted(_items);
+        _items.Clear();
+        foreach (var item in sorted)
+            _items.Add(item);
+        ScheduleVisibleCheck();
+    }
+
+    private void SortBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        AppSettings.Current.BrowserSort = SortKeys[Math.Max(SortBox.SelectedIndex, 0)];
+        if (_items.Count > 0)
+            Resort();
+    }
+
+    private void SortDirection_Changed(object sender, RoutedEventArgs e)
+    {
+        AppSettings.Current.BrowserSortDescending = SortDirectionButton.IsChecked == true;
+        if (_items.Count > 0)
+            Resort();
+    }
+
+    private void SizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!IsInitialized)
+            return;
+
+        AppSettings.Current.BrowserTileSize = (int)Math.Round(e.NewValue);
+        ApplySize(e.NewValue);
+
+        // The pictures are scaled at once; once the slider rests, those now drawn larger than they were made are made again.
+        _sizeSettled.Stop();
+        _sizeSettled.Start();
+    }
+
+    /// <summary>The list, or tiles of a width: from the size slider's value.</summary>
+    private void ApplySize(double value)
+    {
+        var list = value < ListBelow;
+        _tileWidth = Math.Round(SmallestTile + (Math.Max(value, ListBelow) - ListBelow) / (100 - ListBelow) * (LargestTile - SmallestTile));
+        Resources["TileWidth"] = _tileWidth;
+        Resources["TileHeight"] = Math.Round(_tileWidth * 9 / 16);
+        if (_listView == list)
+            return;
+
+        _listView = list;
         Items.ItemTemplate = (DataTemplate)Resources[list ? "RowTemplate" : "TileTemplate"];
         Items.ItemsPanel = (ItemsPanelTemplate)Resources[list ? "RowPanel" : "TilePanel"];
         VirtualizingPanel.SetIsVirtualizing(Items, list);
         ScrollViewer.SetCanContentScroll(Items, list);
-        Resources["TileWidth"] = width;
-        Resources["TileHeight"] = Math.Round(width * 9 / 16);
+        ScheduleVisibleCheck();
+    }
 
-        // The pictures were made for the size before: made again, from the strips already on disk.
+    /// <summary>Makes again, from the strips already on disk, the pictures now shown larger than they were made.</summary>
+    private void SharpenPictures()
+    {
+        var wanted = PictureHeight * 0.85;
         _strips.Clear();
         foreach (var item in _items)
-            (item.Poster, item.HoverFrame, item.PreviewRequested) = (null, null, false);
+        {
+            if (item.Poster is BitmapSource { PixelHeight: var made } && made < wanted)
+                item.PreviewRequested = false;
+        }
+
         ScheduleVisibleCheck();
     }
 

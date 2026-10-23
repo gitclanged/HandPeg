@@ -66,6 +66,7 @@ public sealed class ProjectOutput
     public bool WebOptimized { get; set; }
     public bool ChapterMarkers { get; set; } = true;
     public bool ChaptersAtCuts { get; set; }
+    public bool ChaptersAtMarkers { get; set; }
     public string TargetFileSize { get; set; } = "";
     public string? ManualCommand { get; set; }
 
@@ -78,6 +79,9 @@ public sealed class ProjectSequence
 {
     /// <summary>The kept stretches of the timeline, each as [start, end] in milliseconds; a third number of 1 marks one that is skipped.</summary>
     public List<double[]> Cuts { get; set; } = [];
+
+    /// <summary>The markers: each its moment in seconds and its name.</summary>
+    public List<TimelineMarker> Markers { get; set; } = [];
 
     public bool SnapToIFrames { get; set; }
     public bool AudioLinked { get; set; } = true;
@@ -424,6 +428,7 @@ public static class ProjectStore
                 WebOptimized = state.WebOptimized,
                 ChapterMarkers = state.ChapterMarkers,
                 ChaptersAtCuts = state.ChaptersAtCuts,
+                ChaptersAtMarkers = state.ChaptersAtMarkers,
                 Subtitles = state.Subtitles,
                 TargetFileSize = state.TargetFileSize,
                 ManualCommand = state.ManualCommand,
@@ -431,6 +436,7 @@ public static class ProjectStore
             Sequence = new ProjectSequence
             {
                 Cuts = state.Segments.Select(s => s.Skipped ? new[] { s.StartMs, s.EndMs, 1 } : [s.StartMs, s.EndMs]).ToList(),
+                Markers = state.Markers,
                 SnapToIFrames = state.SnapToIFrames,
                 AudioLinked = state.AudioLinked,
                 Main = new ProjectTrack
@@ -491,6 +497,8 @@ public static class ProjectStore
             WebOptimized = file.Output.WebOptimized,
             ChapterMarkers = file.Output.ChapterMarkers,
             ChaptersAtCuts = file.Output.ChaptersAtCuts,
+            ChaptersAtMarkers = file.Output.ChaptersAtMarkers,
+            Markers = file.Sequence.Markers ?? [],
             Subtitles = file.Output.Subtitles,
             TargetFileSize = file.Output.TargetFileSize,
             ManualCommand = file.Output.ManualCommand,

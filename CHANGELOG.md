@@ -3,7 +3,24 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
-## HandPeg v3.1.0
+## HandPeg v3.2.0
+
+### Highlights
+- **Arrange the window your way.** Every part of the window is a pane you can move: the player, the playback controls, the master timeline, the layout pane, the header, Source, Media, Keyframes, Cut Segments, the preset bar and each of the settings tabs. Drag a pane by its title (or, for the player, the playback controls and the timeline, by the tab that appears when the pointer reaches its top-left corner): onto another pane to tab them together, to one side of it to put it beside, to the edge of the window, or into the row of settings tabs. A settings tab can be dragged out to become a pane of its own. Tabs take the place of the titles, so nothing gets taller. Each mode keeps its own arrangement; right-click any tab (or use the Views menu) for Reset Panes Layout.
+- **Side window for a second monitor.** Drag a pane out of the window, or right-click its tab and choose Move to Side Window, and it goes into a second HandPeg window that holds any number of panes, arranged as freely as the main one. The player can go there too and keeps playing. The new Side Window button (left of Project, both now icons) opens and closes it; closing it puts its panes back, and opening it again brings them back where they were. Its place is remembered.
+- **Drop links.** The drop hint now reads "Drag & Drop Files or Links": drag a video link from a browser (any site yt-dlp supports, not only YouTube) onto the window to load it, onto a preset target to load it with that preset, onto the Layers or Audio tab to download it and add it as a clip, or onto the Squisher.
+- **Markers.** Press M (or the Add Marker button) to put a marker at the playhead. Markers show on the time ruler and the master timeline, clips snap to them, Shift+M and Ctrl+Shift+M go to the next and previous one, and right-clicking one renames or deletes it. **Generate Chapters at Markers** (Video tab) writes a chapter at each marker.
+- **Choose the playback controls.** A gear on the playback bar lists what it can show, per mode: Mark In / Mark Out (the cut segment start and stop), Go to In / Out, Play Start to Stop, Loop, previous / next edit point, jump to start / end, Add Marker and previous / next marker, Export Frame (saves the frame as a picture), Safe Margins, Mute, and the ones it had already.
+- **Default encoding settings** (Settings): the container, encoder preset, rate control and quality or bitrate, frame rate, size, 10-bit, audio merge and normalize, and hardware decoding a session starts with, with Use Current and Reset buttons. An option applies them again after a style preset; an encoding preset always wins.
+
+### Changed
+- The built-in Overwatch vertical preset is now the hand-made "Overwatch Vertical HUDv2" style, with its cleaner mask.
+- Media browser: sort by name, date, size or type (either way), and a size slider from a list to large tiles.
+
+### Fixed
+- Dragging a file over the "Drag & Drop" hint did not show the drop targets, and they appeared with a delay the first time. They are now prepared in the background after launch and appear wherever a file is dragged.
+
+## HandPeg v3.1.0 (not released on its own: it ships in 3.2.0)
 
 ### Highlights
 - **A timeline you can scroll and zoom, with clips end to end.** The Layers and Audio tabs have a time ruler over their bars, zoom buttons and a zoom slider, Fit, and a scrollbar under the bars. The wheel over the ruler (or Ctrl + wheel over a bar) zooms about the pointer; Shift + wheel or a middle-button drag moves along; `=`, `-` and `\` zoom in, out and back to the whole sequence. The bars reach past the end of the sequence (that room is shaded), so a clip can be dropped or dragged after the last one, and the sequence grows to hold it. While a video plays zoomed in, the view turns the page with the playhead.

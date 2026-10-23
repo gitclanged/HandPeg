@@ -715,6 +715,30 @@ public partial class MainViewModel
 
     partial void OnShowMediaBrowserChanged(bool value) => SaveView(s => s.ShowMediaBrowser = value);
 
+    // ----- The playback bar -----
+
+    /// <summary>Which controls the playback bar shows, chosen with its settings button. Each mode keeps its own choice.</summary>
+    public PlaybackControlSet PlaybackControls { get; } = new();
+
+    /// <summary>Playback starts again at the end: of the selected cut segment, or of the whole sequence.</summary>
+    [ObservableProperty] private bool _loopPlayback;
+
+    /// <summary>The action-safe and title-safe areas are outlined over the picture.</summary>
+    [ObservableProperty] private bool _showSafeMargins;
+
+    /// <summary>The player is silent (the export is not affected).</summary>
+    [ObservableProperty] private bool _isPlayerMuted;
+
+    /// <summary>Takes up the playback bar's choice of controls for the mode in use, and saves it whenever it changes.</summary>
+    private void LoadPlaybackControls()
+    {
+        PlaybackControls.Changed -= SavePlaybackControls;
+        PlaybackControls.Load(AppSettings.Current.PlaybackControls, IsEditorMode);
+        PlaybackControls.Changed += SavePlaybackControls;
+    }
+
+    private void SavePlaybackControls() => SaveView(s => s.PlaybackControls = PlaybackControls.Save());
+
     /// <summary>Whether a clip's block on the timeline shows a diamond at each of its keyframes.</summary>
     [ObservableProperty] private bool _showClipKeyframes = AppSettings.Current.ShowClipKeyframes;
 

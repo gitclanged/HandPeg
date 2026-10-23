@@ -186,6 +186,9 @@ public sealed record SequenceExportState
 
     public bool ChapterMarkers { get; init; }
     public bool ChaptersAtCuts { get; init; }
+
+    /// <summary>Chapters begin at the markers: switched on, and there are markers.</summary>
+    public bool ChaptersAtMarkers { get; init; }
     public string CutsFilePath { get; init; } = "";
     public string ChaptersFilePath { get; init; } = "";
 
@@ -612,9 +615,9 @@ public static class FilterGraphBuilder
                 }
             }
 
-            // One chapter per kept segment, read from a metadata file given as the input after the video's.
+            // One chapter per kept segment and per marker (as asked), read from a metadata file given as the input after the video's.
             var videoInputs = cutInputs?.Inputs.Count ?? 1;
-            var chaptersFromCuts = ChaptersAtCuts && segments.Count > 0 && !animated;
+            var chaptersFromCuts = ((ChaptersAtCuts && segments.Count > 0) || S.ChaptersAtMarkers) && !animated;
             if (chaptersFromCuts)
             {
                 _usesChaptersFile = true;
