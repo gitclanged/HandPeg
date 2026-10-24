@@ -71,6 +71,9 @@ public static class AppPaths
     /// <summary>Style presets (.hpstyle): a look and a layout in one file, to keep or to share.</summary>
     public static string Styles { get; } = Path.Combine(UserRoot, "Styles");
 
+    /// <summary>Effect presets (.hpfx): a stack of effect cards saved from the Effects pane.</summary>
+    public static string EffectPresets { get; } = Path.Combine(UserRoot, "Effect Presets");
+
     /// <summary>Mask pictures: the ones that arrive inside style presets, and the ones made for the HUD layers.</summary>
     public static string Masks { get; } = Path.Combine(UserRoot, "Masks");
 

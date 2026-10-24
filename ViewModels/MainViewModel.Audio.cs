@@ -99,30 +99,38 @@ public partial class MainViewModel
 
     /// <summary>Height in pixels of one sound's row in the Audio tab: 100 at the default of 25.</summary>
     public double AudioTrackRowHeight => ShowWaveforms ? Math.Round(46 + 2.16 * AudioTrackHeight) : 64;
-
-    /// <summary>Draws the timeline's waveform and one for every audio track, in the background, after a load.</summary>
+    /// <summary>
+    /// Draws the timeline's waveform and one for every audio track, in the background, after a load: all of
+    /// them from one reading of the file (see Waveforms.RenderManyAsync).
+    /// </summary>
     private async Task GenerateWaveformsAsync(string mediaPath)
     {
         _waveformCancellation?.Cancel();
-        _ = RefreshTimelineWaveformAsync(mediaPath);
+        _timelineWaveformCancellation?.Cancel();
 
-        var tracks = AudioTracks.ToList();
-        if (tracks.Count == 0 || !ShowWaveforms)
+        var tracks = ShowWaveforms ? AudioTracks.ToList() : [];
+        var active = AudioTracks.Where(t => !t.IsDropped).Select(t => t.Index).ToList();
+        if (!ShowWaveforms || active.Count == 0)
+            TimelineWaveform = null;
+        if (tracks.Count == 0)
             return;
 
+        var requests = tracks.Select(t => new WaveformRequest([t.Index], 1200, 120, t.WaveformColor.Replace("#", "0x"))).ToList();
+        if (active.Count > 0)
+            requests.Add(new WaveformRequest(active, 1920, 150, "gray"));
+
         var cancellation = _waveformCancellation = new CancellationTokenSource();
-        var run = Guid.NewGuid().ToString("N");
+        var timeline = _timelineWaveformCancellation = new CancellationTokenSource();
         try
         {
-            foreach (var track in tracks)
-            {
-                var image = await Waveforms.RenderAsync(
-                    mediaPath, [track.Index], Path.Combine(WaveformFolder, $"track{track.Index}_{run}.png"), 1200, 120,
-                    track.WaveformColor.Replace("#", "0x"), cancellation.Token);
-                if (cancellation.IsCancellationRequested)
-                    return;
-                track.Waveform = image;
-            }
+            var pictures = await Waveforms.RenderManyAsync(mediaPath, requests, cancellation.Token);
+            if (cancellation.IsCancellationRequested)
+                return;
+
+            for (var i = 0; i < tracks.Count; i++)
+                tracks[i].Waveform = pictures[i];
+            if (active.Count > 0 && !timeline.IsCancellationRequested)
+                TimelineWaveform = pictures[^1];
         }
         catch (OperationCanceledException)
         {
@@ -135,7 +143,10 @@ public partial class MainViewModel
         {
             if (ReferenceEquals(_waveformCancellation, cancellation))
                 _waveformCancellation = null;
+            if (ReferenceEquals(_timelineWaveformCancellation, timeline))
+                _timelineWaveformCancellation = null;
             cancellation.Dispose();
+            timeline.Dispose();
         }
     }
 
@@ -179,20 +190,27 @@ public partial class MainViewModel
     // ----- Listening to one track -----
 
     /// <summary>
-    /// The audio track the player plays instead of the first one, or null. The player plays one track at a
-    /// time, so this is how a track is heard on its own; it changes nothing about the encode.
+    /// The audio track the player plays instead of the first one, while exactly one is soloed; null otherwise. The player
+    /// plays one track at a time, so this is how a track is heard on its own; several soloed are mixed live instead (see
+    /// SoloedTracks, MainViewModel.Edits). It changes nothing about the encode.
     /// </summary>
     [ObservableProperty] private AudioTrack? _soloTrack;
 
-    [RelayCommand]
-    private void ToggleSolo(AudioTrack? track) => SoloTrack = track is null || ReferenceEquals(SoloTrack, track) ? null : track;
-
     partial void OnSoloTrackChanged(AudioTrack? value)
     {
+        // Set from outside the solo buttons (a video loaded): the set follows it.
+        if (!_applyingSolo)
+        {
+            _soloed.Clear();
+            if (value is not null)
+                _soloed.Add(value);
+            OnPropertyChanged(nameof(SoloedTracks));
+        }
+
         foreach (var track in AudioTracks)
-            track.IsSolo = ReferenceEquals(track, value);
+            track.IsSolo = _soloed.Contains(track);
         if (value is not null)
-            StatusText = $"Playing {value.Title} on its own. Press its button again to stop.";
+            StatusText = $"Playing {value.Title} on its own. Press its button again to stop; click another's to hear them together (Alt-click: alone).";
     }
 
     /// <summary>
@@ -205,7 +223,7 @@ public partial class MainViewModel
     // ----- The layers list -----
 
     /// <summary>
-    /// The rows of the Filters tab's layers list: the pieces of video and the images, and after them the
+    /// The rows of the Layers tab's list: the pieces of video and the images, and after them the
     /// caption box while auto-captions are on. One list, so every layer is placed and sized the same way.
     /// </summary>
     public ObservableCollection<Layer> LayerRows { get; } = [];

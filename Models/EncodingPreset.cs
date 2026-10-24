@@ -65,6 +65,11 @@ public sealed class EncodingPreset
     /// <summary>The look of the main video as a layer: its style, mask, filters and how it is turned.</summary>
     public LayerState? MainLayer { get; set; }
 
+    /// <summary>The Sequence Output's effect stack (Effects pane), applied to the finished picture; null for none.</summary>
+    public List<Models.Effects.EffectState>? SequenceEffects { get; set; }
+
+    public bool SequenceEffectsBypassed { get; set; }
+
     /// <summary>Whether the blurred background is switched off, leaving the black canvas.</summary>
     public bool BackgroundHidden { get; set; }
 

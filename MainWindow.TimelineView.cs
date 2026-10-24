@@ -66,8 +66,9 @@ public partial class MainWindow
     /// <summary>Shows a stretch of the timeline: from <paramref name="start"/>, <paramref name="span"/> seconds across (all of it, at its longest).</summary>
     private void SetView(double start, double span)
     {
+        // Encoder Mode's time bars always show the whole sequence.
         var extent = TimelineExtent;
-        if (extent <= 0)
+        if (extent <= 0 || _viewModel.IsEncoderMode)
             return;
 
         span = Math.Clamp(span, Math.Min(MinViewSpan, extent), extent);
@@ -101,7 +102,7 @@ public partial class MainWindow
 
     private void PanTimeline(double seconds)
     {
-        if (_viewFit || Math.Abs(seconds) < 1e-9)
+        if (_viewFit || _viewModel.IsEncoderMode || Math.Abs(seconds) < 1e-9)
             return;
 
         _viewStart += seconds;
@@ -135,6 +136,7 @@ public partial class MainWindow
             DrawTrack(track);
         UpdateTimelineChrome();
         UpdateMasterStretch();
+        DrawKeyTimeline();
         if (!announce)
             return;
 
@@ -324,6 +326,13 @@ public partial class MainWindow
             if (element.Parent is not FrameworkElement parent || Ancestor<DockPanel>(element) is not { } tab)
                 continue;
 
+            // Encoder Mode has no zoom, so no scrollbar to move along with (its ruler's row is not shown at all).
+            if (_viewModel.IsEncoderMode)
+            {
+                element.Visibility = Visibility.Collapsed;
+                continue;
+            }
+
             var track = _clipTracks.FirstOrDefault(t => t is { IsVisible: true, ActualWidth: > 0 } && tab.IsAncestorOf(t));
             if (track is null || !parent.IsAncestorOf(element))
             {
@@ -438,15 +447,13 @@ public partial class MainWindow
             seconds = SnapTime(Math.Max(TimeAt(reference, x), 0), reference);
         else if (row is { IsMainVideo: true })
             seconds = _viewModel.GetMainSpan().End;
-        else if (row is { HasTiming: true })
+        else if (row is { HasTiming: true, IsEmptyTrack: false })
             seconds = _viewModel.GetTrackClips(row).Max(c => c.GetSpan(_viewModel.DurationMs / 1000).End);
         else
             seconds = 0;
 
-        // Dropped on a video track inside one of its clips: after that clip, so the two follow each other.
-        if (row is { IsVideoFile: true } && _viewModel.GetTrackClips(row).FirstOrDefault(c => c.GetSpan(_viewModel.DurationMs / 1000) is var (from, to) && seconds > from + 0.01 && seconds < to - 0.01) is { } under)
-            seconds = under.GetSpan(_viewModel.DurationMs / 1000).End;
-
+        // Inside a clip of the row, the moment stays where it was let go: the new clip goes on a track of its own
+        // there (MainViewModel.PlaceClip), never over the clip. Snapping gives the clip's end, for clips end to end.
         return (row, bar, seconds);
     }
 
@@ -458,7 +465,8 @@ public partial class MainWindow
     {
         TimelineTrack? bar = null;
         var seconds = 0.0;
-        if (_viewModel.HasSource && e.Data.GetDataPresent(DataFormats.FileDrop))
+        // Editor Mode's: Encoder Mode's tabs take no dropped clips.
+        if (_viewModel is { HasSource: true, IsEditorMode: true } && e.Data.GetDataPresent(DataFormats.FileDrop))
         {
             foreach (var scope in new FrameworkElement?[] { LayersList, AudioPanel })
             {

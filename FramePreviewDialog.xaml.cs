@@ -117,7 +117,8 @@ public partial class FramePreviewDialog : Window
                 try
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(_framePath)!);
-                    await Task.Run(() => FfmpegRunner.RunAsync(command, new Progress<FfmpegProgress>(), _closing.Token), _closing.Token);
+                    await WorkScheduler.Run(new WorkSpec("Frame preview", WorkLane.Interactive) { Visible = false },
+                        work => Task.Run(() => FfmpegRunner.RunAsync(command, new Progress<FfmpegProgress>(), work.Token), work.Token), _closing.Token);
                     ShowFrame();
                     StatusText.Text = $"Frame at {TimeDisplay.Format(seconds)}";
                 }

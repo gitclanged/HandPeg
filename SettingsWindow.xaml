@@ -70,11 +70,17 @@
                     </TextBlock>
                     <StackPanel Style="{StaticResource Row}">
                         <Button x:Name="CheckUpdateButton" Content="Check for Updates" Click="CheckForUpdates_Click" AutomationProperties.Name="Check for HandPeg Updates"
-                                ToolTip="Looks now for a newer release of HandPeg itself. A copy put in by the installer downloads it, and it goes in at the next restart. A self-contained copy, or one run from a build folder, is told whether there is a newer release and where to get it." />
+                                ToolTip="Looks now for a newer release of HandPeg itself. A copy put in by the installer offers it on the Update button at the bottom of the main window (or downloads it at once, when Auto-download is on). A self-contained copy, or one run from a build folder, is told whether there is a newer release and where to get it." />
                         <Button x:Name="UpdateDependenciesButton" Content="Update Dependencies" Margin="6,0,0,0" Click="UpdateDependencies_Click" AutomationProperties.Name="Update Dependencies"
                                 ToolTip="Installs whatever HandPeg needs that is missing, and replaces FFmpeg, libmpv, yt-dlp and whisper.cpp with newer releases where there are any, from the update URLs on the Tools &amp; Backup tab. A tool with a path of your own is left alone. The same as Install / Update All Dependencies there." />
                         <TextBlock x:Name="UpdateStatusText" VerticalAlignment="Center" Margin="14,0,0,0" TextWrapping="Wrap" MaxWidth="640" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
+                    <CheckBox Content="Auto-update dependencies in the background" IsChecked="{Binding AutoUpdateDependencies}" Margin="0,4,0,2" AutomationProperties.Name="Auto-Update Dependencies"
+                              ToolTip="A little after HandPeg starts, FFmpeg, libmpv, yt-dlp and whisper.cpp are compared with their newest releases and replaced where there is a newer one, in the background (the progress shows at the bottom left; it waits while playing or exporting). Only the tools HandPeg installed: one with a path of your own is left alone, and one never installed is not fetched. A tool in use is tried again at the next start." />
+                    <CheckBox Content="Check for HandPeg updates on startup" IsChecked="{Binding CheckAppUpdatesOnStartup}" Margin="0,2" AutomationProperties.Name="Check for App Updates on Startup"
+                              ToolTip="Looks for a newer HandPeg when it starts, and shows an Update button at the bottom of the window when there is one. Nothing is downloaded until you press it (unless the next option is on)." />
+                    <CheckBox Content="Auto-download HandPeg updates in the background" IsChecked="{Binding AutoDownloadAppUpdates}" Margin="0,2,0,6" AutomationProperties.Name="Auto-Download App Updates"
+                              ToolTip="Off: an update found is only downloaded when you press Update. On: it is downloaded as soon as it is found, offered as Restart to Update, and put in when HandPeg closes if you do not restart." />
                     <StackPanel x:Name="DependencyStatusRow" Style="{StaticResource Row}" Visibility="Collapsed">
                         <ProgressBar x:Name="DependencyProgress" Width="160" Height="8" Minimum="0" Maximum="1" VerticalAlignment="Center" />
                         <TextBlock x:Name="DependencyStatusText" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" MaxWidth="640" Foreground="{DynamicResource MutedTextBrush}" />
@@ -174,6 +180,30 @@
                             <ComboBoxItem Content="Frames (HH:MM:SS:FF)" />
                         </ComboBox>
                     </StackPanel>
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="Editor Mode: where a video or a picture dropped on the Layers tab goes. Always Create New Track: a track of its own, just above the row it was dropped on. Join Track Under Pointer If Free: onto that row's track when nothing is there at that moment. Either way a clip is never laid over another: one that would overlap gets a new track above. An empty track (Add Layer) is always filled.">
+                        <TextBlock Text="Dropped Clips:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DroppedClipsBox" MinWidth="250" Margin="0" AutomationProperties.Name="Dropped Clips">
+                            <ComboBoxItem Content="Always create new track" />
+                            <ComboBoxItem Content="Join track under pointer if free" />
+                        </ComboBox>
+                    </StackPanel>
+                    <CheckBox Content="Ripple affects all tracks (Editor Mode)" IsChecked="{Binding RippleAllTracks}" AutomationProperties.Name="Ripple Affects All Tracks"
+                              ToolTip="A ripple edit (Shift-drag of a clip's edge, Shift+Delete) moves the later clips of every track by as much, so they stay in step. Off: only the clips of its own track move. The main video and the video's own audio tracks never move with a ripple." />
+                    <CheckBox Content="Solo is exclusive" IsChecked="{Binding SoloIsExclusive}" AutomationProperties.Name="Solo Is Exclusive"
+                              ToolTip="On: a track's Solo button plays it alone, the others' solo going off. Off: several tracks can be soloed together and are mixed in the player; Alt-click plays one alone." />
+                    <CheckBox Content="Show gain lines on clips with sound (Editor Mode)" IsChecked="{Binding ShowClipGainLines}" AutomationProperties.Name="Show Gain Lines"
+                              ToolTip="Clips whose sound is drawn on their blocks show a line at their gain (drag it up or down), sloping down over the clip's fades. The fades themselves are the handles at every clip's top corners, whether this is on or not." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Crossfade and Fade Length (s):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="60" Text="{Binding DefaultTransitionSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Crossfade Length"
+                                 local:NumericInput.Default="1" local:NumericInput.DragStep="0.01" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="10" local:NumericInput.Decimals="2"
+                                 ToolTip="Editor Mode: how long a crossfade made from a clip's right-click menu is (Crossfade from / into the clip it meets), and a fade added from its Fade In / Fade Out menu (or by choosing a transition style for a clip that has no fade there). Letting a dragged clip go a little over the one it meets makes a crossfade as long as the overlap; a fade handle is dragged to any length." />
+                    </StackPanel>
+                    <CheckBox Content="Layout pane: show the selected clip's motion path" IsChecked="{Binding ShowMotionPath}" AutomationProperties.Name="Show Motion Path"
+                              ToolTip="Editor Mode: an animated clip's path across the frame (where its anchor point goes between its place keyframes), with a dot at each keyframe to drag." />
+                    <CheckBox Content="Layout pane: snap to the middle and the safe margins" IsChecked="{Binding SnapLayoutGuides}" AutomationProperties.Name="Snap to Layout Guides"
+                              ToolTip="Editor Mode: a box dragged in the layout pane snaps its edges or its middle to the frame's middle, its edges and the action-safe (5%) and title-safe (10%) margins. Hold Alt while dragging to place it freely." />
 
                     <TextBlock Text="I-frames" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
@@ -213,6 +243,14 @@
                               ToolTip="The graphics card decodes the video as well as drawing it (Direct3D 11), which keeps high-resolution and high-frame-rate footage smooth and the processor free. With Live Preview on, the card still decodes and each frame is handed to the filters. Turn this off if the picture is green, garbled or stutters: the processor then decodes. Applied when you press Save." />
                     <CheckBox Content="Show advanced playback controls" IsChecked="{Binding ShowAdvancedPlayback}"
                               ToolTip="A transport row centred under the player: reload player, previous I-frame, back one frame, play/pause, forward one frame, next I-frame and render preview, with a playback speed selector (0.25x to 2x) beside it." />
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="Live Preview, while the playhead is dragged or wound back (Editor Mode). Still Frame: each video layer shows the I-frame nearest the playhead, which keeps up with the drag. Live: the layers are decoded to the exact frame, which is slow for 4K or AV1 files. Hidden: the layers are left out. They play live again as soon as the playhead is let go.">
+                        <TextBlock Text="Video Layers While Scrubbing:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="150" Margin="0" ItemsSource="{x:Static services:AppSettings.ScrubLayerChoices}" SelectedItem="{Binding LayersWhileScrubbing}"
+                                  AutomationProperties.Name="Video Layers While Scrubbing" />
+                    </StackPanel>
+                    <CheckBox Content="Draft Mode: skip red-cost effects while scrubbing" IsChecked="{Binding DraftScrubSkipHeavyEffects}" AutomationProperties.Name="Draft Mode"
+                              ToolTip="Editor Mode, Live Preview: while the playhead is dragged or wound back, the effects marked red on the Effects pane (Denoise, Matte Smooth) are left out, so scrubbing keeps up. They are back as soon as the playhead is let go; exports always have them." />
 
                     <TextBlock Text="Tabs and bars" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Show Command Preview Tab" IsChecked="{Binding ShowCommandPreviewTab}"
@@ -243,9 +281,9 @@
                                  AutomationProperties.Name="Preview Duration" local:NumericInput.Default="3" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="60" local:NumericInput.Decimals="0" />
                     </StackPanel>
 
-                    <TextBlock Text="Timeline preview cache" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="Caches" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="What is made for the timeline of each video you load (the hover previews, the frames drawn on its blocks, its waveforms and its I-frame list) is kept on disk, so loading the same file again shows them at once instead of making them again. Past the size below, what was used longest ago is deleted. A file that has changed since is made again." />
+                               Text="What HandPeg makes from your files is kept on disk, so that opening them again shows it at once instead of making it again: the timeline's previews (hover previews, the frames on the blocks, waveforms, I-frame lists), the media browser's frames, and proxies. Each cache has a size limit: past it, what was used longest ago is deleted. A file that has changed is made again. Each cache keeps a list of what it was made from, so what belongs to deleted files can be cleared out." />
                     <CheckBox Content="Cache timeline previews" IsChecked="{Binding CacheTimelinePreviews}" AutomationProperties.Name="Cache Timeline Previews"
                               ToolTip="Keep the timeline's pictures and waveforms of loaded videos between sessions. Off, they are made again every time a video is loaded." />
                     <StackPanel Style="{StaticResource Row}" IsEnabled="{Binding CacheTimelinePreviews}">
@@ -255,20 +293,6 @@
                         <TextBlock x:Name="TimelineCacheUsage" Style="{StaticResource FieldLabel}" Margin="16,0,12,0" Foreground="{DynamicResource MutedTextBrush}" />
                         <Button Content="Clear" Padding="12,3" Tag="Timeline" Click="ClearCache_Click" AutomationProperties.Name="Clear Timeline Cache"
                                 ToolTip="Deletes everything in the timeline's cache now." />
-                    </StackPanel>
-
-                    <TextBlock Text="Media browser" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="The media browser pane (Editor Mode, Views menu) takes a few frames from each video in the folder it shows, for the picture that follows the pointer across a tile. They are made in the background, a few at a time, and kept in their own cache so the folder opens at once next time." />
-                    <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Frames per Video:" Style="{StaticResource FieldLabel}" />
-                        <TextBox Width="60" Text="{Binding BrowserPreviewFrames, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Media Browser Frames per Video"
-                                 local:NumericInput.Default="15" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="2" local:NumericInput.Maximum="40" local:NumericInput.Decimals="0"
-                                 ToolTip="How many frames are taken from each video, evenly spread over its length. More is smoother to scrub, and slower to make." />
-                        <TextBlock Text="Frame Height (pixels):" Style="{StaticResource FieldLabel}" Margin="28,0,12,0" />
-                        <TextBox Width="60" Text="{Binding BrowserPreviewHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Media Browser Frame Height"
-                                 local:NumericInput.Default="480" local:NumericInput.DragStep="2" local:NumericInput.Minimum="90" local:NumericInput.Maximum="1080" local:NumericInput.Decimals="0"
-                                 ToolTip="How tall each frame is made. Larger stays sharp in the large view, and takes more room in the cache." />
                     </StackPanel>
                     <CheckBox Content="Cache media browser previews" IsChecked="{Binding CacheBrowserPreviews}" AutomationProperties.Name="Cache Media Browser Previews"
                               ToolTip="Keep the media browser's frames between sessions. Off, they are made again each session, and the ones made are let go when HandPeg closes." />
@@ -280,25 +304,135 @@
                         <Button Content="Clear" Padding="12,3" Tag="Browser" Click="ClearCache_Click" AutomationProperties.Name="Clear Media Browser Cache"
                                 ToolTip="Deletes everything in the media browser's cache now." />
                     </StackPanel>
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="How large the proxy cache may grow (proxies of heavy videos, and timeline proxies). Past it, the proxies used longest ago are deleted; a proxy playing now never is.">
+                        <TextBlock Text="Proxy Cache Size (GB):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="70" Text="{Binding ProxyCacheGigabytes, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Proxy Cache Size"
+                                 local:NumericInput.Default="20" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="0.25" local:NumericInput.Maximum="2000" local:NumericInput.Decimals="2" />
+                        <TextBlock x:Name="ProxyCacheUsage" Style="{StaticResource FieldLabel}" Margin="16,0,12,0" Foreground="{DynamicResource MutedTextBrush}" />
+                        <Button Content="Clear Proxy Cache" Padding="12,3" Tag="Proxies" Click="ClearCache_Click" AutomationProperties.Name="Clear Proxy Cache"
+                                ToolTip="Deletes every proxy in the proxy cache now. They are made again, in the background, when they are needed." />
+                    </StackPanel>
+                    <CheckBox Content="Remove previews of deleted files at startup" IsChecked="{Binding PurgeMissingAtStartup}" AutomationProperties.Name="Remove Previews of Deleted Files"
+                              ToolTip="A while after HandPeg starts, the timeline and media browser caches let go of what was made from files that have since been deleted or changed. Files on a drive that is not plugged in are kept." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Clean Up After Start (seconds):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="70" Text="{Binding PurgeDelaySeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Clean Up After Start"
+                                 local:NumericInput.Default="60" local:NumericInput.DragStep="0.5" local:NumericInput.Minimum="0" local:NumericInput.Maximum="3600" local:NumericInput.Decimals="0"
+                                 ToolTip="How long after startup the caches are cleaned up: later keeps it out of the way of whatever you open first." />
+                    </StackPanel>
+                    <CheckBox Content="Treat files on missing drives as deleted" IsChecked="{Binding MissingDrivesCountAsDeleted}" AutomationProperties.Name="Treat Files on Missing Drives as Deleted"
+                              ToolTip="On: what was made from files on a drive that is not there now (an unplugged USB drive, an offline share) is cleared out too. Off: it is kept for when the drive comes back." />
+
+                    <TextBlock Text="Proxies" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="A proxy is a small copy of a heavy video (4K, AV1, VP9, ProRes, 10-bit HEVC, far between I-frames) that Live Preview plays in its place, so that seeking and playing cost what a 540-line H.264 file costs. Proxies are made in the background, on the second graphics card where there is one, once HandPeg has been left alone a few seconds. Exports always read the original files, and the sound always comes from the originals. A clip's right-click menu can ask for a proxy, or for the original." />
+                    <CheckBox Content="Per-clip video proxies (heavy files)" IsChecked="{Binding VideoProxies}" AutomationProperties.Name="Per-Clip Video Proxies"
+                              ToolTip="Heavy videos on the timeline get a proxy, which Live Preview plays in their place. Off, only clips set to Make Proxy (right-click) get one." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Make Proxies For:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="250" Margin="0" ItemsSource="{x:Static services:AppSettings.ProxyScopes}" SelectedItem="{Binding ProxyScope}"
+                                  AutomationProperties.Name="Make Proxies For"
+                                  ToolTip="The video layers only, or the main video as well. A proxied main video plays its picture from the proxy and its sound from the original." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Heavy: Larger Than (p):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="70" Text="{Binding ProxyHeavyHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Heavy Larger Than"
+                                 local:NumericInput.Default="1080" local:NumericInput.DragStep="2" local:NumericInput.Minimum="240" local:NumericInput.Maximum="8640" local:NumericInput.Decimals="0"
+                                 ToolTip="A video larger than this counts as heavy: 1080 means anything above 1080p, upright or on its side (by its shorter side). AV1, VP9, ProRes and 10-bit HEVC always count, whatever their size." />
+                        <TextBlock Text="or I-Frames Further Apart Than (s):" Style="{StaticResource FieldLabel}" Margin="20,0,12,0" />
+                        <TextBox Width="60" Text="{Binding ProxyHeavyIFrameSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Heavy I-Frames Further Apart Than"
+                                 local:NumericInput.Default="2" local:NumericInput.DragStep="0.02" local:NumericInput.Minimum="0.5" local:NumericInput.Maximum="60" local:NumericInput.Decimals="1"
+                                 ToolTip="Every seek decodes from the I-frame before it: a video whose I-frames are further apart than this counts as heavy." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Proxy Height (lines):" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="90" Margin="0" ItemsSource="{x:Static services:AppSettings.ProxyTiers}" SelectedItem="{Binding ProxyTier}" AutomationProperties.Name="Proxy Height"
+                                  ToolTip="How tall proxies are made: 480, 540 or 720 lines (never taller than the original). Changing it makes new proxies." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Proxy Format:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="250" Margin="0" ItemsSource="{x:Static services:AppSettings.ProxyCodecs}" SelectedItem="{Binding ProxyCodec}" AutomationProperties.Name="Proxy Format"
+                                  ToolTip="H.264 with an I-frame every 15 frames and no B-frames: small, quick to seek. MJPEG: every frame an I-frame, so seeks are instant, at about three times the size, made by the processor." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Proxy Encoder:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="150" Margin="0" ItemsSource="{x:Static services:AppSettings.ProxyEncoders}" SelectedItem="{Binding ProxyEncoder}" AutomationProperties.Name="Proxy Encoder"
+                                  ToolTip="What encodes H.264 proxies. Auto: the background graphics card's encoder (Settings, Performance), then the main card's, then the processor. An encoder that fails is followed by the next." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Start Making Proxies After (seconds idle):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="60" Text="{Binding ProxyIdleSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Start Making Proxies After"
+                                 local:NumericInput.Default="10" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="3600" local:NumericInput.Decimals="0"
+                                 ToolTip="Proxies are made once nothing heavy has happened for this long (no scrubbing, no clip or box being dragged), and HandPeg is not playing or exporting. Ordinary mouse moves and clicks do not put it off." />
+                        <TextBlock Text="With a Background Card:" Style="{StaticResource FieldLabel}" Margin="20,0,12,0" />
+                        <TextBox Width="60" Text="{Binding ProxyIdleSecondsWithBackgroundCard, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Start Making Proxies After With a Background Card"
+                                 local:NumericInput.Default="2" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="3600" local:NumericInput.Decimals="0"
+                                 ToolTip="The wait instead, when a graphics card other than the player's makes the proxies (Background Graphics Card, under Performance): it takes nothing from playback, so the proxy can be ready sooner." />
+                    </StackPanel>
+                    <CheckBox Content="Pause making proxies while playing" IsChecked="{Binding PauseProxiesWhilePlaying}" AutomationProperties.Name="Pause Making Proxies While Playing"
+                              ToolTip="A proxy being made stops where it is while the player plays, and goes on afterwards." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Keep Proxies:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="200" Margin="0" ItemsSource="{x:Static services:AppSettings.ProxyLocations}" SelectedItem="{Binding ProxyLocation}" AutomationProperties.Name="Keep Proxies"
+                                  ToolTip="In the cache folder, with the other caches; or in a folder beside the project file (Name.proxies), to move with the project. Work not yet saved as a project uses the cache folder." />
+                    </StackPanel>
+                    <CheckBox Content="Delete the proxies of deleted files at startup" IsChecked="{Binding PurgeProxiesOfDeletedFiles}" AutomationProperties.Name="Delete Proxies of Deleted Files"
+                              ToolTip="A while after HandPeg starts, the proxies of files that have since been deleted or changed are deleted (files on missing drives are kept, as above)." />
+                    <CheckBox Content="Delete a project's proxies when it is closed" IsChecked="{Binding ClearProjectProxiesOnExit}" AutomationProperties.Name="Delete Project Proxies on Close"
+                              ToolTip="When another video or project is opened, or HandPeg closes, the proxies of the files the project used are deleted. Saves disk space; they are made again next time." />
+                    <CheckBox Content="Composed timeline proxy" IsChecked="{Binding TimelineProxy}" AutomationProperties.Name="Composed Timeline Proxy"
+                              ToolTip="Editor Mode: once the timeline has not changed for a while, the whole sequence is rendered in the background as one small video, which the player then plays with no live filters at all (the sound is still mixed live from the originals). Any change goes back to Live Preview at once. For heavy layouts with many layers; off by default." />
+
+                    <TextBlock Text="Media browser" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="The media browser pane (Editor Mode, Views menu) takes a few frames from each video in the folder it shows, for the picture that follows the pointer across a tile. They are made in the background for the tiles on screen; a folder that stays open a while has all of its videos prepared." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Frames per Video:" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="60" Text="{Binding BrowserPreviewFrames, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Media Browser Frames per Video"
+                                 local:NumericInput.Default="15" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="2" local:NumericInput.Maximum="40" local:NumericInput.Decimals="0"
+                                 ToolTip="How many frames are taken from each video, evenly spread over its length. More is smoother to scrub, and slower to make." />
+                        <TextBlock Text="Frame Height (pixels):" Style="{StaticResource FieldLabel}" Margin="28,0,12,0" />
+                        <TextBox Width="60" Text="{Binding BrowserPreviewHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Media Browser Frame Height"
+                                 local:NumericInput.Default="480" local:NumericInput.DragStep="2" local:NumericInput.Minimum="90" local:NumericInput.Maximum="1080" local:NumericInput.Decimals="0"
+                                 ToolTip="How tall each frame is made. Larger stays sharp in the large view, and takes more room in the cache." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Prepare the Whole Folder After (seconds):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="60" Text="{Binding BrowserIndexDelaySeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Prepare the Whole Folder After"
+                                 local:NumericInput.Default="40" local:NumericInput.DragStep="0.5" local:NumericInput.Minimum="0" local:NumericInput.Maximum="3600" local:NumericInput.Decimals="0"
+                                 ToolTip="Once a folder has been open this long, every video in it is prepared in the background, not only those on screen (quiet-time work, after what is on screen). 0: never." />
+                        <TextBlock Text="Most Videos per Folder:" Style="{StaticResource FieldLabel}" Margin="28,0,12,0" />
+                        <TextBox Width="60" Text="{Binding BrowserIndexMaxFiles, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Most Videos per Folder"
+                                 local:NumericInput.Default="500" local:NumericInput.DragStep="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="10000" local:NumericInput.Decimals="0"
+                                 ToolTip="At most this many videos of one folder are prepared that way." />
+                    </StackPanel>
+                    <CheckBox Content="Prepare folders on battery power too" IsChecked="{Binding BrowserIndexOnBattery}" AutomationProperties.Name="Prepare Folders on Battery"
+                              ToolTip="Off, a laptop running on its battery only prepares the videos on screen." />
+                    <CheckBox Content="Prepare folders on network drives too" IsChecked="{Binding BrowserIndexNetwork}" AutomationProperties.Name="Prepare Network Folders"
+                              ToolTip="Off, a folder on a network drive or share only has the videos on screen prepared: reading every video across the network is slow." />
+                    <CheckBox Content="Notify when a folder has been prepared" IsChecked="{Binding NotifyIndexingDone}" AutomationProperties.Name="Notify When a Folder Is Prepared"
+                              ToolTip="A Windows notification says when every video of the folder shown is ready to scrub." />
 
                     <TextBlock Text="Downloads" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Where a video loaded from a URL (YouTube and the rest) is saved. Left blank, downloads stay in the download cache below, where only the most recent are kept. Saved to a folder, they are yours to keep: HandPeg never deletes them there. Either way, loading the same URL again with the same options uses the file already downloaded." />
+                               Text="Where a video loaded from a URL (YouTube and the rest) is saved. Left blank, downloads stay in the download cache, where only the most recent are kept. Saved to a folder, they are yours to keep: HandPeg never deletes them there. Either way, loading the same URL again with the same options uses the file already downloaded." />
                     <DockPanel Style="{StaticResource WideRow}">
                         <TextBlock Text="Download folder:" Style="{StaticResource WideLabel}" />
                         <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=DownloadFolderBox}" Click="BrowseFolder_Click" />
                         <TextBox x:Name="DownloadFolderBox" Text="{Binding DownloadFolder, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Download Folder"
                                  ToolTip="The folder downloads are saved in. Blank keeps them in the download cache." />
                     </DockPanel>
-
-                    <TextBlock Text="Download cache" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="Downloaded videos are kept in the cache folder so that loading the same URL again, with the same options, is instant. Only the most recently used ones are kept; older ones are deleted when HandPeg starts and closes." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Download Cache Size (Files):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="70" Text="{Binding DownloadCacheSize, UpdateSourceTrigger=PropertyChanged}"
-                                 AutomationProperties.Name="Download Cache Size" local:NumericInput.Default="5" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" local:NumericInput.Decimals="0" ToolTip="0 keeps nothing between sessions." />
+                                 AutomationProperties.Name="Download Cache Size" local:NumericInput.Default="5" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" local:NumericInput.Decimals="0"
+                                 ToolTip="How many downloads the cache keeps between sessions (the most recently used); older ones are deleted when HandPeg starts and closes. 0 keeps nothing." />
                     </StackPanel>
+                    <CheckBox Content="Keep downloads used by projects" IsChecked="{Binding KeepDownloadsUsedByProjects}" AutomationProperties.Name="Keep Downloads Used by Projects"
+                              ToolTip="A download in the cache that a saved project (or the open one) uses is never deleted to make room, however many there are." />
+                    <CheckBox Content="Offer to copy downloads into the download folder when saving a project" IsChecked="{Binding AskToCopyDownloadsOnSave}" AutomationProperties.Name="Offer to Copy Downloads When Saving"
+                              ToolTip="Saving a project that uses videos from the download cache asks whether to copy them into the download folder (or Videos\HandPeg Downloads) and have the project use the copies." />
                 </StackPanel>
             </TabItem>
 
@@ -394,6 +528,9 @@
                                   SelectedValue="{Binding HardwareDecodeAdapter}" AutomationProperties.Name="Hardware Decode Adapter"
                                   ToolTip="Which graphics card decodes the video for an encode, when Enable Hardware Decoding is ticked on the Video tab. Automatic leaves it to FFmpeg (-hwaccel auto). Choosing a card names it to FFmpeg (-hwaccel d3d11va -hwaccel_device and its number), so that a second card can take the decoding while the first one encodes or runs a game." />
                     </StackPanel>
+                    <Button x:Name="RetestEncodersButton" Content="Test Hardware Encoders Again" HorizontalAlignment="Left" Padding="12,4" Margin="0,4,0,0"
+                            Click="RetestEncoders_Click" AutomationProperties.Name="Test Hardware Encoders Again"
+                            ToolTip="The hardware encoders are tested with a short encode once for each FFmpeg and graphics driver, and the result is kept. Press this to test them again (after changing a card, say): the test runs when you press Save, or at the next start." />
                     <CheckBox Content="Fall back to the software encoder when a hardware encode fails" IsChecked="{Binding AutoFallbackToSoftware}"
                               ToolTip="If an encode or queue job fails on a hardware encoder, it is tried once more with libx264 (or libx265 for HEVC, SVT-AV1 for AV1)." />
                     <CheckBox Content="Install FFmpeg 8.1 instead of the newest build (for older NVIDIA drivers)" IsChecked="{Binding UseFfmpegForOlderNvidiaDrivers}"
@@ -402,6 +539,60 @@
                     <TextBlock Text="When an encode finishes" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Notify when an encode finishes" IsChecked="{Binding NotifyOnEncodeComplete}"
                               ToolTip="Sends a Windows notification when an encode, or the queue, has finished." />
+
+                    <TextBlock Text="Performance" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="What HandPeg does behind your back (thumbnails, waveforms, I-frame lists, proxies, indexing) runs in the background at low priority, a little at a time, and waits while you play or export. Exports and loads come first. Every tool HandPeg starts closes with it, even after a crash." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Background Jobs at Once:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="BackgroundJobsBox" MinWidth="130" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding BackgroundJobs}" AutomationProperties.Name="Background Jobs at Once"
+                                  ToolTip="How many background tools run at once. Auto: one for every six processors not reserved (two on a 16-core processor). Fewer leaves more for playing and editing." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Reserved Cores:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="ReservedCoresBox" MinWidth="130" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding ReservedCores}" AutomationProperties.Name="Reserved Cores"
+                                  ToolTip="Processors kept free for the window and the player: no tool HandPeg starts (exports included) runs on them, so the interface answers however busy the rest is. Auto keeps two on a machine with eight or more." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Background Priority:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="130" Margin="0" ItemsSource="{x:Static services:AppSettings.BackgroundPriorities}" SelectedItem="{Binding BackgroundPriority}"
+                                  AutomationProperties.Name="Background Priority"
+                                  ToolTip="Below Normal: background tools give way to everything you run. Idle: they only run when nothing else wants the processor (slowest to finish)." />
+                    </StackPanel>
+                    <CheckBox Content="Run background tools in Efficiency mode" IsChecked="{Binding BackgroundEfficiencyMode}" AutomationProperties.Name="Efficiency Mode"
+                              ToolTip="Windows 11's Efficiency mode (EcoQoS) for background tools: slower cores and lower clocks, cooler and quieter. Exports are never put in it." />
+                    <CheckBox Content="Pause background work while playing" IsChecked="{Binding PauseBackgroundWhilePlaying}" AutomationProperties.Name="Pause Background Work While Playing"
+                              ToolTip="Background work waiting to start waits while the player plays. Work already running carries on." />
+                    <CheckBox Content="Pause background work while exporting" IsChecked="{Binding PauseBackgroundWhileExporting}" AutomationProperties.Name="Pause Background Work While Exporting"
+                              ToolTip="Background work waiting to start waits while an export, Render Preview or the queue runs. Work already running carries on." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Background Graphics Card:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="BackgroundGpuBox" MinWidth="300" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding BackgroundGpu}" AutomationProperties.Name="Background Graphics Card"
+                                  ToolTip="The graphics card background tools decode on (and proxies are encoded on). Auto: a card other than the one the player draws on, when there is one (an Intel Arc beside a Radeon, say), so the player's card is left to the player. Processor Only: no graphics card." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Threads per Background Tool:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="BackgroundThreadsBox" MinWidth="130" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding BackgroundToolThreads}" AutomationProperties.Name="Threads per Background Tool"
+                                  ToolTip="Threads each background FFmpeg may use. Auto leaves it to FFmpeg." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Whisper Threads:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="WhisperThreadsBox" MinWidth="130" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding WhisperThreads}" AutomationProperties.Name="Whisper Threads"
+                                  ToolTip="Threads whisper transcribes captions with. Auto leaves it to whisper (at most 4). More is faster on a processor with cores to spare." />
+                    </StackPanel>
+                    <CheckBox Content="Show background work in the status bar" IsChecked="{Binding ShowBackgroundTasks}" AutomationProperties.Name="Show Background Work"
+                              ToolTip="The progress chip at the bottom left shows thumbnails, waveforms and the rest as well as exports and loads. Off, it shows only what you are waiting for (the flyout still lists everything)." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Show Finished Work For (seconds):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="60" Text="{Binding FinishedTaskSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Show Finished Work For"
+                                 local:NumericInput.Default="5" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="600" local:NumericInput.Decimals="0"
+                                 ToolTip="How long finished work stays in the progress flyout." />
+                    </StackPanel>
                 </StackPanel>
             </TabItem>
 

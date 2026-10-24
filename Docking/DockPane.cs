@@ -16,6 +16,19 @@ public enum PaneHandle
     Tab,
 }
 
+/// <summary>How a pane that can change its shape (the header) is laid out where the arrangement has put it.</summary>
+public enum PaneShape
+{
+    /// <summary>A row across its part: in a column of panes, or a part of its own.</summary>
+    Row,
+
+    /// <summary>A narrow column standing beside other parts (docked to a side), or given a slot taller than wide: an upright strip of icons.</summary>
+    Column,
+
+    /// <summary>At the right-hand end of the row of boxed tabs of the pane right under it (the two headers joined into one bar).</summary>
+    Joined,
+}
+
 /// <summary>A pane the windows can arrange: what it is called, what it shows, and how it behaves.</summary>
 public sealed class DockPane
 {
@@ -46,6 +59,25 @@ public sealed class DockPane
 
     /// <summary>The overlay the pane's hover tab is put in, when the pane draws it itself (the player: its tab has to lie over the video).</summary>
     public Panel? HoverHost { get; init; }
+
+    /// <summary>
+    /// Told the pane's shape each time the windows are laid out, before its width is asked for, and again when its slot
+    /// changes shape; null for a pane with one shape. Alone in a part of a side-by-side split it is a
+    /// <see cref="PaneShape.Column"/> (as narrow as its content), as it is in any slot taller than wide or too narrow for
+    /// a row; with <see cref="JoinsPaneBelow"/>, right above a pane with a title row (or a row of tabs), it is
+    /// <see cref="PaneShape.Joined"/> to the row of boxed tabs that pane is then given.
+    /// </summary>
+    public Action<PaneShape>? Reshape { get; init; }
+
+    /// <summary>Goes into the row of tabs of the pane right under it (at its right-hand end) instead of being a row of its own.</summary>
+    public bool JoinsPaneBelow { get; init; }
+
+    /// <summary>
+    /// Holds a native window (the player): its content is never taken out of its window when the windows are laid out
+    /// again (taken out, the native window is put away for a moment, a black flash), but lies on a layer over the
+    /// panes, kept exactly over a stand-in that goes wherever the arrangement puts the pane.
+    /// </summary>
+    public bool Floats { get; init; }
 }
 
 /// <summary>

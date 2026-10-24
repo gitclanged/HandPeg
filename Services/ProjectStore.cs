@@ -46,6 +46,31 @@ public sealed class ProjectFile
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, string>? Masks { get; set; }
+
+    /// <summary>
+    /// What is known about seeking in the project's video files (the main video and the video layers), as it was at the
+    /// save: taken up again on opening, for each file still exactly as it was, so the first graph can seek in them before
+    /// anything is probed. Absent when nothing was known.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<ProjectSeekIndex>? SeekIndexes { get; set; }
+}
+
+/// <summary>One video file's seek facts in a project (see <see cref="SeekFacts"/>): the file as it was (size, last write) and where its I-frames are.</summary>
+public sealed class ProjectSeekIndex
+{
+    public string Path { get; set; } = "";
+    public long Length { get; set; }
+
+    /// <summary>When the file was last written, in UTC ticks.</summary>
+    public long Written { get; set; }
+
+    public double ContainerStart { get; set; }
+    public double VideoStart { get; set; }
+    public double Duration { get; set; }
+
+    /// <summary>The I-frames' times on the file's own clock: Base64 of the doubles, little-endian (see MediaProbe.PackTimes).</summary>
+    public string IFrames { get; set; } = "";
 }
 
 public sealed class ProjectSource
@@ -147,7 +172,20 @@ public sealed class ProjectClip
     /// <summary>How many times as fast as recorded the clip runs; left out of the file at 1.</summary>
     public double Speed { get; set; } = 1;
     public bool Hidden { get; set; }
+
+    /// <summary>Live Preview's proxy for the clip's file: Make or Original; left out for Auto.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public ProxyChoice Proxy { get; set; }
     public double AudioOffset { get; set; }
+
+    // Its fades in and out (picture and sound), and a crossfade from the clip before it (seconds); left out while 0.
+    public double FadeIn { get; set; }
+    public double FadeOut { get; set; }
+    public double Transition { get; set; }
+
+    // How its picture comes on and goes over those fades; left out for a dissolve.
+    public TransitionStyle FadeInStyle { get; set; }
+    public TransitionStyle FadeOutStyle { get; set; }
 
     /// <summary>Where it sits on the frame: left, top, width, and (for one not held to its shape) height, as fractions of the frame.</summary>
     public double[] Place { get; set; } = [];
@@ -167,6 +205,14 @@ public sealed class ProjectClip
     public int[]? EaseScale { get; set; }
     public int[]? EaseRotation { get; set; }
     public int[]? EaseOpacity { get; set; }
+
+    // A Custom Bézier's handles, four numbers (x1, y1, x2, y2) for each of those keyframes, in the same order; left out
+    // while none of them is a Custom Bézier.
+    public double[]? CurveX { get; set; }
+    public double[]? CurveY { get; set; }
+    public double[]? CurveScale { get; set; }
+    public double[]? CurveRotation { get; set; }
+    public double[]? CurveOpacity { get; set; }
 }
 
 /// <summary>
@@ -273,7 +319,7 @@ public static class ProjectStore
 
     public static string Serialize(ProjectState state) => JsonSerializer.Serialize(ToFile(state), JsonOptions);
 
-    /// <param name="unpackMasks">Write the masks the project carries into the masks folder and point its layers at them: when it is being opened, not when it is only being listed.</param>
+    /// <param name="unpackMasks">Write the masks the project carries into the masks folder and point its layers at them, and take up the seek indexes of its video files: when it is being opened, not when it is only being listed.</param>
     public static ProjectState Load(string filePath, bool unpackMasks = true) => Deserialize(File.ReadAllText(filePath), unpackMasks);
 
     /// <summary>Reads a project from its text. Anything that is not a format 2 project is refused, with the reason.</summary>
@@ -296,7 +342,7 @@ public static class ProjectStore
 
     private static double[]? Flatten(List<Keyframe>? keys) => keys is { Count: > 0 } ? keys.SelectMany(k => new[] { k.Time, k.Value }).ToArray() : null;
 
-    private static List<Keyframe>? Unflatten(double[]? numbers, int[]? easings)
+    private static List<Keyframe>? Unflatten(double[]? numbers, int[]? easings, double[]? curves)
     {
         if (numbers is not { Length: >= 2 })
             return null;
@@ -305,7 +351,10 @@ public static class ProjectStore
         for (var i = 0; i + 1 < numbers.Length; i += 2)
         {
             var easing = easings is not null && i / 2 < easings.Length && Enum.IsDefined((EasingType)easings[i / 2]) ? (EasingType)easings[i / 2] : EasingType.Linear;
-            keys.Add(new Keyframe(numbers[i], numbers[i + 1], easing));
+            var key = new Keyframe(numbers[i], numbers[i + 1], easing);
+            if (curves is not null && i * 2 + 3 < curves.Length)
+                key = key with { BezierX1 = curves[i * 2], BezierY1 = curves[i * 2 + 1], BezierX2 = curves[i * 2 + 2], BezierY2 = curves[i * 2 + 3] };
+            keys.Add(key);
         }
 
         return keys;
@@ -313,6 +362,11 @@ public static class ProjectStore
 
     private static int[]? Easings(List<Keyframe>? keys) =>
         keys is { Count: > 0 } && keys.Any(k => k.Easing != EasingType.Linear) ? keys.Select(k => (int)k.Easing).ToArray() : null;
+
+    private static double[]? Curves(List<Keyframe>? keys) =>
+        keys is { Count: > 0 } && keys.Any(k => k.Easing == EasingType.CubicBezier)
+            ? keys.SelectMany(k => new[] { k.BezierX1, k.BezierY1, k.BezierX2, k.BezierY2 }).ToArray()
+            : null;
 
     private static LayerState Copy(LayerState state) => JsonSerializer.Deserialize<LayerState>(JsonSerializer.Serialize(state))!;
 
@@ -334,7 +388,13 @@ public static class ProjectStore
         Offset = layer.MediaOffset,
         Speed = layer.Speed,
         Hidden = layer.IsHidden,
+        Proxy = layer.ProxyChoice,
         AudioOffset = layer.AudioOffset,
+        FadeIn = layer.FadeInSeconds,
+        FadeOut = layer.FadeOutSeconds,
+        FadeInStyle = layer.FadeInStyle,
+        FadeOutStyle = layer.FadeOutStyle,
+        Transition = layer.TransitionIn,
         Place = layer.LockAspectRatio || layer.SizeHeight <= 0
             ? [layer.PositionX, layer.PositionY, layer.SizeWidth]
             : [layer.PositionX, layer.PositionY, layer.SizeWidth, layer.SizeHeight],
@@ -348,6 +408,11 @@ public static class ProjectStore
         EaseScale = Easings(layer.KeysScale),
         EaseRotation = Easings(layer.KeysRotation),
         EaseOpacity = Easings(layer.KeysOpacity),
+        CurveX = Curves(layer.KeysX),
+        CurveY = Curves(layer.KeysY),
+        CurveScale = Curves(layer.KeysScale),
+        CurveRotation = Curves(layer.KeysRotation),
+        CurveOpacity = Curves(layer.KeysOpacity),
     };
 
     /// <summary>A track's shared look: one of its clips with everything that is a clip's own taken out.</summary>
@@ -355,6 +420,8 @@ public static class ProjectStore
     {
         var look = Copy(layer);
         (look.StartTime, look.Duration, look.MediaOffset, look.IsHidden, look.AudioOffset, look.TrackId, look.Speed) = (0, 0, 0, false, 0, 0, 1);
+        (look.FadeInSeconds, look.FadeOutSeconds, look.TransitionIn) = (0, 0, 0);
+        (look.FadeInStyle, look.FadeOutStyle) = (TransitionStyle.Dissolve, TransitionStyle.Dissolve);
         (look.PositionX, look.PositionY, look.SizeWidth, look.SizeHeight) = (0, 0, 0, 0);
         (look.KeysX, look.KeysY, look.KeysScale, look.KeysRotation, look.KeysOpacity) = (null, null, null, null, null);
         return look;
@@ -372,10 +439,14 @@ public static class ProjectStore
         }
 
         (layer.StartTime, layer.Duration, layer.MediaOffset, layer.IsHidden, layer.AudioOffset) = (clip.Start, clip.Duration, clip.Offset, clip.Hidden, clip.AudioOffset);
+        layer.ProxyChoice = clip.Proxy;
+        (layer.FadeInSeconds, layer.FadeOutSeconds, layer.TransitionIn) = (clip.FadeIn, clip.FadeOut, clip.Transition);
+        (layer.FadeInStyle, layer.FadeOutStyle) = (clip.FadeInStyle, clip.FadeOutStyle);
         layer.Speed = clip.Speed > 0 ? clip.Speed : 1;
         (layer.PositionX, layer.PositionY, layer.SizeWidth, layer.SizeHeight) = (At(0), At(1), At(2), At(3));
-        (layer.KeysX, layer.KeysY, layer.KeysScale, layer.KeysRotation) = (Unflatten(clip.KeysX, clip.EaseX), Unflatten(clip.KeysY, clip.EaseY), Unflatten(clip.KeysScale, clip.EaseScale), Unflatten(clip.KeysRotation, clip.EaseRotation));
-        layer.KeysOpacity = Unflatten(clip.KeysOpacity, clip.EaseOpacity);
+        (layer.KeysX, layer.KeysY) = (Unflatten(clip.KeysX, clip.EaseX, clip.CurveX), Unflatten(clip.KeysY, clip.EaseY, clip.CurveY));
+        (layer.KeysScale, layer.KeysRotation) = (Unflatten(clip.KeysScale, clip.EaseScale, clip.CurveScale), Unflatten(clip.KeysRotation, clip.EaseRotation, clip.CurveRotation));
+        layer.KeysOpacity = Unflatten(clip.KeysOpacity, clip.EaseOpacity, clip.CurveOpacity);
         return layer;
     }
 
@@ -442,7 +513,11 @@ public static class ProjectStore
                 Main = new ProjectTrack
                 {
                     Look = ToLook(main),
-                    Clips = [ToClip(main, main.Name), .. state.MainPieces.Select(p => new ProjectClip { Start = p.Start, Duration = p.Duration, Offset = p.Offset })],
+                    Clips = [ToClip(main, main.Name), .. state.MainPieces.Select(p => new ProjectClip
+                    {
+                        Start = p.Start, Duration = p.Duration, Offset = p.Offset,
+                        FadeIn = p.FadeIn, FadeOut = p.FadeOut, FadeInStyle = p.FadeInStyle, FadeOutStyle = p.FadeOutStyle,
+                    })],
                 },
                 Deleted = state.Deleted,
                 MainIndex = settings.MainVideoIndex,
@@ -462,7 +537,49 @@ public static class ProjectStore
         foreach (var look in MaskedLooks(file))
             MaskStore.Pack(look, masks);
         file.Masks = masks.Count > 0 ? masks : null;
+
+        var seeks = VideoFiles(state).Select(MediaProbe.KnownFacts).OfType<SeekFacts>().Select(f => new ProjectSeekIndex
+        {
+            Path = f.Path, Length = f.Length, Written = f.WrittenTicks, ContainerStart = f.ContainerStart, VideoStart = f.VideoStart, Duration = f.Duration,
+            IFrames = MediaProbe.PackTimes(f.IFrames),
+        }).ToList();
+        file.SeekIndexes = seeks.Count > 0 ? seeks : null;
         return file;
+    }
+
+    /// <summary>The video files a project plays: the main video and every video layer's file, once each.</summary>
+    private static IEnumerable<string> VideoFiles(ProjectState state) =>
+        new[] { state.LocalMediaPath }.Concat(state.Settings.Layers.Where(l => l.Kind == LayerKind.VideoFile).Select(l => l.ImagePath))
+            .Select(p => (p ?? "").Trim().Trim('"')).Where(p => p.Length > 0 && !p.Contains("://", StringComparison.Ordinal)).Distinct(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Makes the project's video files ready to be seeked in, as the project is opened and before anything is built from
+    /// it: from the facts the project carries, for each file still exactly as it was; else from the Timeline cache.
+    /// Logged: how many were ready, and from where.
+    /// </summary>
+    private static void TakeUpSeekIndexes(ProjectFile file, ProjectState state)
+    {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var (carried, cached, missing) = (0, 0, 0);
+        var adopted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var seek in file.SeekIndexes ?? [])
+        {
+            if (MediaProbe.Adopt(new SeekFacts(seek.Path, seek.Length, seek.Written, seek.ContainerStart, seek.VideoStart, seek.Duration, MediaProbe.UnpackTimes(seek.IFrames))))
+                adopted.Add(seek.Path);
+        }
+
+        foreach (var path in VideoFiles(state))
+        {
+            if (adopted.Contains(Path.GetFullPath(path)))
+                carried++;
+            else if (MediaProbe.Recall(path))
+                cached++;
+            else
+                missing++;
+        }
+
+        AppLog.Write(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"Seek indexes on opening {file.Name}: {carried} from the project, {cached} from the cache, {missing} still to learn ({System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:0.0} ms)"));
     }
 
     private static ProjectState FromFile(ProjectFile file, bool unpackMasks)
@@ -484,7 +601,7 @@ public static class ProjectStore
         settings.MainLayer = sequence.Main.Clips.Count > 0 ? ToLayer(sequence.Main.Look, sequence.Main.Clips[0], 0) : sequence.Main.Look;
         (settings.MainVideoIndex, settings.BackgroundHidden, settings.AudioTracks) = (sequence.MainIndex, sequence.BackgroundHidden, sequence.Audio);
 
-        return new ProjectState
+        var state = new ProjectState
         {
             Name = file.Name,
             SavedAt = file.SavedAt,
@@ -505,7 +622,10 @@ public static class ProjectStore
             Segments = sequence.Cuts.Where(c => c.Length >= 2).Select(c => new SegmentState(c[0], c[1], c.Length > 2 && c[2] != 0)).ToList(),
             SnapToIFrames = sequence.SnapToIFrames,
             AudioLinked = sequence.AudioLinked,
-            MainPieces = sequence.Main.Clips.Skip(1).Select(c => new MainPiece(c.Start, c.Duration, c.Offset)).ToList(),
+            MainPieces = sequence.Main.Clips.Skip(1).Select(c => new MainPiece(c.Start, c.Duration, c.Offset)
+            {
+                FadeIn = Math.Clamp(c.FadeIn, 0, 60), FadeOut = Math.Clamp(c.FadeOut, 0, 60), FadeInStyle = c.FadeInStyle, FadeOutStyle = c.FadeOutStyle,
+            }).ToList(),
             Deleted = sequence.Deleted,
             Settings = settings,
             AudioTracks = sequence.Audio,
@@ -514,6 +634,11 @@ public static class ProjectStore
             CaptionUseExternalAudio = sequence.CaptionUseExternalAudio,
             CaptionAudioTrackIndex = sequence.CaptionAudioTrack,
         };
+
+        // Opened (not only listed): its video files are made ready to be seeked in now, before the first graph is built.
+        if (unpackMasks)
+            TakeUpSeekIndexes(file, state);
+        return state;
     }
 
     /// <summary>Saved projects, most recently saved first. Files that cannot be read are left out.</summary>

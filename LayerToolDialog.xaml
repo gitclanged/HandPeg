@@ -9,8 +9,10 @@
     <StackPanel Margin="16">
         <TextBlock x:Name="IntroText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12" />
 
-        <!-- Filters of the track's own -->
+        <!-- Filters of the track's own: a view onto the clip's effect cards (Flip, LUT 3D, Denoise, Color Grade, Hue, Blur, Sharpen). -->
         <StackPanel x:Name="FiltersPanel" Visibility="Collapsed">
+        <TextBlock TextWrapping="Wrap" Margin="0,0,0,10" Foreground="{DynamicResource MutedTextBrush}"
+                   Text="These are cards of the clip's effect stack, set here for every clip of the track. The Effects pane shows the whole stack in order, with more effects, per clip." />
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />

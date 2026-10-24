@@ -19,9 +19,9 @@ namespace HandPegApp;
 [ContentProperty(nameof(Overlay))]
 public sealed partial class VideoSurface : HwndHost
 {
-    private const int WsChild = 0x40000000, WsVisible = 0x10000000, WsClipChildren = 0x02000000, WsClipSiblings = 0x04000000, SsBlackRect = 0x4;
+    private const int WsChild = 0x40000000, WsClipChildren = 0x02000000, WsClipSiblings = 0x04000000, CsHRedraw = 0x2, CsVRedraw = 0x1, BlackBrush = 4;
     private const int GwlExStyle = -20, WsExNoActivate = 0x08000000, WsExToolWindow = 0x80;
-    private const uint SwpNoZOrder = 0x4, SwpNoActivate = 0x10;
+    private const uint SwpNoSize = 0x1, SwpNoMove = 0x2, SwpNoZOrder = 0x4, SwpNoActivate = 0x10;
 
     [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     private static partial IntPtr CreateWindowEx(
@@ -31,6 +31,27 @@ public sealed partial class VideoSurface : HwndHost
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool DestroyWindow(IntPtr window);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowClass
+    {
+        public int Size, Style;
+        public IntPtr Procedure;
+        public int ClassExtra, WindowExtra;
+        public IntPtr Instance, Icon, Cursor, Background, MenuName, ClassName, SmallIcon;
+    }
+
+    [LibraryImport("user32.dll", EntryPoint = "RegisterClassExW", SetLastError = true)]
+    private static partial ushort RegisterClassEx(in WindowClass windowClass);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial IntPtr GetModuleHandle(string? module);
+
+    [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr GetProcAddress(IntPtr module, string name);
+
+    [LibraryImport("gdi32.dll")]
+    private static partial IntPtr GetStockObject(int kind);
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -62,11 +83,28 @@ public sealed partial class VideoSurface : HwndHost
     /// <summary>Raised when <see cref="SurfaceHandle"/> has been created.</summary>
     public event Action? SurfaceReady;
 
+    // The window class of the surface: Windows' own window procedure, painting black. (A "static" black rectangle is
+    // painted in the window frame colour, which is grey on Windows 10 and 11: that was the grey box at launch.)
+    private static readonly Lazy<string> SurfaceClass = new(() =>
+    {
+        const string name = "HandPegVideoSurface";
+        var windowClass = new WindowClass
+        {
+            Size = Marshal.SizeOf<WindowClass>(), Style = CsHRedraw | CsVRedraw,
+            Procedure = GetProcAddress(GetModuleHandle("user32.dll"), "DefWindowProcW"), Instance = GetModuleHandle(null),
+            Background = GetStockObject(BlackBrush), ClassName = Marshal.StringToHGlobalUni(name),
+        };
+
+        // Kept for the life of the process, as the class is; "static" if it cannot be had.
+        return windowClass.Procedure != IntPtr.Zero && RegisterClassEx(windowClass) != 0 ? name : "static";
+    });
+
     protected override HandleRef BuildWindowCore(HandleRef hwndParent)
     {
-        // A plain black rectangle until a player draws in it.
+        // Black until a player draws in it. Made hidden: the host shows it once it is laid out and meant to be seen, so
+        // it never stands in the window, at the size the window was first measured at, before anything else is drawn.
         SurfaceHandle = CreateWindowEx(
-            0, "static", "", WsChild | WsVisible | WsClipChildren | WsClipSiblings | SsBlackRect, 0, 0, 0, 0, hwndParent.Handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+            0, SurfaceClass.Value, "", WsChild | WsClipChildren | WsClipSiblings, 0, 0, 0, 0, hwndParent.Handle, IntPtr.Zero, GetModuleHandle(null), IntPtr.Zero);
         Dispatcher.BeginInvoke(() => SurfaceReady?.Invoke());
         return new HandleRef(this, SurfaceHandle);
     }
@@ -135,6 +173,7 @@ public sealed partial class VideoSurface : HwndHost
         owner.Closed += Owner_Closed;
         _placed = default;
         PlaceOverlay();
+        KeepUnderSideWindow();
     }
 
     private void Owner_Moved(object? sender, EventArgs e) => PlaceOverlay();
@@ -168,6 +207,27 @@ public sealed partial class VideoSurface : HwndHost
         }
     }
 
+    /// <summary>
+    /// The second window and the side window are both owned by the main window (while the player is in the main
+    /// window), and between two windows with one owner the one shown or raised last is on top: shown again (after any
+    /// rearrangement of the panes), this one would cover the side window wherever that is. It is put back directly
+    /// under the side window each time.
+    /// </summary>
+    private void KeepUnderSideWindow()
+    {
+        if (_overlayWindow is not { } overlay || _owner is not { } owner)
+            return;
+
+        foreach (Window other in owner.OwnedWindows)
+        {
+            if (other is Docking.SideWindow { IsVisible: true } side && new WindowInteropHelper(side).Handle is var sideHandle && sideHandle != IntPtr.Zero)
+            {
+                SetWindowPos(new WindowInteropHelper(overlay).Handle, sideHandle, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
+                return;
+            }
+        }
+    }
+
     /// <summary>Puts the second window exactly over the native one, or hides it when that one cannot be seen.</summary>
     private void PlaceOverlay()
     {
@@ -193,6 +253,7 @@ public sealed partial class VideoSurface : HwndHost
         {
             overlay.Show();
             _placed = default;
+            KeepUnderSideWindow();
         }
 
         if (place == _placed)

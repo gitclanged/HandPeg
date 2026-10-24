@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO;
 using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Models;
@@ -48,18 +49,21 @@ public partial class MainViewModel
             return _mainClips = clips;
         }
 
-        void Add(int index, double start, double duration, double offset)
+        void Add(int index, double start, double duration, double offset, (double In, double Out, TransitionStyle InStyle, TransitionStyle OutStyle) fades)
         {
             var left = Math.Max(media - offset, 0);
             var length = duration > 0.001 ? (media > 0 ? Math.Min(duration, left) : duration) : left;
             if (length > 0.001 || media <= 0)
-                clips.Add(new MainClip(index, start, start + length, offset));
+                clips.Add(new MainClip(index, start, start + length, offset) { FadeIn = fades.In, FadeOut = fades.Out, FadeInStyle = fades.InStyle, FadeOutStyle = fades.OutStyle });
         }
 
         var main = _mainVideoRow;
-        Add(0, main.StartTime, main.Duration, main.MediaOffset);
+        Add(0, main.StartTime, main.Duration, main.MediaOffset, (main.FadeInSeconds, main.FadeOutSeconds, main.FadeInStyle, main.FadeOutStyle));
         for (var i = 0; i < _mainPieces.Count; i++)
-            Add(i + 1, _mainPieces[i].Start, _mainPieces[i].Duration, _mainPieces[i].Offset);
+        {
+            var piece = _mainPieces[i];
+            Add(i + 1, piece.Start, piece.Duration, piece.Offset, (piece.FadeIn, piece.FadeOut, piece.FadeInStyle, piece.FadeOutStyle));
+        }
 
         clips.Sort((a, b) => a.Start.CompareTo(b.Start));
         for (var i = clips.Count - 2; i >= 0; i--)
@@ -214,7 +218,8 @@ public partial class MainViewModel
         }
         else
         {
-            _mainPieces[index - 1] = new MainPiece(start, duration, offset);
+            // Its fades go where it goes.
+            _mainPieces[index - 1] = _mainPieces[index - 1] with { Start = start, Duration = duration, Offset = offset };
         }
 
         InvalidateMainClips();
@@ -250,8 +255,13 @@ public partial class MainViewModel
         Checkpoint("split the main video");
         using (DeferCommand())
         {
-            _mainPieces.Add(new MainPiece(Math.Round(seconds, 3), Math.Round(clip.End - seconds, 3), Math.Round(clip.Offset + seconds - clip.Start, 3)));
+            // The fade in stays with the first part, the fade out goes with the second (each no longer than its part).
+            _mainPieces.Add(new MainPiece(Math.Round(seconds, 3), Math.Round(clip.End - seconds, 3), Math.Round(clip.Offset + seconds - clip.Start, 3))
+            {
+                FadeOut = Math.Min(clip.FadeOut, Math.Round(clip.End - seconds, 2)), FadeOutStyle = clip.FadeOutStyle,
+            });
             SetMainClip(clip.Index, clip.Start, Math.Round(seconds - clip.Start, 3), clip.Offset);
+            SetMainFades(clip.Index, Math.Min(clip.FadeIn, Math.Round(seconds - clip.Start, 2)), 0);
             GenerateCommand();
         }
 
@@ -616,6 +626,16 @@ public partial class MainViewModel
         set => KeyframesSnap = !value;
     }
 
+    /// <summary>With keyframes enabled, a change by hand keys only the property that changed; off, every motion property (Key All).</summary>
+    [ObservableProperty] private bool _keyChangedOnly = AppSettings.Current.KeyChangedOnly;
+
+    partial void OnKeyChangedOnlyChanged(bool value) => SaveView(s => s.KeyChangedOnly = value);
+
+    /// <summary>The Keyframes pane's graph of the selected row's value.</summary>
+    [ObservableProperty] private bool _showKeyframeGraph = AppSettings.Current.ShowKeyframeGraph;
+
+    partial void OnShowKeyframeGraphChanged(bool value) => SaveView(s => s.ShowKeyframeGraph = value);
+
     partial void OnKeyframesEnabledChanged(bool value) =>
         StatusText = value
             ? $"Keyframes on: moving, resizing or turning a clip {(KeyframesSnap ? "changes its keyframe nearest the playhead" : "sets a keyframe at the playhead")}."
@@ -665,28 +685,35 @@ public partial class MainViewModel
                 return;
 
             var layer = ActiveKeyLayer;
-            var time = PositionMs / 1000 - layer.StartTime;
             Checkpoint($"change the easing of a keyframe of {layer.Name}");
 
-            // The keyframes changing is what redraws the clip and writes the command again.
-            if (layer.SetEasingAt(time, easing))
-                Log($"Easing of the keyframe at {TimeDisplay.Format(PositionMs / 1000)} set to {EasingChoice.All.First(c => c.Type == easing).Name} ({layer.Name})");
-            RefreshSelectedKey();
+            // The keyframes changing is what redraws the clip and writes the command again. On the All row every motion
+            // property leaves the keyframe that way; on a property's or an effect value's row, that one alone.
+            if (SetLaneEasing(layer, easing, null))
+                Log($"Easing of the {LaneName(SelectedKeyLane)} keyframe at {TimeDisplay.Format(PositionMs / 1000)} set to {EasingChoice.All.First(c => c.Type == easing).Name} ({layer.Name})");
         }
     }
 
-    /// <summary>Looks again at whether the playhead is on a keyframe, and says so only when that has changed.</summary>
-    private void RefreshSelectedKey()
+    /// <summary>Looks again at whether the playhead is on a keyframe of the selected row, and says so only when that has changed.</summary>
+    /// <param name="force">Announce it even when it looks the same (a Bezier's handles changed).</param>
+    private void RefreshSelectedKey(bool force = false)
     {
         var layer = ActiveKeyLayer;
-        var easing = HasSource && layer.IsAnimated ? layer.GetEasingAt(PositionMs / 1000 - layer.StartTime) : null;
-        var now = (easing is not null, easing ?? EasingType.Linear);
-        if (now == _selectedKey)
+        var key = HasSource ? KeyOnLane(layer, SelectedKeyLane) : null;
+        var now = (key is not null, key?.Easing ?? EasingType.Linear);
+        var handles = key is { } found ? EasingCurves.Handles(found) : EasingCurves.DefaultHandles;
+        if (now == _selectedKey && handles == _selectedHandles && !force)
             return;
 
-        _selectedKey = now;
+        (_selectedKey, _selectedHandles) = (now, handles);
         OnPropertyChanged(nameof(HasSelectedKeyframe));
         OnPropertyChanged(nameof(SelectedKeyEasing));
+        OnPropertyChanged(nameof(IsBezierSelected));
+        OnPropertyChanged(nameof(BezierX1));
+        OnPropertyChanged(nameof(BezierY1));
+        OnPropertyChanged(nameof(BezierX2));
+        OnPropertyChanged(nameof(BezierY2));
+        OnPropertyChanged(nameof(SelectedBezierPreset));
     }
 
     // Which panes are open beside the player, and whether clips show their keyframes: per mode, and remembered.
@@ -696,14 +723,6 @@ public partial class MainViewModel
 
     /// <summary>The Keyframes pane beside the player.</summary>
     [ObservableProperty] private bool _showKeyframesPane = AppSettings.Current.ShowKeyframesPane;
-
-    /// <summary>The Source pane at the top of the side column. Editor Mode's: Encoder Mode has the source in its top bar.</summary>
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsSourcePaneVisible))]
-    private bool _showSourcePane = AppSettings.Current.ShowSourcePane;
-
-    /// <summary>Whether the Source pane is on screen: open, and in the mode that has it.</summary>
-    public bool IsSourcePaneVisible => IsEditorMode && ShowSourcePane;
 
     /// <summary>The media browser pane in the side column. Editor Mode's.</summary>
     [ObservableProperty]
@@ -744,7 +763,6 @@ public partial class MainViewModel
 
     partial void OnShowCutSegmentsPaneChanged(bool value) => SaveView(s => s.ShowCutSegmentsPane = value);
     partial void OnShowKeyframesPaneChanged(bool value) => SaveView(s => s.ShowKeyframesPane = value);
-    partial void OnShowSourcePaneChanged(bool value) => SaveView(s => s.ShowSourcePane = value);
 
     partial void OnShowClipKeyframesChanged(bool value)
     {
@@ -825,12 +843,38 @@ public partial class MainViewModel
 
     partial void OnPositionMsChanged(double value)
     {
-        if (_anyKeys)
+        if (!_anyKeys)
+            return;
+
+        // While playing, the boxes and the layout pane follow the motion fifteen times a second, not at the
+        // player's frame rate: they are there to be read, and every change re-lays them out. They come to rest on
+        // the exact frame when playback stops (OnIsPlayingChanged).
+        if (IsPlaying && Environment.TickCount64 - _keysAppliedAt < KeyEchoIntervalMs)
+            return;
+
+        _keysAppliedAt = Environment.TickCount64;
+        ApplyKeyframes();
+        RefreshSelectedKey();
+    }
+
+    private const long KeyEchoIntervalMs = 66;
+    private long _keysAppliedAt;
+
+    partial void OnIsPlayingChanged(bool value)
+    {
+        // Background work waiting to start waits while the player plays (Settings, Performance).
+        if (!_isBackgroundWorker)
+            WorkScheduler.IsPlaying = value;
+
+        if (!value && _anyKeys)
         {
             ApplyKeyframes();
             RefreshSelectedKey();
         }
     }
+
+    /// <summary>Set while the clips are being shown as they are at the playhead (their keyframes applied): nothing is being changed.</summary>
+    public bool IsApplyingKeys => _applyingKeys;
 
     /// <summary>
     /// Shows every animated clip as it is at the playhead: its row, the Keyframes pane and its box in the
@@ -854,15 +898,14 @@ public partial class MainViewModel
                 if (!layer.IsAnimated)
                     return;
 
+                // The size first, about the anchor point: a place with no keyframes of its own is the anchor's, and is
+                // moved with it (as the graph places it); a place with keyframes is then set from them.
                 var time = seconds - layer.StartTime;
-                layer.FromCorner(() =>
+                foreach (var property in KeyOrder)
                 {
-                    foreach (var property in KeyOrder)
-                    {
-                        if (layer.HasKeys(property))
-                            layer.SetValue(property, layer.Evaluate(property, time));
-                    }
-                });
+                    if (layer.HasKeys(property))
+                        layer.SetValue(property, layer.Evaluate(property, time));
+                }
             }
         }
         finally
@@ -894,6 +937,8 @@ public partial class MainViewModel
                 layer.OffsetKeys(property, layer.GetValue(property) - layer.Evaluate(property, time));
             else if (KeyframesSnap && layer.GetNearestKeyTime(time) is { } nearest)
                 layer.SetKey(property, nearest, layer.GetValue(property));
+            else if (KeyChangedOnly)
+                layer.SetKey(property, time, layer.GetValue(property));
             else
                 layer.SetMasterKey(time);
         }
@@ -977,43 +1022,138 @@ public partial class MainViewModel
 
     // ----- What the player plays -----
 
-
     /// <summary>
     /// What the player opens: the main video's file while that is the whole sequence, and otherwise the
     /// sequence written out for it (mpv's EDL), clip after clip, so that its clock is the sequence's. Where
-    /// no clip of the main video is, the clock still needs frames to run on; stretches of the same file stand
-    /// in, and Live Preview leaves the main video's picture out of them.
+    /// no clip of the main video is, the clock still needs frames to run on: stretches of a tiny black file
+    /// stand in (see <see cref="StandInClock"/>), with as many silent audio tracks as the main video has, so
+    /// that nothing of the main video is decoded where it is not on screen. Until that file has been made,
+    /// stretches of the main video's own file stand in, and Live Preview leaves their picture out.
+    ///
+    /// When the picture comes from a proxy (the composed timeline proxy, or the main video's own: see
+    /// MainViewModel.Proxies), the EDL has two streams: the first the proxy's picture, laid out the same way
+    /// (with a picture-only clock between clips), the second the sequence as above, for its sound. The player's
+    /// [vid1] is then the proxy and its [aidN] the original's tracks.
     /// </summary>
     public string PlayerSource
     {
         get
         {
             var path = LocalMediaPath;
-            if (!HasSource || IsMainWholeSequence)
+            if (!HasSource)
                 return path;
 
-            var media = MainMediaSeconds;
-            var name = $"%{Encoding.UTF8.GetByteCount(path)}%{path}";
-            var parts = new StringBuilder("edl://");
-            void Part(double start, double length) => parts.Append(parts.Length > 6 ? ";" : "").Append(name).Append(",start=").Append(Number(start)).Append(",length=").Append(Number(length));
-            void StandIn(double seconds)
+            var sound = SequenceParts(path, 0, StandInClock(), withMainSound: true);
+            if (_timelineProxy is { } timeline)
+                return $"edl://!new_stream;{EdlName(timeline)};!new_stream;{sound ?? EdlName(path)}";
+
+            // The main video's proxy starts at its first frame; the original's clips are placed by the original's time stamps.
+            if (MainProxy is { } proxy && (IsMainWholeSequence || StandInClock(withSound: false) is not null))
             {
-                for (; seconds > 0.001; seconds -= media)
-                    Part(0, Math.Min(seconds, media));
+                var picture = IsMainWholeSequence ? EdlName(proxy) : SequenceParts(proxy, _mediaInfo?.VideoStartSeconds ?? 0, StandInClock(withSound: false), withMainSound: false);
+                return $"edl://!new_stream;{picture};!new_stream;{sound ?? EdlName(path)}";
             }
 
-            var reached = 0.0;
-            foreach (var clip in GetMainClips())
-            {
-                StandIn(clip.Start - reached);
-                Part(clip.Offset, clip.End - clip.Start);
-                reached = clip.End;
-            }
-
-            StandIn(SequenceSeconds - reached);
-            return parts.ToString();
+            return sound is null ? path : "edl://" + sound;
         }
     }
+
+    private static string EdlName(string path) => $"%{Encoding.UTF8.GetByteCount(path)}%{path}";
+
+    /// <summary>
+    /// The sequence as parts of an EDL: each clip of the main video, from <paramref name="file"/> (its clip offsets
+    /// less <paramref name="origin"/>), and stand-in stretches between them; null when the main video is the whole
+    /// sequence (the file is played as it is).
+    /// </summary>
+    /// <param name="clock">The stand-in clock, when it has been made; until then the main video's own file stands in.</param>
+    private string? SequenceParts(string file, double origin, string? clock, bool withMainSound)
+    {
+        if (IsMainWholeSequence)
+            return null;
+
+        var name = EdlName(file);
+        var parts = new StringBuilder();
+        void Part(string source, double start, double length) => parts.Append(parts.Length > 0 ? ";" : "").Append(source).Append(",start=").Append(Number(start)).Append(",length=").Append(Number(length));
+
+        var (standInName, standInLength) = clock is null ? (EdlName(LocalMediaPath), MainMediaSeconds) : (EdlName(clock), ClockSeconds);
+        void StandIn(double seconds)
+        {
+            for (; seconds > 0.001; seconds -= standInLength)
+                Part(standInName, 0, Math.Min(seconds, standInLength));
+        }
+
+        var reached = 0.0;
+        foreach (var clip in GetMainClips())
+        {
+            StandIn(clip.Start - reached);
+            Part(name, Math.Max(clip.Offset - origin, 0), clip.End - clip.Start);
+            reached = clip.End;
+        }
+
+        StandIn(SequenceSeconds - reached);
+        return parts.ToString();
+    }
+
+    // ----- The stand-in clock -----
+    // Where the main video is not on the sequence, the player still plays something, whose frames are the clock
+    // Live Preview composes on. It used to be stretches of the main video's own file: a 1440p60 recording decoded
+    // (and copied back from the graphics card) for half an hour of nothing. It is now a black file 64 by 36
+    // pixels, at the main video's frame rate, with one silent track for each of its audio tracks so that the
+    // graph's [aidN] are there throughout; made once by FFmpeg and kept with the caches.
+
+    /// <summary>How long the clock file is: one stretch of it serves ten minutes of the sequence.</summary>
+    private const double ClockSeconds = 600;
+
+    private readonly HashSet<string> _clocksReady = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _clocksBeingMade = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The clock file for the main video as it is, when it has been made; null while it is being made (which
+    /// this starts, and the player is given the sequence again when it is done) or when it cannot be.
+    /// </summary>
+    /// <param name="withSound">With a silent track for each of the main video's audio tracks; without, picture only (for an EDL whose sound comes from a stream of its own).</param>
+    private string? StandInClock(bool withSound = true)
+    {
+        if (_mediaInfo is not { Video: not null } info || _isBackgroundWorker)
+            return null;
+
+        var rate = info.Video.FrameRate is > 1 and < 1000 and var r ? r : 30;
+        var tracks = withSound ? info.Audio.Select(a => ClockLayout(a.Channels)).ToList() : [];
+        var layouts = string.Join("-", tracks);
+        var key = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"clock_{rate:0.###}_{(layouts.Length > 0 ? layouts : "silent")}_v1.mkv");
+        var path = Path.Combine(AppPaths.Cache, "clock", key);
+        if (_clocksReady.Contains(path))
+            return path;
+
+        if (_clocksBeingMade.Add(path))
+        {
+            _ = Task.Run(async () =>
+            {
+                var made = File.Exists(path) || await WorkScheduler.Run(new WorkSpec("Making the player's stand-in clock", WorkLane.Interactive) { Visible = false },
+                    work => FfmpegRunner.MakeClockFileAsync(path, rate, tracks, ClockSeconds, work.Token), _shutdown.Token);
+                System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+                {
+                    _clocksBeingMade.Remove(path);
+                    if (!made)
+                        return;
+
+                    _clocksReady.Add(path);
+                    GenerateCommand();
+                });
+            });
+        }
+
+        return null;
+    }
+
+    /// <summary>The channel layout a silent track is made with, for a track of the main video with this many channels.</summary>
+    private static string ClockLayout(int channels) => channels switch
+    {
+        1 => "mono",
+        6 => "5.1",
+        8 => "7.1",
+        _ => "stereo",
+    };
 
     /// <summary>The audio filter that goes with <see cref="PlayerSource"/>: silence where the main video is not there. Empty for none.</summary>
     public string PlayerAudioFilter =>

@@ -9,6 +9,31 @@
              StartupUri="MainWindow.xaml">
     <Application.Resources>
         <!--
+            What a drop area shows: a video file (a page with its corner folded and a play triangle on it) and a link
+            (two loops of a chain over its lower right): files or links. Drawn with a stroke, as the drop targets' icons are.
+        -->
+        <GeometryGroup x:Key="DropFileOrLinkIcon" FillRule="Nonzero">
+            <PathGeometry Figures="M 36,33 L 36,12 L 27,3 L 8,3 L 8,44 L 29,44 M 27,3 L 27,12 L 36,12" />
+            <PathGeometry Figures="M 17,18 L 28,24.5 L 17,31 Z" />
+            <RectangleGeometry Rect="29.5,40 18,8" RadiusX="4" RadiusY="4">
+                <RectangleGeometry.Transform>
+                    <RotateTransform Angle="-45" CenterX="38.5" CenterY="44" />
+                </RectangleGeometry.Transform>
+            </RectangleGeometry>
+            <RectangleGeometry Rect="37.5,32 18,8" RadiusX="4" RadiusY="4">
+                <RectangleGeometry.Transform>
+                    <RotateTransform Angle="-45" CenterX="46.5" CenterY="36" />
+                </RectangleGeometry.Transform>
+            </RectangleGeometry>
+        </GeometryGroup>
+
+        <!-- The Layout button: a window of panes (a large one, two beside it, a band under them), drawn with a stroke as the header's other drawn icon is. -->
+        <GeometryGroup x:Key="LayoutIcon" FillRule="Nonzero">
+            <RectangleGeometry Rect="2,3 20,18" RadiusX="2.5" RadiusY="2.5" />
+            <PathGeometry Figures="M 2,14.5 L 22,14.5 M 14.5,3 L 14.5,14.5 M 14.5,8.75 L 22,8.75" />
+        </GeometryGroup>
+
+        <!--
             The palette. These are the dark colours; ThemeManager replaces the brushes at startup and whenever
             the theme or the Windows accent changes, which is why everything refers to them dynamically.
         -->

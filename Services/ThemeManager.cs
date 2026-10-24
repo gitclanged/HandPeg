@@ -107,6 +107,20 @@ public static partial class ThemeManager
         _ = DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int));
     }
 
+    /// <summary>
+    /// Hides a window from the screen while it keeps being drawn (DWMWA_CLOAK), or shows it again: a window cloaked
+    /// before it is shown appears only once it has a frame to show, instead of as an empty white rectangle first.
+    /// </summary>
+    public static void SetCloaked(Window window, bool cloaked)
+    {
+        var handle = new WindowInteropHelper(window).Handle;
+        if (handle == IntPtr.Zero)
+            return;
+
+        var value = cloaked ? 1 : 0;
+        _ = DwmSetWindowAttribute(handle, 13, ref value, sizeof(int));
+    }
+
     private static bool WindowsUsesLightApps()
     {
         // A self-contained copy does not read the registry: it is dark unless its own settings say otherwise.

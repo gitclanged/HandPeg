@@ -2,15 +2,29 @@ namespace HandPegApp.Models;
 
 /// <summary>
 /// A further clip of the main video: what a split leaves after the first. Where it starts on the sequence,
-/// how long it stays, and how far into the file it begins, all in seconds.
+/// how long it stays, and how far into the file it begins, all in seconds; and its fades, as a layer's clip has them
+/// (the first clip's are the main video row's own, Layer.FadeInSeconds and the rest).
 /// </summary>
-public sealed record MainPiece(double Start, double Duration, double Offset);
+public sealed record MainPiece(double Start, double Duration, double Offset)
+{
+    public double FadeIn { get; init; }
+    public double FadeOut { get; init; }
+    public TransitionStyle FadeInStyle { get; init; }
+    public TransitionStyle FadeOutStyle { get; init; }
+}
 
 /// <summary>
 /// One clip of the main video as it lies on the sequence: where it starts and ends there, and how far into the
 /// file it begins, all in seconds. Index 0 is the row's own clip; the others follow in the order they were made.
+/// Its fades in and out (seconds) and their styles come with it.
 /// </summary>
-public readonly record struct MainClip(int Index, double Start, double End, double Offset);
+public readonly record struct MainClip(int Index, double Start, double End, double Offset)
+{
+    public double FadeIn { get; init; }
+    public double FadeOut { get; init; }
+    public TransitionStyle FadeInStyle { get; init; }
+    public TransitionStyle FadeOutStyle { get; init; }
+}
 
 /// <summary>
 /// A clip that was deleted from the timeline and waits in the recycle bin: a layer's clip as it was (with

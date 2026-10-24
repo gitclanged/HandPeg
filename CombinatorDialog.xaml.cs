@@ -332,7 +332,8 @@ public partial class CombinatorDialog : Window
             var command = fastCopy
                 ? VideoCombinator.BuildCopyCommand(inputs, Path.Combine(SessionPaths.Root, "combined", $"list_{Guid.NewGuid():N}.txt"), outputPath)
                 : VideoCombinator.BuildCommand(inputs, resolution, transition, outputPath, CodecArguments);
-            await FfmpegRunner.RunAsync(command, progress, cancellation.Token);
+            await WorkScheduler.Run(new WorkSpec($"Combining into {Path.GetFileName(outputPath)}", WorkLane.Foreground),
+                work => FfmpegRunner.RunAsync(command, progress, work.Token), cancellation.Token);
             return true;
         }
         catch (OperationCanceledException)

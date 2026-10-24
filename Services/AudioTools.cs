@@ -9,6 +9,15 @@ using CliWrap.Buffered;
 
 namespace HandPegApp.Services;
 
+/// <summary>One waveform to be made of a file: of one of its audio tracks, or of several mixed together.</summary>
+/// <param name="Width">The shape of the picture: it is this many units wide for every <paramref name="Height"/> high.</param>
+/// <param name="Color">A colour as FFmpeg would be given it: a name such as gray, or 0xRRGGBB.</param>
+public sealed record WaveformRequest(IReadOnlyList<int> Tracks, int Width, int Height, string Color)
+{
+    /// <summary>What its peaks are kept under in the cache.</summary>
+    public string CacheKind => "wave" + string.Join("-", Tracks);
+}
+
 /// <summary>Pictures of sound: the waveform images shown on the timeline and in the mixer.</summary>
 public static partial class Waveforms
 {
@@ -39,111 +48,210 @@ public static partial class Waveforms
     /// <param name="width">The shape of the picture: it is this many units wide for every <paramref name="height"/> high.</param>
     /// <param name="color">A colour as FFmpeg would be given it: a name such as gray, or 0xRRGGBB.</param>
     public static async Task<ImageSource?> RenderAsync(
-        string mediaPath, IReadOnlyList<int> trackIndexes, string imagePath, int width, int height, string color, CancellationToken cancellationToken)
+        string mediaPath, IReadOnlyList<int> trackIndexes, string imagePath, int width, int height, string color, CancellationToken cancellationToken) =>
+        (await RenderManyAsync(mediaPath, [new WaveformRequest(trackIndexes, width, height, color)], cancellationToken))[0];
+
+    /// <summary>
+    /// Several waveforms of one file in one reading of it: each track asked for, and each mix of tracks, decoded
+    /// by one FFmpeg (the tracks split where several waveforms want them, and every waveform a channel of one
+    /// stream), where one FFmpeg per waveform would read the whole file once for each. A recording with four
+    /// tracks and their mix was five readings of the file. Those kept in the cache are not made again.
+    /// </summary>
+    /// <returns>One picture for each request, in order; null for one that could not be made.</returns>
+    public static async Task<ImageSource?[]> RenderManyAsync(string mediaPath, IReadOnlyList<WaveformRequest> requests, CancellationToken cancellationToken)
     {
-        if (!File.Exists(DependencyUpdater.FfmpegPath) || !File.Exists(mediaPath) || trackIndexes.Count == 0)
-            return null;
+        var pictures = new ImageSource?[requests.Count];
+        if (!File.Exists(DependencyUpdater.FfmpegPath) || !File.Exists(mediaPath))
+            return pictures;
 
         // Read before, for this file as it is and these tracks: the peaks are taken from the cache.
-        var kind = "wave" + string.Join("-", trackIndexes);
-        if (PreviewCache.Timeline.ReadBytes(mediaPath, kind, ".peaks") is { } kept && ReadPeaks(kept) is var (keptLows, keptHighs))
-            return Picture(new WaveformData(keptLows, keptHighs, BrushOf(color)));
-
-        var inputs = string.Concat(trackIndexes.Select(index => $"[0:a:{index}]"));
-        var mix = trackIndexes.Count > 1 ? $"amix=inputs={trackIndexes.Count}:normalize=0," : "";
-
-        var peaks = new PeakReader();
-        var (lows, highs) = (peaks.Lows, peaks.Highs);
-        var samples = PipeTarget.Create(async (stream, token) =>
+        var wanted = new List<int>();
+        for (var i = 0; i < requests.Count; i++)
         {
-            // Borrowed, and given back: what FFmpeg writes passes through the same room for every waveform.
-            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(32768);
+            if (requests[i].Tracks.Count == 0)
+                continue;
+            if (ReadPeaks(PreviewCache.Timeline.Find(mediaPath, requests[i].CacheKind, ".peaks")) is { } kept)
+                pictures[i] = Picture(requests[i], new WaveformData(kept.Lows, kept.Highs, BrushOf(requests[i].Color)));
+            else
+                wanted.Add(i);
+        }
+
+        if (wanted.Count == 0)
+            return pictures;
+
+        // The reading itself is background work (see WorkScheduler): asked for twice, it is done once.
+        var key = $"wave|{mediaPath}|{string.Join(",", wanted.Select(i => requests[i].CacheKind))}";
+        return await WorkScheduler.Run(new WorkSpec($"Waveforms of {Path.GetFileName(mediaPath)}", WorkLane.Background) { Key = key },
+            work => DecodeAsync(work.Token), cancellationToken);
+
+        async Task<ImageSource?[]> DecodeAsync(CancellationToken cancellationToken)
+        {
+            // Each track goes to as many waveforms as want it: split where that is more than one.
+            var uses = wanted.SelectMany(i => requests[i].Tracks).GroupBy(t => t).ToDictionary(g => g.Key, g => g.Count());
+            var taken = uses.Keys.ToDictionary(t => t, _ => 0);
+            var graph = new System.Text.StringBuilder();
+            foreach (var (track, count) in uses.Where(u => u.Value > 1))
+            {
+                graph.Append($"[0:a:{track}]asplit={count}");
+                for (var k = 0; k < count; k++)
+                    graph.Append($"[t{track}_{k}]");
+                graph.Append(';');
+            }
+
+            string Input(int track) => uses[track] > 1 ? $"[t{track}_{taken[track]++}]" : $"[0:a:{track}]";
+            for (var w = 0; w < wanted.Count; w++)
+            {
+                var tracks = requests[wanted[w]].Tracks;
+                graph.Append(string.Concat(tracks.Select(Input)));
+                if (tracks.Count > 1)
+                    graph.Append($"amix=inputs={tracks.Count}:normalize=0,");
+                graph.Append($"aresample={SampleRate},aformat=sample_fmts=s16:channel_layouts=mono[w{w}];");
+            }
+
+            // Every waveform a channel of the one stream that comes out.
+            if (wanted.Count > 1)
+                graph.Append(string.Concat(Enumerable.Range(0, wanted.Count).Select(w => $"[w{w}]"))).Append($"amerge=inputs={wanted.Count}[wave]");
+            else
+                graph.Append("[w0]anull[wave]");
+
+            var readers = wanted.Select(_ => new PeakReader()).ToArray();
+            var samples = PipeTarget.Create(async (stream, token) =>
+            {
+                // Borrowed, and given back: what FFmpeg writes passes through the same room for every waveform.
+                var frame = 2 * readers.Length;
+                var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(32768 / frame * frame + frame);
+                try
+                {
+                    var held = 0;
+                    int read;
+                    while ((read = await stream.ReadAsync(buffer.AsMemory(held, buffer.Length / frame * frame - held), token)) > 0)
+                    {
+                        var have = held + read;
+                        var whole = have / frame * frame;
+                        Deal(buffer, whole, readers);
+
+                        // Part of a frame at the end of what was read waits for the rest of it.
+                        held = have - whole;
+                        if (held > 0)
+                            buffer.AsSpan(whole, held).CopyTo(buffer);
+                    }
+
+                    foreach (var reader in readers)
+                        reader.Finish();
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                }
+            });
+
             try
             {
-                var held = 0;
-                int read;
-                while ((read = await stream.ReadAsync(buffer.AsMemory(held), token)) > 0)
-                {
-                    var have = held + read;
-                    var whole = have & ~1;
-                    peaks.Add(buffer.AsSpan(0, whole));
+                var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
+                    .WithArguments(["-hide_banner", "-loglevel", "error", "-i", mediaPath, "-filter_complex", graph.ToString(), "-map", "[wave]", "-f", "s16le", "-"])
+                    .WithStandardOutputPipe(samples)
+                    .WithValidation(CommandResultValidation.None),
+                    cancellationToken);
 
-                    // Half a sample at the end of what was read waits for its other half.
-                    held = have - whole;
-                    if (held > 0)
-                        buffer[0] = buffer[whole];
+                if (result.ExitCode != 0)
+                    return pictures;
+
+                for (var w = 0; w < wanted.Count; w++)
+                {
+                    var request = requests[wanted[w]];
+                    if (readers[w].TakePeaks() is not var (lows, highs))
+                        continue;
+
+                    PreviewCache.Timeline.Write(mediaPath, request.CacheKind, ".peaks", stream => WritePeaks(stream, lows, highs));
+                    pictures[wanted[w]] = Picture(request, new WaveformData(lows, highs, BrushOf(request.Color)));
                 }
 
-                peaks.Finish();
+                return pictures;
             }
             finally
             {
-                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                foreach (var reader in readers)
+                    reader.Dispose();
             }
-        });
+        }
 
-        var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
-            .WithArguments(["-hide_banner", "-loglevel", "error", "-i", mediaPath, "-filter_complex",
-                $"{inputs}{mix}aresample={SampleRate},aformat=sample_fmts=s16:channel_layouts=mono[wave]", "-map", "[wave]", "-f", "s16le", "-"])
-            .WithStandardOutputPipe(samples)
-            .WithValidation(CommandResultValidation.None),
-            cancellationToken);
-
-        if (result.ExitCode != 0 || highs.Count == 0)
-            return null;
-
-        PreviewCache.Timeline.WriteBytes(mediaPath, kind, ".peaks", WritePeaks(lows, highs));
-        return Picture(new WaveformData(lows.ToArray(), highs.ToArray(), BrushOf(color)));
-
-        ImageSource Picture(WaveformData data)
+        static ImageSource Picture(WaveformRequest request, WaveformData data)
         {
-            var picture = Draw(data, Math.Max(width, 2), Math.Max(height, 2));
+            var picture = Draw(data, Math.Max(request.Width, 2), Math.Max(request.Height, 2));
             Peaks.AddOrUpdate(picture, data);
             return picture;
         }
     }
 
-    // Peaks as they are kept on disk: how many pairs, then the lows, then the highs, as 32-bit floats.
-    private static byte[] WritePeaks(List<float> lows, List<float> highs)
+    /// <summary>Hands each waveform its own samples, out of frames of one sample for each (16-bit, little-endian, as this processor is).</summary>
+    private static void Deal(byte[] buffer, int length, PeakReader[] readers)
     {
-        var bytes = new byte[4 + highs.Count * 8];
-        BitConverter.TryWriteBytes(bytes.AsSpan(0, 4), highs.Count);
-        System.Runtime.InteropServices.MemoryMarshal.AsBytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(lows)).CopyTo(bytes.AsSpan(4));
-        System.Runtime.InteropServices.MemoryMarshal.AsBytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(highs)).CopyTo(bytes.AsSpan(4 + highs.Count * 4));
-        return bytes;
-    }
-
-    private static (float[] Lows, float[] Highs)? ReadPeaks(byte[] bytes)
-    {
-        if (bytes.Length < 4)
-            return null;
-
-        var count = BitConverter.ToInt32(bytes, 0);
-        if (count <= 0 || bytes.Length != 4 + count * 8L)
-            return null;
-
-        var floats = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(bytes.AsSpan(4));
-        return (floats[..count].ToArray(), floats[count..].ToArray());
-    }
-
-    /// <summary>Reduces 16-bit samples, as they arrive, to the lowest and highest of every so many.</summary>
-    private sealed class PeakReader
-    {
-        public readonly List<float> Lows = new(4096), Highs = new(4096);
-        private int _count, _low, _high;
-
-        public void Add(ReadOnlySpan<byte> bytes)
+        var values = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(buffer.AsSpan(0, length));
+        for (var at = 0; at < values.Length; at += readers.Length)
         {
-            // Read as the numbers they are (little-endian, as this processor is) rather than put together byte by byte.
-            foreach (var sample in System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(bytes))
-            {
-                if (sample < _low)
-                    _low = sample;
-                if (sample > _high)
-                    _high = sample;
-                if (++_count == SamplesPerPeak)
-                    Finish();
-            }
+            for (var c = 0; c < readers.Length; c++)
+                readers[c].Add(values[at + c]);
+        }
+    }
+
+    // Peaks as they are kept on disk: how many pairs, then the lows, then the highs, as 32-bit floats. Written
+    // and read in place, from and into the arrays the waveform keeps: no copy of the whole is made either way.
+    private static void WritePeaks(Stream stream, float[] lows, float[] highs)
+    {
+        Span<byte> count = stackalloc byte[4];
+        BitConverter.TryWriteBytes(count, highs.Length);
+        stream.Write(count);
+        stream.Write(System.Runtime.InteropServices.MemoryMarshal.AsBytes(lows.AsSpan()));
+        stream.Write(System.Runtime.InteropServices.MemoryMarshal.AsBytes(highs.AsSpan()));
+    }
+
+    private static (float[] Lows, float[] Highs)? ReadPeaks(string? path)
+    {
+        if (path is null)
+            return null;
+
+        try
+        {
+            using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            var length = RandomAccess.GetLength(handle);
+            Span<byte> head = stackalloc byte[4];
+            if (length < 4 || RandomAccess.Read(handle, head, 0) != 4)
+                return null;
+
+            var count = BitConverter.ToInt32(head);
+            if (count <= 0 || length != 4 + count * 8L)
+                return null;
+
+            var (lows, highs) = (new float[count], new float[count]);
+            var lowBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(lows.AsSpan());
+            var highBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(highs.AsSpan());
+            return RandomAccess.Read(handle, lowBytes, 4) == lowBytes.Length && RandomAccess.Read(handle, highBytes, 4 + lowBytes.Length) == highBytes.Length
+                ? (lows, highs)
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Reduces 16-bit samples, as they arrive, to the lowest and highest of every so many. The pairs gather in
+    /// borrowed room that grows as it needs to, and are copied out once, at their final size, when it is done.
+    /// </summary>
+    private sealed class PeakReader : IDisposable
+    {
+        private float[] _lows = System.Buffers.ArrayPool<float>.Shared.Rent(4096), _highs = System.Buffers.ArrayPool<float>.Shared.Rent(4096);
+        private int _pairs, _count, _low, _high;
+
+        public void Add(short sample)
+        {
+            if (sample < _low)
+                _low = sample;
+            if (sample > _high)
+                _high = sample;
+            if (++_count == SamplesPerPeak)
+                Finish();
         }
 
         public void Finish()
@@ -151,9 +259,33 @@ public static partial class Waveforms
             if (_count == 0)
                 return;
 
-            Lows.Add(_low / 32768f);
-            Highs.Add(_high / 32768f);
+            if (_pairs == _lows.Length)
+            {
+                Grow(ref _lows);
+                Grow(ref _highs);
+            }
+
+            _lows[_pairs] = _low / 32768f;
+            _highs[_pairs++] = _high / 32768f;
             (_count, _low, _high) = (0, 0, 0);
+        }
+
+        /// <summary>The peaks, in arrays of their own exact size; null when there were none.</summary>
+        public (float[] Lows, float[] Highs)? TakePeaks() => _pairs == 0 ? null : (_lows.AsSpan(0, _pairs).ToArray(), _highs.AsSpan(0, _pairs).ToArray());
+
+        private void Grow(ref float[] room)
+        {
+            var larger = System.Buffers.ArrayPool<float>.Shared.Rent(room.Length * 2);
+            room.AsSpan(0, _pairs).CopyTo(larger);
+            System.Buffers.ArrayPool<float>.Shared.Return(room);
+            room = larger;
+        }
+
+        public void Dispose()
+        {
+            System.Buffers.ArrayPool<float>.Shared.Return(_lows);
+            System.Buffers.ArrayPool<float>.Shared.Return(_highs);
+            (_lows, _highs) = ([], []);
         }
     }
 

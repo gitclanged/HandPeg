@@ -100,18 +100,20 @@ public static class MaskStore
     {
         try
         {
-            var file = new FileInfo(path);
+            // Asked every time the graph is built: what is known of the file comes from memory (see FileState).
+            var file = FileState.Get(path);
             if (!file.Exists)
                 return false;
 
-            var key = $"{file.FullName}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
+            var fullName = Path.GetFullPath(path.Trim().Trim('"'));
+            var key = $"{fullName}|{file.Length}|{file.WrittenUtc.Ticks}";
             lock (AlphaKnown)
             {
                 if (AlphaKnown.TryGetValue(key, out var known))
                     return known;
             }
 
-            var found = HasTransparency(file.FullName);
+            var found = HasTransparency(fullName);
             lock (AlphaKnown)
                 AlphaKnown[key] = found;
             return found;

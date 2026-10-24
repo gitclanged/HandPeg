@@ -6,7 +6,8 @@
         The colour grading and sharpening controls, bound to the main view model. Used on the Advanced tab
         and in the Live Frame Preview, so the two always show the same values. Each row is a slider with a
         number box beside it: drag the box sideways to adjust, click it to type, double-click either to reset.
-        The two groups sit side by side where there is room and stack where there is not.
+        The two groups sit side by side where there is room and stack where there is not; in a pane narrower
+        than a group, the group narrows with it (SoftMinWidth) rather than being cut off.
     -->
     <UserControl.Resources>
         <Style x:Key="ColorLabel" TargetType="TextBlock">
@@ -23,7 +24,8 @@
     </UserControl.Resources>
 
     <WrapPanel>
-        <Grid Width="284" Margin="0,0,20,8">
+        <local:SoftMinWidth Value="284" Margin="0,0,20,8">
+        <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
@@ -74,8 +76,10 @@
                      AutomationProperties.Name="Hue Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.5"
                      local:NumericInput.Decimals="0" local:NumericInput.Minimum="-180" local:NumericInput.Maximum="180" />
         </Grid>
+        </local:SoftMinWidth>
 
-        <Grid Width="284" Margin="0,0,20,8">
+        <local:SoftMinWidth Value="284" Margin="0,0,20,8">
+        <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
@@ -120,5 +124,6 @@
                      AutomationProperties.Name="Sharpening Strength Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.005"
                      local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="1" />
         </Grid>
+        </local:SoftMinWidth>
     </WrapPanel>
 </UserControl>

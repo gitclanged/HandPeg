@@ -59,7 +59,7 @@ public partial class MainViewModel : ObservableObject
         nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(IsSubtitleEditorOpen), nameof(ShowLegacySubtitles), nameof(ShowSubtitleImportRow), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
         nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName), nameof(SnapClips), nameof(LayerControlsShown), nameof(LoopPlayback), nameof(ShowSafeMargins), nameof(IsPlayerMuted),
         nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
-        nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowSourcePane), nameof(IsSourcePaneVisible), nameof(ShowMediaBrowser), nameof(IsMediaBrowserVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
+        nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowEffectsPane), nameof(ShowMediaBrowser), nameof(IsMediaBrowserVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
         nameof(RecentActions), nameof(HideDroppedTracks), nameof(HasSelectedKeyframe), nameof(SelectedKeyEasing), nameof(PreviewSubtitles),
     ];
 
@@ -79,6 +79,7 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
+        StartupTrace.Mark("MainViewModel: start");
         _videoEncoder = EncoderOption.Copy;
         Presets = [.. PresetStore.TakeEarly()];
         Initialize();
@@ -86,13 +87,16 @@ public partial class MainViewModel : ObservableObject
         var missing = DependencyUpdater.GetMissing();
         if (missing.Count > 0)
             StatusText = $"Missing {string.Join(", ", missing)}. Open Settings (the gear button) to install them.";
+        StartupTrace.Mark("MainViewModel: made");
 
         // Neither is part of getting the window up: testing the encoders starts FFmpeg, looking for updates
         // brings in the whole of networking. Both begin once the window has been laid out and drawn.
         System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(() =>
         {
-            _ = ProbeHardwareEncodersAsync();
+            if (!_hardwareEncodersEarly)
+                _ = ProbeHardwareEncodersAsync();
             _ = CheckDependencyUpdatesAsync();
+            _ = AutoUpdateDependenciesLaterAsync();
         }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
@@ -346,6 +350,7 @@ public partial class MainViewModel : ObservableObject
             VideoEncoder = VideoEncoders.First(e => e.Name == preset.VideoEncoder);
 
         LutPath = preset.LutPath;
+        SetSequenceEffects(preset.SequenceEffects, preset.SequenceEffectsBypassed);
         ColorContrast = Math.Clamp(preset.ColorContrast, 0, 2);
         ColorBrightness = Math.Clamp(preset.ColorBrightness, -1, 1);
         ColorSaturation = Math.Clamp(preset.ColorSaturation, 0, 3);
@@ -911,7 +916,75 @@ public partial class MainViewModel : ObservableObject
 
     // ----- Command preview -----
 
-    [ObservableProperty] private string _commandPreview = "";
+    private string _commandPreview = "";
+
+    // Set when the settings have changed since the command text was last written. The text (the whole command
+    // with its filter graph, tens of kilobytes on a large project) is written only when it is wanted: when it
+    // is read (an export, the queue, a project saved with a hand-edited command), and, while the Command Preview
+    // box is on screen, once the changes have stopped coming (see GenerateCommand).
+    private bool _commandStale;
+
+    /// <summary>The export's command line, as generated from the settings or as edited by hand.</summary>
+    public string CommandPreview
+    {
+        get
+        {
+            // Read while out of date: written now, for whoever is reading. (The box shows it when it is next told.)
+            if (_commandStale && !IsCommandManuallyEdited)
+            {
+                _commandStale = false;
+                _commandPreview = BuildFfmpegCommand();
+            }
+
+            return _commandPreview;
+        }
+        set
+        {
+            _commandStale = false;
+            if (SetProperty(ref _commandPreview, value) && !_writingGeneratedCommand)
+                IsCommandManuallyEdited = true;
+        }
+    }
+
+    /// <summary>Whether the Command Preview box is on screen, so that the command is written as the settings change.</summary>
+    public bool CommandPreviewWatched
+    {
+        get => _commandPreviewWatched;
+        set
+        {
+            _commandPreviewWatched = value;
+            if (value && _commandStale)
+                ScheduleCommandText();
+        }
+    }
+
+    private bool _commandPreviewWatched;
+    private bool _commandTextQueued;
+
+    /// <summary>Writes the command text for the box once the dispatcher has nothing more pressing: one write for a whole drag of a slider.</summary>
+    private void ScheduleCommandText()
+    {
+        if (_commandTextQueued || System.Windows.Application.Current?.Dispatcher is not { } dispatcher)
+            return;
+
+        _commandTextQueued = true;
+        dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+        {
+            _commandTextQueued = false;
+            if (!_commandStale || IsCommandManuallyEdited)
+                return;
+
+            _writingGeneratedCommand = true;
+            try
+            {
+                CommandPreview = BuildFfmpegCommand();
+            }
+            finally
+            {
+                _writingGeneratedCommand = false;
+            }
+        });
+    }
 
     /// <summary>
     /// Set once the user types in the command box. While set, settings changes leave the command alone.
@@ -1045,6 +1118,25 @@ public partial class MainViewModel : ObservableObject
             : "Everything is up to date.";
     }
 
+    // Whether the hardware encoders were put in the list before the window's first frame (TakeEarlyHardwareEncoders).
+    private bool _hardwareEncodersEarly;
+
+    /// <summary>
+    /// The hardware encoders as an earlier probe found them for this FFmpeg and these drivers (read on another thread
+    /// while the window was being made), put in the list before the window's first frame: the Video and Layers tabs then
+    /// open with the encoder they keep, where a hardware default used to show as Copy, with Copy's warning over the
+    /// layers, until the probe answered. Not there yet, or none saved: the probe after the first frame does it, as before.
+    /// </summary>
+    public void TakeEarlyHardwareEncoders()
+    {
+        if (_isBackgroundWorker || EncoderProber.TakeEarlyResult(TimeSpan.FromMilliseconds(100)) is not { } saved)
+            return;
+
+        ++_hardwareProbeRun;
+        _hardwareEncodersEarly = true;
+        ApplyHardwareEncoders(saved.Supported, saved.Problems);
+    }
+
     /// <summary>Tests the GPU encoders in the background and offers the working ones in the Video tab.</summary>
     private async Task ProbeHardwareEncodersAsync()
     {
@@ -1062,7 +1154,10 @@ public partial class MainViewModel : ObservableObject
         List<string> problems;
         try
         {
-            (supported, problems) = await EncoderProber.ProbeAsync(_shutdown.Token);
+            // Found before for this FFmpeg and these drivers: not tested again (see EncoderProber.LoadSavedResult).
+            (supported, problems) = await Task.Run(EncoderProber.LoadSavedResult) is { } saved
+                ? saved
+                : await WorkScheduler.Run(new WorkSpec("Testing hardware encoders", WorkLane.Idle), work => EncoderProber.ProbeAsync(work.Token), _shutdown.Token);
         }
         catch (OperationCanceledException)
         {
@@ -1078,8 +1173,12 @@ public partial class MainViewModel : ObservableObject
         if (run != _hardwareProbeRun)
             return;
 
-        _ = ProbeOpenClBlurAsync();
+        ApplyHardwareEncoders(supported, problems);
+    }
 
+    /// <summary>Puts the hardware encoders found into the list, keeping the selection where it still exists.</summary>
+    private void ApplyHardwareEncoders(List<string> supported, List<string> problems)
+    {
         // Rebuild the hardware part of the list, keeping the selection where it still exists. The first time
         // round, a hardware encoder set as the default is selected, unless another was chosen in the meantime.
         var untouched = VideoEncoder.Family is EncoderFamily.Copy || VideoEncoder == DefaultVideoEncoder;
@@ -1111,8 +1210,15 @@ public partial class MainViewModel : ObservableObject
         if (problems.Count > 0)
             HardwareEncoderStatusText += $". Not usable: {string.Join("; ", problems)}";
 
-        if (EncoderProber.NvencNeedsOlderFfmpeg)
-            OfferFfmpegForOlderNvidiaDrivers();
+        // Testing the OpenCL blur and offering an older FFmpeg are not part of putting the list up: they wait for the
+        // window to be drawn (this may run before its first frame).
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(() =>
+        {
+            if (!EncoderProber.OpenClKnown)
+                _ = ProbeOpenClBlurAsync();
+            if (EncoderProber.NvencNeedsOlderFfmpeg)
+                OfferFfmpegForOlderNvidiaDrivers();
+        }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
     /// <summary>
@@ -1154,7 +1260,8 @@ public partial class MainViewModel : ObservableObject
         try
         {
             var before = EncoderProber.OpenClBlurAvailable;
-            if (await EncoderProber.ProbeOpenClBlurAsync(_shutdown.Token) != before)
+            if (await WorkScheduler.Run(new WorkSpec("Testing the OpenCL blur", WorkLane.Idle) { Visible = false },
+                    work => EncoderProber.ProbeOpenClBlurAsync(work.Token), _shutdown.Token) != before)
                 GenerateCommand();
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
@@ -1187,7 +1294,7 @@ public partial class MainViewModel : ObservableObject
             return null;
 
         string? path = null;
-        await RunOperationAsync(async cancellationToken =>
+        await RunOperationAsync("Downloading a link", WorkLane.Interactive, async cancellationToken =>
         {
             IsProgressIndeterminate = true;
             StatusText = "Starting yt-dlp...";
@@ -1200,7 +1307,7 @@ public partial class MainViewModel : ObservableObject
         return path is not null && File.Exists(path) ? path : null;
     }
 
-    private Task LoadSourceNowAsync() => RunOperationAsync(async cancellationToken =>
+    private Task LoadSourceNowAsync() => RunOperationAsync("Loading the source", WorkLane.Interactive, async cancellationToken =>
     {
         var source = SourcePath.Trim().Trim('"');
         if (source.Length == 0)
@@ -1238,7 +1345,7 @@ public partial class MainViewModel : ObservableObject
         await LoadFileWithStyleNowAsync(path, stylePath);
     }
 
-    private Task LoadFileWithStyleNowAsync(string path, string stylePath) => RunOperationAsync(async cancellationToken =>
+    private Task LoadFileWithStyleNowAsync(string path, string stylePath) => RunOperationAsync("Loading with a style", WorkLane.Interactive, async cancellationToken =>
     {
         SourcePath = path;
         EditingJob = null;
@@ -1281,8 +1388,8 @@ public partial class MainViewModel : ObservableObject
         if (!HasSource)
             MergeAudioTracks = IsEditorMode;
         (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (settings.ShowCutSegmentsPane, settings.ShowKeyframesPane, settings.ShowClipKeyframes);
-        ShowSourcePane = settings.ShowSourcePane;
         ShowMediaBrowser = settings.ShowMediaBrowser;
+        ShowEffectsPane = settings.ShowEffectsPane;
         LoadPlaybackControls();
         OnPropertyChanged(nameof(ModeButtonText));
 
@@ -1482,6 +1589,11 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Picks up new tool paths after the settings window was saved.</summary>
     public void OnSettingsSaved()
     {
+        // The proxy settings may name another height, format or place: proxies are looked for again under them.
+        _proxies.Clear();
+        _proxyLooked.Clear();
+        PreviewCache.Proxies.QueueTrim();
+
         ApplyDisplaySettings();
         if (IsEditorMode)
             FrameEngine = true;
@@ -1492,6 +1604,7 @@ public partial class MainViewModel : ObservableObject
 
         // A cache made smaller, or switched off (which empties it), is brought to its new size.
         PreviewCache.Timeline.QueueTrim();
+        WorkScheduler.ApplySettings();
         PreviewCache.Browser.QueueTrim();
 
         var missing = DependencyUpdater.GetMissing();
@@ -1503,6 +1616,7 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Stops whatever is still running when the application closes.</summary>
     public void Shutdown()
     {
+        ForgetProjectProxies(now: true);
         _operationCancellation?.Cancel();
         _iFrameScanCancellation?.Cancel();
         _shutdown.Cancel();
@@ -1528,7 +1642,7 @@ public partial class MainViewModel : ObservableObject
             await RunEncodeAsync();
     }
 
-    private Task RunEncodeAsync() => RunOperationAsync(async cancellationToken =>
+    private Task RunEncodeAsync() => RunOperationAsync("Exporting", WorkLane.Foreground, async cancellationToken =>
     {
         if (string.IsNullOrWhiteSpace(CommandPreview))
             return "There is no command to run.";
@@ -1651,8 +1765,11 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>
     /// Runs one operation at a time, and turns its outcome (returned message, cancellation or failure) into status text.
+    /// It is a piece of work in its lane (see WorkScheduler): shown by the progress chip with the progress and the
+    /// status it reports here, and cancelled from the chip's flyout as by the Cancel button.
     /// </summary>
-    private async Task RunOperationAsync(Func<CancellationToken, Task<string?>> operation)
+    /// <param name="title">What the progress chip calls it.</param>
+    private async Task RunOperationAsync(string title, WorkLane lane, Func<CancellationToken, Task<string?>> operation)
     {
         if (IsBusy)
             return;
@@ -1665,7 +1782,28 @@ public partial class MainViewModel : ObservableObject
         string? outcome;
         try
         {
-            outcome = await operation(cancellation.Token);
+            outcome = await WorkScheduler.Run(new WorkSpec(title, lane), async work =>
+            {
+                // What the operation says of itself (the progress bar's value, the status line) is what its chip says.
+                void Mirror(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+                {
+                    if (e.PropertyName is nameof(ProgressValue) or nameof(IsProgressIndeterminate))
+                        work.Report(IsProgressIndeterminate ? -1 : ProgressValue / 100);
+                    else if (e.PropertyName == nameof(StatusText) && _acceptProgressReports)
+                        work.Report(StatusText);
+                }
+
+                using var either = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token, work.Token);
+                PropertyChanged += Mirror;
+                try
+                {
+                    return await operation(either.Token);
+                }
+                finally
+                {
+                    PropertyChanged -= Mirror;
+                }
+            }, cancellation.Token);
         }
         catch (OperationCanceledException)
         {
@@ -1695,6 +1833,8 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Clears per-source state when a different source is loaded.</summary>
     private void ResetForNewSource()
     {
+        ForgetProjectProxies();
+        _timelineProxy = null;
         Segments.Clear();
         PendingStartMs = null;
         PositionMs = 0;
@@ -1717,12 +1857,6 @@ public partial class MainViewModel : ObservableObject
     {
         IsCommandManuallyEdited = false;
         GenerateCommand();
-    }
-
-    partial void OnCommandPreviewChanged(string value)
-    {
-        if (!_writingGeneratedCommand)
-            IsCommandManuallyEdited = true;
     }
 
     partial void OnContainerChanged(string value)
@@ -1788,22 +1922,22 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(CaptionHint));
         OnPropertyChanged(nameof(CopyBypassWarning));
 
+        // The timeline proxy no longer shows the timeline; the proxies follow the files now on it.
+        DropTimelineProxy();
+        RefreshProxies();
+        WarmLayerFiles();
+
         // So does Live Preview, which shows the settings, not the command.
         if (!_isBackgroundWorker)
-            LiveFilterInvalidated?.Invoke();
+            InvalidateLiveFilter();
 
         if (IsCommandManuallyEdited)
             return;
 
-        _writingGeneratedCommand = true;
-        try
-        {
-            CommandPreview = BuildFfmpegCommand();
-        }
-        finally
-        {
-            _writingGeneratedCommand = false;
-        }
+        // The text itself is written when it is wanted (see CommandPreview).
+        _commandStale = true;
+        if (CommandPreviewWatched)
+            ScheduleCommandText();
     }
 
     /// <summary>The cut segments in order, with overlapping or touching ones merged.</summary>

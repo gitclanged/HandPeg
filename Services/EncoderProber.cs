@@ -90,7 +90,104 @@ public static class EncoderProber
         }
 
         (_refused, NvencNeedsOlderFfmpeg) = (refused, driverTooOld);
+        (_lastSupported, _lastProblems, _openClKnown) = (supported, problems, false);
+        SaveResult();
         return (supported, problems);
+    }
+
+    // ----- The result, kept between launches -----
+    // Every test encode loads a graphics driver: a burst of memory and processor at every start, for an answer
+    // that only changes with FFmpeg or a driver. The answer is kept, with what it was found for (the FFmpeg
+    // executable and each card's driver), and asked again only when one of those has changed, or from Settings.
+
+    private sealed record SavedResult(string Key, List<string> Supported, List<string> Problems, List<string> Refused, bool NvencNeedsOlderFfmpeg,
+        bool OpenClKnown, bool OpenClBlur, string OpenClDevice);
+
+    // Raised when what the tests check changes, so that a result saved by an older HandPeg is not used.
+    private const int TestsVersion = 1;
+
+    private static List<string> _lastSupported = [], _lastProblems = [];
+    private static bool _openClKnown;
+
+    private static string SavedPath => Path.Combine(AppPaths.Cache, "encoder-probe.json");
+
+    /// <summary>What the result was found for: this FFmpeg (where, how large, when written) and these cards with these drivers.</summary>
+    private static string MachineKey()
+    {
+        var ffmpeg = new FileInfo(DependencyUpdater.FfmpegPath);
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{TestsVersion}|{ffmpeg.FullName}|{(ffmpeg.Exists ? ffmpeg.Length : 0)}|{(ffmpeg.Exists ? ffmpeg.LastWriteTimeUtc.Ticks : 0)}|{GpuAdapters.Fingerprint}");
+    }
+
+    private static Task<(List<string> Supported, List<string> Problems)?>? _early;
+
+    /// <summary>
+    /// Starts reading the saved result away from the calling thread, at launch: with it, the cards are listed (DXGI, up to
+    /// a quarter of a second while a card wakes up), so that the window can have its encoders before its first frame.
+    /// </summary>
+    public static void LoadSavedResultEarly() => _early = Task.Run(LoadSavedResult);
+
+    /// <summary>
+    /// The saved result read at launch, once, when it is there within <paramref name="patience"/>; null when there is none
+    /// for this FFmpeg and these drivers, or it is still being read (the probe then reads it as it always did).
+    /// </summary>
+    public static (List<string> Supported, List<string> Problems)? TakeEarlyResult(TimeSpan patience) =>
+        Interlocked.Exchange(ref _early, null) is { } early && early.Wait(patience) ? early.Result : null;
+
+    /// <summary>
+    /// The result saved by an earlier probe for this FFmpeg and these drivers, put back in place (what each
+    /// encoder can do, the OpenCL blur); null when there is none or it was found for something else.
+    /// </summary>
+    public static (List<string> Supported, List<string> Problems)? LoadSavedResult()
+    {
+        try
+        {
+            if (!File.Exists(SavedPath) || System.Text.Json.JsonSerializer.Deserialize<SavedResult>(File.ReadAllText(SavedPath)) is not { } saved
+                || saved.Key != MachineKey())
+            {
+                return null;
+            }
+
+            (_refused, NvencNeedsOlderFfmpeg) = ([.. saved.Refused], saved.NvencNeedsOlderFfmpeg);
+            (_lastSupported, _lastProblems, _openClKnown) = (saved.Supported, saved.Problems, saved.OpenClKnown);
+            if (saved.OpenClKnown)
+                (OpenClBlurAvailable, _openClDevice) = (saved.OpenClBlur, OpenClDevices.Contains(saved.OpenClDevice) ? saved.OpenClDevice : OpenClDevices[0]);
+            Log($"Hardware encoders as found before for this FFmpeg and these drivers: {(saved.Supported.Count > 0 ? string.Join(", ", saved.Supported) : "none")}.");
+            return (saved.Supported, saved.Problems);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Whether the OpenCL blur's test has been made for the result in place, or has yet to be.</summary>
+    public static bool OpenClKnown => _openClKnown;
+
+    /// <summary>Forgets the saved result: the next probe tests every encoder again (Settings, "Check Hardware Again").</summary>
+    public static void ForgetSavedResult()
+    {
+        try
+        {
+            File.Delete(SavedPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void SaveResult()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.Cache);
+            var saved = new SavedResult(MachineKey(), _lastSupported, _lastProblems, [.. _refused], NvencNeedsOlderFfmpeg, _openClKnown, OpenClBlurAvailable, _openClDevice);
+            File.WriteAllText(SavedPath, System.Text.Json.JsonSerializer.Serialize(saved));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Not kept: it is asked again next time.
+        }
     }
 
     /// <summary>Temporal adaptive quantization: not for HEVC on the GTX 10 series, for one.</summary>
@@ -179,8 +276,9 @@ public static class EncoderProber
 
             if (result.ExitCode == 0)
             {
-                _openClDevice = device;
-                return OpenClBlurAvailable = true;
+                (_openClDevice, OpenClBlurAvailable, _openClKnown) = (device, true, true);
+                SaveResult();
+                return true;
             }
 
             reason = result.StandardError.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? $"exit code {result.ExitCode}";
@@ -191,6 +289,8 @@ public static class EncoderProber
         }
 
         AppLog.Write($"The OpenCL blur is not available, and the processor blurs instead: {reason}");
-        return OpenClBlurAvailable = false;
+        (OpenClBlurAvailable, _openClKnown) = (false, true);
+        SaveResult();
+        return false;
     }
 }

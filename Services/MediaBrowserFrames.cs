@@ -21,12 +21,13 @@ public static class MediaBrowserFrames
     private static string SessionFolder => Path.Combine(SessionPaths.Root, "browser");
 
     /// <summary>What a video is: how long it plays and its picture's size; null when it cannot be read.</summary>
-    public static async Task<(double Seconds, int Width, int Height)?> DescribeAsync(string path, CancellationToken token)
+    /// <param name="lane">Background for the tiles on screen; the folder indexer runs it inside its own Idle work.</param>
+    public static async Task<(double Seconds, int Width, int Height)?> DescribeAsync(string path, CancellationToken token, WorkLane lane = WorkLane.Background)
     {
         if (ReadKept(path, "probe", ".txt") is { } kept && Parse(kept) is { } known)
             return known;
 
-        var info = await MediaProbe.ProbeAsync(path, token);
+        var info = await MediaProbe.ProbeAsync(path, token, lane);
         if (info is null)
             return null;
 
@@ -50,7 +51,7 @@ public static class MediaBrowserFrames
     /// The strip of a video's frames: kept, or made now. Null when it could not be made. Its frames are as tall as
     /// asked, unless that would make a strip too wide for a JPEG (65,535 pixels), when they are made smaller.
     /// </summary>
-    public static async Task<string?> StripAsync(string path, double seconds, int width, int height, int frames, int frameHeight, CancellationToken token)
+    public static async Task<string?> StripAsync(string path, double seconds, int width, int height, int frames, int frameHeight, CancellationToken token, WorkLane lane = WorkLane.Background)
     {
         var shape = width > 0 && height > 0 ? (double)width / height : 16.0 / 9;
         frameHeight = (int)Math.Min(frameHeight, 60000 / (frames * shape));
@@ -59,7 +60,7 @@ public static class MediaBrowserFrames
             return kept;
 
         var made = Path.Combine(SessionFolder, $"{Guid.NewGuid():N}.jpg");
-        if (!await FfmpegRunner.GenerateFilmstripAsync(path, made, frames, seconds, token, frameHeight))
+        if (!await FfmpegRunner.GenerateFilmstripAsync(path, made, frames, seconds, token, frameHeight, lane))
             return null;
 
         if (PreviewCache.Browser.IsEnabled)
@@ -92,30 +93,64 @@ public static class MediaBrowserFrames
         return frames;
     }
 
-    /// <summary>One frame of a strip as a picture standing on its own (the strip is not held): a tile's poster. Frozen.</summary>
+    /// <summary>
+    /// One frame of a strip as a picture standing on its own: a tile's poster. Only that frame is kept (the strip's size is
+    /// read from its header, and the decode is cropped to the frame), never the whole strip decoded for it, which left a
+    /// megabyte and a half of pixels per tile waiting to be collected. Frozen.
+    /// </summary>
     public static BitmapSource? Poster(string strip, double shape, int height, double at)
     {
-        if (Frames(strip, shape, height) is not { Count: > 0 } frames)
-            return null;
+        try
+        {
+            int stripWidth, stripHeight;
+            using (var stream = File.OpenRead(strip))
+            {
+                var header = BitmapDecoder.Create(stream, BitmapCreateOptions.IgnoreColorProfile | BitmapCreateOptions.DelayCreation, BitmapCacheOption.None).Frames[0];
+                (stripWidth, stripHeight) = (header.PixelWidth, header.PixelHeight);
+            }
 
-        var copy = new WriteableBitmap(frames[Math.Clamp((int)(at * frames.Count), 0, frames.Count - 1)]);
-        copy.Freeze();
-        return copy;
+            // Where the frame is, in the strip's own pixels (the frames are told apart by the video's shape): the crop is
+            // taken there, and what it cuts out is then decoded at the tile's height.
+            var frameWidth = Math.Max((int)Math.Round(stripHeight * (shape > 0 ? shape : 16.0 / 9)), 1);
+            var count = Math.Max((int)Math.Round((double)stripWidth / frameWidth), 1);
+            frameWidth = Math.Max(stripWidth / count, 1);
+            var index = Math.Clamp((int)(at * count), 0, count - 1);
+
+            // No IgnoreImageCache with a stream: WPF's image cache is kept by address, and with none it throws.
+            using var file = File.OpenRead(strip);
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+            image.DecodePixelHeight = Math.Max(height, 8);
+            image.SourceRect = new Int32Rect(index * frameWidth, 0, frameWidth, stripHeight);
+            image.StreamSource = file;
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch (Exception ex) when (ex is IOException or NotSupportedException or InvalidOperationException or UriFormatException or ArgumentException or System.Runtime.InteropServices.COMException or FileFormatException)
+        {
+            return null;
+        }
     }
 
     /// <summary>A picture file, decoded at the given height: an image's poster. Frozen; null when it cannot be read.</summary>
     public static BitmapSource? Picture(string path, int height) => DecodeAt(path, height);
 
+    // Read from a file stream, not a URI: a URI goes through WPF's web request path (URL monikers and security zones,
+    // loaded for a local file). No IgnoreImageCache with a stream: the image cache is kept by address, and with none it throws.
     private static BitmapSource? DecodeAt(string path, int height)
     {
         try
         {
+            using var file = File.OpenRead(path);
             var image = new BitmapImage();
             image.BeginInit();
             image.CacheOption = BitmapCacheOption.OnLoad;
-            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile | BitmapCreateOptions.IgnoreImageCache;
+            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
             image.DecodePixelHeight = Math.Max(height, 8);
-            image.UriSource = new Uri(path);
+            image.StreamSource = file;
             image.EndInit();
             image.Freeze();
             return image;

@@ -256,7 +256,7 @@ public partial class MainViewModel
         if (!value)
             RefreshSubtitlePreview();
         if (!_isBackgroundWorker)
-            LiveFilterInvalidated?.Invoke();
+            InvalidateLiveFilter();
     }
 
     /// <summary>Has the main player show the subtitle track as it is now.</summary>
@@ -268,7 +268,7 @@ public partial class MainViewModel
         if (SubtitlesAreImages || !HasSubtitleCues)
         {
             _imageSubtitleFile = HasSubtitleCues ? WriteImageSubtitles() ?? "" : "";
-            LiveFilterInvalidated?.Invoke();
+            InvalidateLiveFilter();
         }
 
         if (PreviewSubtitles && !IsSubtitleEditorOpen)
@@ -347,11 +347,12 @@ public partial class MainViewModel
         try
         {
             // An I-frame every second, so that any moment is a short step from one.
-            var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
-                .WithArguments(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", $"color=c=black:s={width}x{height}:r=10",
-                    "-t", length.ToString(System.Globalization.CultureInfo.InvariantCulture), "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-                    "-g", "10", "-pix_fmt", "yuv420p", making])
-                .WithValidation(CommandResultValidation.None), cancellationToken);
+            var result = await WorkScheduler.Run(new WorkSpec("Preparing the Subtitle Editor", WorkLane.Interactive) { Visible = false },
+                work => ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
+                    .WithArguments(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", $"color=c=black:s={width}x{height}:r=10",
+                        "-t", length.ToString(System.Globalization.CultureInfo.InvariantCulture), "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+                        "-g", "10", "-pix_fmt", "yuv420p", making])
+                    .WithValidation(CommandResultValidation.None), work.Token), cancellationToken);
             if (result.ExitCode != 0 || !File.Exists(making))
             {
                 AppLog.Write($"The Subtitle Editor's blank video could not be made (exit code {result.ExitCode}): {result.StandardError.Trim()}");
@@ -464,7 +465,7 @@ public partial class MainViewModel
             await TranscribeToCuesAsync();
     }
 
-    private Task TranscribeToCuesAsync() => RunOperationAsync(async cancellationToken =>
+    private Task TranscribeToCuesAsync() => RunOperationAsync("Transcribing captions", WorkLane.Interactive, async cancellationToken =>
     {
         var (words, problem) = await GetCaptionWordsAsync([], cancellationToken);
         if (words is null)

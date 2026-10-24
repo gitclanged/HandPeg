@@ -20,6 +20,9 @@ public static class AppUpdater
         /// <summary>A newer release has been downloaded and goes in at the next restart.</summary>
         Ready,
 
+        /// <summary>A newer release that this copy can put in by itself has been found; the Update button in the status bar downloads it.</summary>
+        Found,
+
         /// <summary>A newer release exists, but this copy cannot put it in by itself: it is fetched by hand.</summary>
         Available,
 
@@ -42,9 +45,10 @@ public static class AppUpdater
     private static readonly SemaphoreSlim Checking = new(1, 1);
 
     /// <summary>
-    /// Check for Updates, in the settings: looks now, and says what it found. A copy the installer put in
-    /// downloads a newer release as the check at startup does. A self-contained copy, or one run from a build
-    /// folder, cannot replace itself, so it is only told whether GitHub has a newer release than it is.
+    /// Check for Updates, in the settings: looks now, and says what it found. A copy the installer put in is told
+    /// of a newer release, which the Update button in the status bar downloads (or which is downloaded at once when
+    /// Settings say to download in the background). A self-contained copy, or one run from a build folder, cannot
+    /// replace itself, so it is only told whether GitHub has a newer release than it is.
     /// </summary>
     /// <returns>The outcome, and with it the version found, or why the check failed.</returns>
     public static Task<(CheckResult Result, string Detail)> CheckNowAsync() => Task.Run(async () =>
@@ -64,8 +68,13 @@ public static class AppUpdater
                     if (update is null)
                         return (CheckResult.UpToDate, CurrentVersion.ToString());
 
+                    // Found, and left to the Update button, unless Settings say to download in the background.
+                    (_manager, _found) = (manager, update);
+                    if (!AppSettings.Current.AutoDownloadAppUpdates)
+                        return (CheckResult.Found, update.TargetFullRelease.Version.ToString());
+
                     await manager.DownloadUpdatesAsync(update);
-                    (_manager, _ready) = (manager, update.TargetFullRelease);
+                    _ready = update.TargetFullRelease;
                     AppLog.Write($"Update {update.TargetFullRelease.Version} downloaded.");
                     return (CheckResult.Ready, update.TargetFullRelease.Version.ToString());
                 }
@@ -97,26 +106,32 @@ public static class AppUpdater
 
     private static UpdateManager? _manager;
 
-    // The release that has been downloaded and is waiting to be put in.
+    // A newer release that has been found and not downloaded yet; and the one downloaded, waiting to be put in.
+    private static UpdateInfo? _found;
     private static VelopackAsset? _ready;
     private static bool _handedOver;
 
+    /// <summary>The newer release found and not downloaded yet (startup checks only look), or null.</summary>
+    public static string? FoundVersion => _found is null || _ready is not null ? null : _found.TargetFullRelease.Version.ToString();
+
     /// <summary>
-    /// Looks for a newer release and downloads it, off the UI thread. Returns its version once it is ready
-    /// to be applied, or null when there is nothing to do or the check could not be made.
+    /// Looks for a newer release, off the UI thread (Settings: Check for App Updates on Startup). It is only downloaded
+    /// when Settings say so (Auto-Download App Updates in Background, off by default): otherwise the Update button
+    /// in the status bar downloads it, so closing and opening HandPeg never puts in an update nobody asked for.
+    /// Returns its version and whether it is downloaded, or null when there is nothing or the check could not be made.
     /// </summary>
-    public static Task<string?> CheckAndDownloadAsync() => Task.Run(async () =>
+    public static Task<(string Version, bool Downloaded)?> CheckAtStartupAsync() => Task.Run(async () =>
     {
         // A self-contained copy is replaced by hand: the updater keeps its packages outside the program's folder.
         if (AppPaths.IsSelfContained)
-            return (string?)null;
+            return ((string, bool)?)null;
 
         await Checking.WaitAsync();
         try
         {
             // Already found, by a check asked for in the settings.
             if (ReadyVersion is { } waiting)
-                return waiting;
+                return (waiting, true);
 
             var manager = new UpdateManager(new GithubSource(AppSettings.HandPegRepositoryUrl, accessToken: null, prerelease: false));
             if (!manager.IsInstalled)
@@ -126,15 +141,21 @@ public static class AppUpdater
             if (update is null)
                 return null;
 
+            (_manager, _found) = (manager, update);
+            var version = update.TargetFullRelease.Version.ToString();
+            AppLog.Write($"Update {version} found.");
+            if (!AppSettings.Current.AutoDownloadAppUpdates)
+                return (version, false);
+
             await manager.DownloadUpdatesAsync(update);
-            (_manager, _ready) = (manager, update.TargetFullRelease);
-            AppLog.Write($"Update {update.TargetFullRelease.Version} downloaded.");
-            return update.TargetFullRelease.Version.ToString();
+            _ready = update.TargetFullRelease;
+            AppLog.Write($"Update {version} downloaded.");
+            return (version, true);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             AppLog.Write("Update check failed", ex);
-            return (string?)null;
+            return null;
         }
         finally
         {
@@ -143,12 +164,49 @@ public static class AppUpdater
     });
 
     /// <summary>
+    /// Downloads the release found (the Update button), reporting 0 to 1. True once it is ready to be put in; it is put
+    /// in at the next restart, or when HandPeg closes: it was asked for.
+    /// </summary>
+    public static async Task<bool> DownloadFoundAsync(Action<double> progress, CancellationToken token)
+    {
+        await Checking.WaitAsync(token);
+        try
+        {
+            if (_ready is not null)
+                return true;
+            if (_manager is not { } manager || _found is not { } update)
+                return false;
+
+            await manager.DownloadUpdatesAsync(update, percent => progress(percent / 100.0), token);
+            _ready = update.TargetFullRelease;
+            AppLog.Write($"Update {update.TargetFullRelease.Version} downloaded.");
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Update download failed", ex);
+            return false;
+        }
+        finally
+        {
+            Checking.Release();
+        }
+    }
+
+    /// <summary>
     /// Hands the downloaded release to the updater, which waits for this process to end, puts the new
     /// version in and starts it. The caller then closes the application in the ordinary way.
     /// </summary>
     public static bool BeginRestartIntoUpdate() => HandOver(restart: true);
 
-    /// <summary>At exit: an update the user did not restart into is put in quietly, ready for the next start.</summary>
+    /// <summary>
+    /// At exit: an update that was downloaded (by the Update button, or in the background when Settings say so) and not
+    /// restarted into is put in quietly, ready for the next start. One only found is left alone.
+    /// </summary>
     public static void ApplyOnExit() => HandOver(restart: false);
 
     private static bool HandOver(bool restart)

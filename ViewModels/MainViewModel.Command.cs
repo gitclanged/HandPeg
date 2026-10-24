@@ -56,16 +56,22 @@ public partial class MainViewModel
         }
 
         // A clip that is still being looked at has no size or length yet, and is not rendered.
-        var stack = GetStack().Where(l => !l.IsLoading).Select(Snapshot).ToList();
+        var stack = GetStack().Where(l => l is { IsLoading: false, IsEmptyTrack: false }).Select(Snapshot).ToList();
         var sounds = GetLayerAudioSources().Select(Snapshot).ToList();
         var caption = Snapshot(CaptionLayer);
+
+        // Crossfades lay two clips of a track over each other across their cut, the later one on top; across tracks the
+        // lower clip of a crossfade keeps its picture (the upper one's fade is the picture's side of it).
+        LayLaterClipsOver(stack);
+        ApplyCrossfades(copies.Values);
+        PairLayerCrossfades(stack);
 
         // Which of the files the layers name are there: the builder leaves out a mask or a LUT that is missing.
         var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         void Note(string? path)
         {
             var name = (path ?? "").Trim().Trim('"');
-            if (name.Length > 0 && File.Exists(name))
+            if (name.Length > 0 && FileState.Exists(name))
                 files.Add(name);
         }
 
@@ -74,13 +80,31 @@ public partial class MainViewModel
         foreach (var layer in stack.Append(caption))
         {
             Note(layer.MaskPath);
-            Note(layer.FilterLut);
+            foreach (var lut in layer.Effects.Where(e => e.Type == Models.Effects.EffectRegistry.Lut))
+                Note(lut.GetText("file"));
             var mask = layer.MaskPath.Trim().Trim('"');
             if (layer.CustomMask && files.Contains(mask) && MaskStore.UsesAlpha(mask))
                 alphaMasks.Add(mask);
         }
 
         Note(CaptionsFilePath);
+        foreach (var lut in SequenceEffects.Where(e => e.Type == Models.Effects.EffectRegistry.Lut))
+            Note(lut.GetText("file"));
+
+        // Where each video layer's picture starts in its file, so the builder can seek in it (see MediaStarts).
+        // And where their I-frames are, so a live graph opens each exactly at one (see SeekIndexes).
+        var starts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var seekIndexes = new Dictionary<string, SeekIndex>(StringComparer.OrdinalIgnoreCase);
+        foreach (var layer in stack.Where(l => l.IsVideoFile))
+        {
+            var file = layer.ImagePath.Trim().Trim('"');
+            if (MediaProbe.KnownVideoStart(file) is { } start)
+                starts[file] = start;
+            else
+                LearnVideoStart(file);
+            if (MediaProbe.KnownSeekIndex(file) is { } index)
+                seekIndexes[file] = index;
+        }
 
         var tracks = GetOutputAudioTracks()
             .Select(t => new ExportAudioTrack(
@@ -189,7 +213,82 @@ public partial class MainViewModel
                 : DestinationPath.Trim().Trim('"'),
             ExistingFiles = files,
             AlphaMasks = alphaMasks,
+            MediaStarts = starts,
+            SeekIndexes = seekIndexes,
+
+            // Read by Live Preview only: an export reads the originals.
+            PreviewPaths = new Dictionary<string, string>(_proxiesInUse, StringComparer.OrdinalIgnoreCase),
+            MainPreviewHeight = MainProxyHeight,
+            SequenceEffects = SequenceEffectsBypassed ? [] : [.. SequenceEffects.Select(e => e.Clone())],
         };
+    }
+
+    // Layer files being inspected for where their picture starts, so each is asked about once.
+    private readonly HashSet<string> _learningStarts = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Inspects a video layer's file that has not been inspected this session (one from a project that was
+    /// opened, say), in the background; once it is known, the graphs are built again with it.
+    /// </summary>
+    private void LearnVideoStart(string file)
+    {
+        if (_isBackgroundWorker || !_learningStarts.Add(file))
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            if (File.Exists(file) && await MediaProbe.ProbeAsync(file, _shutdown.Token) is not null)
+                System.Windows.Application.Current?.Dispatcher.BeginInvoke(GenerateCommand);
+        });
+    }
+
+    // Layer files whose seek tables have been warmed and whose I-frames have been asked for, this session.
+    private readonly HashSet<string> _warmedFiles = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Gets every video layer's file ready to be seeked in, as soon as it is on the timeline (a clip dropped, a project
+    /// opened): the start and end of the file (where its seek tables are), and points spread across a large one, read
+    /// into the system's file cache, then its I-frames listed (from the disk cache when listed before), so the first
+    /// seek into a part of it never visited is as quick as the next one. A file whose seek index is known already (taken
+    /// up with the project or from the Timeline cache) is neither inspected nor listed again: only read. Background
+    /// work, once per file and session; the live graph is built again after a listing.
+    /// </summary>
+    private void WarmLayerFiles()
+    {
+        if (_isBackgroundWorker)
+            return;
+
+        foreach (var layer in Layers)
+        {
+            var file = layer.IsVideoFile && !layer.IsDeleted ? layer.ImagePath.Trim().Trim('"') : "";
+            if (file.Length == 0 || !_warmedFiles.Add(file))
+                continue;
+
+            var indexed = MediaProbe.KnownSeekIndex(file) is not null;
+            if (MediaProbe.KnownVideoStart(file) is null)
+                LearnVideoStart(file);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await WorkScheduler.Run(new WorkSpec($"Reading the index of {Path.GetFileName(file)}", WorkLane.Background) { Visible = false, Key = $"warm|{file}" },
+                        work =>
+                        {
+                            MediaProbe.WarmSeekTables(file, work.Token);
+                            return Task.CompletedTask;
+                        }, _shutdown.Token);
+                    if (!indexed && File.Exists(file) && (await FfmpegRunner.GetIFramesAsync(file, _shutdown.Token)).Count > 0)
+                        System.Windows.Application.Current?.Dispatcher.BeginInvoke(InvalidateLiveFilter);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+                {
+                    AppLog.Write($"The index of {Path.GetFileName(file)} could not be read", ex);
+                }
+            });
+        }
     }
 
     /// <summary>
@@ -208,17 +307,41 @@ public partial class MainViewModel
 
     /// <summary>
     /// The filter graph Live Preview runs on the picture, for mpv's lavfi-complex; empty when the export would
-    /// not filter the picture at all (Copy), which is then what the preview shows too.
+    /// not filter the picture at all (Copy), which is then what the preview shows too. It holds what is on screen
+    /// around the playhead (<paramref name="videoFromMs"/>), and says when it is to be built again while playing.
     /// </summary>
     /// <param name="surfaceWidth">Width of the player on screen, in screen pixels: the picture is not built larger than it is shown.</param>
     /// <param name="audioFromMs">
     /// Where playback starts from, for the sound of the layers to be mixed into what is heard from there on;
     /// null while nothing is playing, and the graph then has no sound in it. See <see cref="FilterGraphBuilder.BuildLiveGraph"/>.
     /// </param>
-    public string BuildLiveFilterGraph(double surfaceWidth, double surfaceHeight, long? audioFromMs = null) =>
-        FilterGraphBuilder.BuildLiveGraph(
-            CompileExportState(), surfaceWidth, surfaceHeight, audioFromMs / 1000.0,
-            mainAudioTrack: _mediaInfo is { Audio.Count: 0 } ? -1 : 0);
+    /// <param name="videoFromMs">The playhead the graph is built for: where the player is, or is about to be sent.</param>
+    /// <param name="layers">How the video layers are shown: live, or as one frame each while scrubbing.</param>
+    public LiveGraph BuildLiveFilterGraph(double surfaceWidth, double surfaceHeight, long? audioFromMs, long videoFromMs, LiveLayerMode layers, bool draftEffects = false) =>
+        FilterGraphBuilder.BuildLiveGraph(Soloed(_liveState ??= CompileExportState()), new LiveGraphRequest
+        {
+            SurfaceWidth = surfaceWidth,
+            SurfaceHeight = surfaceHeight,
+            AudioFrom = audioFromMs / 1000.0,
+            MainAudioTrack = _mediaInfo is { Audio.Count: 0 } ? -1 : 0,
+            VideoFrom = videoFromMs / 1000.0,
+            Layers = layers,
+            DecodeThreads = LiveDecodeThreads,
+            PictureIsComposed = PlaysTimelineProxy,
+            DraftEffects = draftEffects,
+        });
+
+    // The state the last live graph was built from. A live graph is built for every seek (it belongs to its
+    // moment), and the state is the same for all of them until something changes: it is gathered again only
+    // then (every change raises LiveFilterInvalidated, which drops it).
+    private SequenceExportState? _liveState;
+
+    /// <summary>
+    /// Threads each video layer's decoder may use inside the player: a quarter of the processor, at least two.
+    /// The player decodes the main video on the graphics card; several layers at once would otherwise each take
+    /// every core, and fight the interface for them.
+    /// </summary>
+    private static readonly int LiveDecodeThreads = Math.Max(2, Environment.ProcessorCount / 4);
 
     /// <summary>Render Preview's command: a short, small encode of the given stretches of the timeline.</summary>
     private string BuildPreviewCommand(string outputPath, List<(double Start, double End)> ranges, int percent, string? captionsPath) =>
@@ -231,6 +354,13 @@ public partial class MainViewModel
 
     /// <summary>Raised whenever a setting changed that may have changed what Live Preview should show.</summary>
     public event Action? LiveFilterInvalidated;
+
+    /// <summary>Something a live graph is built from has changed: the state is gathered afresh for the next one.</summary>
+    private void InvalidateLiveFilter()
+    {
+        _liveState = null;
+        LiveFilterInvalidated?.Invoke();
+    }
 
     partial void OnLivePreviewChanged(bool value)
     {
@@ -425,13 +555,16 @@ public partial class MainViewModel
         if (System.Windows.Application.Current?.Dispatcher.CheckAccess() != true)
             return;
 
-        foreach (var layer in Layers.Where(l => l.CustomMask && l.MaskShapes.Length > 0 && !File.Exists(l.MaskPath.Trim().Trim('"'))))
+        foreach (var layer in Layers.Where(l => l.CustomMask && l.MaskShapes.Length > 0 && !FileState.Exists(l.MaskPath)))
         {
             try
             {
                 var (width, height) = MaskStore.SizeFor(SourceWidth, SourceHeight);
                 if (MaskStore.Render(layer.MaskShapes, width, height) is { } path)
+                {
+                    FileState.Forget(path);
                     layer.MaskPath = path;
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {

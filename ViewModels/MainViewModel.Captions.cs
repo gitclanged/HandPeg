@@ -204,7 +204,7 @@ public partial class MainViewModel
         DeleteLiveCaptions(_liveCaptionsPath);
         _liveCaptionsPath = "";
         if (!_isBackgroundWorker)
-            LiveFilterInvalidated?.Invoke();
+            InvalidateLiveFilter();
     }
 
     private CancellationTokenSource? _liveCaptionsWait;
@@ -242,7 +242,7 @@ public partial class MainViewModel
             return;
         }
 
-        await RunOperationAsync(async cancellationToken =>
+        await RunOperationAsync("Making captions", WorkLane.Interactive, async cancellationToken =>
         {
             // A new name each time: the player only loads the file again when its name has changed.
             var path = Path.Combine(_workFolder, $"captions_live_{++_liveCaptionsRun}.ass");
@@ -259,7 +259,7 @@ public partial class MainViewModel
             _liveCaptionsPath = path;
             DeleteLiveCaptions(before);
 
-            LiveFilterInvalidated?.Invoke();
+            InvalidateLiveFilter();
             return LivePreview
                 ? "Subtitles preview on: the player draws the captions over the picture as they are styled."
                 : "Subtitles preview on: the player draws the captions over the source. Switch Live Preview on to see them on the finished frame.";
@@ -572,7 +572,7 @@ public partial class MainViewModel
 
     /// <summary>Downloads a speech model into the models folder.</summary>
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
-    private Task DownloadWhisperModelAsync(string? model) => RunOperationAsync(async cancellationToken =>
+    private Task DownloadWhisperModelAsync(string? model) => RunOperationAsync("Downloading a speech model", WorkLane.Interactive, async cancellationToken =>
     {
         if (string.IsNullOrWhiteSpace(model))
             return "Choose a model first.";

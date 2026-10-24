@@ -80,10 +80,53 @@ public static partial class FfmpegRunner
         }
     }
 
-    // How many FFmpeg may be making thumbnails at once, whatever asked for them: the hover-preview sheet of
-    // the main video, and the strip of frames of every video on the timeline. Dropping ten videos at once
-    // makes ten strips two at a time, not ten at a time with the processor and the memory that takes.
-    private static readonly SemaphoreSlim ThumbnailGate = new(2, 2);
+    /// <summary>
+    /// Makes the player's stand-in clock (see MainViewModel.PlayerSource): black, 64 by 36, at the given frame
+    /// rate, with a silent track for each channel layout given, I-frames a second apart so that it seeks at
+    /// once. Written beside its place and moved there when whole. Returns whether it was made.
+    /// </summary>
+    public static async Task<bool> MakeClockFileAsync(string path, double frameRate, IReadOnlyList<string> audioLayouts, double seconds, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(DependencyUpdater.FfmpegPath))
+            return false;
+
+        var rate = frameRate.ToString("0.###", CultureInfo.InvariantCulture);
+        var part = path + ".part";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", $"color=c=black:s=64x36:r={rate}" };
+            foreach (var layout in audioLayouts)
+                arguments.AddRange(["-f", "lavfi", "-i", $"anullsrc=r=48000:cl={layout}"]);
+            arguments.AddRange(["-map", "0:v"]);
+            for (var i = 0; i < audioLayouts.Count; i++)
+                arguments.AddRange(["-map", $"{i + 1}:a"]);
+            arguments.AddRange(["-t", seconds.ToString("0.###", CultureInfo.InvariantCulture),
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-pix_fmt", "yuv420p",
+                "-g", Math.Max((int)Math.Round(frameRate), 1).ToString(CultureInfo.InvariantCulture)]);
+            if (audioLayouts.Count > 0)
+                arguments.AddRange(["-c:a", "aac", "-b:a", "32k"]);
+            arguments.AddRange(["-f", "matroska", part]);
+
+            var said = new StringBuilder();
+            var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath).WithArguments(arguments)
+                .WithStandardErrorPipe(PipeTarget.ToStringBuilder(said)).WithValidation(CommandResultValidation.None), cancellationToken);
+            if (result.ExitCode != 0 || !File.Exists(part))
+            {
+                AppLog.Write($"The player's stand-in clock could not be made: {said.ToString().Trim()}");
+                return false;
+            }
+
+            File.Move(part, path, overwrite: true);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException or System.ComponentModel.Win32Exception)
+        {
+            if (ex is not OperationCanceledException)
+                AppLog.Write("The player's stand-in clock could not be made", ex);
+            return false;
+        }
+    }
 
     /// <summary>Thumbnails per row and per column of a hover-preview sheet.</summary>
     public const int SpriteGridSize = 10;
@@ -94,69 +137,82 @@ public static partial class FfmpegRunner
     /// <summary>
     /// Writes one image holding a grid of thumbnails taken every <paramref name="intervalSeconds"/> seconds.
     /// Only I-frames are decoded, which makes this quick even for long videos; each thumbnail is the
-    /// I-frame nearest its time.
+    /// I-frame nearest its time. Background work (see WorkScheduler), decoded on the background card where there
+    /// is one; on the processor when that does not work out.
     /// </summary>
-    public static async Task<bool> GenerateSpriteSheetAsync(
-        string videoPath, string imagePath, double intervalSeconds, CancellationToken cancellationToken)
-    {
-        if (!File.Exists(DependencyUpdater.FfmpegPath))
-            return false;
-
-        Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
-        var filter = string.Create(CultureInfo.InvariantCulture,
-            $"fps=1/{intervalSeconds:0.###},scale={SpriteThumbnailWidth}:-1,tile={SpriteGridSize}x{SpriteGridSize}");
-
-        await ThumbnailGate.WaitAsync(cancellationToken);
-        try
+    public static Task<bool> GenerateSpriteSheetAsync(string videoPath, string imagePath, double intervalSeconds, CancellationToken cancellationToken) =>
+        WorkScheduler.Run(new WorkSpec($"Hover previews of {Path.GetFileName(videoPath)}", WorkLane.Background) { Key = $"sprite|{videoPath}|{intervalSeconds}" }, async work =>
         {
-            var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
-                .WithArguments(["-hide_banner", "-loglevel", "error", "-y", "-skip_frame", "nokey", "-i", videoPath,
-                    "-an", "-sn", "-vf", filter, "-frames:v", "1", "-q:v", "4", imagePath])
-                .WithValidation(CommandResultValidation.None),
-                cancellationToken);
+            if (!File.Exists(DependencyUpdater.FfmpegPath))
+                return false;
 
-            return result.ExitCode == 0 && File.Exists(imagePath);
-        }
-        finally
-        {
-            ThumbnailGate.Release();
-        }
-    }
+            Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
+            var filter = string.Create(CultureInfo.InvariantCulture,
+                $"fps=1/{intervalSeconds:0.###},scale={SpriteThumbnailWidth}:-1,tile={SpriteGridSize}x{SpriteGridSize}");
 
-    /// <summary>
-    /// A strip of frames from a video, evenly spread over its length and set side by side in one picture:
-    /// what a video's block on the timeline is drawn with. The graphics card decodes where it can; when that
-    /// does not work out (a format the card does not take, a driver that will not open eight decoders at
-    /// once) the strip is made again by the processor.
-    /// </summary>
-    /// <param name="height">How tall each frame is made, in pixels: 54 for a block on the timeline.</param>
-    public static async Task<bool> GenerateFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, CancellationToken cancellationToken, int height = 54)
-    {
-        if (!File.Exists(DependencyUpdater.FfmpegPath))
-            return false;
-
-        Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
-
-        // Waits its turn: see ThumbnailGate.
-        await ThumbnailGate.WaitAsync(cancellationToken);
-        try
-        {
-            foreach (var hardware in new[] { true, false })
+            foreach (var hardware in GpuAdapters.BackgroundDecodeArguments.Count > 0 ? new[] { true, false } : [false])
             {
-                var problem = await RunFilmstripAsync(videoPath, imagePath, count, durationSeconds, hardware, height, cancellationToken);
-                if (problem is null)
-                    return true;
+                if (hardware)
+                    await WorkScheduler.GpuDecodeGate.WaitAsync(work.Token);
+                try
+                {
+                    var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
+                        .WithArguments(["-hide_banner", "-loglevel", "error", "-y", .. GpuAdapters.BackgroundThreadArguments,
+                            .. hardware ? GpuAdapters.BackgroundDecodeArguments : [], "-skip_frame", "nokey", "-i", videoPath,
+                            "-an", "-sn", "-vf", filter, "-frames:v", "1", "-q:v", "4", imagePath])
+                        .WithValidation(CommandResultValidation.None),
+                        work.Token);
 
-                AppLog.Write($"Thumbnails of {Path.GetFileName(videoPath)} could not be made{(hardware ? " with hardware decoding, and are tried again without" : "")}: {problem}");
+                    if (result.ExitCode == 0 && File.Exists(imagePath))
+                        return true;
+                }
+                finally
+                {
+                    if (hardware)
+                        WorkScheduler.GpuDecodeGate.Release();
+                }
             }
 
             return false;
-        }
-        finally
+        }, cancellationToken);
+
+    /// <summary>
+    /// A strip of frames from a video, evenly spread over its length and set side by side in one picture:
+    /// what a video's block on the timeline is drawn with. The background graphics card decodes where it can;
+    /// when that does not work out (a format the card does not take, a driver that will not open eight decoders
+    /// at once) the strip is made again by the processor. Background work (the media browser's: Idle).
+    /// </summary>
+    /// <param name="height">How tall each frame is made, in pixels: 54 for a block on the timeline.</param>
+    public static Task<bool> GenerateFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, CancellationToken cancellationToken,
+        int height = 54, WorkLane lane = WorkLane.Background) =>
+        WorkScheduler.Run(new WorkSpec($"Thumbnails of {Path.GetFileName(videoPath)}", lane) { Key = $"strip|{videoPath}|{count}|{height}|{imagePath}" }, async work =>
         {
-            ThumbnailGate.Release();
-        }
-    }
+            if (!File.Exists(DependencyUpdater.FfmpegPath))
+                return false;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
+            foreach (var hardware in GpuAdapters.BackgroundDecodeArguments.Count > 0 ? new[] { true, false } : [false])
+            {
+                // A few decoding sessions at a time on the card, whatever asked for them (see WorkScheduler.GpuDecodeGate).
+                if (hardware)
+                    await WorkScheduler.GpuDecodeGate.WaitAsync(work.Token);
+                try
+                {
+                    var problem = await RunFilmstripAsync(videoPath, imagePath, count, durationSeconds, hardware, height, work.Token);
+                    if (problem is null)
+                        return true;
+
+                    AppLog.Write($"Thumbnails of {Path.GetFileName(videoPath)} could not be made{(hardware ? " with hardware decoding, and are tried again without" : "")}: {problem}");
+                }
+                finally
+                {
+                    if (hardware)
+                        WorkScheduler.GpuDecodeGate.Release();
+                }
+            }
+
+            return false;
+        }, cancellationToken);
 
     /// <summary>Makes the strip once. Null when it was written; otherwise what FFmpeg said.</summary>
     private static async Task<string?> RunFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, bool hardware, int height, CancellationToken cancellationToken)
@@ -178,7 +234,7 @@ public static partial class FfmpegRunner
         {
             var at = durationSeconds > 0.2 ? Math.Min(durationSeconds * (i + 0.5) / count, last) : 0;
             if (hardware)
-                arguments.AddRange(["-hwaccel", "auto"]);
+                arguments.AddRange(GpuAdapters.BackgroundDecodeArguments);
 
             // Each input is a decoder of its own, and there are as many as there are frames in the strip. So
             // each is kept small: one thread, and the first frame it can give (the I-frame the seek lands on)
@@ -262,27 +318,47 @@ public static partial class FfmpegRunner
         if (!File.Exists(DependencyUpdater.FfprobePath))
             return [];
 
+        // Known already for this file as it is (listed this session, or taken up with a project or from seekindex.bin).
+        if (MediaProbe.KnownIFrames(path) is { } known)
+            return [.. known];
+
         // Listed before, for this file as it is: a long recording takes minutes to go through.
         if (PreviewCache.Timeline.ReadBytes(path, "iframes", ".bin") is { Length: > 0 } kept && kept.Length % sizeof(double) == 0)
-            return [.. System.Runtime.InteropServices.MemoryMarshal.Cast<byte, double>(kept)];
-
-        var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfprobePath)
-            .WithArguments(["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time",
-                "-of", "csv=p=0", "-skip_frame", "nokey", "-i", path])
-            .WithValidation(CommandResultValidation.None), cancellationToken);
-
-        var iFrames = new List<double>();
-        foreach (var line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            // Frames with side data get extra columns after the timestamp.
-            if (double.TryParse(line.Split(',')[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
-                iFrames.Add(seconds);
+            List<double> listed = [.. System.Runtime.InteropServices.MemoryMarshal.Cast<byte, double>(kept)];
+            MediaProbe.NoteIFrames(path, listed);
+            return listed;
         }
 
-        iFrames.Sort();
-        if (result.ExitCode == 0 && iFrames.Count > 0)
-            PreviewCache.Timeline.WriteBytes(path, "iframes", ".bin", System.Runtime.InteropServices.MemoryMarshal.AsBytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(iFrames)));
-        return iFrames;
+        // Read from the packets' flags, with nothing decoded: the demuxer marks every packet that starts an I-frame
+        // (K). The same list as decoding the I-frames gives, in a fraction of the time (a 4.5-hour 1440p recording
+        // in about half a minute, bound by the disk), and read line by line as it comes, not held whole. Background
+        // work (see WorkScheduler): asked for twice, it is read once.
+        return await WorkScheduler.Run(new WorkSpec($"I-frames of {Path.GetFileName(path)}", WorkLane.Background) { Key = $"iframes|{path}" }, async work =>
+        {
+            var iFrames = new List<double>();
+            var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfprobePath)
+                .WithArguments(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", "-i", path])
+                .WithStandardOutputPipe(ProcessPipes.Lines(line =>
+                {
+                    var comma = line.IndexOf(',');
+                    if (comma > 0 && comma + 1 < line.Length && line[comma + 1] == 'K'
+                        && double.TryParse(line.AsSpan(0, comma), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
+                    {
+                        iFrames.Add(seconds);
+                    }
+                }))
+                .WithValidation(CommandResultValidation.None), work.Token);
+
+            iFrames.Sort();
+            if (result.ExitCode == 0 && iFrames.Count > 0)
+            {
+                PreviewCache.Timeline.WriteBytes(path, "iframes", ".bin", System.Runtime.InteropServices.MemoryMarshal.AsBytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(iFrames)));
+                MediaProbe.NoteIFrames(path, iFrames);
+            }
+
+            return iFrames;
+        }, cancellationToken);
     }
 
     private static TimeSpan? ParseTime(Match match)

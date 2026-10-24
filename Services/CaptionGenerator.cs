@@ -162,6 +162,10 @@ public static partial class CaptionGenerator
             Option("--temperature", Number(set.Temperature));
         if (!set.TemperatureFallback && help.Contains("--no-fallback", StringComparison.Ordinal))
             arguments.Add("--no-fallback");
+
+        // Settings > Performance, "Whisper threads": Auto leaves it to whisper (at most 4). It changes how fast, not what is heard.
+        if (AppSettings.Current.WhisperThreads > 0)
+            Option("--threads", Math.Clamp(AppSettings.Current.WhisperThreads, 1, 64).ToString(CultureInfo.InvariantCulture));
         if (useVad)
         {
             if (set.VadThreshold != standard.VadThreshold)

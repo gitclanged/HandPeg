@@ -53,6 +53,8 @@ internal static class ProcessPipes
         using var execution = command.ExecuteAsync(cancellationToken);
         var processId = execution.ProcessId;
         RunningProcesses[processId] = 0;
+        IntoJob(processId);
+        WorkScheduler.NoteProcess(processId, running: true);
 
         // CliWrap kills on cancellation as well; this makes sure it is the tree, and happens straight away.
         await using var killOnCancel = cancellationToken.Register(() => KillTree(processId));
@@ -63,6 +65,7 @@ internal static class ProcessPipes
         finally
         {
             RunningProcesses.TryRemove(processId, out _);
+            WorkScheduler.NoteProcess(processId, running: false);
         }
     }
 
@@ -73,11 +76,26 @@ internal static class ProcessPipes
     public static async Task<CliWrap.Buffered.BufferedCommandResult> RunBufferedAsync(Command command, CancellationToken cancellationToken, Encoding? encoding = null)
     {
         using var execution = CliWrap.Buffered.BufferedCommandExtensions.ExecuteBufferedAsync(command, encoding ?? Console.OutputEncoding, cancellationToken);
+        IntoJob(execution.ProcessId);
         return await execution;
     }
 
-    /// <summary>Adds a process started some other way to those that are stopped when the application closes.</summary>
-    public static void Track(int processId) => RunningProcesses[processId] = 0;
+    /// <summary>
+    /// Puts a tool just started into the job for the work it was started for (see WorkScheduler, JobObjects): it then
+    /// keeps off the reserved processors, runs at its lane's priority, and dies with HandPeg whatever way HandPeg ends.
+    /// </summary>
+    private static void IntoJob(int processId) =>
+        JobObjects.Assign(processId, WorkScheduler.CurrentProcessClass, AppSettings.Current.BackgroundEfficiencyMode);
+
+    /// <summary>
+    /// Adds a process started some other way (the voiceover recorder) to those that are stopped when the application
+    /// closes. It goes into the foreground job: never lowered, but gone with HandPeg.
+    /// </summary>
+    public static void Track(int processId)
+    {
+        RunningProcesses[processId] = 0;
+        JobObjects.Assign(processId, ProcessClass.Foreground, efficiencyMode: false);
+    }
 
     public static void Untrack(int processId) => RunningProcesses.TryRemove(processId, out _);
 

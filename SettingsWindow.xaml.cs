@@ -182,6 +182,7 @@ public partial class SettingsWindow : Window
         {
             AppUpdater.CheckResult.UpToDate => $"HandPeg {detail} is the newest release.",
             AppUpdater.CheckResult.Ready => $"HandPeg {detail} is downloaded. It goes in when HandPeg is restarted: use Restart to Update in the main window, or just close HandPeg.",
+            AppUpdater.CheckResult.Found => $"HandPeg {detail} is available. Press Update at the bottom of the main window to download and put it in.",
             AppUpdater.CheckResult.Available => $"HandPeg {detail} is available. This copy does not update itself: get it from {AppUpdater.ReleasesPage}",
             _ => $"The check could not be made: {detail}",
         };
@@ -295,16 +296,19 @@ public partial class SettingsWindow : Window
         // About: which HandPeg this is, and whether it is a copy that can update itself.
         AboutText.Text = $"Version {AppUpdater.CurrentVersion}  ·  " + (AppPaths.IsSelfContained
             ? "self-contained copy: it keeps everything beside the program, and is updated by replacing its folder."
-            : "updates itself from its GitHub releases when it was put in by the installer; a check is made each time it starts.");
+            : "updates itself from its GitHub releases when it was put in by the installer: a newer one is offered at startup, and downloaded when you press Update.");
         RepositoryLink.NavigateUri = new Uri(AppSettings.HandPegRepositoryUrl);
         RepositoryLink.Inlines.Add(AppSettings.HandPegRepositoryUrl);
         if (AppUpdater.ReadyVersion is { } ready)
             UpdateStatusText.Text = $"HandPeg {ready} is downloaded and goes in when HandPeg is restarted.";
+        else if (AppUpdater.FoundVersion is { } found)
+            UpdateStatusText.Text = $"HandPeg {found} is available: press Update at the bottom of the main window.";
         WhisperDefaultText.Text = $"Default: {AppSettings.DefaultWhisperReleaseUrl}";
 
         // Two-way choices stored as a flag each.
 
         TimeFormatBox.SelectedIndex = _settings.ShowTimesAsFrames ? 1 : 0;
+        DroppedClipsBox.SelectedIndex = _settings.DroppedClipsJoinTrack ? 1 : 0;
         DefaultModeBox.ItemsSource = AppSettings.DefaultModes;
         if (!AppSettings.DefaultModes.Contains(_settings.DefaultMode))
             _settings.DefaultMode = AppSettings.LastUsedMode;
@@ -338,6 +342,29 @@ public partial class SettingsWindow : Window
             _settings.HardwareDecodeAdapter = GpuAdapter.Automatic.Index;
         DecodeAdapterBox.ItemsSource = adapters.Prepend(GpuAdapter.Automatic).ToList();
         DecodeAdapterBox.SelectedValue = _settings.HardwareDecodeAdapter;
+
+        // Performance: the choices that are numbers, with Auto first.
+        static List<NumberChoice> Numbers(string auto, IEnumerable<int> values) => [new(auto, 0), .. values.Select(v => new NumberChoice(v.ToString(System.Globalization.CultureInfo.InvariantCulture), v))];
+        var cores = Environment.ProcessorCount;
+        BackgroundJobsBox.ItemsSource = Numbers($"Auto ({WorkScheduler.LaneLimit(WorkLane.Background)})", Enumerable.Range(1, Math.Min(cores, 8)));
+        BackgroundThreadsBox.ItemsSource = Numbers("Auto", new[] { 1, 2, 4, 6, 8, 12, 16 }.Where(v => v <= cores));
+        WhisperThreadsBox.ItemsSource = Numbers("Auto", new[] { 1, 2, 4, 6, 8, 12, 16 }.Where(v => v <= cores));
+        ReservedCoresBox.ItemsSource = new List<NumberChoice> { new($"Auto ({new AppSettings { ReservedCores = -1 }.EffectiveReservedCores})", -1), new("None", 0) }
+            .Concat(Enumerable.Range(1, Math.Max(Math.Min(cores - 2, 8), 0)).Select(v => new NumberChoice(v.ToString(System.Globalization.CultureInfo.InvariantCulture), v))).ToList();
+        BackgroundGpuBox.ItemsSource = new List<NumberChoice> { new(GpuAdapters.BackgroundAdapter is { } card && _settings.BackgroundGpu == -1 ? $"Auto ({card.Name})" : "Auto", -1), new("Processor Only", -2) }
+            .Concat(adapters.Select(a => new NumberChoice(a.Display, a.Index))).ToList();
+        foreach (var (box, value) in new[] { (BackgroundJobsBox, _settings.BackgroundJobs), (BackgroundThreadsBox, _settings.BackgroundToolThreads),
+                     (WhisperThreadsBox, _settings.WhisperThreads), (ReservedCoresBox, _settings.ReservedCores), (BackgroundGpuBox, _settings.BackgroundGpu) })
+        {
+            // A value the list does not have (a number of cores from another machine) goes back to Auto.
+            if (box.ItemsSource is List<NumberChoice> choices && choices.All(c => c.Value != value))
+                box.SelectedValue = choices[0].Value;
+            else
+                box.SelectedValue = value;
+        }
+
+        if (!AppSettings.BackgroundPriorities.Contains(_settings.BackgroundPriority))
+            _settings.BackgroundPriority = AppSettings.PriorityBelowNormal;
 
         PresetBarBox.ItemsSource = AppSettings.PresetBarLocations;
         if (!AppSettings.PresetBarLocations.Contains(_settings.PresetBarLocation))
@@ -464,18 +491,42 @@ public partial class SettingsWindow : Window
     /// <summary>Shows how much each preview cache holds now, beside its size limit.</summary>
     private void ShowCacheUsage()
     {
-        foreach (var (cache, text) in new[] { (PreviewCache.Timeline, TimelineCacheUsage), (PreviewCache.Browser, BrowserCacheUsage) })
+        foreach (var (cache, text) in new[] { (PreviewCache.Timeline, TimelineCacheUsage), (PreviewCache.Browser, BrowserCacheUsage), (PreviewCache.Proxies, ProxyCacheUsage) })
         {
             var (bytes, files) = cache.Measure();
             text.Text = files == 0 ? "Empty" : $"{PreviewCache.Describe(bytes)} in use";
         }
     }
 
-    private void ClearCache_Click(object sender, RoutedEventArgs e)
+    private async void ClearCache_Click(object sender, RoutedEventArgs e)
     {
-        var cache = sender is Button { Tag: "Browser" } ? PreviewCache.Browser : PreviewCache.Timeline;
-        cache.Clear();
+        var cache = sender switch
+        {
+            Button { Tag: "Browser" } => PreviewCache.Browser,
+            Button { Tag: "Proxies" } => PreviewCache.Proxies,
+            _ => PreviewCache.Timeline,
+        };
+
+        // A large proxy cache takes a moment to delete: away from the window.
+        IsEnabled = false;
+        try
+        {
+            await Task.Run(cache.Clear);
+        }
+        finally
+        {
+            IsEnabled = true;
+        }
+
         ShowCacheUsage();
+    }
+
+    // The saved result of the hardware encoder tests is forgotten: they run again when Settings is saved (or at the next start).
+    private void RetestEncoders_Click(object sender, RoutedEventArgs e)
+    {
+        EncoderProber.ForgetSavedResult();
+        RetestEncodersButton.IsEnabled = false;
+        RetestEncodersButton.Content = "Hardware Encoders Will Be Tested Again";
     }
 
     private void BrowseFolder_Click(object sender, RoutedEventArgs e)
@@ -833,6 +884,7 @@ public partial class SettingsWindow : Window
 
 
         _settings.ShowTimesAsFrames = TimeFormatBox.SelectedIndex == 1;
+        _settings.DroppedClipsJoinTrack = DroppedClipsBox.SelectedIndex == 1;
         _settings.SplashStylePresets = _overlayStyles.Select(name => name + StyleFile.Extension).ToList();
         _settings.OverlayEncodingPresets = [.. _overlayEncodings];
 
@@ -854,3 +906,6 @@ public partial class SettingsWindow : Window
         DialogResult = true;
     }
 }
+
+/// <summary>One entry of a Settings list whose value is a number: what it says, and the number it stands for.</summary>
+public sealed record NumberChoice(string Display, int Value);

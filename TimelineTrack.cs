@@ -16,7 +16,7 @@ public abstract class TimelineBar : FrameworkElement
     public static readonly DependencyProperty BackgroundProperty = DependencyProperty.Register(
         nameof(Background), typeof(Brush), typeof(TimelineBar), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
-    private static readonly Pen KeyOutline = Frozen(new Pen(Brushes.Black, 0.7));
+    protected static readonly Pen KeyOutline = Frozen(new Pen(Brushes.Black, 0.7));
 
     private readonly DrawingVisual _playhead = new();
     private double _playheadX = double.NaN;
@@ -76,19 +76,32 @@ public abstract class TimelineBar : FrameworkElement
         drawing.DrawRectangle(Background ?? Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));
 
     /// <summary>A keyframe's diamond, centred on a point.</summary>
-    protected static void DrawDiamond(DrawingContext drawing, double x, double y, double radius)
+    protected static void DrawDiamond(DrawingContext drawing, double x, double y, double radius) =>
+        drawing.DrawGeometry(Brushes.Gold, KeyOutline, Diamonds([x], double.MaxValue, y, radius));
+
+    /// <summary>
+    /// Keyframes' diamonds as one shape: one centred on each of the given x, all at the height y, those that
+    /// would lie wholly outside 0 to <paramref name="width"/> left out. Made once and frozen, however many keys.
+    /// </summary>
+    protected static Geometry Diamonds(IReadOnlyList<double> xs, double width, double y, double radius)
     {
-        var diamond = new StreamGeometry();
-        using (var path = diamond.Open())
+        var diamonds = new StreamGeometry();
+        using (var path = diamonds.Open())
         {
-            path.BeginFigure(new Point(x, y - radius), isFilled: true, isClosed: true);
-            path.LineTo(new Point(x + radius, y), true, false);
-            path.LineTo(new Point(x, y + radius), true, false);
-            path.LineTo(new Point(x - radius, y), true, false);
+            foreach (var x in xs)
+            {
+                if (x < -radius || x > width + radius)
+                    continue;
+
+                path.BeginFigure(new Point(x, y - radius), isFilled: true, isClosed: true);
+                path.LineTo(new Point(x + radius, y), true, false);
+                path.LineTo(new Point(x, y + radius), true, false);
+                path.LineTo(new Point(x - radius, y), true, false);
+            }
         }
 
-        diamond.Freeze();
-        drawing.DrawGeometry(Brushes.Gold, KeyOutline, diamond);
+        diamonds.Freeze();
+        return diamonds;
     }
 
     protected static Pen Frozen(Pen pen)
@@ -110,6 +123,32 @@ public abstract class TimelineBar : FrameworkElement
 /// of nothing means the whole sound, fitted to the block.
 /// </summary>
 public readonly record struct WaveSpan(HandPegApp.Services.WaveformData Data, double Offset, double Span);
+
+/// <summary>What a drag does to a block (and, for a roll, the block it meets).</summary>
+public enum BlockEdit
+{
+    /// <summary>Moved along its bar (or onto another track's).</summary>
+    Move,
+
+    /// <summary>Its right edge: how long it is.</summary>
+    TrimEnd,
+
+    /// <summary>Its left edge: where it starts, and what of its file it starts with.</summary>
+    TrimStart,
+
+    /// <summary>The cut where it meets the block after it: its end and the next one's start move together.</summary>
+    Roll,
+
+    /// <summary>Alt-dragged inside: what of its file it plays, with the block left where it is.</summary>
+    Slip,
+}
+
+/// <summary>A drag of a block that was let go: its new left edge and width, how far its file was slipped (pixels), whether
+/// it ripples (Shift: the later clips move by as much as its end did), and for a roll the block after it, as it is now.</summary>
+public readonly record struct BlockEditDone(BlockEdit Kind, double Left, double Width, double Slip, bool Ripple, TimelineBlock? Neighbor);
+
+/// <summary>A gain line dragged on a block: its new gain (dB), or a fade handle's new length (seconds) at its start or end.</summary>
+public readonly record struct GainEditDone(double GainDb, double FadeIn, double FadeOut);
 
 /// <summary>One block of a <see cref="TimelineTrack"/>: a clip, a cut segment, a part of an audio track, a subtitle.</summary>
 public sealed class TimelineBlock
@@ -142,6 +181,39 @@ public sealed class TimelineBlock
     /// <summary>Whether its right edge can be dragged to change its length.</summary>
     public bool Resizable { get; init; }
 
+    /// <summary>Whether its left edge can be dragged too (trimming where it starts in its file), and it can be rolled and rippled.</summary>
+    public bool TrimmableStart { get; init; }
+
+    /// <summary>Whether Alt-dragging inside it slips what of its file it plays (a video or a sound with a length).</summary>
+    public bool Slippable { get; init; }
+
+    /// <summary>What letting go of a trim of its start, a roll, a slip or a ripple does; null for a block that only moves and trims its end.</summary>
+    public Action<BlockEditDone>? Edit { get; init; }
+
+    /// <summary>
+    /// Its sound's gain line, for a clip that carries sound: the gain in dB (drawn as a line, 0 dB at two thirds of its
+    /// height), and its fades in and out (seconds); null for a block with none. Dragged, <see cref="GainEdit"/> is told.
+    /// </summary>
+    public (double GainDb, double FadeIn, double FadeOut)? Gain { get; set; }
+
+    /// <summary>What letting go of a dragged gain line does.</summary>
+    public Action<GainEditDone>? GainEdit { get; init; }
+
+    /// <summary>
+    /// The clip's fades in and out (seconds of the timeline) and their transition styles: handles at its top corners (or
+    /// as far in as each fade), dragged along to set them, and each fade shaded above its curve. Null for a block with none.
+    /// </summary>
+    public (double In, double Out, Models.TransitionStyle InStyle, Models.TransitionStyle OutStyle)? Fades { get; set; }
+
+    /// <summary>What letting go of a dragged fade handle does: the fade in (true) or out, and its new length in seconds.</summary>
+    public Action<bool, double>? FadeEdit { get; init; }
+
+    /// <summary>A crossfade from the block before it on its bar, in seconds: drawn as a pill across their cut, centred on it.</summary>
+    public double CrossfadeIn { get; init; }
+
+    /// <summary>How many pixels a second of its file takes on the bar (its speed taken in), for a slip and for fades; 0 for none.</summary>
+    public double PixelsPerMediaSecond { get; init; }
+
     /// <summary>What letting go of a moved block does, given its new left edge and width in pixels.</summary>
     public Action<double, double>? Commit { get; init; }
 
@@ -151,7 +223,39 @@ public sealed class TimelineBlock
     /// <summary>May be dragged past the left end of the bar: a sound that was slipped.</summary>
     public bool MayStartBeforeZero { get; init; }
 
+    /// <summary>
+    /// Whether the block may be let go on another bar (another track's row), given that bar's data and the block's
+    /// left edge in pixels; null for a block that stays on its own bar.
+    /// </summary>
+    public Func<object, double, bool>? CanMoveTo { get; init; }
+
+    /// <summary>What letting go of the block on another bar does, given that bar's data and the block's left edge in pixels.</summary>
+    public Action<object, double>? MoveTo { get; init; }
+
     internal FormattedText? Label;
+
+    // What its drawing is made of, made once and used again while the block keeps its place and size (a pan or a
+    // playhead move draws it again unchanged): its rounded outline, and its keyframes' diamonds as one shape.
+    internal Rect ShapeRect;
+    internal Geometry? Shape;
+    internal Geometry? Diamonds;
+
+    /// <summary>The block's rounded outline at <paramref name="rect"/>: the one made before when it is still there.</summary>
+    internal Geometry ShapeAt(Rect rect)
+    {
+        if (Shape is null || ShapeRect != rect)
+        {
+            // Resized (its right edge dragged): the diamonds are laid out again for its new width.
+            if (ShapeRect.Size != rect.Size)
+                Diamonds = null;
+
+            var shape = new RectangleGeometry(rect, 3, 3);
+            shape.Freeze();
+            (Shape, ShapeRect) = (shape, rect);
+        }
+
+        return Shape;
+    }
 }
 
 /// <summary>
@@ -164,6 +268,32 @@ public sealed class TimelineTrack : TimelineBar
     /// <summary>How close to a block's right edge the pointer has to be to take hold of its length.</summary>
     public const double EdgePixels = 7;
 
+    /// <summary>The gain line's reach: from silence at the bottom of a block to +12 dB at its top, 0 dB a third of the way down.</summary>
+    public const double LowestGain = -40, HighestGain = 12;
+
+    /// <summary>How close to the gain line (or a fade handle) the pointer has to be to take hold of it.</summary>
+    private const double GainReach = 4;
+
+    /// <summary>How close to an edge of the bar a drag has to come to move the time bars along by itself.</summary>
+    private const double AutoScrollZone = 28;
+
+    private static readonly Pen GainPen = Frozen(new Pen(FrozenBrush(Color.FromArgb(230, 0xFF, 0xD5, 0x4F)), 1.2));
+    private static readonly Brush HandleFill = FrozenBrush(Color.FromRgb(0xFF, 0xD5, 0x4F));
+
+    /// <summary>How close to a fade handle the pointer has to be, along the block, to take hold of it.</summary>
+    private const double FadeReach = 6;
+
+    /// <summary>How deep the band along a block's top is where its fade handles are (below it, its edges trim).</summary>
+    private const double FadeBand = 10;
+
+    private static readonly Brush FadeShade = FrozenBrush(Color.FromArgb(120, 0, 0, 0));
+    private static readonly Pen FadeCurve = Frozen(new Pen(FrozenBrush(Color.FromArgb(235, 255, 255, 255)), 1.3));
+    private static readonly Brush FadeHandleFill = FrozenBrush(Color.FromRgb(0xF2, 0xF2, 0xF2));
+    private static readonly Pen FadeHandleOutline = Frozen(new Pen(FrozenBrush(Color.FromArgb(200, 0, 0, 0)), 1));
+    private static readonly Brush ReadoutFill = FrozenBrush(Color.FromArgb(230, 24, 24, 24));
+    private static readonly Brush CrossfadeFill = FrozenBrush(Color.FromArgb(170, 0x4F, 0xC3, 0xF7));
+    private static readonly Pen CrossfadeLine = Frozen(new Pen(FrozenBrush(Color.FromArgb(235, 255, 255, 255)), 1.2));
+
     private static readonly Pen SelectedOutline = Frozen(new Pen(Brushes.White, 1.5));
     private static readonly Brush LabelShade = FrozenBrush(Color.FromArgb(150, 0, 0, 0));
 
@@ -175,13 +305,52 @@ public sealed class TimelineTrack : TimelineBar
     public const double SnapPixels = 8;
     private static readonly Typeface LabelFace = new("Segoe UI");
 
-    private (TimelineBlock Block, double PointerX, double Left, double Width, bool Resizing)? _drag;
+    // A block being dragged: what the drag does, where the pointer and the block (and for a roll the next block) were.
+    private sealed class BlockDrag
+    {
+        public required TimelineBlock Block { get; init; }
+        public required BlockEdit Kind { get; init; }
+        public double PointerX { get; init; }
+        public double Left { get; init; }
+        public double Width { get; init; }
+        public bool Ripple { get; init; }
+        public TimelineBlock? Neighbor { get; init; }
+        public double NeighborLeft { get; init; }
+        public double NeighborWidth { get; init; }
+
+        /// <summary>A slip so far, in pixels: what of the file shows has moved with the pointer by this much.</summary>
+        public double Slip { get; set; }
+
+        public bool Resizing => Kind != BlockEdit.Move;
+    }
+
+    private BlockDrag? _drag;
+
+    // A gain line being dragged: the block, which part, the pointer and the values where it started.
+    private (TimelineBlock Block, int Part, Point From, (double GainDb, double FadeIn, double FadeOut) Start)? _gainDrag;
+
+    // A fade handle being dragged: the block, which fade (true: in), and the block's fades when the drag began.
+    private (TimelineBlock Block, bool In, (double In, double Out, Models.TransitionStyle InStyle, Models.TransitionStyle OutStyle) Start)? _fadeDrag;
+
+    // The block the pointer is over: its fade handles show while it is (and always where it has a fade).
+    private TimelineBlock? _hovered;
+
+    /// <summary>
+    /// The fade handle the last right-button press was on: its block, and which fade (true: in); null when the press was
+    /// anywhere else. The menu that opens on the release offers that fade's transition styles.
+    /// </summary>
+    public (TimelineBlock Block, bool In)? MenuFade { get; private set; }
+
+    // The last pointer during a drag, on the bar as it is laid out: what an auto-scroll tick drags on with.
+    private Point _lastPointer;
+    private readonly System.Windows.Threading.DispatcherTimer _autoScroll = new() { Interval = TimeSpan.FromMilliseconds(40) };
 
     public TimelineTrack()
     {
         // The frames in a block are thumbnails, drawn smaller than they are and many at a time: the cheapest
         // scaling there is, not the smooth one, which costs the most exactly while a timeline is scrolled.
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.LowQuality);
+        _autoScroll.Tick += AutoScroll_Tick;
     }
 
     public List<TimelineBlock> Blocks { get; } = [];
@@ -212,13 +381,28 @@ public sealed class TimelineTrack : TimelineBar
     /// <summary>A drag ended, whether or not it moved anything.</summary>
     public event Action? DragEnded;
 
-    public bool IsDragging => _drag is not null;
+    public bool IsDragging => _drag is not null || _gainDrag is not null || _fadeDrag is not null;
 
     /// <summary>
     /// How far the bar has been moved along, in pixels: its blocks are laid out as if it were as wide as the
     /// zoom makes it, and this is how much of that lies to the left of what is seen.
     /// </summary>
     public double ViewOffsetX { get; set; }
+
+    // The view's slide, frozen, and made again only when the view moves.
+    private TranslateTransform? _viewShift;
+
+    /// <summary>The transform that slides the seen part of the bar into view (see ViewOffsetX).</summary>
+    private Transform ViewShift()
+    {
+        if (_viewShift is null || _viewShift.X != -ViewOffsetX)
+        {
+            _viewShift = new TranslateTransform(-ViewOffsetX, 0);
+            _viewShift.Freeze();
+        }
+
+        return _viewShift;
+    }
 
     /// <summary>Ctrl + wheel over the bar: zoom by a factor, about the pointer (pixels from the bar's left).</summary>
     public event Action<TimelineTrack, double, double>? ZoomRequested;
@@ -301,7 +485,7 @@ public sealed class TimelineTrack : TimelineBar
         }
 
         // The blocks are where the zoom puts them; the part of the bar that is seen is slid into view.
-        drawing.PushTransform(new TranslateTransform(-ViewOffsetX, 0));
+        drawing.PushTransform(ViewShift());
         foreach (var block in Blocks)
         {
             // What is off the bar is not drawn at all.
@@ -309,10 +493,14 @@ public sealed class TimelineTrack : TimelineBar
                 continue;
 
             var rect = new Rect(block.Left, block.Top, Math.Max(block.Width, 3), Math.Max(block.Height, 1));
-            var shape = new RectangleGeometry(rect, 3, 3);
-            shape.Freeze();
+            var shape = block.ShapeAt(rect);
             drawing.DrawGeometry(block.Fill, null, shape);
             drawing.PushClip(shape);
+
+            // Being slipped: what of its file it shows slides with the pointer, the block staying put.
+            var slip = _drag is { Kind: BlockEdit.Slip } slipping && ReferenceEquals(slipping.Block, block) ? slipping.Slip : 0;
+            if (slip != 0)
+                drawing.PushTransform(new TranslateTransform(slip, 0));
 
             if (block.Frames is { } frames)
             {
@@ -343,13 +531,24 @@ public sealed class TimelineTrack : TimelineBar
                 drawing.Pop();
             }
 
-            if (block.Keys is { } keys)
+            if (slip != 0)
+                drawing.Pop();
+
+            if (block.Gain is { } gain)
+                DrawGain(drawing, rect, gain);
+
+            // Its fades: shaded above their curves, with a handle at each (at the corners while there is none, when the
+            // pointer is over it).
+            if (block.Fades is { } fades && block.FadeEdit is not null)
+                DrawFades(drawing, rect, fades, ReferenceEquals(block, _hovered) || ReferenceEquals(block, _fadeDrag?.Block));
+
+            // The diamonds are one shape for the block, made once from its keys, laid where the block is.
+            if (block.Keys is { Count: > 0 } keys)
             {
-                foreach (var at in keys)
-                {
-                    if (at >= -4 && at <= rect.Width + 4)
-                        DrawDiamond(drawing, rect.Left + at, rect.Bottom - 6, 4.5);
-                }
+                block.Diamonds ??= Diamonds(keys, rect.Width, rect.Height - 6, 4.5);
+                drawing.PushTransform(new TranslateTransform(rect.Left, rect.Top));
+                drawing.DrawGeometry(Brushes.Gold, KeyOutline, block.Diamonds);
+                drawing.Pop();
             }
 
             if (block.Name.Length > 0 && rect.Width > 14)
@@ -358,7 +557,11 @@ public sealed class TimelineTrack : TimelineBar
                 {
                     MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis,
                 };
-                label.MaxTextWidth = Math.Max(rect.Width - 10, 4);
+
+                // Set only when it changes: setting it lays the text out again.
+                var widest = Math.Max(rect.Width - 10, 4);
+                if (label.MaxTextWidth != widest)
+                    label.MaxTextWidth = widest;
                 var origin = new Point(Math.Max(rect.Left, ViewOffsetX) + 5, rect.Top + (rect.Height - label.Height) / 2);
 
                 // Over frames, the words get a shade of their own to be read against.
@@ -372,14 +575,237 @@ public sealed class TimelineTrack : TimelineBar
                 drawing.DrawRoundedRectangle(null, SelectedOutline, new Rect(rect.Left + 0.75, rect.Top + 0.75, Math.Max(rect.Width - 1.5, 1), Math.Max(rect.Height - 1.5, 1)), 3, 3);
         }
 
+        // A crossfade across a cut: a pill over the two blocks, as long as the crossfade and centred on the cut.
+        foreach (var block in Blocks)
+        {
+            if (block.CrossfadeIn > 0.01 && PixelsPerSecond > 0)
+                DrawCrossfade(drawing, block);
+        }
+
+        // The fade being dragged, said as it changes.
+        if (_fadeDrag is { } fadeDrag && fadeDrag.Block.Fades is { } dragged)
+            DrawFadeReadout(drawing, fadeDrag.Block, fadeDrag.In, dragged, dpi);
+
         drawing.Pop();
+
+        // Where a block dragged from another bar would go on this one: blue where it can, red where it cannot.
+        if (_ghost is { } ghost)
+        {
+            drawing.PushTransform(ViewShift());
+            var rect = new Rect(ghost.Left, 1, Math.Max(ghost.Width, 3), Math.Max(ActualHeight - 2, 1));
+            drawing.DrawRoundedRectangle(ghost.Fits ? GhostFill : RefusedFill, ghost.Fits ? GhostOutline : RefusedOutline, rect, 3, 3);
+            drawing.Pop();
+        }
 
         // Where a file being dragged over the bar would land.
         if (!double.IsNaN(_dropX) && _dropX >= -2 && _dropX <= ActualWidth + 2)
             drawing.DrawRectangle(DropMarkBrush, null, new Rect(_dropX - 1.5, 0, 3, ActualHeight));
     }
 
+    /// <summary>Where the gain line of a block lies, from the top of the block, for a gain in dB.</summary>
+    private static double GainY(Rect rect, double gainDb) =>
+        rect.Top + 3 + (1 - (Math.Clamp(gainDb, LowestGain, HighestGain) - LowestGain) / (HighestGain - LowestGain)) * Math.Max(rect.Height - 6, 1);
+
+    /// <summary>The gain in dB at a height in a block: the line's place, the other way round.</summary>
+    private static double GainAt(Rect rect, double y) =>
+        Math.Round(LowestGain + (1 - Math.Clamp((y - rect.Top - 3) / Math.Max(rect.Height - 6, 1), 0, 1)) * (HighestGain - LowestGain), 1);
+
+    /// <summary>
+    /// A clip's gain line: level across it at its gain, sloping down to the bottom corners over its fades (its sound's
+    /// envelope), with a grip in its middle. Its fades are set by the handles at the block's top corners (DrawFades).
+    /// </summary>
+    private void DrawGain(DrawingContext drawing, Rect rect, (double GainDb, double FadeIn, double FadeOut) gain)
+    {
+        var y = GainY(rect, gain.GainDb);
+        var (fadeIn, fadeOut) = FadeSpan(rect, gain.FadeIn, gain.FadeOut);
+        var (inX, outX) = (rect.Left + fadeIn, rect.Right - fadeOut);
+        drawing.DrawLine(GainPen, new Point(rect.Left, fadeIn > 0.5 ? rect.Bottom : y), new Point(inX, y));
+        drawing.DrawLine(GainPen, new Point(inX, y), new Point(outX, y));
+        drawing.DrawLine(GainPen, new Point(outX, y), new Point(rect.Right, fadeOut > 0.5 ? rect.Bottom : y));
+        drawing.DrawRectangle(HandleFill, null, new Rect((inX + outX) / 2 - 2.5, y - 2.5, 5, 5));
+    }
+
+    /// <summary>How wide a block's fades are drawn, in pixels: their seconds at the bar's scale, never more than the block.</summary>
+    private (double In, double Out) FadeSpan(Rect rect, double fadeInSeconds, double fadeOutSeconds)
+    {
+        var scale = PixelsPerSecond > 0 ? PixelsPerSecond : 0;
+        var fadeIn = Math.Clamp(fadeInSeconds * scale, 0, rect.Width);
+        var fadeOut = Math.Clamp(fadeOutSeconds * scale, 0, rect.Width - fadeIn);
+        return (fadeIn, fadeOut);
+    }
+
+    /// <summary>Which part of a block's gain line a point is on: 1 the line; 0 none.</summary>
+    private int GainPartAt(TimelineBlock block, Point point)
+    {
+        if (block.Gain is not { } gain || block.GainEdit is null)
+            return 0;
+
+        var rect = BlockRect(block);
+        var y = GainY(rect, gain.GainDb);
+        if (Math.Abs(point.Y - y) > GainReach + 1)
+            return 0;
+        return point.X > rect.Left + EdgePixels && point.X < rect.Right - EdgePixels ? 1 : 0;
+    }
+
+    private static Rect BlockRect(TimelineBlock block) => new(block.Left, block.Top, Math.Max(block.Width, 3), Math.Max(block.Height, 1));
+
+    // ----- Fades -----
+
+    /// <summary>Which of a block's fade handles a point is on: true the fade in's, false the fade out's; null neither.</summary>
+    private bool? FadeHandleAt(TimelineBlock block, Point point)
+    {
+        if (block.Fades is not { } fades || block.FadeEdit is null || point.Y > block.Top + FadeBand || point.Y < block.Top - 1)
+            return null;
+
+        var rect = BlockRect(block);
+        var (fadeIn, fadeOut) = FadeSpan(rect, fades.In, fades.Out);
+        var (toIn, toOut) = (Math.Abs(point.X - HandleX(rect, rect.Left + fadeIn)), Math.Abs(point.X - HandleX(rect, rect.Right - fadeOut)));
+        if (Math.Min(toIn, toOut) > FadeReach)
+            return null;
+        return toIn <= toOut;
+    }
+
+    /// <summary>Where a fade handle is drawn: at its fade's end, kept inside the block.</summary>
+    private static double HandleX(Rect rect, double x) => Math.Clamp(x, rect.Left + 4, Math.Max(rect.Right - 4, rect.Left + 4));
+
+    /// <summary>
+    /// A block's fades: each one shaded above its curve (from nothing at the block's foot to all of it at its top, or
+    /// back, in the curve its transition style follows), and a handle where each fade ends, at the top. With no fade, the
+    /// handles are shown at the corners only while the pointer is over the block.
+    /// </summary>
+    private void DrawFades(DrawingContext drawing, Rect rect, (double In, double Out, Models.TransitionStyle InStyle, Models.TransitionStyle OutStyle) fades, bool hovered)
+    {
+        var (fadeIn, fadeOut) = FadeSpan(rect, fades.In, fades.Out);
+        if (fadeIn > 0.5)
+            DrawFadeRamp(drawing, rect, rect.Left, fadeIn, rising: true, fades.InStyle);
+        if (fadeOut > 0.5)
+            DrawFadeRamp(drawing, rect, rect.Right - fadeOut, fadeOut, rising: false, fades.OutStyle);
+
+        if (hovered || fadeIn > 0.5)
+            DrawFadeHandle(drawing, rect, rect.Left + fadeIn);
+        if (hovered || fadeOut > 0.5)
+            DrawFadeHandle(drawing, rect, rect.Right - fadeOut);
+    }
+
+    private static void DrawFadeRamp(DrawingContext drawing, Rect rect, double left, double width, bool rising, Models.TransitionStyle style)
+    {
+        var easing = new Models.Keyframe(0, 0, Models.TransitionStyles.Easing(style));
+        var steps = Math.Clamp((int)(width / 3), 2, 32);
+        var points = new Point[steps + 1];
+        for (var i = 0; i <= steps; i++)
+        {
+            var u = (double)i / steps;
+            var shown = Models.EasingCurves.Evaluate(rising ? u : 1 - u, easing);
+            points[i] = new Point(left + u * width, rect.Bottom - Math.Clamp(shown, -0.1, 1.15) * rect.Height);
+        }
+
+        // The shade: the top edge across the fade, then back along the curve.
+        var shade = new StreamGeometry();
+        using (var path = shade.Open())
+        {
+            path.BeginFigure(new Point(left, rect.Top), isFilled: true, isClosed: true);
+            path.LineTo(new Point(left + width, rect.Top), false, false);
+            for (var i = steps; i >= 0; i--)
+                path.LineTo(points[i], false, false);
+        }
+
+        shade.Freeze();
+        drawing.DrawGeometry(FadeShade, null, shade);
+
+        var curve = new StreamGeometry();
+        using (var path = curve.Open())
+        {
+            path.BeginFigure(points[0], isFilled: false, isClosed: false);
+            for (var i = 1; i <= steps; i++)
+                path.LineTo(points[i], true, true);
+        }
+
+        curve.Freeze();
+        drawing.DrawGeometry(null, FadeCurve, curve);
+    }
+
+    private static void DrawFadeHandle(DrawingContext drawing, Rect rect, double x) =>
+        drawing.DrawRoundedRectangle(FadeHandleFill, FadeHandleOutline, new Rect(HandleX(rect, x) - 3.5, rect.Top + 1.5, 7, 7), 1.5, 1.5);
+
+    /// <summary>A pill across the cut a crossfade spans, with a cross in it: as long as the crossfade, centred on the cut.</summary>
+    private void DrawCrossfade(DrawingContext drawing, TimelineBlock block)
+    {
+        var half = block.CrossfadeIn * PixelsPerSecond / 2;
+        var height = Math.Min(Math.Max(block.Height * 0.42, 8), 16);
+        var pill = new Rect(block.Left - half, block.Top + (block.Height - height) / 2, Math.Max(half * 2, 6), height);
+        drawing.DrawRoundedRectangle(CrossfadeFill, null, pill, height / 2, height / 2);
+        var inset = Math.Min(height / 2, pill.Width / 2);
+        drawing.DrawLine(CrossfadeLine, new Point(pill.Left + inset, pill.Top + 2), new Point(pill.Right - inset, pill.Bottom - 2));
+        drawing.DrawLine(CrossfadeLine, new Point(pill.Left + inset, pill.Bottom - 2), new Point(pill.Right - inset, pill.Top + 2));
+    }
+
+    /// <summary>The fade being dragged, in words beside its handle: "Fade In: 0.75 s", with its style.</summary>
+    private void DrawFadeReadout(DrawingContext drawing, TimelineBlock block, bool fadeIn, (double In, double Out, Models.TransitionStyle InStyle, Models.TransitionStyle OutStyle) fades, double dpi)
+    {
+        var rect = BlockRect(block);
+        var (inWidth, outWidth) = FadeSpan(rect, fades.In, fades.Out);
+        var x = HandleX(rect, fadeIn ? rect.Left + inWidth : rect.Right - outWidth);
+        var text = new FormattedText(FadeWords(fadeIn, fadeIn ? fades.In : fades.Out, fadeIn ? fades.InStyle : fades.OutStyle),
+            CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, LabelFace, 10.5, Brushes.White, dpi);
+
+        // Beside the handle, on the side of the block it fades (and inside what is seen of the bar).
+        var left = fadeIn ? x + 7 : x - 7 - text.Width - 8;
+        left = Math.Clamp(left, ViewOffsetX + 2, Math.Max(ViewOffsetX + ActualWidth - text.Width - 10, ViewOffsetX + 2));
+        var box = new Rect(left, rect.Top + 1, text.Width + 8, text.Height + 2);
+        drawing.DrawRoundedRectangle(ReadoutFill, null, box, 3, 3);
+        drawing.DrawText(text, new Point(box.Left + 4, box.Top + 1));
+    }
+
+    private static string FadeWords(bool fadeIn, double seconds, Models.TransitionStyle style) =>
+        string.Create(CultureInfo.InvariantCulture, $"Fade {(fadeIn ? "In" : "Out")}: {seconds:0.00} s · {Models.TransitionStyles.Label(style)}");
+
     private static readonly Brush DropMarkBrush = FrozenBrush(Color.FromRgb(0x4F, 0xC3, 0xF7));
+    private static readonly Brush GhostFill = FrozenBrush(Color.FromArgb(70, 0x4F, 0xC3, 0xF7));
+    private static readonly Pen GhostOutline = Frozen(new Pen(DropMarkBrush, 1.5));
+    private static readonly Brush RefusedFill = FrozenBrush(Color.FromArgb(60, 0xE5, 0x39, 0x35));
+    private static readonly Pen RefusedOutline = Frozen(new Pen(FrozenBrush(Color.FromRgb(0xE5, 0x39, 0x35)), 1.5));
+
+    // A block being dragged over this bar from another: where it is, and whether it may be let go here.
+    private (double Left, double Width, bool Fits)? _ghost;
+
+    private void ShowGhost((double Left, double Width, bool Fits)? ghost)
+    {
+        if (_ghost == ghost)
+            return;
+
+        _ghost = ghost;
+        InvalidateVisual();
+    }
+
+    // The bar a dragged block is over, when that is another track's row.
+    private TimelineTrack? _dragOver;
+
+    /// <summary>The bar of another track's row under the pointer (in this window); null over this bar or anything else.</summary>
+    private TimelineTrack? OtherTrackUnder(MouseEventArgs e)
+    {
+        if (Window.GetWindow(this) is not { } window)
+            return null;
+
+        // The bars draw themselves, so a hit on one is the bar itself; anything else in a row is not one.
+        return window.InputHitTest(e.GetPosition(window)) is TimelineTrack track && !ReferenceEquals(track, this)
+            && track.Tag is null && track.DataContext is not null && track.IsVisible ? track : null;
+    }
+
+    /// <summary>Follows a dragged block that may go to another track: the bar under the pointer shows where it would go there.</summary>
+    private void TrackDragOver(MouseEventArgs e, TimelineBlock block)
+    {
+        var over = block.CanMoveTo is null ? null : OtherTrackUnder(e);
+        if (!ReferenceEquals(over, _dragOver))
+            _dragOver?.ShowGhost(null);
+        _dragOver = over;
+        over?.ShowGhost((block.Left, block.Width, block.CanMoveTo!(over.DataContext, block.Left)));
+    }
+
+    private void EndTrackDrag()
+    {
+        _dragOver?.ShowGhost(null);
+        _dragOver = null;
+    }
     private double _dropX = double.NaN;
 
     /// <summary>Where a file being dragged over the bar would land, in pixels from its left as it is seen; NaN for nowhere.</summary>
@@ -443,9 +869,17 @@ public sealed class TimelineTrack : TimelineBar
 
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
     {
-        // A right-click selects the block as well, so that the menu that opens is about it.
-        if (BlockAt(Virtual(e)) is { } block)
+        // A right-click selects the block as well, so that the menu that opens is about it; on a fade handle, the menu
+        // that opens is that fade's.
+        var point = Virtual(e);
+        MenuFade = null;
+        if (BlockAt(point) is { } block)
+        {
+            if (FadeHandleAt(block, point) is { } fadeIn)
+                MenuFade = (block, fadeIn);
             BlockPressed?.Invoke(block, e);
+        }
+
         base.OnMouseRightButtonDown(e);
     }
 
@@ -459,6 +893,27 @@ public sealed class TimelineTrack : TimelineBar
         }
 
         BlockPressed?.Invoke(block, e);
+
+        // A fade handle, at the top of the block: dragged along, its fade's length (snapping to other clips' edges, on
+        // any track, and the playhead: where a clip under or over this one starts or ends is where a crossfade with it ends).
+        if (FadeHandleAt(block, point) is { } fadeIn && block.Fades is { } fades && CaptureMouse())
+        {
+            _fadeDrag = (block, fadeIn, fades);
+            _snapTimes = SnapTimes?.Invoke() ?? [];
+            ToolTip = null;
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
+
+        // The gain line, on a clip with sound: dragged up and down.
+        if (GainPartAt(block, point) is > 0 and var part && block.Gain is { } gain && CaptureMouse())
+        {
+            _gainDrag = (block, part, point, gain);
+            e.Handled = true;
+            return;
+        }
+
         if (block is { CanDrag: { } canDrag, Commit: not null })
         {
             if (!canDrag())
@@ -467,12 +922,60 @@ public sealed class TimelineTrack : TimelineBar
             }
             else if (CaptureMouse())
             {
-                _drag = (block, point.X, block.Left, block.Width, block.Resizable && point.X > block.Left + block.Width - EdgePixels);
+                _drag = StartDrag(block, point);
                 _snapTimes = SnapTimes?.Invoke() ?? [];
+                _lastPointer = point;
             }
         }
 
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// What a press on a block starts: on its right edge a trim of its end, on its left edge a trim of its start, on the
+    /// cut where it meets the next block a roll of both, Alt inside it a slip, anywhere else a move. Shift on an edge
+    /// ripples (the later clips follow its end).
+    /// </summary>
+    private BlockDrag StartDrag(TimelineBlock block, Point point)
+    {
+        var modifiers = Keyboard.Modifiers;
+        var ripple = modifiers.HasFlag(ModifierKeys.Shift) && block.Edit is not null;
+        var (left, right) = (block.Left, block.Left + block.Width);
+
+        // The cut between this block and the next, when they meet: the block on either side of it can be pressed.
+        if (!ripple && block.Edit is not null && block.TrimmableStart)
+        {
+            var (before, after) = point.X > right - EdgePixels ? (block, NextTo(block, after: true))
+                : point.X < left + EdgePixels ? (NextTo(block, after: false), block) : (null, null);
+            if (before is { Edit: not null, TrimmableStart: true } && after is { Edit: not null, TrimmableStart: true })
+            {
+                return new BlockDrag
+                {
+                    Block = before, Kind = BlockEdit.Roll, PointerX = point.X, Left = before.Left, Width = before.Width,
+                    Neighbor = after, NeighborLeft = after.Left, NeighborWidth = after.Width,
+                };
+            }
+        }
+
+        var kind = block.Resizable && point.X > right - EdgePixels ? BlockEdit.TrimEnd
+            : block.TrimmableStart && block.Edit is not null && point.X < left + EdgePixels ? BlockEdit.TrimStart
+            : block.Slippable && block.Edit is not null && modifiers.HasFlag(ModifierKeys.Alt) ? BlockEdit.Slip
+            : BlockEdit.Move;
+        return new BlockDrag { Block = block, Kind = kind, PointerX = point.X, Left = left, Width = block.Width, Ripple = ripple && kind is BlockEdit.TrimEnd or BlockEdit.TrimStart };
+    }
+
+    /// <summary>The block whose edge meets this one's (its end, or its start), on this bar; null when there is none within a pixel.</summary>
+    private TimelineBlock? NextTo(TimelineBlock block, bool after)
+    {
+        foreach (var other in Blocks)
+        {
+            if (ReferenceEquals(other, block) || Math.Abs(other.Top - block.Top) > 0.5)
+                continue;
+            if (after ? Math.Abs(other.Left - (block.Left + block.Width)) < 1 : Math.Abs(other.Left + other.Width - block.Left) < 1)
+                return other;
+        }
+
+        return null;
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -486,36 +989,191 @@ public sealed class TimelineTrack : TimelineBar
         }
 
         var point = Virtual(e);
-        if (_drag is not { } drag)
+        if (_fadeDrag is { } fadeDrag)
         {
-            // The right edge is the handle for the length.
-            Cursor = BlockAt(point) switch
-            {
-                { Resizable: true, CanDrag: not null } over when point.X > over.Left + over.Width - EdgePixels => Cursors.SizeWE,
-                { CanDrag: not null } => Cursors.SizeAll,
-                _ => Cursors.Hand,
-            };
+            FollowFade(fadeDrag, point);
             return;
         }
 
+        if (_gainDrag is { } gainDrag)
+        {
+            FollowGain(gainDrag, point);
+            return;
+        }
+
+        if (_drag is not { } drag)
+        {
+            // The edges are the handles for the length and the start; the cut between two clips rolls; Alt slips; the
+            // top corners (or as far in as a fade) are the fades' handles.
+            var over = BlockAt(point);
+            Hover(over);
+            var fadeHandle = over is null ? null : FadeHandleAt(over, point);
+            ShowFadeTip(over, fadeHandle);
+            Cursor = over is null ? Cursors.Hand
+                : fadeHandle is not null ? Cursors.Cross
+                : GainPartAt(over, point) is 1 ? Cursors.SizeNS
+                : over is { Resizable: true, CanDrag: not null } && point.X > over.Left + over.Width - EdgePixels ? Cursors.SizeWE
+                : over is { TrimmableStart: true, CanDrag: not null, Edit: not null } && point.X < over.Left + EdgePixels ? Cursors.SizeWE
+                : over is { Slippable: true, Edit: not null } && Keyboard.Modifiers.HasFlag(ModifierKeys.Alt) ? Cursors.ScrollWE
+                : over.CanDrag is not null ? Cursors.SizeAll
+                : Cursors.Hand;
+            return;
+        }
+
+        _lastPointer = point;
+        Follow(drag, point, e);
+
+        // Near an edge of the bar, the time bars move along by themselves while the pointer stays there.
+        var seen = point.X - ViewOffsetX;
+        var nearEdge = seen < AutoScrollZone || seen > ActualWidth - AutoScrollZone;
+        if (nearEdge && !_autoScroll.IsEnabled)
+            _autoScroll.Start();
+        else if (!nearEdge)
+            _autoScroll.Stop();
+    }
+
+    /// <summary>Lays a dragged block (and a rolled neighbour) out for where the pointer is.</summary>
+    private void Follow(BlockDrag drag, Point point, MouseEventArgs? e)
+    {
         // A clip may be dragged, or stretched, past the right-hand end of the bar: the sequence is as long as
         // its clips reach, and the bars are drawn to the new length when it is let go.
         var moved = point.X - drag.PointerX;
-        if (drag.Resizing)
+        switch (drag.Kind)
         {
-            var right = Snap(drag.Left + drag.Width + moved);
-            drag.Block.Width = Math.Max(right - drag.Left, 4);
-        }
-        else
-        {
-            // Either edge of a moved block snaps, whichever is the nearer to something.
-            var left = drag.Left + moved;
-            var (toLeft, toRight) = (Snap(left) - left, Snap(left + drag.Width) - (left + drag.Width));
-            left += Math.Abs(toLeft) <= Math.Abs(toRight) ? toLeft : toRight;
-            drag.Block.Left = drag.Block.MayStartBeforeZero ? left : Math.Max(left, 0);
+            case BlockEdit.TrimEnd:
+                drag.Block.Width = Math.Max(Snap(drag.Left + drag.Width + moved) - drag.Left, 4);
+                break;
+
+            case BlockEdit.TrimStart:
+            {
+                var right = drag.Left + drag.Width;
+                var left = Math.Min(Snap(drag.Left + moved), right - 4);
+                (drag.Block.Left, drag.Block.Width) = (Math.Max(left, 0), right - Math.Max(left, 0));
+                break;
+            }
+
+            case BlockEdit.Roll when drag.Neighbor is { } next:
+            {
+                var cut = Math.Clamp(Snap(drag.Left + drag.Width + moved), drag.Left + 4, drag.NeighborLeft + drag.NeighborWidth - 4);
+                drag.Block.Width = cut - drag.Left;
+                (next.Left, next.Width) = (cut, drag.NeighborLeft + drag.NeighborWidth - cut);
+                break;
+            }
+
+            case BlockEdit.Slip:
+                drag.Slip = moved;
+                break;
+
+            default:
+            {
+                // Either edge of a moved block snaps, whichever is the nearer to something.
+                var left = drag.Left + moved;
+                var (toLeft, toRight) = (Snap(left) - left, Snap(left + drag.Width) - (left + drag.Width));
+                left += Math.Abs(toLeft) <= Math.Abs(toRight) ? toLeft : toRight;
+                drag.Block.Left = drag.Block.MayStartBeforeZero ? left : Math.Max(left, 0);
+                if (e is not null)
+                    TrackDragOver(e, drag.Block);
+                break;
+            }
         }
 
         InvalidateVisual();
+    }
+
+    /// <summary>A gain line dragged up or down: the gain.</summary>
+    private void FollowGain((TimelineBlock Block, int Part, Point From, (double GainDb, double FadeIn, double FadeOut) Start) drag, Point point)
+    {
+        var rect = BlockRect(drag.Block);
+        drag.Block.Gain = drag.Start with { GainDb = GainAt(rect, GainY(rect, drag.Start.GainDb) + point.Y - drag.From.Y) };
+        InvalidateVisual();
+    }
+
+    /// <summary>
+    /// A fade handle dragged along: its fade's length, from the block's edge to where the handle is, snapped (to the
+    /// other clips' edges and the playhead) and no longer than the block leaves beside its other fade. The gain line's
+    /// slope follows.
+    /// </summary>
+    private void FollowFade((TimelineBlock Block, bool In, (double In, double Out, Models.TransitionStyle InStyle, Models.TransitionStyle OutStyle) Start) drag, Point point)
+    {
+        if (PixelsPerSecond <= 0)
+            return;
+
+        var (block, start) = (drag.Block, drag.Start);
+        var rect = BlockRect(block);
+        var x = Snap(point.X);
+        var room = Math.Max(rect.Width / PixelsPerSecond - (drag.In ? start.Out : start.In), 0);
+        var seconds = Math.Round(Math.Clamp((drag.In ? x - rect.Left : rect.Right - x) / PixelsPerSecond, 0, room), 2);
+        block.Fades = drag.In ? start with { In = seconds } : start with { Out = seconds };
+        if (block.Gain is { } gain)
+            block.Gain = drag.In ? gain with { FadeIn = seconds } : gain with { FadeOut = seconds };
+        InvalidateVisual();
+    }
+
+    /// <summary>The pointer is over another block (or none): the one it left hides its handles, the one it is over shows them.</summary>
+    private void Hover(TimelineBlock? block)
+    {
+        if (ReferenceEquals(block, _hovered))
+            return;
+
+        var shows = (_hovered?.Fades is not null) || (block?.Fades is not null);
+        _hovered = block;
+        if (shows)
+            InvalidateVisual();
+    }
+
+    // The fade a tooltip is up for, so it is set once per handle, not on every move.
+    private (TimelineBlock Block, bool In)? _tipFor;
+
+    /// <summary>Over a fade handle, a tooltip saying what it is and what it does; elsewhere, none.</summary>
+    private void ShowFadeTip(TimelineBlock? block, bool? fadeIn)
+    {
+        (TimelineBlock, bool)? tip = block is not null && fadeIn is { } which ? (block, which) : null;
+        if (tip == _tipFor)
+            return;
+
+        _tipFor = tip;
+        if (block?.Fades is not { } fades || fadeIn is not { } isIn)
+        {
+            ToolTip = null;
+            return;
+        }
+
+        var seconds = isIn ? fades.In : fades.Out;
+        ToolTip = (seconds > 0.005 ? FadeWords(isIn, seconds, isIn ? fades.InStyle : fades.OutStyle) : $"Fade {(isIn ? "In" : "Out")}: none")
+            + $". Drag {(isIn ? "right" : "left")} to fade the clip's picture and sound {(isIn ? "in" : "out")} over what is under it; it snaps to where clips on the other tracks start and end"
+            + ", for a crossfade with one. Right-click for the transition style.";
+    }
+
+    protected override void OnMouseLeave(MouseEventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (_fadeDrag is null)
+        {
+            Hover(null);
+            ShowFadeTip(null, null);
+        }
+    }
+
+    private void AutoScroll_Tick(object? sender, EventArgs e)
+    {
+        if (_drag is not { } drag || Mouse.LeftButton != MouseButtonState.Pressed || ActualWidth <= 0)
+        {
+            _autoScroll.Stop();
+            return;
+        }
+
+        // Faster the further into the edge the pointer is: up to about 3% of the bar every tick.
+        var seen = _lastPointer.X - ViewOffsetX;
+        var depth = seen < AutoScrollZone ? seen - AutoScrollZone : seen > ActualWidth - AutoScrollZone ? seen - (ActualWidth - AutoScrollZone) : 0;
+        var pixels = Math.Clamp(depth / AutoScrollZone, -1.5, 1.5) * ActualWidth * 0.03;
+        if (Math.Abs(pixels) < 0.5)
+            return;
+
+        // The window moves every bar along, this one with them (its ViewOffsetX), and the pointer is where it was on screen.
+        var before = ViewOffsetX;
+        PanRequested?.Invoke(this, pixels);
+        _lastPointer.X += ViewOffsetX - before;
+        Follow(drag, _lastPointer, null);
     }
 
     /// <summary>A point along the bar moved onto the nearest moment to snap to, when one is close enough; as it was otherwise, or while Alt is held.</summary>
@@ -538,6 +1196,28 @@ public sealed class TimelineTrack : TimelineBar
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
+        _autoScroll.Stop();
+        if (_fadeDrag is { } fadeDrag)
+        {
+            _fadeDrag = null;
+            ReleaseMouseCapture();
+            if (fadeDrag.Block.Fades is { } fades && fades != fadeDrag.Start)
+                fadeDrag.Block.FadeEdit?.Invoke(fadeDrag.In, fadeDrag.In ? fades.In : fades.Out);
+            InvalidateVisual();
+            DragEnded?.Invoke();
+            return;
+        }
+
+        if (_gainDrag is { } gainDrag)
+        {
+            _gainDrag = null;
+            ReleaseMouseCapture();
+            if (gainDrag.Block.Gain is { } gain && gain != gainDrag.Start)
+                gainDrag.Block.GainEdit?.Invoke(new GainEditDone(gain.GainDb, gain.FadeIn, gain.FadeOut));
+            DragEnded?.Invoke();
+            return;
+        }
+
         if (_drag is not { } drag)
         {
             base.OnMouseLeftButtonUp(e);
@@ -545,23 +1225,65 @@ public sealed class TimelineTrack : TimelineBar
         }
 
         _drag = null;
+        var over = _dragOver;
+        EndTrackDrag();
         ReleaseMouseCapture();
 
+        var changed = Math.Abs(drag.Block.Left - drag.Left) > 0.5 || Math.Abs(drag.Block.Width - drag.Width) > 0.5;
+
+        // Let go on another track's row: it goes there (or, refused, is drawn back where it was).
+        if (over?.DataContext is { } row && drag.Block.MoveTo is { } moveTo)
+            moveTo(row, drag.Block.Left);
+
+        // A trim of the start, a roll, a slip or a ripple: the block says what that does.
+        else if (drag.Kind is BlockEdit.TrimStart or BlockEdit.Roll or BlockEdit.Slip || drag.Ripple)
+        {
+            if ((changed || Math.Abs(drag.Slip) > 0.5) && drag.Block.Edit is { } edit)
+                edit(new BlockEditDone(drag.Kind, drag.Block.Left, drag.Block.Width, drag.Slip, drag.Ripple, drag.Neighbor));
+        }
+
         // A click that did not move the block changes nothing.
-        if (Math.Abs(drag.Block.Left - drag.Left) > 0.5 || Math.Abs(drag.Block.Width - drag.Width) > 0.5)
+        else if (changed)
             drag.Block.Commit?.Invoke(drag.Block.Left, drag.Block.Width);
+        InvalidateVisual();
         DragEnded?.Invoke();
     }
 
     protected override void OnLostMouseCapture(MouseEventArgs e)
     {
         base.OnLostMouseCapture(e);
-        if (_drag is null)
+        _autoScroll.Stop();
+        if (_fadeDrag is { } fadeDrag)
+        {
+            // Taken away mid-drag: the fades go back to what they were.
+            fadeDrag.Block.Fades = fadeDrag.Start;
+            if (fadeDrag.Block.Gain is { } gain)
+                fadeDrag.Block.Gain = gain with { FadeIn = fadeDrag.Start.In, FadeOut = fadeDrag.Start.Out };
+            _fadeDrag = null;
+            InvalidateVisual();
+            DragEnded?.Invoke();
+            return;
+        }
+
+        if (_gainDrag is { } gainDrag)
+        {
+            gainDrag.Block.Gain = gainDrag.Start;
+            _gainDrag = null;
+            InvalidateVisual();
+            DragEnded?.Invoke();
+            return;
+        }
+
+        if (_drag is not { } drag)
             return;
 
         // Taken away mid-drag (another window came forward): the block goes back to where it was.
-        (_drag.Value.Block.Left, _drag.Value.Block.Width) = (_drag.Value.Left, _drag.Value.Width);
+        (drag.Block.Left, drag.Block.Width) = (drag.Left, drag.Width);
+        if (drag.Neighbor is { } next)
+            (next.Left, next.Width) = (drag.NeighborLeft, drag.NeighborWidth);
         _drag = null;
+        EndTrackDrag();
+        InvalidateVisual();
         DragEnded?.Invoke();
     }
 
@@ -646,6 +1368,23 @@ public sealed class TimelineRuler : TimelineBar
     /// <summary>The moment at a point along the ruler.</summary>
     public double TimeAt(double x) => ActualWidth > 0 ? _start + x / ActualWidth * _span : 0;
 
+    // The labels by their text: a zoom or a pan draws mostly the same ones again, and they are not made afresh.
+    private readonly Dictionary<string, FormattedText> _labels = [];
+    private double _labelsDpi;
+
+    private FormattedText Label(string text, double dpi)
+    {
+        if (dpi != _labelsDpi || _labels.Count > 256)
+        {
+            _labelsDpi = dpi;
+            _labels.Clear();
+        }
+
+        if (!_labels.TryGetValue(text, out var label))
+            _labels[text] = label = new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 10.5, LabelBrush, dpi);
+        return label;
+    }
+
     protected override void OnRender(DrawingContext drawing)
     {
         DrawBackground(drawing);
@@ -681,7 +1420,7 @@ public sealed class TimelineRuler : TimelineBar
             drawing.DrawLine(isMajor ? Tick : MinorTick, new Point(Math.Round(x) + 0.5, top), new Point(Math.Round(x) + 0.5, bottom));
             if (isMajor && time >= -1e-6)
             {
-                var label = new FormattedText(Format(Math.Max(time, 0), major), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 10.5, LabelBrush, dpi);
+                var label = Label(Format(Math.Max(time, 0), major), dpi);
                 drawing.DrawText(label, new Point(Math.Round(x) + 3, Math.Max(bottom - 9 - label.Height, 0)));
             }
         }
@@ -808,46 +1547,5 @@ public sealed class TimelineRuler : TimelineBar
         var brush = new SolidColorBrush(color);
         brush.Freeze();
         return brush;
-    }
-}
-
-/// <summary>The Keyframes pane's bar: the selected clip's stretch of the timeline, a diamond at each of its keyframes, the playhead.</summary>
-public sealed class KeyTimelineBar : TimelineBar
-{
-    private double _spanLeft, _spanWidth;
-    private Brush? _spanFill;
-
-    /// <summary>The keyframes, in pixels from the left.</summary>
-    public IReadOnlyList<double> Keys { get; private set; } = [];
-
-    public void Show(double spanLeft, double spanWidth, Brush? spanFill, IReadOnlyList<double> keys)
-    {
-        (_spanLeft, _spanWidth, _spanFill, Keys) = (spanLeft, spanWidth, spanFill, keys);
-        InvalidateVisual();
-    }
-
-    /// <summary>The keyframe within reach of a point along the bar, or null.</summary>
-    public double? KeyNear(double x, double reach = 7)
-    {
-        double? nearest = null;
-        foreach (var key in Keys)
-        {
-            if (Math.Abs(key - x) <= reach && (nearest is null || Math.Abs(key - x) < Math.Abs(nearest.Value - x)))
-                nearest = key;
-        }
-
-        return nearest;
-    }
-
-    protected override void OnRender(DrawingContext drawing)
-    {
-        DrawBackground(drawing);
-        if (_spanFill is not null && _spanWidth > 0)
-            drawing.DrawRoundedRectangle(_spanFill, null, new Rect(_spanLeft, (ActualHeight - 6) / 2, Math.Max(_spanWidth, 2), 6), 2, 2);
-        foreach (var key in Keys)
-        {
-            if (key >= -8 && key <= ActualWidth + 8)
-                DrawDiamond(drawing, key, ActualHeight / 2, 7);
-        }
     }
 }

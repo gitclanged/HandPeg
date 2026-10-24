@@ -23,10 +23,16 @@ public partial class MainWindow
         if (options.GroupDescriptions.Count == 0)
             options.GroupDescriptions.Add(new PropertyGroupDescription(nameof(PlaybackControlOption.Group)));
 
+        // Encoder Mode's list leaves out what its bar can never show (Live Preview, Render Preview, Split).
+        options.Filter = item => item is PlaybackControlOption { EditorOnly: false } || _viewModel.IsEditorMode;
+
         _viewModel.PropertyChanged += (_, e) =>
         {
             switch (e.PropertyName)
             {
+                case nameof(ViewModels.MainViewModel.IsEditorMode):
+                    options.Refresh();
+                    break;
                 case nameof(ViewModels.MainViewModel.IsPlayerMuted):
                     _mpv?.SetMute(_viewModel.IsPlayerMuted);
                     break;
@@ -238,9 +244,36 @@ public partial class MainWindow
 
     // ----- Room for the controls -----
 
-    /// <summary>The controls in the middle of the bar wrap onto a second line rather than run under the ones at its ends.</summary>
-    private void TransportRow_SizeChanged(object sender, SizeChangedEventArgs e)
+    /// <summary>
+    /// The controls in the middle of the bar get the room its two ends do not need: the left end needs only its Views
+    /// button (its checkboxes fold into that menu), the right end all of its controls. What the middle has no room
+    /// for is left out of it and listed in its "more" menu (see OverflowStrip); nothing is ever wrapped onto a second line.
+    /// Asked by the row each time it is measured, with the width it is offered (see PlaybackRow).
+    /// </summary>
+    private void FitTransport(double width)
     {
-        TransportCenter.MaxWidth = Math.Max(TransportRow.ActualWidth - TransportRight.ActualWidth - 170, 160);
+        TransportRight.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var right = Math.Ceiling(TransportRight.DesiredSize.Width);
+        TransportRow.ColumnDefinitions[2].MinWidth = right;
+        UpdateTransportMinWidth();
+        TransportCenter.MaxWidth = Math.Max(width - TransportRow.Margin.Left - TransportRow.Margin.Right - right - TransportRow.ColumnDefinitions[0].MinWidth, 60);
+    }
+}
+
+/// <summary>
+/// The playback bar's row: each time it is measured it first has its middle fitted (<see cref="Fitting"/>) to the width
+/// it is offered. Not to its own width: a row too wide for its pane is laid out at its own width and cut, so its own
+/// width never shrank, and the middle, sized from it, never gave way (the bar's right end was cut off in a narrow pane).
+/// </summary>
+public sealed class PlaybackRow : Grid
+{
+    /// <summary>Told the width offered to the row, before it measures its parts.</summary>
+    public Action<double>? Fitting { get; set; }
+
+    protected override Size MeasureOverride(Size constraint)
+    {
+        if (!double.IsInfinity(constraint.Width))
+            Fitting?.Invoke(constraint.Width);
+        return base.MeasureOverride(constraint);
     }
 }

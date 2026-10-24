@@ -50,6 +50,80 @@ public partial class MainViewModel
         return ready;
     }
 
+    // ----- Keeping the tools up to date by themselves (Settings: Auto-Update Dependencies) -----
+    // A while after startup, as Idle work (it waits while playing or exporting), every tool HandPeg installed itself
+    // is compared with its newest release and replaced when there is a newer one, with its progress on the chip. A
+    // tool of the user's own (a path in the settings) and a tool never installed are left alone. A tool in use cannot
+    // be replaced: nothing about it changes, and it is tried again at the next start.
+
+    /// <summary>How long after startup the tools are looked at: the window, the project and its pictures come first.</summary>
+    private static readonly TimeSpan AutoUpdateDelay = TimeSpan.FromSeconds(30);
+
+    private async Task AutoUpdateDependenciesLaterAsync()
+    {
+        if (_isBackgroundWorker || !AppSettings.Current.AutoUpdateDependencies)
+            return;
+
+        try
+        {
+            await Task.Delay(AutoUpdateDelay, _shutdown.Token);
+            if (!AppSettings.Current.AutoUpdateDependencies)
+                return;
+
+            var updated = await WorkScheduler.Run(new WorkSpec("Updating dependencies", WorkLane.Idle) { Key = "auto-update-dependencies" }, UpdateInstalledToolsAsync, _shutdown.Token);
+            if (updated.Count > 0)
+            {
+                StatusText = $"Updated in the background: {string.Join(", ", updated)}.";
+                OnDependenciesChanged();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    /// <summary>Replaces every tool HandPeg installed that has a newer release; returns the names of those replaced.</summary>
+    private static async Task<List<string>> UpdateInstalledToolsAsync(WorkContext work)
+    {
+        var due = new List<(string Tool, RemoteAsset Latest)>();
+        work.Report(-1, "Looking for newer releases");
+        var tools = DependencyUpdater.Tools.Where(t => DependencyUpdater.GetLocalState(t) is DependencyState.Installed or DependencyState.UpdateAvailable).ToList();
+        foreach (var tool in tools)
+        {
+            try
+            {
+                var latest = await DependencyUpdater.GetLatestAsync(tool, work.Token);
+                if (DependencyUpdater.IsOutdated(tool, latest))
+                    due.Add((tool, latest));
+            }
+            catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex))
+            {
+                AppLog.Write($"Auto-update: {DependencyUpdater.DisplayName(tool)} could not be checked: {ex.Message}");
+            }
+        }
+
+        AppLog.Write($"Auto-update: {tools.Count} tool(s) checked ({string.Join(", ", tools.Select(DependencyUpdater.DisplayName))}); "
+            + (due.Count == 0 ? "all up to date." : $"newer: {string.Join(", ", due.Select(d => $"{DependencyUpdater.DisplayName(d.Tool)} {d.Latest.Tag}"))}."));
+        var updated = new List<string>();
+        for (var i = 0; i < due.Count; i++)
+        {
+            var (tool, latest) = due[i];
+            var (name, step) = (DependencyUpdater.DisplayName(tool), i);
+            var progress = new Progress<InstallProgress>(p => work.Report((step + Math.Clamp(p.Fraction, 0, 1)) / due.Count, $"{name}: {p.Text}"));
+            try
+            {
+                await Task.Run(() => DependencyUpdater.InstallToolAsync(tool, latest, progress, work.Token), work.Token);
+                updated.Add($"{name} {latest.Tag}");
+            }
+            catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex))
+            {
+                AppLog.Write($"Auto-update: {name} was not updated: {ex.Message}");
+            }
+        }
+
+        return updated;
+    }
+
     /// <summary>What transcribing takes: whisper.cpp, FFmpeg to cut the sound out, the speech model in use, and the silence model when that is switched on.</summary>
     private Task<bool> RequireCaptionToolsAsync(string purpose) => RequireAsync(purpose,
         [DependencyUpdater.Whisper, DependencyUpdater.Ffmpeg],

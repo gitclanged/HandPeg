@@ -279,7 +279,10 @@ public partial class MainViewModel
     /// When on the timeline the layer appears; 0 with no length is the whole video. Placed after the end of the
     /// sequence, it is given a few seconds of its own (a picture has no length), which the sequence grows to hold.
     /// </param>
-    /// <param name="onTrack">The row it was dropped on: the main video's puts it in the main video's place, on a track of its own.</param>
+    /// <param name="onTrack">
+    /// The row it was dropped on, which decides its track (<see cref="PlaceClip"/>). The main video's also puts it in
+    /// the main video's place.
+    /// </param>
     public bool AddImageLayer(string path, double startSeconds = 0, Layer? onTrack = null)
     {
         if (ImageInfo.GetSize(path) is not { } size)
@@ -306,10 +309,178 @@ public partial class MainViewModel
             FitInto(element, GetCenterRect());
 
         Checkpoint("add an image");
-        AttachLayer(element);
+        var span = element.GetSpan(SequenceSeconds);
+        PlaceClip(element, onTrack, joins: onTrack is { IsImage: true } && AppSettings.Current.DroppedClipsJoinTrack && HasRoom(onTrack, span.Start, span.End - span.Start));
         Log($"Added image layer {element.Name}");
         return true;
     }
+
+    /// <summary>
+    /// Adds a track with nothing on it (the + Add Layer button): a row of the Layers tab to drop clips onto. It draws
+    /// nothing and is kept in the project and in undo; the first clip dropped on it takes its place.
+    /// </summary>
+    [RelayCommand]
+    private void AddEmptyTrack()
+    {
+        Checkpoint("add a track");
+        AttachLayer(new Layer { Kind = LayerKind.VideoFile, Name = "Empty Track", IsEmptyTrack = true });
+        Log("Added an empty track: drop a video or a picture on it");
+    }
+
+    /// <summary>
+    /// Puts a new clip into the list by the row it was dropped on. Nothing is ever laid over a clip already there:
+    /// an empty track is filled (the clip takes its place and number); a track the clip joins
+    /// (<paramref name="joins"/>: one after another in one drop, or Settings' Join Track Under Pointer If Free with room
+    /// there) takes it after its last clip; any other row gets a track of its own just above it (the main video's,
+    /// just above the main video); no row, or the caption box or the background, a track at the top.
+    /// </summary>
+    private void PlaceClip(Layer element, Layer? onTrack, bool joins)
+    {
+        var known = onTrack is not null && Layers.Contains(onTrack);
+        if (known && onTrack!.IsEmptyTrack)
+        {
+            var index = Layers.IndexOf(onTrack);
+            element.TrackId = onTrack.TrackId;
+            if (element.IsLoading)
+                _emptyTracksFilled[element] = onTrack;
+            Detach(onTrack);
+            Hook(element);
+            InsertLayer(index, element);
+            return;
+        }
+
+        if (known && joins)
+            element.TrackId = onTrack!.TrackId;
+        else if (element.TrackId == onTrack?.TrackId)
+            element.TrackId = 0;
+
+        if (known)
+        {
+            // After the row's last clip in the list: one more up the stack, which keeps each track's clips together.
+            var index = Layers.IndexOf(GetTrackClips(onTrack!)[^1]) + 1;
+            Hook(element);
+            InsertLayer(index, element);
+        }
+        else if (onTrack is { IsMainVideo: true })
+        {
+            Hook(element);
+            InsertLayer(IndexAboveMainVideo(), element);
+        }
+        else
+        {
+            AttachLayer(element);
+        }
+    }
+
+    // Clips still being looked at that filled an empty track, and the track: a file that is not a video gives it back.
+    private readonly Dictionary<Layer, Layer> _emptyTracksFilled = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Where in the list a picture goes to lie just over the main video: after the pictures under it.</summary>
+    private int IndexAboveMainVideo()
+    {
+        var pictures = 0;
+        for (var i = 0; i < Layers.Count; i++)
+        {
+            if (pictures >= MainVideoIndex || Layers[i].IsAudio)
+                return i;
+            pictures++;
+        }
+
+        return Layers.Count;
+    }
+
+    /// <summary>Whether a track has nothing on it from a moment for a length (0: at that moment alone).</summary>
+    private bool HasRoom(Layer track, double start, double length) =>
+        IsClear(GetTrackClips(track).Where(c => !c.IsEmptyTrack), start, start + Math.Max(length, 0.05));
+
+    /// <summary>
+    /// A clip that joined a track before its length was known, and turns out to run over another clip there, is moved
+    /// to a track of its own just above: nothing is laid over a clip already on the timeline.
+    /// </summary>
+    private void KeepOffOtherClips(Layer element)
+    {
+        var others = GetTrackClips(element).Where(c => !ReferenceEquals(c, element)).ToList();
+        var (start, end) = element.GetSpan(SequenceSeconds);
+        if (others.Count == 0 || IsClear(others, start, end))
+            return;
+
+        Detach(element);
+        element.TrackId = 0;
+        Hook(element);
+        InsertLayer(Layers.IndexOf(others[^1]) + 1, element);
+        StatusText = $"{element.Name} would have run over another clip, so it is on a track of its own.";
+    }
+
+    /// <summary>
+    /// Whether a clip on the Layers tab can be dragged onto another track's row, to begin at a moment there: onto an
+    /// empty track always; onto a track of its own kind (a video onto a video track, a picture onto a picture track)
+    /// only where that track has nothing for the clip's whole length. The main video, sounds and the captions never.
+    /// </summary>
+    public bool CanMoveClipToTrack(Layer clip, Layer track, double start)
+    {
+        if (!Layers.Contains(clip) || !Layers.Contains(track) || clip is { IsRemovable: false } or { IsAudio: true } or { IsEmptyTrack: true } || track.IsAudio)
+            return false;
+        if (track.IsEmptyTrack)
+            return true;
+        if (track.Kind != clip.Kind || track.TrackId == clip.TrackId)
+            return false;
+
+        var (from, to) = clip.GetSpan(SequenceSeconds);
+        return HasRoom(track, Math.Max(start, 0), to - from);
+    }
+
+    /// <summary>
+    /// Moves a clip to another track (a drag from its row onto another), beginning at <paramref name="start"/>. Onto an
+    /// empty track, it takes the track's place and number and keeps its own look; onto a track of clips, it takes that
+    /// track's place, size and look (a track's clips share them) and keeps its own timing and keyframes. Its old track
+    /// goes when it was the only clip on it. One step of Undo.
+    /// </summary>
+    public bool MoveClipToTrack(Layer clip, Layer track, double start)
+    {
+        start = Math.Round(Math.Max(start, 0), 2);
+        if (!CanMoveClipToTrack(clip, track, start))
+        {
+            StatusText = track.IsEmptyTrack || track.Kind == clip.Kind
+                ? $"{clip.Name} would run over a clip on that track: drop it where the track is free, or onto an empty track (+ Add Layer)."
+                : $"{clip.Name} can only go onto a track of its own kind, or onto an empty track (+ Add Layer).";
+            return false;
+        }
+
+        Checkpoint($"move {clip.Name} to another track");
+        using var whole = DeferCommand();
+        var name = track.IsEmptyTrack ? "the empty track" : track.Name;
+        Detach(clip, keepWork: true);
+        clip.StartTime = start;
+        if (track.IsEmptyTrack)
+        {
+            var index = Layers.IndexOf(track);
+            clip.TrackId = track.TrackId;
+            Detach(track);
+            Hook(clip);
+            InsertLayer(index, clip);
+        }
+        else
+        {
+            var look = track.ToState();
+            clip.ApplyLook(look);
+            // The size first: a layer that grows about its middle moves as it is sized, and the place is the track's.
+            clip.LockAspectRatio = track.LockAspectRatio;
+            (clip.SizeWidth, clip.SizeHeight) = (track.SizeWidth, track.SizeHeight);
+            (clip.PositionX, clip.PositionY) = (track.PositionX, track.PositionY);
+            clip.TrackId = track.TrackId;
+            Hook(clip);
+            InsertLayer(Layers.IndexOf(GetTrackClips(track)[^1]) + 1, clip);
+        }
+
+        RefreshLayerRows();
+        TimelineChanged?.Invoke();
+        StatusText = $"{clip.Name} moved to {name}, at {TimeSpan.FromSeconds(start):h\\:mm\\:ss\\.ff}. Ctrl+Z puts it back.";
+        return true;
+    }
+
+    /// <summary>Whether none of the clips covers any of a stretch of the timeline (touching at an end is not covering).</summary>
+    private bool IsClear(IEnumerable<Layer> clips, double start, double end) =>
+        clips.All(c => c.GetSpan(SequenceSeconds) is var (from, to) && (end <= from + 0.01 || start >= to - 0.01));
 
     /// <summary>How long a picture placed after the end of the sequence is shown for, in seconds.</summary>
     private const double PictureSeconds = 5;
@@ -391,22 +562,24 @@ public partial class MainViewModel
     /// as the file lasts (the sequence grows to hold it); left at the start, it runs for the whole video.
     /// </param>
     /// <param name="onTrack">
-    /// The row of the Layers tab the file was dropped on. A video track: the clip joins it, in its place and with
-    /// its look, so videos can follow each other on one row. The main video: the clip goes on a new track, sized and
-    /// placed as the main video is. Null, or anything else: a new track of its own, as any layer added.
+    /// The row of the Layers tab the file was dropped on, which decides its track (<see cref="PlaceClip"/>): an empty
+    /// track is filled; a video track it joins takes it in its place and with its look; otherwise it gets a track of
+    /// its own. The main video's row also sizes and places it as the main video is.
     /// </param>
     public async Task<bool> AddVideoLayerAsync(string path, double startSeconds = 0, Layer? onTrack = null) =>
         await AddVideoClipAsync(path, startSeconds, onTrack) is not null;
 
     /// <summary>As <see cref="AddVideoLayerAsync"/>, and returns the clip once its file has been looked at; null when it could not be added.</summary>
     /// <param name="playOnce">Plays once through even when placed at the very start (videos dropped together, one after another).</param>
-    public async Task<Layer?> AddVideoClipAsync(string path, double startSeconds, Layer? onTrack, bool playOnce = false)
+    /// <param name="follows">Goes on <paramref name="onTrack"/>'s track whatever Settings say: it follows the clip before it in one drop.</param>
+    public async Task<Layer?> AddVideoClipAsync(string path, double startSeconds, Layer? onTrack, bool playOnce = false, bool follows = false)
     {
         // The block goes onto the timeline now, marked as loading: nothing is waited for before the drop is
         // answered. What the file is (its size, its length, whether it has sound) is found out afterwards.
         var start = startSeconds > 0.01 ? Math.Round(startSeconds, 2) : 0;
         Layer element;
-        var joins = onTrack is { IsVideoFile: true } && Layers.Contains(onTrack);
+        var joins = onTrack is { IsVideoFile: true, IsEmptyTrack: false } && Layers.Contains(onTrack)
+            && (follows || AppSettings.Current.DroppedClipsJoinTrack && HasRoom(onTrack, start, 0));
         if (joins)
         {
             // The track's look (place, size, filters, mask) with nothing of the clip it was copied from.
@@ -435,17 +608,7 @@ public partial class MainViewModel
         }
 
         Checkpoint("add a video layer");
-        if (joins)
-        {
-            // After the track's last clip in the list, which keeps the track's clips together.
-            Hook(element);
-            InsertLayer(Layers.IndexOf(GetTrackClips(onTrack!)[^1]) + 1, element);
-        }
-        else
-        {
-            AttachLayer(element);
-        }
-
+        PlaceClip(element, onTrack, joins);
         StatusText = $"Loading {element.Name}...";
 
         // Dropped on the main video's row: it takes the main video's place, fitted inside it once its shape is known.
@@ -507,12 +670,21 @@ public partial class MainViewModel
         }
 
         // Undone, or removed, while it was being looked at: there is nothing left to fill in.
+        _emptyTracksFilled.Remove(element, out var emptyTrack);
         if (!Layers.Contains(element))
             return false;
 
         if (info?.Video is not { Width: > 0, Height: > 0 } video)
         {
+            // Dropped on an empty track: the track is left as it was.
+            var index = Layers.IndexOf(element);
             Detach(element);
+            if (emptyTrack is not null)
+            {
+                Hook(emptyTrack);
+                InsertLayer(index, emptyTrack);
+            }
+
             StatusText = $"Not a video that can be read: {path}";
             return false;
         }
@@ -528,6 +700,7 @@ public partial class MainViewModel
                 element.Duration = Math.Round(info.DurationSeconds, 2);
             if (fitInto is { } box)
                 FitInto(element, box);
+            KeepOffOtherClips(element);
 
             element.IsLoading = false;
             GenerateCommand();
@@ -693,6 +866,10 @@ public partial class MainViewModel
         second.ShiftKeys(layer.StartTime - seconds);
         layer.Duration = seconds - layer.StartTime;
 
+        // The fade in (and a crossfade from the clip before) stays with the first part, the fade out goes with the second.
+        (second.FadeInSeconds, second.TransitionIn, second.FadeOutSeconds) = (0, 0, Math.Min(layer.FadeOutSeconds, Math.Round(second.Duration, 2)));
+        (layer.FadeOutSeconds, layer.FadeInSeconds) = (0, Math.Min(layer.FadeInSeconds, Math.Round(layer.Duration, 2)));
+
         Hook(second);
         InsertLayer(Layers.IndexOf(layer) + 1, second);
         Log($"Split clip: {layer.Name} at {TimeDisplay.Format(seconds)}");
@@ -853,7 +1030,7 @@ public partial class MainViewModel
     /// so a picture that goes from under it takes one off that count: otherwise the main video would climb
     /// over the next layer up.
     /// </summary>
-    private void Detach(Layer element)
+    private void Detach(Layer element, bool keepWork = false)
     {
         var index = Layers.IndexOf(element);
         if (index < 0)
@@ -866,7 +1043,10 @@ public partial class MainViewModel
         Layers.RemoveAt(index);
         if (under)
             MainVideoIndex--;
-        CancelStalePictureWork(element.ImagePath);
+
+        // Only moved (to another track): its pictures still being made are still wanted.
+        if (!keepWork)
+            CancelStalePictureWork(element.ImagePath);
     }
 
     /// <summary>Puts a layer into the list at a place of its own; one that goes in under the main video adds one to that count.</summary>
@@ -944,6 +1124,9 @@ public partial class MainViewModel
             AttachLayer(layer);
 
             // Saved while it was still being looked at (an undo step taken a moment after a drop): looked at again.
+            // An empty track has no file to look at.
+            if (layer.IsEmptyTrack)
+                continue;
             if (layer is { IsVideoFile: true, ImageWidth: <= 0 })
             {
                 layer.IsLoading = true;
@@ -1027,7 +1210,8 @@ public partial class MainViewModel
         if (e.PropertyName is nameof(Layer.Waveform) or nameof(Layer.Filmstrip))
             return;
 
-        if (sender is Layer changed && e.PropertyName is { } name && !Layer.IsClipProperty(name) && GetTrackProperty(name) is { } property)
+        // A change made in the Effects pane is the clip's own (Layer.IsEchoing); the layer tools' are the track's.
+        if (sender is Layer changed && e.PropertyName is { } name && !Layer.IsEchoing && !Layer.IsClipProperty(name) && GetTrackProperty(name) is { } property)
         {
             var others = Layers.Where(l => !ReferenceEquals(l, changed) && l.TrackId == changed.TrackId && l.IsAudio == changed.IsAudio).ToList();
             if (others.Count > 0)
@@ -1231,7 +1415,7 @@ public partial class MainViewModel
     /// It starts at the selected cut segment, or the first one; without cuts, at the beginning.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
-    private Task RenderPreviewAsync() => RunOperationAsync(async cancellationToken =>
+    private Task RenderPreviewAsync() => RunOperationAsync("Render Preview", WorkLane.Foreground, async cancellationToken =>
     {
         if (!HasSource)
             return "Load a video first.";
@@ -1599,7 +1783,6 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowCommandPreviewTab));
         OnPropertyChanged(nameof(ShowAdvancedFiltersTab));
         OnPropertyChanged(nameof(IsEditorMode));
-        OnPropertyChanged(nameof(IsSourcePaneVisible));
         OnPropertyChanged(nameof(IsMediaBrowserVisible));
         ApplyModePreview();
         OnPropertyChanged(nameof(IsTextLayerSelected));
@@ -1624,7 +1807,7 @@ public partial class MainViewModel
     /// What counts as silence (how quiet, for how long) is in the settings, set from the Remove Dead Air dialog.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
-    private Task RemoveDeadAirAsync() => RunOperationAsync(async cancellationToken =>
+    private Task RemoveDeadAirAsync() => RunOperationAsync("Removing dead air", WorkLane.Interactive, async cancellationToken =>
     {
         // How, and on what: set by RunDeadAir; left alone, it is the classic way on the main video.
         var (mode, target) = (_deadAirMode, _deadAirTarget);

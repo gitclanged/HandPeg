@@ -142,11 +142,25 @@ public static class SocialSquisher
         return result.ExitCode == 0 && File.Exists(imagePath) ? Waveforms.Load(imagePath) : null;
     }
 
+    /// <summary>
+    /// Squeezes a video under a preset's size. Throws InvalidOperationException, with the reason, when it cannot be
+    /// done. Foreground work (see WorkScheduler): the progress chip shows it as well as the Squisher's own window.
+    /// </summary>
+    public static Task<SquishResult> SquishAsync(
+        string input, SquishPreset preset, double offsetMb, IReadOnlyCollection<string> availableEncoders, string? presetOverride,
+        string outputPath, IProgress<double> progress, CancellationToken cancellationToken) =>
+        WorkScheduler.Run(new WorkSpec($"Squishing {Path.GetFileName(input)}", WorkLane.Foreground), work =>
+            SquishNowAsync(input, preset, offsetMb, availableEncoders, presetOverride, outputPath, new Progress<double>(fraction =>
+            {
+                progress.Report(fraction);
+                work.Report(fraction);
+            }), work.Token), cancellationToken);
+
     /// <summary>Squeezes a video under a preset's size. Throws InvalidOperationException, with the reason, when it cannot be done.</summary>
     /// <param name="offsetMb">Megabytes kept in hand below the target: what the container adds, and what a bitrate overshoots by.</param>
     /// <param name="presetOverride">An encoder preset to use in place of the most careful one; null or empty for that one.</param>
     /// <param name="progress">How far along the encode in hand is, 0 to 1.</param>
-    public static async Task<SquishResult> SquishAsync(
+    private static async Task<SquishResult> SquishNowAsync(
         string input, SquishPreset preset, double offsetMb, IReadOnlyCollection<string> availableEncoders, string? presetOverride,
         string outputPath, IProgress<double> progress, CancellationToken cancellationToken)
     {

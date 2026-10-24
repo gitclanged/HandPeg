@@ -14,6 +14,15 @@ public partial class LayerPropertiesDialog : Window
         InitializeComponent();
     }
 
+    /// <summary>Hides or shows the layer's whole track (the main window's, so it is a step of Undo); none: no eye.</summary>
+    public Action<Layer>? ToggleVisibility { get; init; }
+
+    private void Visibility_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is Layer { CanHide: true } layer)
+            ToggleVisibility?.Invoke(layer);
+    }
+
     private void PickKeyColor_Click(object sender, RoutedEventArgs e)
     {
         if (DataContext is not Layer layer)

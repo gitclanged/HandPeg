@@ -91,6 +91,22 @@ public sealed class DockLayoutState
 
     /// <summary>The side window's panes as they were when it was last closed, to come back when it is opened again.</summary>
     public DockNode? SideClosed { get; set; }
+
+    /// <summary>A copy sharing nothing with this one, to change or to keep as it is now.</summary>
+    public DockLayoutState Copy() => System.Text.Json.JsonSerializer.Deserialize<DockLayoutState>(System.Text.Json.JsonSerializer.Serialize(this))!;
+
+    /// <summary>An arrangement as saved (JSON), or null when there is none or it cannot be read.</summary>
+    public static DockLayoutState? Read(string? saved)
+    {
+        try
+        {
+            return saved is { Length: > 0 } ? System.Text.Json.JsonSerializer.Deserialize<DockLayoutState>(saved) : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
 }
 
 /// <summary>Changes to a tree of parts. Every change keeps the tree tidy: no empty groups, no split of one part.</summary>

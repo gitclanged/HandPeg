@@ -27,6 +27,8 @@ public sealed partial class DockGuide : Window
     private static partial bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
 
     private readonly TextBlock _label = new() { Foreground = Brushes.White, FontWeight = FontWeights.SemiBold, Margin = new Thickness(10, 6, 10, 6), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+    private readonly Border _shape, _words;
+    private readonly Brush _accent, _fill;
 
     public DockGuide(Brush accent)
     {
@@ -35,14 +37,17 @@ public sealed partial class DockGuide : Window
         var fill = accent.Clone();
         fill.Opacity = 0.32;
         fill.Freeze();
-        Content = new Border
+        (_accent, _fill) = (accent, fill);
+        _words = new Border { Background = new SolidColorBrush(Color.FromArgb(150, 0, 0, 0)), CornerRadius = new CornerRadius(4), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Child = _label };
+        _shape = new Border
         {
             Background = fill,
             BorderBrush = accent,
             BorderThickness = new Thickness(2),
             CornerRadius = new CornerRadius(4),
-            Child = new Border { Background = new SolidColorBrush(Color.FromArgb(150, 0, 0, 0)), CornerRadius = new CornerRadius(4), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Child = _label },
+            Child = _words,
         };
+        Content = _shape;
         SourceInitialized += (_, _) =>
         {
             var handle = new WindowInteropHelper(this).Handle;
@@ -54,13 +59,26 @@ public sealed partial class DockGuide : Window
     public void ShowAt(Rect pixels, string text)
     {
         _label.Text = text;
+        (_shape.Background, _shape.BorderThickness, _shape.CornerRadius, _words.Visibility) = (_fill, new Thickness(2), new CornerRadius(4), Visibility.Visible);
+        Place(pixels, 8);
+    }
+
+    /// <summary>Shows a thin upright line in the accent colour: where, among a row of tabs, a tab let go now goes.</summary>
+    public void ShowLine(Rect pixels)
+    {
+        (_shape.Background, _shape.BorderThickness, _shape.CornerRadius, _words.Visibility) = (_accent, new Thickness(0), new CornerRadius(1.5), Visibility.Collapsed);
+        Place(pixels, 2);
+    }
+
+    private void Place(Rect pixels, int least)
+    {
         if (!IsVisible)
         {
             (Left, Top, Width, Height) = (0, 0, 1, 1);
             Show();
         }
 
-        SetWindowPos(new WindowInteropHelper(this).Handle, IntPtr.Zero, (int)pixels.X, (int)pixels.Y, Math.Max((int)pixels.Width, 8), Math.Max((int)pixels.Height, 8), SwpNoZOrder | SwpNoActivate | SwpShowWindow);
+        SetWindowPos(new WindowInteropHelper(this).Handle, IntPtr.Zero, (int)Math.Round(pixels.X), (int)Math.Round(pixels.Y), Math.Max((int)Math.Round(pixels.Width), least), Math.Max((int)Math.Round(pixels.Height), least), SwpNoZOrder | SwpNoActivate | SwpShowWindow);
     }
 }
 

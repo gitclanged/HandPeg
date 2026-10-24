@@ -9,8 +9,10 @@ namespace HandPegApp.Services;
 /// a window it is given, plays a file, and can run an FFmpeg filter graph (its lavfi-complex property) on the
 /// picture as it plays, which is what lets the export's own filters be watched while they are set.
 ///
-/// The library is loaded from the deps folder on first use. Everything here may be called from any thread;
-/// the events are raised on a thread of this class's own, and it is for the listener to go back to the UI thread.
+/// The library is loaded from the deps folder on first use. Everything here may be called from any thread, and
+/// nothing here waits for mpv: every request is queued with mpv's asynchronous calls, which its core runs in the
+/// order they were sent (see "Requests"). The events are raised on a thread of this class's own, and it is for
+/// the listener to go back to the UI thread.
 /// </summary>
 public sealed class MpvPlayer
 {
@@ -20,7 +22,7 @@ public sealed class MpvPlayer
     /// libmpv's functions, called through their addresses: no delegate, and no marshalling code made while the
     /// program runs. (Not [LibraryImport]: that needs the library's name when HandPeg is compiled, and libmpv
     /// is loaded from wherever it was downloaded to.) Text goes over as UTF-8 written into room on the stack,
-    /// or into a borrowed buffer when it is long, as a filter graph is.
+    /// or into a borrowed buffer when it is long, as a filter graph is; mpv copies it before the call returns.
     /// </summary>
     private sealed unsafe class Library(IntPtr handle)
     {
@@ -28,8 +30,8 @@ public sealed class MpvPlayer
         private readonly delegate* unmanaged[Cdecl]<IntPtr, int> _initialize = (delegate* unmanaged[Cdecl]<IntPtr, int>)NativeLibrary.GetExport(handle, "mpv_initialize");
         private readonly delegate* unmanaged[Cdecl]<IntPtr, void> _destroy = (delegate* unmanaged[Cdecl]<IntPtr, void>)NativeLibrary.GetExport(handle, "mpv_terminate_destroy");
         private readonly delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int> _setOption = (delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int>)NativeLibrary.GetExport(handle, "mpv_set_option_string");
-        private readonly delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int> _setProperty = (delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int>)NativeLibrary.GetExport(handle, "mpv_set_property_string");
-        private readonly delegate* unmanaged[Cdecl]<IntPtr, byte**, int> _command = (delegate* unmanaged[Cdecl]<IntPtr, byte**, int>)NativeLibrary.GetExport(handle, "mpv_command");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, int, void*, int> _setPropertyAsync = (delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, int, void*, int>)NativeLibrary.GetExport(handle, "mpv_set_property_async");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, ulong, byte**, int> _commandAsync = (delegate* unmanaged[Cdecl]<IntPtr, ulong, byte**, int>)NativeLibrary.GetExport(handle, "mpv_command_async");
         private readonly delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, int, int> _observe = (delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, int, int>)NativeLibrary.GetExport(handle, "mpv_observe_property");
         private readonly delegate* unmanaged[Cdecl]<IntPtr, byte*, int> _requestLog = (delegate* unmanaged[Cdecl]<IntPtr, byte*, int>)NativeLibrary.GetExport(handle, "mpv_request_log_messages");
         private readonly delegate* unmanaged[Cdecl]<IntPtr, double, Event*> _waitEvent = (delegate* unmanaged[Cdecl]<IntPtr, double, Event*>)NativeLibrary.GetExport(handle, "mpv_wait_event");
@@ -38,15 +40,48 @@ public sealed class MpvPlayer
         // Longer text than this is written into a borrowed buffer instead of onto the stack.
         private const int OnStack = 512;
 
+        // mpv_format: a property's value given as text.
+        private const int FormatString = 1;
+
         public IntPtr Create() => _create();
 
         public int Initialize(IntPtr mpv) => _initialize(mpv);
 
         public void Destroy(IntPtr mpv) => _destroy(mpv);
 
-        public int SetOption(IntPtr mpv, string name, string value) => SetText(_setOption, mpv, name, value);
+        public int SetOption(IntPtr mpv, string name, string value)
+        {
+            byte[]? borrowedName = null, borrowedValue = null;
+            try
+            {
+                fixed (byte* nameText = Encode(name, stackalloc byte[128], ref borrowedName), valueText = Encode(value, stackalloc byte[OnStack], ref borrowedValue))
+                    return _setOption(mpv, nameText, valueText);
+            }
+            finally
+            {
+                Release(borrowedName);
+                Release(borrowedValue);
+            }
+        }
 
-        public int SetProperty(IntPtr mpv, string name, string value) => SetText(_setProperty, mpv, name, value);
+        /// <summary>Queues a property change; the answer comes back as an event with <paramref name="reply"/> in it.</summary>
+        public int SetPropertyAsync(IntPtr mpv, ulong reply, string name, string value)
+        {
+            byte[]? borrowedName = null, borrowedValue = null;
+            try
+            {
+                fixed (byte* nameText = Encode(name, stackalloc byte[128], ref borrowedName), valueText = Encode(value, stackalloc byte[OnStack], ref borrowedValue))
+                {
+                    var text = valueText;
+                    return _setPropertyAsync(mpv, reply, nameText, FormatString, &text);
+                }
+            }
+            finally
+            {
+                Release(borrowedName);
+                Release(borrowedValue);
+            }
+        }
 
         public Event* WaitEvent(IntPtr mpv, double timeout) => _waitEvent(mpv, timeout);
 
@@ -80,8 +115,11 @@ public sealed class MpvPlayer
             }
         }
 
-        /// <summary>A command and its arguments: one run of C strings, and a list of where each starts with a null at its end.</summary>
-        public int Command(IntPtr mpv, ReadOnlySpan<string> arguments)
+        /// <summary>
+        /// Queues a command and its arguments: one run of C strings, and a list of where each starts with a null
+        /// at its end. The answer comes back as an event with <paramref name="reply"/> in it.
+        /// </summary>
+        public int CommandAsync(IntPtr mpv, ulong reply, ReadOnlySpan<string> arguments)
         {
             var most = 0;
             foreach (var argument in arguments)
@@ -106,27 +144,12 @@ public sealed class MpvPlayer
                     }
 
                     starts[arguments.Length] = null;
-                    return _command(mpv, starts);
+                    return _commandAsync(mpv, reply, starts);
                 }
             }
             finally
             {
                 Release(borrowed);
-            }
-        }
-
-        private static int SetText(delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int> function, IntPtr mpv, string name, string value)
-        {
-            byte[]? borrowedName = null, borrowedValue = null;
-            try
-            {
-                fixed (byte* nameText = Encode(name, stackalloc byte[128], ref borrowedName), valueText = Encode(value, stackalloc byte[OnStack], ref borrowedValue))
-                    return function(mpv, nameText, valueText);
-            }
-            finally
-            {
-                Release(borrowedName);
-                Release(borrowedValue);
             }
         }
 
@@ -162,12 +185,16 @@ public sealed class MpvPlayer
     }
 
     // mpv's own numbers, from its client.h.
-    private const int EventShutdown = 1, EventLogMessage = 2, EventEndFile = 7, EventFileLoaded = 8, EventPlaybackRestart = 21, EventPropertyChange = 22;
+    private const int EventNone = 0, EventShutdown = 1, EventLogMessage = 2, EventSetPropertyReply = 4, EventCommandReply = 5,
+        EventEndFile = 7, EventFileLoaded = 8, EventPlaybackRestart = 21, EventPropertyChange = 22;
     private const int FormatFlag = 3, FormatDouble = 5;
 
     // What each watched property is asked for under: its changes come back with the number, so that no name
     // has to be read (and made into a string) for every frame that is shown.
     private const ulong WatchTime = 1, WatchDuration = 2, WatchPause = 3, WatchEnd = 4;
+
+    // What the answers to requests are told apart by: the seek being waited for, and the filter graph.
+    private const ulong ReplyNone = 0, ReplySeek = 100, ReplyGraph = 101;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Event
@@ -205,8 +232,15 @@ public sealed class MpvPlayer
 
     private MpvPlayer(Library api, IntPtr mpv) => (_api, _mpv) = (api, mpv);
 
-    /// <summary>Raised with the playback position in milliseconds as it moves.</summary>
+    /// <summary>Raised with the playback position in milliseconds as it moves, for every frame: see <see cref="PositionPending"/> for the merged kind.</summary>
     public event Action<long>? TimeChanged;
+
+    /// <summary>
+    /// Raised when the position has moved and nobody has taken the last one yet (<see cref="TryTakePosition"/>):
+    /// at most once until it is taken, however many frames go by. A listener that reads the position on every
+    /// screen refresh while playing need not listen at all.
+    /// </summary>
+    public event Action? PositionPending;
 
     /// <summary>Raised with the length of the loaded file in milliseconds.</summary>
     public event Action<long>? DurationChanged;
@@ -222,6 +256,9 @@ public sealed class MpvPlayer
 
     /// <summary>Raised with a line mpv logged as an error: a filter graph it could not build, a file it could not open.</summary>
     public event Action<string>? ErrorLogged;
+
+    /// <summary>Raised with mpv's reason when it would not take a filter graph it was given.</summary>
+    public event Action<string>? GraphRefused;
 
     /// <summary>Where playback is, in milliseconds, as last reported.</summary>
     public long PositionMs { get; private set; }
@@ -319,26 +356,218 @@ public sealed class MpvPlayer
     /// <summary>Opens a file, at the given position, playing or paused.</summary>
     public void Open(string path, long startMs, bool paused)
     {
+        lock (_sendLock)
+        {
+            // Whatever was waiting to be sent belonged to the file before.
+            (_pendingGraph, _pendingSeek, _seekInFlight) = (null, null, false);
+            OpenLocked(path, startMs, paused);
+        }
+    }
+
+    private void OpenLocked(string path, long startMs, bool paused)
+    {
         // A file opened while a graph is set does not start playing: the graph goes first, and whoever set
         // it sets it again once the file is open (see FileLoaded).
-        DropFilterGraph();
+        if (_hasGraph)
+        {
+            _hasGraph = false;
+            SetProperty("lavfi-complex", "");
+        }
+
         _path = path;
         IsLoading = true;
         IsEnded = false;
         SetProperty("pause", paused ? "yes" : "no");
-        Command("loadfile", path, "replace", "-1", $"start={Number(startMs / 1000.0)}");
+        Command(ReplyNone, "loadfile", path, "replace", "-1", $"start={Number(startMs / 1000.0)}");
     }
 
-    public void SetPause(bool paused) => SetProperty("pause", paused ? "yes" : "no");
+    public void SetPause(bool paused)
+    {
+        // HANDPEG_LOG_PLAY=1: how long Play takes to move the picture on (see NotePlayStarted).
+        if (LogPlay && !paused && IsPaused)
+            (_playAskedAt, _playFromMs, _graphsSincePlay, _firstMoveMs) = (System.Diagnostics.Stopwatch.GetTimestamp(), Volatile.Read(ref _latestPositionMs), 0, -1);
+        SetProperty("pause", paused ? "yes" : "no");
+    }
+
+    private static readonly bool LogPlay = Environment.GetEnvironmentVariable("HANDPEG_LOG_PLAY") == "1";
+    private long _playAskedAt, _playFromMs;
+    private int _graphsSincePlay;
+
+    /// <summary>
+    /// Logs the time from Play to the first position past where it was paused, and to half a second of the video played
+    /// (about 500 ms when nothing held it up), and how many graphs were sent between.
+    /// </summary>
+    private void NotePlayStarted(long positionMs)
+    {
+        if (_playAskedAt == 0 || positionMs <= _playFromMs)
+            return;
+
+        var ms = System.Diagnostics.Stopwatch.GetElapsedTime(_playAskedAt).TotalMilliseconds;
+        if (_firstMoveMs < 0)
+            _firstMoveMs = ms;
+        if (positionMs < _playFromMs + 500)
+            return;
+
+        _playAskedAt = 0;
+        AppLog.Write($"Play: the picture moved on {_firstMoveMs:0} ms after Play, and had played 0.5 s of the video {ms:0} ms after it (from {_playFromMs} ms; {_graphsSincePlay} graph(s) sent meanwhile).");
+        _firstMoveMs = -1;
+    }
+
+    private double _firstMoveMs = -1;
 
     /// <summary>
     /// Goes to a position: to that very frame, or, much faster, to the I-frame nearest it, which is what
-    /// keeps up with a timeline thumb while it is being dragged.
+    /// keeps up with a timeline thumb while it is being dragged. Seeks wait their turn (see "Requests").
     /// </summary>
-    public void Seek(long positionMs, bool exact)
+    public void Seek(long positionMs, bool exact) => Request(null, (positionMs, exact));
+
+    // ----- Requests -----
+    // Nothing here waits for mpv: the UI thread only queues. A seek and the filter graph go through one slot,
+    // and the newest wins: while a seek is under way (from being sent until mpv says playback has restarted),
+    // what is asked meanwhile is kept, the newer replacing the older, and sent when it is done. A playhead that
+    // is dragged thus asks for as many frames as the player can show, at the pace it can show them, and is never
+    // left behind a queue of positions it has already passed.
+    //
+    // A seek is sent before the graph that belongs to it. mpv runs a new graph from where it is (a refresh
+    // seek) unless a seek is already waiting, in which case the graph waits for that seek. The other way round,
+    // a graph made for the new moment is first run at the old one: a layer that, at the old moment, has minutes
+    // of its file behind it must decode all of them to catch up before the seek is even looked at.
+
+    private readonly object _sendLock = new();
+    private string? _pendingGraph;
+    private (long Ms, bool Exact)? _pendingSeek;
+    private bool _seekInFlight;
+    private long _seekSentAt, _seekAskedAt;
+
+    // How long a seek is waited for before what is waiting is sent anyway: mpv says nothing for a seek it did not make.
+    private const long SeekPatienceMs = 3000;
+
+    /// <summary>
+    /// Gives mpv the filter graph to run on the picture, in FFmpeg's own syntax, from [vid1] to [vo]; an empty
+    /// string for none. With a position, the player is sent there first and the graph is run from there. What
+    /// mpv says about it comes back through <see cref="GraphRefused"/> and <see cref="ErrorLogged"/>.
+    /// </summary>
+    /// <param name="mayBeOvertaken">
+    /// Asked for by nobody waiting on it (the paused player readying the graph it will play with): whatever is asked
+    /// while it is under way is sent at once instead of waiting for it, as a seek the user makes must never wait
+    /// behind work done ahead of need.
+    /// </param>
+    public void SetFilterGraph(string graph, (long Ms, bool Exact)? seek = null, bool mayBeOvertaken = false) => Request(graph, seek, mayBeOvertaken);
+
+    private void Request(string? graph, (long Ms, bool Exact)? seek, bool mayBeOvertaken = false)
     {
-        IsEnded = false;
-        Command("seek", Number(positionMs / 1000.0), exact ? "absolute+exact" : "absolute+keyframes");
+        lock (_sendLock)
+        {
+            if (graph is not null)
+                _pendingGraph = graph;
+            if (seek is not null)
+                (_pendingSeek, _seekAskedAt) = (seek, Environment.TickCount64);
+            _pendingOvertakable &= mayBeOvertaken;
+
+            if (!_seekInFlight || _inFlightOvertakable || Environment.TickCount64 - _seekSentAt > SeekPatienceMs)
+                SendPendingLocked();
+        }
+    }
+
+    // Whether what waits (and what is under way) was asked for ahead of need, and may be overtaken (see SetFilterGraph).
+    private bool _pendingOvertakable = true, _inFlightOvertakable;
+
+    private void SendPendingLocked()
+    {
+        var (graph, seek, overtakable) = (_pendingGraph, _pendingSeek, _pendingOvertakable);
+        (_pendingGraph, _pendingSeek, _seekInFlight, _pendingOvertakable, _inFlightOvertakable) = (null, null, false, true, false);
+        if (_closing || (graph is null && seek is null))
+            return;
+
+        if (graph is { Length: 0 })
+        {
+            if (_hasGraph)
+            {
+                // A graph takes the video track for itself, and mpv does not hand it back when the graph goes: it
+                // carries on without a picture and takes that for the end of the file. Opening the file again,
+                // where it was (or was going), is what brings the plain picture back.
+                _hasGraph = false;
+                if (_path is { } path)
+                {
+                    OpenLocked(path, seek?.Ms ?? PositionMs, IsPaused || IsEnded);
+                    return;
+                }
+            }
+
+            graph = null;
+        }
+
+        // What is on screen while paused is a frame from before the change: the same moment is asked for again,
+        // so that it is shown as the filters now make it.
+        if (seek is null && graph is not null && IsPaused)
+            seek = (PositionMs, true);
+
+        if (seek is { } target)
+        {
+            IsEnded = false;
+            Command(ReplySeek, "seek", Number(target.Ms / 1000.0), target.Exact ? "absolute+exact" : "absolute+keyframes");
+            (_seekInFlight, _seekSentAt, _inFlightOvertakable) = (true, Environment.TickCount64, overtakable);
+        }
+
+        if (graph is not null)
+        {
+            // HANDPEG_LOG_GRAPH=1: each graph is written to the log in full before mpv is given it, so that one the
+            // player cannot run (or that takes it down) can be read afterwards.
+            if (LogGraphs)
+                AppLog.Write($"Live graph ({graph.Length} characters): {graph}");
+
+            _hasGraph = true;
+            _graphsSincePlay++;
+            SetProperty("lavfi-complex", graph, ReplyGraph);
+
+            // A graph with sound takes the audio tracks; the track has to be given again after it.
+            if (graph.Contains("[ao]", StringComparison.Ordinal))
+                _audioTrack = null;
+        }
+    }
+
+    /// <summary>A seek is over (or never happened): what waited for it goes now.</summary>
+    private void SeekDone()
+    {
+        lock (_sendLock)
+        {
+            _seekInFlight = false;
+            if (_pendingGraph is not null || _pendingSeek is not null)
+                SendPendingLocked();
+        }
+    }
+
+    /// <summary>Takes the filter graph off without opening the file again: for when another file is about to be opened anyway.</summary>
+    public void DropFilterGraph()
+    {
+        lock (_sendLock)
+        {
+            _pendingGraph = null;
+            if (!_hasGraph)
+                return;
+
+            _hasGraph = false;
+            SetProperty("lavfi-complex", "");
+        }
+    }
+
+    private bool _hasGraph;
+    private bool _awaitingFirstFrame;
+
+    private static readonly bool LogGraphs = Environment.GetEnvironmentVariable("HANDPEG_LOG_GRAPH") == "1";
+
+    // ----- Where playback is -----
+    // mpv reports the position for every frame it shows. It is kept here, and a listener is told only that there
+    // is a new one; it takes the newest when it is ready for it. Nothing piles up on the UI thread while it is busy.
+
+    private long _latestPositionMs;
+    private int _positionPending;
+
+    /// <summary>Takes the newest position, if it moved since it was last taken.</summary>
+    public bool TryTakePosition(out long positionMs)
+    {
+        positionMs = Volatile.Read(ref _latestPositionMs);
+        return Interlocked.Exchange(ref _positionPending, 0) != 0;
     }
 
     // ----- The graphics card -----
@@ -382,7 +611,7 @@ public sealed class MpvPlayer
     public void SetMute(bool muted) => SetProperty("mute", muted ? "yes" : "no");
 
     /// <summary>Saves the frame on screen as a picture, as the filters make it but without the subtitles drawn over it.</summary>
-    public void SaveFrame(string path) => Command("screenshot-to-file", path, "video");
+    public void SaveFrame(string path) => Command(ReplyNone, "screenshot-to-file", path, "video");
 
     public void SetSpeed(double speed) => SetProperty("speed", Number(speed));
 
@@ -430,9 +659,9 @@ public sealed class MpvPlayer
 
             // The only subtitle track ever selected is this one (sid starts as "no"), so the current one is it.
             if (hadOne)
-                Command("sub-remove");
+                Command(ReplyNone, "sub-remove");
             if (path.Length > 0)
-                Command("sub-add", path, "select");
+                Command(ReplyNone, "sub-add", path, "select");
         }
     }
 
@@ -444,68 +673,18 @@ public sealed class MpvPlayer
     public void SetAudioTrack(int index)
     {
         var value = index < 0 ? "no" : Number(index + 1);
-        if (value == _audioTrack)
-            return;
+        lock (_sendLock)
+        {
+            if (value == _audioTrack)
+                return;
 
-        _audioTrack = value;
-        SetProperty("aid", value);
+            _audioTrack = value;
+            SetProperty("aid", value);
+        }
     }
 
     // The track last given, or null once a graph with sound has taken the tracks over.
     private string? _audioTrack;
-
-    /// <summary>
-    /// Gives mpv the filter graph to run on the picture, in FFmpeg's own syntax, from [vid1] to [vo]; an empty
-    /// string for none. Returns null, or what mpv said was wrong with it.
-    /// </summary>
-    public string? SetFilterGraph(string graph)
-    {
-        if (graph.Length == 0 && !_hasGraph)
-            return null;
-
-        _hasGraph = graph.Length > 0;
-
-        // HANDPEG_LOG_GRAPH=1: each graph is written to the log in full before mpv is given it, so that one the
-        // player cannot run (or that takes it down) can be read afterwards.
-        if (LogGraphs && graph.Length > 0)
-            AppLog.Write($"Live graph ({graph.Length} characters): {graph}");
-
-        var result = SetProperty("lavfi-complex", graph);
-        if (graph.Contains("[ao]", StringComparison.Ordinal))
-            _audioTrack = null;
-
-        if (graph.Length == 0)
-        {
-            // A graph takes the video track for itself, and mpv does not hand it back when the graph goes: it
-            // carries on without a picture and takes that for the end of the file. Opening the file again,
-            // where it was, is what brings the plain picture back.
-            if (_path is { } path)
-                Open(path, PositionMs, IsPaused || IsEnded);
-        }
-        else if (IsPaused)
-        {
-            // What is on screen while paused is a frame from before the change: the same moment is asked for
-            // again, so that it is shown as the filters now make it.
-            Command("seek", Number(PositionMs / 1000.0), "absolute+exact");
-        }
-
-        return result < 0 ? Describe(result) : null;
-    }
-
-    /// <summary>Takes the filter graph off without opening the file again: for when another file is about to be opened anyway.</summary>
-    public void DropFilterGraph()
-    {
-        if (!_hasGraph)
-            return;
-
-        _hasGraph = false;
-        SetProperty("lavfi-complex", "");
-    }
-
-    private bool _hasGraph;
-    private bool _awaitingFirstFrame;
-
-    private static readonly bool LogGraphs = Environment.GetEnvironmentVariable("HANDPEG_LOG_GRAPH") == "1";
 
     /// <summary>
     /// Ends the player. mpv is asked to quit; the thread reading its events then releases it, so nothing here
@@ -517,18 +696,21 @@ public sealed class MpvPlayer
             return;
 
         _closing = true;
-        Command("quit");
+        _api.CommandAsync(_mpv, ReplyNone, ["quit"]);
     }
 
-    private int SetProperty(string name, string value) => _closing && name != "pause" ? 0 : _api.SetProperty(_mpv, name, value);
-
-    private void Command(params string[] arguments)
+    // Once it has been told to quit, the player is on its way to being released: nothing more is sent to it.
+    // (Pausing still is: a player being closed must not go on making sound.)
+    private void SetProperty(string name, string value, ulong reply = ReplyNone)
     {
-        // Once it has been told to quit, the player is on its way to being released: nothing more is sent to it.
-        if (_closing && arguments is not ["quit"])
-            return;
+        if (!_closing || name == "pause")
+            _api.SetPropertyAsync(_mpv, reply, name, value);
+    }
 
-        _api.Command(_mpv, arguments);
+    private void Command(ulong reply, params string[] arguments)
+    {
+        if (!_closing)
+            _api.CommandAsync(_mpv, reply, arguments);
     }
 
     // Read where mpv keeps them: an event is not copied out, and the position that arrives with every frame
@@ -547,6 +729,12 @@ public sealed class MpvPlayer
 
             switch (e->Id)
             {
+                // Nothing for half a second: a seek that was never answered is given up on, so what waits behind it goes.
+                case EventNone:
+                    if (_seekInFlight && Environment.TickCount64 - _seekSentAt > SeekPatienceMs)
+                        SeekDone();
+                    break;
+
                 case EventPropertyChange when e->Data != IntPtr.Zero:
                     var property = (PropertyEvent*)e->Data;
                     if (property->Data == IntPtr.Zero)
@@ -558,6 +746,11 @@ public sealed class MpvPlayer
                         if (e->UserData == WatchTime)
                         {
                             PositionMs = (long)Math.Round(seconds * 1000);
+                            Volatile.Write(ref _latestPositionMs, PositionMs);
+                            if (LogPlay)
+                                NotePlayStarted(PositionMs);
+                            if (Interlocked.Exchange(ref _positionPending, 1) == 0)
+                                PositionPending?.Invoke();
                             TimeChanged?.Invoke(PositionMs);
                         }
                         else if (e->UserData == WatchDuration)
@@ -575,13 +768,28 @@ public sealed class MpvPlayer
 
                     break;
 
+                // A seek that mpv would not make (no file open, say) is not waited for.
+                case EventCommandReply when e->UserData == ReplySeek && e->Error < 0:
+                    SeekDone();
+                    break;
+
+                case EventSetPropertyReply when e->UserData == ReplyGraph && e->Error < 0:
+                    GraphRefused?.Invoke(Describe(e->Error));
+                    break;
+
                 // A file counts as open once it has shown its first frame, which mpv reports as playback
                 // (re)starting: a graph given between the two is one of the ways to leave it stuck.
                 case EventFileLoaded:
                     _awaitingFirstFrame = true;
                     break;
 
-                case EventPlaybackRestart when _awaitingFirstFrame:
+                case EventPlaybackRestart:
+                    if (LogPlay && _seekInFlight)
+                        AppLog.Write($"Seek: shown {Environment.TickCount64 - _seekSentAt} ms after it was sent, {Environment.TickCount64 - _seekAskedAt} ms after the newest was asked (at {Volatile.Read(ref _latestPositionMs)} ms).");
+                    SeekDone();
+                    if (!_awaitingFirstFrame)
+                        break;
+
                     _awaitingFirstFrame = false;
                     lock (_subtitleLock)
                     {
@@ -589,7 +797,7 @@ public sealed class MpvPlayer
 
                         // The new file has none of the tracks that were added to the one before.
                         if (_subtitleFile.Length > 0 && File.Exists(_subtitleFile))
-                            Command("sub-add", _subtitleFile, "select");
+                            Command(ReplyNone, "sub-add", _subtitleFile, "select");
                     }
 
                     FileLoaded?.Invoke();
@@ -597,6 +805,7 @@ public sealed class MpvPlayer
 
                 case EventEndFile:
                     IsLoading = false;
+                    SeekDone();
                     StateChanged?.Invoke();
                     break;
 

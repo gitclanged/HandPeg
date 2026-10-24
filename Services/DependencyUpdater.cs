@@ -301,10 +301,11 @@ public static partial class DependencyUpdater
         BufferedCommandResult result;
         try
         {
-            result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(Path.Combine(folder, program))
-                .WithArguments(argument)
-                .WithWorkingDirectory(folder)
-                .WithValidation(CommandResultValidation.None), timeout.Token);
+            result = await WorkScheduler.Run(new WorkSpec($"Checking {program}", WorkLane.Interactive) { Visible = false },
+                work => ProcessPipes.RunBufferedAsync(Cli.Wrap(Path.Combine(folder, program))
+                    .WithArguments(argument)
+                    .WithWorkingDirectory(folder)
+                    .WithValidation(CommandResultValidation.None), work.Token), timeout.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -489,6 +490,27 @@ public static partial class DependencyUpdater
     {
         if (GetLocalState(tool) == DependencyState.CustomPath)
             return;
+
+        // One install at a time, whoever asks (the dependency list, the background update): two would swap the same folders.
+        await Installing.WaitAsync(cancellationToken);
+        try
+        {
+            // Put in by the other one meanwhile: nothing left to do.
+            if (GetLocalState(tool) != DependencyState.Missing && !IsOutdated(tool, asset))
+                return;
+
+            await InstallToolNowAsync(tool, asset, progress, cancellationToken);
+        }
+        finally
+        {
+            Installing.Release();
+        }
+    }
+
+    private static readonly SemaphoreSlim Installing = new(1, 1);
+
+    private static async Task InstallToolNowAsync(string tool, RemoteAsset asset, IProgress<InstallProgress> progress, CancellationToken cancellationToken)
+    {
 
         var name = DisplayName(tool);
         var staging = Path.Combine(StagingRoot, $"{tool}_{Guid.NewGuid():N}");

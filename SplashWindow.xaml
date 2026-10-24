@@ -19,8 +19,8 @@
                 <Rectangle Margin="8" RadiusX="8" RadiusY="8" Stroke="{DynamicResource MutedTextBrush}" StrokeThickness="2" StrokeDashArray="6 5"
                            IsHitTestVisible="False" />
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
-                    <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="46" HorizontalAlignment="Center"
-                               Foreground="{DynamicResource MutedTextBrush}" />
+                    <Path Data="{StaticResource DropFileOrLinkIcon}" Width="50" Height="46" Stretch="Uniform" Stroke="{DynamicResource MutedTextBrush}" StrokeThickness="2.2"
+                          StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" />
                     <TextBlock Text="Drop Video Here" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,10,0,0" />
                     <TextBlock Text="or click to browse" HorizontalAlignment="Center" Margin="0,4,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                 </StackPanel>

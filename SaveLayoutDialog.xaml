@@ -1,0 +1,20 @@
+<Window x:Class="HandPegApp.SaveLayoutDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Save Current Layout" Width="420" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <!-- The panes as they are now, kept as a layout of the user's own: a name, and which of this mode's three places it goes in. -->
+    <StackPanel Margin="16">
+        <TextBlock x:Name="ModeText" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,10" />
+        <TextBlock Text="Name:" Margin="0,0,0,4" />
+        <TextBox x:Name="NameBox" Padding="6,5" MaxLength="40" AutomationProperties.Name="Layout Name" TextChanged="NameBox_TextChanged"
+                 ToolTip="What the layout is called in the Layout button's flyout and in the Layout Selector." />
+        <TextBlock Text="Keep it in:" Margin="0,12,0,4" />
+        <StackPanel x:Name="SlotChoices" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button x:Name="SaveButton" Content="Save" MinWidth="110" IsDefault="True" Click="Save_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

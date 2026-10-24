@@ -39,6 +39,24 @@ public sealed class SubtitleTimeline : FrameworkElement
     private double _position;
     private Drag? _drag;
 
+    // The strip (ruler, cues, words) is drawn into a visual of its own, three screens wide around the playhead,
+    // and slid by a transform as the time under the playhead changes: playing draws nothing until the view runs
+    // past what was drawn. It is drawn again when anything on it changes (InvalidateVisual: OnRender). The
+    // playhead, which never moves, is a visual of its own too, drawn again only when its colour changes.
+    private readonly DrawingVisual _strip = new(), _head = new();
+    private readonly TranslateTransform _stripShift = new();
+    private (double From, double To) _drawn = (double.NaN, double.NaN);
+    private bool? _headOver;
+    private double _headWidth;
+
+    // Ruler labels by their text: the same few dozen, drawn over and over as the strip slides.
+    private readonly Dictionary<string, FormattedText> _rulerLabels = [];
+    private double _labelsDpi;
+
+    private static readonly Brush VideoBrush = Frozen(Color.FromRgb(0x22, 0x22, 0x22));
+    private static readonly Pen HeadPen = FrozenPen(Colors.OrangeRed, 2), HeadOverPen = FrozenPen(((SolidColorBrush)OverCueBrush).Color, 2);
+    private static readonly double[] RulerSteps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+
     private sealed record Label(string Text, FormattedText Formatted);
 
     private enum Grip { Pan, Move, Start, End, Word }
@@ -52,7 +70,14 @@ public sealed class SubtitleTimeline : FrameworkElement
     {
         ClipToBounds = true;
         Focusable = false;
+        _strip.Transform = _stripShift;
+        AddVisualChild(_strip);
+        AddVisualChild(_head);
     }
+
+    protected override int VisualChildrenCount => 2;
+
+    protected override Visual GetVisualChild(int index) => index == 0 ? _strip : _head;
 
     /// <summary>The cues that are drawn. Not copied: the timeline draws them as they are whenever it is asked to.</summary>
     public IList<SubtitleCue>? Cues { get; set; }
@@ -81,7 +106,7 @@ public sealed class SubtitleTimeline : FrameworkElement
         set
         {
             _position = Math.Clamp(double.IsFinite(value) ? value : 0, 0, Math.Max(DurationSeconds, 0));
-            InvalidateVisual();
+            Slide();
         }
     }
 
@@ -114,96 +139,161 @@ public sealed class SubtitleTimeline : FrameworkElement
 
     protected override void OnRender(DrawingContext drawing)
     {
-        var (width, height) = (ActualWidth, ActualHeight);
-        drawing.DrawRectangle(BackBrush, null, new Rect(0, 0, width, height));
+        drawing.DrawRectangle(BackBrush, null, new Rect(0, 0, ActualWidth, ActualHeight));
+
+        // Something on the strip changed (a cue, the selection, the zoom, the size): it is drawn again.
+        _drawn = (double.NaN, double.NaN);
+        Slide();
+    }
+
+    /// <summary>
+    /// Puts the moment under the playhead in the middle: the strip is moved, and drawn again only when what is
+    /// on screen now runs past what was drawn (or nothing has been). The playhead takes its colour from whether a
+    /// subtitle is showing there.
+    /// </summary>
+    private void Slide()
+    {
+        var width = ActualWidth;
         if (width <= 0)
             return;
 
         // The playhead stays in the middle: the strip is moved so that the moment it is at lies under it.
         _pan.X = width / 2 - _position * _zoom.ScaleX;
-        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         var (firstSecond, lastSecond) = (-_pan.X / _zoom.ScaleX, (width - _pan.X) / _zoom.ScaleX);
+        if (double.IsNaN(_drawn.From) || firstSecond < _drawn.From || lastSecond > _drawn.To)
+            DrawStrip(width, firstSecond, lastSecond);
+        _stripShift.X = _pan.X + _drawn.From * _zoom.ScaleX;
+
+        var over = false;
+        if (Cues is { } cues)
+        {
+            foreach (var cue in cues)
+            {
+                if (_position >= cue.Start + OffsetSeconds && _position < cue.End + OffsetSeconds)
+                {
+                    over = true;
+                    break;
+                }
+            }
+        }
+
+        DrawHead(width, over);
+    }
+
+    /// <summary>The playhead, which never moves: drawn again only when its colour or the strip's width changes.</summary>
+    private void DrawHead(double width, bool over)
+    {
+        if (_headOver == over && _headWidth == width)
+            return;
+
+        (_headOver, _headWidth) = (over, width);
+        using var drawing = _head.RenderOpen();
+        var middle = Math.Round(width / 2) + 0.5;
+        drawing.DrawLine(over ? HeadOverPen : HeadPen, new Point(middle, 0), new Point(middle, ActualHeight));
+    }
+
+    /// <summary>
+    /// Draws the strip from a screen's width before what is on screen to a screen's width after it, with its own
+    /// origin at the first of those moments (x = (seconds - from) * zoom); <see cref="Slide"/> moves it into place.
+    /// </summary>
+    private void DrawStrip(double width, double firstSecond, double lastSecond)
+    {
+        var span = lastSecond - firstSecond;
+        var (from, to) = (firstSecond - span, lastSecond + span);
+        _drawn = (from, to);
+
+        var zoom = _zoom.ScaleX;
+        var height = ActualHeight;
+        double X(double seconds) => (seconds - from) * zoom;
+        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        if (dpi != _labelsDpi || _rulerLabels.Count > 512)
+        {
+            _labelsDpi = dpi;
+            _rulerLabels.Clear();
+        }
+
+        using var drawing = _strip.RenderOpen();
 
         // Outside the video there is nothing to subtitle: that part of the strip is left darker.
-        var (from, to) = (Math.Max(ToX(0), 0), Math.Min(ToX(DurationSeconds), width));
-        if (to > from)
-            drawing.DrawRectangle(Frozen(Color.FromRgb(0x22, 0x22, 0x22)), null, new Rect(from, RulerHeight, to - from, height - RulerHeight));
+        var (left, right) = (Math.Max(X(0), 0), Math.Min(X(DurationSeconds), X(to)));
+        if (right > left)
+            drawing.DrawRectangle(VideoBrush, null, new Rect(left, RulerHeight, right - left, height - RulerHeight));
 
         // The ruler: a tick at every round step of time that leaves room for its label.
-        var step = new[] { 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600 }.FirstOrDefault(s => s * _zoom.ScaleX >= 72, 7200);
-        for (var tick = Math.Max(Math.Floor(firstSecond / step) * step, 0); tick <= Math.Min(lastSecond, DurationSeconds); tick += step)
+        var step = RulerSteps.FirstOrDefault(s => s * zoom >= 72, 7200);
+        for (var tick = Math.Max(Math.Floor(from / step) * step, 0); tick <= Math.Min(to, DurationSeconds); tick += step)
         {
-            var x = Math.Round(ToX(tick)) + 0.5;
+            var x = Math.Round(X(tick)) + 0.5;
             drawing.DrawLine(TickPen, new Point(x, 0), new Point(x, height));
             var time = TimeSpan.FromSeconds(tick);
             var text = step < 1
                 ? string.Create(CultureInfo.InvariantCulture, $"{(int)time.TotalMinutes}:{time.Seconds:00}.{time.Milliseconds / 100}")
                 : time.TotalHours >= 1 ? string.Create(CultureInfo.InvariantCulture, $"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}")
                 : string.Create(CultureInfo.InvariantCulture, $"{time.Minutes}:{time.Seconds:00}");
-            drawing.DrawText(new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 10, RulerBrush, dpi), new Point(x + 3, 2));
+            if (!_rulerLabels.TryGetValue(text, out var label))
+                _rulerLabels[text] = label = new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 10, RulerBrush, dpi);
+            drawing.DrawText(label, new Point(x + 3, 2));
         }
 
-        var over = false;
-        if (Cues is { } cues)
+        if (Cues is not { } cues)
+            return;
+
+        var (top, tall) = (CuesTop, CuesHeight);
+        foreach (var cue in cues)
         {
-            var (top, tall) = (CuesTop, CuesHeight);
-            foreach (var cue in cues)
+            var (start, end) = (cue.Start + OffsetSeconds, cue.End + OffsetSeconds);
+
+            // A cue that is not on the strip costs a comparison and nothing more.
+            if (end < from || start > to)
+                continue;
+
+            var rect = new Rect(X(start), top, Math.Max((end - start) * zoom, 2), tall);
+            var selected = ReferenceEquals(cue, Selected);
+            drawing.DrawRoundedRectangle(selected ? SelectedCueBrush : CuesAreImages ? ImageCueBrush : CueBrush, selected ? SelectedPen : null, rect, 3, 3);
+
+            if (rect.Width > 12)
             {
-                var (start, end) = (cue.Start + OffsetSeconds, cue.End + OffsetSeconds);
-                over |= _position >= start && _position < end;
+                // The ends are what is taken hold of to retime them.
+                drawing.DrawLine(EdgePen, new Point(rect.Left + 3, rect.Top + 5), new Point(rect.Left + 3, rect.Bottom - 5));
+                drawing.DrawLine(EdgePen, new Point(rect.Right - 3, rect.Top + 5), new Point(rect.Right - 3, rect.Bottom - 5));
+            }
 
-                // A cue that is not on screen costs a comparison and nothing more.
-                if (end < firstSecond || start > lastSecond)
-                    continue;
-
-                var rect = new Rect(ToX(start), top, Math.Max((end - start) * _zoom.ScaleX, 2), tall);
-                var selected = ReferenceEquals(cue, Selected);
-                drawing.DrawRoundedRectangle(selected ? SelectedCueBrush : CuesAreImages ? ImageCueBrush : CueBrush, selected ? SelectedPen : null, rect, 3, 3);
-
-                if (rect.Width > 12)
+            if (selected && !CuesAreImages && cue.GetWords() is { Length: > 1 } parts)
+            {
+                DrawWords(drawing, cue, parts, rect, X(to), dpi);
+            }
+            else if (rect.Width > 30)
+            {
+                var words = CuesAreImages ? $"#{cue.Index}" : cue.Text.ReplaceLineEndings(" ");
+                if (!_labels.TryGetValue(cue, out var label) || label.Text != words)
                 {
-                    // The ends are what is taken hold of to retime them.
-                    drawing.DrawLine(EdgePen, new Point(rect.Left + 3, rect.Top + 5), new Point(rect.Left + 3, rect.Bottom - 5));
-                    drawing.DrawLine(EdgePen, new Point(rect.Right - 3, rect.Top + 5), new Point(rect.Right - 3, rect.Bottom - 5));
-                }
-
-                if (selected && !CuesAreImages && cue.GetWords() is { Length: > 1 } parts)
-                {
-                    DrawWords(drawing, cue, parts, rect, dpi);
-                }
-                else if (rect.Width > 30)
-                {
-                    var words = CuesAreImages ? $"#{cue.Index}" : cue.Text.ReplaceLineEndings(" ");
-                    if (!_labels.TryGetValue(cue, out var label) || label.Text != words)
+                    label = new Label(words, new FormattedText(words, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, Face, 11.5, Brushes.White, dpi)
                     {
-                        label = new Label(words, new FormattedText(words, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, Face, 11.5, Brushes.White, dpi)
-                        {
-                            MaxLineCount = 2, Trimming = TextTrimming.CharacterEllipsis,
-                        });
-                        _labels.AddOrUpdate(cue, label);
-                    }
-
-                    // The words keep to the part of the block that is on screen.
-                    var left = Math.Max(rect.Left, 0) + 8;
-                    label.Formatted.MaxTextWidth = Math.Max(rect.Right - left - 8, 4);
-                    label.Formatted.MaxTextHeight = Math.Max(tall - 4, 12);
-                    drawing.PushClip(new RectangleGeometry(rect));
-                    drawing.DrawText(label.Formatted, new Point(left, rect.Top + Math.Max((tall - label.Formatted.Height) / 2, 2)));
-                    drawing.Pop();
+                        MaxLineCount = 2, Trimming = TextTrimming.CharacterEllipsis,
+                    });
+                    _labels.AddOrUpdate(cue, label);
                 }
+
+                // The words keep to the part of the block that is on the strip; set only when that changes, as
+                // setting it lays the text out again.
+                var textLeft = Math.Max(rect.Left, 0) + 8;
+                var (maxWidth, maxHeight) = (Math.Max(rect.Right - textLeft - 8, 4), Math.Max(tall - 4, 12));
+                if (label.Formatted.MaxTextWidth != maxWidth)
+                    label.Formatted.MaxTextWidth = maxWidth;
+                if (label.Formatted.MaxTextHeight != maxHeight)
+                    label.Formatted.MaxTextHeight = maxHeight;
+                drawing.PushClip(new RectangleGeometry(rect));
+                drawing.DrawText(label.Formatted, new Point(textLeft, rect.Top + Math.Max((tall - label.Formatted.Height) / 2, 2)));
+                drawing.Pop();
             }
         }
-
-        // The playhead: where it is never changes; its colour says whether a subtitle is showing there.
-        var middle = Math.Round(width / 2) + 0.5;
-        drawing.DrawLine(FrozenPen(over ? ((SolidColorBrush)OverCueBrush).Color : Colors.OrangeRed, 2), new Point(middle, 0), new Point(middle, height));
     }
 
     /// <summary>
     /// The selected cue's words, each in its own part of the block: a divider where one word ends and the next
     /// begins, which is what is dragged to retime them, and the word itself where there is room for it.
     /// </summary>
-    private void DrawWords(DrawingContext drawing, SubtitleCue cue, string[] words, Rect rect, double dpi)
+    private void DrawWords(DrawingContext drawing, SubtitleCue cue, string[] words, Rect rect, double stripRight, double dpi)
     {
         var breaks = cue.GetBreaks();
         drawing.PushClip(new RectangleGeometry(rect));
@@ -214,7 +304,7 @@ public sealed class SubtitleTimeline : FrameworkElement
                 drawing.DrawRectangle(ActiveWordBrush, null, new Rect(from, rect.Top + 1, Math.Max(to - from, 1), rect.Height - 2));
             if (i > 0)
                 drawing.DrawLine(WordPen, new Point(Math.Round(from) + 0.5, rect.Top + 2), new Point(Math.Round(from) + 0.5, rect.Bottom - 2));
-            if (to - from < 14 || to < 0 || from > ActualWidth)
+            if (to - from < 14 || to < 0 || from > stripRight)
                 continue;
 
             var word = new FormattedText(words[i], CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, Face, 11.5, Brushes.White, dpi)

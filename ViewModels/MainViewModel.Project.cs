@@ -79,6 +79,8 @@ public partial class MainViewModel
         WhisperLanguage = WhisperLanguage,
         WhisperTranslate = WhisperTranslate,
         LutPath = LutPath,
+        SequenceEffects = CaptureSequenceEffects(),
+        SequenceEffectsBypassed = SequenceEffectsBypassed,
         ColorContrast = ColorContrast,
         ColorBrightness = ColorBrightness,
         ColorSaturation = ColorSaturation,
@@ -136,7 +138,7 @@ public partial class MainViewModel
     public bool HasSource => !string.IsNullOrWhiteSpace(LocalMediaPath);
 
     /// <summary>Loads the state's source and puts every setting back. Runs as a normal busy operation.</summary>
-    public Task RestoreStateAsync(ProjectState state, string doneMessage) => RunOperationAsync(async cancellationToken =>
+    public Task RestoreStateAsync(ProjectState state, string doneMessage) => RunOperationAsync("Opening a project", WorkLane.Interactive, async cancellationToken =>
     {
         SourcePath = state.SourcePath;
         DownloadResolution = Pick(DownloadResolutions, state.DownloadResolution, "Best");
@@ -356,6 +358,7 @@ public partial class MainViewModel
             CurrentProjectPath = path;
             MarkSaved();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
+            _ = OfferToKeepDownloadsAsync();
             return StatusText = $"Project saved: {path}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
@@ -411,6 +414,7 @@ public partial class MainViewModel
             CurrentProjectPath = path;
             MarkSaved();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
+            _ = OfferToKeepDownloadsAsync();
             return StatusText = $"Project saved: {Path.GetFileNameWithoutExtension(path)}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

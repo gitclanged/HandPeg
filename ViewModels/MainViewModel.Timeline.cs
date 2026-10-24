@@ -10,7 +10,8 @@ namespace HandPegApp.ViewModels;
 public sealed record TimelineSnapshot(
     List<SegmentState> Segments, List<LayerState> Layers, int MainVideoIndex, List<AudioEditState> Audio, bool AudioLinked,
     LayerState? MainLayer = null, bool BackgroundHidden = false, List<MainPiece>? MainPieces = null, List<DeletedClip>? Bin = null,
-    SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null, List<TimelineMarker>? Markers = null);
+    SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null, List<TimelineMarker>? Markers = null,
+    List<Models.Effects.EffectState>? SequenceEffects = null, bool SequenceEffectsBypassed = false);
 
 /// <summary>What was done to one audio track on the timeline: how far it was slipped, and its pieces.</summary>
 public sealed record AudioEditState(int Index, double Offset, List<AudioPiece> Pieces);
@@ -62,22 +63,52 @@ public partial class MainViewModel
     private readonly List<(string What, byte[] State)> _undo = [];
     private readonly List<(string What, byte[] State)> _redo = [];
 
-    private static byte[] Pack(string state)
+    // The room a state is written into as UTF-8 before it is compressed, and read back into, kept and used again:
+    // with a long subtitle track a state is hundreds of kilobytes of text, which made afresh at every checkpoint
+    // (as a string, then its bytes) went on the large object heap each time. Only the compressed copy is kept.
+    private readonly System.Buffers.ArrayBufferWriter<byte> _stateText = new(64 * 1024), _otherText = new(16 * 1024);
+
+    /// <summary>A value as JSON (UTF-8), in the room given, which it replaces.</summary>
+    private static ReadOnlySpan<byte> WriteJson<T>(T value, System.Buffers.ArrayBufferWriter<byte> room)
     {
-        using var packed = new MemoryStream();
-        using (var brotli = new System.IO.Compression.BrotliStream(packed, System.IO.Compression.CompressionLevel.Fastest))
-            brotli.Write(System.Text.Encoding.UTF8.GetBytes(state));
-        return packed.ToArray();
+        room.ResetWrittenCount();
+        using (var writer = new Utf8JsonWriter(room))
+            JsonSerializer.Serialize(writer, value);
+        return room.WrittenSpan;
     }
 
-    private static string Unpack(byte[] state)
+    /// <summary>Whether two values come out as the same JSON: for "has this part of the state changed".</summary>
+    private bool SameJson<T>(T first, T second) => WriteJson(first, _stateText).SequenceEqual(WriteJson(second, _otherText));
+
+    private byte[] Pack(TimelineSnapshot state)
     {
-        using var brotli = new System.IO.Compression.BrotliStream(new MemoryStream(state), System.IO.Compression.CompressionMode.Decompress);
-        using var reader = new StreamReader(brotli, System.Text.Encoding.UTF8);
-        return reader.ReadToEnd();
+        var text = WriteJson(state, _stateText);
+        var room = System.Buffers.ArrayPool<byte>.Shared.Rent(System.IO.Compression.BrotliEncoder.GetMaxCompressedLength(text.Length));
+        try
+        {
+            // Quality 1: what CompressionLevel.Fastest is.
+            return System.IO.Compression.BrotliEncoder.TryCompress(text, room, out var written, quality: 1, window: 22)
+                ? room.AsSpan(0, written).ToArray()
+                : throw new InvalidOperationException("An undo step could not be compressed.");
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(room);
+        }
     }
 
-    private string CaptureTimeline() => JsonSerializer.Serialize(CaptureSnapshot());
+    private TimelineSnapshot? Unpack(byte[] state)
+    {
+        _stateText.ResetWrittenCount();
+        using (var brotli = new System.IO.Compression.BrotliStream(new MemoryStream(state), System.IO.Compression.CompressionMode.Decompress))
+        {
+            int read;
+            while ((read = brotli.Read(_stateText.GetSpan(65536))) > 0)
+                _stateText.Advance(read);
+        }
+
+        return JsonSerializer.Deserialize<TimelineSnapshot>(_stateText.WrittenSpan);
+    }
 
     private TimelineSnapshot CaptureSnapshot() => new(
         Segments.Select(s => new SegmentState(s.Start.TotalMilliseconds, s.End.TotalMilliseconds, s.IsSkipped)).ToList(),
@@ -85,7 +116,7 @@ public partial class MainViewModel
         MainVideoIndex,
         AudioTracks.Select(t => new AudioEditState(t.Index, t.OffsetSeconds, [.. t.Pieces])).ToList(),
         AudioLinked, _mainVideoRow.ToState(), _backgroundRow.IsHidden, [.. _mainPieces], RecycleBin.Select(i => i.Clip).ToList(),
-        CaptureSubtitles(), CaptionLayer.ToState(), CaptionStyle.Clone(), [.. Markers]);
+        CaptureSubtitles(), CaptionLayer.ToState(), CaptionStyle.Clone(), [.. Markers], CaptureSequenceEffects(), SequenceEffectsBypassed);
 
     /// <summary>Puts an undo step on the stack that brings back the state given, which may be other than the present one.</summary>
     private void Checkpoint(string what, TimelineSnapshot before)
@@ -93,7 +124,7 @@ public partial class MainViewModel
         if (_isBackgroundWorker)
             return;
 
-        _undo.Add((what, Pack(JsonSerializer.Serialize(before))));
+        _undo.Add((what, Pack(before)));
         if (_undo.Count > UndoDepth)
             _undo.RemoveAt(0);
         _redo.Clear();
@@ -106,7 +137,7 @@ public partial class MainViewModel
         if (_isBackgroundWorker)
             return;
 
-        _undo.Add((what, Pack(CaptureTimeline())));
+        _undo.Add((what, Pack(CaptureSnapshot())));
         if (_undo.Count > UndoDepth)
             _undo.RemoveAt(0);
         _redo.Clear();
@@ -127,22 +158,22 @@ public partial class MainViewModel
         var (what, state) = from[^1];
 
         // The Subtitle Editor holds the cues it shows: a step that changes them waits until it is closed.
-        if (IsSubtitleEditorOpen && JsonSerializer.Deserialize<TimelineSnapshot>(Unpack(state)) is { } target
-            && JsonSerializer.Serialize(target.Subtitles) != JsonSerializer.Serialize(CaptureSubtitles()))
+        if (IsSubtitleEditorOpen && Unpack(state) is { } target
+            && !SameJson(target.Subtitles, CaptureSubtitles()))
         {
             StatusText = $"Close the Subtitle Editor first: {what} changes the subtitles.";
             return;
         }
 
         from.RemoveAt(from.Count - 1);
-        to.Add((what, Pack(CaptureTimeline())));
+        to.Add((what, Pack(CaptureSnapshot())));
         RestoreTimeline(Unpack(state));
         Log($"{verb}: {what}");
     }
 
-    private void RestoreTimeline(string state)
+    private void RestoreTimeline(TimelineSnapshot? state)
     {
-        if (JsonSerializer.Deserialize<TimelineSnapshot>(state) is not { } snapshot)
+        if (state is not { } snapshot)
             return;
 
         // One rebuild of the command for the whole step, not one for every clip that is put back.
@@ -168,18 +199,20 @@ public partial class MainViewModel
         }
 
         AudioLinked = snapshot.AudioLinked;
+        if (snapshot.SequenceEffects is { } sequenceEffects)
+            SetSequenceEffects(sequenceEffects, snapshot.SequenceEffectsBypassed);
 
         // The subtitles, the caption box and its style, each only where it differs: a step that did not touch
         // them leaves the caption preview as it is.
-        if (JsonSerializer.Serialize(snapshot.Subtitles) != JsonSerializer.Serialize(CaptureSubtitles()))
+        if (!SameJson(snapshot.Subtitles, CaptureSubtitles()))
         {
             ApplySubtitles(snapshot.Subtitles);
             RefreshSubtitlePreview();
         }
 
-        if (snapshot.CaptionLayer is { } caption && JsonSerializer.Serialize(caption) != JsonSerializer.Serialize(CaptionLayer.ToState()))
+        if (snapshot.CaptionLayer is { } caption && !SameJson(caption, CaptionLayer.ToState()))
             SetCaptionLayer(caption);
-        if (snapshot.CaptionStyle is { } style && JsonSerializer.Serialize(style) != JsonSerializer.Serialize(CaptionStyle))
+        if (snapshot.CaptionStyle is { } style && !SameJson(style, CaptionStyle))
             SetCaptionStyle(style.Clone());
 
         RefreshLayerRows();
@@ -335,6 +368,9 @@ public partial class MainViewModel
         StatusText = $"Removed {layer.Name}. Its clips are in the recycle bin (the trash can), and Ctrl+Z brings them back.";
     }
 
+    /// <summary>Raised when a track has been hidden or shown: the layout pane draws its boxes again.</summary>
+    public event Action? LayerVisibilityChanged;
+
     public void ToggleHidden(Layer layer)
     {
         Checkpoint(layer.IsHidden ? $"show {layer.Name}" : $"hide {layer.Name}");
@@ -344,6 +380,7 @@ public partial class MainViewModel
         if (layer.IsMainVideo || layer.IsBackground)
             GenerateCommand();
         RefreshLayerRows();
+        LayerVisibilityChanged?.Invoke();
         StatusText = !hide ? $"{layer.Name} is shown again."
             : layer.IsBackground ? "The blurred background is hidden: the canvas behind the layers is black."
             : layer.IsMainVideo ? "The main video's picture is hidden. Its sound, its length and its cuts stay as they are."
@@ -474,7 +511,7 @@ public partial class MainViewModel
 
     /// <summary>The video layers whose own sound goes into the output: those that have any, and are not hidden.</summary>
     private List<Layer> GetLayerAudioSources() =>
-        Layers.Where(l => l.CarriesSound && !l.IsHidden && !l.IsSoundMuted && File.Exists(l.ImagePath)).ToList();
+        Layers.Where(l => l.CarriesSound && !l.IsHidden && !l.IsSoundMuted && FileState.Exists(l.ImagePath)).ToList();
 
     /// <summary>Draws the waveform of a video layer's sound, for its block on the Layers tab. In the background; the layer works without it.</summary>
     private async Task LoadLayerWaveformAsync(Layer layer)

@@ -16,9 +16,10 @@ namespace HandPegApp.Views;
 /// <summary>
 /// The media browser pane (Editor Mode, side column): a folder's videos, sounds and pictures, to drag onto the
 /// timeline. Each video's tile is a small timeline of its own: moving the pointer across it shows the frame at that
-/// point. The frames are made in the background, one video at a time and only for the tiles on screen, from a strip
-/// of a few frames per video (Settings: Preview &amp; Cache) kept in the browser's cache, so a folder opens at once the
-/// next time. Only the strip of the tile last hovered is held whole in memory; the other tiles hold one small frame.
+/// point. The frames are made in the background, one video at a time, from a strip of a few frames per video (Settings:
+/// Preview &amp; Cache) kept in the browser's cache, so a folder opens at once the next time. Only the tiles in view (and
+/// a row either side) are made and hold a picture at rest; with the pointer in the pane, the tiles out of sight get
+/// theirs too, within a budget, until a minute after it left. Only the strips of the tiles last hovered are held whole.
 /// </summary>
 public partial class MediaBrowserPane : UserControl
 {
@@ -30,8 +31,9 @@ public partial class MediaBrowserPane : UserControl
     // A folder with more entries than this lists the first ones, and says so.
     private const int MostEntries = 3000;
 
-    // Tiles holding a picture beyond this many give up the pictures of those out of sight (made again from the cache when they come back).
-    private const int MostPosters = 300;
+    // Pictures held beyond this many bytes give up those of the tiles out of sight (made again from the cache when
+    // they come back). Bytes, not a count: at the largest tiles one poster is twenty times what it is at the smallest.
+    private const long PosterBudgetBytes = 32L * 1024 * 1024;
 
     // The decoded strips of the tiles hovered last.
     private const int StripsKept = 6;
@@ -62,7 +64,17 @@ public partial class MediaBrowserPane : UserControl
             _visibleCheck.Stop();
             QueueVisible();
         };
-        Items.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => ScheduleVisibleCheck()));
+        Items.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) =>
+        {
+            ScheduleVisibleCheck();
+
+            // A scroll is something happening in the pane too: the minute before the pictures out of sight go starts again.
+            if (!IsMouseOver)
+                RestartRest();
+        }));
+        MouseEnter += Pane_MouseEnter;
+        MouseLeave += Pane_MouseLeave;
+        _rest.Tick += Rest_Tick;
         Items.SizeChanged += (_, _) => ScheduleVisibleCheck();
         _sizeSettled.Tick += (_, _) =>
         {
@@ -76,7 +88,109 @@ public partial class MediaBrowserPane : UserControl
         SortDirectionButton.IsChecked = settings.BrowserSortDescending;
         SizeSlider.Value = Math.Clamp(settings.BrowserTileSize, 0, 100);
         ApplySize(SizeSlider.Value);
+
+        _projectMode = settings.BrowserShowsProject;
+        (_projectMode ? ProjectSide : FolderSide).IsChecked = true;
+        FolderBar.Visibility = _projectMode ? Visibility.Collapsed : Visibility.Visible;
+        _projectSettled.Tick += (_, _) =>
+        {
+            _projectSettled.Stop();
+            if (_projectMode && _started && IsVisible)
+                _ = ListProjectAsync();
+        };
     }
+
+    // ----- Project Media or Folder Browser -----
+    // Project Media lists every file the open project uses (ProjectFiles), with no folder bar; Folder Browser is a folder
+    // on disk. The folder last shown is kept for coming back to it.
+
+    private bool _projectMode;
+    private readonly DispatcherTimer _projectSettled = new() { Interval = TimeSpan.FromMilliseconds(400) };
+
+    /// <summary>The media files the open project uses, for Project Media.</summary>
+    public Func<IReadOnlyList<string>>? ProjectFiles { get; set; }
+
+    /// <summary>The project's files have changed (a clip added or removed, another video loaded): Project Media lists them again, once things settle.</summary>
+    public void ProjectChanged()
+    {
+        if (!_projectMode)
+            return;
+
+        _projectSettled.Stop();
+        _projectSettled.Start();
+    }
+
+    private void Source_Checked(object sender, RoutedEventArgs e)
+    {
+        var project = ReferenceEquals(sender, ProjectSide);
+        if (!IsInitialized || project == _projectMode)
+            return;
+
+        _projectMode = AppSettings.Current.BrowserShowsProject = project;
+        FolderBar.Visibility = project ? Visibility.Collapsed : Visibility.Visible;
+        if (!_started)
+            return;
+
+        if (project)
+            _ = ListProjectAsync();
+        else
+            _ = _folder is null ? NavigateAsync(null, fromStart: true) : NavigateAsync(_folder);
+    }
+
+    /// <summary>Lists the files the open project uses, sorted as the folder's would be; a file that is gone says so.</summary>
+    private async Task ListProjectAsync()
+    {
+        StopIndexing();
+        _listing.Cancel();
+        _listing = new CancellationTokenSource();
+        var token = _listing.Token;
+        _queue.Clear();
+        _strips.Clear();
+        _items.Clear();
+
+        var files = ProjectFiles?.Invoke() ?? [];
+        List<MediaBrowserItem> entries;
+        try
+        {
+            entries = await Task.Run(() => files.Select(path =>
+            {
+                var file = new FileInfo(path);
+                var kind = MediaBrowserItem.KindOf(file.Name) ?? MediaBrowserKind.Video;
+                return file.Exists
+                    ? new MediaBrowserItem(file.FullName, kind, file.Name) { Info = MediaBrowserItem.FormatSize(file.Length), Bytes = file.Length, Modified = file.LastWriteTime }
+                    : new MediaBrowserItem(path, kind, file.Name) { Info = "missing" };
+            }).ToList(), token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
+        {
+            StatusText.Text = $"The project's files could not be read: {ex.Message}";
+            return;
+        }
+
+        if (token.IsCancellationRequested || !await AddInTurnsAsync(Sorted(entries), token))
+            return;
+
+        StatusText.Text = entries.Count == 0
+            ? "The project uses no media files yet: open a video, or drop files onto the Layers or Audio tab."
+            : $"{entries.Count} file{(entries.Count == 1 ? "" : "s")} in this project. Drag them onto the Layers or Audio tab again.";
+        if (_items.Count > 0)
+            Items.ScrollIntoView(_items[0]);
+        ScheduleVisibleCheck();
+    }
+
+    /// <summary>
+    /// Where Folder Browser starts when no folder was shown before: the remembered one, the video's, or Videos. It asks
+    /// the disk, so it is never asked on the interface's thread (a remembered folder on a network drive that is not
+    /// there can keep it waiting for seconds, and the pane is first shown while the window is being laid out).
+    /// </summary>
+    private static string StartFolder(string remembered, string? suggested) =>
+        Directory.Exists(remembered) ? remembered
+        : suggested is not null && Directory.Exists(suggested) ? suggested
+        : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
 
     /// <summary>A file was asked to be opened as the main video.</summary>
     public event Action<string>? LoadRequested;
@@ -97,16 +211,19 @@ public partial class MediaBrowserPane : UserControl
     private void Pane_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
         if (!IsVisible)
+        {
+            StopIndexing();
             return;
+        }
+
+        StartIndexDwell();
 
         if (!_started)
         {
+            // Once the window has drawn (it may be the one being laid out for its first frame): what a folder holds is not
+            // what the first frame waits for. A folder of 290 videos, its tiles all made at once, held it back half a second.
             _started = true;
-            var remembered = AppSettings.Current.BrowserFolder;
-            var start = Directory.Exists(remembered) ? remembered
-                : SuggestFolder?.Invoke() is { } suggested && Directory.Exists(suggested) ? suggested
-                : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
-            _ = NavigateAsync(start);
+            Dispatcher.BeginInvoke(() => _ = _projectMode ? ListProjectAsync() : NavigateAsync(null, fromStart: true), DispatcherPriority.ContextIdle);
         }
         else
         {
@@ -114,11 +231,36 @@ public partial class MediaBrowserPane : UserControl
         }
     }
 
+    // How many tiles go in at a time: the window draws and answers the pointer between one batch and the next (the tile
+    // view is not virtualized, so every tile is made as it is added).
+    private const int TilesPerTurn = 24;
+
+    /// <summary>Adds the entries a batch at a time; false when a new listing began meanwhile (it has cleared the list).</summary>
+    private async Task<bool> AddInTurnsAsync(IEnumerable<MediaBrowserItem> entries, CancellationToken token)
+    {
+        var added = 0;
+        foreach (var entry in entries)
+        {
+            if (added > 0 && added % TilesPerTurn == 0)
+            {
+                await Dispatcher.Yield(DispatcherPriority.Background);
+                if (token.IsCancellationRequested)
+                    return false;
+            }
+
+            _items.Add(entry);
+            added++;
+        }
+
+        return true;
+    }
+
     // ----- The folder -----
 
-    /// <summary>Shows a folder; null or empty for the drives.</summary>
-    public async Task NavigateAsync(string? folder)
+    /// <summary>Shows a folder; null or empty for the drives; with <paramref name="fromStart"/>, the folder it starts in (StartFolder).</summary>
+    public async Task NavigateAsync(string? folder, bool fromStart = false)
     {
+        StopIndexing();
         _listing.Cancel();
         _listing = new CancellationTokenSource();
         var token = _listing.Token;
@@ -127,20 +269,18 @@ public partial class MediaBrowserPane : UserControl
         _items.Clear();
 
         folder = string.IsNullOrWhiteSpace(folder) ? null : folder.Trim().Trim('"');
+        var (remembered, suggested) = fromStart ? (AppSettings.Current.BrowserFolder, SuggestFolder?.Invoke()) : ("", null);
         PathBox.Text = folder ?? "";
-        if (folder is not null && !Directory.Exists(folder))
-        {
-            StatusText.Text = $"Not a folder that can be opened: {folder}";
-            return;
-        }
-
-        _folder = folder;
         StatusText.Text = "Reading the folder...";
-        List<MediaBrowserItem> entries;
+        List<MediaBrowserItem>? entries;
         try
         {
-            // Away from the interface: a folder on a network drive can take a moment to answer.
-            entries = await Task.Run(() => List(folder), token);
+            // Away from the interface, whether it is a folder too: a folder on a network drive can take a moment to answer.
+            (folder, entries) = await Task.Run(() =>
+            {
+                var shown = fromStart ? StartFolder(remembered, suggested) : folder;
+                return (shown, shown is null || Directory.Exists(shown) ? List(shown) : null);
+            }, token);
         }
         catch (OperationCanceledException)
         {
@@ -155,8 +295,16 @@ public partial class MediaBrowserPane : UserControl
         if (token.IsCancellationRequested)
             return;
 
-        foreach (var entry in Sorted(entries))
-            _items.Add(entry);
+        PathBox.Text = folder ?? "";
+        if (entries is null)
+        {
+            StatusText.Text = $"Not a folder that can be opened: {folder}";
+            return;
+        }
+
+        _folder = folder;
+        if (!await AddInTurnsAsync(Sorted(entries), token))
+            return;
 
         if (folder is not null)
             AppSettings.Current.BrowserFolder = folder;
@@ -168,6 +316,94 @@ public partial class MediaBrowserPane : UserControl
         if (_items.Count > 0)
             Items.ScrollIntoView(_items[0]);
         ScheduleVisibleCheck();
+        StartIndexDwell();
+    }
+
+    // ----- Indexing the folder shown -----
+    // A folder that stays open for a while (Settings, 40 s by default) has every one of its videos prepared, not only
+    // those on screen: their frames for the pointer to scrub through, made one at a time as Idle work (see
+    // WorkScheduler), after whatever the tiles on screen are waiting for. Posters are still made for tiles on
+    // screen only. Not on battery, nor on a network drive, unless Settings says so.
+
+    private readonly DispatcherTimer _indexDwell = new();
+    private CancellationTokenSource? _indexing;
+
+    private void StartIndexDwell()
+    {
+        var delay = AppSettings.Current.BrowserIndexDelaySeconds;
+        if (_folder is null || _projectMode || !IsVisible || delay <= 0 || _indexing is not null)
+            return;
+
+        if (!_indexHooked)
+        {
+            _indexDwell.Tick += (_, _) =>
+            {
+                _indexDwell.Stop();
+                _ = IndexFolderAsync();
+            };
+            _indexHooked = true;
+        }
+
+        _indexDwell.Interval = TimeSpan.FromSeconds(delay);
+        _indexDwell.Stop();
+        _indexDwell.Start();
+    }
+
+    private bool _indexHooked;
+
+    private void StopIndexing()
+    {
+        _indexDwell.Stop();
+        _indexing?.Cancel();
+        _indexing = null;
+    }
+
+    private async Task IndexFolderAsync()
+    {
+        var settings = AppSettings.Current;
+        if (_folder is not { } folder || (!settings.BrowserIndexOnBattery && PowerStatus.OnBattery))
+            return;
+        if (!settings.BrowserIndexNetwork && await Task.Run(() => PowerStatus.IsNetworkFolder(folder)))
+            return;
+
+        var videos = _items.Where(i => i.IsVideo && i.StripPath is null).Take(Math.Max(settings.BrowserIndexMaxFiles, 0)).ToList();
+        if (videos.Count == 0 || _folder != folder)
+            return;
+
+        var indexing = _indexing = CancellationTokenSource.CreateLinkedTokenSource(_listing.Token);
+        try
+        {
+            var shown = Path.GetFileName(folder.TrimEnd('\\')) is { Length: > 0 } name ? name : folder;
+            await WorkScheduler.Run(new WorkSpec($"Indexing {shown}", WorkLane.Idle) { Key = $"index|{folder}" }, async work =>
+            {
+                for (var i = 0; i < videos.Count; i++)
+                {
+                    // The tiles on screen go first: the indexer waits while the pane has their pictures to make.
+                    while (_queue.Count > 0 || _working)
+                        await Task.Delay(250, work.Token);
+
+                    work.Report((double)i / videos.Count, $"{i + 1} of {videos.Count} videos");
+                    if (videos[i].StripPath is null)
+                        await PrepareStripAsync(videos[i], work.Token, WorkLane.Idle);
+                }
+            }, indexing.Token);
+
+            if (settings.NotifyIndexingDone)
+                Notifier.Show("Folder indexed", $"The videos in {folder} are ready to scrub in the media browser.");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            AppLog.Write($"Media browser: indexing {folder}: {ex.Message}");
+        }
+        finally
+        {
+            if (ReferenceEquals(_indexing, indexing))
+                _indexing = null;
+            indexing.Dispose();
+        }
     }
 
     /// <summary>What a folder holds that the browser shows: its folders, then its media files, each by name.</summary>
@@ -224,14 +460,14 @@ public partial class MediaBrowserPane : UserControl
 
     private void GoUp()
     {
-        if (_folder is null)
+        if (_folder is null || _projectMode)
             return;
 
         // From a drive's root, up is the list of drives.
         _ = NavigateAsync(Directory.GetParent(_folder)?.FullName);
     }
 
-    private void Refresh_Click(object sender, RoutedEventArgs e) => _ = NavigateAsync(_folder);
+    private void Refresh_Click(object sender, RoutedEventArgs e) => _ = _projectMode ? ListProjectAsync() : NavigateAsync(_folder);
 
     // ----- The view: its order and its size -----
 
@@ -305,11 +541,12 @@ public partial class MediaBrowserPane : UserControl
         if (_listView == list)
             return;
 
+        // Both views make only what is in view (the tiles' panel scrolls itself by pixels).
         _listView = list;
         Items.ItemTemplate = (DataTemplate)Resources[list ? "RowTemplate" : "TileTemplate"];
         Items.ItemsPanel = (ItemsPanelTemplate)Resources[list ? "RowPanel" : "TilePanel"];
-        VirtualizingPanel.SetIsVirtualizing(Items, list);
-        ScrollViewer.SetCanContentScroll(Items, list);
+        VirtualizingPanel.SetIsVirtualizing(Items, true);
+        ScrollViewer.SetCanContentScroll(Items, true);
         ScheduleVisibleCheck();
     }
 
@@ -337,14 +574,125 @@ public partial class MediaBrowserPane : UserControl
 
     private ScrollViewer? Scroller => VisualTreeHelper.GetChildrenCount(Items) > 0 && VisualTreeHelper.GetChild(Items, 0) is Border { Child: ScrollViewer scroller } ? scroller : null;
 
-    /// <summary>Asks for the pictures of the tiles on screen (and just beyond), nearest first; lets go of those far out of sight when too many are held.</summary>
+    // ----- What is held, and for how long -----
+    // At rest, only the tiles in view (and one row either side) hold their pictures. Once the pointer comes into the pane,
+    // the pictures of the tiles out of sight are made too, nearest first, while what is held stays within the budget, so
+    // scrolling never finds tiles blank. A minute after the pointer left the pane (or after the last scroll without it),
+    // the pictures out of sight are let go again, and with them the memory they took.
+
+    // How long the pane keeps the pictures out of sight once nothing happens in it.
+    private const int RestSeconds = 60;
+
+    private readonly DispatcherTimer _rest = new() { Interval = TimeSpan.FromSeconds(RestSeconds) };
+
+    // The tiles in view (and one row either side) at the last check, and whether those out of sight are being made.
+    private readonly HashSet<MediaBrowserItem> _inSight = [];
+    private bool _prefetching;
+
+    private void Pane_MouseEnter(object sender, MouseEventArgs e)
+    {
+        _rest.Stop();
+        if (_prefetching)
+            return;
+
+        _prefetching = true;
+        ScheduleVisibleCheck();
+    }
+
+    private void Pane_MouseLeave(object sender, MouseEventArgs e) => RestartRest();
+
+    private void RestartRest()
+    {
+        _rest.Stop();
+        if (_prefetching)
+            _rest.Start();
+    }
+
+    /// <summary>A minute with nothing in the pane: the pictures of the tiles out of sight, and every decoded strip, are let go.</summary>
+    private void Rest_Tick(object? sender, EventArgs e)
+    {
+        _rest.Stop();
+        if (IsMouseOver)
+            return;
+
+        _prefetching = false;
+        _queue.RemoveAll(i => !_inSight.Contains(i));
+        var pictures = 0;
+        foreach (var item in _items.Where(i => i.Poster is not null && !_inSight.Contains(i)))
+        {
+            (item.Poster, item.PreviewRequested) = (null, false);
+            pictures++;
+        }
+
+        // The decoded strips are for the pointer scrubbing across a tile: none is wanted at rest, and a tile's is decoded
+        // again (at its size, away from the interface) the next time the pointer comes onto it.
+        var strips = _strips.Count;
+        _strips.Clear();
+
+        if (pictures + strips > 0)
+        {
+            AppLog.Write($"Media browser: at rest for {RestSeconds} s, let go of {pictures} pictures out of sight and {strips} strips.");
+            GiveBackMemory();
+        }
+    }
+
+    /// <summary>
+    /// At rest, with every picture wanted made: the memory that making them took is given back to the system. After a
+    /// burst of work the collector keeps what it committed for later (24 MB of 45 after a folder's first pictures); a
+    /// picture's pixels are native memory, freed only once it is collected and its finalizer has run; and the process
+    /// heap keeps freed blocks committed. At rest nothing would bring any of it back for a long while. Once the window is
+    /// idle, away from it (a finalizer must never wait on the interface's thread): an aggressive collection, the
+    /// finalizers, another, and the heap's free blocks handed back.
+    /// </summary>
+    private void GiveBackMemory()
+    {
+        if (_givingBack)
+            return;
+
+        _givingBack = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_prefetching || _working)
+            {
+                _givingBack = false;
+                return;
+            }
+
+            Task.Run(() =>
+            {
+                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                GC.WaitForPendingFinalizers();
+                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                HeapCompact(GetProcessHeap(), 0);
+            }).ContinueWith(_ => _givingBack = false, TaskScheduler.Default);
+        }, DispatcherPriority.ApplicationIdle);
+    }
+
+    private volatile bool _givingBack;
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    private static partial IntPtr GetProcessHeap();
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    private static partial nuint HeapCompact(IntPtr heap, uint flags);
+
+    /// <summary>What the held pictures and decoded strips take, in bytes.</summary>
+    private long HeldBytes() =>
+        _items.Sum(i => i.Poster is BitmapSource picture ? (long)picture.PixelWidth * picture.PixelHeight * 4 : 0)
+        + _strips.Sum(s => s.Frames.Sum(f => (long)f.PixelWidth * f.PixelHeight * 4));
+
+    /// <summary>
+    /// Asks for the pictures of the tiles in view and one row either side, nearest first; while the pointer has been in
+    /// the pane, those of the tiles out of sight after them (nearest first). Lets go of those out of sight when more than
+    /// the budget is held.
+    /// </summary>
     private void QueueVisible()
     {
         if (!IsVisible || Scroller is not { } scroller)
             return;
 
-        var view = new Rect(0, -scroller.ActualHeight / 2, scroller.ActualWidth, scroller.ActualHeight * 2);
-        var seen = new HashSet<MediaBrowserItem>();
+        // The tiles made (the panels make only those in view and a row either side), where they are.
+        var boxes = new List<(MediaBrowserItem Item, Rect Box)>();
         foreach (var item in _items)
         {
             if (Items.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement { IsVisible: true } box)
@@ -352,8 +700,7 @@ public partial class MediaBrowserPane : UserControl
 
             try
             {
-                if (box.TransformToAncestor(scroller).TransformBounds(new Rect(box.RenderSize)).IntersectsWith(view))
-                    seen.Add(item);
+                boxes.Add((item, box.TransformToAncestor(scroller).TransformBounds(new Rect(box.RenderSize))));
             }
             catch (InvalidOperationException)
             {
@@ -361,13 +708,30 @@ public partial class MediaBrowserPane : UserControl
             }
         }
 
-        var wanted = _items.Where(i => seen.Contains(i) && i.IsFile && !i.PreviewRequested).ToList();
+        var row = boxes.Count > 0 ? boxes.Max(b => b.Box.Height) : 0;
+        var view = new Rect(0, -row, scroller.ActualWidth, scroller.ActualHeight + 2 * row);
+        _inSight.Clear();
+        foreach (var (item, box) in boxes.Where(b => b.Box.IntersectsWith(view)))
+            _inSight.Add(item);
+
+        var wanted = _items.Where(i => _inSight.Contains(i) && i.IsFile && !i.PreviewRequested).ToList();
         _queue.RemoveAll(wanted.Contains);
         _queue.InsertRange(0, wanted);
 
-        if (_items.Count(i => i.Poster is not null) > MostPosters)
+        // With the pointer in the pane: the others after them, nearest to those in view first.
+        if (_prefetching && _inSight.Count > 0)
         {
-            foreach (var item in _items.Where(i => i.Poster is not null && !seen.Contains(i)))
+            var shown = _inSight.Select(_items.IndexOf).ToList();
+            var (top, bottom) = (shown.Min(), shown.Max());
+            var rest = _items.Select((item, index) => (Item: item, Distance: index < top ? top - index : index - bottom))
+                .Where(p => !_inSight.Contains(p.Item) && p.Item.IsFile && !p.Item.PreviewRequested && !_queue.Contains(p.Item))
+                .OrderBy(p => p.Distance).Select(p => p.Item);
+            _queue.AddRange(rest);
+        }
+
+        if (HeldBytes() > PosterBudgetBytes)
+        {
+            foreach (var item in _items.Where(i => i.Poster is not null && !_inSight.Contains(i)))
                 (item.Poster, item.PreviewRequested) = (null, false);
         }
 
@@ -389,6 +753,14 @@ public partial class MediaBrowserPane : UserControl
                 if (item.PreviewRequested)
                     continue;
 
+                // A tile out of sight only while the pointer has been in the pane and the budget has room: once it is
+                // full, the rest wait (asked again when they come into view).
+                if (!_inSight.Contains(item) && (!_prefetching || HeldBytes() >= PosterBudgetBytes))
+                {
+                    _queue.RemoveAll(i => !_inSight.Contains(i));
+                    continue;
+                }
+
                 item.PreviewRequested = true;
                 await PrepareAsync(item, token);
             }
@@ -408,6 +780,8 @@ public partial class MediaBrowserPane : UserControl
         // Another folder was opened meanwhile: its pictures are made now.
         if (_queue.Count > 0 && !_listing.IsCancellationRequested)
             _ = WorkAsync();
+        else if (!_prefetching)
+            GiveBackMemory();
     }
 
     private async Task PrepareAsync(MediaBrowserItem item, CancellationToken token)
@@ -427,26 +801,31 @@ public partial class MediaBrowserPane : UserControl
 
             case MediaBrowserKind.Video:
                 if (item.StripPath is null)
-                {
-                    if (await MediaBrowserFrames.DescribeAsync(item.Path, token) is not { } video)
-                    {
-                        item.Info = "cannot be read";
-                        return;
-                    }
-
-                    (item.Seconds, item.Info) = (video.Seconds, video.Seconds > 0 ? MediaBrowserItem.FormatSeconds(video.Seconds) : item.Info);
-                    if (video.Width <= 0 || video.Height <= 0)
-                        return;
-
-                    item.Shape = (double)video.Width / video.Height;
-                    var (frames, frameHeight) = (Math.Clamp(settings.BrowserPreviewFrames, 2, 40), Math.Clamp(settings.BrowserPreviewHeight, 90, 1080));
-                    item.StripPath = await MediaBrowserFrames.StripAsync(item.Path, video.Seconds, video.Width, video.Height, frames, frameHeight, token);
-                }
+                    await PrepareStripAsync(item, token, WorkLane.Background);
 
                 if (item.StripPath is { } strip)
                     item.Poster = await Task.Run(() => MediaBrowserFrames.Poster(strip, item.Shape, height, 0.3), token);
                 return;
         }
+    }
+
+    /// <summary>A video's length and shape, and its strip of frames (kept, or made now): what scrubbing across its tile needs.</summary>
+    private static async Task PrepareStripAsync(MediaBrowserItem item, CancellationToken token, WorkLane lane)
+    {
+        if (await MediaBrowserFrames.DescribeAsync(item.Path, token, lane) is not { } video)
+        {
+            item.Info = "cannot be read";
+            return;
+        }
+
+        (item.Seconds, item.Info) = (video.Seconds, video.Seconds > 0 ? MediaBrowserItem.FormatSeconds(video.Seconds) : item.Info);
+        if (video.Width <= 0 || video.Height <= 0)
+            return;
+
+        var settings = AppSettings.Current;
+        item.Shape = (double)video.Width / video.Height;
+        var (frames, frameHeight) = (Math.Clamp(settings.BrowserPreviewFrames, 2, 40), Math.Clamp(settings.BrowserPreviewHeight, 90, 1080));
+        item.StripPath = await MediaBrowserFrames.StripAsync(item.Path, video.Seconds, video.Width, video.Height, frames, frameHeight, token, lane);
     }
 
     // ----- The pointer across a tile: the frame at that point -----
@@ -637,8 +1016,9 @@ public partial class MediaBrowserPane : UserControl
 
         if (menu.Items.Count > 0)
             menu.Items.Add(new Separator());
-        Add("Up One Folder", GoUp, _folder is not null);
-        Add("Refresh", () => _ = NavigateAsync(_folder));
+        if (!_projectMode)
+            Add("Up One Folder", GoUp, _folder is not null);
+        Add("Refresh", () => _ = _projectMode ? ListProjectAsync() : NavigateAsync(_folder));
     }
 
     private static void ShowInExplorer(string path)

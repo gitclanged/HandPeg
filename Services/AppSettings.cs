@@ -67,11 +67,20 @@ public sealed class ModeProfile
     public int MasterTimelineHeight { get; set; }
     public bool ShowCutSegmentsPane { get; set; }
     public bool ShowKeyframesPane { get; set; }
-    public bool ShowSourcePane { get; set; }
+    public bool ShowEffectsPane { get; set; } = true;
     public bool ShowMediaBrowser { get; set; }
     public string? PlaybackControls { get; set; }
     public string? DockLayout { get; set; }
+    public List<SavedDockLayout> SavedLayouts { get; set; } = [];
     public bool ShowClipKeyframes { get; set; }
+}
+
+/// <summary>A layout of the user's own (Layout button, Save Current Layout): its name, its place (1 to 3), and the arrangement (Docking.DockLayoutState as JSON).</summary>
+public sealed class SavedDockLayout
+{
+    public int Slot { get; set; }
+    public string Name { get; set; } = "";
+    public string Layout { get; set; } = "";
 }
 
 /// <summary>
@@ -110,6 +119,15 @@ public sealed class AppSettings
 
     /// <summary>A whisper.cpp program of the user's own (whisper-cli.exe, say), used instead of the downloaded one.</summary>
     public string WhisperPath { get; set; } = "";
+
+    /// <summary>A while after startup, the tools HandPeg installed are replaced by their newest releases, in the background.</summary>
+    public bool AutoUpdateDependencies { get; set; } = true;
+
+    /// <summary>Looks for a newer HandPeg at startup and offers the Update button; nothing is downloaded until it is pressed.</summary>
+    public bool CheckAppUpdatesOnStartup { get; set; } = true;
+
+    /// <summary>Downloads a newer HandPeg as soon as it is found (and puts it in when HandPeg closes), instead of waiting for the Update button.</summary>
+    public bool AutoDownloadAppUpdates { get; set; }
 
     public string YtDlpReleaseUrl { get; set; } = "";
     public string FfmpegReleaseUrl { get; set; } = "";
@@ -230,6 +248,118 @@ public sealed class AppSettings
     /// <summary>How large the media browser's cache may grow, in megabytes.</summary>
     public int BrowserCacheMegabytes { get; set; } = 512;
 
+    // ----- Proxies (Settings > Preview & Cache > Proxies; see ProxyCache) -----
+
+    /// <summary>
+    /// Per-Clip Video Proxies: heavy videos on the timeline (taller than <see cref="ProxyHeavyHeight"/>, AV1, VP9,
+    /// 10-bit HEVC, ProRes, or I-frames further apart than <see cref="ProxyHeavyIFrameSeconds"/>) get a small copy
+    /// made in the background, which Live Preview plays in their place. Exports always read the originals.
+    /// </summary>
+    public bool VideoProxies { get; set; } = true;
+
+    public const string ProxyLayersOnly = "Video layers only", ProxyAllVideos = "Video layers and the main video";
+
+    public static IReadOnlyList<string> ProxyScopes { get; } = [ProxyLayersOnly, ProxyAllVideos];
+
+    /// <summary>Which videos may get a proxy: the video layers, or the main video as well.</summary>
+    public string ProxyScope { get; set; } = ProxyLayersOnly;
+
+    /// <summary>A video whose shorter side is longer than this, in pixels, counts as heavy (1080: anything above 1080p, upright or on its side).</summary>
+    public int ProxyHeavyHeight { get; set; } = 1080;
+
+    /// <summary>A video whose I-frames are further apart than this, in seconds, counts as heavy (every seek decodes that far).</summary>
+    public double ProxyHeavyIFrameSeconds { get; set; } = 2;
+
+    /// <summary>
+    /// The Composed Timeline Proxy: the whole sequence rendered once, in the background, as one small video the
+    /// player plays with no filter graph at all; dropped at once when anything is changed. Off by default.
+    /// </summary>
+    public bool TimelineProxy { get; set; }
+
+    public static IReadOnlyList<int> ProxyTiers { get; } = [480, 540, 720];
+
+    /// <summary>How tall proxies are made, in pixels: 480, 540 or 720.</summary>
+    public int ProxyTier { get; set; } = 540;
+
+    public const string ProxyCodecH264 = "H.264 (short GOP)", ProxyCodecMjpeg = "MJPEG (every frame an I-frame)";
+
+    public static IReadOnlyList<string> ProxyCodecs { get; } = [ProxyCodecH264, ProxyCodecMjpeg];
+
+    /// <summary>What proxies are encoded as: H.264 with an I-frame every 15 frames and no B-frames, or MJPEG (instant seeks, about three times the size).</summary>
+    public string ProxyCodec { get; set; } = ProxyCodecH264;
+
+    public const string ProxyEncoderAuto = "Auto", ProxyEncoderProcessor = "Processor";
+
+    public static IReadOnlyList<string> ProxyEncoders { get; } = [ProxyEncoderAuto, "NVENC", "Quick Sync", "AMF", ProxyEncoderProcessor];
+
+    /// <summary>Which encoder makes H.264 proxies: Auto (the background card's, then the main card's, then the processor), or one named.</summary>
+    public string ProxyEncoder { get; set; } = ProxyEncoderAuto;
+
+    /// <summary>How long HandPeg has to be left alone (no input, not playing, not exporting) before proxies start being made, in seconds.</summary>
+    public int ProxyIdleSeconds { get; set; } = 10;
+
+    /// <summary>The same wait when a graphics card other than the player's makes the proxies (Settings, Performance): it takes nothing from playback.</summary>
+    public int ProxyIdleSecondsWithBackgroundCard { get; set; } = 2;
+
+    /// <summary>A proxy being made is paused (its FFmpeg suspended) while the player plays, and goes on after.</summary>
+    public bool PauseProxiesWhilePlaying { get; set; } = true;
+
+    /// <summary>How large the proxy cache may grow, in gigabytes, before the proxies used longest ago are deleted.</summary>
+    public double ProxyCacheGigabytes { get; set; } = 20;
+
+    public const string ProxiesInCache = "In the cache folder", ProxiesBesideProject = "Beside the project";
+
+    public static IReadOnlyList<string> ProxyLocations { get; } = [ProxiesInCache, ProxiesBesideProject];
+
+    /// <summary>Where proxies are kept: with the other caches, or in a folder beside the project file (Name.proxies) when there is one.</summary>
+    public string ProxyLocation { get; set; } = ProxiesInCache;
+
+    /// <summary>The proxies of files that have been deleted are deleted too, at startup.</summary>
+    public bool PurgeProxiesOfDeletedFiles { get; set; } = true;
+
+    /// <summary>The proxies of the project's files are deleted when the project is closed (another opened, or HandPeg closed).</summary>
+    public bool ClearProjectProxiesOnExit { get; set; }
+
+    /// <summary>Whether anything uses the proxy cache.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool UsesProxies => VideoProxies || TimelineProxy;
+
+    // ----- Cache clean-up at startup -----
+
+    /// <summary>The previews of files that have been deleted (or changed) are deleted from the caches, a while after startup.</summary>
+    public bool PurgeMissingAtStartup { get; set; } = true;
+
+    /// <summary>How long after startup the clean-up runs, in seconds.</summary>
+    public int PurgeDelaySeconds { get; set; } = 60;
+
+    /// <summary>A file on a drive that is not there (unplugged, offline) counts as deleted. Off: its previews are kept until the size limit takes them.</summary>
+    public bool MissingDrivesCountAsDeleted { get; set; }
+
+    // ----- Media browser: indexing the folder shown -----
+
+    /// <summary>How long a folder stays open in the media browser before all of its videos are prepared, in seconds; 0 for never.</summary>
+    public int BrowserIndexDelaySeconds { get; set; } = 40;
+
+    /// <summary>The most videos of one folder prepared that way.</summary>
+    public int BrowserIndexMaxFiles { get; set; } = 500;
+
+    /// <summary>Folders are indexed on battery power too.</summary>
+    public bool BrowserIndexOnBattery { get; set; }
+
+    /// <summary>Folders on network drives are indexed too.</summary>
+    public bool BrowserIndexNetwork { get; set; }
+
+    /// <summary>A notification says when a folder has been indexed.</summary>
+    public bool NotifyIndexingDone { get; set; }
+
+    // ----- Downloads used by projects -----
+
+    /// <summary>A download in the download cache that a project uses is not deleted when the cache is trimmed.</summary>
+    public bool KeepDownloadsUsedByProjects { get; set; } = true;
+
+    /// <summary>Saving a project that uses files from the download cache offers to copy them into the download folder.</summary>
+    public bool AskToCopyDownloadsOnSave { get; set; } = true;
+
     // Media browser
     /// <summary>How many frames are taken from each video in the media browser, for the picture that follows the pointer over its tile.</summary>
     public int BrowserPreviewFrames { get; set; } = 15;
@@ -239,6 +369,13 @@ public sealed class AppSettings
 
     /// <summary>A clip dragged or dropped on the time bars snaps to the edges of the others, the end of the sequence and the playhead.</summary>
     public bool SnapClips { get; set; } = true;
+
+    /// <summary>
+    /// A clip dropped on a track that has room for it at that moment joins it (Editor Mode). Off (the default), every
+    /// clip dropped gets a track of its own, just above the row it was dropped on. Either way nothing is ever laid over
+    /// a clip already there: a clip that would overlap one goes on a new track instead.
+    /// </summary>
+    public bool DroppedClipsJoinTrack { get; set; }
 
     /// <summary>The folder the media browser last showed.</summary>
     public string BrowserFolder { get; set; } = "";
@@ -250,6 +387,9 @@ public sealed class AppSettings
     public string BrowserSort { get; set; } = "Name";
 
     public bool BrowserSortDescending { get; set; }
+
+    /// <summary>The media browser lists the files the open project uses (Project Media) instead of a folder (Folder Browser).</summary>
+    public bool BrowserShowsProject { get; set; }
 
     // Interface
     public bool ShowCommandPreviewTab { get; set; }
@@ -303,6 +443,17 @@ public sealed class AppSettings
     /// </summary>
     public bool LivePreview { get; set; }
 
+    public const string ScrubLayersLive = "Live", ScrubLayersStill = "Still frame", ScrubLayersHidden = "Hidden";
+
+    /// <summary>
+    /// Live Preview, while the playhead is dragged or wound back: video layers decoded as they play (Live), one
+    /// frame each, the I-frame nearest the playhead (Still frame), or left out (Hidden). They play live again
+    /// as soon as the playhead is let go.
+    /// </summary>
+    public string LayersWhileScrubbing { get; set; } = ScrubLayersStill;
+
+    public static IReadOnlyList<string> ScrubLayerChoices { get; } = [ScrubLayersLive, ScrubLayersStill, ScrubLayersHidden];
+
     /// <summary>
     /// The graphics card decodes the video in the player, as well as drawing it. Off, the processor decodes:
     /// for a driver that shows a green or garbled picture, or stutters.
@@ -314,6 +465,57 @@ public sealed class AppSettings
     /// work can be given to a second card. -1 leaves the choice to FFmpeg.
     /// </summary>
     public int HardwareDecodeAdapter { get; set; } = -1;
+
+    // ----- Performance: the tools HandPeg runs in the background (see WorkScheduler, JobObjects) -----
+
+    /// <summary>Background tools at once (thumbnails, waveforms, I-frame lists, proxies); 0 is Auto: one for every six processors not reserved.</summary>
+    public int BackgroundJobs { get; set; }
+
+    /// <summary>Processors kept free for the interface and the player: no tool runs on the first this many. -1 is Auto (2).</summary>
+    public int ReservedCores { get; set; } = -1;
+
+    public const string PriorityBelowNormal = "Below Normal", PriorityIdle = "Idle";
+
+    public static IReadOnlyList<string> BackgroundPriorities { get; } = [PriorityBelowNormal, PriorityIdle];
+
+    /// <summary>The priority background tools run at: Below Normal, or Idle (only when nothing else wants the processor).</summary>
+    public string BackgroundPriority { get; set; } = PriorityBelowNormal;
+
+    /// <summary>Background tools run in Windows' Efficiency mode (EcoQoS): slower cores, lower clocks.</summary>
+    public bool BackgroundEfficiencyMode { get; set; } = true;
+
+    /// <summary>Background work waiting to start waits while the player plays (running tools carry on).</summary>
+    public bool PauseBackgroundWhilePlaying { get; set; } = true;
+
+    /// <summary>Background work waiting to start waits while an export, Render Preview or the queue runs.</summary>
+    public bool PauseBackgroundWhileExporting { get; set; } = true;
+
+    /// <summary>
+    /// The graphics card background tools decode on (and proxies are encoded on): -1 Auto (a card other than the
+    /// one the player draws on, when there is one), -2 none (the processor), otherwise its DXGI number.
+    /// </summary>
+    public int BackgroundGpu { get; set; } = -1;
+
+    /// <summary>Threads each background FFmpeg may use; 0 is Auto (FFmpeg's own choice).</summary>
+    public int BackgroundToolThreads { get; set; }
+
+    /// <summary>Threads whisper transcribes with; 0 is Auto (whisper's own default, at most 4).</summary>
+    public int WhisperThreads { get; set; }
+
+    /// <summary>The order of the Summary tab's cards (Editor Mode), by their names, comma-separated; empty for the order they were designed in.</summary>
+    public string SummaryCardOrder { get; set; } = "";
+
+    /// <summary>The progress chip at the bottom left shows background work too, not only exports and loads.</summary>
+    public bool ShowBackgroundTasks { get; set; } = true;
+
+    /// <summary>How long a finished task stays in the progress flyout, in seconds.</summary>
+    public int FinishedTaskSeconds { get; set; } = 5;
+
+    /// <summary>The processors reserved, Auto worked out: two on a machine with eight or more, one with four or more, else none.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int EffectiveReservedCores => ReservedCores >= 0
+        ? Math.Min(ReservedCores, Math.Max(Environment.ProcessorCount - 2, 0))
+        : Environment.ProcessorCount >= 8 ? 2 : Environment.ProcessorCount >= 4 ? 1 : 0;
 
     // ----- Dead air -----
 
@@ -375,6 +577,8 @@ public sealed class AppSettings
         }
         else
         {
+            // A mode never used has no layouts of its own yet: those of the mode left stay with it.
+            SavedLayouts = [];
             ApplyMode(mode);
         }
     }
@@ -421,10 +625,13 @@ public sealed class AppSettings
     /// <summary>The Keyframes pane beside the player: the selected clip's keyframes on a timeline of their own.</summary>
     public bool ShowKeyframesPane { get; set; }
 
-    /// <summary>The Source pane at the top of the side column, in Editor Mode: Encoder Mode has the source in its top bar.</summary>
-    public bool ShowSourcePane { get; set; } = true;
+    /// <summary>The Effects pane (Editor Mode only): the selected clip's effect stack, or the Sequence Output's. Tabbed with Keyframes to start with.</summary>
+    public bool ShowEffectsPane { get; set; } = true;
 
-    /// <summary>The media browser pane in the side column, in Editor Mode: a folder's videos to drag onto the timeline.</summary>
+    /// <summary>Draft Mode: while the playhead is dragged or wound back, Live Preview leaves out the effects that cost it most (red). Exports always have them.</summary>
+    public bool DraftScrubSkipHeavyEffects { get; set; } = true;
+
+    /// <summary>The media browser pane in the side column, in Editor Mode: a folder's videos, or the project's files, to drag onto the timeline. Editor Mode starts with it.</summary>
     public bool ShowMediaBrowser { get; set; }
 
     /// <summary>The controls the playback bar shows, by name (see PlaybackControlSet); null for the mode's defaults.</summary>
@@ -433,8 +640,44 @@ public sealed class AppSettings
     /// <summary>Where every pane is, in the main window and the side window (Docking.DockLayoutState as JSON); null for where the mode starts them.</summary>
     public string? DockLayout { get; set; }
 
+    /// <summary>
+    /// The mode's layouts of the user's own (the Layout button: Save Current Layout), at most <see cref="SavedLayoutSlots"/>,
+    /// each in its place. Replaced as a whole when one is saved or deleted, so a copy of the settings never shares it.
+    /// </summary>
+    public List<SavedDockLayout> SavedLayouts { get; set; } = [];
+
+    /// <summary>How many layouts of the user's own each mode keeps (the brief of Pass 2E).</summary>
+    public const int SavedLayoutSlots = 3;
+
     /// <summary>Whether clips on the timeline show a diamond at each of their keyframes.</summary>
     public bool ShowClipKeyframes { get; set; } = true;
+
+    /// <summary>
+    /// With keyframes enabled, what a change by hand keys: only the property that changed (true; a resize about the anchor
+    /// moves the corner too, so that is keyed with it), or every motion property at once (false, Key All, as before lanes).
+    /// </summary>
+    public bool KeyChangedOnly { get; set; }
+
+    /// <summary>The Keyframes pane draws the selected row's value over time under it.</summary>
+    public bool ShowKeyframeGraph { get; set; } = true;
+
+    /// <summary>A ripple edit (Shift-drag of a clip's edge, Shift+Delete) moves the later clips of every track, not only its own.</summary>
+    public bool RippleAllTracks { get; set; } = true;
+
+    /// <summary>A track's Solo button plays it alone (the others' solo goes off); off, solo is a set of tracks and Alt-click is alone.</summary>
+    public bool SoloIsExclusive { get; set; }
+
+    /// <summary>Clips with sound show a gain line and fade handles on their blocks, to be dragged.</summary>
+    public bool ShowClipGainLines { get; set; } = true;
+
+    /// <summary>How long a crossfade made from a cut's right-click menu is, in seconds.</summary>
+    public double DefaultTransitionSeconds { get; set; } = 1;
+
+    /// <summary>The layout pane draws an animated layer's path, with a dot at each of its place keyframes to drag.</summary>
+    public bool ShowMotionPath { get; set; } = true;
+
+    /// <summary>A layer dragged in the layout pane snaps to the frame's middle and the safe margins (Alt held: no snapping).</summary>
+    public bool SnapLayoutGuides { get; set; } = true;
 
     /// <summary>How tall the master timeline starts out in a mode, 1 to 50.</summary>
     public static int DefaultMasterTimelineHeight(string mode) => mode == EditorMode ? 17 : 1;
@@ -571,7 +814,7 @@ public sealed class AppSettings
         ShowTimelineThumbnails = editor;
         StartWithFrameEngine = editor;
         (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (!editor, editor, true);
-        ShowSourcePane = true;
+        ShowMediaBrowser = editor;
         if (!editor)
             (DefaultVideoEncoder, DefaultAudioEncoder, DefaultAudioBitrate) = ("", "", "");
 
@@ -677,6 +920,7 @@ public sealed class AppSettings
         copy.ModeProfiles = new(ModeProfiles);
         copy.SplashStylePresets = [.. SplashStylePresets];
         copy.OverlayEncodingPresets = [.. OverlayEncodingPresets];
+        copy.SavedLayouts = [.. SavedLayouts];
         copy.DefaultCaptionStyle = DefaultCaptionStyle?.Clone();
         return copy;
     }
@@ -716,6 +960,9 @@ public sealed class AppSettings
                 // A file that spells these out as null, as one written by hand or by an older version might.
                 settings.SmartRules ??= [];
                 settings.ModeProfiles ??= [];
+                settings.SavedLayouts ??= [];
+                foreach (var profile in settings.ModeProfiles.Values)
+                    profile.SavedLayouts ??= [];
 
                 foreach (var rule in settings.SmartRules)
                     rule.Normalize();
@@ -748,14 +995,9 @@ public sealed class AppSettings
                         encoderProfile.ShowAdvancedFiltersTab = true;
                 }
 
-                // Settings from before the Source pane: it is open in each mode until it is closed there.
+                // Version 3 opened the Source pane, which Editor Mode no longer has (Add Media in its header took its place).
                 if (settings.ViewDefaultsVersion < 3)
-                {
                     settings.ViewDefaultsVersion = 3;
-                    settings.ShowSourcePane = true;
-                    foreach (var profile in settings.ModeProfiles.Values)
-                        profile.ShowSourcePane = true;
-                }
 
                 // The Squisher began with one preset; the others came after. Settings saved in between hold just
                 // that one, untouched: they get the full set. A list that was edited is left as it is.

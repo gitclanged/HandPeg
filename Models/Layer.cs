@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Models;
 
@@ -28,6 +29,9 @@ public enum LayerKind
 
     /// <summary>Words typed in HandPeg (a title, a label), drawn in a font of the computer's. Placed, sized, turned and animated like a picture.</summary>
     Text,
+
+    /// <summary>A clip with no picture of its own: its effect stack works on everything under it while it lasts, within its rectangle.</summary>
+    Adjustment,
 }
 
 /// <summary>
@@ -35,9 +39,21 @@ public enum LayerKind
 /// clip moves on from it to the next keyframe.
 /// </summary>
 /// <remarks>A value, not an object: a motion's keyframes lie side by side in their list, and none is a thing for the collector to follow.
-/// Read from JSON through its constructor, so that a keyframe saved without an easing gets the default one, as it always did.</remarks>
+/// Read from JSON through its constructor, so that a keyframe saved without an easing gets the default one, as it always did.
+/// The four Bézier numbers are a Custom Bézier's handles (see <see cref="EasingCurves"/>); they are left out of JSON while 0.</remarks>
 [method: System.Text.Json.Serialization.JsonConstructor]
-public readonly record struct Keyframe(double Time, double Value, EasingType Easing = EasingType.EaseInOut);
+public readonly record struct Keyframe(
+    double Time, double Value, EasingType Easing = EasingType.EaseInOut,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double BezierX1 = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double BezierY1 = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double BezierX2 = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double BezierY2 = 0)
+{
+    /// <summary>The same keyframe leaving by another easing (a Custom Bézier with these handles).</summary>
+    public Keyframe WithEasing(EasingType easing, (double X1, double Y1, double X2, double Y2)? handles = null) => handles is { } h
+        ? this with { Easing = easing, BezierX1 = h.X1, BezierY1 = h.Y1, BezierX2 = h.X2, BezierY2 = h.Y2 }
+        : this with { Easing = easing };
+}
 
 /// <summary>What of a layer can be animated with keyframes.</summary>
 public enum KeyProperty
@@ -139,7 +155,10 @@ public sealed partial class Layer : ObservableObject
     public bool CarriesSound => HasAudio && (IsVideoFile || IsAudio);
 
     /// <summary>Something added by hand, which can be removed again: the captions, the main video and the background cannot.</summary>
-    public bool IsRemovable => Kind is LayerKind.Video or LayerKind.Image or LayerKind.VideoFile or LayerKind.Audio or LayerKind.Text;
+    public bool IsRemovable => Kind is LayerKind.Video or LayerKind.Image or LayerKind.VideoFile or LayerKind.Audio or LayerKind.Text or LayerKind.Adjustment;
+
+    /// <summary>An adjustment layer: its effects work on the picture under it.</summary>
+    public bool IsAdjustment => Kind == LayerKind.Adjustment;
 
     /// <summary>A picture on the frame: everything but the background, which is the frame, and a sound.</summary>
     public bool IsPicture => !IsBackground && !IsAudio;
@@ -152,6 +171,9 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>Can be moved up and down the stack: the captions stay on top and the background at the bottom.</summary>
     public bool CanReorder => !IsCaptions && !IsBackground;
+
+    /// <summary>Whether its track can be hidden (the eye on its row, Hide on its menu): the captions have their own switch.</summary>
+    public bool CanHide => IsRemovable || IsMainVideo || IsBackground;
 
     /// <summary>Can have a color keyed out of it: the main video, and the pictures and videos added by hand.</summary>
     public bool HasKeying => IsPicture && !IsCaptions;
@@ -174,10 +196,12 @@ public sealed partial class Layer : ObservableObject
     /// </summary>
     public static bool IsClipProperty(string? name) => name is nameof(StartTime) or nameof(Duration) or nameof(MediaOffset) or nameof(IsHidden)
         or nameof(ImagePath) or nameof(ImageWidth) or nameof(ImageHeight) or nameof(HasAudio) or nameof(AudioCodec) or nameof(AudioChannels)
-        or nameof(IsLoading) or nameof(Title) or nameof(Action) or nameof(IsMuted) or nameof(GainDb)
+        or nameof(IsLoading) or nameof(Title) or nameof(Action) or nameof(IsMuted) or nameof(GainDb) or nameof(ProxyChoice)
         or nameof(AudioOffset) or nameof(Name) or nameof(TrackId) or nameof(PositionXPercent) or nameof(PositionYPercent) or nameof(SizePercent)
-        or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges) or KeysChanged
-        or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(AnimatesOpacity) or nameof(IsAnimated) or nameof(IsDeleted) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration) or nameof(Speed) or nameof(ClipSpeed);
+        or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges) or KeysChanged or nameof(AnchorXPercent) or nameof(AnchorYPercent)
+        or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(AnimatesOpacity) or nameof(IsAnimated) or nameof(IsDeleted) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration) or nameof(Speed) or nameof(ClipSpeed)
+        or EffectsChanged or nameof(EffectsBypassed) or nameof(FadeInSeconds) or nameof(FadeOutSeconds) or nameof(TransitionIn)
+        or nameof(FadeInStyle) or nameof(FadeOutStyle);
 
     // When the layer is on screen, in seconds of the source's own time.
 
@@ -249,6 +273,15 @@ public sealed partial class Layer : ObservableObject
     /// <summary>In the recycle bin: taken off the timeline, and kept so that it can be put back.</summary>
     [ObservableProperty] private bool _isDeleted;
 
+    /// <summary>Whether Live Preview plays this clip's file from a proxy: when it is heavy (Auto), always (Make Proxy), or never (Use Original).</summary>
+    [ObservableProperty] private ProxyChoice _proxyChoice;
+
+    /// <summary>
+    /// A track with nothing on it yet (Add Layer's click): it stands for the track in the list, takes the first clip dropped
+    /// onto it (which takes its place), and draws nothing and goes into no graph.
+    /// </summary>
+    [ObservableProperty] private bool _isEmptyTrack;
+
     /// <summary>A video layer whose file has sound, which goes into the output with it.</summary>
     [ObservableProperty] private bool _hasAudio;
 
@@ -268,6 +301,38 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(GainDb))]
     private double _audioGainDb;
+
+    /// <summary>
+    /// How long the clip takes to come on at its start, in seconds of the timeline: its picture in its
+    /// <see cref="FadeInStyle"/> over whatever is under it, and its sound up from silence. The handle at the block's
+    /// top-left corner.
+    /// </summary>
+    [ObservableProperty] private double _fadeInSeconds;
+
+    /// <summary>How long it takes to go before its end, picture and sound (the handle at the block's top-right corner).</summary>
+    [ObservableProperty] private double _fadeOutSeconds;
+
+    /// <summary>How the picture comes on over its fade in: a dissolve, a wipe, a slide, a zoom, a blur.</summary>
+    [ObservableProperty] private TransitionStyle _fadeInStyle;
+
+    /// <summary>How the picture goes over its fade out.</summary>
+    [ObservableProperty] private TransitionStyle _fadeOutStyle;
+
+    /// <summary>
+    /// On a copy a graph is built from only (never saved): the picture stays as it is through its fade in (or out), only
+    /// its sound fading, because the clip laid over it fades in (or out) across the same stretch and carries the
+    /// picture's side of that crossfade. See MainViewModel.ApplyCrossfades and PairLayerCrossfades.
+    /// </summary>
+    public bool PictureFadeInOff { get; set; }
+
+    public bool PictureFadeOutOff { get; set; }
+
+    /// <summary>
+    /// A crossfade from the clip just before it on its track (the one whose end meets its start), this many seconds long,
+    /// centred on the cut: both run on into what their files have beyond it, the picture dissolving from the one to the
+    /// other and the sound crossfading. 0 for a plain cut. See MainViewModel.ApplyCrossfades.
+    /// </summary>
+    [ObservableProperty] private double _transitionIn;
 
     // ----- As a row of the Audio tab -----
     // A sound added from a file is listed there with the video's own audio tracks, in rows made from one
@@ -389,57 +454,99 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Degrees the picture is turned clockwise about its middle.</summary>
     [ObservableProperty] private double _rotation;
 
-    [ObservableProperty] private bool _flipHorizontal;
-    [ObservableProperty] private bool _flipVertical;
-
-    // Filters of the layer's own, applied to its picture before it is laid on the frame.
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterContrast = 1;
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterBrightness;
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterSaturation = 1;
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterGamma = 1;
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterHue;
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterSharpen;
-
-    /// <summary>How far the picture is blurred, in pixels of a 1080-wide frame; 0 for not at all.</summary>
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private double _filterBlur;
-
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private bool _filterDenoise;
-
-    /// <summary>A .cube file whose look is given to this layer alone.</summary>
-    [ObservableProperty] [NotifyPropertyChangedFor(nameof(HasFilterChanges))] private string _filterLut = "";
+    // Mirroring and the layer's own filters are cards of its effect stack (Layer.Effects.cs): FlipHorizontal,
+    // FilterContrast and the rest are views onto those cards.
 
     /// <summary>Whether any filter of the layer's own is set to something.</summary>
     public bool HasFilterChanges => Math.Abs(FilterContrast - 1) >= 0.005 || Math.Abs(FilterBrightness) >= 0.005 || Math.Abs(FilterSaturation - 1) >= 0.005
-        || Math.Abs(FilterGamma - 1) >= 0.005 || Math.Abs(FilterHue) >= 0.05 || FilterSharpen >= 0.005 || FilterBlur >= 0.05 || FilterDenoise || FilterLut.Trim().Length > 0;
+        || Math.Abs(FilterGamma - 1) >= 0.005 || Math.Abs(FilterHue) >= 0.05 || FilterSharpen >= 0.005 || FilterBlur >= 0.05 || FilterDenoise || FilterLut.Trim().Length > 0 || HasNewLook;
 
     public void ResetFilters() =>
         (FilterContrast, FilterBrightness, FilterSaturation, FilterGamma, FilterHue, FilterSharpen, FilterBlur, FilterDenoise, FilterLut) = (1, 0, 1, 1, 0, 0, 0, false, "");
 
     public void ResetTransform() => (Rotation, FlipHorizontal, FlipVertical) = (0, false, false);
 
-    // Growing about the middle. A layer is kept by its top-left corner, but when its size is changed (by its
-    // slider, its number box, a dialog) it is its middle that stays where it is: the corner is moved to suit.
+    // Growing about the anchor point. A layer is kept by its top-left corner, but when its size is changed (by its
+    // slider, its number box, a dialog, the layout pane) it is its anchor point (its middle, unless it was moved) that
+    // stays where it is: the corner is moved to suit. It turns about the same point (FilterGraphBuilder, the layout pane).
 
     /// <summary>Switched on once the layer is in use; while it is being built, sizes and corners are simply taken as given.</summary>
     public bool AnchorCenter { get; set; }
 
+    /// <summary>Where in the layer it turns and grows about, as a fraction of its width from its left edge: 0.5 is its middle.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(AnchorXPercent))]
+    private double _anchorX = 0.5;
+
+    /// <summary>The same, as a fraction of its height from its top edge.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(AnchorYPercent))]
+    private double _anchorY = 0.5;
+
+    // The anchor as percentages of the layer, for the number boxes.
+    public double AnchorXPercent { get => Math.Round(AnchorX * 100, 1); set => AnchorX = Anchor(value / 100); }
+    public double AnchorYPercent { get => Math.Round(AnchorY * 100, 1); set => AnchorY = Anchor(value / 100); }
+
+    /// <summary>
+    /// How far a layer's middle moves when it is turned about its anchor point instead of its middle: the turn of the
+    /// line from the anchor to the middle (dx, dy, in pixels, y pointing down, degrees clockwise), less that line. The
+    /// rotate filter turns about the middle; the overlay then puts the middle where the turn about the anchor takes it.
+    /// </summary>
+    public static (double X, double Y) Pivot(double degrees, double dx, double dy)
+    {
+        var angle = degrees * Math.PI / 180;
+        var (cos, sin) = (Math.Cos(angle), Math.Sin(angle));
+        return (dx * (cos - 1) - dy * sin, dx * sin + dy * (cos - 1));
+    }
+
+    /// <summary>
+    /// Moves the anchor point without moving the layer on the frame (the layout pane's anchor dot): a turned layer turns
+    /// about the new point from now on, so its corner is moved by as much as that would move it.
+    /// </summary>
+    public void MoveAnchor(double x, double y, double widthPixels, double heightPixels, int frameWidth, int frameHeight)
+    {
+        (x, y) = (Anchor(x), Anchor(y));
+        var turn = HasFilters ? Rotation : 0;
+        if (Math.Abs(turn % 360) >= 0.05 && frameWidth > 0 && frameHeight > 0)
+        {
+            var before = Pivot(turn, (0.5 - AnchorX) * widthPixels, (0.5 - AnchorY) * heightPixels);
+            var after = Pivot(turn, (0.5 - x) * widthPixels, (0.5 - y) * heightPixels);
+            PositionX += (before.X - after.X) / frameWidth;
+            PositionY += (before.Y - after.Y) / frameHeight;
+        }
+
+        (AnchorX, AnchorY) = (x, y);
+    }
+
+    /// <summary>How far outside the layer its anchor point may be put: a layer's width or height beyond each edge.</summary>
+    public const double SmallestAnchor = -1, LargestAnchor = 2;
+
+    /// <summary>Whether the anchor point is anywhere but the middle.</summary>
+    public bool HasOffsetAnchor => Math.Abs(AnchorX - 0.5) > 1e-4 || Math.Abs(AnchorY - 0.5) > 1e-4;
+
+    /// <summary>A saved anchor, held to the reach above; the middle for one that is not a number.</summary>
+    public static double Anchor(double value) => double.IsFinite(value) ? Math.Clamp(value, SmallestAnchor, LargestAnchor) : 0.5;
+
     // The layer's height for each unit of its width, both as fractions of the frame; learnt whenever it is laid out.
     private double _heightPerWidth;
+
+    /// <summary>The layer's height for each unit of its width, both as fractions of the frame, as last laid out (1 before).</summary>
+    public double HeightPerWidth => _heightPerWidth > 0 ? _heightPerWidth : 1;
 
     partial void OnSizeWidthChanged(double oldValue, double newValue)
     {
         if (!AnchorCenter)
             return;
 
-        PositionX -= (newValue - oldValue) / 2;
+        PositionX -= (newValue - oldValue) * AnchorX;
         if (LockAspectRatio || SizeHeight <= 0)
-            PositionY -= (newValue - oldValue) * _heightPerWidth / 2;
+            PositionY -= (newValue - oldValue) * _heightPerWidth * AnchorY;
     }
 
     partial void OnSizeHeightChanged(double oldValue, double newValue)
     {
         if (AnchorCenter && !LockAspectRatio && oldValue > 0)
-            PositionY -= (newValue - oldValue) / 2;
+            PositionY -= (newValue - oldValue) * AnchorY;
     }
 
     /// <summary>Changes the layer with its corner staying where it is: for a resize dragged by the opposite corner.</summary>
@@ -530,52 +637,24 @@ public sealed partial class Layer : ObservableObject
     };
 
     /// <summary>The value of an animated property at a moment of the clip; its set value when it has no keyframes.</summary>
-    public double Evaluate(KeyProperty property, double time)
-    {
-        var keys = _keys[(int)property];
-        if (keys.Count == 0)
-            return GetValue(property);
-        if (time <= keys[0].Time)
-            return keys[0].Value;
-
-        for (var i = 1; i < keys.Count; i++)
-        {
-            if (time < keys[i].Time)
-            {
-                var (a, b) = (keys[i - 1], keys[i]);
-                return b.Time - a.Time < 1e-6 ? b.Value : a.Value + (b.Value - a.Value) * Ease((time - a.Time) / (b.Time - a.Time), a.Easing);
-            }
-        }
-
-        return keys[^1].Value;
-    }
-
-    /// <summary>
-    /// How far along a stretch between two keyframes the clip is, given how far through its time it is (both
-    /// 0 to 1). The same curves FFmpeg is given for the export, so what is seen here is what is encoded.
-    /// </summary>
-    public static double Ease(double progress, EasingType easing)
-    {
-        var u = Math.Clamp(progress, 0, 1);
-        return easing switch
-        {
-            EasingType.EaseInOut => (1 - Math.Cos(u * Math.PI)) / 2,
-            EasingType.EaseIn => 1 - Math.Cos(u * Math.PI / 2),
-            EasingType.EaseOut => Math.Sin(u * Math.PI / 2),
-            EasingType.Smoothstep => u * u * (3 - 2 * u),
-            _ => u,
-        };
-    }
+    public double Evaluate(KeyProperty property, double time) =>
+        _keys[(int)property] is { Count: > 0 } keys ? EasingCurves.ValueAt(keys, time) : GetValue(property);
 
     /// <summary>The easing of the keyframe at a moment, or null when the clip has no keyframe there.</summary>
-    public EasingType? GetEasingAt(double time)
+    public EasingType? GetEasingAt(double time) => GetKeyAt(time)?.Easing;
+
+    /// <summary>The keyframe at a moment: of one property, or (null) the first of any; null when there is none there.</summary>
+    public Keyframe? GetKeyAt(double time, KeyProperty? only = null)
     {
-        foreach (var keys in _keys)
+        foreach (var property in Enum.GetValues<KeyProperty>())
         {
-            foreach (var key in keys)
+            if (only is { } wanted && wanted != property)
+                continue;
+
+            foreach (var key in _keys[(int)property])
             {
                 if (Math.Abs(key.Time - time) <= KeyTolerance)
-                    return key.Easing;
+                    return key;
             }
         }
 
@@ -583,19 +662,28 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
-    /// Sets how the clip moves on from the keyframe at a moment. A keyframe pins place, size and turn
-    /// together, so all of them leave it the same way. False when there is no keyframe there.
+    /// Sets how the clip moves on from the keyframes at a moment: of one property (its lane in the Keyframes pane), or
+    /// (null) of all of them, place, size and turn leaving it the same way. A Custom Bezier takes its handles with it.
+    /// False when there is no keyframe there, or it already leaves that way.
     /// </summary>
-    public bool SetEasingAt(double time, EasingType easing)
+    public bool SetEasingAt(double time, EasingType easing, (double X1, double Y1, double X2, double Y2)? handles = null, KeyProperty? only = null)
     {
         var changed = false;
-        foreach (var keys in _keys)
+        foreach (var property in Enum.GetValues<KeyProperty>())
         {
+            if (only is { } wanted && wanted != property)
+                continue;
+
+            var keys = _keys[(int)property];
             for (var i = 0; i < keys.Count; i++)
             {
-                if (Math.Abs(keys[i].Time - time) <= KeyTolerance && keys[i].Easing != easing)
+                if (Math.Abs(keys[i].Time - time) > KeyTolerance)
+                    continue;
+
+                var eased = keys[i].WithEasing(easing, easing == EasingType.CubicBezier ? handles ?? EasingCurves.Handles(keys[i]) : null);
+                if (eased != keys[i])
                 {
-                    keys[i] = keys[i] with { Easing = easing };
+                    keys[i] = eased;
                     changed = true;
                 }
             }
@@ -604,6 +692,36 @@ public sealed partial class Layer : ObservableObject
         if (changed)
             NotifyAllKeys();
         return changed;
+    }
+
+    /// <summary>
+    /// Moves the keyframes at one moment to another (a diamond dragged along its lane): of one property, or (null) of
+    /// all of them. One already at the new moment is replaced. False when there was none to move.
+    /// </summary>
+    public bool MoveKeys(double from, double to, KeyProperty? only = null)
+    {
+        to = Math.Round(Math.Max(to, 0), 3);
+        var moved = false;
+        foreach (var property in Enum.GetValues<KeyProperty>())
+        {
+            if (only is { } wanted && wanted != property)
+                continue;
+
+            var list = _keys[(int)property];
+            var at = list.FindIndex(k => Math.Abs(k.Time - from) <= KeyTolerance);
+            if (at < 0)
+                continue;
+
+            var key = list[at] with { Time = to };
+            list.RemoveAt(at);
+            list.RemoveAll(k => Math.Abs(k.Time - to) <= KeyTolerance);
+            var next = list.FindIndex(k => k.Time > to);
+            list.Insert(next < 0 ? list.Count : next, key);
+            moved = true;
+            NotifyKeys(property);
+        }
+
+        return moved;
     }
 
     /// <summary>Replaces a property's keyframes; none switches its animation off.</summary>
@@ -622,7 +740,35 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Sets a keyframe at a moment: a new one, or the value of the one that is already there.</summary>
     public void SetKey(KeyProperty property, double time, double value)
     {
+        PutKey(property, time, value);
+        NotifyKeys(property);
+    }
+
+    /// <summary>Sets a property's keyframe at a moment to its value there, or takes the one there away: its lane's diamond button.</summary>
+    /// <returns>Whether there is a keyframe there now.</returns>
+    public bool ToggleKey(KeyProperty property, double time)
+    {
+        if (RemoveKey(property, time))
+            return false;
+
+        SetKey(property, time, GetValue(property));
+        return true;
+    }
+
+    // Writes a keyframe without announcing it. The first keyframe of the place while the size is animated: until then the
+    // place was the anchor's, held still as the size changed about it (FilterGraphBuilder); from then on it is the
+    // corner's, keyframe by keyframe. So that nothing jumps, the corner is first keyed where the anchor puts it at each of
+    // the size's keyframes, leaving them as the size does.
+    private void PutKey(KeyProperty property, double time, double value)
+    {
         var list = _keys[(int)property];
+        if (list.Count == 0 && property is KeyProperty.X or KeyProperty.Y && _keys[(int)KeyProperty.Scale].Count > 0)
+        {
+            var (place, anchor, across) = property == KeyProperty.X ? (PositionX, AnchorX, 1.0) : (PositionY, AnchorY, HeightPerWidth);
+            foreach (var size in _keys[(int)KeyProperty.Scale])
+                list.Add(size with { Value = place + anchor * (SizeWidth - size.Value) * across });
+        }
+
         var at = list.FindIndex(k => Math.Abs(k.Time - time) <= KeyTolerance);
         if (at >= 0)
         {
@@ -633,8 +779,6 @@ public sealed partial class Layer : ObservableObject
             at = list.FindIndex(k => k.Time > time);
             list.Insert(at < 0 ? list.Count : at, new Keyframe(Math.Round(time, 3), value));
         }
-
-        NotifyKeys(property);
     }
 
     /// <summary>Takes away the keyframe at a moment. False when there is none there.</summary>
@@ -688,17 +832,7 @@ public sealed partial class Layer : ObservableObject
             if (property == KeyProperty.Rotation && !HasFilters || property == KeyProperty.Opacity && !IsPicture)
                 continue;
 
-            var (list, value) = (_keys[(int)property], GetValue(property));
-            var at = list.FindIndex(k => Math.Abs(k.Time - time) <= KeyTolerance);
-            if (at >= 0)
-            {
-                list[at] = list[at] with { Value = value };
-            }
-            else
-            {
-                at = list.FindIndex(k => k.Time > time);
-                list.Insert(at < 0 ? list.Count : at, new Keyframe(Math.Round(time, 3), value));
-            }
+            PutKey(property, time, GetValue(property));
         }
 
         NotifyAllKeys();
@@ -736,7 +870,10 @@ public sealed partial class Layer : ObservableObject
         NotifyKeys(property);
     }
 
-    /// <summary>Moves every keyframe in time: for the second half of a clip that was split, whose beginning is later.</summary>
+    /// <summary>
+    /// Moves every keyframe in time, and its effects' keyframes and ranges with them: for a clip whose beginning moved
+    /// while what it shows stayed (the second half of a split, a trim of its start), so they stay on their frames.
+    /// </summary>
     public void ShiftKeys(double seconds)
     {
         foreach (var property in Enum.GetValues<KeyProperty>())
@@ -748,6 +885,14 @@ public sealed partial class Layer : ObservableObject
             for (var i = 0; i < list.Count; i++)
                 list[i] = list[i] with { Time = Math.Round(list[i].Time + seconds, 3) };
             NotifyKeys(property);
+        }
+
+        foreach (var effect in Effects)
+        {
+            foreach (var (key, keys) in effect.Keys.ToList())
+                effect.SetKeys(key, keys.Select(k => k with { Time = Math.Round(k.Time + seconds, 3) }).ToList());
+            if (effect.Range is { } range)
+                effect.SetRange((Math.Max(Math.Round(range.Start + seconds, 3), 0), Math.Max(Math.Round(range.End + seconds, 3), 0.01)));
         }
     }
 
@@ -781,6 +926,8 @@ public sealed partial class Layer : ObservableObject
     {
         (StartTime, Duration, MediaOffset) = (Math.Max(state?.StartTime ?? 0, 0), Math.Max(state?.Duration ?? 0, 0), Math.Max(state?.MediaOffset ?? 0, 0));
         Speed = ReadSpeed(state?.Speed ?? 1);
+        (FadeInSeconds, FadeOutSeconds, TransitionIn) = (Seconds(state?.FadeInSeconds ?? 0), Seconds(state?.FadeOutSeconds ?? 0), Seconds(state?.TransitionIn ?? 0));
+        (FadeInStyle, FadeOutStyle) = (Style(state?.FadeInStyle ?? 0), Style(state?.FadeOutStyle ?? 0));
         ApplyKeys(state);
     }
 
@@ -1050,24 +1197,24 @@ public sealed partial class Layer : ObservableObject
         MediaOffset = MediaOffset,
         Speed = Speed,
         IsHidden = IsHidden,
+        ProxyChoice = ProxyChoice,
+        IsEmptyTrack = IsEmptyTrack,
         IsDeleted = IsDeleted,
         HasAudio = HasAudio,
         AudioOffset = AudioOffset,
         TrackId = TrackId,
         MediaDuration = MediaDuration,
         AudioGainDb = AudioGainDb,
+        FadeInSeconds = FadeInSeconds,
+        FadeOutSeconds = FadeOutSeconds,
+        FadeInStyle = FadeInStyle,
+        FadeOutStyle = FadeOutStyle,
+        TransitionIn = TransitionIn,
         Rotation = Rotation,
-        FlipHorizontal = FlipHorizontal,
-        FlipVertical = FlipVertical,
-        FilterContrast = FilterContrast,
-        FilterBrightness = FilterBrightness,
-        FilterSaturation = FilterSaturation,
-        FilterGamma = FilterGamma,
-        FilterHue = FilterHue,
-        FilterSharpen = FilterSharpen,
-        FilterBlur = FilterBlur,
-        FilterDenoise = FilterDenoise,
-        FilterLut = FilterLut,
+        AnchorX = AnchorX,
+        AnchorY = AnchorY,
+        Effects = [.. Effects.Select(e => e.ToState())],
+        EffectsBypassed = EffectsBypassed,
         AutoDuck = AutoDuck,
         IsVoice = IsVoice,
         IsSoundMuted = IsSoundMuted,
@@ -1084,6 +1231,12 @@ public sealed partial class Layer : ObservableObject
     /// <summary>How far a mask can be grown or shrunk, in pixels.</summary>
     public const int MaskGrowLimit = 40;
 
+    /// <summary>A saved length of a fade or a crossfade: not below 0, nor beyond a minute.</summary>
+    private static double Seconds(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 60) : 0;
+
+    /// <summary>A saved transition style, one that exists (an unknown number, from a later HandPeg, is a dissolve).</summary>
+    private static TransitionStyle Style(TransitionStyle saved) => Enum.IsDefined(saved) ? saved : TransitionStyle.Dissolve;
+
     /// <summary>A saved crop, held to what leaves something of the layer: at most 95% from one edge.</summary>
     private static double Crop(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 0.95) : 0;
 
@@ -1098,10 +1251,9 @@ public sealed partial class Layer : ObservableObject
         (CustomMask, MaskPath, IsHidden) = (state.CustomMask, state.MaskPath ?? "", state.IsHidden);
         (MaskFrame, MaskGrow, MaskInvert, MaskShapes) = (state.MaskFrame, Math.Clamp(state.MaskGrow, -MaskGrowLimit, MaskGrowLimit), state.MaskInvert, state.MaskShapes ?? "");
         (CropLeft, CropRight, CropTop, CropBottom) = (Crop(state.CropLeft), Crop(state.CropRight), Crop(state.CropTop), Crop(state.CropBottom));
-        (Rotation, FlipHorizontal, FlipVertical) = (Math.Clamp(state.Rotation, -360, 360), state.FlipHorizontal, state.FlipVertical);
-        (FilterContrast, FilterBrightness, FilterSaturation) = (Math.Clamp(state.FilterContrast, 0, 2), Math.Clamp(state.FilterBrightness, -1, 1), Math.Clamp(state.FilterSaturation, 0, 3));
-        (FilterGamma, FilterHue, FilterSharpen) = (Math.Clamp(state.FilterGamma, 0.1, 3), Math.Clamp(state.FilterHue, -180, 180), Math.Clamp(state.FilterSharpen, 0, 1));
-        (FilterBlur, FilterDenoise, FilterLut) = (Math.Clamp(state.FilterBlur, 0, 50), state.FilterDenoise, state.FilterLut ?? "");
+        Rotation = Math.Clamp(state.Rotation, -360, 360);
+        (AnchorX, AnchorY) = (Anchor(state.AnchorX), Anchor(state.AnchorY));
+        LoadEffects(state);
     }
 
     /// <summary>
@@ -1152,23 +1304,21 @@ public sealed partial class Layer : ObservableObject
             MediaOffset = Math.Max(state.MediaOffset, 0),
             Speed = ReadSpeed(state.Speed),
             IsHidden = state.IsHidden,
+            ProxyChoice = state.ProxyChoice,
+            IsEmptyTrack = state.IsEmptyTrack,
             HasAudio = state.HasAudio,
             AudioOffset = state.AudioOffset,
             TrackId = state.TrackId,
             MediaDuration = Math.Max(state.MediaDuration, 0),
             AudioGainDb = Math.Clamp(state.AudioGainDb, -40, 24),
+            FadeInSeconds = Seconds(state.FadeInSeconds),
+            FadeOutSeconds = Seconds(state.FadeOutSeconds),
+            FadeInStyle = Style(state.FadeInStyle),
+            FadeOutStyle = Style(state.FadeOutStyle),
+            TransitionIn = Seconds(state.TransitionIn),
             Rotation = Math.Clamp(state.Rotation, -360, 360),
-            FlipHorizontal = state.FlipHorizontal,
-            FlipVertical = state.FlipVertical,
-            FilterContrast = Math.Clamp(state.FilterContrast, 0, 2),
-            FilterBrightness = Math.Clamp(state.FilterBrightness, -1, 1),
-            FilterSaturation = Math.Clamp(state.FilterSaturation, 0, 3),
-            FilterGamma = Math.Clamp(state.FilterGamma, 0.1, 3),
-            FilterHue = Math.Clamp(state.FilterHue, -180, 180),
-            FilterSharpen = Math.Clamp(state.FilterSharpen, 0, 1),
-            FilterBlur = Math.Clamp(state.FilterBlur, 0, 50),
-            FilterDenoise = state.FilterDenoise,
-            FilterLut = state.FilterLut ?? "",
+            AnchorX = Anchor(state.AnchorX),
+            AnchorY = Anchor(state.AnchorY),
             AutoDuck = state.AutoDuck,
             IsVoice = state.IsVoice,
             IsSoundMuted = state.IsSoundMuted,
@@ -1177,6 +1327,7 @@ public sealed partial class Layer : ObservableObject
             AudioFilters = state.AudioFilters?.Clone() ?? new TrackAudioFilters(),
         };
         region.ApplyKeys(state);
+        region.LoadEffects(state);
 
         if (state.SourceWidth <= 0 && state.Width is > 0 && state.Height is > 0)
         {
@@ -1266,6 +1417,8 @@ public sealed class LayerState
     public double MediaOffset { get; set; }
     public double Speed { get; set; } = 1;
     public bool IsHidden { get; set; }
+    public ProxyChoice ProxyChoice { get; set; }
+    public bool IsEmptyTrack { get; set; }
     public bool IsDeleted { get; set; }
     public bool HasAudio { get; set; }
     public double AudioOffset { get; set; }
@@ -1273,7 +1426,16 @@ public sealed class LayerState
     public int TrackId { get; set; }
     public double MediaDuration { get; set; }
     public double AudioGainDb { get; set; }
+    public double FadeInSeconds { get; set; }
+    public double FadeOutSeconds { get; set; }
+    public TransitionStyle FadeInStyle { get; set; }
+    public TransitionStyle FadeOutStyle { get; set; }
+    public double TransitionIn { get; set; }
     public double Rotation { get; set; }
+
+    /// <summary>The anchor point (see Layer.AnchorX); what was saved before it was there has the middle.</summary>
+    public double AnchorX { get; set; } = 0.5;
+    public double AnchorY { get; set; } = 0.5;
     public bool FlipHorizontal { get; set; }
     public bool FlipVertical { get; set; }
     public double FilterContrast { get; set; } = 1;
@@ -1285,6 +1447,16 @@ public sealed class LayerState
     public double FilterBlur { get; set; }
     public bool FilterDenoise { get; set; }
     public string FilterLut { get; set; } = "";
+
+    /// <summary>
+    /// The effect stack, in order (see Models/Effects). Null in what was saved before stacks: the flips and filters
+    /// above, and the key, mask, edges and shadow, are then made into cards in the order they were applied.
+    /// The Flip and Filter values above are read only then; a layer with a stack writes them as defaults.
+    /// </summary>
+    public List<EffectState>? Effects { get; set; }
+
+    /// <summary>Every effect of the clip set aside at once (the Effects pane's Bypass All), without losing them.</summary>
+    public bool EffectsBypassed { get; set; }
 
     public bool AutoDuck { get; set; }
     public bool IsVoice { get; set; }

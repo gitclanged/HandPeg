@@ -3,6 +3,48 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v4.0.0
+
+### Highlights
+- **Live Preview that keeps up.** The player builds its preview for a stretch of time around the playhead and seeks inside each video file instead of decoding it from the start, so long timelines, and clips late in long recordings, play and scrub at once (seeking back from late in a long sequence went from about 14 s to about 1 s). Seeks land on the nearest I-frame, which HandPeg remembers for every file, in its cache and inside saved projects. A seek or an edit while paused shows the picture at once and gets the sound ready just after, so Play starts immediately. The player engine loads only when it is needed.
+- **Proxies.** Heavy files (larger than 1080p, AV1, VP9, ProRes, 10-bit HEVC, or I-frames far apart) get a small editing copy made in the background while you are idle, on the second graphics card when there is one. Proxies are for the player only: exports always read the original files. An optional composed timeline proxy plays the whole sequence from one file. Per clip, right-click > Proxy chooses Automatic, Make Proxy or Use Original. Every setting, with the cache's size, usage, Clear and clean-up rules, is in Settings > Preview & Cache.
+- **Effect stacks.** The new Effects pane shows the selected clip's effects as cards, in the order they are applied: add, reorder, switch off, and animate them, with a time range per card. Blend modes, adjustment layers, and a Sequence Output stack for the whole picture. Effects a newer version adds are kept, not lost, by this one.
+- **Keyframe lanes and curves.** The Keyframes pane has a lane for each property (and each animated effect value), keyed, moved and deleted on its own, with a graph of the selected value over time. New easings: Hold, Back, Elastic, Bounce and Custom Bezier. Layers turn and scale about an anchor point that can be moved (a dot in the layout pane).
+- **Fades and transitions on every clip.** Drag the handles at a clip's top corners to fade its picture and sound in or out, over whatever is under it; choose dissolve, wipes, slides, zooms or a blur dissolve. Crossfades from a cut's menu or by letting a clip overlap its neighbour, also between clips on different tracks. Works in the export and in Live Preview.
+- **Timeline editing.** Ripple trim and ripple delete, roll, slip, trims at a clip's start, and auto-scroll while dragging; drag clips up or down onto another track; solo as a set (Alt-click for alone); gain lines; an eye button to hide a track. The layout pane has a rotation handle, the anchor dot, a motion path, snap guides and arrow-key nudges.
+- **Layouts.** The new Layout button (in the header, and in Encoder Mode's top bar) offers three built-in layouts (Standard Editing, Color & Effects, Assembly & Media), three of your own per mode, Save Current Layout and Reset Layout; the Side Window switch is in its menu now. A click opens the Layout Selector: point at a layout and the window takes it, click to keep it, move away to put yours back. Standard Editing is where both modes start.
+- **Docking.** A tab dragged over a row of tabs goes exactly where the accent line shows, so tabs can be reordered, and only the tab dragged moves. The header joins the row of boxed tabs under it, or stands as a strip of icons beside other panes. The video no longer blinks when panes are rearranged. Settings tabs rearrange themselves in a narrow pane and scroll instead of being cut off.
+- **Background work you can see and steer.** A progress chip in the status bar lists everything running in the background, with progress and Cancel, and pauses background or idle work. Background tools run at low priority, off reserved cores, in Windows' efficiency mode, and wait while you play or export (Settings > Export & Hardware > Performance).
+
+### New
+- **Add Media** in Editor Mode's header (in place of the Source pane): a click picks files to open or add at the playhead; resting on it opens a box for a path or a link, with the download resolution.
+- **Media pane:** a Project Media / Folder Browser switch; a folder left open is indexed in the background so every video is ready to scrub (not on battery or network folders unless allowed).
+- **Add Layer** adds an empty track; dropped clips go onto a new track (or an empty one), never over another clip.
+- **Updates:** FFmpeg, yt-dlp, whisper and libmpv update themselves in the background; HandPeg checks for its own update at startup and the status bar's Update button installs it.
+- **Video layers while scrubbing** (Settings): live, a still frame, or hidden.
+- **Downloads used by your projects are kept,** and saving a project offers to copy downloaded videos it uses into your download folder.
+- **Cache clean-up at startup** for entries whose source file is gone (never for a drive that is only offline).
+- The Summary tab's cards can be dragged into the order you like.
+
+### Changed
+- **Faster start:** the first frame is the finished window (no panes or tabs appearing after it), drawn about 0.6 s after launch; HandPeg idles under 200 MB, also with the Media pane open on a large folder. The Media pane makes only the tiles on screen, makes the others' pictures ahead when the pointer comes into it, and lets them go a minute after.
+- The playback bar and the Keyframes pane's buttons stay on one line; what does not fit goes into a "more" menu.
+- Encoder Mode shows none of the editing panes or tools.
+- I-frame lists and waveforms are made several times faster (all of a file's tracks in one pass).
+- The hardware encoder test is remembered until FFmpeg or a graphics driver changes (Settings: Test Hardware Encoders Again).
+- Tabs outside the main tab bar use compact inline tabs; tabs are reachable from the keyboard and by screen readers.
+
+### Fixed
+- Seeking back from late in a long sequence could take over ten seconds.
+- A layer cut from late in a long file was decoded from the file's start on export (3 s at 317 s into a file: 26.6 s, now 0.7 s).
+- Dragging one tab out of a group of panes could leave the panes it left behind invisible.
+- The panes' arrangement was sometimes not saved when the window was closed.
+- Controls were cut off in narrow panes (the playback bar's right end, the Keyframes buttons, the settings tabs).
+
+### Compatibility
+- Projects from 3.x open in 4.0. Projects saved by 4.0 carry effect stacks, fades, transitions and seek facts that 3.x does not know; open them in 4.0.
+- A layer's blur is now a box blur; on old projects that used one it looks very slightly different.
+
 ## HandPeg v3.2.0
 
 ### Highlights

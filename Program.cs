@@ -11,6 +11,8 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        Services.StartupTrace.Mark("Main");
+
         // A self-contained copy (portable.txt, --portable) is not an installed one: it has no installer to answer,
         // and nothing from an earlier build elsewhere on the computer to bring over. It stays in its folder.
         if (!Services.AppPaths.IsSelfContained)
@@ -26,8 +28,13 @@ public static class Program
         _ = Task.Run(static () => Services.AppSettings.Current);
         Services.PresetStore.LoadEarly();
 
+        // And the hardware encoders an earlier launch found (with the cards, which take a moment to list): the window
+        // puts them in its list before its first frame, so a hardware default encoder is there from the start.
+        Services.EncoderProber.LoadSavedResultEarly();
+
         var app = new App();
         app.InitializeComponent();
+        Services.StartupTrace.Mark("App made");
         app.Run();
     }
 }

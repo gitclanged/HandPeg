@@ -10,8 +10,26 @@
     </Window.Resources>
     <!-- Bound straight to the layer: every change shows in the command at once. -->
     <StackPanel Margin="16">
-        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
-                   Text="How the layer sits on the picture. Live Preview shows the result as you change it." />
+        <DockPanel Margin="0,0,0,12">
+            <!-- Toggle Visibility: the eye on the layer's row, here too -->
+            <Button DockPanel.Dock="Right" Padding="7,4" Margin="12,0,0,0" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Top"
+                    Click="Visibility_Click" AutomationProperties.Name="Toggle Visibility" Visibility="{Binding CanHide, Converter={StaticResource BoolToVisibility}}">
+                <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                        <Setter Property="Content" Value="&#xE890;" />
+                        <Setter Property="ToolTip" Value="Visible: click to hide this layer from Live Preview, the export and the Layout Pane." />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsHidden}" Value="True">
+                                <Setter Property="Content" Value="&#xED1A;" />
+                                <Setter Property="ToolTip" Value="Hidden: click to show this layer again." />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+            <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"
+                       Text="How the layer sits on the picture. Live Preview shows the result as you change it." />
+        </DockPanel>
 
         <!-- Shape and transparency: always available -->
         <Grid Margin="0,0,0,10">

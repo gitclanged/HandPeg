@@ -3,7 +3,7 @@ using CliWrap;
 
 namespace HandPegApp.Services;
 
-public static class YtDlpDownloader
+public static partial class YtDlpDownloader
 {
     // Written into each download's folder: what was asked for, so the same request can reuse the file.
     private const string RequestFileName = "request.txt";
@@ -28,7 +28,26 @@ public static class YtDlpDownloader
     /// A folder of the user's to save the file in, to keep; blank keeps it in the cache. Either way the cache
     /// remembers the request, so loading the same URL again finds the file wherever it was saved.
     /// </param>
-    public static async Task<string> DownloadAsync(
+    public static Task<string> DownloadAsync(
+        string url, string resolution, bool downloadSubtitles, string sponsorBlockCategories, string saveFolder,
+        IProgress<string> progress, CancellationToken cancellationToken) =>
+        WorkScheduler.Run(new WorkSpec($"Downloading {url}", WorkLane.Interactive), work =>
+            DownloadNowAsync(url, resolution, downloadSubtitles, sponsorBlockCategories, saveFolder, new Progress<string>(line =>
+            {
+                progress.Report(line);
+                work.Report(line);
+                if (DownloadPercent().Match(line) is { Success: true } match
+                    && double.TryParse(match.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var percent))
+                {
+                    work.Report(percent / 100);
+                }
+            }), work.Token), cancellationToken);
+
+    // yt-dlp's progress lines: "[download]  42.3% of ...".
+    [System.Text.RegularExpressions.GeneratedRegex(@"\[download\]\s+(\d+(?:\.\d+)?)%")]
+    private static partial System.Text.RegularExpressions.Regex DownloadPercent();
+
+    private static async Task<string> DownloadNowAsync(
         string url, string resolution, bool downloadSubtitles, string sponsorBlockCategories, string saveFolder,
         IProgress<string> progress, CancellationToken cancellationToken)
     {
@@ -216,9 +235,71 @@ public static class YtDlpDownloader
     }
 
     /// <summary>
-    /// Keeps the most recently used downloads, up to <paramref name="keep"/>, and deletes the rest.
+    /// The download folders (by name) that projects use: those saved in the projects folder, and the files given
+    /// (what the open project uses). Their downloads are kept whatever the cache's size (Settings: Keep downloads
+    /// used by projects). Projects are not opened, only searched for the download folder's path.
     /// </summary>
-    public static void TrimDownloads(int keep)
+    public static HashSet<string> FoldersUsedByProjects(IEnumerable<string> projectFolders, IEnumerable<string> filesInUse)
+    {
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string root;
+        try
+        {
+            root = Path.GetFullPath(DownloadRoot).TrimEnd('\\') + "\\";
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return used;
+        }
+
+        void Note(string path)
+        {
+            if (path.StartsWith(root, StringComparison.OrdinalIgnoreCase) && path[root.Length..].Split('\\')[0] is { Length: > 0 } folder)
+                used.Add(folder);
+        }
+
+        foreach (var file in filesInUse)
+        {
+            try
+            {
+                Note(Path.GetFullPath(file.Trim().Trim('"')));
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+            }
+        }
+
+        // In a project's JSON the path is written with its backslashes doubled.
+        var written = root.Replace("\\", "\\\\");
+        foreach (var folder in projectFolders.Where(Directory.Exists))
+        {
+            try
+            {
+                foreach (var project in Directory.EnumerateFiles(folder, "*.hproj"))
+                {
+                    var text = File.ReadAllText(project);
+                    for (var at = text.IndexOf(written, StringComparison.OrdinalIgnoreCase); at >= 0; at = text.IndexOf(written, at + written.Length, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var start = at + written.Length;
+                        var end = text.IndexOf("\\\\", start, StringComparison.Ordinal);
+                        if (end > start)
+                            used.Add(text[start..end]);
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return used;
+    }
+
+    /// <summary>
+    /// Keeps the most recently used downloads, up to <paramref name="keep"/>, and deletes the rest; never those whose
+    /// folder is in <paramref name="pinned"/> (used by a project).
+    /// </summary>
+    public static void TrimDownloads(int keep, IReadOnlySet<string>? pinned = null)
     {
         if (!Directory.Exists(DownloadRoot))
             return;
@@ -226,6 +307,7 @@ public static class YtDlpDownloader
         try
         {
             var stale = new DirectoryInfo(DownloadRoot).EnumerateDirectories()
+                .Where(d => pinned?.Contains(d.Name) != true)
                 .OrderByDescending(d => d.LastWriteTime)
                 .Skip(Math.Max(keep, 0))
                 .ToList();

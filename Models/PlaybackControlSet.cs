@@ -3,7 +3,8 @@ using CommunityToolkit.Mvvm.ComponentModel;
 namespace HandPegApp.Models;
 
 /// <summary>One control the playback bar can show, and whether it does.</summary>
-public sealed partial class PlaybackControlOption(string id, string label, string group, string tip) : ObservableObject
+/// <param name="editorOnly">Only Editor Mode has it: Encoder Mode's bar never shows it, and its settings do not list it.</param>
+public sealed partial class PlaybackControlOption(string id, string label, string group, string tip, bool editorOnly = false) : ObservableObject
 {
     public string Id { get; } = id;
     public string Label { get; } = label;
@@ -12,6 +13,8 @@ public sealed partial class PlaybackControlOption(string id, string label, strin
     public string Group { get; } = group;
 
     public string Tip { get; } = tip;
+
+    public bool EditorOnly { get; } = editorOnly;
 
     [ObservableProperty] private bool _isShown;
 }
@@ -44,14 +47,14 @@ public sealed class PlaybackControlSet : ObservableObject
             new("GoToIn", "Go to Start Point", "Cut segments", "Jump to the start point being set, or the start of the selected cut segment."),
             new("GoToOut", "Go to Stop Point", "Cut segments", "Jump to the end of the selected cut segment."),
             new("PlayInOut", "Play Start to Stop", "Cut segments", "Plays the selected cut segment (or from the start point being set to the playhead) and stops at its end."),
-            new("Split", "Split at Playhead", "Cut segments", "Cuts the selected block in two at the playhead (S)."),
+            new("Split", "Split at Playhead", "Cut segments", "Cuts the selected block in two at the playhead (S).", editorOnly: true),
             new("AddMarker", "Add Marker", "Markers", "Puts a marker at the playhead (M). Markers can become the export's chapters."),
             new("PrevMarker", "Previous Marker", "Markers", "Jump back to the marker before the playhead (Ctrl+Shift+M)."),
             new("NextMarker", "Next Marker", "Markers", "Jump on to the marker after the playhead (Shift+M)."),
-            new("LivePreview", "Live Preview", "Viewer", "Runs the export's filters on the picture as it plays."),
+            new("LivePreview", "Live Preview", "Viewer", "Runs the export's filters on the picture as it plays.", editorOnly: true),
             new("SafeMargins", "Safe Margins", "Viewer", "Outlines the action-safe (90%) and title-safe (80%) areas of the frame over the picture."),
             new("ExportFrame", "Export Frame", "Viewer", "Saves the frame as it is shown, as a PNG beside the output."),
-            new("RenderPreview", "Render Preview", "Viewer", "Encodes a few seconds as the export will look, and plays them."),
+            new("RenderPreview", "Render Preview", "Viewer", "Encodes a few seconds as the export will look, and plays them.", editorOnly: true),
             new("Reload", "Reload Player", "Viewer", "For when the player has stopped answering."),
             new("Timecode", "Timecode", "Viewer", "The playhead's time and the sequence's length."),
             new("Mute", "Mute", "Sound", "Silences the player (not the export)."),

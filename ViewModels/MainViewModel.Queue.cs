@@ -241,7 +241,7 @@ public partial class MainViewModel
 
     /// <summary>Runs the pending jobs one after another. A failed job does not stop the ones behind it.</summary>
     [RelayCommand(CanExecute = nameof(CanStartQueue))]
-    private Task StartQueueAsync() => RunOperationAsync(async cancellationToken =>
+    private Task StartQueueAsync() => RunOperationAsync("Encoding the queue", WorkLane.Foreground, async cancellationToken =>
     {
         IsQueuePauseRequested = false;
         var completed = 0;

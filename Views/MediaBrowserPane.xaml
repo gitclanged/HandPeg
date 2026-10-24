@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:sys="clr-namespace:System;assembly=mscorlib"
              xmlns:docking="clr-namespace:HandPegApp.Docking"
+             xmlns:views="clr-namespace:HandPegApp.Views"
              IsVisibleChanged="Pane_IsVisibleChanged">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
@@ -87,8 +88,47 @@
             </DockPanel>
         </DataTemplate>
 
+        <!-- One side of the Project Media | Folder Browser switch: the side chosen is filled with the accent -->
+        <Style x:Key="SwitchSide" TargetType="RadioButton">
+            <Setter Property="GroupName" Value="MediaSource" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <!--
+                        Each side is as wide as its words (no fixed width): the full name, or in a narrow pane the short one
+                        kept in Tag (Project, Folder). Both are in the template and one is shown, so the title row measures
+                        each form as it is, and gives the switch the whole width of the form it shows (it is never cut).
+                    -->
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="side" CornerRadius="8" Padding="8,1,8,2" Background="Transparent">
+                            <Grid>
+                                <TextBlock x:Name="label" Text="{TemplateBinding Content}" FontSize="11" Foreground="{TemplateBinding Foreground}" />
+                                <TextBlock x:Name="shortLabel" Text="{TemplateBinding Tag}" FontSize="11" Foreground="{TemplateBinding Foreground}" Visibility="Collapsed" />
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="docking:PaneTitleRow.IsCompact" Value="True">
+                                <Setter TargetName="label" Property="Visibility" Value="Collapsed" />
+                                <Setter TargetName="shortLabel" Property="Visibility" Value="Visible" />
+                                <Setter TargetName="side" Property="Padding" Value="7,1,7,2" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="side" Property="Background" Value="{DynamicResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource OnAccentBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Only the rows of tiles in view (and one more each side) are made: a folder of hundreds of videos stays light. -->
         <ItemsPanelTemplate x:Key="TilePanel">
-            <WrapPanel />
+            <views:VirtualizingTilePanel />
         </ItemsPanelTemplate>
         <ItemsPanelTemplate x:Key="RowPanel">
             <VirtualizingStackPanel />
@@ -97,16 +137,29 @@
 
     <DockPanel>
         <!-- The title, and against the right edge: what the files are sorted by, which way, how large they are shown, and Refresh -->
-        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
-            <Button DockPanel.Dock="Right" Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="8,4" Margin="8,0,0,0" Click="Refresh_Click"
-                    AutomationProperties.Name="Refresh Media Browser" ToolTip="Reads the folder again." />
-            <!-- How large the files are shown, as the timeline's height is set: the smallest few steps are a list, then tiles that grow. -->
-            <Slider DockPanel.Dock="Right" x:Name="SizeSlider" Width="70" Margin="6,0,0,0" VerticalAlignment="Center" Minimum="0" Maximum="100" SmallChange="2" LargeChange="10"
-                    IsMoveToPointEnabled="True" ValueChanged="SizeSlider_ValueChanged" AutomationProperties.Name="Media Browser Size"
-                    ToolTip="How large the files are shown: all the way left is a list, then tiles from small to large. Move the pointer across a video's picture to see through it." />
-            <TextBlock DockPanel.Dock="Right" Text="&#xE8B9;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Margin="10,0,0,0"
-                       Foreground="{DynamicResource MutedTextBrush}" ToolTip="Size" />
-            <ToggleButton DockPanel.Dock="Right" x:Name="SortDirectionButton" FontFamily="Segoe MDL2 Assets" FontSize="11" Padding="6,4" Margin="3,0,0,0"
+        <docking:PaneTitleRow DockPanel.Dock="Top" Margin="0,0,0,6">
+            <docking:PaneTitleSlot PaneId="Media" HorizontalAlignment="Left" />
+            <!--
+                What the pane lists: the files the open project uses, or a folder on disk. "Project | Folder" when the pane is
+                too narrow for the full names beside the sort and size controls (the row decides; it never cuts the names).
+            -->
+            <Border Margin="0,0,8,0" Padding="1" CornerRadius="9" VerticalAlignment="Center" Background="{DynamicResource InsetBrush}"
+                    BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" docking:PaneTitleRow.CanCompact="True">
+                <StackPanel Orientation="Horizontal">
+                    <RadioButton x:Name="ProjectSide" Style="{StaticResource SwitchSide}" Content="Project Media" Tag="Project" Checked="Source_Checked"
+                                 AutomationProperties.Name="Project Media" ToolTip="Project Media: every file the open project uses: the main video, the layers' videos and pictures, the sounds." />
+                    <RadioButton x:Name="FolderSide" Style="{StaticResource SwitchSide}" Content="Folder Browser" Tag="Folder" Checked="Source_Checked"
+                                 AutomationProperties.Name="Folder Browser" ToolTip="Folder Browser: the media files of a folder on disk, with its path above them." />
+                </StackPanel>
+            </Border>
+            <ComboBox x:Name="SortBox" MinWidth="78" Margin="0" SelectionChanged="SortBox_SelectionChanged"
+                      AutomationProperties.Name="Media Browser Sort" ToolTip="What the files are sorted by. Folders stay first.">
+                <ComboBoxItem Content="Name" />
+                <ComboBoxItem Content="Date" />
+                <ComboBoxItem Content="Size" />
+                <ComboBoxItem Content="Type" />
+            </ComboBox>
+            <ToggleButton x:Name="SortDirectionButton" FontFamily="Segoe MDL2 Assets" FontSize="11" Padding="6,4" Margin="3,0,0,0"
                           Checked="SortDirection_Changed" Unchecked="SortDirection_Changed" AutomationProperties.Name="Sort Descending">
                 <ToggleButton.Style>
                     <Style TargetType="ToggleButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
@@ -121,18 +174,18 @@
                     </Style>
                 </ToggleButton.Style>
             </ToggleButton>
-            <ComboBox DockPanel.Dock="Right" x:Name="SortBox" MinWidth="78" Margin="0" SelectionChanged="SortBox_SelectionChanged"
-                      AutomationProperties.Name="Media Browser Sort" ToolTip="What the files are sorted by. Folders stay first.">
-                <ComboBoxItem Content="Name" />
-                <ComboBoxItem Content="Date" />
-                <ComboBoxItem Content="Size" />
-                <ComboBoxItem Content="Type" />
-            </ComboBox>
-            <docking:PaneTitleSlot PaneId="Media" HorizontalAlignment="Left" />
-        </DockPanel>
+            <TextBlock docking:PaneTitleRow.Optional="True" Text="&#xE8B9;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Margin="10,0,0,0"
+                       Foreground="{DynamicResource MutedTextBrush}" ToolTip="Size" />
+            <!-- How large the files are shown, as the timeline's height is set: the smallest few steps are a list, then tiles that grow. -->
+            <Slider x:Name="SizeSlider" Width="70" Margin="6,0,0,0" VerticalAlignment="Center" Minimum="0" Maximum="100" SmallChange="2" LargeChange="10"
+                    IsMoveToPointEnabled="True" ValueChanged="SizeSlider_ValueChanged" AutomationProperties.Name="Media Browser Size"
+                    ToolTip="How large the files are shown: all the way left is a list, then tiles from small to large. Move the pointer across a video's picture to see through it." />
+            <Button Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="8,4" Margin="8,0,0,0" Click="Refresh_Click"
+                    AutomationProperties.Name="Refresh Media Browser" ToolTip="Reads the folder (or the project's files) again." />
+        </docking:PaneTitleRow>
 
-        <!-- The folder: up a level, the path (type one and press Enter), Browse inside the box as in the Source pane -->
-        <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
+        <!-- The folder: up a level, the path (type one and press Enter), Browse inside the box as in the Source pane. Folder Browser only. -->
+        <Grid x:Name="FolderBar" DockPanel.Dock="Top" Margin="0,0,0,6">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
