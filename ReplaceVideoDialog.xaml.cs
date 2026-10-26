@@ -61,7 +61,7 @@ public partial class ReplaceVideoDialog : Window
         var name = ProjectName;
         SaveButton.IsEnabled = name.Length > 0;
         var fileName = string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)).Trim();
-        NoteText.Text = fileName.Length > 0 && File.Exists(Path.Combine(ProjectStore.Folder, fileName + ".txt"))
+        NoteText.Text = fileName.Length > 0 && File.Exists(Path.Combine(ProjectStore.Folder, fileName + ProjectStore.Extension))
             ? "A project with this name exists already and will be replaced."
             : "";
     }

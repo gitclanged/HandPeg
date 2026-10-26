@@ -1,0 +1,354 @@
+# The format 2 fixture (fixtures/format2.hproj) as this version writes it.
+
+{
+  "format": "handpeg-project",
+  "version": 3,
+  "writtenBy": "HandPeg <version>",
+  "name": "Golden fixture",
+  "savedAt": "2026-10-20T12:00:00",
+  "source": {
+    "path": "D:/media/main.mp4"
+  },
+  "output": {
+    "path": "D:/out/main_HandPeg.mp4",
+    "webOptimized": true,
+    "chaptersAtCuts": true,
+    "subtitles": {
+      "cues": [
+        {
+          "start": 1.5,
+          "end": 3.25,
+          "text": "First line"
+        },
+        {
+          "start": 4,
+          "end": 6,
+          "text": "Second, with a comma"
+        }
+      ]
+    }
+  },
+  "sequence": {
+    "cuts": [
+      [
+        5000,
+        12000
+      ],
+      [
+        14000,
+        20000
+      ],
+      [
+        30000,
+        45500,
+        1
+      ]
+    ],
+    "markers": [
+      {
+        "seconds": 12.5,
+        "name": "Intro"
+      },
+      {
+        "seconds": 31.25,
+        "name": "Highlight"
+      }
+    ],
+    "snapToIFrames": true,
+    "main": {
+      "look": {
+        "name": "main.mp4",
+        "kind": "MainVideo",
+        "sourceWidth": 0.25,
+        "sourceHeight": 0.25,
+        "maskShapes": "",
+        "mediaDuration": 120
+      },
+      "clips": [
+        {
+          "duration": 40,
+          "fadeOut": 1,
+          "fadeOutStyle": "WipeLeft",
+          "place": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "start": 50,
+          "duration": 30,
+          "offset": 60,
+          "fadeIn": 0.5
+        }
+      ]
+    },
+    "mainIndex": 1,
+    "tracks": [
+      {
+        "id": 1,
+        "look": {
+          "name": "clip1.mp4",
+          "kind": "VideoFile",
+          "imagePath": "D:/media/clip1.mp4",
+          "imageWidth": 1920,
+          "imageHeight": 1080,
+          "cornerRadius": 8,
+          "sourceWidth": 0.25,
+          "sourceHeight": 0.25,
+          "maskShapes": "",
+          "hasAudio": true,
+          "mediaDuration": 30,
+          "rotation": 5,
+          "anchorX": 0.25,
+          "effects": [
+            {
+              "type": "builtin.color.eq",
+              "id": "00000001-0000-0000-0000-000000000000",
+              "values": {
+                "contrast": 1.2,
+                "saturation": 1.1
+              },
+              "keys": {
+                "brightness": [
+                  {
+                    "easing": "EaseIn"
+                  },
+                  {
+                    "time": 2,
+                    "value": 0.2,
+                    "easing": "Linear"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "builtin.blur.box",
+              "id": "00000002-0000-0000-0000-000000000000",
+              "values": {
+                "radius": 3
+              },
+              "range": [
+                1,
+                4
+              ]
+            },
+            {
+              "type": "plugin.future.glow",
+              "id": "00000003-0000-0000-0000-000000000000",
+              "values": {
+                "amount": 0.7
+              },
+              "extraSetting": "kept as it was"
+            }
+          ],
+          "audioCodec": "aac",
+          "audioChannels": "stereo"
+        },
+        "clips": [
+          {
+            "start": 10,
+            "duration": 12,
+            "offset": 3,
+            "fadeIn": 1,
+            "fadeOut": 1.5,
+            "fadeInStyle": "SlideRight",
+            "fadeOutStyle": "Zoom",
+            "place": [
+              0.05,
+              0.05,
+              0.9
+            ],
+            "keysX": [
+              0,
+              0.05,
+              4,
+              0.4
+            ],
+            "keysOpacity": [
+              0,
+              0,
+              1,
+              100
+            ],
+            "easeX": [
+              1,
+              0
+            ],
+            "easeOpacity": [
+              3,
+              0
+            ]
+          },
+          {
+            "name": "clip2.mp4",
+            "file": {
+              "path": "D:/media/clip2.mp4",
+              "width": 1280,
+              "height": 720,
+              "mediaDuration": 60,
+              "hasAudio": true,
+              "audioCodec": "opus",
+              "audioChannels": "stereo"
+            },
+            "start": 22,
+            "duration": 20,
+            "offset": 1,
+            "speed": 1.5,
+            "proxy": "Original",
+            "transition": 1,
+            "place": [
+              0.05,
+              0.05,
+              0.9
+            ],
+            "keysScale": [
+              0,
+              0.9,
+              3,
+              0.5
+            ],
+            "easeScale": [
+              9,
+              0
+            ],
+            "curveScale": [
+              0.7,
+              0,
+              0.3,
+              1,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "look": {
+          "name": "Text",
+          "kind": "Text",
+          "imageWidth": 520,
+          "imageHeight": 110,
+          "textContent": "Hello, \"world\"",
+          "fontFamily": "Arial",
+          "fontSize": 64,
+          "opacity": 80,
+          "sourceWidth": 0.25,
+          "sourceHeight": 0.25,
+          "maskShapes": ""
+        },
+        "clips": [
+          {
+            "start": 2,
+            "duration": 8,
+            "place": [
+              0.1,
+              0.75,
+              0.8
+            ],
+            "keysRotation": [
+              0,
+              0,
+              2,
+              90
+            ],
+            "easeRotation": [
+              8,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "look": {
+          "name": "music.m4a",
+          "kind": "Audio",
+          "imagePath": "D:/media/music.m4a",
+          "sourceWidth": 0.25,
+          "sourceHeight": 0.25,
+          "maskShapes": "",
+          "hasAudio": true,
+          "mediaDuration": 240,
+          "audioGainDb": -6,
+          "autoDuck": true,
+          "audioCodec": "aac",
+          "audioChannels": "stereo"
+        },
+        "clips": [
+          {
+            "duration": 60,
+            "offset": 4,
+            "fadeIn": 2,
+            "fadeOut": 3,
+            "place": [
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    ],
+    "audio": [
+      {
+        "action": "Re-encode",
+        "codec": "aac",
+        "bitrate": "192k",
+        "title": "Main mix",
+        "gainDb": -3,
+        "offset": 0.3,
+        "pieces": [
+          {
+            "end": 10
+          },
+          {
+            "start": 10,
+            "end": 12,
+            "muted": true
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "action": "Re-encode",
+        "codec": "aac",
+        "bitrate": "192k",
+        "title": "Commentary",
+        "isVoice": true
+      }
+    ],
+    "captionAudioTrack": 1
+  },
+  "settings": {
+    "cropPercent": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "useVerticalResolution": false,
+    "VerticalFramer": true,
+    "layoutSourceAspectRatio": 1.7778,
+    "captionStyle": {},
+    "captionLayer": {
+      "name": "Subtitles",
+      "kind": "Captions",
+      "sourceWidth": 0.25,
+      "sourceHeight": 0.25,
+      "positionX": 0.05,
+      "positionY": 0.7,
+      "sizeWidth": 0.9,
+      "sizeHeight": 0.2,
+      "lockAspectRatio": false,
+      "maskShapes": ""
+    },
+    "videoEncoder": "hevc_nvenc",
+    "quality": 24,
+    "audioBitrate": "192k",
+    "mergeAudioTracks": true
+  }
+}

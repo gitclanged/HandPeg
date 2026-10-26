@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+      The A/V sync harness (see tools\README.md, "AvSyncTest.ps1"): plays a project's live graphs headless in libmpv's
+      encoding mode, exactly as the app sends them, and measures how far the picture and the sound it wrote are from
+      the files they came from. It builds the graphs with the app's own FilterGraphBuilder, so it references the app.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>HandPegApp.Tools.AvSync</RootNamespace>
+    <AssemblyName>AvSync</AssemblyName>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\HandPegApp.csproj" />
+  </ItemGroup>
+
+</Project>

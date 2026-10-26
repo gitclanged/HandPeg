@@ -21,7 +21,7 @@ public sealed partial class PlaybackControlOption(string id, string label, strin
 
 /// <summary>
 /// Which controls the playback bar shows, chosen from its settings button, as editors' viewers let one choose
-/// (Premiere's button editor, DaVinci Resolve's viewer options). The bar binds each control's visibility to this
+/// (a viewer's button editor, its viewer options). The bar binds each control's visibility to this
 /// by name (<c>PlaybackControls[Loop]</c>). Saved per mode as the names of the controls shown.
 /// </summary>
 public sealed class PlaybackControlSet : ObservableObject

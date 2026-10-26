@@ -52,9 +52,11 @@ public partial class MainViewModel
 
     // ----- Keeping the tools up to date by themselves (Settings: Auto-Update Dependencies) -----
     // A while after startup, as Idle work (it waits while playing or exporting), every tool HandPeg installed itself
-    // is compared with its newest release and replaced when there is a newer one, with its progress on the chip. A
-    // tool of the user's own (a path in the settings) and a tool never installed are left alone. A tool in use cannot
-    // be replaced: nothing about it changes, and it is tried again at the next start.
+    // is compared with the build it should be and replaced when it is not, with its progress on the chip: FFmpeg,
+    // libmpv and whisper.cpp with the builds this version was tested with (their newest releases only when the settings
+    // allow untested updates), yt-dlp with its newest release. A tool of the user's own (a path in the settings) and a
+    // tool never installed are left alone. A tool in use cannot be replaced: nothing about it changes, and it is tried
+    // again at the next start.
 
     /// <summary>How long after startup the tools are looked at: the window, the project and its pictures come first.</summary>
     private static readonly TimeSpan AutoUpdateDelay = TimeSpan.FromSeconds(30);
@@ -82,11 +84,40 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Replaces every tool HandPeg installed that has a newer release; returns the names of those replaced.</summary>
+    /// <summary>How long after startup unsent crash reports are sent: after the window, the project and its pictures.</summary>
+    private static readonly TimeSpan CrashUploadDelay = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// Sends the crash reports not sent yet (Pass 4.1B), in the Idle lane, unlisted: only while crash reports are on and
+    /// there are some. Offline or unreachable, nothing is said and they wait for the next start.
+    /// </summary>
+    private async Task UploadCrashReportsLaterAsync()
+    {
+        if (_isBackgroundWorker || !AppSettings.Current.SendCrashReports)
+            return;
+
+        try
+        {
+            await Task.Delay(CrashUploadDelay, _shutdown.Token);
+            var (folder, endpoint) = (AppPaths.Crashes, AppSettings.Current.CrashReportEndpoint);
+            if (!AppSettings.Current.SendCrashReports || !CrashReports.IsUsableEndpoint(endpoint, out _)
+                || !await Task.Run(() => CrashReports.Pending(folder).Count > 0, _shutdown.Token))
+                return;
+
+            var sent = await WorkScheduler.Run(new WorkSpec("Sending crash reports", WorkLane.Idle) { Key = "crash-upload", Visible = false },
+                work => CrashReports.UploadPendingAsync(folder, endpoint, work.Token), _shutdown.Token);
+            CrashReporter.Note("crash", $"{sent} report(s) sent");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    /// <summary>Replaces every tool HandPeg installed that is not the build it should be (pinned, or newest); returns the names of those replaced.</summary>
     private static async Task<List<string>> UpdateInstalledToolsAsync(WorkContext work)
     {
         var due = new List<(string Tool, RemoteAsset Latest)>();
-        work.Report(-1, "Looking for newer releases");
+        work.Report(-1, "Checking the installed builds");
         var tools = DependencyUpdater.Tools.Where(t => DependencyUpdater.GetLocalState(t) is DependencyState.Installed or DependencyState.UpdateAvailable).ToList();
         foreach (var tool in tools)
         {
@@ -103,7 +134,7 @@ public partial class MainViewModel
         }
 
         AppLog.Write($"Auto-update: {tools.Count} tool(s) checked ({string.Join(", ", tools.Select(DependencyUpdater.DisplayName))}); "
-            + (due.Count == 0 ? "all up to date." : $"newer: {string.Join(", ", due.Select(d => $"{DependencyUpdater.DisplayName(d.Tool)} {d.Latest.Tag}"))}."));
+            + (due.Count == 0 ? "all as they should be." : $"to install: {string.Join(", ", due.Select(d => $"{DependencyUpdater.DisplayName(d.Tool)} {d.Latest.Label} ({d.Latest.Pin})"))}."));
         var updated = new List<string>();
         for (var i = 0; i < due.Count; i++)
         {
@@ -112,11 +143,14 @@ public partial class MainViewModel
             var progress = new Progress<InstallProgress>(p => work.Report((step + Math.Clamp(p.Fraction, 0, 1)) / due.Count, $"{name}: {p.Text}"));
             try
             {
+                CrashReporter.Note("deps", $"auto-updating {tool} to {latest.Tag}");
                 await Task.Run(() => DependencyUpdater.InstallToolAsync(tool, latest, progress, work.Token), work.Token);
-                updated.Add($"{name} {latest.Tag}");
+                updated.Add(latest.Pin == PinState.StandIn ? $"{name} {latest.Label} (a stand-in: {latest.Note})" : $"{name} {latest.Label}");
+                CrashReporter.Note("deps", "auto-updated " + tool);
             }
             catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex))
             {
+                CrashReporter.Note("deps", $"auto-update of {tool} failed: {ex.GetType().Name}");
                 AppLog.Write($"Auto-update: {name} was not updated: {ex.Message}");
             }
         }

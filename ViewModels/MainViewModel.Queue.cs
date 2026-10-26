@@ -321,7 +321,13 @@ public partial class MainViewModel
 
             try
             {
-                await FfmpegRunner.RunAsync(job.Command, progress, cancellationToken);
+                // For a crash report: the encoders, the output's kind and length, never the files (their names included).
+                CrashReporter.KeepOut(job.Source, job.Target);
+                var jobSummary = CrashSummaries.Command(job.Command, expected);
+                CrashReporter.SetContext("export", "queue job: " + jobSummary);
+                CrashReporter.Note("queue", "job started: " + jobSummary);
+                await FfmpegRunner.RunAsync(job.Command, progress, cancellationToken, graphInFile: true);
+                CrashReporter.Note("queue", "job finished");
                 job.Status = QueueJob.Complete;
                 job.Progress = 100;
                 completed++;
@@ -335,7 +341,8 @@ public partial class MainViewModel
                 throw;
             }
             catch (InvalidOperationException ex) when (
-                AppSettings.Current.AutoFallbackToSoftware
+                ex is not FfmpegCommandException
+                && AppSettings.Current.AutoFallbackToSoftware
                 && !job.Detail.StartsWith(FallbackNote, StringComparison.Ordinal)
                 && HardwareFallback.TryRewrite(job.Command, out _, out _, out _))
             {
@@ -354,12 +361,14 @@ public partial class MainViewModel
                 job.Status = QueueJob.Failed;
                 job.Detail = ex.Message;
                 failed++;
+                CrashReporter.Note("queue", "job failed: " + ex.GetType().Name);
             }
 
             ProgressValue = 0;
             SetTaskbarProgress(System.Windows.Shell.TaskbarItemProgressState.None);
         }
 
+        CrashReporter.SetContext("export", null);
         var summary = $"{completed} complete, {failed} failed";
         if (completed + failed > 0 && !IsQueuePauseRequested)
             NotifyFinished("Queue finished", summary);

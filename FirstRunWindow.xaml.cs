@@ -8,8 +8,9 @@ namespace HandPegApp;
 
 /// <summary>
 /// Shown before the main window on a first start: the theme, whether a failed hardware encode may fall back
-/// to software, and the mode, which sets a whole group of settings at once. Closing it without pressing
-/// Start leaves the settings alone, and it is shown again next time.
+/// to software, the mode, which sets a whole group of settings at once, and whether crash reports are written
+/// (with the Privacy Policy beside it). Closing it without pressing Start leaves the settings alone, and it is
+/// shown again next time.
 /// </summary>
 public partial class FirstRunWindow : Window
 {
@@ -23,9 +24,10 @@ public partial class FirstRunWindow : Window
         MaxHeight = SystemParameters.WorkArea.Height;
 
         ThemeBox.ItemsSource = ThemeManager.Themes;
-        ThemeBox.SelectedItem = ThemeManager.Themes.Contains(_originalTheme) ? _originalTheme : ThemeManager.FollowSystem;
+        ThemeBox.SelectedItem = ThemeManager.Normalize(_originalTheme);
         FallbackBox.IsChecked = AppSettings.Current.AutoFallbackToSoftware;
         PromptBox.IsChecked = AppSettings.Current.PromptToSaveOnExit;
+        CrashReportsBox.IsChecked = AppSettings.Current.SendCrashReports;
 
         // The audio settings an editor starts with: encoded, so that edits to the sound never meet a copied track.
         AudioEncoderBox.ItemsSource = AudioTrack.AllCodecs;
@@ -191,6 +193,10 @@ public partial class FirstRunWindow : Window
         }
     }
 
+    // What a crash report holds, and what it never does.
+    private void PrivacyPolicy_Click(object sender, RoutedEventArgs e) =>
+        PrivacyPolicyDialog.ShowFor(this, CrashReportsBox.IsChecked == true, on => CrashReportsBox.IsChecked = on);
+
     // Shown at once, so the choice can be made by looking.
     private void ThemeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -254,6 +260,7 @@ public partial class FirstRunWindow : Window
         settings.ApplyMode(EditorCard.IsChecked == true ? AppSettings.EditorMode : AppSettings.EncoderMode);
         settings.DefaultVideoEncoder = EditorCard.IsChecked == true && EncoderBox.SelectedItem is EncoderOption encoder ? encoder.Name : "";
         settings.PromptToSaveOnExit = PromptBox.IsChecked == true;
+        settings.SendCrashReports = CrashReportsBox.IsChecked == true;
         if (EditorCard.IsChecked == true)
             (settings.DefaultAudioEncoder, settings.DefaultAudioBitrate) = (AudioEncoderBox.SelectedItem as string ?? "aac", AudioBitrateBox.SelectedItem as string ?? "192k");
         settings.DefaultMode = settings.UiMode;

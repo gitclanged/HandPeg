@@ -1,0 +1,53 @@
+# The same at 100 s with proxies ready for the clips: the picture read from the proxy (its clock from 0), the sound from the original.
+# request: surface 960x540, video from 100, sound from 100, layers Live, decode threads 2
+# rebuild at: 180.5
+
+live graph: 14 chains, 1870 characters
+  1| [vid1]scale=trunc(iw*0.5/2)*2:trunc(ih*0.5/2)*2:flags=fast_bilinear
+   |   ,split=2[canvas_in][center_in]
+  2| [canvas_in]crop=2:2:0:0
+   |   ,format=yuv420p
+   |   ,lutyuv=y=16:u=128:v=128
+   |   ,scale=960:540:flags=neighbor[stage0]
+  3| [center_in]scale=960:540:flags=fast_bilinear
+   |   ,format=yuva420p[center_layer]
+  4| [stage0][center_layer]overlay=0:0[stage1]
+  5| movie='D\:/cache/proxies/clip1_540.mp4':sp=41.85:dec_threads=2
+   |   ,trim=start=41.9:end=121
+   |   ,setpts=PTS+58/TB
+   |   ,scale=308:174:flags=fast_bilinear
+   |   ,format=yuva420p[ui1_layer]
+  6| [stage1][ui1_layer]overlay=326:0:eof_action=pass:enable='between(t,58,179)'[stage2]
+  7| movie='D\:/media/clip3.mp4':sp=17.3:dec_threads=2
+   |   ,trim=start=17.35:end=55
+   |   ,setpts=(PTS-10/TB)/1.5+95/TB
+   |   ,scale=288:162:flags=fast_bilinear
+   |   ,format=yuva420p[ui2_layer]
+  8| [stage2][ui2_layer]overlay=19:324:eof_action=pass:enable='between(t,95,125)'
+   |   ,setsar=1[vo]
+  9| [aid1]aresample=48000:async=1:first_pts=4800000
+   |   ,asetpts=(N+4800000)/SR/TB
+   |   ,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[lt0]
+ 10| [aid2]aresample=48000:async=1:first_pts=4800000
+   |   ,asetpts=(N+4800000)/SR/TB
+   |   ,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[lt1]
+ 11| amovie='D\:/media/clip1.mp4':seek_point=41
+   |   ,atrim=start=42:end=121
+   |   ,asetpts=PTS-42/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,asetpts=(N+4800000)/SR/TB
+   |   ,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[ll0]
+ 12| amovie='D\:/media/clip3.mp4':seek_point=16.5
+   |   ,atrim=start=17.5:end=55
+   |   ,asetpts=PTS-17.5/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,atempo=1.5
+   |   ,asetpts=(N+4800000)/SR/TB
+   |   ,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[ll1]
+ 13| amovie='D\:/media/music.m4a':seek_point=13
+   |   ,atrim=start=14:end=104
+   |   ,asetpts=PTS-14/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,asetpts=(N+4800000)/SR/TB
+   |   ,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[ll2]
+ 14| [lt0][lt1][ll0][ll1][ll2]amix=inputs=5:duration=first:normalize=0:dropout_transition=0[ao]

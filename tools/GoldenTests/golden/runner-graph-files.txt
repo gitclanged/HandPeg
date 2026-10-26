@@ -1,0 +1,90 @@
+# How a command's graphs reach FFmpeg (FfmpegRunner.WithGraphFiles): the arguments after the change, a graph file shown as <file N: its text>.
+
+Every graph in a file, FFmpeg 7 or later (needs a file: yes)
+  -hide_banner
+  -i
+  D:/media/a b.mp4
+  -/filter_complex
+  <file 1>
+  -map
+  [v]
+  -/vf
+  <file 2>
+  -/af
+  <file 3>
+  -/filter:v:0
+  <file 4>
+  D:/out/x.mp4
+  <file 1>: [0:v]scale=640:-2[v]
+  <file 2>: hflip
+  <file 3>: volume=0.5
+  <file 4>: vflip
+
+Every graph in a file, an older FFmpeg (needs a file: yes)
+  -hide_banner
+  -i
+  D:/media/a b.mp4
+  -filter_complex_script
+  <file 1>
+  -map
+  [v]
+  -filter_script:v
+  <file 2>
+  -filter_script:a
+  <file 3>
+  -filter_script:v:0
+  <file 4>
+  D:/out/x.mp4
+  <file 1>: [0:v]scale=640:-2[v]
+  <file 2>: hflip
+  <file 3>: volume=0.5
+  <file 4>: vflip
+
+Only long graphs (a run that does not always send them in files) (needs a file: no)
+  -hide_banner
+  -i
+  D:/media/a b.mp4
+  -filter_complex
+  [0:v]scale=640:-2[v]
+  -map
+  [v]
+  -vf
+  hflip
+  -af
+  volume=0.5
+  -filter:v:0
+  vflip
+  D:/out/x.mp4
+
+A long graph, a run that does not always send them in files (needs a file: yes)
+  -hide_banner
+  -i
+  D:/media/a b.mp4
+  -/filter_complex
+  <file 1>
+  -map
+  [v]
+  -vf
+  hflip
+  -af
+  volume=0.5
+  -filter:v:0
+  vflip
+  D:/out/x.mp4
+  <file 1>: [0:v]null,null,null,null,null,null,null,null,null,null,null,... (10022 characters)
+
+An FFmpeg that takes neither (needs a file: yes)
+  -hide_banner
+  -i
+  D:/media/a b.mp4
+  -filter_complex
+  [0:v]scale=640:-2[v]
+  -map
+  [v]
+  -vf
+  hflip
+  -af
+  volume=0.5
+  -filter:v:0
+  vflip
+  D:/out/x.mp4

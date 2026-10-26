@@ -25,6 +25,16 @@ public partial class ConfirmDialog : Window
     /// <summary>Whether the second way of going ahead was the one chosen.</summary>
     public bool ChoseOther { get; private set; }
 
+    /// <summary>
+    /// Makes Cancel the button Enter presses: for a warning, where going ahead should take a deliberate click and a
+    /// key pressed out of habit should change nothing.
+    /// </summary>
+    public bool DefaultsToCancel
+    {
+        get => CancelButton.IsDefault;
+        init => (ConfirmButton.IsDefault, CancelButton.IsDefault) = (!value, value);
+    }
+
     private void Confirm_Click(object sender, RoutedEventArgs e) => DialogResult = true;
 
     private void Other_Click(object sender, RoutedEventArgs e)

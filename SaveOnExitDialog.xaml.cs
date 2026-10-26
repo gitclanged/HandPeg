@@ -36,7 +36,7 @@ public partial class SaveOnExitDialog : Window
 
         SaveButton.IsEnabled = ProjectName.Length > 0;
         var fileName = string.Concat(ProjectName.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)).Trim();
-        NoteText.Text = fileName.Length > 0 && File.Exists(Path.Combine(ProjectStore.Folder, fileName + ".txt"))
+        NoteText.Text = fileName.Length > 0 && File.Exists(Path.Combine(ProjectStore.Folder, fileName + ProjectStore.Extension))
             ? "A project with this name exists already and will be replaced."
             : "";
     }

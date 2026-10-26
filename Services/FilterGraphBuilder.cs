@@ -1407,8 +1407,14 @@ public static class FilterGraphBuilder
         /// at time stamps; it adds up whatever samples arrive. So the sound is laid out from one moment, the one
         /// playback starts at: every layer is cut and held back as that moment needs, each track of the video is
         /// made to begin exactly there (aresample's first_pts drops what comes before it and fills in what is
-        /// missing), and all of them are then counted from that moment (asetpts) and start level. A jump to
-        /// another moment needs the graph built again for that moment, which is for whoever plays it to ask for.
+        /// missing), and all of them are then counted sample by sample from that moment (asetpts) and start level.
+        /// A jump to another moment needs the graph built again for that moment, which is for whoever plays it to ask for.
+        ///
+        /// The count is kept on the sequence's clock, the one the picture ([vo]) is on: the sound's first sample is
+        /// stamped with that moment, not 0. mpv lines the two up by their time stamps when playback starts, and drops
+        /// the sound it holds before the picture's first frame: a sound counted from 0 was dropped for as long as the
+        /// moment was into the sequence, and then played that far ahead of the picture (seen at 300 s: the layer's file
+        /// 418 s in under the frame of 118 s in).
         /// </summary>
         /// <param name="from">The moment playback starts from, in sequence seconds.</param>
         /// <param name="mainTrack">Negative when the video has no sound of its own; otherwise every kept track is heard.</param>
@@ -1432,11 +1438,11 @@ public static class FilterGraphBuilder
             if (layers.Count == 0 && mainTrack < 0)
                 return "";
 
-            // Every input in the one form, and counted from the moment playback starts: what is mixed, and what is
-            // ducked under what, then lines up sample for sample.
+            // Every input in the one form, and counted from the moment playback starts, on the sequence's clock: what
+            // is mixed, and what is ducked under what, then lines up sample for sample, and with the picture.
             const string form = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
-            const string fromHere = "asetpts=N/SR/TB";
             var first = ((long)Math.Round(from * 48000)).ToString(CultureInfo.InvariantCulture);
+            var fromHere = $"asetpts=(N+{first})/SR/TB";
             var graph = new List<string>();
             var inputs = new List<(string Name, bool Voice, bool Ducked, IReadOnlyList<string> Filters)>();
 
@@ -1472,7 +1478,7 @@ public static class FilterGraphBuilder
             if (tracks.Count == 0)
             {
                 // No sound of the video's own: silence to the end of the sequence, for the rest to be mixed into.
-                graph.Add($"anullsrc=r=48000:cl=stereo,atrim=end={Number(Math.Max(SequenceSeconds - from, 0.1))},{form}[lt_base]");
+                graph.Add($"anullsrc=r=48000:cl=stereo,atrim=end={Number(Math.Max(SequenceSeconds - from, 0.1))},{fromHere},{form}[lt_base]");
                 inputs.Add(("lt_base", false, false, []));
             }
 
@@ -1529,12 +1535,12 @@ public static class FilterGraphBuilder
                 Rename(input.Name, $"{input.Name}_fx");
             }
 
-            // The fades over the whole, on the sequence's clock: the mix is counted from the moment playback starts.
+            // The fades over the whole, on the sequence's clock, which the mix is on.
             var finish = new List<string>();
             if (FadeIn && from < FadeSeconds)
-                finish.Add($"volume='clip((t+{Number(from)})/{Number(FadeSeconds)},0,1)':eval=frame");
+                finish.Add($"volume='clip(t/{Number(FadeSeconds)},0,1)':eval=frame");
             if (FadeOut && SequenceSeconds > FadeSeconds)
-                finish.Add($"volume='clip(({Number(SequenceSeconds)}-(t+{Number(from)}))/{Number(FadeSeconds)},0,1)':eval=frame");
+                finish.Add($"volume='clip(({Number(SequenceSeconds)}-t)/{Number(FadeSeconds)},0,1)':eval=frame");
 
             // The first input sets how long the mix lasts: a track of the video, or the silence standing in for one.
             var mix = inputs.Count == 1 ? $"[{inputs[0].Name}]anull" : $"{string.Concat(inputs.Select(i => $"[{i.Name}]"))}amix=inputs={inputs.Count}:duration=first:normalize=0:dropout_transition=0";
@@ -2016,19 +2022,28 @@ public static class FilterGraphBuilder
             var startsAt = LayerAudioStart(layer);
             var into = layer.MediaOffset + Math.Max(from - startsAt, 0) * speed;
 
+            // Cut on the file's own time stamps from where its picture starts, as the picture is (see AppendVideoFile):
+            // a sample is heard with the frame that has its time stamp. Counted from the file's first sample instead,
+            // the sound was out by as much as the picture starts after it (7 ms in a webm, over a second in some
+            // recordings). A file not inspected yet is counted from 0, as its picture is in a live graph.
+            var origin = S.MediaStarts.TryGetValue(layer.ImagePath.Trim().Trim('"'), out var videoStart) ? videoStart : 0;
+            var cut = origin + into;
+
             // Read from a little before where it is wanted, when that is well into the file: the cut that follows is exact.
             var source = $"amovie='{EscapeFilterPath(layer.ImagePath)}'";
             if (from > 0 && into > 2)
                 source += $":seek_point={Number(into - 1)}";
 
             var chain = new List<string> { source };
-            var trim = into > 0.01 ? $"atrim=start={Number(into)}" : "";
+            var trim = cut > 0.0005 ? $"atrim=start={Number(cut)}" : "";
             if (layer.Duration > 0.001)
-                trim = (trim.Length > 0 ? trim + ":" : "atrim=") + $"end={Number(layer.MediaOffset + layer.Duration * speed)}";
+                trim = (trim.Length > 0 ? trim + ":" : "atrim=") + $"end={Number(origin + layer.MediaOffset + layer.Duration * speed)}";
             if (trim.Length > 0)
-                chain.Add(trim + ",asetpts=PTS-STARTPTS");
+                chain.Add(trim + (cut > 0.0005 ? $",asetpts=PTS-{Number(cut)}/TB" : ""));
 
-            chain.Add("aresample=48000");
+            // Begun exactly at the cut: a sound that starts after it (a file's sound starting after its picture) is
+            // preceded by silence, what comes before it (an encoder's priming) is dropped.
+            chain.Add("aresample=48000:async=1:first_pts=0");
             chain.AddRange(BuildTempo(speed));
             // Its own processing and gain, as a track of the video has them.
             chain.AddRange(layer.AudioFilters.BuildChain(Math.Clamp(layer.AudioGainDb, -40, 24)));
@@ -2118,10 +2133,13 @@ public static class FilterGraphBuilder
                 filters.Add("yadif");
 
             // Live Preview: fewer frames from a fast source, and fewer pixels, before anything else is done to them.
+            // Every other frame is kept as it is, at its own time stamp: fps= gives each frame a place on its own clock
+            // instead, and on time stamps kept to the millisecond it took the later of two frames for some places,
+            // showing the picture a frame early (17 ms at 60 frames a second) against its sound.
             if (_buildingLiveGraph)
             {
                 if (SourceFrameRate > 40)
-                    filters.Add($"fps={Number(SourceFrameRate / 2)}");
+                    filters.Add("select='not(mod(n,2))'");
 
                 // The player's frames are the proxy's when the main video has one (S.MainPreviewHeight): smaller to
                 // start with, they are only made smaller when they are still larger than the frame needs.
@@ -3016,8 +3034,16 @@ public static class FilterGraphBuilder
             var speed = GetSpeed(layer);
             var retimed = IsRetimed(speed);
             var windowed = _buildingLiveGraph && _window is not null;
-            var origin = 0.0;
-            var known = proxied || S.MediaStarts.TryGetValue(file, out origin) || _buildingLiveGraph;
+
+            // A proxy has its own clock: FFmpeg moves a file's time stamps when it makes one, by the container's start or
+            // by the picture's, depending on the container. Its picture's start is its own (inspected like any file), and
+            // never the original's: the original's first frame is its first frame (0 until it is known).
+            double origin;
+            bool known;
+            if (proxied)
+                (known, origin) = (true, S.MediaStarts.GetValueOrDefault(proxy!));
+            else
+                known = S.MediaStarts.TryGetValue(file, out origin) || _buildingLiveGraph;
 
             if (layer.Duration > 0.001 && known)
             {

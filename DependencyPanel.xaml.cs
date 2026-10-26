@@ -272,16 +272,42 @@ public partial class DependencyPanel : UserControl
         Refreshed?.Invoke();
     }
 
+    /// <summary>
+    /// What the row says: what is installed and, for a pinned tool, whether that is the build this version of HandPeg was
+    /// tested with, and what Install / Update would put in (the pinned build, or a stand-in for it, named as one).
+    /// </summary>
     private static string Describe(DependencyRow row, string version)
     {
+        if (row.State == DependencyState.CustomPath)
+            return $"Using custom path: {DependencyUpdater.CustomPath(row.Id)}";
+
         var size = row.Latest is { Size: > 0 } latest ? $" ({Megabytes(latest.Size)} download)" : "";
         var installed = version.Length > 0 ? $" ({version})" : "";
+        if (DependencyUpdater.TestedBuild(row.Id) is not { } tested)
+        {
+            // Not pinned: yt-dlp always, the others when untested updates are allowed.
+            var newest = row.Id == DependencyUpdater.YtDlp ? "" : ", following the newest releases (untested)";
+            return row.State switch
+            {
+                DependencyState.Installed => $"Installed{installed}{newest}",
+                DependencyState.UpdateAvailable => $"Update available{size}: installed{installed.Replace("(", "").Replace(")", "")}{newest}",
+                _ => $"Missing{size}{newest}",
+            };
+        }
+
+        var coming = row.Latest is { Pin: PinState.StandIn } standIn
+            ? $"{standIn.Label}, a stand-in ({standIn.Note})"
+            : $"the pinned {tested.Label}";
         return row.State switch
         {
-            DependencyState.CustomPath => $"Using custom path: {DependencyUpdater.CustomPath(row.Id)}",
-            DependencyState.Installed => $"Installed{installed}",
-            DependencyState.UpdateAvailable => $"Update available{size}: installed{installed.Replace("(", "").Replace(")", "")}",
-            _ => $"Missing{size}",
+            DependencyState.Installed => DependencyUpdater.InstalledPinRank(row.Id, row.Latest?.Variant ?? tested.Variant) switch
+            {
+                0 => $"Installed{installed}: the pinned build",
+                null => $"Installed{installed}: not the pinned build ({tested.Label})",
+                _ => $"Installed{installed}: a stand-in for the pinned {tested.Label}, which is no longer published",
+            },
+            DependencyState.UpdateAvailable => $"Not the pinned build: installed{installed.Replace("(", "").Replace(")", "")}. Install / Update puts in {coming}{size}",
+            _ => $"Missing{size}: installs {coming}",
         };
     }
 
@@ -317,7 +343,7 @@ public partial class DependencyPanel : UserControl
 
     private void UpdateButtons()
     {
-        InstallButton.IsEnabled = !_isRunning && !_appIsBusy;
+        InstallButton.IsEnabled = ForceLatestButton.IsEnabled = RestorePinnedButton.IsEnabled = !_isRunning && !_appIsBusy;
         CancelButton.IsEnabled = _isRunning;
         UseExistingButton.IsEnabled = !_isRunning;
         if (_appIsBusy && !_isRunning)
@@ -338,11 +364,13 @@ public partial class DependencyPanel : UserControl
     private async void Install_Click(object sender, RoutedEventArgs e) => await InstallAsync();
 
     /// <summary>
-    /// Install / Update All Dependencies: installs what is missing and replaces what has a newer release, with
-    /// the speech models that are ticked; a tool with a path of the user's own is left alone. What happens is
-    /// said in the panel's message line (and through <see cref="MessageShown"/>). Nothing while an encode is running.
+    /// Install / Update All Dependencies: installs what is missing and replaces what is not the build to have (the pinned
+    /// one, or the newest release where builds are not pinned), with the speech models that are ticked; a tool with a path
+    /// of the user's own is left alone. What happens is said in the panel's message line (and through <see cref="MessageShown"/>).
+    /// Nothing while an encode is running.
     /// </summary>
-    public async Task InstallAsync()
+    /// <param name="installedToolsOnly">Only replace the tools that are installed, fetching nothing new and no models: for switching between pinned and newest builds.</param>
+    public async Task InstallAsync(bool installedToolsOnly = false)
     {
         if (_isRunning)
             return;
@@ -376,7 +404,8 @@ public partial class DependencyPanel : UserControl
             // What there is to do. A tool is asked about again here, so that a check that failed when the
             // list was filled (no connection at the time) is simply made again.
             var work = new List<DependencyRow>();
-            foreach (var row in _tools.Where(r => !_excludedTools.Contains(r.Id) && DependencyUpdater.GetLocalState(r.Id) != DependencyState.CustomPath))
+            foreach (var row in _tools.Where(r => !_excludedTools.Contains(r.Id) && DependencyUpdater.GetLocalState(r.Id) is var state
+                                                  && (installedToolsOnly ? state == DependencyState.Installed : state != DependencyState.CustomPath)))
             {
                 try
                 {
@@ -391,7 +420,8 @@ public partial class DependencyPanel : UserControl
                 }
             }
 
-            work.AddRange(_models.Where(m => m.IsSelected && m.CanSelect));
+            if (!installedToolsOnly)
+                work.AddRange(_models.Where(m => m.IsSelected && m.CanSelect));
 
             // How much each payload weighs, so that the one bar counts bytes and not payloads.
             var sizes = work.Select(r => (double)Math.Max(r.IsModel ? DependencyUpdater.ApproximateModelBytes(r.Id) : r.Latest?.Size ?? 0, 1048576)).ToList();
@@ -415,15 +445,19 @@ public partial class DependencyPanel : UserControl
                 ShowMessage($"Installing {row.Name} ({index + 1} of {work.Count})...", isProblem: false);
                 try
                 {
+                    CrashReporter.Note("deps", "installing " + row.Id);
+
                     // On the thread pool: the bytes are hashed as they arrive, which is not work for the UI thread.
                     if (row.IsModel)
                         await Task.Run(() => DependencyUpdater.InstallModelAsync(row.Id, progress, token), token);
                     else
                         await Task.Run(() => DependencyUpdater.InstallToolAsync(row.Id, row.Latest!, progress, token), token);
                     installed.Add(row.Name);
+                    CrashReporter.Note("deps", "installed " + row.Id);
                 }
                 catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex))
                 {
+                    CrashReporter.Note("deps", $"{row.Id} failed: {ex.GetType().Name}");
                     AppLog.Write($"Installing {row.Name} failed", ex);
                     row.Status = $"Failed: {ex.Message}";
                     failed.Add(row.Name);
@@ -483,4 +517,94 @@ public partial class DependencyPanel : UserControl
     private void Cancel_Click(object sender, RoutedEventArgs e) => _cancellation?.Cancel();
 
     private void UseExisting_Click(object sender, RoutedEventArgs e) => UseExistingFfmpegRequested?.Invoke();
+
+    // ----- Pinned builds or the newest ones (the settings) -----
+    // FFmpeg, libmpv and whisper.cpp are installed from the builds this version of HandPeg was tested with (see
+    // DependencyUpdater.PinnedBuilds). Force Update puts the newest upstream builds in their place, after a warning, and
+    // keeps them coming; Restore Pinned turns that off again and puts the tested builds back. Both change the setting at
+    // once (it is what every later update goes by), and say so through UnpinnedChanged to a host editing a copy of the settings.
+
+    /// <summary>Whether the two buttons for choosing between pinned and newest builds are offered: in the settings, not the first-run window.</summary>
+    public bool OffersPinnedBuilds
+    {
+        get => PinRow.Visibility == Visibility.Visible;
+        set => PinRow.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>Raised when a button here has changed <see cref="AppSettings.AllowUnpinnedDependencyUpdates"/>, with its new value.</summary>
+    public event Action<bool>? UnpinnedChanged;
+
+    /// <summary>
+    /// The warning given before untested builds are allowed, here and by the settings' check box; true when the user went ahead.
+    /// Cancel is its default button.
+    /// </summary>
+    /// <param name="installNow">Whether going ahead installs them at once (Force Update), or only lets later updates do so.</param>
+    public static bool ConfirmUnpinned(Window? owner, bool installNow)
+    {
+        var message = "HandPeg installs the builds of FFmpeg, libmpv (the player) and whisper.cpp that this version was tested with. "
+                      + "The newest upstream builds are untested with it: a new FFmpeg can change filter syntax, so that exports, Render Preview "
+                      + "or Live Preview fail, and a new libmpv or whisper.cpp can bring playback, export or caption instability.\n\n"
+                      + (installNow
+                          ? "The newest builds are installed now, and every update after that installs the newest again."
+                          : "From now on, Install / Update and the background updates install the newest builds.")
+                      + "\n\nTo go back at any time: Settings, Tools & Backup, Restore Pinned Recommended Versions turns this off and puts the "
+                      + "tested builds back in one click. yt-dlp follows its newest release either way.";
+        return new ConfirmDialog("Untested Dependency Builds", message, installNow ? "Install the Newest Builds" : "Allow Untested Builds")
+        {
+            Owner = owner,
+            DefaultsToCancel = true,
+        }.ShowDialog() == true;
+    }
+
+    private async void ForceLatest_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isRunning || ShowBusy() || !ConfirmUnpinned(Window.GetWindow(this), installNow: true))
+            return;
+
+        SetUnpinned(true);
+        await InstallAsync(installedToolsOnly: true);
+    }
+
+    private async void RestorePinned_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isRunning || ShowBusy())
+            return;
+
+        SetUnpinned(false);
+        await InstallAsync(installedToolsOnly: true);
+    }
+
+    // Nothing is installed while the tools are in use: said, and the setting is left as it was.
+    private bool ShowBusy()
+    {
+        if (_appIsBusy)
+            ShowMessage("An encode, preview or transcription is running. Dependencies can be installed or updated once it has finished.", isProblem: false);
+        return _appIsBusy;
+    }
+
+    /// <summary>Changes and saves the setting, and asks GitHub afresh: the builds wanted are other ones now.</summary>
+    private void SetUnpinned(bool allowed)
+    {
+        var settings = AppSettings.Current;
+        if (settings.AllowUnpinnedDependencyUpdates != allowed)
+        {
+            settings.AllowUnpinnedDependencyUpdates = allowed;
+            try
+            {
+                settings.SaveAsCurrent();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The choice still holds for this session.
+                AppLog.Write("The dependency setting could not be saved", ex);
+            }
+
+            AppLog.Write(allowed
+                ? "Untested dependency updates allowed: the newest FFmpeg, libmpv and whisper.cpp are installed from now on."
+                : "Dependencies pinned again: FFmpeg, libmpv and whisper.cpp go back to the builds this version was tested with.");
+        }
+
+        DependencyUpdater.ForgetAnswers();
+        UnpinnedChanged?.Invoke(allowed);
+    }
 }

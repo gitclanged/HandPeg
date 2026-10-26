@@ -66,17 +66,21 @@
                     <TextBlock x:Name="AboutText" Style="{StaticResource Hint}" Margin="0,0,0,4" />
                     <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,6">
                         <Hyperlink x:Name="RepositoryLink" RequestNavigate="Link_RequestNavigate" Foreground="{DynamicResource AccentBrush}" />
+                        <Run Text="   " /><Hyperlink Click="PrivacyPolicy_Click" Foreground="{DynamicResource AccentBrush}" AutomationProperties.Name="Privacy Policy" ToolTip="What a crash report holds, and what HandPeg never collects.">Privacy Policy</Hyperlink>
                         <Run Text="   Built on FFmpeg, libmpv, yt-dlp and whisper.cpp, which HandPeg downloads and does not ship." />
                     </TextBlock>
                     <StackPanel Style="{StaticResource Row}">
                         <Button x:Name="CheckUpdateButton" Content="Check for Updates" Click="CheckForUpdates_Click" AutomationProperties.Name="Check for HandPeg Updates"
                                 ToolTip="Looks now for a newer release of HandPeg itself. A copy put in by the installer offers it on the Update button at the bottom of the main window (or downloads it at once, when Auto-download is on). A self-contained copy, or one run from a build folder, is told whether there is a newer release and where to get it." />
                         <Button x:Name="UpdateDependenciesButton" Content="Update Dependencies" Margin="6,0,0,0" Click="UpdateDependencies_Click" AutomationProperties.Name="Update Dependencies"
-                                ToolTip="Installs whatever HandPeg needs that is missing, and replaces FFmpeg, libmpv, yt-dlp and whisper.cpp with newer releases where there are any, from the update URLs on the Tools &amp; Backup tab. A tool with a path of your own is left alone. The same as Install / Update All Dependencies there." />
+                                ToolTip="Installs whatever HandPeg needs that is missing, puts back the builds of FFmpeg, libmpv and whisper.cpp this version was tested with wherever another one is installed (the newest releases instead, when untested updates are allowed), and updates yt-dlp to its newest release. A tool with a path of your own is left alone. The same as Install / Update All Dependencies on the Tools &amp; Backup tab." />
                         <TextBlock x:Name="UpdateStatusText" VerticalAlignment="Center" Margin="14,0,0,0" TextWrapping="Wrap" MaxWidth="640" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <CheckBox Content="Auto-update dependencies in the background" IsChecked="{Binding AutoUpdateDependencies}" Margin="0,4,0,2" AutomationProperties.Name="Auto-Update Dependencies"
-                              ToolTip="A little after HandPeg starts, FFmpeg, libmpv, yt-dlp and whisper.cpp are compared with their newest releases and replaced where there is a newer one, in the background (the progress shows at the bottom left; it waits while playing or exporting). Only the tools HandPeg installed: one with a path of your own is left alone, and one never installed is not fetched. A tool in use is tried again at the next start." />
+                              ToolTip="A little after HandPeg starts, in the background (the progress shows at the bottom left; it waits while playing or exporting): FFmpeg, libmpv and whisper.cpp are put back to the builds this version was tested with where another one is installed (or brought to their newest releases, when untested updates are allowed below), and yt-dlp to its newest release. Only the tools HandPeg installed: one with a path of your own is left alone, and one never installed is not fetched. A tool in use is tried again at the next start." />
+                    <CheckBox x:Name="AllowUnpinnedBox" Content="Allow untested dependency updates (the newest FFmpeg, libmpv and whisper.cpp)" IsChecked="{Binding AllowUnpinnedDependencyUpdates}"
+                              Click="AllowUnpinned_Click" Margin="0,2" AutomationProperties.Name="Allow Unpinned Dependency Updates"
+                              ToolTip="Off (recommended): FFmpeg, libmpv and whisper.cpp are installed and updated only to the builds this version of HandPeg was tested with, each checked against its SHA-256. On: to their newest upstream releases, which may change filter syntax or bring playback or export instability; you are asked first. Restore Pinned Recommended Versions on the Tools &amp; Backup tab turns it off again and puts the tested builds back. yt-dlp follows its newest release either way." />
                     <CheckBox Content="Check for HandPeg updates on startup" IsChecked="{Binding CheckAppUpdatesOnStartup}" Margin="0,2" AutomationProperties.Name="Check for App Updates on Startup"
                               ToolTip="Looks for a newer HandPeg when it starts, and shows an Update button at the bottom of the window when there is one. Nothing is downloaded until you press it (unless the next option is on)." />
                     <CheckBox Content="Auto-download HandPeg updates in the background" IsChecked="{Binding AutoDownloadAppUpdates}" Margin="0,2,0,6" AutomationProperties.Name="Auto-Download App Updates"
@@ -94,7 +98,7 @@
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Theme:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="ThemeBox" MinWidth="170" Margin="0" SelectedItem="{Binding Theme}" AutomationProperties.Name="Theme"
-                                  ToolTip="Dark, light, or whichever Windows is set to. Applied when you press Save." />
+                                  ToolTip="Windows System follows Windows' light or dark mode and accent; OLED Black is true black with Windows' accent; Leonardo is warm slate with amber; Reno is a light studio grey with blue; Reno Dark is charcoal with cyan. Applied when you press Save. Resting on the Layout button shows them all, live." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
                                 ToolTip="How thick scrollbars are, everywhere in HandPeg: from 4 pixels, a hairline, to 16, as Windows draws them. They change as the slider is moved.">
@@ -150,6 +154,22 @@
                         <TextBlock Text="Interval (minutes):" VerticalAlignment="Center" Margin="18,0,8,0" />
                         <TextBox Width="48" Padding="4,2" VerticalAlignment="Center" Text="{Binding AutosaveMinutes}" IsEnabled="{Binding AutosaveEnabled}" AutomationProperties.Name="Autosave Interval"
                                  ToolTip="How many minutes pass between autosaves: 1 to 120." />
+                    </StackPanel>
+
+                    <!-- Diagnostics: crash reports (CrashReporter), written here and sent once each (CrashReports.UploadPendingAsync) -->
+                    <TextBlock Text="Diagnostics" Style="{StaticResource SectionTitle}" />
+                    <CheckBox x:Name="CrashReportsCheck" Content="Save anonymous crash reports" IsChecked="{Binding SendCrashReports}" Margin="0,2" AutomationProperties.Name="Send Crash Reports"
+                              ToolTip="When HandPeg falls over, a crash report (.hpcrash) is written to the crash reports folder: the error, the parts of HandPeg that were running, its last few steps, the kind of media open (container, codecs, resolution, frame rate, length) and the computer (processor, memory, graphics cards, display, engine versions), with no file names, paths, names, serial numbers or words from your media. Reports stay on this PC; HandPeg never sends them (attach one to a GitHub issue to share it). On, a small watcher process (a second HandPeg.exe, using no processor time) runs beside HandPeg to catch crashes in libmpv or a graphics driver. Off: nothing is written and the watcher does not run. Applied when you press Save." />
+                    <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,6">
+                        <Run Text="Uses 0% CPU during normal editing, 20 KB of shared memory, and a ~6.8 MB idle background sentinel process. A report holds no file names, paths, names or words from your media; the newest 50 are kept here." />
+                        <Hyperlink Click="PrivacyPolicy_Click" Foreground="{DynamicResource AccentBrush}" AutomationProperties.Name="Diagnostics Privacy Policy">Privacy Policy</Hyperlink>
+                    </TextBlock>
+                    <StackPanel Style="{StaticResource Row}">
+                        <Button Content="Open Crash Reports Folder" Click="OpenCrashReportsFolder_Click" AutomationProperties.Name="Open Crash Reports Folder"
+                                ToolTip="Opens the folder the crash reports are kept in (made now if there is none yet). A report is plain text: open one in any text editor to see what it says." />
+                        <Button x:Name="ClearCrashReportsButton" Content="Clear Crash Reports" Margin="6,0,0,0" Click="ClearCrashReports_Click" AutomationProperties.Name="Clear Crash Reports"
+                                ToolTip="Deletes every crash report in the folder, at once (not when you press Save)." />
+                        <TextBlock x:Name="CrashReportsUsage" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                 </StackPanel>
             </TabItem>
@@ -886,7 +906,7 @@
                 <StackPanel>
                     <TextBlock Text="Dependencies" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Everything HandPeg downloads, and what is installed. Nothing ships with HandPeg itself. One button installs what is missing and replaces what has a newer release, using the update URLs as last saved; a tool with a path of your own under Tool paths is left alone." />
+                               Text="Everything HandPeg downloads, and what is installed. Nothing ships with HandPeg itself. FFmpeg, libmpv and whisper.cpp come from the builds this version of HandPeg was tested with (pinned, each checked against its SHA-256), unless untested updates are allowed; yt-dlp from its newest release. One button installs what is missing and replaces what is not the build to have; a tool with a path of your own under Tool paths is left alone." />
                     <local:DependencyPanel x:Name="Dependencies" />
 
                     <TextBlock Text="Tool paths" Style="{StaticResource SectionTitle}" />
@@ -918,7 +938,7 @@
 
                     <TextBlock Text="Update URLs" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="GitHub API release addresses. Leave blank for the defaults. Tools are downloaded and run from whatever these point at, so only use sources you trust." />
+                               Text="GitHub API release addresses. Leave blank for the defaults. Tools are downloaded and run from whatever these point at, so only use sources you trust. A tool given an address of your own is installed from its newest release there, not from its pinned build." />
                     <DockPanel Style="{StaticResource WideRow}">
                         <TextBlock Text="yt-dlp release:" Style="{StaticResource WideLabel}" />
                         <TextBox Text="{Binding YtDlpReleaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="yt-dlp Release URL" />

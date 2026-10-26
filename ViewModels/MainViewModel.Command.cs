@@ -106,6 +106,15 @@ public partial class MainViewModel
                 seekIndexes[file] = index;
         }
 
+        // And where the picture of each proxy in use starts, on the proxy's own clock (see FilterGraphBuilder.AppendVideoFile).
+        foreach (var proxy in _proxiesInUse.Values.Append(MainProxy).OfType<string>())
+        {
+            if (MediaProbe.KnownVideoStart(proxy) is { } start)
+                starts[proxy] = start;
+            else
+                LearnVideoStart(proxy);
+        }
+
         var tracks = GetOutputAudioTracks()
             .Select(t => new ExportAudioTrack(
                 t.Index, t.Title, t.Codec, t.Bitrate, t.IsPassthrough, t.Stream.Channels == 1, t.AutoDuck, t.IsVoice,

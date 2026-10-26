@@ -17,6 +17,9 @@ public sealed record GpuAdapter(int Index, string Name)
     /// <summary>The version of its driver, as Windows numbers it (31.0.24033.1003); empty when it could not be read.</summary>
     public string DriverVersion { get; init; } = "";
 
+    /// <summary>Its own video memory in MB (DXGI's DedicatedVideoMemory); 0 for a card that shares the computer's.</summary>
+    public long DedicatedVideoMemoryMb { get; init; }
+
     public bool IsNvidia => VendorId == 0x10DE;
 
     public bool IsAmd => VendorId == 0x1002;
@@ -118,8 +121,10 @@ public static partial class GpuAdapters
     /// </summary>
     public static string Fingerprint => string.Join(";", All.Select(a => string.Create(CultureInfo.InvariantCulture, $"{a.VendorId:X4}:{a.DeviceId:X4}:{a.DriverVersion}")));
 
-    // DXGI_ADAPTER_DESC: the name (128 UTF-16 characters), then the vendor and device numbers.
+    // DXGI_ADAPTER_DESC: the name (128 UTF-16 characters), then the vendor, device, subsystem and revision numbers, then
+    // the dedicated video memory (a SIZE_T).
     private const int DescriptionBytes = 256;
+    private const int DedicatedVideoMemoryOffset = DescriptionBytes + 16;
     private const int DescriptionSize = 320;
 
     // The software renderer Windows lists after the real cards.
@@ -158,6 +163,7 @@ public static partial class GpuAdapters
                         VendorId = vendor,
                         DeviceId = device,
                         DriverVersion = driver,
+                        DedicatedVideoMemoryMb = (long)((ulong)Marshal.ReadIntPtr(description, DedicatedVideoMemoryOffset) / (1024 * 1024)),
                     });
                 }
                 finally

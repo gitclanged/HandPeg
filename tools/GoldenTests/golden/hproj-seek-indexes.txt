@@ -1,0 +1,1 @@
+# Seek indexes: always written for the files known, taken up again on opening.

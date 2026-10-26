@@ -25,17 +25,72 @@ public readonly record struct InstallProgress(double Fraction, string Text);
 
 /// <summary>A release of a tool as GitHub describes it.</summary>
 /// <param name="Stamp">What identifies this build: compared with the stamp kept beside the installed one.</param>
-/// <param name="Sha256">The digest GitHub publishes for the file, when it does.</param>
+/// <param name="Sha256">The digest the file is checked against: the pinned one, or the one GitHub publishes, when there is either.</param>
 /// <param name="SumsUrl">A checksum list attached to the same release, used when there is no digest.</param>
-public sealed record RemoteAsset(string Name, string DownloadUrl, string Stamp, string Tag, long Size, string? Sha256, string? SumsUrl);
+public sealed record RemoteAsset(string Name, string DownloadUrl, string Stamp, string Tag, long Size, string? Sha256, string? SumsUrl)
+{
+    /// <summary>Whether this is the build pinned for this version of HandPeg, a stand-in for it, or simply the newest.</summary>
+    public PinState Pin { get; init; }
+
+    /// <summary>Its place among the tool's pinned builds, best first (see <see cref="DependencyUpdater.PinnedBuilds"/>); past them all for a stand-in from outside the list.</summary>
+    public int PinRank { get; init; } = DependencyUpdater.OutsideListRank;
+
+    /// <summary>Which of the tool's pinned lists it was taken from (see <see cref="PinnedBuild.Variant"/>).</summary>
+    public string Variant { get; init; } = "";
+
+    /// <summary>How the dependency list names the build: the pinned build's label, or the release's tag.</summary>
+    public string Label { get; init; } = "";
+
+    /// <summary>Why a stand-in was taken, in a few words for the list and the log; empty otherwise.</summary>
+    public string Note { get; init; } = "";
+}
+
+/// <summary>Where a build stands against the builds pinned for this version of HandPeg.</summary>
+public enum PinState
+{
+    /// <summary>The newest upstream release: the tool is not pinned (yt-dlp), unpinned updates are allowed, or its release address is the user's own.</summary>
+    Unpinned,
+
+    /// <summary>The build this version of HandPeg was tested with.</summary>
+    Pinned,
+
+    /// <summary>A kept build standing in for the pinned one, which upstream no longer publishes.</summary>
+    StandIn,
+}
+
+/// <summary>
+/// A build of a tool that this version of HandPeg installs by default. The first one listed for a tool (or for a kind
+/// of it) is the one it was tested with; those after it stand in, in order, when upstream no longer publishes it.
+/// </summary>
+/// <param name="Variant">Which build of the tool: <see cref="DependencyUpdater.OlderNvidiaVariant"/> for the FFmpeg that older NVIDIA drivers take, the file's name for whisper.cpp (a build per kind of hardware); empty otherwise.</param>
+/// <param name="Repository">The GitHub repository that publishes it, as owner/name.</param>
+/// <param name="Tag">The release that carries it. Only dated or numbered releases, whose files never change.</param>
+/// <param name="Asset">The file attached to that release.</param>
+/// <param name="Sha256">Its SHA-256, checked whatever the release says now.</param>
+/// <param name="Size">Its size in bytes, shown before it is downloaded.</param>
+/// <param name="Version">What the build reports itself as (ffmpeg -version; the release date for libmpv, the tag for whisper.cpp): it recognises a copy put in before it was pinned.</param>
+/// <param name="Published">When the release was made: a stand-in from outside the list is looked for nearest this.</param>
+/// <param name="Label">How the list names it.</param>
+/// <param name="Mirror">Another address of the very same file, for when the release has gone from GitHub: checked against the same SHA-256.</param>
+public sealed record PinnedBuild(
+    string Tool, string Variant, string Repository, string Tag, string Asset, string Sha256, long Size, string Version, DateTime Published, string Label,
+    string? Mirror = null)
+{
+    /// <summary>Where GitHub serves the file. Asked with a HEAD, it says whether the file is still there without counting against the API's hourly limit.</summary>
+    public string DownloadUrl => $"https://github.com/{Repository}/releases/download/{Tag}/{Asset}";
+}
 
 /// <summary>
 /// Installs and updates FFmpeg (with ffprobe), yt-dlp and whisper.cpp, and the speech models, in the deps
 /// folder (see <see cref="AppPaths"/>): a folder per tool. Nothing is shipped with HandPeg itself.
 ///
+/// FFmpeg, libmpv and whisper.cpp are installed from the builds this version of HandPeg was tested with
+/// (<see cref="PinnedBuilds"/>), not from whatever upstream published last night; yt-dlp follows its newest release.
+/// Settings can allow the newest builds instead (<see cref="AppSettings.AllowUnpinnedDependencyUpdates"/>).
+///
 /// An install never works on the copy in use. The download goes into a staging folder, is checked against
-/// the published SHA-256 where there is one, unpacked and run once; only then is the tool's folder swapped
-/// for the new one. A download that fails, is cancelled or does not check out leaves what was there untouched.
+/// the pinned SHA-256 (or the published one, where there is one), unpacked and run once; only then is the tool's folder
+/// swapped for the new one. A download that fails, is cancelled or does not check out leaves what was there untouched.
 /// </summary>
 public static partial class DependencyUpdater
 {
@@ -77,6 +132,79 @@ public static partial class DependencyUpdater
 
     // Checksum lists some projects attach to a release: yt-dlp's, and the FFmpeg builds'.
     private static readonly string[] SumsAssetNames = ["SHA2-256SUMS", "checksums.sha256"];
+
+    // ----- The builds this version of HandPeg was tested with -----
+    // FFmpeg, libmpv and whisper.cpp publish new builds every day, and a new FFmpeg can rename a filter's option or a
+    // new libmpv crash where the last one did not. So these three are installed from the builds HandPeg was tested
+    // with, each checked against its SHA-256, and yt-dlp alone follows its newest release (sites change under it,
+    // and an old yt-dlp simply stops downloading). How long each upstream keeps a build (as of 2026-10-24):
+    //   BtbN/FFmpeg-Builds: the last 14 daily builds, and the last build of each month for two years.
+    //   shinchiro/mpv-winbuild-cmake: its last 30 releases on GitHub (about a month); the weekly builds stay on
+    //     SourceForge far longer (its listing went back a year, to 2025-11-16), the very same files.
+    //   ggml-org/whisper.cpp: every release so far, with its files (back to 2022).
+    // So the tested FFmpeg (a daily build) and libmpv go from GitHub within weeks: each has a stand-in listed after it
+    // that is kept far longer (the month's last FFmpeg build; a weekly libmpv build on SourceForge), and past those the
+    // dated build nearest the tested one is taken. A stand-in is logged and named in the dependency list, never taken
+    // silently, and the newest nightly is only ever installed when the user has allowed it.
+
+    /// <summary>The FFmpeg build for NVIDIA drivers before 610 (see <see cref="AppSettings.UseFfmpegForOlderNvidiaDrivers"/>): the 8.1 line.</summary>
+    public const string OlderNvidiaVariant = "8.1";
+
+    /// <summary>The place of a stand-in from outside <see cref="PinnedBuilds"/>: after every listed build.</summary>
+    public const int OutsideListRank = int.MaxValue;
+
+    // What a stand-in from outside the list says in its stamp, so that it is recognised as one when it is installed.
+    private const string StandInMark = "stand-in";
+
+    private static readonly DateTime TestedFfmpegDate = new(2026, 10, 23, 13, 5, 34, DateTimeKind.Utc);
+    private static readonly DateTime MonthEndFfmpegDate = new(2026, 9, 30, 13, 9, 24, DateTimeKind.Utc);
+    private static readonly DateTime TestedWhisperDate = new(2026, 10, 6, 16, 51, 27, DateTimeKind.Utc);
+
+    /// <summary>
+    /// The builds HandPeg 4.1 installs, a list per tool and variant, the tested build first and its stand-ins after it in
+    /// the order they are taken. Raised with each version of HandPeg, once the new builds have been tested with it.
+    /// </summary>
+    public static IReadOnlyList<PinnedBuild> PinnedBuilds { get; } =
+    [
+        // FFmpeg: the master build of 2026-10-23, then September's last build, which BtbN keeps until 2028.
+        new(Ffmpeg, "", "BtbN/FFmpeg-Builds", "autobuild-2026-10-23-13-04", "ffmpeg-N-127957-g935f29eaae-win64-gpl.zip",
+            "fcf14fbbf9937ead11f464c6ecc73bc30400441ab6048c8cf3c55d77fd1c1042", 200466434, "N-127957-g935f29eaae-20261023", TestedFfmpegDate,
+            "N-127957 (2026-10-23)"),
+        new(Ffmpeg, "", "BtbN/FFmpeg-Builds", "autobuild-2026-09-30-13-08", "ffmpeg-N-127021-ge0c94b2d1c-win64-gpl.zip",
+            "85c4a4636b93d681a07588ffa6f1d8f5c064d9c3fb0622066662906b6fd718a1", 198589424, "N-127021-ge0c94b2d1c-20260930", MonthEndFfmpegDate,
+            "N-127021 (2026-09-30)"),
+
+        // FFmpeg for older NVIDIA drivers: the 8.1 line, built the same days.
+        new(Ffmpeg, OlderNvidiaVariant, "BtbN/FFmpeg-Builds", "autobuild-2026-10-23-13-04", "ffmpeg-n8.1.3-24-g92611900bb-win64-gpl-8.1.zip",
+            "ec297d65145f71686498436bb7d5281f540d26fb6791072ba73b194498581b22", 193050071, "n8.1.3-24-g92611900bb-20261023", TestedFfmpegDate,
+            "8.1.3-24 (2026-10-23)"),
+        new(Ffmpeg, OlderNvidiaVariant, "BtbN/FFmpeg-Builds", "autobuild-2026-09-30-13-08", "ffmpeg-n8.1.3-9-g29e619e767-win64-gpl-8.1.zip",
+            "7b801cdd3a1a0bb54ae6f572187e68b4ed54f52086cfee133fab2180bfb429fa", 193109593, "n8.1.3-9-g29e619e767-20260930", MonthEndFfmpegDate,
+            "8.1.3-9 (2026-09-30)"),
+
+        // libmpv: the build of 2026-10-21, then the weekly one of 2026-10-18, which SourceForge keeps once GitHub has let it go.
+        new(Mpv, "", "shinchiro/mpv-winbuild-cmake", "20261021", "mpv-dev-x86_64-20261021-git-e471496c56.7z",
+            "efc719eff3dc5954b4a5efc800632808bcec01cc9034940dd14e5eb7fe9ea633", 31622190, "20261021", new(2026, 10, 21, 0, 54, 32, DateTimeKind.Utc),
+            "20261021"),
+        new(Mpv, "", "shinchiro/mpv-winbuild-cmake", "20261018", "mpv-dev-x86_64-20261018-git-01e2533f31.7z",
+            "d7f5621f42b6e161fe032df914a10bdece28a89df3e57c6c3e16a5a250929b5e", 31595598, "20261018", new(2026, 10, 18, 0, 35, 2, DateTimeKind.Utc),
+            "20261018", "https://sourceforge.net/projects/mpv-player-windows/files/libmpv/mpv-dev-x86_64-20261018-git-01e2533f31.7z/download"),
+
+        // whisper.cpp: build b5454, in each kind HandPeg chooses between (see WhisperAssetNames).
+        new(Whisper, "whisper-bin-win-cuda-12.4.0-x64.zip", "ggml-org/whisper.cpp", "b5454", "whisper-bin-win-cuda-12.4.0-x64.zip",
+            "afef0b881c500958921c3f5523b50e59ee2ec9b6f5cbd25b324c51ed308a957a", 684913404, "b5454", TestedWhisperDate, "b5454 (CUDA)"),
+        new(Whisper, "whisper-blas-bin-x64.zip", "ggml-org/whisper.cpp", "b5454", "whisper-blas-bin-x64.zip",
+            "b1158bd10edf92c9799149a6fc5d3e58da3f495241d6fb3423088130e88ffbf3", 21715607, "b5454", TestedWhisperDate, "b5454 (OpenBLAS)"),
+        new(Whisper, WhisperAssetName, "ggml-org/whisper.cpp", "b5454", WhisperAssetName,
+            "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb", 8928640, "b5454", TestedWhisperDate, "b5454"),
+    ];
+
+    // The files a stand-in from outside the list may be: the same kind of build as the pinned one.
+    [GeneratedRegex(@"^ffmpeg-N-\d+-g[0-9a-f]+-win64-gpl\.zip$")]
+    private static partial Regex FfmpegMasterAssetRegex();
+
+    [GeneratedRegex(@"^ffmpeg-n8\.1(?:\.\d+)*(?:-\d+-g[0-9a-f]+)?-win64-gpl-8\.1\.zip$")]
+    private static partial Regex FfmpegOlderNvidiaAssetRegex();
 
     /// <summary>The speech models offered for download: English-only ones first (smaller and better for English), then multilingual.</summary>
     public static IReadOnlyList<string> WhisperModels { get; } =
@@ -128,10 +256,15 @@ public static partial class DependencyUpdater
 
     private const string VadModelUrl = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/" + VadModel;
 
-    private static readonly HttpClient Http = CreateClient(followRedirects: true);
+    // Made when first used, not with the class (which the window's view model touches before the first frame): making
+    // an HttpClient and its handler is a few milliseconds that nothing at start-up needs (Pass 4.1C).
+    private static readonly Lazy<HttpClient> LazyHttp = new(() => CreateClient(followRedirects: true));
+    private static readonly Lazy<HttpClient> LazyHttpNoRedirect = new(() => CreateClient(followRedirects: false));
+
+    private static HttpClient Http => LazyHttp.Value;
 
     // For asking where a download redirects to, and what the answer says about the file, without fetching it.
-    private static readonly HttpClient HttpNoRedirect = CreateClient(followRedirects: false);
+    private static HttpClient HttpNoRedirect => LazyHttpNoRedirect.Value;
 
     // ----- Where things are -----
 
@@ -244,8 +377,65 @@ public static partial class DependencyUpdater
         : LocalPrograms(tool).All(File.Exists) ? DependencyState.Installed
         : DependencyState.Missing;
 
-    /// <summary>True when the installed copy is not the build <paramref name="latest"/> describes.</summary>
-    public static bool IsOutdated(string tool, RemoteAsset latest) => ReadText(StampPath(ToolFolder(tool), tool)) != latest.Stamp;
+    /// <summary>
+    /// True when the installed copy should be replaced by <paramref name="latest"/>. For the newest release, when it is
+    /// not that build. For a pinned build, when the installed copy is none of the tool's pinned builds, or a better one
+    /// of them (the tested one, say, over a stand-in) is what is published now: a pinned build already installed is
+    /// never replaced by a stand-in because upstream has since let it go.
+    /// </summary>
+    public static bool IsOutdated(string tool, RemoteAsset latest)
+    {
+        var stamp = ReadText(StampPath(ToolFolder(tool), tool));
+        if (stamp == latest.Stamp)
+            return false;
+        if (latest.Pin == PinState.Unpinned)
+            return true;
+
+        return InstalledPinRank(tool, latest.Variant) is not { } rank || latest.PinRank < rank;
+    }
+
+    /// <summary>
+    /// Where the installed copy stands among the tool's pinned builds of a variant: its place in the list, <see cref="OutsideListRank"/>
+    /// for a stand-in from outside it, or null when it is none of them (the newest release, another variant, or nothing).
+    /// A copy put in before builds were pinned is recognised by the version it reports.
+    /// </summary>
+    public static int? InstalledPinRank(string tool, string variant)
+    {
+        var folder = ToolFolder(tool);
+        if (ReadText(StampPath(folder, tool)) is not { Length: > 0 } stamp)
+            return null;
+
+        var builds = PinnedFor(tool, variant);
+        var index = builds.FindIndex(b => stamp == PinStamp(b));
+        if (index >= 0)
+            return index;
+
+        // Installed from the newest release before there were pins: the same build, if it reports the same version. A
+        // whisper.cpp stamp named its kind of build (all but the plain one), and that has to be the kind wanted.
+        var version = ReadText(VersionPath(folder)) ?? "";
+        var parts = stamp.Split('|');
+        index = builds.FindIndex(b => b.Version == version
+                                      && (tool != Whisper || (parts.Length > 2 ? parts[^1] : WhisperAssetName) == b.Asset));
+        if (index >= 0)
+            return index;
+
+        return parts is [_, var asset, StandInMark] && IsVariantAsset(tool, variant, asset) ? OutsideListRank : null;
+    }
+
+    /// <summary>What the stamp of a pinned build says: its release and its file.</summary>
+    private static string PinStamp(PinnedBuild build) => $"{build.Tag}|{build.Asset}";
+
+    /// <summary>The pinned builds of a tool's variant, the tested one first.</summary>
+    private static List<PinnedBuild> PinnedFor(string tool, string variant) => PinnedBuilds.Where(b => b.Tool == tool && b.Variant == variant).ToList();
+
+    /// <summary>Whether a file of a release is the same kind of build as a variant's pinned ones: what a stand-in from outside the list may be.</summary>
+    private static bool IsVariantAsset(string tool, string variant, string name) => tool switch
+    {
+        Ffmpeg => variant == OlderNvidiaVariant ? FfmpegOlderNvidiaAssetRegex().IsMatch(name) : FfmpegMasterAssetRegex().IsMatch(name),
+        Mpv => MpvAssetRegex().IsMatch(name),
+        Whisper => name == variant,
+        _ => false,
+    };
 
     /// <summary>File names of the tools that are not installed yet.</summary>
     public static IReadOnlyList<string> GetMissing() =>
@@ -377,8 +567,199 @@ public static partial class DependencyUpdater
         _ => name is not null && WhisperAssetNames.Contains(name),
     };
 
+    /// <summary>
+    /// Whether the tool is installed from its pinned builds: FFmpeg, libmpv and whisper.cpp, unless the settings allow the
+    /// newest releases or name a release address of the user's own. yt-dlp never is.
+    /// </summary>
+    public static bool IsPinned(string tool) => tool != YtDlp && !AppSettings.Current.AllowUnpinnedDependencyUpdates && !HasOwnReleaseUrl(tool);
+
+    /// <summary>Whether the settings point a tool at a release address other than the default: the user's own source, used as it is.</summary>
+    private static bool HasOwnReleaseUrl(string tool) => tool switch
+    {
+        Ffmpeg => AppSettings.Current.FfmpegReleaseUrl.Trim() is { Length: > 0 } url && url != AppSettings.DefaultFfmpegReleaseUrl,
+        Whisper => AppSettings.Current.WhisperReleaseUrl.Trim() is { Length: > 0 } url && url != AppSettings.DefaultWhisperReleaseUrl,
+        _ => false,
+    };
+
+    /// <summary>The variants of a tool wanted on this computer, the best first: whisper.cpp's kinds of build, FFmpeg's for the driver.</summary>
+    private static IReadOnlyList<string> WantedVariants(string tool) => tool switch
+    {
+        Ffmpeg => [AppSettings.Current.UseFfmpegForOlderNvidiaDrivers ? OlderNvidiaVariant : ""],
+        Whisper => WhisperAssetNames.Where(name => PinnedBuilds.Any(b => b.Tool == Whisper && b.Variant == name)).ToList(),
+        _ => [""],
+    };
+
+    /// <summary>The build a pinned tool is tested with on this computer, for the dependency list; null for a tool that is not pinned.</summary>
+    public static PinnedBuild? TestedBuild(string tool) =>
+        IsPinned(tool) ? WantedVariants(tool).Select(v => PinnedFor(tool, v).FirstOrDefault()).FirstOrDefault(b => b is not null) : null;
+
+    /// <summary>Lets go of what GitHub was asked: for when the settings change which builds are wanted.</summary>
+    public static void ForgetAnswers()
+    {
+        lock (Answers)
+            Answers.Clear();
+    }
+
+    /// <summary>
+    /// The build Install / Update puts in: for a pinned tool (see <see cref="IsPinned"/>) the build HandPeg was tested
+    /// with, or a stand-in for it when upstream no longer publishes it; otherwise the newest release. Throws when it
+    /// cannot be reached or there is none.
+    /// </summary>
+    public static Task<RemoteAsset> GetLatestAsync(string tool, CancellationToken cancellationToken) =>
+        IsPinned(tool) ? GetPinnedAsync(tool, cancellationToken) : GetNewestAsync(tool, cancellationToken);
+
+    /// <summary>
+    /// The pinned build to install: the first of the wanted variant's list that is still published (on GitHub, or at its
+    /// mirror), else the dated build nearest the tested one. Asking whether a file is there is a HEAD on its download
+    /// address, which GitHub does not count against the API's hourly limit; only the search for a stand-in from outside
+    /// the list asks the API.
+    /// </summary>
+    private static async Task<RemoteAsset> GetPinnedAsync(string tool, CancellationToken cancellationToken)
+    {
+        var variants = WantedVariants(tool);
+        var answerKey = $"pinned|{tool}|{string.Join(",", variants)}";
+        lock (Answers)
+        {
+            if (Answers.TryGetValue(answerKey, out var kept) && DateTime.UtcNow - kept.At < AnswerLifetime)
+                return kept.Asset;
+        }
+
+        var found = await ResolvePinnedAsync(tool, PinnedBuilds, variants, cancellationToken);
+        if (found.Pin == PinState.StandIn)
+            AppLog.Write($"{DisplayName(tool)}: {found.Label} ({found.Tag}) stands in, because {found.Note}.");
+
+        lock (Answers)
+            Answers[answerKey] = (DateTime.UtcNow, found);
+        return found;
+    }
+
+    /// <summary>The first published build of the variants' lists in <paramref name="table"/>, else the dated build nearest the tested one; throws when there is neither.</summary>
+    private static async Task<RemoteAsset> ResolvePinnedAsync(string tool, IReadOnlyList<PinnedBuild> table, IReadOnlyList<string> variants, CancellationToken cancellationToken)
+    {
+        RemoteAsset? found = null;
+        foreach (var variant in variants)
+        {
+            var builds = table.Where(b => b.Tool == tool && b.Variant == variant).ToList();
+            for (var rank = 0; rank < builds.Count && found is null; rank++)
+            {
+                var build = builds[rank];
+                var url = await IsPublishedAsync(build.DownloadUrl, cancellationToken) ? build.DownloadUrl
+                    : build.Mirror is { } mirror && await IsPublishedAsync(mirror, cancellationToken) ? mirror
+                    : null;
+                if (url is null)
+                    continue;
+
+                found = new RemoteAsset(build.Asset, url, PinStamp(build), build.Tag, build.Size, build.Sha256, null)
+                {
+                    Pin = rank == 0 ? PinState.Pinned : PinState.StandIn,
+                    PinRank = rank,
+                    Variant = variant,
+                    Label = build.Label,
+                    Note = rank == 0 ? "" : $"the pinned {builds[0].Label} is no longer published",
+                };
+            }
+
+            if (found is not null)
+                break;
+        }
+
+        // Nothing on the list is published any more: the dated build nearest the tested one, of the kind most wanted.
+        foreach (var variant in variants)
+        {
+            if (found is not null)
+                break;
+            if (table.FirstOrDefault(b => b.Tool == tool && b.Variant == variant) is { } tested)
+                found = await FindNearestAsync(tool, variant, tested, cancellationToken);
+        }
+
+        if (found is null)
+        {
+            var tested = table.FirstOrDefault(b => b.Tool == tool && variants.Contains(b.Variant));
+            throw new InvalidOperationException($"The {DisplayName(tool)} build this version of HandPeg was tested with ({tested?.Label}) is no longer published, and no build "
+                                                + "stands in for it. Settings, General: allowing untested dependency updates installs the newest release instead.");
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// Whether a file is still published: asked with a HEAD that does not follow the redirect to the file itself. Gone (404 or
+    /// 410) is false; any other refusal is not taken for an answer and throws, so that a server's bad moment never makes a
+    /// stand-in of a build that is still there.
+    /// </summary>
+    private static async Task<bool> IsPublishedAsync(string url, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Head, url);
+        request.Headers.Accept.ParseAdd("*/*");
+        using var response = await HttpNoRedirect.SendAsync(request, cancellationToken);
+        var status = (int)response.StatusCode;
+        return status switch
+        {
+            >= 200 and < 400 => true,
+            404 or 410 => false,
+            _ => throw new InvalidOperationException($"{new Uri(url).Host} answered {status} ({response.ReasonPhrase}) when asked for {Path.GetFileName(new Uri(url).AbsolutePath)}"),
+        };
+    }
+
+    /// <summary>
+    /// The dated release of the pinned build's repository nearest the tested one that has the same kind of build, as a
+    /// stand-in from outside the list; null when there is none. Checked against the SHA-256 GitHub publishes for it.
+    /// </summary>
+    private static async Task<RemoteAsset?> FindNearestAsync(string tool, string variant, PinnedBuild tested, CancellationToken cancellationToken)
+    {
+        var listUrl = $"https://api.github.com/repos/{tested.Repository}/releases?per_page=100";
+        using var response = await Http.GetAsync(listUrl, cancellationToken);
+        if ((int)response.StatusCode is 403 or 429)
+            throw new InvalidOperationException("GitHub's hourly limit for update checks has been reached; try again in a while");
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"GitHub returned {(int)response.StatusCode} ({response.ReasonPhrase}) for {listUrl}");
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+        RemoteAsset? nearest = null;
+        var distance = TimeSpan.MaxValue;
+        foreach (var release in json.RootElement.EnumerateArray())
+        {
+            // The rolling release is the newest build under a name that never changes: not a dated one.
+            var tag = release.GetProperty("tag_name").GetString() ?? "";
+            if (tag == "latest" || !release.TryGetProperty("published_at", out var publishedValue) || !publishedValue.TryGetDateTime(out var published))
+                continue;
+
+            var away = (published.ToUniversalTime() - tested.Published).Duration();
+            if (away >= distance)
+                continue;
+
+            var assets = release.GetProperty("assets").EnumerateArray().ToList();
+            var sums = assets.FirstOrDefault(a => SumsAssetNames.Contains(a.GetProperty("name").GetString()));
+            foreach (var asset in assets)
+            {
+                var name = asset.GetProperty("name").GetString() ?? "";
+                if (!IsVariantAsset(tool, variant, name))
+                    continue;
+
+                // Releases from before GitHub published digests are checked against their checksum list, where they have one.
+                var digest = asset.TryGetProperty("digest", out var digestValue) && digestValue.ValueKind == JsonValueKind.String ? digestValue.GetString() : null;
+                nearest = new RemoteAsset(name, asset.GetProperty("browser_download_url").GetString()!, $"{tag}|{name}|{StandInMark}", tag,
+                    asset.TryGetProperty("size", out var sizeValue) && sizeValue.TryGetInt64(out var bytes) ? bytes : 0,
+                    digest is not null && digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) ? digest[7..] : null,
+                    sums.ValueKind == JsonValueKind.Object ? sums.GetProperty("browser_download_url").GetString() : null)
+                {
+                    Pin = PinState.StandIn,
+                    Variant = variant,
+                    Label = tag,
+                    Note = $"the pinned {tested.Label} and the builds listed after it are no longer published, and {tag} is the nearest to it",
+                };
+                distance = away;
+                break;
+            }
+        }
+
+        return nearest;
+    }
+
     /// <summary>Asks GitHub for the newest build of a tool. Throws when it cannot be reached or has none.</summary>
-    public static async Task<RemoteAsset> GetLatestAsync(string tool, CancellationToken cancellationToken)
+    private static async Task<RemoteAsset> GetNewestAsync(string tool, CancellationToken cancellationToken)
     {
         var releaseUrl = ReleaseUrl(tool);
 
@@ -439,7 +820,7 @@ public static partial class DependencyUpdater
             var sums = assets.FirstOrDefault(a => SumsAssetNames.Contains(a.GetProperty("name").GetString()));
             var sumsUrl = sums.ValueKind == JsonValueKind.Object ? sums.GetProperty("browser_download_url").GetString() : null;
 
-            var found = new RemoteAsset(assetName, url, stamp, tag, size, sha256, sumsUrl);
+            var found = new RemoteAsset(assetName, url, stamp, tag, size, sha256, sumsUrl) { Label = tag };
             lock (Answers)
                 Answers[answerKey] = (DateTime.UtcNow, found);
             return found;
@@ -450,9 +831,9 @@ public static partial class DependencyUpdater
 
     /// <summary>
     /// Quietly checks whether Install/Update would have anything to do for the tools everything depends on:
-    /// yt-dlp or FFmpeg is missing, or its release is newer than the installed one. Tools replaced by a path
-    /// from the settings are not checked. A failed check (offline, rate limited) reports false rather than
-    /// raising an alarm.
+    /// yt-dlp, FFmpeg or libmpv is missing, or is not the build Install/Update puts in (the pinned build, or the newest
+    /// release where builds are not pinned). Tools replaced by a path from the settings are not checked. A failed check
+    /// (offline, rate limited) reports false rather than raising an alarm.
     /// </summary>
     public static async Task<bool> CheckForUpdatesAsync(CancellationToken cancellationToken)
     {
@@ -540,7 +921,13 @@ public static partial class DependencyUpdater
                 SwapLibrary(fresh, ToolFolder(tool));
             else
                 Swap(fresh, ToolFolder(tool), parked, name);
-            AppLog.Write($"Installed {name} {asset.Tag} ({(expected is null ? "no checksum published" : "SHA-256 verified")}).");
+            var kind = asset.Pin switch
+            {
+                PinState.Pinned => "the pinned build",
+                PinState.StandIn => $"a stand-in: {asset.Note}",
+                _ => "the newest release",
+            };
+            AppLog.Write($"Installed {name} {asset.Label} {asset.Name}, {kind} ({(expected is null ? "no checksum published" : "SHA-256 verified")}).");
         }
         finally
         {
@@ -785,7 +1172,7 @@ public static partial class DependencyUpdater
     private static void Verify(string label, string actual, string? expected)
     {
         if (expected is not null && !actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException($"The download of {label} does not match its published checksum, and was thrown away.");
+            throw new InvalidDataException($"The download of {label} does not match its checksum, and was thrown away.");
     }
 
     /// <summary>Looks the file up in the checksum list attached to its release, when there is one.</summary>

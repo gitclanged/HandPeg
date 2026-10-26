@@ -12,6 +12,9 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         Services.StartupTrace.Mark("App.OnStartup");
+
+        // Exceptions that escape the window's thread are reported (and still end the process, as they always have).
+        Services.CrashReporter.WatchDispatcher(Dispatcher);
         LogBindingErrors();
         if (Environment.GetEnvironmentVariable("HANDPEG_LOG_STALLS") == "1")
             WatchForStalls(Dispatcher);
@@ -26,6 +29,7 @@ public partial class App : Application
         // the mode before the main window (named as StartupUri) is created with them.
         if (!Services.AppSettings.Current.FirstRunComplete)
         {
+            Services.CrashReporter.Note("app", "first-run window");
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             new FirstRunWindow().ShowDialog();
             ShutdownMode = ShutdownMode.OnMainWindowClose;
@@ -37,11 +41,27 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        Services.CrashReporter.Note("app", "exit");
         Services.Notifier.Dispose();
 
         // An update that was downloaded but not restarted into goes in once this process has gone.
         Services.AppUpdater.ApplyOnExit();
         base.OnExit(e);
+
+        // An ordinary way out (the window closed, or a restart into an update): the crash sentinel has nothing to write.
+        Services.CrashReporter.MarkCleanExit();
+    }
+
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        base.OnSessionEnding(e);
+
+        // Windows is signing out or shutting down, and may end HandPeg before OnExit is reached: that is no crash.
+        if (!e.Cancel)
+        {
+            Services.CrashReporter.Note("app", "session ending: " + e.ReasonSessionEnding);
+            Services.CrashReporter.MarkCleanExit();
+        }
     }
 
     /// <summary>

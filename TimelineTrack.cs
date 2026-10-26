@@ -16,6 +16,15 @@ public abstract class TimelineBar : FrameworkElement
     public static readonly DependencyProperty BackgroundProperty = DependencyProperty.Register(
         nameof(Background), typeof(Brush), typeof(TimelineBar), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
+    public static readonly DependencyProperty BorderBrushProperty = DependencyProperty.Register(
+        nameof(BorderBrush), typeof(Brush), typeof(TimelineBar), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public static readonly DependencyProperty LowerBorderBrushProperty = DependencyProperty.Register(
+        nameof(LowerBorderBrush), typeof(Brush), typeof(TimelineBar), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public static readonly DependencyProperty BorderThicknessProperty = DependencyProperty.Register(
+        nameof(BorderThickness), typeof(Thickness), typeof(TimelineBar), new FrameworkPropertyMetadata(new Thickness(), FrameworkPropertyMetadataOptions.AffectsRender));
+
     protected static readonly Pen KeyOutline = Frozen(new Pen(Brushes.Black, 0.7));
 
     private readonly DrawingVisual _playhead = new();
@@ -33,6 +42,30 @@ public abstract class TimelineBar : FrameworkElement
     {
         get => (Brush?)GetValue(BackgroundProperty);
         set => SetValue(BackgroundProperty, value);
+    }
+
+    /// <summary>
+    /// The well's sunken edge (Pass 4.1C.2: the theme's WellBorderBrush along the top and left), drawn over the background
+    /// and under everything else. It takes no room: blocks and times are where they were.
+    /// </summary>
+    public Brush? BorderBrush
+    {
+        get => (Brush?)GetValue(BorderBrushProperty);
+        set => SetValue(BorderBrushProperty, value);
+    }
+
+    /// <summary>The edge's bottom and right (WellBorderLowerBrush); null for one colour all round.</summary>
+    public Brush? LowerBorderBrush
+    {
+        get => (Brush?)GetValue(LowerBorderBrushProperty);
+        set => SetValue(LowerBorderBrushProperty, value);
+    }
+
+    /// <summary>The edge's width (its top is used for all four sides); 0, as in the flat themes, draws none.</summary>
+    public Thickness BorderThickness
+    {
+        get => (Thickness)GetValue(BorderThicknessProperty);
+        set => SetValue(BorderThicknessProperty, value);
     }
 
     /// <summary>Where the playhead is, in pixels from the left; NaN for none.</summary>
@@ -72,8 +105,53 @@ public abstract class TimelineBar : FrameworkElement
             _playhead.Offset = new Vector(_playheadX, 0);
     }
 
-    protected void DrawBackground(DrawingContext drawing) =>
-        drawing.DrawRectangle(Background ?? Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));
+    // The edge's pens, kept while their brush and width stay (the theme's brushes are frozen: the same brush is the same look).
+    private Pen? _edgePen, _lowerEdgePen;
+
+    // Square ends: each half of a lit edge covers its corners whole, the lower half (drawn last) taking the two it shares.
+    private static Pen EdgePen(ref Pen? kept, Brush brush, double width)
+    {
+        if (kept is null || !ReferenceEquals(kept.Brush, brush) || kept.Thickness != width)
+            kept = Frozen(new Pen(brush, width) { StartLineCap = PenLineCap.Square, EndLineCap = PenLineCap.Square });
+        return kept;
+    }
+
+    protected void DrawBackground(DrawingContext drawing)
+    {
+        var (width, height) = (ActualWidth, ActualHeight);
+        drawing.DrawRectangle(Background ?? Brushes.Transparent, null, new Rect(0, 0, width, height));
+
+        var edge = BorderThickness.Top;
+        if (edge <= 0 || BorderBrush is not { } brush || width <= 2 * edge || height <= 2 * edge)
+            return;
+
+        // On whole device pixels, as the buttons' edges are (ButtonChrome); along the edge's centre line.
+        var guidelines = new GuidelineSet([0, width], [0, height]);
+        guidelines.Freeze();
+        drawing.PushGuidelineSet(guidelines);
+        var (left, top, right, bottom) = (edge / 2, edge / 2, width - edge / 2, height - edge / 2);
+        if (LowerBorderBrush is { } lower && !ReferenceEquals(lower, brush))
+        {
+            drawing.DrawGeometry(null, EdgePen(ref _edgePen, brush, edge), Frozen(Polyline(new(left, bottom), new(left, top), new(right, top))));
+            drawing.DrawGeometry(null, EdgePen(ref _lowerEdgePen, lower, edge), Frozen(Polyline(new(right, top), new(right, bottom), new(left, bottom))));
+        }
+        else
+        {
+            drawing.DrawRectangle(null, EdgePen(ref _edgePen, brush, edge), new Rect(left, top, right - left, bottom - top));
+        }
+
+        drawing.Pop();
+    }
+
+    private static StreamGeometry Polyline(Point from, Point corner, Point to)
+    {
+        var line = new StreamGeometry();
+        using var path = line.Open();
+        path.BeginFigure(from, false, false);
+        path.LineTo(corner, true, false);
+        path.LineTo(to, true, false);
+        return line;
+    }
 
     /// <summary>A keyframe's diamond, centred on a point.</summary>
     protected static void DrawDiamond(DrawingContext drawing, double x, double y, double radius) =>

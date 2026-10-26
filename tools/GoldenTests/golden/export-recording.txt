@@ -1,0 +1,56 @@
+# A clip of an MPEG-TS recording (its clock starts at 1.4 s), cut into and played at double speed, with its sound.
+# reads the cuts list: no; the chapters list: no
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -i
+  D:/media/main.mp4
+  -filter_complex <graph 1>
+  -map
+  0:v:0
+  -map
+  [amixed0]
+  -vf <graph 2>
+  -c:v
+  libx264
+  -preset
+  medium
+  -crf
+  23
+  -pix_fmt
+  yuv420p
+  -metadata:s:a:0
+  title=Track 1
+  -c:a:0
+  aac
+  -b:a:0
+  160k
+  -map_chapters
+  -1
+  D:/out/recording.mp4
+
+graph 1 (-filter_complex): 2 chains, 220 characters
+  1| amovie='D\:/media/recording.ts'
+   |   ,atrim=start=6.433:end=46.433
+   |   ,asetpts=PTS-6.433/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,atempo=2
+   |   ,adelay=30000:all=1[alayer0]
+  2| [0:a:0][alayer0]amix=inputs=2:duration=first:normalize=0[amixed0]
+
+graph 2 (-vf): 6 chains, 411 characters
+  1| null[center_in]
+  2| color=c=black:s=1920x1080:r=30:d=120
+   |   ,format=yuv420p[stage0]
+  3| [center_in]scale=1920:1080
+   |   ,format=yuva420p[center_layer]
+  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
+  5| movie='D\:/media/recording.ts':sp=4
+   |   ,trim=start=6.433:end=46.433
+   |   ,setpts=(PTS-6.433/TB)/2+30/TB
+   |   ,scale=960:540
+   |   ,format=yuva420p[ui1_layer]
+  6| [stage1][ui1_layer]overlay=192:432:eof_action=pass:enable='between(t,30,50)'
+   |   ,setsar=1

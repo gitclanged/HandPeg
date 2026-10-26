@@ -1029,19 +1029,24 @@ public sealed class DockManager
         FrameworkElement tab;
         if (boxed)
         {
-            // In the main tab bar: the classic boxed tab (the app's TabItem look), joined to the panel below while shown.
+            // In the main tab bar: the classic boxed tab (the app's TabItem look), joined to the panel below while shown and
+            // traced along its top edge (the theme's ActiveTabTraceBrush, 2 px; every tab keeps the room for it).
             text.SetResourceReference(TextBlock.ForegroundProperty, active ? "TextBrush" : "MutedTextBrush");
             var border = new PaneTab(byKey =>
             {
                 _focusTabOf = byKey && !active ? pane : null;
                 Activate(pane);
-            }, active) { Child = text, Padding = new Thickness(16, 8, 16, 8), Margin = new Thickness(0, 0, 2, 0), CornerRadius = new CornerRadius(6, 6, 0, 0) };
+            }, active) { Child = text, Padding = new Thickness(16, 6, 16, 8), Margin = new Thickness(0, 0, 2, 0), BorderThickness = new Thickness(0, 2, 0, 0) };
+            border.SetResourceReference(Border.CornerRadiusProperty, "TabCornerRadius");
             if (active)
             {
                 border.SetResourceReference(Border.BackgroundProperty, "PanelBrush");
+                border.SetResourceReference(Border.BorderBrushProperty, "ActiveTabTraceBrush");
             }
             else
             {
+                // The tabs not shown: the theme's InactiveTabBrush (open to what is behind them in most themes; Reno's darker stone).
+                border.SetResourceReference(Border.BackgroundProperty, "InactiveTabBrush");
                 border.MouseEnter += (_, _) => text.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
                 border.MouseLeave += (_, _) => text.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
             }
@@ -1062,7 +1067,7 @@ public sealed class DockManager
                 text.LayoutTransform = new RotateTransform(90);
             var border = new Border { Child = text, Padding = upright ? new Thickness(2, 9, 3, 9) : new Thickness(9, 2, 9, 3), CornerRadius = new CornerRadius(0, 0, 5, 0), BorderThickness = new Thickness(0, 0, 1, 1) };
             border.SetResourceReference(Border.BackgroundProperty, "PanelBrush");
-            border.SetResourceReference(Border.BorderBrushProperty, "AccentBrush");
+            border.SetResourceReference(Border.BorderBrushProperty, "ActiveTabTraceBrush");
             text.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
             tab = border;
         }
@@ -1077,7 +1082,7 @@ public sealed class DockManager
                 _focusTabOf = byKey && !active ? pane : null;
                 Activate(pane);
             }, active) { Child = text, Padding = new Thickness(0, 0, 0, 2), Margin = new Thickness(0, 0, 14, 0), BorderThickness = new Thickness(0, 0, 0, active ? 2 : 0) };
-            border.SetResourceReference(Border.BorderBrushProperty, "AccentBrush");
+            border.SetResourceReference(Border.BorderBrushProperty, "ActiveTabTraceBrush");
             if (active && _focusTabOf == pane)
             {
                 _focusTabOf = null;
@@ -1204,8 +1209,12 @@ public sealed class DockManager
             Add($"Close {info.Title}", close);
         menu.Items.Add(new Separator());
         Add("Reset Panes Layout", Reset);
+        ExtendTabMenu?.Invoke(menu);
         menu.IsOpen = true;
     }
+
+    /// <summary>Adds the window's own items to a tab's right-click menu (the main window's Tabs and Panes list).</summary>
+    public Action<ContextMenu>? ExtendTabMenu { get; set; }
 
     // ----- Dragging a pane -----
 
@@ -1569,6 +1578,17 @@ public sealed class DockManager
 
     /// <summary>An arrangement as it would be taken up now (panes no longer known left out, missing ones put in, the side window as it is): to preview and draw.</summary>
     public DockLayoutState Prepared(DockLayoutState layout) => KeepingSideWindow(layout);
+
+    /// <summary>
+    /// Whether two arrangements lay the main window out alike: the same panes in the same groups, in the same splits
+    /// the same way round. How wide each part is, which tab is shown and the tabs' order do not count (the Layout
+    /// Selector's mark of the layout in use, Pass 4.1C: dragging a splitter or a tab does not make it another layout).
+    /// </summary>
+    public static bool SameShape(DockLayoutState a, DockLayoutState b) => Shape(a.Main) == Shape(b.Main);
+
+    private static string Shape(DockNode node) => node.IsGroup
+        ? "[" + string.Join(",", node.Panes.Order(StringComparer.Ordinal)) + "]"
+        : (node.Vertical ? "V(" : "H(") + string.Join(";", node.Children.Select(Shape)) + ")";
 
     /// <summary>
     /// An arrangement for the main window with the side window as it is now: the panes the side window holds stay there

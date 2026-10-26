@@ -3,6 +3,38 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v4.1.0
+
+### Highlights
+- **Sound and picture stay in step after every seek.** Live Preview now counts every sound in the mix on the sequence's own clock, cuts a layer's sound exactly where its picture is cut, and gives each proxy its own clock, so seeking anywhere in a long multi-video timeline (with or without proxies) plays in sync, within a frame. Proxies are now made at a constant frame rate, which fixes drift on recordings with variable or clustered time stamps.
+- **Five themes with a look of their own.** Windows System, OLED Black (true black), Leonardo (a dark grading studio with one coral line tracing what is active), Reno (a warm pewter studio light with squared, embossed buttons and lit edges) and Reno Dark (gunmetal, embossed, steel blue). Pick one from the Themes row under the Layout button and see it at once. The active tab is traced in every theme.
+- **The Layout button, turned around.** Resting on it opens the Layout Selector: a card per layout, the window taking each one as you point at it, with the layout and the theme in use marked. A click opens the menu (side window, built-in and saved layouts, Save Current Layout, Reset Layout).
+- **One Export tab.** Video, Audio, Output and Chapters settings, with Save As, Start Encode and Add to Queue, in one tab (on by default in Editor Mode, where Video, Audio and Chapters start hidden). It is the last tab before Command Preview.
+- **More room for the picture.** A slim 32 px title bar of HandPeg's own, where an export's progress is a dimmed fill across its full width with the status centred over it. The status bar can be hidden from its right-click menu. **Tabs and Panes** (the Views menu, or right-click any tab) is one list to show or hide every tab and pane.
+- **Faster to launch.** About 0.5 s to the first frame in Release builds (0.6 s in 4.0), and the busy "working in background" pointer that spun for about 5 seconds after launch is gone.
+- **Crash reports with no personal data.** If HandPeg falls over, it writes a small plain-text report (the error, the parts of HandPeg that were running, its last steps, the kind of media and of computer) with no file names, paths, user names, serial numbers or words from your media. A tiny watcher process catches crashes in libmpv and graphics drivers too. Reports stay on your PC and are never sent anywhere: attach one to a GitHub issue to share it. Settings > General > Diagnostics (and the new Privacy Policy) shows them, opens their folder, clears them, or switches them off.
+
+### New
+- **Pinned engines:** FFmpeg, libmpv and whisper.cpp install and update only to builds tested with this version of HandPeg (checked by SHA-256). Settings can allow newer untested builds behind a warning, and Tools & Backup has Restore Pinned Recommended Versions. yt-dlp still follows its newest release.
+- **Project format 3** (`.hproj`), with the version of HandPeg that wrote it. Projects from HandPeg 1.x (`.txt`) are brought over; a project from a newer HandPeg is never read as if it were known (it offers to open it read-only, for Save As).
+- **Portable copy:** the portable zip keeps all of its data beside `HandPeg.exe`; on its first start it copies your installed settings, presets, projects and styles.
+- HandPeg is now under the MIT license (`LICENSE`).
+
+### Changed
+- A project or file opened in Editor Mode waits, paused, on its first frame instead of playing.
+- Long filter graphs go to FFmpeg in a file, so very large timelines never run into Windows' command-line limit.
+- Buttons, fields, lists and tabs follow the theme's look everywhere (corners, outlines, bevels, hover and selection colours).
+- The mode switch is an icon button.
+
+### Fixed
+- Sound could play ahead of the picture, or drop out, after a seek in timelines with several videos.
+- A layer's sound could start from the wrong moment of its file.
+- Proxies of variable-frame-rate recordings drifted against the original over long files.
+- The maximized window now fits the screen's work area exactly.
+
+### Compatibility
+- Projects from 4.0 and 3.x open in 4.1. Projects saved by 4.1 are format 3: open them in 4.1 or later.
+
 ## HandPeg v4.0.0
 
 ### Highlights

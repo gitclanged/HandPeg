@@ -1,0 +1,80 @@
+# A crossfade between two clips of one track (laid over each other across the cut) and one across tracks (the lower keeps its picture).
+# reads the cuts list: no; the chapters list: no
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -i
+  D:/media/main.mp4
+  -filter_complex <graph 1>
+  -map
+  0:v:0
+  -map
+  [amixed0]
+  -vf <graph 2>
+  -c:v
+  libx264
+  -preset
+  medium
+  -crf
+  23
+  -pix_fmt
+  yuv420p
+  -metadata:s:a:0
+  title=Track 1
+  -c:a:0
+  aac
+  -b:a:0
+  160k
+  -map_chapters
+  -1
+  D:/out/crossfade.mp4
+
+graph 1 (-filter_complex): 3 chains, 365 characters
+  1| amovie='D\:/media/clip2.mp4'
+   |   ,atrim=start=2:end=12.5
+   |   ,asetpts=PTS-2/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,afade=t=out:st=9.5:d=1[alayer0]
+  2| amovie='D\:/media/clip3.mp4'
+   |   ,atrim=start=4.5:end=15
+   |   ,asetpts=PTS-4.5/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,afade=t=in:st=0:d=1
+   |   ,adelay=9500:all=1[alayer1]
+  3| [0:a:0][alayer0][alayer1]amix=inputs=3:duration=first:normalize=0[amixed0]
+
+graph 2 (-vf): 12 chains, 1032 characters
+  1| null[center_in]
+  2| color=c=black:s=1920x1080:r=30:d=120
+   |   ,format=yuv420p[stage0]
+  3| [center_in]scale=1920:1080
+   |   ,format=yuva420p[center_layer]
+  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
+  5| movie='D\:/media/clip2.mp4':sp=1
+   |   ,trim=start=2:end=12.5
+   |   ,setpts=PTS-2/TB
+   |   ,scale=960:540
+   |   ,format=yuva420p[ui1_layer]
+  6| [stage1][ui1_layer]overlay=0:0:eof_action=pass:enable='between(t,0,10.5)'[stage2]
+  7| movie='D\:/media/clip3.mp4':sp=3.5
+   |   ,trim=start=4.5:end=15
+   |   ,setpts=PTS+5/TB
+   |   ,scale=960:540
+   |   ,format=yuva420p
+   |   ,fade=t=in:st=9.5:d=1:alpha=1:enable='between(t,9.5,10.5)'[ui2_layer]
+  8| [stage2][ui2_layer]overlay=0:0:eof_action=pass:enable='between(t,9.5,20)'[stage3]
+  9| movie='D\:/media/lower.png'
+   |   ,scale=768:432
+   |   ,format=yuva420p[ui3_layer]
+ 10| [stage3][ui3_layer]overlay=960:540:enable='between(t,8,16)'[stage4]
+ 11| movie='D\:/media/upper.png'
+   |   ,scale=768:432
+   |   ,format=yuva420p
+   |   ,loop=loop=-1:size=1
+   |   ,setpts=N/(30*TB)
+   |   ,format=yuva420p
+   |   ,fade=t=in:st=15:d=1:alpha=1:enable='between(t,15,16)'[ui4_layer]
+ 12| [stage4][ui4_layer]overlay=960:540:shortest=1:enable='between(t,15,23)'
+   |   ,setsar=1

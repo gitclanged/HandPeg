@@ -50,7 +50,7 @@ public partial class MainWindow
         // The player floats over its place (DockPane.Floats): the panes are laid out again around it, and its video never blinks.
         Add("Player", "Player", PlayerPane, PaneHandle.Hover, minWidth: () => 320, minHeight: 180, hoverHost: PlayerOverlay, floats: true);
         Add("Playback", "Playback Controls", TransportRow, PaneHandle.Hover, fits: true, shown: () => _viewModel.ShowAdvancedPlayback, minWidth: () => 300);
-        Add("Timeline", "Master Timeline", TimelinePane, PaneHandle.Hover, fits: true, minWidth: () => 300, resize: ResizeMasterTimeline);
+        Add("Timeline", "Master Timeline", TimelinePane, PaneHandle.Hover, fits: true, shown: () => AppSettings.Current.ShowMasterTimeline, minWidth: () => 300, resize: ResizeMasterTimeline);
         Add("Layout", "Layout", LayoutPane, shown: () => _viewModel.IsArrangeActive, close: () => _viewModel.IsArrangeActive = false, minWidth: () => 200);
         Add("Header", "Header", EditorHeader, PaneHandle.Hover, fits: true, shown: () => _viewModel.IsEditorMode, minWidth: HeaderWidth,
             reshape: ApplyHeaderShape, joinsBelow: true);
@@ -61,19 +61,24 @@ public partial class MainWindow
         Add("Presets", "Preset Bar", PresetBarPane, PaneHandle.Hover, fits: true, shown: () => _viewModel.ShowPresetBarAtTop);
 
         // The settings tabs: each a pane with a tab, made when first shown (RealizeTabContent), shown while its tab would be.
-        UpdateTabVisibility();
+        // Video, Audio and Chapters are a box each, their contents moved between it and the Export tab (MainWindow.Export.cs).
         foreach (var tab in SettingsTabs.Items.OfType<TabItem>())
         {
             var title = tab.Header as string ?? "Tab";
             var id = "Tab:" + title;
             _tabPanes.Add((id, tab));
+            Func<FrameworkElement> content = id == ExportId ? ExportContent : IsSection(id) ? () => SectionSlot(id) : () => RealizeTabContent(tab);
             _dock.Register(new DockPane
             {
-                Id = id, Title = title, Handle = PaneHandle.Tab, Content = () => RealizeTabContent(tab),
+                Id = id, Title = title, Handle = PaneHandle.Tab, Content = content,
                 IsShown = () => tab.Visibility == Visibility.Visible, MinWidth = () => 300, MinHeight = 140,
             });
-            DependencyPropertyDescriptor.FromProperty(VisibilityProperty, typeof(TabItem)).AddValueChanged(tab, (_, _) => _dock.ScheduleRebuild());
         }
+
+        UpdateTabVisibility();
+        foreach (var (_, tab) in _tabPanes)
+            DependencyPropertyDescriptor.FromProperty(VisibilityProperty, typeof(TabItem)).AddValueChanged(tab, (_, _) => _dock.ScheduleRebuild());
+        _dock.ExtendTabMenu = AddTabsAndPanesMenu;
 
         _dock.Changed += () => _viewModel.SavePaneLayout(s => s.DockLayout = _dock.Save());
         _dock.SideChanged += () =>
@@ -105,17 +110,18 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The settings tabs that a mode or a setting leaves out (Layers is Editor Mode's, Chapters Encoder Mode's, Command
-    /// Preview the setting's), as the view model says. Set here, before the panes are first laid out, not bound in the
-    /// XAML: a binding there is attached only once the window is up, so the first frame had the other mode's tab in its
-    /// bar and the next frame took it away.
+    /// The settings tabs that a mode or a setting leaves out (Layers is Editor Mode's, Command Preview the setting's, and
+    /// each mode's Tabs and Panes choices: Editor Mode starts with Export instead of Video, Audio and Chapters), then
+    /// where the sections and the destination bar go (MainWindow.Export.cs). Set here, before the panes are first laid
+    /// out, not bound in the XAML: a binding there is attached only once the window is up, so the first frame had the
+    /// other mode's tab in its bar and the next frame took it away.
     /// </summary>
     private void UpdateTabVisibility()
     {
-        static Visibility Shown(bool shown) => shown ? Visibility.Visible : Visibility.Collapsed;
-        LayersTab.Visibility = Shown(_viewModel.IsEditorMode);
-        ChaptersTab.Visibility = Shown(_viewModel.IsEncoderMode);
-        CommandPreviewTab.Visibility = Shown(_viewModel.ShowCommandPreviewTab);
+        foreach (var (id, tab) in _tabPanes)
+            tab.Visibility = TabWanted(id) ? Visibility.Visible : Visibility.Collapsed;
+        PlaceSections();
+        PlaceDestinationBar();
     }
 
     /// <summary>
@@ -163,9 +169,6 @@ public partial class MainWindow
             (button.Width, button.Height) = column ? (32, 32) : (double.NaN, double.NaN);
             button.Padding = column ? new Thickness(0) : _headerPadding[button];
         }
-
-        ModeButton.MinWidth = column ? 0 : 84;
-        ModeButtonLabel.Visibility = column ? Visibility.Collapsed : Visibility.Visible;
     }
 
     /// <summary>The border beside the master timeline, dragged: the timeline's height setting, four pixels a step.</summary>
@@ -235,18 +238,44 @@ public partial class MainWindow
     private void RealizeTabsWhenIdle()
     {
         if (_tabPanes.FirstOrDefault(t => !_dock.IsRealized(t.Id)) is not { Id: { } next })
+        {
+            GiveBackStartupMemory();
             return;
+        }
 
         _dock.Realize(next);
         Dispatcher.BeginInvoke(RealizeTabsWhenIdle, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
     }
+
+    /// <summary>
+    /// The start's warm-up is over (every tab made): what it took and let go is given back to the system once, away
+    /// from the interface's thread (v4.1.0). A start allocates little after its first frame, so the collector would not
+    /// run again for a long while and kept about 40 MB of the start's garbage committed: 10 s after the first frame
+    /// HandPeg read 212 to 215 MB where the collection leaves it under 200 (the Media pane did the same by chance in
+    /// 4.0, after making its pictures). Done once per start, at ApplicationIdle, as the Media pane's GiveBackMemory.
+    /// </summary>
+    private void GiveBackStartupMemory()
+    {
+        if (_startupMemoryGivenBack)
+            return;
+
+        _startupMemoryGivenBack = true;
+        Task.Run(() =>
+        {
+            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        });
+    }
+
+    private bool _startupMemoryGivenBack;
 
     // ----- The side window -----
 
     /// <summary>The Layout flyout's Side Window row: opens the side window, or closes it (its panes come back).</summary>
     private void SideWindowRow_Click(object sender, RoutedEventArgs e)
     {
-        _layoutHover.Close();
+        CloseLayoutMenu();
         _dock.SetSideOpen(!_dock.IsSideOpen);
         UpdateSideWindowCheck();
         _viewModel.StatusText = _dock.IsSideOpen

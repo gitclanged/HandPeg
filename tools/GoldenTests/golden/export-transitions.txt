@@ -1,0 +1,83 @@
+# Fades in and out in each family of style: dissolve, wipe, slide, zoom, blur dissolve; the main video fading too.
+# reads the cuts list: no; the chapters list: no
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -i
+  D:/media/main.mp4
+  -filter_complex <graph 1>
+  -map
+  0:v:0
+  -map
+  [aedit0]
+  -vf <graph 2>
+  -c:v
+  libx264
+  -preset
+  medium
+  -crf
+  23
+  -pix_fmt
+  yuv420p
+  -metadata:s:a:0
+  title=Track 1
+  -c:a:0
+  aac
+  -b:a:0
+  160k
+  -map_chapters
+  -1
+  D:/out/transitions.mp4
+
+graph 1 (-filter_complex): 1 chains, 48 characters
+  1| [0:a:0]atrim=end=60
+   |   ,asetpts=PTS-STARTPTS[aedit0]
+
+graph 2 (-vf): 14 chains, 3047 characters
+  1| trim=end=60
+   |   ,setpts=PTS-STARTPTS
+   |   ,null[center_in]
+  2| color=c=black:s=1920x1080:r=30:d=60
+   |   ,format=yuv420p[stage0]
+  3| [center_in]scale=1920:1080
+   |   ,format=yuva420p[center_layer]
+  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
+  5| movie='D\:/media/clip2.mp4'
+   |   ,trim=start=1:end=11
+   |   ,setpts=PTS+4/TB
+   |   ,scale=768:432
+   |   ,format=yuva420p
+   |   ,split[ui1_tf][ui1_tfa_in]
+  6| [ui1_tfa_in]alphaextract
+   |   ,geq=lum='lum(X,Y)*clip(((W+15)*((1-cos((1-clip((T-13.5)/1.5,0,1))*PI))/2)-X)/15,0,1)':enable='between(t,13.5,15)'[ui1_tfa]
+  7| [ui1_tf][ui1_tfa]alphamerge
+   |   ,fade=t=in:st=5:d=1:alpha=1:enable='between(t,5,6)'[ui1_layer]
+  8| [stage1][ui1_layer]overlay=96:54:eof_action=pass:enable='between(t,5,15)'[stage2]
+  9| movie='D\:/media/still.png'
+   |   ,scale=860:484
+   |   ,format=yuva420p
+   |   ,loop=loop=-1:size=1
+   |   ,setpts=N/(30*TB)
+   |   ,format=yuva420p
+   |   ,fade=t=out:st=17.8:d=0.2:alpha=1:enable='between(t,17.8,18)'
+   |   ,scale=w='max(2,trunc((768)*(1-(1-(1+2.70158*pow((1-clip((t-17)/1,0,1))-1,3)+1.70158*pow((1-clip((t-17)/1,0,1))-1,2)))*(gte(t,17)*lt(t,18)))))':h='max(2,trunc(((768)*(1-(1-(1+2.70158*pow((1-clip((t-17)/1,0,1))-1,3)+1.70158*pow((1-clip((t-17)/1,0,1))-1,2)))*(gte(t,17)*lt(t,18))))*0.562791))':eval=frame[ui2_layer]
+ 10| [stage2][ui2_layer]overlay=x='1344-0.5*((768)*(1-(1-(1+2.70158*pow((1-clip((t-17)/1,0,1))-1,3)+1.70158*pow((1-clip((t-17)/1,0,1))-1,2)))*(gte(t,17)*lt(t,18))))+(0+(-1730)*(1-sin(clip((t-8)/0.8,0,1)*(PI/2)))*(gte(t,8)*lt(t,8.8)))':y='756-0.5*((768)*(1-(1-(1+2.70158*pow((1-clip((t-17)/1,0,1))-1,3)+1.70158*pow((1-clip((t-17)/1,0,1))-1,2)))*(gte(t,17)*lt(t,18))))*0.562791':eval=frame:shortest=1:enable='between(t,8,18)'[stage3]
+ 11| color=c=0x000000@0:s=768x486:r=1
+   |   ,format=yuva444p
+   |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Title':expansion=none:fontsize=317.793:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=9:x=(w-text_w)/2:y=353.172-ascent
+   |   ,trim=end_frame=1
+   |   ,format=yuva420p
+   |   ,loop=loop=-1:size=1
+   |   ,setpts=N/(30*TB)
+   |   ,format=yuva420p
+   |   ,split[ui3_tf][ui3_tfa_in]
+ 12| [ui3_tfa_in]alphaextract
+   |   ,geq=lum='lum(X,Y)*clip((Y-(H+15)*(1-((1-cos((1-clip((T-7.4)/0.6,0,1))*PI))/2)))/15+1,0,1)':enable='between(t,7.4,8)'[ui3_tfa]
+ 13| [ui3_tf][ui3_tfa]alphamerge
+   |   ,sendcmd=c='2 avgblur@fx9 sizeX 19, avgblur@fx9 sizeY 19;2.08 avgblur@fx9 sizeX 18, avgblur@fx9 sizeY 18;2.16 avgblur@fx9 sizeX 16, avgblur@fx9 sizeY 16;2.24 avgblur@fx9 sizeX 15, avgblur@fx9 sizeY 15;2.32 avgblur@fx9 sizeX 14, avgblur@fx9 sizeY 14;2.4 avgblur@fx9 sizeX 13, avgblur@fx9 sizeY 13;2.48 avgblur@fx9 sizeX 11, avgblur@fx9 sizeY 11;2.56 avgblur@fx9 sizeX 10, avgblur@fx9 sizeY 10;2.64 avgblur@fx9 sizeX 9, avgblur@fx9 sizeY 9;2.72 avgblur@fx9 sizeX 8, avgblur@fx9 sizeY 8;2.8 avgblur@fx9 sizeX 6, avgblur@fx9 sizeY 6;2.88 avgblur@fx9 sizeX 5, avgblur@fx9 sizeY 5;2.96 avgblur@fx9 sizeX 4, avgblur@fx9 sizeY 4;3.04 avgblur@fx9 sizeX 3, avgblur@fx9 sizeY 3;3.12 avgblur@fx9 sizeX 1, avgblur@fx9 sizeY 1;3.2 avgblur@fx9 sizeX 1, avgblur@fx9 sizeY 1'
+   |   ,avgblur@fx9=sizeX=19:sizeY=19:enable='between(t,2,3.2)'
+   |   ,fade=t=in:st=2:d=1.2:alpha=1:enable='between(t,2,3.2)'[ui3_layer]
+ 14| [stage3][ui3_layer]overlay=576:108:shortest=1:enable='between(t,2,8)'
+   |   ,setsar=1

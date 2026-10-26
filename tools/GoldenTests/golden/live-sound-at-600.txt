@@ -1,0 +1,34 @@
+# Live graph after a seek to 600 s, sound laid out from there: the layers' amovie and the main video's two tracks.
+# request: surface 960x540, video from 600, sound from 600, layers Live, decode threads 2
+# rebuild at: never
+
+live graph: 10 chains, 1194 characters
+  1| [vid1]scale=trunc(iw*0.5/2)*2:trunc(ih*0.5/2)*2:flags=fast_bilinear
+   |   ,split=2[canvas_in][center_in]
+  2| [canvas_in]crop=2:2:0:0
+   |   ,format=yuv420p
+   |   ,lutyuv=y=16:u=128:v=128
+   |   ,scale=960:540:flags=neighbor[stage0]
+  3| [center_in]scale=960:540:flags=fast_bilinear
+   |   ,format=yuva420p[center_layer]
+  4| [stage0][center_layer]overlay=0:0[stage1]
+  5| movie='D\:/media/recording.ts':sp=416.034333:dec_threads=2
+   |   ,trim=start=419.333:end=1401.433
+   |   ,setpts=PTS+180.567/TB
+   |   ,scale=308:174:flags=fast_bilinear
+   |   ,format=yuva420p[ui1_layer]
+  6| [stage1][ui1_layer]overlay=326:0:eof_action=pass:enable='between(t,182,1582)'
+   |   ,setsar=1[vo]
+  7| [aid1]aresample=48000:async=1:first_pts=28800000
+   |   ,asetpts=(N+28800000)/SR/TB
+   |   ,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[lt0]
+  8| [aid2]aresample=48000:async=1:first_pts=28800000
+   |   ,asetpts=(N+28800000)/SR/TB
+   |   ,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[lt1]
+  9| amovie='D\:/media/recording.ts':seek_point=417
+   |   ,atrim=start=419.433:end=1401.433
+   |   ,asetpts=PTS-419.433/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,asetpts=(N+28800000)/SR/TB
+   |   ,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[ll0]
+ 10| [lt0][lt1][ll0]amix=inputs=3:duration=first:normalize=0:dropout_transition=0[ao]

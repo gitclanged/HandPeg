@@ -15,21 +15,34 @@ public sealed record ProjectEntry(string FilePath, string Name, string SourceNam
     public string SavedText => $"Saved {SavedAt:g}";
 }
 
-// ----- The project file (.hproj), format 2 -----
+// ----- The project file (.hproj), format 3 -----
 // A project is a sequence: cuts, the main video's clip, and tracks of clips. The file is laid out that way.
 // What a track's clips share (what they show, their look, their filters) is written once, on the track; a clip
 // carries only what is its own: when it is on, where it sits, and its keyframes. Nothing is written that is
 // still at its default, and times and keyframes are plain arrays of numbers.
+//
+// The formats: 1 was HandPeg 1.x's project, a .txt holding the window's state in another layout (read, as far as it
+// still maps, by LegacyProject). 2 is this layout, written by HandPeg 2.0 to 4.0. 3 (HandPeg 4.1) is the same layout
+// with the name of the HandPeg that wrote it, so that an older HandPeg handed a newer file can say which version it
+// needs. Both 2 and 3 are read; a newer format is opened only when the user asks, and is never written over.
 
 /// <summary>A project as it is written to disk.</summary>
 public sealed class ProjectFile
 {
     public const string FormatName = "handpeg-project";
-    public const int CurrentVersion = 2;
+
+    /// <summary>The format this version writes.</summary>
+    public const int CurrentVersion = 3;
+
+    /// <summary>The oldest format of .hproj this version reads: 2, the first in this layout.</summary>
+    public const int OldestVersion = 2;
 
     // No defaults here: a file that does not say what it is must not pass for one that does.
     public string? Format { get; set; }
     public int Version { get; set; }
+
+    /// <summary>The HandPeg that wrote the file ("HandPeg 4.1.0"); absent in format 2. Named when a version too old for the file refuses it.</summary>
+    public string? WrittenBy { get; set; }
 
     public string Name { get; set; } = "";
     public DateTime SavedAt { get; set; }
@@ -216,12 +229,34 @@ public sealed class ProjectClip
 }
 
 /// <summary>
+/// A project file of a newer format than this version reads. It can still be opened when the user asks (reading what this
+/// version knows of it), but is never written over: what the newer version put in it would be lost. An IOException, so that
+/// whatever opens or lists projects reports it as a file it could not read.
+/// </summary>
+public sealed class NewerProjectFormatException(int version, string? writtenBy)
+    : IOException($"This project was saved by {writtenBy ?? "a newer version of HandPeg"} in project format {version}; this version of HandPeg "
+                           + $"({ProjectStore.WriterName}) reads formats up to {ProjectFile.CurrentVersion}.")
+{
+    public int Version { get; } = version;
+    public string? WrittenBy { get; } = writtenBy;
+}
+
+/// <summary>
 /// Project files live in the Projects folder (see <see cref="AppPaths"/>), as .hproj: JSON in the layout above.
-/// Projects saved by versions before 2.0 (.txt, in another layout) are not read.
+/// Projects saved by HandPeg 1.x (format 1: a .txt in another layout) are recognised by their shape and brought over
+/// as far as they still map (see <see cref="LegacyProject"/>).
 /// </summary>
 public static class ProjectStore
 {
     public const string Extension = ".hproj";
+
+    /// <summary>What a format 1 project's file name ends in.</summary>
+    public const string LegacyExtension = ".txt";
+
+    /// <summary>The name written into each project as the HandPeg that wrote it: "HandPeg 4.1.0".</summary>
+    public static string WriterName { get; } = typeof(ProjectStore).Assembly.GetName().Version is { } version
+        ? $"HandPeg {version.Major}.{version.Minor}.{Math.Max(version.Build, 0)}"
+        : "HandPeg";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -251,8 +286,10 @@ public static class ProjectStore
         {
             if (info.Type.GetConstructor(Type.EmptyTypes) is not null)
                 fresh = Activator.CreateInstance(info.Type);
+            else if (ReadingConstructor(info.Type) is { } constructor)
+                fresh = constructor.Invoke(constructor.GetParameters().Select(DefaultArgument).ToArray());
         }
-        catch (Exception ex) when (ex is MissingMethodException or System.Reflection.TargetInvocationException)
+        catch (Exception ex) when (ex is MissingMethodException or System.Reflection.TargetInvocationException or ArgumentException)
         {
         }
 
@@ -273,6 +310,20 @@ public static class ProjectStore
         }
     }
 
+    /// <summary>
+    /// The constructor a value is read through, when it has one whose parameters can all be left out: what it makes of
+    /// nothing is what a value left out of the file reads as. A keyframe read without its easing is Ease In-Out (its
+    /// constructor's default), so Ease In-Out is what is left out, and Linear is written.
+    /// </summary>
+    private static System.Reflection.ConstructorInfo? ReadingConstructor(Type type) =>
+        type.GetConstructors().FirstOrDefault(c => c.IsDefined(typeof(JsonConstructorAttribute), inherit: false)
+                                                   && c.GetParameters().All(p => p.HasDefaultValue || p.ParameterType.IsValueType));
+
+    private static object? DefaultArgument(System.Reflection.ParameterInfo parameter) =>
+        !parameter.HasDefaultValue ? Activator.CreateInstance(parameter.ParameterType)
+        : parameter.ParameterType.IsEnum && parameter.DefaultValue is not null ? Enum.ToObject(parameter.ParameterType, parameter.DefaultValue)
+        : parameter.DefaultValue;
+
     /// <summary>Saves the state under its name, replacing a project of the same name.</summary>
     public static string Save(ProjectState state)
     {
@@ -283,6 +334,7 @@ public static class ProjectStore
             fileName = "Project";
 
         var path = Path.Combine(Folder, fileName + Extension);
+        RefuseNewer(path);
         File.WriteAllText(path, Serialize(state));
         return path;
     }
@@ -293,8 +345,92 @@ public static class ProjectStore
     /// <summary>Saves the state to a file of the user's choosing, wherever it is.</summary>
     public static string SaveTo(ProjectState state, string path)
     {
+        RefuseNewer(path);
         WriteWhole(path, Serialize(state));
         return path;
+    }
+
+    /// <summary>
+    /// Refuses to write over a project file of a newer format than this version writes, however it was opened: what the
+    /// newer HandPeg put in it would be lost. An IOException, so that every save reports it as a save that could not be made.
+    /// </summary>
+    private static void RefuseNewer(string path)
+    {
+        if (PeekHeader(path) is { Format: ProjectFile.FormatName, Version: > ProjectFile.CurrentVersion } header)
+        {
+            throw new IOException($"{Path.GetFileName(path)} was saved by {header.WrittenBy ?? "a newer version of HandPeg"} in project format {header.Version}, "
+                                  + "and saving over it would lose what that version put in it. Save the project under another name (Save As).");
+        }
+    }
+
+    /// <summary>
+    /// What a project file says it is (format, version, writer), read from its first few kilobytes: they come first in
+    /// the file, so a project carrying megabytes of masks is not read whole. Null when there is no such file or it does
+    /// not start like a project.
+    /// </summary>
+    public static (string? Format, int Version, string? WrittenBy)? PeekHeader(string path)
+    {
+        byte[] buffer;
+        int read;
+        try
+        {
+            if (!File.Exists(path))
+                return null;
+
+            buffer = new byte[8192];
+            using var stream = File.OpenRead(path);
+            read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        var bytes = buffer.AsSpan(0, read);
+        if (bytes.StartsWith("﻿"u8))
+            bytes = bytes[3..];
+
+        var (format, version, writtenBy) = ((string?)null, 0, (string?)null);
+        try
+        {
+            var reader = new Utf8JsonReader(bytes, isFinalBlock: read < buffer.Length, state: default);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+                return null;
+
+            // The top level's plain values. An object or a list among them (the source, say) is stepped over while it lies
+            // whole in what was read; one that runs past it ends the search, with what was found so far.
+            while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+            {
+                var name = reader.GetString();
+                if (!reader.Read())
+                    break;
+                if (reader.TokenType is JsonTokenType.StartObject or JsonTokenType.StartArray)
+                {
+                    if (!reader.TrySkip())
+                        break;
+                    continue;
+                }
+
+                switch (name)
+                {
+                    case "format" when reader.TokenType == JsonTokenType.String:
+                        format = reader.GetString();
+                        break;
+                    case "version" when reader.TokenType == JsonTokenType.Number && reader.TryGetInt32(out var number):
+                        version = number;
+                        break;
+                    case "writtenBy" when reader.TokenType == JsonTokenType.String:
+                        writtenBy = reader.GetString();
+                        break;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Cut off in the middle of a value, or not JSON at all: what was read so far stands.
+        }
+
+        return format is null ? null : (format, version, writtenBy);
     }
 
     /// <summary>Where a project's autosave goes: beside the project when it has a file, in the projects folder under its name otherwise.</summary>
@@ -320,23 +456,44 @@ public static class ProjectStore
     public static string Serialize(ProjectState state) => JsonSerializer.Serialize(ToFile(state), JsonOptions);
 
     /// <param name="unpackMasks">Write the masks the project carries into the masks folder and point its layers at them, and take up the seek indexes of its video files: when it is being opened, not when it is only being listed.</param>
-    public static ProjectState Load(string filePath, bool unpackMasks = true) => Deserialize(File.ReadAllText(filePath), unpackMasks);
+    /// <param name="allowNewer">Read a file of a newer format too, as far as this version knows it, instead of refusing it: for when the user asked to open it anyway.</param>
+    public static ProjectState Load(string filePath, bool unpackMasks = true, bool allowNewer = false) => Deserialize(File.ReadAllText(filePath), unpackMasks, allowNewer);
 
-    /// <summary>Reads a project from its text. Anything that is not a format 2 project is refused, with the reason.</summary>
-    public static ProjectState Deserialize(string json, bool unpackMasks = false)
+    /// <summary>
+    /// Reads a project from its text: format 2 or 3, or a HandPeg 1.x project (format 1, recognised by its shape). A newer
+    /// format is refused with <see cref="NewerProjectFormatException"/> unless <paramref name="allowNewer"/>; anything else
+    /// is refused with the reason.
+    /// </summary>
+    public static ProjectState Deserialize(string json, bool unpackMasks = false, bool allowNewer = false)
     {
         var file = JsonSerializer.Deserialize<ProjectFile>(json, JsonOptions) ?? throw new InvalidDataException("The project file is empty.");
         if (file.Format != ProjectFile.FormatName)
-            throw new InvalidDataException("This is not a HandPeg 2.0 project. Projects saved by earlier versions cannot be opened.");
-        if (file.Version != ProjectFile.CurrentVersion)
-            throw new InvalidDataException($"This project is in format {file.Version}; this version of HandPeg reads format {ProjectFile.CurrentVersion}.");
+        {
+            return LegacyProject.TryRead(json) ?? throw new InvalidDataException("This is not a HandPeg project.");
+        }
+
+        if (file.Version > ProjectFile.CurrentVersion && !allowNewer)
+            throw new NewerProjectFormatException(file.Version, file.WrittenBy);
+        if (file.Version < ProjectFile.OldestVersion)
+            throw new InvalidDataException($"This project is in format {file.Version}, which this version of HandPeg does not read.");
         return FromFile(file, unpackMasks);
     }
 
-    /// <summary>Whether a piece of JSON says it is a project of the format this version reads.</summary>
+    /// <summary>Whether a piece of JSON says it is a .hproj project: of a format this version reads, or of a newer one.</summary>
     public static bool IsProject(System.Text.Json.Nodes.JsonObject node) =>
         node["format"] is System.Text.Json.Nodes.JsonValue format && format.TryGetValue<string>(out var name) && name == ProjectFile.FormatName
-        && node["version"] is System.Text.Json.Nodes.JsonValue version && version.TryGetValue<int>(out var number) && number == ProjectFile.CurrentVersion;
+        && node["version"] is System.Text.Json.Nodes.JsonValue version && version.TryGetValue<int>(out var number) && number >= ProjectFile.OldestVersion;
+
+    /// <summary>
+    /// Whether a file is a project this version can open: a .hproj, or a .txt that is a HandPeg 1.x project by its shape. A
+    /// .txt is looked into only when it is small enough to be one, so that other text files are never taken for projects.
+    /// </summary>
+    public static bool IsProjectFile(string path)
+    {
+        if (path.EndsWith(Extension, StringComparison.OrdinalIgnoreCase))
+            return File.Exists(path);
+        return path.EndsWith(LegacyExtension, StringComparison.OrdinalIgnoreCase) && LegacyProject.IsLegacyFile(path);
+    }
 
     // ----- Between the window's state and the file -----
 
@@ -483,6 +640,7 @@ public static class ProjectStore
         {
             Format = ProjectFile.FormatName,
             Version = ProjectFile.CurrentVersion,
+            WrittenBy = WriterName,
             Name = state.Name,
             SavedAt = state.SavedAt,
             Source = new ProjectSource
@@ -641,18 +799,23 @@ public static class ProjectStore
         return state;
     }
 
-    /// <summary>Saved projects, most recently saved first. Files that cannot be read are left out.</summary>
+    /// <summary>
+    /// Saved projects, most recently saved first: the .hproj files (a newer format's too, which asks before it opens) and
+    /// the HandPeg 1.x projects (.txt) among the text files, recognised by their shape. Files that cannot be read are left out.
+    /// </summary>
     public static List<ProjectEntry> ListRecent()
     {
         var entries = new List<ProjectEntry>();
         if (!Directory.Exists(Folder))
             return entries;
 
-        foreach (var file in new DirectoryInfo(Folder).EnumerateFiles("*" + Extension).OrderByDescending(f => f.LastWriteTime))
+        var files = new DirectoryInfo(Folder).EnumerateFiles("*" + Extension)
+            .Concat(new DirectoryInfo(Folder).EnumerateFiles("*" + LegacyExtension).Where(f => LegacyProject.IsLegacyFile(f.FullName)));
+        foreach (var file in files.OrderByDescending(f => f.LastWriteTime))
         {
             try
             {
-                var state = Load(file.FullName, unpackMasks: false);
+                var state = Load(file.FullName, unpackMasks: false, allowNewer: true);
                 var isUrl = Uri.TryCreate(state.SourcePath, UriKind.Absolute, out var uri) && !uri.IsFile;
                 entries.Add(new ProjectEntry(
                     file.FullName,

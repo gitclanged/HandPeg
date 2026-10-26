@@ -142,9 +142,22 @@
 
         <local:DependencyPanel x:Name="Dependencies" OffersExistingFfmpeg="True" />
 
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0">
-            <Button x:Name="StartButton" Content="Start HandPeg" MinWidth="140" Padding="18,8" IsDefault="True" Click="Start_Click" />
-        </StackPanel>
+        <!-- Crash reports (written here, sent once each), what they cost and what is in them, beside the button that starts HandPeg -->
+        <DockPanel Margin="0,22,0,0">
+            <Button DockPanel.Dock="Right" x:Name="StartButton" Content="Start HandPeg" MinWidth="140" Padding="18,8" IsDefault="True" Click="Start_Click" VerticalAlignment="Center" />
+            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                <StackPanel Orientation="Horizontal">
+                    <CheckBox x:Name="CrashReportsBox" Content="Save anonymous crash reports" VerticalAlignment="Center"
+                              AutomationProperties.Name="Send Crash Reports"
+                              ToolTip="When HandPeg falls over, a crash report is written to the crash reports folder: the error, the parts of HandPeg that were running, its last few steps, the kind of media open (container, codecs, resolution) and the computer (processor, memory, graphics cards, display, engine versions), with no file names, paths, names, serial numbers or words from your media. Reports stay on this PC; HandPeg never sends them. Can be changed later in Settings, General tab, or in the Privacy Policy." />
+                    <TextBlock VerticalAlignment="Center" Margin="12,0,0,0">
+                        <Hyperlink Click="PrivacyPolicy_Click" Foreground="{DynamicResource AccentBrush}" AutomationProperties.Name="Privacy Policy">Privacy Policy</Hyperlink>
+                    </TextBlock>
+                </StackPanel>
+                <TextBlock Foreground="{DynamicResource MutedTextBrush}" FontSize="12" Margin="22,3,0,0" TextWrapping="Wrap"
+                           Text="Uses 0% CPU during normal editing, 20 KB of shared memory, and a ~6.8 MB idle background sentinel process." />
+            </StackPanel>
+        </DockPanel>
     </StackPanel>
     </ScrollViewer>
 </Window>

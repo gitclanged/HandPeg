@@ -773,6 +773,17 @@ public partial class MainViewModel
     /// <summary>Remembers where a pane was put or how large it was made, for the mode in use.</summary>
     public void SavePaneLayout(Action<AppSettings> set) => SaveView(set);
 
+    /// <summary>
+    /// A view setting of the mode in use changed from the window's Tabs and Panes menu (Pass 4.1B): saved, and the
+    /// properties that show it raised (they read the settings: ShowAdvancedPlayback, ShowCommandPreviewTab...).
+    /// </summary>
+    public void SetViewSetting(Action<AppSettings> set, params string[] properties)
+    {
+        SaveView(set);
+        foreach (var property in properties)
+            OnPropertyChanged(property);
+    }
+
     /// <summary>Reset Panes Layout: every pane back where this mode starts with it. The window then lays them out again.</summary>
     public void ResetPaneLayout()
     {
@@ -1047,10 +1058,12 @@ public partial class MainViewModel
             if (_timelineProxy is { } timeline)
                 return $"edl://!new_stream;{EdlName(timeline)};!new_stream;{sound ?? EdlName(path)}";
 
-            // The main video's proxy starts at its first frame; the original's clips are placed by the original's time stamps.
+            // The original's clips are placed by the original's time stamps; the main video's proxy has its own clock, its first
+            // frame being the original's (FFmpeg moves the time stamps when it makes one): the clips' offsets are moved by as much.
             if (MainProxy is { } proxy && (IsMainWholeSequence || StandInClock(withSound: false) is not null))
             {
-                var picture = IsMainWholeSequence ? EdlName(proxy) : SequenceParts(proxy, _mediaInfo?.VideoStartSeconds ?? 0, StandInClock(withSound: false), withMainSound: false);
+                var shift = (_mediaInfo?.VideoStartSeconds ?? 0) - (MediaProbe.KnownVideoStart(proxy) ?? 0);
+                var picture = IsMainWholeSequence ? EdlName(proxy) : SequenceParts(proxy, shift, StandInClock(withSound: false), withMainSound: false);
                 return $"edl://!new_stream;{picture};!new_stream;{sound ?? EdlName(path)}";
             }
 

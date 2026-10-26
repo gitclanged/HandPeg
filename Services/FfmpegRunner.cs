@@ -1,11 +1,18 @@
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using CliWrap;
 using CliWrap.Buffered;
 
 namespace HandPegApp.Services;
+
+/// <summary>
+/// An FFmpeg command that could not be started as it was written (too long for Windows, say): the same with another
+/// encoder would fail the same way, so the hardware fallback leaves it alone.
+/// </summary>
+public sealed class FfmpegCommandException(string message) : InvalidOperationException(message);
 
 /// <param name="Line">The raw line FFmpeg printed.</param>
 /// <param name="Position">Output timestamp reached so far, when the line is a progress line.</param>
@@ -26,8 +33,12 @@ public static partial class FfmpegRunner
     /// <summary>
     /// Runs an FFmpeg command line exactly as written. A bare "ffmpeg" resolves to the
     /// local copy in the deps folder when there is one, otherwise to whatever is on PATH.
+    /// FFmpeg is given the very arguments the line spells out, except that a filter graph may reach it in a file
+    /// rather than on the command line (see <see cref="WithGraphFiles"/>): always when <paramref name="graphInFile"/>
+    /// is set (exports, queue jobs, Render Preview), and otherwise when the graph is longer than
+    /// <see cref="GraphFileThreshold"/>. The line itself, as the user sees and copies it, keeps its graphs inline.
     /// </summary>
-    public static async Task RunAsync(string commandLine, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
+    public static async Task RunAsync(string commandLine, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken, bool graphInFile = false)
     {
         var match = CommandLineRegex().Match(commandLine.ReplaceLineEndings(" ").Trim());
         var executable = match.Groups[1].Value.Trim('"');
@@ -39,6 +50,62 @@ public static partial class FfmpegRunner
         var isBareName = Path.GetFileName(executable) == executable;
         if (isBareName && File.Exists(DependencyUpdater.FfmpegPath))
             executable = DependencyUpdater.FfmpegPath;
+
+        // The files the graphs are written to belong to this run, and go with it however it ends.
+        var graphFiles = new List<string>();
+        try
+        {
+            await RunArgumentsAsync(executable, match.Groups[2].Value, graphInFile, graphFiles, progress, cancellationToken);
+        }
+        finally
+        {
+            foreach (var file in graphFiles)
+                DeleteQuietly(file);
+        }
+    }
+
+    private static async Task RunArgumentsAsync(
+        string executable, string argumentText, bool graphInFile, List<string> graphFiles, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
+    {
+        var original = SplitArguments(argumentText);
+        var arguments = original;
+        if (NeedsGraphFile(original, graphInFile))
+        {
+            var form = await GraphFileFormAsync(executable, cancellationToken);
+            arguments = WithGraphFiles(original, graphInFile, form, graph =>
+            {
+                Directory.CreateDirectory(SessionPaths.Graphs);
+                var path = Path.Combine(SessionPaths.Graphs, $"graph_{Guid.NewGuid():N}.txt");
+                File.WriteAllText(path, graph, Utf8WithoutMark);
+                graphFiles.Add(path);
+                if (graph.Length > GraphFileThreshold)
+                    AppLog.Write(string.Create(CultureInfo.InvariantCulture, $"A filter graph of {graph.Length:N0} characters was given to FFmpeg in a file ({form})."));
+                return path;
+            });
+        }
+
+        var command = Cli.Wrap(executable).WithArguments(arguments);
+
+        // CliWrap quotes each argument for the command line, and FFmpeg splits that line again: what it gets back
+        // has to be what was meant, to the character. Proven by the golden tests; checked here as well, because a
+        // graph that arrived changed would be an export that is quietly wrong.
+        if (!SplitArguments(command.Arguments).SequenceEqual(arguments, StringComparer.Ordinal))
+        {
+            if (graphFiles.Count > 0)
+                throw new FfmpegCommandException("The FFmpeg command could not be passed on unchanged, so it was not run.");
+            AppLog.Write("The FFmpeg command's arguments did not survive quoting, so the command line is passed on exactly as written.");
+            command = Cli.Wrap(executable).WithArguments(argumentText);
+        }
+
+        // Windows starts nothing from a command line longer than this (the terminating null counts): say so plainly,
+        // rather than as the system's "The filename or extension is too long". What is left that long is the list of
+        // inputs (the Video Combinator's, of some hundreds of files), which has no other way to FFmpeg.
+        var length = executable.Length + 3 + command.Arguments.Length;
+        if (length > MaxCommandLineLength)
+        {
+            throw new FfmpegCommandException(string.Create(CultureInfo.InvariantCulture,
+                $"The FFmpeg command is {length:N0} characters long{(graphFiles.Count > 0 ? " even with its filter graph in a file" : "")}, and Windows starts no program from more than {MaxCommandLineLength:N0}."));
+        }
 
         var recentLines = new Queue<string>();
         void OnLine(string line)
@@ -55,8 +122,7 @@ public static partial class FfmpegRunner
             progress.Report(new FfmpegProgress(line.Trim(), position, ParseTime(DurationRegex().Match(line))));
         }
 
-        var result = await ProcessPipes.RunAsync(Cli.Wrap(executable)
-            .WithArguments(match.Groups[2].Value)
+        var result = await ProcessPipes.RunAsync(command
             .WithValidation(CommandResultValidation.None)
             .WithStandardOutputPipe(ProcessPipes.Lines(OnLine))
             .WithStandardErrorPipe(ProcessPipes.Lines(OnLine)),
@@ -77,6 +143,200 @@ public static partial class FfmpegRunner
                 : recentLines.Count > 0 ? string.Join(" | ", recentLines.TakeLast(3))
                 : "no output";
             throw new InvalidOperationException($"FFmpeg exited with code {result.ExitCode}: {detail}");
+        }
+    }
+
+    // ----- Filter graphs in files -----
+    // Windows starts a program with at most 32,767 characters of command line, and a timeline of many clips, cuts or
+    // keyframes writes a graph longer than that. So the graph is written to a file in the session folder and FFmpeg is
+    // pointed at it: "-/filter_complex file" (FFmpeg 7 and later, which load any option's value from a file that way;
+    // FFmpeg 9 has dropped the older options), or "-filter_complex_script file" for an older FFmpeg of the user's own.
+    // Which of the two an FFmpeg takes is asked of it once, by running it on a tiny graph. The arguments are split
+    // exactly as FFmpeg splits them, so the file holds the very text the command line would have given it.
+
+    /// <summary>A graph longer than this goes to FFmpeg in a file even for a run that does not always send its graphs so.</summary>
+    public const int GraphFileThreshold = 4000;
+
+    /// <summary>The longest command line Windows starts a program from, in characters (32,767 with its terminating null).</summary>
+    public const int MaxCommandLineLength = 32766;
+
+    private static readonly UTF8Encoding Utf8WithoutMark = new(encoderShouldEmitUTF8Identifier: false);
+
+    /// <summary>How an FFmpeg is pointed at a graph in a file.</summary>
+    public enum GraphFileForm
+    {
+        /// <summary>Neither way works: the graph stays on the command line.</summary>
+        None,
+
+        /// <summary>"-/filter_complex file": FFmpeg 7 and later.</summary>
+        LoadOption,
+
+        /// <summary>"-filter_complex_script file", "-filter_script:v file": FFmpeg before 9.</summary>
+        ScriptOption,
+    }
+
+    // The options whose value is a filter graph: the complex one, and the simple ones of the streams.
+    [GeneratedRegex(@"^-(?:filter_complex|lavfi|vf|af|filter(?::\S+)?)$")]
+    private static partial Regex GraphOptionRegex();
+
+    [LibraryImport("shell32.dll", EntryPoint = "CommandLineToArgvW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    private static partial IntPtr CommandLineToArgv(string commandLine, out int count);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial IntPtr LocalFree(IntPtr memory);
+
+    /// <summary>
+    /// The arguments a command line gives a program, split exactly as FFmpeg splits its own: its Windows build reads
+    /// them with CommandLineToArgvW, as this does, so quotes and the backslashes before them mean here what they mean to it.
+    /// </summary>
+    public static List<string> SplitArguments(string arguments)
+    {
+        // The first word is taken for the program's name, which is split by rules of its own: a stand-in goes there.
+        var pointer = CommandLineToArgv("ffmpeg " + arguments, out var count);
+        if (pointer == IntPtr.Zero)
+            throw new System.ComponentModel.Win32Exception();
+
+        try
+        {
+            var split = new List<string>(Math.Max(count - 1, 0));
+            for (var i = 1; i < count; i++)
+                split.Add(Marshal.PtrToStringUni(Marshal.ReadIntPtr(pointer, i * IntPtr.Size)) ?? "");
+            return split;
+        }
+        finally
+        {
+            LocalFree(pointer);
+        }
+    }
+
+    /// <summary>Whether any graph among the arguments goes to FFmpeg in a file.</summary>
+    public static bool NeedsGraphFile(IReadOnlyList<string> arguments, bool always)
+    {
+        for (var i = 0; i + 1 < arguments.Count; i++)
+        {
+            if (GraphOptionRegex().IsMatch(arguments[i]) && (always || arguments[i + 1].Length > GraphFileThreshold))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The arguments with their filter graphs given in files: every graph when <paramref name="always"/>, otherwise
+    /// those longer than <see cref="GraphFileThreshold"/>. <paramref name="writeGraph"/> writes a graph and returns its
+    /// file. With <see cref="GraphFileForm.None"/> the arguments are returned as they are.
+    /// </summary>
+    public static List<string> WithGraphFiles(IReadOnlyList<string> arguments, bool always, GraphFileForm form, Func<string, string> writeGraph)
+    {
+        var result = new List<string>(arguments);
+        if (form == GraphFileForm.None)
+            return result;
+
+        for (var i = 0; i + 1 < result.Count; i++)
+        {
+            var option = result[i];
+            if (!GraphOptionRegex().IsMatch(option))
+                continue;
+
+            i++;
+            if (!always && result[i].Length <= GraphFileThreshold)
+                continue;
+
+            result[i - 1] = form == GraphFileForm.LoadOption ? "-/" + option[1..] : ScriptOptionFor(option);
+            result[i] = writeGraph(result[i]);
+        }
+
+        return result;
+    }
+
+    /// <summary>The older option that reads a graph option's value from a file: "-filter_complex_script", "-filter_script:v".</summary>
+    private static string ScriptOptionFor(string option) => option switch
+    {
+        "-filter_complex" or "-lavfi" => "-filter_complex_script",
+        "-vf" => "-filter_script:v",
+        "-af" => "-filter_script:a",
+        _ => "-filter_script" + option["-filter".Length..],
+    };
+
+    // What each FFmpeg takes, by its path, with the size and time of the file it was asked of.
+    private static readonly Dictionary<string, (long Length, DateTime Written, GraphFileForm Form)> GraphFileForms = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// How this FFmpeg takes a graph from a file, asked of it once (a run on a one-frame graph, some 40 ms) and
+    /// remembered while the program file stays the same.
+    /// </summary>
+    public static async Task<GraphFileForm> GraphFileFormAsync(string executable, CancellationToken cancellationToken)
+    {
+        var (length, written) = (-1L, DateTime.MinValue);
+        try
+        {
+            var info = new FileInfo(executable);
+            if (info.Exists)
+                (length, written) = (info.Length, info.LastWriteTimeUtc);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+        }
+
+        lock (GraphFileForms)
+        {
+            if (GraphFileForms.TryGetValue(executable, out var known) && known.Length == length && known.Written == written)
+                return known.Form;
+        }
+
+        var form = await ProbeGraphFileFormAsync(executable, cancellationToken);
+        AppLog.Write($"FFmpeg takes filter graphs from files as {form}: {Path.GetFileName(executable)}");
+        lock (GraphFileForms)
+            GraphFileForms[executable] = (length, written, form);
+        return form;
+    }
+
+    private static async Task<GraphFileForm> ProbeGraphFileFormAsync(string executable, CancellationToken cancellationToken)
+    {
+        var probe = Path.Combine(SessionPaths.Graphs, $"probe_{Guid.NewGuid():N}.txt");
+        try
+        {
+            Directory.CreateDirectory(SessionPaths.Graphs);
+            File.WriteAllText(probe, "nullsrc=s=16x16:d=0.04", Utf8WithoutMark);
+            foreach (var (form, option) in new[] { (GraphFileForm.LoadOption, "-/filter_complex"), (GraphFileForm.ScriptOption, "-filter_complex_script") })
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(20));
+                try
+                {
+                    var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(executable)
+                        .WithArguments(["-hide_banner", "-nostdin", "-loglevel", "error", option, probe, "-f", "null", "-"])
+                        .WithValidation(CommandResultValidation.None), timeout.Token);
+                    if (result.ExitCode == 0)
+                        return form;
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // It did not answer in time: taken as not knowing this way.
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            AppLog.Write("Could not ask FFmpeg how it takes a filter graph from a file", ex);
+        }
+        finally
+        {
+            DeleteQuietly(probe);
+        }
+
+        return GraphFileForm.None;
+    }
+
+    private static void DeleteQuietly(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Still open somewhere: it is in the session folder, which goes when the program closes.
         }
     }
 

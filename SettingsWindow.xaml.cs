@@ -208,6 +208,15 @@ public partial class SettingsWindow : Window
         }
     }
 
+    // ----- Pinned dependency builds (v4.1) -----
+
+    /// <summary>Ticking Allow Untested Dependency Updates is asked about first (the same warning as Force Update); unticking needs no warning.</summary>
+    private void AllowUnpinned_Click(object sender, RoutedEventArgs e)
+    {
+        if (AllowUnpinnedBox.IsChecked == true && !DependencyPanel.ConfirmUnpinned(this, installNow: false))
+            AllowUnpinnedBox.IsChecked = false;
+    }
+
     private void ShowDependencyMessage(string text, bool isProblem)
     {
         DependencyStatusText.Text = text;
@@ -289,7 +298,17 @@ public partial class SettingsWindow : Window
             UpdateWhisperStatus();
         };
 
+        // Pinned dependency builds (v4.1): Force Update and Restore Pinned in the list change the setting at once, and the
+        // General tab's box, which edits this copy of the settings, follows them, so that Save keeps what they did.
+        Dependencies.OffersPinnedBuilds = true;
+        Dependencies.UnpinnedChanged += allowed =>
+        {
+            _settings.AllowUnpinnedDependencyUpdates = allowed;
+            AllowUnpinnedBox.IsChecked = allowed;
+        };
+
         ShowCacheUsage();
+        WatchCrashReports();
         YtDlpDefaultText.Text = $"Default: {AppSettings.DefaultYtDlpReleaseUrl}";
         FfmpegDefaultText.Text = $"Default: {AppSettings.DefaultFfmpegReleaseUrl}";
 
@@ -332,8 +351,7 @@ public partial class SettingsWindow : Window
             models.Add(_settings.WhisperModel);
         ThemeBox.ItemsSource = ThemeManager.Themes;
         ResetBox.ItemsSource = AppSettings.ResetTargets;
-        if (!ThemeManager.Themes.Contains(_settings.Theme))
-            _settings.Theme = ThemeManager.FollowSystem;
+        _settings.Theme = ThemeManager.Normalize(_settings.Theme);
         ThemeBox.SelectedItem = _settings.Theme;
 
         // The graphics cards there are now; a card chosen earlier that has since gone is Automatic again.
@@ -553,6 +571,47 @@ public partial class SettingsWindow : Window
         firstRun.ShowDialog();
         _viewModel.OnSettingsSaved();
         DialogResult = false;
+    }
+
+    // ----- Diagnostics: crash reports (General tab; see CrashReporter) -----
+
+    /// <summary>Shows how many crash reports the folder holds and their size, now and whenever this window comes back to the front.</summary>
+    private void WatchCrashReports()
+    {
+        ShowCrashReportUsage();
+        Activated += (_, _) => ShowCrashReportUsage();
+    }
+
+    private void ShowCrashReportUsage()
+    {
+        var (count, bytes) = CrashReports.Measure(AppPaths.Crashes);
+        CrashReportsUsage.Text = count switch
+        {
+            0 => "No crash reports",
+            1 => $"1 crash report, {PreviewCache.Describe(bytes)}",
+            _ => $"{count} crash reports, {PreviewCache.Describe(bytes)}",
+        };
+        ClearCrashReportsButton.IsEnabled = count > 0;
+    }
+
+    // The policy's own box saves at once; this window's copy follows it, so pressing Save later keeps what was chosen there.
+    private void PrivacyPolicy_Click(object sender, RoutedEventArgs e) =>
+        PrivacyPolicyDialog.ShowFor(this, _settings.SendCrashReports, on =>
+        {
+            _settings.SendCrashReports = on;
+            CrashReportsCheck.IsChecked = on;
+        });
+
+    private void OpenCrashReportsFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (!PrivacyPolicyDialog.OpenCrashReportsFolder())
+            ErrorText.Text = $"The crash reports folder could not be opened: {AppPaths.Crashes}";
+    }
+
+    private void ClearCrashReports_Click(object sender, RoutedEventArgs e)
+    {
+        CrashReports.Clear(AppPaths.Crashes);
+        ShowCrashReportUsage();
     }
 
     // ----- Search -----

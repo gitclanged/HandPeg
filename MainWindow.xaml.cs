@@ -164,7 +164,15 @@ public partial class MainWindow : Window
         };
 
         // The Layout button, in the header and in Encoder Mode's top bar: one flyout, opened beside whichever is rested on.
-        _layoutHover = new HoverFlyout([LayoutButton, LayoutButtonTop], LayoutFlyout, LayoutFlyoutPanel) { Opening = OpeningLayoutFlyout, HoldsWhile = () => _layoutRowMenuOpen };
+        // Resting on the Layout button opens the Layout Selector (layouts and themes, live); a click opens its menu (Pass 4.1B).
+        _layoutHover = new HoverFlyout([LayoutButton, LayoutButtonTop], LayoutSelector, LayoutSelectorPanel)
+        {
+            Opening = OpeningLayoutSelector,
+            HoldsWhileFocused = true,
+            CanOpen = () => !LayoutFlyout.IsOpen,
+        };
+        PreviewMouseDown += CloseLayoutMenuOnPress;
+        Deactivated += (_, _) => CloseLayoutMenu();
         _autosave.Tick += Autosave_Tick;
         _autosave.Start();
 
@@ -182,6 +190,7 @@ public partial class MainWindow : Window
                 UpdateMasterStretch();
         };
         InitializeDocking();
+        InitializeTitleBar();
         StartupTrace.Mark("MainWindow: docking laid out");
 
         // The player's surface and the drop hint as they are to be in the first frame (the XAML starts them so too).
@@ -305,6 +314,9 @@ public partial class MainWindow : Window
         {
             ShowFirstFrame();
             StartupTrace.FirstFrame();
+
+            // The crash sentinel starts once the window is idle (no process before the first frame).
+            CrashReporter.FirstFrameShown(Dispatcher);
 
             // How long the launch took, for the log: from the process starting to the window being on screen.
             var sinceStart = (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalMilliseconds;
@@ -493,6 +505,10 @@ public partial class MainWindow : Window
     /// </summary>
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
+        // From here the user is closing HandPeg: ended from outside while the save prompt is up (the taskbar, Task
+        // Manager), the crash sentinel takes it for the user's doing, not a crash. Going back to work clears it.
+        CrashReporter.MarkUserClosing(true);
+
         // The side window's place and size are kept with the arrangement. Set before the window's size is remembered,
         // which writes the settings file: the arrangement's own save waits half a second, and the app is gone by then.
         _viewModel.SavePaneLayout(s => s.DockLayout = _dock.Save());
@@ -527,12 +543,16 @@ public partial class MainWindow : Window
                 break;
         }
 
-        if (!e.Cancel)
+        if (e.Cancel)
+            CrashReporter.MarkUserClosing(false);
+        else
             _dock.Shutdown();
     }
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
+        CrashReporter.Note("app", "window closed");
+
         // Encodes, downloads and probes still running go first, children included, so nothing is left
         // behind in the background and nothing still holds a file in the session folder.
         _windowClosing.Cancel();
@@ -1164,11 +1184,20 @@ public partial class MainWindow : Window
 
     private readonly System.Windows.Threading.DispatcherTimer _workFlyoutClose = new() { Interval = TimeSpan.FromMilliseconds(260) };
 
+    // From the progress chip it opens above it; from the status in the title bar (the status bar hidden), under it.
     private void WorkChip_MouseEnter(object sender, MouseEventArgs e)
     {
         _workFlyoutClose.Stop();
         PauseBackgroundToggle.IsChecked = WorkScheduler.IsPausedByUser(WorkLane.Background);
         PauseIdleToggle.IsChecked = WorkScheduler.IsPausedByUser(WorkLane.Idle);
+        var fromTitle = ReferenceEquals(sender, TitleStatus);
+        if (!WorkFlyout.IsOpen)
+        {
+            WorkFlyout.PlacementTarget = fromTitle ? TitleStatus : WorkChip;
+            WorkFlyout.Placement = fromTitle ? PlacementMode.Bottom : PlacementMode.Top;
+            WorkFlyoutPanel.Margin = fromTitle ? new Thickness(0, 4, 0, 0) : new Thickness(0, 0, 0, 4);
+        }
+
         WorkFlyout.IsOpen = true;
     }
 
@@ -1179,7 +1208,7 @@ public partial class MainWindow : Window
             _workFlyoutClose.Tick += (_, _) =>
             {
                 _workFlyoutClose.Stop();
-                if (!WorkChip.IsMouseOver && !WorkFlyoutPanel.IsMouseOver)
+                if (!WorkChip.IsMouseOver && !TitleStatus.IsMouseOver && !WorkFlyoutPanel.IsMouseOver)
                     WorkFlyout.IsOpen = false;
             };
             _workFlyoutCloseHooked = true;
@@ -1556,11 +1585,17 @@ public partial class MainWindow : Window
 
     private void OpenSettings_Click(object sender, RoutedEventArgs e)
     {
-        if (new SettingsWindow(_viewModel) { Owner = this }.ShowDialog() == true)
+        CrashReporter.Note("settings", "opened");
+        var saved = new SettingsWindow(_viewModel) { Owner = this }.ShowDialog() == true;
+        CrashReporter.Note("settings", saved ? "saved" : "closed");
+        if (saved)
         {
             _viewModel.OnSettingsSaved();
             _mpv?.SetHardwareAcceleration(AppSettings.Current.PlayerHardwareAcceleration);
         }
+
+        // Crash reports switched on or off there (or in the first-run window it can open): the sentinel follows.
+        CrashReporter.FollowSetting();
 
         // Check for Updates, in that window, may have found (or brought in) a release: it is offered here as one found at startup is.
         if (AppUpdater.ReadyVersion is { } update)
@@ -1660,6 +1695,7 @@ public partial class MainWindow : Window
         // where the jump lands.
         if (LiveGraphHasSound)
             _liveAudioSeekMs = positionMs;
+        CrashReporter.Note("seek", string.Create(CultureInfo.InvariantCulture, $"to {positionMs / 1000.0:0.0} s{(exact ? "" : " (to an I-frame)")}"));
         ApplyLiveFilter((positionMs, exact));
     }
 
@@ -1864,7 +1900,10 @@ public partial class MainWindow : Window
         await EnsurePlayerAsync();
     }
 
-    /// <summary>Plays a newly loaded source.</summary>
+    /// <summary>
+    /// Opens a newly loaded source in the player: in Editor Mode paused on its first frame (a project or a file opened
+    /// is looked at before it is played, Pass 4.1C), in Encoder Mode playing, as it always has.
+    /// </summary>
     private void PlayMedia(string path)
     {
         if (!File.Exists(path))
@@ -1874,7 +1913,7 @@ public partial class MainWindow : Window
         }
 
         StopShuttle();
-        OpenInPlayer(_viewModel.PlayerSource, 0, paused: false);
+        OpenInPlayer(_viewModel.PlayerSource, 0, paused: _viewModel.IsEditorMode);
 
         // A new video is seen whole on the time bars.
         FitTimeline(announce: false);
@@ -2169,6 +2208,9 @@ public partial class MainWindow : Window
         if (graph.Text.Length == 0)
             player.SetFiltering(false);
 
+        // For a crash report: the graph's size and its filters' names, never what is in them.
+        CrashReporter.SetContext("graph", graph.Text.Length == 0 ? "none" : CrashSummaries.Graph(graph.Text) + (hasSound ? ", with sound" : ""));
+
         // Without sound in the graph the player plays a track of the file itself. After a graph that had sound
         // it has none selected at all, so the track is given again.
         ApplyAudioTrack();
@@ -2190,6 +2232,7 @@ public partial class MainWindow : Window
     private void OnPlayerError(string text)
     {
         AppLog.Write($"Player: {text}");
+        CrashReporter.Note("player", text);
         if (_mpv is not { } player || _liveGraph.Length == 0
             || !(text.Contains("lavfi", StringComparison.OrdinalIgnoreCase) || text.Contains("filter", StringComparison.OrdinalIgnoreCase)))
         {
@@ -2208,6 +2251,7 @@ public partial class MainWindow : Window
         var refused = _liveStamp;
         ClearLiveFilter(player);
         _failedLiveStamp = refused;
+        CrashReporter.SetContext("graph", "refused by the player: the source is shown");
         _viewModel.StatusText = $"Live Preview could not run the filters as they are set, and shows the source instead ({text}).";
     }
 
@@ -3133,7 +3177,7 @@ public partial class MainWindow : Window
     // Reset Panes Layout (the Views menu), and Reset Layout (the Layout flyout).
     private void ResetPanesLayout_Click(object sender, RoutedEventArgs e)
     {
-        _layoutHover.Close();
+        CloseLayoutMenu();
         _viewModel.ResetPaneLayout();
         _dock.Reset();
         ViewsButton.IsChecked = false;
@@ -3206,7 +3250,11 @@ public partial class MainWindow : Window
     // A button that opened a menu would, clicked again to close it, open it straight back up (see
     // TimelineOptionsPopup_Opened). The views menu, the bins and the keyframe menu share the cure: each popup
     // knows its button (its placement target), which is deaf while the popup is open.
-    private void ViewsPopup_Opened(object? sender, EventArgs e) => ViewsButton.IsHitTestVisible = EditorViewsButton.IsHitTestVisible = false;
+    private void ViewsPopup_Opened(object? sender, EventArgs e)
+    {
+        FillViewsLists();
+        ViewsButton.IsHitTestVisible = EditorViewsButton.IsHitTestVisible = false;
+    }
 
     private void ViewsPopup_Closed(object? sender, EventArgs e) =>
         Dispatcher.BeginInvoke(() => ViewsButton.IsHitTestVisible = EditorViewsButton.IsHitTestVisible = true, System.Windows.Threading.DispatcherPriority.Input);
@@ -5352,8 +5400,9 @@ public partial class MainWindow : Window
     /// </summary>
     private void UpdateBottomBar()
     {
+        // While the Export tab holds the output row (Pass 4.1B), the status bar has the bottom to itself.
         var editor = _viewModel.IsEditorMode;
-        var merged = editor && ActualWidth >= MergedBottomBarWidth;
+        var merged = editor && ActualWidth >= MergedBottomBarWidth && ReferenceEquals(DestinationBar.Parent, BottomBar);
 
         var columns = BottomBar.ColumnDefinitions;
         (columns[0].Width, columns[1].Width) = merged

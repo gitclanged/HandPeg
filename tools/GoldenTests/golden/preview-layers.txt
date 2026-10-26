@@ -1,0 +1,111 @@
+# Render Preview of two stretches of the layered timeline at half size.
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -ss
+  10
+  -i
+  D:/media/main.mp4
+  -ss
+  60
+  -i
+  D:/media/main.mp4
+  -filter_complex <graph 1>
+  -map
+  [v]
+  -map
+  [a]
+  -c:v
+  libx264
+  -preset
+  ultrafast
+  -crf
+  24
+  -c:a
+  aac
+  -b:a
+  128k
+  -movflags
+  +faststart
+  D:/session/previews/preview.mp4
+
+graph 1 (-filter_complex): 30 chains, 3018 characters
+  1| [0:v:0]trim=end=4
+   |   ,setpts=PTS-STARTPTS
+   |   ,split=2[bg_in0][center_in0]
+  2| color=c=black:s=1080x1920:r=30:d=4
+   |   ,format=yuv420p[base0]
+  3| [bg_in0]scale=1080:1920:force_original_aspect_ratio=increase
+   |   ,crop=1080:1920
+   |   ,boxblur=20:2
+   |   ,eq=brightness=-0.15[bg0]
+  4| [base0][bg0]overlay=0:0:eof_action=pass[stage00]
+  5| [center_in0]scale=1080:608
+   |   ,format=yuva420p[center_layer0]
+  6| [stage00][center_layer0]overlay=0:656:eof_action=pass[stage10]
+  7| movie='D\:/media/clip1.mp4':sp=2
+   |   ,trim=start=3:end=15
+   |   ,setpts=PTS-3/TB
+   |   ,scale=972:546
+   |   ,format=yuva420p[ui1_layer0]
+  8| [stage10][ui1_layer0]overlay=54:96:eof_action=pass:enable='between(t,0,12)'[stage20]
+  9| movie='D\:/media/it'\\\''s logo.png'
+   |   ,scale=270:136
+   |   ,format=yuva420p
+   |   ,lutyuv=a=val*0.8
+   |   ,rotate=12*PI/180:ow=294:oh=190:c=black@0[ui2_layer0]
+ 10| [stage20][ui2_layer0]overlay=744:11[stage30]
+ 11| color=c=0x000000@0:s=864x218:r=1
+   |   ,format=yuva444p
+   |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Hello, “world”\: it\'\''s 50%':expansion=none:fontsize=81.75:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=2:x=(w-text_w)/2:y=90.339-ascent
+   |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Second line':expansion=none:fontsize=81.75:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=2:x=(w-text_w)/2:y=184.343-ascent
+   |   ,trim=end_frame=1
+   |   ,format=yuva420p[ui3_layer0]
+ 12| [stage30][ui3_layer0]overlay=108:1440:enable='between(t,-8,0)'
+   |   ,setsar=1[pv0]
+ 13| [0:a:0]atrim=start=0:end=4
+   |   ,asetpts=PTS-STARTPTS
+   |   ,aformat=channel_layouts=stereo[pa0_0]
+ 14| [pa0_0]apad=whole_dur=4[pa0]
+ 15| [1:v:0]trim=end=2
+   |   ,setpts=PTS-STARTPTS
+   |   ,split=2[bg_in1][center_in1]
+ 16| color=c=black:s=1080x1920:r=30:d=2
+   |   ,format=yuv420p[base1]
+ 17| [bg_in1]scale=1080:1920:force_original_aspect_ratio=increase
+   |   ,crop=1080:1920
+   |   ,boxblur=20:2
+   |   ,eq=brightness=-0.15[bg1]
+ 18| [base1][bg1]overlay=0:0:eof_action=pass[stage01]
+ 19| [center_in1]scale=1080:608
+   |   ,format=yuva420p[center_layer1]
+ 20| [stage01][center_layer1]overlay=0:656:eof_action=pass[stage11]
+ 21| movie='D\:/media/clip1.mp4':sp=52
+   |   ,trim=start=53:end=15
+   |   ,setpts=PTS-53/TB
+   |   ,scale=972:546
+   |   ,format=yuva420p[ui1_layer1]
+ 22| [stage11][ui1_layer1]overlay=54:96:eof_action=pass:enable='between(t,-50,-38)'[stage21]
+ 23| movie='D\:/media/it'\\\''s logo.png'
+   |   ,scale=270:136
+   |   ,format=yuva420p
+   |   ,lutyuv=a=val*0.8
+   |   ,rotate=12*PI/180:ow=294:oh=190:c=black@0[ui2_layer1]
+ 24| [stage21][ui2_layer1]overlay=744:11[stage31]
+ 25| color=c=0x000000@0:s=864x218:r=1
+   |   ,format=yuva444p
+   |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Hello, “world”\: it\'\''s 50%':expansion=none:fontsize=81.75:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=2:x=(w-text_w)/2:y=90.339-ascent
+   |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Second line':expansion=none:fontsize=81.75:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=2:x=(w-text_w)/2:y=184.343-ascent
+   |   ,trim=end_frame=1
+   |   ,format=yuva420p[ui3_layer1]
+ 26| [stage31][ui3_layer1]overlay=108:1440:enable='between(t,-58,-50)'
+   |   ,setsar=1[pv1]
+ 27| [1:a:0]atrim=start=0:end=2
+   |   ,asetpts=PTS-STARTPTS
+   |   ,aformat=channel_layouts=stereo[pa1_0]
+ 28| [pa1_0]apad=whole_dur=2[pa1]
+ 29| [pv0][pa0][pv1][pa1]concat=n=2:v=1:a=1[joined][a]
+ 30| [joined]scale=trunc(iw*0.5/2)*2:trunc(ih*0.5/2)*2
+   |   ,format=yuv420p[v]

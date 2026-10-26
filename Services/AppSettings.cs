@@ -73,6 +73,9 @@ public sealed class ModeProfile
     public string? DockLayout { get; set; }
     public List<SavedDockLayout> SavedLayouts { get; set; } = [];
     public bool ShowClipKeyframes { get; set; }
+    public List<string>? HiddenTabs { get; set; }
+    public bool ShowMasterTimeline { get; set; } = true;
+    public bool ShowStatusBar { get; set; } = true;
 }
 
 /// <summary>A layout of the user's own (Layout button, Save Current Layout): its name, its place (1 to 3), and the arrangement (Docking.DockLayoutState as JSON).</summary>
@@ -140,6 +143,15 @@ public sealed class AppSettings
     public bool UseFfmpegForOlderNvidiaDrivers { get; set; }
 
     public string WhisperReleaseUrl { get; set; } = "";
+
+    // ----- Pinned dependency builds (v4.1) -----
+
+    /// <summary>
+    /// Off (the default): FFmpeg, libmpv and whisper.cpp are installed and updated only to the builds this version of HandPeg
+    /// was tested with (see <see cref="DependencyUpdater.PinnedBuilds"/>). On: to their newest upstream releases, untested.
+    /// Turned on only after a warning; Restore Pinned Recommended Versions turns it off again. yt-dlp follows its newest release either way.
+    /// </summary>
+    public bool AllowUnpinnedDependencyUpdates { get; set; }
 
     /// <summary>File name of the speech model auto-captions use, in the models folder.</summary>
     public string WhisperModel { get; set; } = "ggml-base.en.bin";
@@ -525,6 +537,24 @@ public sealed class AppSettings
     /// <summary>Remove Dead Air: a silence has to last this long, in seconds, to be cut.</summary>
     public double DeadAirMinSeconds { get; set; } = 1;
 
+    // ----- Diagnostics: crash reports (Settings > General > Diagnostics; see CrashReporter) -----
+
+    /// <summary>
+    /// Writes a crash report (.hpcrash, with no names, paths or words from the media in it) to the crashes folder when
+    /// HandPeg falls over and runs the small sentinel process that catches native crashes. When a
+    /// <see cref="CrashReportEndpoint"/> is set, each report is also sent once to it a little after a start
+    /// (CrashReports.UploadPendingAsync). Off: nothing is written or sent and no sentinel runs.
+    /// </summary>
+    public bool SendCrashReports { get; set; } = true;
+
+    /// <summary>
+    /// Where crash reports are sent (HTTPS; http only to this PC, for tests). Set in appsettings.json only, not in Settings.
+    /// Empty by default (the user's call, v4.1.0): HandPeg has no crash report service yet, so reports stay on the PC.
+    /// </summary>
+    public string CrashReportEndpoint { get; set; } = DefaultCrashReportEndpoint;
+
+    public const string DefaultCrashReportEndpoint = "";
+
     // ----- First run, appearance and mode -----
 
     /// <summary>False until the first-run window has been completed once.</summary>
@@ -618,6 +648,25 @@ public sealed class AppSettings
 
     /// <summary>What a double-click on a slider or a number box puts it back to: the value of the style preset in use, or the built-in default.</summary>
     public string DoubleClickResetsTo { get; set; } = ResetToStyle;
+
+    /// <summary>
+    /// The settings tabs this mode hides (Tabs and Panes, Pass 4.1B), by pane id ("Tab:Video"); null for the mode's own
+    /// defaults (<see cref="DefaultHiddenTabs"/>). Replaced whole when it changes, never changed in place (the profiles share lists).
+    /// </summary>
+    public List<string>? HiddenTabs { get; set; }
+
+    /// <summary>
+    /// What each mode hides until asked: Editor Mode has the Export tab instead of Video, Audio and Chapters (their
+    /// contents are in it); Encoder Mode keeps those and its destination bar, and has no Export tab.
+    /// </summary>
+    public static IReadOnlyList<string> DefaultHiddenTabs(string mode) =>
+        mode == EditorMode ? ["Tab:Video", "Tab:Audio", "Tab:Chapters"] : ["Tab:Export"];
+
+    /// <summary>The master timeline pane (Tabs and Panes), per mode.</summary>
+    public bool ShowMasterTimeline { get; set; } = true;
+
+    /// <summary>The status bar at the bottom of the window, per mode. Hidden, the status and progress are in the title bar (Pass 4.1B).</summary>
+    public bool ShowStatusBar { get; set; } = true;
 
     /// <summary>The Cut Segments pane beside the player. Encoder Mode starts with it; Editor Mode has the Keyframes pane there instead.</summary>
     public bool ShowCutSegmentsPane { get; set; } = true;
@@ -815,6 +864,7 @@ public sealed class AppSettings
         StartWithFrameEngine = editor;
         (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (!editor, editor, true);
         ShowMediaBrowser = editor;
+        (HiddenTabs, ShowMasterTimeline, ShowStatusBar) = (null, true, true);
         if (!editor)
             (DefaultVideoEncoder, DefaultAudioEncoder, DefaultAudioBitrate) = ("", "", "");
 
@@ -921,6 +971,7 @@ public sealed class AppSettings
         copy.SplashStylePresets = [.. SplashStylePresets];
         copy.OverlayEncodingPresets = [.. OverlayEncodingPresets];
         copy.SavedLayouts = [.. SavedLayouts];
+        copy.HiddenTabs = HiddenTabs is null ? null : [.. HiddenTabs];
         copy.DefaultCaptionStyle = DefaultCaptionStyle?.Clone();
         return copy;
     }

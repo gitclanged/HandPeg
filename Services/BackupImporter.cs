@@ -88,6 +88,14 @@ public static class BackupImporter
                     else
                         skipped++;
                 }
+                else if (root is not null && LegacyProject.IsLegacy(root))
+                {
+                    // A HandPeg 1.x project: brought in as a project of today's format, as far as it still maps. The .txt stays where it was.
+                    if (AddProject(Path.GetFileNameWithoutExtension(path), ProjectStore.Serialize(ProjectStore.Deserialize(text))))
+                        imported++;
+                    else
+                        skipped++;
+                }
                 else if (root is not null && GetBundledProjects(root) is { Count: > 0 } bundled)
                 {
                     foreach (var (name, project) in bundled)
@@ -103,7 +111,7 @@ public static class BackupImporter
                     skipped++;
                 }
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
             {
                 skipped++;
             }
@@ -136,7 +144,10 @@ public static class BackupImporter
         return entries.All(entry => entry.Value is JsonObject project && IsProject(project)) ? entries : [];
     }
 
-    /// <summary>A project says that it is one, in the format this version reads, and can be read as such. Projects from before 2.0 are not taken.</summary>
+    /// <summary>
+    /// A .hproj project says that it is one and can be read as such. One of a newer format is taken as it is (its file is
+    /// copied unchanged, and asks before it opens); HandPeg 1.x projects are converted by the caller instead.
+    /// </summary>
     private static bool IsProject(JsonObject node)
     {
         if (!ProjectStore.IsProject(node))
@@ -144,7 +155,7 @@ public static class BackupImporter
 
         try
         {
-            ProjectStore.Deserialize(node.ToJsonString());
+            ProjectStore.Deserialize(node.ToJsonString(), allowNewer: true);
             return true;
         }
         catch (Exception ex) when (ex is JsonException or InvalidDataException)

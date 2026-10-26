@@ -1,0 +1,82 @@
+# Effect cards in every zone: a grade with keyframes, a blur over part of the clip, a flip, a chroma key, rounded and soft edges, a shadow, a blend mode; an adjustment layer; the Sequence Output's own effects.
+# reads the cuts list: no; the chapters list: no
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -i
+  D:/media/main.mp4
+  -map
+  0:v:0
+  -map
+  0:a:0?
+  -vf <graph 1>
+  -c:v
+  libx264
+  -preset
+  medium
+  -crf
+  23
+  -pix_fmt
+  yuv420p
+  -metadata:s:a:0
+  title=Track 1
+  -c:a:0
+  aac
+  -b:a:0
+  160k
+  -map_chapters
+  -1
+  D:/out/effects.mp4
+
+graph 1 (-vf): 25 chains, 1711 characters
+  1| null[center_in]
+  2| color=c=black:s=1920x1080:r=30:d=120
+   |   ,format=yuv420p[stage0]
+  3| [center_in]scale=1920:1080
+   |   ,format=yuva420p[center_layer]
+  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
+  5| movie='D\:/media/card.png'
+   |   ,scale=768:576
+   |   ,format=yuva420p
+   |   ,split[ui1_fc][ui1_fa_in]
+  6| [ui1_fa_in]alphaextract
+   |   ,hflip[ui1_fa]
+  7| [ui1_fc]eq=contrast=1.2:brightness='clip(0+0.2*((1-cos(clip((t-0)/2,0,1)*PI))/2),-1,1)':saturation=1.3:gamma=1:eval=frame
+   |   ,boxblur=4:2:enable='between(t,1,5)'
+   |   ,hflip[ui1_fd]
+  8| [ui1_fd][ui1_fa]alphamerge
+   |   ,chromakey=0x00FF00:0.2:0.05
+   |   ,despill=type=green:mix=0.5:expand=0
+   |   ,format=yuva420p
+   |   ,split[ui1_pic][ui1_a_in]
+  9| [ui1_a_in]alphaextract[ui1_a0]
+ 10| color=c=black:s=768x576:r=1
+   |   ,format=gray
+   |   ,geq=lum='255*clip((58.5-hypot(max(58-X,0)+max(X-(W-1-58),0),max(58-Y,0)+max(Y-(H-1-58),0)))/8,0,1)'
+   |   ,trim=end_frame=1
+   |   ,loop=loop=-1:size=1[ui1_smask]
+ 11| [ui1_a0][ui1_smask]blend=all_mode=multiply:shortest=1[ui1_a1]
+ 12| [ui1_pic][ui1_a1]alphamerge[ui1_layer]
+ 13| [ui1_layer]split[ui1_top][ui1_shadow_in]
+ 14| [ui1_shadow_in]format=yuva420p
+   |   ,lutyuv=y=16:u=128:v=128:a=val*0.5
+   |   ,boxblur=2:1:0:0:2:1[ui1_shadow]
+ 15| [stage1][ui1_shadow]overlay=202:118:enable='between(t,0,20)'[ui1_shaded]
+ 16| [ui1_shaded]split=3[ui1_u0][ui1_u1][ui1_u2]
+ 17| [ui1_u0]format=yuva420p
+   |   ,lutyuv=y=16:u=128:v=128:a=0[ui1_cv]
+ 18| [ui1_cv][ui1_top]overlay=192:108:enable='between(t,0,20)'
+   |   ,format=gbrap
+   |   ,split[ui1_lc][ui1_la]
+ 19| [ui1_la]alphaextract[ui1_lm]
+ 20| [ui1_lc]format=gbrp[ui1_lrgb]
+ 21| [ui1_u1]format=gbrp[ui1_urgb]
+ 22| [ui1_urgb][ui1_lrgb]blend=all_mode=screen:shortest=1[ui1_mix]
+ 23| [ui1_mix][ui1_lm]alphamerge[ui1_mixa]
+ 24| [ui1_u2][ui1_mixa]overlay=0:0[stage2]
+ 25| [stage2]hue=h=30:enable='between(t,5,10)'
+   |   ,vignette=angle=0.628:enable='between(t,5,10)'
+   |   ,setsar=1
+   |   ,colortemperature=temperature=5000:mix=1:pl=0

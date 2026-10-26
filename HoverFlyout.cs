@@ -64,7 +64,7 @@ public sealed class HoverFlyout
         _open.Tick += (_, _) =>
         {
             _open.Stop();
-            if (_resting.IsMouseOver)
+            if (_resting.IsMouseOver && CanOpen?.Invoke() != false)
                 Open(_resting);
         };
         _close.Tick += (_, _) =>
@@ -86,6 +86,9 @@ public sealed class HoverFlyout
 
     /// <summary>Stays open while this says so: a menu opened from one of its rows, a window of its own the pointer is on.</summary>
     public Func<bool>? HoldsWhile { get; init; }
+
+    /// <summary>Whether resting on the button may open it now: not while something the button opened by a click is open (the Layout button's menu).</summary>
+    public Func<bool>? CanOpen { get; init; }
 
     /// <summary>What held it open has let go: it closes a moment later, unless the pointer is on the button or the flyout.</summary>
     public void Release() => Left();

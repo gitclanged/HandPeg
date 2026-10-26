@@ -97,6 +97,7 @@ public partial class MainViewModel : ObservableObject
                 _ = ProbeHardwareEncodersAsync();
             _ = CheckDependencyUpdatesAsync();
             _ = AutoUpdateDependenciesLaterAsync();
+            _ = UploadCrashReportsLaterAsync();
         }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
@@ -795,10 +796,13 @@ public partial class MainViewModel : ObservableObject
     /// <summary>The rate controls of the selected encoder, by its own names; refilled when the encoder changes.</summary>
     public ObservableCollection<string> RateControlChoices { get; } = [RcCrf, RcCbr, RcVbr];
 
-    /// <summary>What <see cref="RateControl"/> is called by the selected encoder. CBR and VBR are the same everywhere; the constant quality has four names.</summary>
-    public string RateControlChoice
+    /// <summary>
+    /// What <see cref="RateControl"/> is called by the selected encoder. CBR and VBR are the same everywhere; the constant
+    /// quality has four names. Null while the list is being refilled (<see cref="UpdateRateControlChoices"/>).
+    /// </summary>
+    public string? RateControlChoice
     {
-        get => RateControl == ConstantBitrate ? RcCbr
+        get => _refillingRateControl ? null : RateControl == ConstantBitrate ? RcCbr
             : RateControl == AverageBitrate ? RcVbr
             : VideoEncoder.Family switch
             {
@@ -819,7 +823,15 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>Refills the Rate Control box for the selected encoder; what is chosen stays chosen, under its new name.</summary>
+    // Set while the Rate Control list is refilled: see UpdateRateControlChoices.
+    private bool _refillingRateControl;
+
+    /// <summary>
+    /// Refills the Rate Control box for the selected encoder; what is chosen stays chosen, under its new name. While the
+    /// list is refilled the choice reads as nothing: the box writes nothing into it when its item goes, WPF reads it
+    /// straight back, and the new encoder's name (CQP for CRF) handed to the box in the middle of its own refill left it
+    /// showing nothing, though selected (Pass 4.1B; found with the Video tab made before the first frame).
+    /// </summary>
     private void UpdateRateControlChoices()
     {
         string[] choices = VideoEncoder.Family switch
@@ -832,9 +844,17 @@ public partial class MainViewModel : ObservableObject
 
         if (!choices.SequenceEqual(RateControlChoices))
         {
-            RateControlChoices.Clear();
-            foreach (var choice in choices)
-                RateControlChoices.Add(choice);
+            _refillingRateControl = true;
+            try
+            {
+                RateControlChoices.Clear();
+                foreach (var choice in choices)
+                    RateControlChoices.Add(choice);
+            }
+            finally
+            {
+                _refillingRateControl = false;
+            }
         }
 
         OnPropertyChanged(nameof(RateControlChoice));
@@ -1273,6 +1293,13 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
     private async Task LoadSourceAsync()
     {
+        // A project file (a .hproj, or a HandPeg 1.x project recognised by its shape), typed in or dropped, opens the project.
+        if (ProjectStore.IsProjectFile(SourcePath.Trim().Trim('"')))
+        {
+            await LoadProjectAsync(SourcePath.Trim().Trim('"'));
+            return;
+        }
+
         // A web address is fetched by yt-dlp, which is downloaded the first time one is loaded.
         if (IsWebAddress(SourcePath) && !await RequireAsync("Downloading a video", [DependencyUpdater.YtDlp, DependencyUpdater.Ffmpeg], []))
             return;
@@ -1397,6 +1424,8 @@ public partial class MainViewModel : ObservableObject
         if (IsEditorMode && HasSource && _mainVideoRow.Filmstrip is null)
             _ = LoadMainFilmstripAsync(LocalMediaPath);
         StatusText = $"{settings.UiMode}: {(IsEditorMode ? "the tools for cutting, layering and captioning." : "the lean front end for converting and trimming.")}";
+        CrashReporter.SetContext("mode", settings.UiMode);
+        CrashReporter.Note("mode", settings.UiMode);
     }
 
     /// <summary>What the mode button says: the mode in use.</summary>
@@ -1440,10 +1469,17 @@ public partial class MainViewModel : ObservableObject
             return (false, $"Source not found: {source}");
         }
 
+        // A crash report never names the file, not even on its own (a failed probe's message may).
+        CrashReporter.KeepOut(localPath);
         var mediaInfo = await MediaProbe.ProbeAsync(localPath, cancellationToken);
         ResetForNewSource();
         LocalMediaPath = localPath;
         SetMediaInfo(mediaInfo);
+
+        // For a crash report: what kind of file this is (container, codecs, size, rate, length), never which.
+        var mediaSummary = CrashSummaries.Media(localPath, mediaInfo, Layers.Count);
+        CrashReporter.SetContext("media", mediaSummary);
+        CrashReporter.Note("media", "opened: " + mediaSummary);
 
         // Every new source gets its own default name, so one encode never lands on top of the previous one.
         DestinationPath = Path.Combine(
@@ -1695,12 +1731,19 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            await FfmpegRunner.RunAsync(command, progress, cancellationToken);
+            // For a crash report: the encoders, the output's kind and length, never the files (the output's name included).
+            CrashReporter.KeepOut(DestinationPath);
+            var exportSummary = CrashSummaries.Command(command, expected);
+            CrashReporter.SetContext("export", "running: " + exportSummary);
+            CrashReporter.Note("export", "started: " + exportSummary);
+            await FfmpegRunner.RunAsync(command, progress, cancellationToken, graphInFile: true);
+            CrashReporter.Note("export", "finished");
             NotifyFinished("Encode complete", Path.GetFileName(DestinationPath.Trim().Trim('"')));
             return "Encode complete.";
         }
         catch (InvalidOperationException ex) when (
-            AppSettings.Current.AutoFallbackToSoftware
+            ex is not FfmpegCommandException
+            && AppSettings.Current.AutoFallbackToSoftware
             && HardwareFallback.TryRewrite(command, out _, out _, out _))
         {
             // The hardware encoder let us down: one more attempt on the software encoder for the same codec.
@@ -1723,7 +1766,9 @@ public partial class MainViewModel : ObservableObject
             ProgressValue = 0;
             IsProgressIndeterminate = true;
             SetTaskbarProgress(TaskbarItemProgressState.Normal);
-            await FfmpegRunner.RunAsync(retry, progress, cancellationToken);
+            CrashReporter.Note("export", $"{hardware} failed, retried with {software}");
+            await FfmpegRunner.RunAsync(retry, progress, cancellationToken, graphInFile: true);
+            CrashReporter.Note("export", "finished");
             NotifyFinished("Encode complete", Path.GetFileName(DestinationPath.Trim().Trim('"')));
             return $"Encode complete on {software}: the hardware encoder {hardware} failed, so the software encoder was used.";
         }
@@ -1731,6 +1776,7 @@ public partial class MainViewModel : ObservableObject
         {
             // Finished, failed or cancelled: the taskbar button goes back to plain.
             SetTaskbarProgress(TaskbarItemProgressState.None);
+            CrashReporter.SetContext("export", null);
         }
     });
 
@@ -1778,6 +1824,8 @@ public partial class MainViewModel : ObservableObject
         _operationCancellation = cancellation;
         _acceptProgressReports = true;
         IsBusy = true;
+        CrashReporter.Note("op", "started: " + title);
+        var ended = "done";
 
         string? outcome;
         try
@@ -1808,11 +1856,15 @@ public partial class MainViewModel : ObservableObject
         catch (OperationCanceledException)
         {
             outcome = "Cancelled.";
+            ended = "cancelled";
         }
         catch (Exception ex)
         {
             outcome = $"Error: {ex.Message}";
+            ended = "failed: " + ex.GetType().Name;
         }
+
+        CrashReporter.Note("op", title + ": " + ended);
 
         // Progress callbacks are posted, so some can still arrive after the operation has ended.
         _acceptProgressReports = false;

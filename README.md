@@ -1,11 +1,45 @@
-HandPeg is an ffmpeg GUI with yt-dlp and whisper integration, for easy video downloads and subtitle generation. 
-It has significantly better video editing capabilities than traditional video encoding utilities, while retaining a simple and minimalist approach to features and design.
-It was made by myself to greatly simplify the workflow for turning gameplay clips into social media-ready uploads.
-I made version 1.0 in a single day using claude code and gemini, so I make no guarantees about functionality or safety of the code itself. I welcome review from experienced programmers.<img width="2559" height="1439" alt="Screenshot 2026-10-09 144952" src="https://github.com/user-attachments/assets/452b9485-444f-4178-a8e1-0aaab450522e" />
-<img width="2559" height="1439" alt="Screenshot 2026-10-09 145251" src="https://github.com/user-attachments/assets/a28ff05b-c144-44d7-a1f5-74db70a0c318" />
-<img width="2559" height="1439" alt="Screenshot 2026-10-09 145131" src="https://github.com/user-attachments/assets/7e729ad3-41c1-4b11-96d5-eb8f89eb0ad5" />
-<img width="2559" height="1439" alt="Screenshot 2026-10-09 145144" src="https://github.com/user-attachments/assets/3200254d-1a09-4084-87e1-0fc9ab3a5d44" />
-<img width="2559" height="1439" alt="Screenshot 2026-10-09 145121" src="https://github.com/user-attachments/assets/6af55e4b-201a-4115-a5b2-c63e4f7c207d" />
-<img width="2560" height="1440" alt="Screenshot 2026-10-09 14-50-48" src="https://github.com/user-attachments/assets/debfc1eb-7ee9-42d4-8c7a-052c6e849b34" />
-<img width="2559" height="1439" alt="Screenshot 2026-10-09 144931" src="https://github.com/user-attachments/assets/14fadf40-86e1-4ba3-ab95-7e2fe46c61ac" />
+# HandPeg
 
+HandPeg is a featherweight, hardware-accelerated video editor and encoder for Windows, built for getting from a raw
+gameplay recording or screen capture to a finished highlight, short or upload as fast as possible.
+
+It has no middleware: every edit compiles straight to an FFmpeg filter graph, played live through libmpv on the GPU and
+encoded by FFmpeg on export. The window paints in well under a second and HandPeg idles under 200 MB of memory.
+
+## Two modes
+- **Editor Mode:** a multi-track timeline with video, image, text and audio layers, a live preview of the finished
+  picture and sound, effects, keyframes, fades and transitions.
+- **Encoder Mode:** a clean batch converter and downloader (yt-dlp): open a file or a link, trim with cut segments,
+  pick a preset, export or queue it.
+
+## What it does
+- **Live preview that keeps up:** seeks land inside each file at the nearest I-frame (remembered per file and in saved
+  projects), so long timelines and long recordings play and scrub at once, with the sound in step with the picture.
+- **Smart proxies:** heavy files (above 1080p, AV1, VP9, ProRes, 10-bit HEVC) get a small editing copy made in the
+  background, for the player only; exports always read the originals. An optional composed proxy of the whole timeline.
+- **Effect stacks in zones:** each clip's effects are cards, applied in order: key, mask, color, blur, blend modes,
+  adjustment layers and a Sequence Output stack, each animatable over its own time range.
+- **Keyframe lanes and curves:** a lane per property with a graph of the value over time, easings from Hold to Bounce
+  and Custom Bezier, and an anchor point that layers turn and scale about.
+- **Fades and transitions at a clip's corners:** drag a clip's top corners to fade its picture and sound; dissolves,
+  wipes, slides, zooms and blur dissolves, crossfades on one track or across tracks.
+- **Dockable layouts:** every part of the window is a pane you can dock, tab together or move to a side window. Built-in
+  layouts (Standard Editing, Color & Effects, Assembly & Media) and three of your own per mode, previewed live from the
+  Layout button before you keep one.
+- **Five themes:** Windows System, OLED Black, Leonardo, Reno and Reno Dark, chosen from the Layout button's Themes row.
+- **One Export tab:** video, audio, output, chapters and the Save As / Start Encode / Add to Queue buttons in one place,
+  with the progress of an export as a dimmed fill across the full width of the title bar.
+- **Auto-captions** with whisper.cpp, styled and previewed in the player, burned in on export.
+- **Hardware encoders** (NVENC, AMF, Quick Sync) tested on your PC, with a software fallback.
+- **Crash diagnostics without personal data:** a crash writes a small plain-text report to your PC with no file names,
+  paths, user names or words from your media. Nothing is sent anywhere; attach a report to an issue to share it.
+
+## Getting started
+Download the installer (`HandPeg-win-Setup.exe`) or the portable zip from the
+[Releases page](https://github.com/gitclanged/HandPeg/releases). On first start HandPeg downloads the engines it uses
+(FFmpeg, libmpv, yt-dlp and, if you want captions, whisper.cpp), pinned to builds tested with this version, and keeps
+them updated in the background. HandPeg updates itself from the same page. It needs Windows 10 or 11 (x64) and the
+.NET 8 Desktop Runtime.
+
+## License
+MIT: see [LICENSE](LICENSE).

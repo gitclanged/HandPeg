@@ -410,7 +410,10 @@ public partial class MainViewModel
     {
         try
         {
-            var path = ProjectStore.Save(CaptureState(name.Trim()));
+            var state = CaptureState(name.Trim());
+            var path = ProjectStore.Save(state);
+            CrashReporter.KeepOut(CrashSummaries.FilesIn(state).Append(path));
+            CrashReporter.Note("project", "saved: " + CrashSummaries.Project(state, ProjectFile.CurrentVersion));
             CurrentProjectPath = path;
             MarkSaved();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
@@ -426,12 +429,40 @@ public partial class MainViewModel
     public Task LoadProjectAsync(string filePath)
     {
         ProjectState state;
+        var opened = "Project loaded";
         try
         {
-            state = ProjectStore.Load(filePath);
+            CrashReporter.KeepOut(filePath);
+            try
+            {
+                state = ProjectStore.Load(filePath);
+            }
+            catch (NewerProjectFormatException newer)
+            {
+                // Saved by a newer HandPeg: said plainly, and opened only when asked, as far as this version knows it.
+                if (Confirm is null || !Confirm("Newer Project Format",
+                        $"{newer.Message}\n\nOpening it anyway reads what this version knows of it: anything the newer version added is not shown. "
+                        + "So that none of that is lost, saving over this file is refused: Save asks for another name.", "Open Anyway"))
+                {
+                    StatusText = $"Not opened: {newer.Message}";
+                    return Task.CompletedTask;
+                }
 
-            // An autosave is opened as work that has no file yet: Save then asks where, and the autosave is not overwritten by hand.
-            CurrentProjectPath = Path.GetFileNameWithoutExtension(filePath).EndsWith(ProjectStore.AutosaveSuffix, StringComparison.OrdinalIgnoreCase) ? "" : filePath;
+                state = ProjectStore.Load(filePath, allowNewer: true);
+                opened = $"Project loaded from a newer format ({newer.WrittenBy ?? $"format {newer.Version}"}; save it under another name)";
+            }
+            CrashReporter.KeepOut(CrashSummaries.FilesIn(state));
+            CrashReporter.Note("project", "opened: " + CrashSummaries.Project(state));
+
+            // An autosave is opened as work that has no file yet: Save then asks where, and the autosave is not overwritten by hand. So is a
+            // HandPeg 1.x project (its .txt is left as it was; the project is saved as a .hproj), and one of a newer format (never written over).
+            var isLegacy = filePath.EndsWith(ProjectStore.LegacyExtension, StringComparison.OrdinalIgnoreCase);
+            var isNewer = ProjectStore.PeekHeader(filePath) is { Version: > ProjectFile.CurrentVersion };
+            CurrentProjectPath = isLegacy || isNewer || Path.GetFileNameWithoutExtension(filePath).EndsWith(ProjectStore.AutosaveSuffix, StringComparison.OrdinalIgnoreCase)
+                ? ""
+                : filePath;
+            if (isLegacy)
+                opened = "HandPeg 1.x project loaded (the source, cuts and settings that still apply; Save writes it as a new .hproj project)";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException)
         {
@@ -447,7 +478,7 @@ public partial class MainViewModel
 
         EditingJob = null;
         RefreshRecentProjects(name);
-        return RestoreStateAsync(state, $"Project loaded: {name}");
+        return RestoreStateAsync(state, $"{opened}: {name}");
     }
 
     // ----- Manual cut entry -----

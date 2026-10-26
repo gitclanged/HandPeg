@@ -10,7 +10,8 @@ namespace HandPegApp.Services;
 /// downloaded tools, caches and logs under %LocalAppData%\HandPeg-Data. That last one is deliberately not
 /// %LocalAppData%\HandPeg, which is the folder the installer owns and removes on uninstall or reinstall.
 ///
-/// Portable: all of it in a HandPegData folder beside Update.exe, so the whole thing can be carried around.
+/// Portable (Velopack's portable archive): all of it in a HandPeg-Data folder beside HandPeg.exe and Update.exe, never
+/// inside "current", so the whole folder can be carried around and an update leaves the data as it was.
 ///
 /// Folders are not created by asking for their path: whoever writes into one creates it first.
 /// </summary>
@@ -21,7 +22,7 @@ public static class AppPaths
     /// <summary>When set, everything is kept in this folder, laid out as for a portable copy. For testing.</summary>
     public const string DataFolderVariable = "HANDPEG_DATA_DIR";
 
-    private const string PortableDataFolder = "HandPegData";
+    private const string PortableDataFolder = "HandPeg-Data";
 
     /// <summary>A file of this name beside the program makes the copy self-contained: everything it reads and writes is in its own folder.</summary>
     public const string PortableSentinel = "portable.txt";
@@ -59,11 +60,17 @@ public static class AppPaths
     // One folder holding everything (portable, or the override), or null when installed.
     private static readonly string? SingleRoot = FindSingleRoot();
 
-    /// <summary>True when this is Velopack's portable build, as Velopack itself reports it.</summary>
+    /// <summary>True for Velopack's portable build (or a self-contained copy): its data is in its own folder.</summary>
     public static bool IsPortable { get; private set; }
 
+    /// <summary>Where an installed copy keeps its settings and presets: what a portable copy's first start brings over.</summary>
+    public static string InstalledSettings { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), AppName);
+
+    /// <summary>Where an installed copy keeps what the user makes (Documents\HandPeg): projects, styles, effect presets, masks.</summary>
+    public static string InstalledUserRoot { get; } = Path.Combine(DocumentsFolder(), AppName);
+
     /// <summary>What the user makes and may want to find in Explorer: Documents\HandPeg.</summary>
-    public static string UserRoot { get; } = SingleRoot ?? Path.Combine(DocumentsFolder(), AppName);
+    public static string UserRoot { get; } = SingleRoot ?? InstalledUserRoot;
 
     /// <summary>Saved projects.</summary>
     public static string Projects { get; } = Path.Combine(UserRoot, "Projects");
@@ -81,9 +88,7 @@ public static class AppPaths
     public static string Voiceovers { get; } = Path.Combine(UserRoot, "Voiceovers");
 
     /// <summary>The settings and the encoding presets.</summary>
-    public static string Settings { get; } = SingleRoot is null
-        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), AppName)
-        : Path.Combine(SingleRoot, "Settings");
+    public static string Settings { get; } = SingleRoot is null ? InstalledSettings : Path.Combine(SingleRoot, "Settings");
 
     public static string SettingsFile { get; } = Path.Combine(Settings, "appsettings.json");
     public static string PresetsFile { get; } = Path.Combine(Settings, "presets.json");
@@ -105,6 +110,12 @@ public static class AppPaths
 
     public static string Logs { get; } = Path.Combine(DataRoot, "logs");
 
+    /// <summary>
+    /// Crash reports (.hpcrash), one file each, kept here for the user to look at or to send on. Beside the logs,
+    /// under the data folder, so a portable copy (or HANDPEG_DATA_DIR) keeps its crashes with the rest of its data.
+    /// </summary>
+    public static string Crashes { get; } = Path.Combine(DataRoot, "crashes");
+
     /// <summary>Working files of the running sessions: removed when each closes, and at the next start if it could not.</summary>
     public static string Temp { get; } = LocalRoot is not null ? Path.Combine(LocalRoot, "temp")
         : SingleRoot is null ? Path.Combine(Path.GetTempPath(), AppName)
@@ -123,23 +134,31 @@ public static class AppPaths
             return Path.Combine(LocalRoot, "data");
         }
 
-        try
+        // Velopack's portable archive: HandPeg runs from "current", beside which are Update.exe and the ".portable" mark
+        // (Velopack's own test). Read from the disk, not from Velopack's locator: AppPaths is first asked for in Main,
+        // before Velopack's bootstrap has made a locator, and asking then fell back to the installed places (Pass
+        // 4.1C.2). An installed copy has Update.exe there too but no mark; a build folder has neither.
+        if (PortableRoot() is { } root)
         {
-            // Velopack knows whether this copy came from the portable archive, and where its root is:
-            // the folder holding Update.exe and "current". The data goes beside those, never inside "current".
-            var locator = Velopack.Locators.VelopackLocator.Current;
-            if (locator.IsPortable && locator.RootAppDir is { Length: > 0 } root)
-            {
-                IsPortable = true;
-                return Path.Combine(root, PortableDataFolder);
-            }
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            // No locator: this copy was not installed by Velopack at all (a build folder). The installed layout applies.
+            IsPortable = true;
+            return Path.Combine(root, PortableDataFolder);
         }
 
         return null;
+    }
+
+    // The portable archive's root (the folder holding Update.exe, .portable and "current"), or null.
+    private static string? PortableRoot()
+    {
+        try
+        {
+            var root = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory)));
+            return root is not null && File.Exists(Path.Combine(root, ".portable")) && File.Exists(Path.Combine(root, "Update.exe")) ? root : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            return null;
+        }
     }
 
     /// <summary>The user's Documents folder, wherever it has been moved to (OneDrive, another drive).</summary>

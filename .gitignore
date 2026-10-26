@@ -436,3 +436,11 @@ obj/
 # Build output and release archives made by hand: they belong on the Releases page, not in the repository
 publish_output/
 *.zip
+
+# HandPeg.CrashDesk, the crash triage desk, is a local developer tool: it lives beside the repository
+# (C:\Claude\HandPeg\HandPeg.CrashDesk) and is never committed or packed into a release, wherever a copy of it lands.
+**/CrashDesk*/
+**/*.CrashDesk/
+
+# The design north star (UX notes) is local only, beside the repository (C:\Claude\HandPeg\DESIGN_NORTH_STAR.md).
+DESIGN_NORTH_STAR.md

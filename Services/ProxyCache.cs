@@ -36,8 +36,11 @@ public static class ProxyCache
 
     private static int Tier => AppSettings.ProxyTiers.Contains(AppSettings.Current.ProxyTier) ? AppSettings.Current.ProxyTier : 540;
 
-    /// <summary>What a proxy is kept under in its cache: its height and codec ("proxy540h264"). A proxy of another height or codec is another proxy.</summary>
-    public static string Kind => string.Create(CultureInfo.InvariantCulture, $"proxy{Tier}{(Mjpeg ? "mjpeg" : "h264")}");
+    /// <summary>
+    /// What a proxy is kept under in its cache: its height and codec, and "t2" since its frames keep the file's own time
+    /// stamps ("proxy540h264t2", <see cref="FrameTiming"/>). A proxy of another height or codec, or one made before, is another proxy.
+    /// </summary>
+    public static string Kind => string.Create(CultureInfo.InvariantCulture, $"proxy{Tier}{(Mjpeg ? "mjpeg" : "h264")}t2");
 
     private static string Extension => Mjpeg ? ".mkv" : ".mp4";
 
@@ -123,6 +126,16 @@ public static class ProxyCache
         return [.. order.Distinct().Where(working.Contains), "libx264"];
     }
 
+    /// <summary>
+    /// What a proxy keeps of the file's frames, and when: every frame whose time stamp is later than the last one kept,
+    /// at exactly its own time stamp (passed through, on a 1/90000 clock that holds milliseconds and 1/30000 alike).
+    /// Some downloads have runs of frames sharing one time stamp (72 at 511.752 s in a YouTube webm, the stream going
+    /// on 14 ms later): the default constant-rate output put them in the slots that followed and, within its tolerance
+    /// of 1.1 frames, never caught up, so every later frame of the proxy was a frame off the original's (Pass 4.1B).
+    /// </summary>
+    private const string FrameTiming = "select='isnan(prev_selected_t)+gt(t,prev_selected_t)',";
+    private const string FrameTimingOutput = "-fps_mode passthrough -enc_time_base 1/90000";
+
     /// <summary>What follows the picture in a proxy's command: the encoder at its fastest sensible setting, an I-frame every 15 frames and no B-frames.</summary>
     private static string EncodeArguments(string encoder) => Mjpeg ? "-c:v mjpeg -q:v 5 -pix_fmt yuvj420p" : encoder switch
     {
@@ -165,7 +178,7 @@ public static class ProxyCache
                 var decode = string.Join(" ", GpuAdapters.BackgroundDecodeArguments);
                 var threads = string.Join(" ", GpuAdapters.BackgroundThreadArguments);
                 var command = $"ffmpeg -hide_banner -y {threads} {decode} -i \"{media}\" -map 0:v:0 -an -sn -dn "
-                              + $"-vf \"scale=-2:'min({Tier},ih)'\" {EncodeArguments(encoder)} {(Mjpeg ? "" : "-movflags +faststart ")}\"{making}\"";
+                              + $"-vf \"{FrameTiming}scale=-2:'min({Tier},ih)'\" {FrameTimingOutput} {EncodeArguments(encoder)} {(Mjpeg ? "" : "-movflags +faststart ")}\"{making}\"";
                 try
                 {
                     work.Report($"Encoding with {encoder}");
@@ -222,10 +235,10 @@ public static class ProxyCache
             {
                 try
                 {
-                    await FfmpegRunner.RunAsync(previewCommand(making, percent, EncodeArguments(encoders[i])), report, work.Token);
+                    await FfmpegRunner.RunAsync(previewCommand(making, percent, EncodeArguments(encoders[i])), report, work.Token, graphInFile: true);
                     break;
                 }
-                catch (InvalidOperationException ex) when (i + 1 < encoders.Count)
+                catch (InvalidOperationException ex) when (ex is not FfmpegCommandException && i + 1 < encoders.Count)
                 {
                     AppLog.Write($"Timeline proxy: {encoders[i]} would not make it, the next encoder is tried: {ex.Message}");
                 }

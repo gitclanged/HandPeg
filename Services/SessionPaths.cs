@@ -24,6 +24,9 @@ public static class SessionPaths
     /// <summary>Cut and chapter lists belonging to queued jobs.</summary>
     public static string Queue => Path.Combine(Root, "queue");
 
+    /// <summary>Filter graphs handed to FFmpeg in files, each kept only while its run lasts (see FfmpegRunner.WithGraphFiles).</summary>
+    public static string Graphs => Path.Combine(Root, "graphs");
+
     /// <summary>Removes this session's folder and everything in it.</summary>
     public static void DeleteSession() => DeleteFolder(Root);
 

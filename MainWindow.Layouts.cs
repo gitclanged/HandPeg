@@ -9,11 +9,12 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- The Layout button: built-in layouts, the user's own, its flyout and the Layout Selector -----
-// The header's Layout button and Encoder Mode's top bar's share one flyout (resting on either: the side window, the
-// layouts, Save Current Layout, Reset Layout) and one Layout Selector (a click: a card for each layout, shown in the
-// window while the pointer is on it). A layout arranges the main window; the side window is left as it is
-// (DockManager.Prepared). The player floats over its place (DockPane.Floats), so a preview only moves it.
+// ----- The Layout button: built-in layouts, the user's own, its menu and the Layout Selector -----
+// The header's Layout button and Encoder Mode's top bar's share one Layout Selector (resting on either, Pass 4.1B: a
+// card for each layout, shown in the window while the pointer is on it, and a row of themes, put on live the same way)
+// and one menu (a click: the side window, the layouts, Save Current Layout, Reset Layout). A layout arranges the main
+// window; the side window is left as it is (DockManager.Prepared). The player floats over its place (DockPane.Floats),
+// so a preview only moves it.
 public partial class MainWindow
 {
     /// <summary>A layout the Layout button offers: its name, what it is for, the arrangement, and its place when it is one of the user's own.</summary>
@@ -92,10 +93,18 @@ public partial class MainWindow
         .Select(s => DockLayoutState.Read(s.Layout) is { } layout ? new LayoutChoice(s.Name, $"Your layout, kept in place {s.Slot}.", layout, s.Slot) : null)
         .OfType<LayoutChoice>();
 
-    // ----- The flyout -----
+    // ----- The menu (a click on the Layout button) -----
 
-    /// <summary>The flyout is about to open: its rows made for this mode's layouts, the side window's tick, and its place beside the button rested on.</summary>
-    private void OpeningLayoutFlyout()
+    /// <summary>A click on the Layout button: its menu, beside it. A click on it while the menu is open closes it (CloseLayoutMenuOnPress).</summary>
+    private void LayoutButton_Click(object sender, RoutedEventArgs e)
+    {
+        _layoutHover.Close();
+        if (sender is FrameworkElement button)
+            OpenLayoutMenu(button);
+    }
+
+    /// <summary>The menu: its rows made for this mode's layouts, the side window's tick, and its place beside the button clicked.</summary>
+    private void OpenLayoutMenu(FrameworkElement host)
     {
         UpdateSideWindowCheck();
         FillLayoutRows(BuiltInLayoutRows, BuiltInLayouts());
@@ -103,7 +112,6 @@ public partial class MainWindow
         FillLayoutRows(SavedLayoutRows, saved);
         SavedLayoutsTitle.Visibility = saved.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        var host = _layoutHover.OpenedFrom;
         LayoutFlyout.PlacementTarget = host;
         LayoutFlyoutPanel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var width = LayoutFlyoutPanel.DesiredSize.Width;
@@ -116,6 +124,30 @@ public partial class MainWindow
             LayoutFlyout.Placement = PlacementMode.Bottom;
             (LayoutFlyout.HorizontalOffset, LayoutFlyout.VerticalOffset) = (host.ActualWidth - width, 6);
         }
+
+        _layoutMenuFrom = host;
+        LayoutFlyout.IsOpen = true;
+    }
+
+    // The button the menu was opened from, to give the keyboard back to when it closes by Escape.
+    private FrameworkElement? _layoutMenuFrom;
+
+    /// <summary>Closes the menu (a choice made in it, Escape, a press anywhere else in the window, the window left).</summary>
+    private void CloseLayoutMenu() => LayoutFlyout.IsOpen = false;
+
+    /// <summary>
+    /// A press in the window while the menu is open closes it (the menu is a window of its own: presses on it never come
+    /// here, nor do those on a saved layout's right-click menu). A press on the Layout button closes it and is kept from
+    /// opening it again, so the button opens and closes its menu.
+    /// </summary>
+    private void CloseLayoutMenuOnPress(object sender, MouseButtonEventArgs e)
+    {
+        if (!LayoutFlyout.IsOpen)
+            return;
+
+        CloseLayoutMenu();
+        if (LayoutButton.IsMouseOver || LayoutButtonTop.IsMouseOver)
+            e.Handled = true;
     }
 
     /// <summary>A row for each layout: a click takes it up; one of the user's own can be deleted from its right-click menu.</summary>
@@ -128,30 +160,19 @@ public partial class MainWindow
             AutomationProperties.SetName(row, choice.Name);
             row.Click += (_, _) =>
             {
-                _layoutHover.Close();
+                CloseLayoutMenu();
                 TakeUpLayout(choice);
             };
             if (choice.Slot is { } slot)
             {
-                // The flyout stays while its menu is open (the pointer is on the menu, not on the flyout).
                 var delete = new MenuItem { Header = $"Delete \"{choice.Name}\"" };
                 delete.Click += (_, _) => DeleteSavedLayout(slot);
-                var menu = new ContextMenu { Items = { delete } };
-                menu.Opened += (_, _) => _layoutRowMenuOpen = true;
-                menu.Closed += (_, _) =>
-                {
-                    _layoutRowMenuOpen = false;
-                    _layoutHover.Release();
-                };
-                row.ContextMenu = menu;
+                row.ContextMenu = new ContextMenu { Items = { delete } };
             }
 
             rows.Children.Add(row);
         }
     }
-
-    // A saved layout's right-click menu is open (the flyout stays open under it).
-    private bool _layoutRowMenuOpen;
 
     private void TakeUpLayout(LayoutChoice choice)
     {
@@ -164,18 +185,33 @@ public partial class MainWindow
         if (e.Key != Key.Escape)
             return;
 
-        _layoutHover.Close();
+        CloseLayoutMenu();
+        _layoutMenuFrom?.Focus();
         e.Handled = true;
     }
 
-    /// <summary>From the keyboard: Down (or the menu key) on the Layout button opens its flyout, with the first row chosen.</summary>
+    /// <summary>
+    /// From the keyboard: Down on the Layout button opens the Layout Selector with its first card chosen (a card with
+    /// the keyboard is shown as one under the pointer is); the menu key opens the menu with its first row chosen. Enter
+    /// and Space click it (the menu).
+    /// </summary>
     private void LayoutButton_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key is not (Key.Down or Key.Apps) || sender is not FrameworkElement button)
             return;
 
-        _layoutHover.Open(button);
-        Dispatcher.BeginInvoke(() => LayoutFlyoutPanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)), System.Windows.Threading.DispatcherPriority.Input);
+        if (e.Key == Key.Down)
+        {
+            _layoutHover.Open(button);
+            Dispatcher.BeginInvoke(() => LayoutCards.Children.OfType<Button>().FirstOrDefault()?.Focus(), System.Windows.Threading.DispatcherPriority.Input);
+        }
+        else
+        {
+            _layoutHover.Close();
+            OpenLayoutMenu(button);
+            Dispatcher.BeginInvoke(() => LayoutFlyoutPanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)), System.Windows.Threading.DispatcherPriority.Input);
+        }
+
         e.Handled = true;
     }
 
@@ -184,7 +220,7 @@ public partial class MainWindow
     /// <summary>Save Current Layout: the panes as they are now, named, into one of this mode's three places.</summary>
     private void SaveCurrentLayout_Click(object sender, RoutedEventArgs e)
     {
-        _layoutHover.Close();
+        CloseLayoutMenu();
         var kept = AppSettings.Current.SavedLayouts;
         var dialog = new SaveLayoutDialog(_viewModel.IsEditorMode ? AppSettings.EditorMode : AppSettings.EncoderMode, kept) { Owner = this };
         if (dialog.ShowDialog() != true)
@@ -199,7 +235,7 @@ public partial class MainWindow
 
     private void DeleteSavedLayout(int slot)
     {
-        _layoutHover.Close();
+        CloseLayoutMenu();
         var name = AppSettings.Current.SavedLayouts.FirstOrDefault(s => s.Slot == slot)?.Name;
         _viewModel.SavePaneLayout(s => s.SavedLayouts = s.SavedLayouts.Where(l => l.Slot != slot).ToList());
         _cardsKey = null;
@@ -220,19 +256,19 @@ public partial class MainWindow
 
     private const double CardPictureWidth = 164, CardPictureHeight = 92;
 
-    /// <summary>A click on the Layout button: the Layout Selector, under it (beside it, while the header is a strip).</summary>
-    private void LayoutButton_Click(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// The pointer rested on the Layout button (HoverFlyout): the Layout Selector, under it (beside it, while the header
+    /// is a strip), with the arrangement and the theme taken as they are now, to come back to.
+    /// </summary>
+    private void OpeningLayoutSelector()
     {
-        _layoutHover.Close();
-        if (sender is not FrameworkElement button)
-            return;
-
+        CloseLayoutMenu();
         _layoutBeforePreview = _dock.Save();
-        (_previewing, _layoutKept) = (-1, false);
+        _themeBeforePreview = ThemeManager.Current;
+        (_previewing, _layoutKept, _themeKept) = (-1, false, false);
         MakeLayoutCards();
-        PlaceLayoutSelector(button);
-        LayoutSelector.IsOpen = true;
-        Dispatcher.BeginInvoke(() => LayoutCards.Children.OfType<Button>().FirstOrDefault()?.Focus(), System.Windows.Threading.DispatcherPriority.Input);
+        MakeThemeCards();
+        PlaceLayoutSelector(_layoutHover.OpenedFrom);
     }
 
     /// <summary>
@@ -253,7 +289,12 @@ public partial class MainWindow
         }
 
         var (part, band, text, accent) = (Frozen("PanelBrush"), Frozen("ControlBrush"), Frozen("MutedTextBrush"), Frozen("AccentBrush"));
-        var key = string.Join("|", _cardLayouts.Select(l => System.Text.Json.JsonSerializer.Serialize(l))) + "|" + string.Join(",", choices.Select(c => c.Name))
+
+        // The layout in use: every card whose arrangement has the window's parts as they were when the selector opened
+        // (DockManager.SameShape: the panes in the same splits and groups, however wide each part was dragged).
+        var inUse = DockLayoutState.Read(_layoutBeforePreview) ?? _dock.Current;
+        var active = _cardLayouts.Select(l => DockManager.SameShape(l, inUse)).ToList();
+        var key = string.Join("", active.Select(a => a ? '1' : '0')) + "|" + string.Join("|", _cardLayouts.Select(l => System.Text.Json.JsonSerializer.Serialize(l))) + "|" + string.Join(",", choices.Select(c => c.Name))
             + "|" + string.Join(",", _viewModel.IsEditorMode, _viewModel.IsMediaBrowserVisible, _viewModel.ShowKeyframesPane, _viewModel.ShowEffectsPane,
                 _viewModel.ShowCutSegmentsPane, _viewModel.IsArrangeActive, _viewModel.ShowAdvancedPlayback, _viewModel.ShowPresetBarAtTop, _viewModel.ShowCommandPreviewTab)
             + "|" + string.Join(",", new[] { part, band, text, accent }.Select(b => (b as SolidColorBrush)?.Color.ToString()));
@@ -274,15 +315,128 @@ public partial class MainWindow
             var name = new TextBlock { Text = choice.Name, FontWeight = FontWeights.SemiBold, Margin = new Thickness(2, 6, 2, 0), TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = CardPictureWidth + 4 };
             var kind = new TextBlock { Text = choice.Slot is { } slot ? $"Saved, place {slot}" : "Built-in", Margin = new Thickness(2, 1, 2, 0), FontSize = 11 };
             kind.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+            var footer = new DockPanel { LastChildFill = true };
+            if (active[i])
+                footer.Children.Add(InUseBadge());
+            footer.Children.Add(kind);
 
-            var card = new Button { Content = new StackPanel { Children = { picture, name, kind } }, ToolTip = choice.About };
+            var card = new Button { Content = new StackPanel { Children = { picture, name, footer } }, ToolTip = active[i] ? $"In use. {choice.About}" : choice.About };
             card.SetResourceReference(StyleProperty, "LayoutCard");
-            AutomationProperties.SetName(card, choice.Name);
+            card.Tag = active[i] ? "active" : null;
+            AutomationProperties.SetName(card, active[i] ? $"{choice.Name} (in use)" : choice.Name);
             AutomationProperties.SetHelpText(card, choice.About);
             card.MouseEnter += (_, _) => PreviewLayout(index);
+            card.GotKeyboardFocus += (_, _) => PreviewLayout(index);
             card.Click += (_, _) => KeepLayout(index, choice.Name);
             LayoutCards.Children.Add(card);
         }
+    }
+
+    /// <summary>The mark on the card of the layout in use (Pass 4.1C): a tick and "In use", in the chosen edge's colour.</summary>
+    private static FrameworkElement InUseBadge()
+    {
+        var tick = new TextBlock { Text = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 9, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 4, 0) };
+        var words = new TextBlock { Text = "In use", FontSize = 11, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+        tick.SetResourceReference(TextBlock.ForegroundProperty, "SelectedBorderBrush");
+        words.SetResourceReference(TextBlock.ForegroundProperty, "SelectedBorderBrush");
+        var badge = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 1, 2, 0), Children = { tick, words } };
+        DockPanel.SetDock(badge, Dock.Right);
+        return badge;
+    }
+
+    // ----- The Themes row (Pass 4.1B) -----
+    // Under the layout cards, as wide as they are, a card a theme, about a third of a layout card's height: its window,
+    // a panel, its accent and its name in its own colours. The pointer on one (or the keyboard) puts it on live in every
+    // window, the layout cards redrawn in it; leaving the row, Escape or closing puts back the theme taken when the
+    // selector opened; a click keeps it (AppSettings.Theme).
+
+    private string? _themeBeforePreview;
+    private bool _themeKept;
+
+    private const double ThemeSwatchHeight = 30;
+
+    private void MakeThemeCards()
+    {
+        ThemeCards.Children.Clear();
+        var saved = ThemeManager.Normalize(AppSettings.Current.Theme);
+        foreach (var theme in ThemeManager.Themes)
+        {
+            // The window's colour with the theme's name in its text colour, over a band of its panel colour holding its
+            // accent (and a tick on the one in use). A name too long for the card is drawn smaller, never cut.
+            var (window, panel, accent, text) = ThemeManager.Swatch(theme);
+            var swatch = new Grid { Height = ThemeSwatchHeight, ClipToBounds = true };
+            swatch.RowDefinitions.Add(new RowDefinition());
+            swatch.RowDefinitions.Add(new RowDefinition { Height = new GridLength(9) });
+            var name = new Viewbox
+            {
+                Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 1, 5, 0),
+                Child = new TextBlock { Text = theme, Foreground = Frozen(text), FontSize = 11.5, FontWeight = FontWeights.SemiBold },
+            };
+            var band = new Grid { Background = Frozen(panel) };
+            Grid.SetRow(band, 1);
+            band.Children.Add(new Border { Background = Frozen(accent), Width = 18, Height = 3, CornerRadius = new CornerRadius(1.5), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) });
+            if (theme == saved)
+                band.Children.Add(new TextBlock { Text = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 8, Foreground = Frozen(accent), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 5, 0) });
+            swatch.Children.Add(name);
+            swatch.Children.Add(band);
+
+            var about = theme == saved ? $"{theme} (in use)" : theme;
+            var card = new Button
+            {
+                Content = new Border { CornerRadius = new CornerRadius(4), Background = Frozen(window), Child = swatch, ClipToBounds = true },
+                ToolTip = $"{about}: point at it to try it; click to keep it.",
+                Tag = theme == saved ? "active" : null,
+            };
+            card.SetResourceReference(StyleProperty, "LayoutCard");
+            card.Padding = new Thickness(3);
+            AutomationProperties.SetName(card, theme == saved ? $"Theme {theme} (in use)" : $"Theme {theme}");
+            card.MouseEnter += (_, _) => PreviewTheme(theme);
+            card.GotKeyboardFocus += (_, _) => PreviewTheme(theme);
+            card.Click += (_, _) => KeepTheme(theme);
+            ThemeCards.Children.Add(card);
+        }
+
+        static SolidColorBrush Frozen(Color color)
+        {
+            var brush = new SolidColorBrush(color);
+            brush.Freeze();
+            return brush;
+        }
+    }
+
+    /// <summary>The pointer (or the keyboard) came onto a theme: it is put on in every window, nothing saved; the layout cards are drawn in it.</summary>
+    private void PreviewTheme(string theme)
+    {
+        if (ThemeManager.Current == theme)
+            return;
+
+        ThemeManager.Apply(theme);
+        MakeLayoutCards();
+    }
+
+    /// <summary>A theme clicked: kept and saved, and the selector closed.</summary>
+    private void KeepTheme(string theme)
+    {
+        _themeKept = true;
+        _viewModel.SavePaneLayout(s => s.Theme = theme);
+        ThemeManager.Apply();
+        CrashReporter.Note("settings", "theme " + theme);
+        _layoutHover.Close();
+        _viewModel.StatusText = $"Theme: {theme}.";
+    }
+
+    /// <summary>The pointer left the theme cards: the theme as it was.</summary>
+    private void ThemeCards_MouseLeave(object sender, MouseEventArgs e) => RestoreThemeBeforePreview();
+
+    private void RestoreThemeBeforePreview()
+    {
+        if (_themeKept || _themeBeforePreview is not { } theme || ThemeManager.Current == theme)
+            return;
+
+        ThemeManager.Apply(theme);
+        if (LayoutSelector.IsOpen)
+            MakeLayoutCards();
     }
 
     /// <summary>
@@ -330,7 +484,7 @@ public partial class MainWindow
         _layoutKept = true;
         _previewing = index;
         _dock.Apply(_cardLayouts[index]);
-        LayoutSelector.IsOpen = false;
+        _layoutHover.Close();
         _viewModel.StatusText = $"Layout: {name}.";
     }
 
@@ -351,14 +505,18 @@ public partial class MainWindow
         if (e.Key != Key.Escape)
             return;
 
-        LayoutSelector.IsOpen = false;
+        var from = _layoutHover.OpenedFrom;
+        _layoutHover.Close();
+        if (from.IsVisible)
+            from.Focus();
         e.Handled = true;
     }
 
-    /// <summary>Closed without a card chosen (Escape, a click elsewhere): the panes as they were.</summary>
+    /// <summary>Closed without a card chosen (Escape, the pointer gone from it and the button): the panes and the theme as they were.</summary>
     private void LayoutSelector_Closed(object? sender, EventArgs e)
     {
         RestoreLayoutBeforePreview();
-        (_layoutBeforePreview, _previewing) = (null, -1);
+        RestoreThemeBeforePreview();
+        (_layoutBeforePreview, _previewing, _themeBeforePreview) = (null, -1, null);
     }
 }

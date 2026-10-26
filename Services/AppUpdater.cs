@@ -53,6 +53,8 @@ public static class AppUpdater
     /// <returns>The outcome, and with it the version found, or why the check failed.</returns>
     public static Task<(CheckResult Result, string Detail)> CheckNowAsync() => Task.Run(async () =>
     {
+        // Velopack's bootstrap runs beside the window's start (Program.VelopackStarted): it is done before anything here asks Velopack.
+        await Program.VelopackStarted;
         await Checking.WaitAsync();
         try
         {
@@ -126,6 +128,8 @@ public static class AppUpdater
         if (AppPaths.IsSelfContained)
             return ((string, bool)?)null;
 
+        // Velopack's bootstrap runs beside the window's start (Program.VelopackStarted): it is done before anything here asks Velopack.
+        await Program.VelopackStarted;
         await Checking.WaitAsync();
         try
         {

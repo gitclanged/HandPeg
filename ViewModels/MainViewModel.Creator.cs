@@ -336,6 +336,8 @@ public partial class MainViewModel
     /// </summary>
     private void PlaceClip(Layer element, Layer? onTrack, bool joins)
     {
+        // A crash report never names the clip's file, not even on its own.
+        CrashReporter.KeepOut(element.ImagePath);
         var known = onTrack is not null && Layers.Contains(onTrack);
         if (known && onTrack!.IsEmptyTrack)
         {
@@ -1477,7 +1479,7 @@ public partial class MainViewModel
             }
         });
 
-        await FfmpegRunner.RunAsync(command, progress, cancellationToken);
+        await FfmpegRunner.RunAsync(command, progress, cancellationToken, graphInFile: true);
         PreviewRendered?.Invoke(path);
         return ranges.Count > 1
             ? $"Preview rendered: {ranges.Sum(r => r.End - r.Start):0.#} s across {ranges.Count} cut segments, from {TimeDisplay.Format(start)}, at {settings.PreviewResolutionPercent}% size."
