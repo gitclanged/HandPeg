@@ -9,9 +9,12 @@ using System.Windows.Shapes;
 namespace HandPegApp;
 
 /// <summary>
-/// The handles on a layer's box in the layout pane: the resize grip on its bottom-right corner, the rotation handle on a
-/// stalk above its top edge, and its anchor point (the dot it turns and grows about). Living in the adorner layer, they
-/// follow the box wherever it is moved and however it is turned, and lie above every box.
+/// The handles on a layer's box in the layout pane (and, 4.1.1-B, over the player): the resize grip on its bottom-right
+/// corner, the rotation handle on a stalk above its top edge, and its anchor point (the dot it turns and grows about).
+/// Living in the adorner layer, they follow the box wherever it is moved and however it is turned, and lie above every
+/// box. A stalk that would stand outside the surface the box is on (a box at the top of the frame) is turned down into
+/// the box instead, so the handle can always be reached. While the handle is dragged, a ring round the anchor point
+/// and the angle in degrees are shown.
 /// </summary>
 internal sealed class LayerGizmoAdorner : Adorner
 {
@@ -20,7 +23,11 @@ internal sealed class LayerGizmoAdorner : Adorner
     private readonly VisualCollection _visuals;
     private readonly Thumb _grip, _turn, _anchor;
     private readonly Line _stalk;
+    private readonly Ellipse _ring;
+    private readonly Border _readout;
+    private readonly TextBlock _readoutText;
     private readonly Func<Point> _anchorAt;
+    private bool _turning;
 
     /// <summary>The corner grip dragged, with the distance moved in screen units.</summary>
     public event DragDeltaEventHandler? ResizeDelta;
@@ -41,6 +48,14 @@ internal sealed class LayerGizmoAdorner : Adorner
     public LayerGizmoAdorner(FrameworkElement box, Style gripStyle, string name, Func<Point> anchorAt) : base(box)
     {
         _anchorAt = anchorAt;
+        _ring = new Ellipse { Stroke = Brushes.DodgerBlue, StrokeThickness = 1.5, StrokeDashArray = [4, 3], IsHitTestVisible = false, Visibility = Visibility.Collapsed };
+        _readoutText = new TextBlock { Foreground = Brushes.White, FontSize = 11 };
+        _readout = new Border
+        {
+            Background = ReadoutBack, CornerRadius = new CornerRadius(3), Padding = new Thickness(5, 1, 5, 2), Child = _readoutText,
+            IsHitTestVisible = false, Visibility = Visibility.Collapsed,
+        };
+
         _grip = new Thumb { Style = gripStyle, Cursor = Cursors.SizeNWSE, ToolTip = "Drag to resize about the anchor point. Ctrl: the opposite corner stays where it is." };
         System.Windows.Automation.AutomationProperties.SetName(_grip, $"Resize {name}");
         _grip.DragDelta += (_, e) => ResizeDelta?.Invoke(this, e);
@@ -48,8 +63,18 @@ internal sealed class LayerGizmoAdorner : Adorner
 
         _turn = new Thumb { Width = 12, Height = 12, Cursor = Cursors.Hand, Template = RoundTemplate(Brushes.White, Brushes.DodgerBlue), ToolTip = "Drag to turn the layer about its anchor point. Shift: in steps of 15 degrees." };
         System.Windows.Automation.AutomationProperties.SetName(_turn, $"Rotate {name}");
-        _turn.DragStarted += (_, _) => TurnStarted?.Invoke();
+        _turn.DragStarted += (_, _) =>
+        {
+            _turning = true;
+            TurnStarted?.Invoke();
+            InvalidateArrange();
+        };
         _turn.DragDelta += (_, _) => TurnDelta?.Invoke();
+        _turn.DragCompleted += (_, _) =>
+        {
+            _turning = false;
+            (_ring.Visibility, _readout.Visibility) = (Visibility.Collapsed, Visibility.Collapsed);
+        };
 
         _anchor = new Thumb { Width = 11, Height = 11, Cursor = Cursors.Cross, Template = RoundTemplate(Brushes.Gold, Brushes.Black), ToolTip = "The anchor point: the layer turns and grows about it. Drag it to move it; the layer stays where it is." };
         System.Windows.Automation.AutomationProperties.SetName(_anchor, $"Anchor Point of {name}");
@@ -57,7 +82,45 @@ internal sealed class LayerGizmoAdorner : Adorner
         _anchor.DragDelta += (_, _) => AnchorDelta?.Invoke();
 
         _stalk = new Line { Stroke = Brushes.White, StrokeThickness = 1, IsHitTestVisible = false, Opacity = 0.8 };
-        _visuals = new VisualCollection(this) { _stalk, _grip, _turn, _anchor };
+        _visuals = new VisualCollection(this) { _ring, _stalk, _grip, _turn, _anchor, _readout };
+    }
+
+    private static readonly SolidColorBrush ReadoutBack = FrozenBrush(Color.FromArgb(0xD0, 0x10, 0x10, 0x14));
+
+    private static SolidColorBrush FrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+
+    /// <summary>Shows the angle the layer is turned to, beside the rotation handle, while it is dragged.</summary>
+    public void ShowAngle(double degrees)
+    {
+        _readoutText.Text = degrees.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "\u00B0";
+        _readout.Visibility = _ring.Visibility = _turning ? Visibility.Visible : Visibility.Collapsed;
+        InvalidateArrange();
+    }
+
+    /// <summary>
+    /// Whether the rotation handle stands inside the box (true when, above its top edge, it would be outside the surface
+    /// the box lies on). Worked out from the box's place and turn as they are set, not as last laid out: the box is
+    /// placed (Canvas.Left/Top) just before this adorner is told to lay itself out again.
+    /// </summary>
+    private bool HandleInside(Size size)
+    {
+        if (VisualTreeHelper.GetParent(AdornedElement) is not FrameworkElement { ActualWidth: > 0, ActualHeight: > 0 } surface)
+            return false;
+
+        var (left, top) = (Canvas.GetLeft(AdornedElement), Canvas.GetTop(AdornedElement));
+        if (double.IsNaN(left) || double.IsNaN(top))
+            return false;
+
+        var origin = new Point(AdornedElement.RenderTransformOrigin.X * size.Width, AdornedElement.RenderTransformOrigin.Y * size.Height);
+        var tip = new Point(size.Width / 2, -Stalk - 7);
+        var turned = AdornedElement.RenderTransform.Transform(new Point(tip.X - origin.X, tip.Y - origin.Y));
+        var (x, y) = (left + origin.X + turned.X, top + origin.Y + turned.Y);
+        return x < 0 || y < 0 || x > surface.ActualWidth || y > surface.ActualHeight;
     }
 
     private static ControlTemplate RoundTemplate(Brush fill, Brush stroke)
@@ -80,6 +143,8 @@ internal sealed class LayerGizmoAdorner : Adorner
         foreach (var thumb in new[] { _grip, _turn, _anchor })
             thumb.Measure(constraint);
         _stalk.Measure(constraint);
+        _ring.Measure(constraint);
+        _readout.Measure(constraint);
         return base.MeasureOverride(constraint);
     }
 
@@ -87,11 +152,22 @@ internal sealed class LayerGizmoAdorner : Adorner
     {
         var size = AdornedElement.RenderSize;
         _grip.Arrange(new Rect(size.Width - _grip.Width / 2, size.Height - _grip.Height / 2, _grip.Width, _grip.Height));
-        _turn.Arrange(new Rect(size.Width / 2 - _turn.Width / 2, -Stalk - _turn.Height / 2, _turn.Width, _turn.Height));
-        (_stalk.X1, _stalk.Y1, _stalk.X2, _stalk.Y2) = (size.Width / 2, 0, size.Width / 2, -Stalk + _turn.Height / 2);
+
+        // Above the top edge, or (with no room there) turned down into the box: never further in than a quarter of it,
+        // so it keeps clear of the anchor point in the middle.
+        var handleY = HandleInside(size) ? Math.Min(Stalk, Math.Max(size.Height * 0.25, 9)) : -Stalk;
+        _turn.Arrange(new Rect(size.Width / 2 - _turn.Width / 2, handleY - _turn.Height / 2, _turn.Width, _turn.Height));
+        (_stalk.X1, _stalk.Y1, _stalk.X2, _stalk.Y2) = (size.Width / 2, 0, size.Width / 2, handleY - Math.Sign(handleY) * _turn.Height / 2);
         _stalk.Arrange(new Rect(0, 0, Math.Max(size.Width, 1), Math.Max(size.Height, 1)));
         var anchor = _anchorAt();
-        _anchor.Arrange(new Rect(anchor.X * size.Width - _anchor.Width / 2, anchor.Y * size.Height - _anchor.Height / 2, _anchor.Width, _anchor.Height));
+        var anchorPoint = new Point(anchor.X * size.Width, anchor.Y * size.Height);
+        _anchor.Arrange(new Rect(anchorPoint.X - _anchor.Width / 2, anchorPoint.Y - _anchor.Height / 2, _anchor.Width, _anchor.Height));
+
+        // While turning: the ring the handle goes round, about the anchor point, and the angle beside the handle.
+        var radius = Math.Max(Math.Sqrt(Math.Pow(size.Width / 2 - anchorPoint.X, 2) + Math.Pow(handleY - anchorPoint.Y, 2)), 8);
+        _ring.Arrange(new Rect(anchorPoint.X - radius, anchorPoint.Y - radius, 2 * radius, 2 * radius));
+        _readout.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        _readout.Arrange(new Rect(new Point(size.Width / 2 + _turn.Width, handleY - _readout.DesiredSize.Height / 2), _readout.DesiredSize));
         return finalSize;
     }
 }

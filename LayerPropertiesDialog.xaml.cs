@@ -25,21 +25,30 @@ public partial class LayerPropertiesDialog : Window
 
     private void PickKeyColor_Click(object sender, RoutedEventArgs e)
     {
-        if (DataContext is not Layer layer)
-            return;
+        if (DataContext is Layer layer && PickColor(layer.ChromaColor) is { } color)
+            layer.ChromaColor = color;
+    }
 
+    private void PickShadowColor_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is Layer layer && PickColor(layer.ShadowColor) is { } color)
+            layer.ShadowColor = color;
+    }
+
+    /// <summary>The Windows color picker, started from a #RRGGBB colour; the colour chosen, or null when it was cancelled.</summary>
+    private static string? PickColor(string current)
+    {
         using var picker = new System.Windows.Forms.ColorDialog { FullOpen = true, AnyColor = true };
         try
         {
-            picker.Color = System.Drawing.ColorTranslator.FromHtml(layer.ChromaColor);
+            picker.Color = System.Drawing.ColorTranslator.FromHtml(current);
         }
         catch (Exception ex) when (ex is ArgumentException or FormatException)
         {
             // Whatever is typed in the box is not a color yet; the picker starts from its own default.
         }
 
-        if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-            layer.ChromaColor = $"#{picker.Color.R:X2}{picker.Color.G:X2}{picker.Color.B:X2}";
+        return picker.ShowDialog() == System.Windows.Forms.DialogResult.OK ? $"#{picker.Color.R:X2}{picker.Color.G:X2}{picker.Color.B:X2}" : null;
     }
 
     private void BrowseMask_Click(object sender, RoutedEventArgs e)

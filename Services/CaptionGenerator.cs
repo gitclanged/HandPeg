@@ -18,9 +18,9 @@ public readonly record struct CaptionWord(string Text, double Start, double End)
 /// layer's look that a subtitle style can carry, its opacity and its drop shadow.
 /// </summary>
 /// <param name="Opacity">0 to 1.</param>
-/// <param name="ShadowOffset">How far the shadow falls to the right and down, in output pixels; 0 for none.</param>
+/// <param name="ShadowOffset">How far the shadow is moved right (X) and down (Y), in output pixels; (0, 0) for none.</param>
 /// <param name="ShadowOpacity">0 to 1.</param>
-public sealed record CaptionFramePlacement(int X, int Y, int FrameWidth, int FrameHeight, double Opacity, double ShadowOffset, double ShadowOpacity);
+public sealed record CaptionFramePlacement(int X, int Y, int FrameWidth, int FrameHeight, double Opacity, (int X, int Y) ShadowOffset, double ShadowOpacity);
 
 /// <summary>
 /// How whisper.cpp is asked to decode, and how its silence detection listens: what the Auto-Captions tab of
@@ -416,7 +416,11 @@ public static partial class CaptionGenerator
         // ASS writes transparency, not opacity: 00 is solid.
         static string Alpha(double opacity) => ((int)Math.Round((1 - Math.Clamp(opacity, 0, 1)) * 255)).ToString("X2", CultureInfo.InvariantCulture);
         var alpha = Alpha(frame?.Opacity ?? 1);
-        var shadow = Math.Round(Math.Max(frame?.ShadowOffset ?? 0, 0), 1);
+        // The style's shadow falls right and down by one amount; a shadow moved otherwise is set on each line.
+        var (shadowX, shadowY) = frame?.ShadowOffset ?? (0, 0);
+        var shadow = Math.Max(Math.Abs(shadowX), Math.Abs(shadowY));
+        var shadowTag = shadowX == shadowY && shadowX >= 0 ? ""
+            : string.Create(CultureInfo.InvariantCulture, $"{{\\xshad{shadowX}\\yshad{shadowY}}}");
         var back = frame is null ? "&H80000000" : $"&H{Alpha(frame.Opacity * frame.ShadowOpacity)}000000";
 
         var font = string.IsNullOrWhiteSpace(style.FontName) ? "Arial" : style.FontName.Replace(",", " ").Trim();
@@ -450,7 +454,7 @@ public static partial class CaptionGenerator
                     text.Append($"{{\\kf{centiseconds}}}{Escape(caption[w].Text)}{(w + 1 < caption.Count ? " " : "")}");
                 }
 
-                ass.AppendLine(Event(captionStart, captionEnd, text.ToString(), timeOffset));
+                ass.AppendLine(Event(captionStart, captionEnd, shadowTag + text, timeOffset));
             }
             else
             {
@@ -460,7 +464,7 @@ public static partial class CaptionGenerator
                     var text = string.Join(" ", caption.Select((word, index) => index == w
                         ? $"{{\\c&H{second}&\\fscx115\\fscy115}}{Escape(word.Text)}{{\\r}}"
                         : Escape(word.Text)));
-                    ass.AppendLine(Event(caption[w].Start, until, text, timeOffset));
+                    ass.AppendLine(Event(caption[w].Start, until, shadowTag + text, timeOffset));
                 }
             }
         }

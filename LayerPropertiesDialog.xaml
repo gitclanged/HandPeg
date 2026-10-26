@@ -73,7 +73,7 @@
         </Grid>
 
         <CheckBox Content="Drop Shadow" IsChecked="{Binding Shadow}"
-                  ToolTip="Lays a dark copy of the layer's outline underneath it, offset down and to the right." />
+                  ToolTip="Lays a copy of the layer's outline underneath it in the shadow's colour: Distance and Angle say where it falls, Softness feathers its edge." />
         <Grid IsEnabled="{Binding Shadow}" Margin="26,0,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
@@ -83,16 +83,42 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="32" />
                 <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
+                <RowDefinition Height="32" />
             </Grid.RowDefinitions>
             <TextBlock Text="Shadow Opacity:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <Slider Grid.Column="1" Minimum="0" Maximum="1" VerticalAlignment="Center"
                     Value="{Binding ShadowOpacity}" AutomationProperties.Name="Shadow Opacity" local:NumericInput.Default="0.5" />
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowOpacity, StringFormat={}{0:0.00}}" AutomationProperties.Name="Shadow Opacity Value" local:NumericInput.Default="0.5" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="1" /></StackPanel>
 
-            <TextBlock Grid.Row="1" Text="Offset Distance:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="60" VerticalAlignment="Center"
-                    Value="{Binding ShadowOffset}" AutomationProperties.Name="Shadow Offset" local:NumericInput.Default="10" />
-            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowOffset, StringFormat={}{0:0}}" AutomationProperties.Name="Shadow Offset Value" local:NumericInput.Default="10" local:NumericInput.DragStep="0.24" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="60" /><TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            <TextBlock Grid.Row="1" Text="Distance:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="100" VerticalAlignment="Center" IsSnapToTickEnabled="True" TickFrequency="1"
+                    Value="{Binding ShadowDistance}" AutomationProperties.Name="Shadow Distance" local:NumericInput.Default="14"
+                    ToolTip="How far the shadow falls from the layer, in output pixels." />
+            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowDistance, StringFormat={}{0:0}}" AutomationProperties.Name="Shadow Distance Value" local:NumericInput.Default="14" local:NumericInput.DragStep="0.4" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" /><TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+
+            <TextBlock Grid.Row="2" Text="Angle:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="360" VerticalAlignment="Center" IsSnapToTickEnabled="True" TickFrequency="1"
+                    Value="{Binding ShadowAngle}" AutomationProperties.Name="Shadow Angle" local:NumericInput.Default="135"
+                    ToolTip="Where the light comes from: 135 degrees lights the layer from the upper left, so the shadow falls right and down; 45 from the upper right." />
+            <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowAngle, StringFormat={}{0:0}}" AutomationProperties.Name="Shadow Angle Value" local:NumericInput.Default="135" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="360" /><TextBlock Text="&#x00B0;" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+
+            <TextBlock Grid.Row="3" Text="Softness:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="3" Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center" IsSnapToTickEnabled="True" TickFrequency="1"
+                    Value="{Binding ShadowSoftness}" AutomationProperties.Name="Shadow Softness" local:NumericInput.Default="8"
+                    ToolTip="How far the shadow's edge is feathered, in output pixels: 0 is a crisp, hard shadow." />
+            <StackPanel Grid.Row="3" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowSoftness, StringFormat={}{0:0}}" AutomationProperties.Name="Shadow Softness Value" local:NumericInput.Default="8" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="50" /><TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+
+            <TextBlock Grid.Row="4" Text="Shadow Color:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <StackPanel Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <Border Width="34" Height="22" CornerRadius="3" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1"
+                        Background="{Binding ShadowColor}" />
+                <TextBox Width="90" Margin="8,0,0,0" FontFamily="Consolas" VerticalContentAlignment="Center"
+                         Text="{Binding ShadowColor, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Shadow Color"
+                         ToolTip="The shadow's colour, as #RRGGBB. #000000 is black." />
+                <Button Content="Pick..." Padding="12,3" Margin="6,0,0,0" Click="PickShadowColor_Click" ToolTip="Choose the colour with the Windows color picker." />
+            </StackPanel>
         </Grid>
 
         </StackPanel>

@@ -800,13 +800,23 @@ public sealed class DockManager
 
     /// <summary>
     /// The border between two parts of a split: dragged, it shares the room between them anew. Next to a part as tall as
-    /// its content it is only a gap, or, beside a pane that can be made taller (the master timeline), it makes it so.
+    /// its content (the master timeline, the playback controls) it shares the room between the nearest parts above and
+    /// below that are not (4.1.1: the player's row and the tabs; the timeline keeps the height its setting gives it);
+    /// with no such part on one side it is only a gap, or, beside a pane that can be made taller, it makes it so.
     /// </summary>
     private void AddBorder(Grid grid, DockNode split, List<(FrameworkElement Element, int Index, bool Fits)> parts, int k)
     {
         var (before, after) = (parts[k - 1], parts[k]);
         UIElement border;
-        if (before.Fits || after.Fits)
+        var (above, under) = (parts.Take(k).LastOrDefault(p => !p.Fits).Element, parts.Skip(k).FirstOrDefault(p => !p.Fits).Element);
+        if ((before.Fits || after.Fits) && split.Vertical && above is not null && under is not null)
+        {
+            var thumb = new Thumb { Height = 10, Cursor = Cursors.SizeNS, Template = SplitterLook(), ToolTip = "Drag to share the room between the parts above and below" };
+            thumb.DragDelta += (_, e) => ShareRows(grid, parts, above, under, e.VerticalChange);
+            thumb.DragCompleted += (_, _) => TakeSizes(grid, split, parts);
+            border = thumb;
+        }
+        else if (before.Fits || after.Fits)
         {
             var (fitting, below) = before.Fits ? (split.Children[before.Index], false) : (split.Children[after.Index], true);
             var resize = split.Vertical ? fitting.AllPanes().Select(p => _panes[p].ResizeBy).FirstOrDefault(r => r is not null) : null;
@@ -852,6 +862,29 @@ public sealed class DockManager
         }
 
         grid.Children.Add(border);
+    }
+
+    /// <summary>
+    /// A border beside a part as tall as its content, dragged by <paramref name="change"/> pixels: the part above it gains
+    /// what the part under it gives up, each kept to its least height. The shares of every part with a share are first
+    /// put in pixels (as TakeSizes keeps them), so the parts not dragged keep their size.
+    /// </summary>
+    private static void ShareRows(Grid grid, List<(FrameworkElement Element, int Index, bool Fits)> parts, FrameworkElement above, FrameworkElement under, double change)
+    {
+        foreach (var (element, _, fits) in parts)
+        {
+            if (!fits)
+                grid.RowDefinitions[Grid.GetRow(element)].Height = new GridLength(Math.Max(grid.RowDefinitions[Grid.GetRow(element)].ActualHeight, 1), GridUnitType.Star);
+        }
+
+        var (top, bottom) = (grid.RowDefinitions[Grid.GetRow(above)], grid.RowDefinitions[Grid.GetRow(under)]);
+        var (least, most) = (top.MinHeight - top.ActualHeight, bottom.ActualHeight - bottom.MinHeight);
+        if (least > most)
+            return;
+
+        var moved = Math.Clamp(change, least, most);
+        top.Height = new GridLength(Math.Max(top.ActualHeight + moved, 1), GridUnitType.Star);
+        bottom.Height = new GridLength(Math.Max(bottom.ActualHeight - moved, 1), GridUnitType.Star);
     }
 
     private static ControlTemplate SplitterLook()
@@ -1036,7 +1069,7 @@ public sealed class DockManager
             {
                 _focusTabOf = byKey && !active ? pane : null;
                 Activate(pane);
-            }, active) { Child = text, Padding = new Thickness(16, 6, 16, 8), Margin = new Thickness(0, 0, 2, 0), BorderThickness = new Thickness(0, 2, 0, 0) };
+            }, active) { Child = text, Padding = new Thickness(16, 6, 16, 8), Margin = new Thickness(0, 0, 2, 0), BorderThickness = new Thickness(0, 2, 0, 0), Outlined = true };
             border.SetResourceReference(Border.CornerRadiusProperty, "TabCornerRadius");
             if (active)
             {
@@ -1115,12 +1148,15 @@ public sealed class DockManager
     /// </summary>
     private void WireTab(FrameworkElement tab, string pane, bool activates)
     {
-        tab.Cursor = Cursors.SizeAll;
+        // The move pointer only while the button is held on it (4.1.1): at rest and under a passing pointer a tab is a
+        // tab, with the ordinary arrow.
+        tab.Cursor = null;
 
         // The tab holds the pointer from the press on, so that a drag that soon leaves its few letters still starts.
         tab.PreviewMouseLeftButtonDown += (_, e) =>
         {
             _press = (pane, tab, e.GetPosition(tab));
+            tab.Cursor = Cursors.SizeAll;
             tab.CaptureMouse();
         };
         tab.PreviewMouseMove += (_, e) => OnTabMove(tab, e);
@@ -1145,6 +1181,7 @@ public sealed class DockManager
         };
         tab.LostMouseCapture += (_, _) =>
         {
+            tab.Cursor = null;
             if (_dragging)
                 EndDrag(commit: false);
         };

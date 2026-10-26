@@ -155,7 +155,7 @@ public abstract class TimelineBar : FrameworkElement
 
     /// <summary>A keyframe's diamond, centred on a point.</summary>
     protected static void DrawDiamond(DrawingContext drawing, double x, double y, double radius) =>
-        drawing.DrawGeometry(Brushes.Gold, KeyOutline, Diamonds([x], double.MaxValue, y, radius));
+        drawing.DrawGeometry(HandPegApp.Services.ThemeManager.KeyFill, KeyOutline, Diamonds([x], double.MaxValue, y, radius));
 
     /// <summary>
     /// Keyframes' diamonds as one shape: one centred on each of the given x, all at the height y, those that
@@ -625,7 +625,7 @@ public sealed class TimelineTrack : TimelineBar
             {
                 block.Diamonds ??= Diamonds(keys, rect.Width, rect.Height - 6, 4.5);
                 drawing.PushTransform(new TranslateTransform(rect.Left, rect.Top));
-                drawing.DrawGeometry(Brushes.Gold, KeyOutline, block.Diamonds);
+                drawing.DrawGeometry(HandPegApp.Services.ThemeManager.KeyFill, KeyOutline, block.Diamonds);
                 drawing.Pop();
             }
 

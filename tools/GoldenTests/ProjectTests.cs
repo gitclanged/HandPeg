@@ -10,7 +10,7 @@ using HandPegApp.Services;
 namespace HandPegGoldenTests;
 
 /// <summary>
-/// The .hproj format: a format 2 file read and written as format 3 (against a golden), read again and compared field by
+/// The .hproj format: a format 2 file read and written in the current format (against a golden), read again and compared field by
 /// field; a HandPeg 1.x project brought over; a newer format refused, opened only when asked, and never written over;
 /// the seek indexes always written and taken up again. The files the projects name need not exist, except where seek
 /// indexes are concerned (they are kept only for files exactly as they were), which use files made in the temp folder.
@@ -37,7 +37,7 @@ public static class ProjectTests
         var written = ProjectStore.Serialize(first);
         var header = JsonNode.Parse(written)!.AsObject();
         Expect(problems, header["format"]?.GetValue<string>() == ProjectFile.FormatName, "the written file says it is a HandPeg project");
-        Expect(problems, header["version"]?.GetValue<int>() == 3, $"the written file is format 3 (it says {header["version"]})");
+        Expect(problems, header["version"]?.GetValue<int>() == ProjectFile.CurrentVersion, $"the written file is format {ProjectFile.CurrentVersion} (it says {header["version"]})");
         Expect(problems, header["writtenBy"]?.GetValue<string>() == ProjectStore.WriterName, $"the written file names the HandPeg that wrote it ({header["writtenBy"]})");
 
         // Values that a careless writer loses: a setting written under an older name (VerticalFramer is the Layer Engine), and
@@ -51,10 +51,10 @@ public static class ProjectTests
         var second = ProjectStore.Deserialize(written);
         problems.AddRange(Compare(first, second, "state"));
 
-        // Format 2 and 3 share their layout: everything the format 2 file said is still said, in the same words.
+        // Formats 2 to 4 share their layout (4 only adds fields): everything the format 2 file said is still said, in the same words.
         problems.AddRange(Contains(JsonNode.Parse(original)!, JsonNode.Parse(written)!, "file", ignore: ["version"]));
 
-        return new GraphResult("hproj-format2-to-3", "# The format 2 fixture (fixtures/format2.hproj) as this version writes it.\n\n" + Pretty(written), problems, 0);
+        return new GraphResult("hproj-format2-to-current", "# The format 2 fixture (fixtures/format2.hproj) as this version writes it.\n\n" + Pretty(written), problems, 0);
     }
 
     private static GraphResult Format1Migration(string fixtures)
@@ -95,7 +95,8 @@ public static class ProjectTests
     {
         var problems = new List<string>();
         var newer = JsonNode.Parse(File.ReadAllText(Path.Combine(fixtures, "format2.hproj")))!.AsObject();
-        newer["version"] = 4;
+        var newerVersion = ProjectFile.CurrentVersion + 1;
+        newer["version"] = newerVersion;
         newer["writtenBy"] = "HandPeg 9.9.9";
         newer["fromTheFuture"] = new JsonObject { ["something"] = "this version does not know" };
         var text = newer.ToJsonString();
@@ -103,12 +104,12 @@ public static class ProjectTests
         try
         {
             ProjectStore.Deserialize(text);
-            problems.Add("a format 4 project was read without being asked to");
+            problems.Add($"a format {newerVersion} project was read without being asked to");
         }
         catch (NewerProjectFormatException refused)
         {
-            Expect(problems, refused is { Version: 4, WrittenBy: "HandPeg 9.9.9" }, "the refusal says which format and which version wrote it");
-            Expect(problems, refused.Message.Contains("HandPeg 9.9.9", StringComparison.Ordinal) && refused.Message.Contains("format 4", StringComparison.Ordinal),
+            Expect(problems, refused.Version == newerVersion && refused.WrittenBy == "HandPeg 9.9.9", "the refusal says which format and which version wrote it");
+            Expect(problems, refused.Message.Contains("HandPeg 9.9.9", StringComparison.Ordinal) && refused.Message.Contains($"format {newerVersion}", StringComparison.Ordinal),
                 $"the message names both: {refused.Message}");
         }
 
@@ -120,11 +121,11 @@ public static class ProjectTests
         Directory.CreateDirectory(scratch);
         var file = Path.Combine(scratch, "newer.hproj");
         File.WriteAllText(file, text);
-        Expect(problems, ProjectStore.PeekHeader(file) == (ProjectFile.FormatName, 4, "HandPeg 9.9.9"), $"the header is read from the file ({ProjectStore.PeekHeader(file)})");
+        Expect(problems, ProjectStore.PeekHeader(file) == (ProjectFile.FormatName, newerVersion, "HandPeg 9.9.9"), $"the header is read from the file ({ProjectStore.PeekHeader(file)})");
         try
         {
             ProjectStore.SaveTo(opened, file);
-            problems.Add("a format 4 project was written over");
+            problems.Add($"a format {newerVersion} project was written over");
         }
         catch (IOException refused)
         {
@@ -134,11 +135,11 @@ public static class ProjectTests
         Expect(problems, File.ReadAllText(file) == text, "the newer file is left exactly as it was");
         var elsewhere = Path.Combine(scratch, "saved elsewhere.hproj");
         ProjectStore.SaveTo(opened, elsewhere);
-        Expect(problems, ProjectStore.PeekHeader(elsewhere) is { Version: 3 }, "saved under another name, it is a format 3 project");
+        Expect(problems, ProjectStore.PeekHeader(elsewhere)?.Version == ProjectFile.CurrentVersion, $"saved under another name, it is a format {ProjectFile.CurrentVersion} project");
 
-        // A format 2 or 3 file is saved over as it always was.
+        // A file of a format this version knows is saved over as it always was.
         ProjectStore.SaveTo(opened, elsewhere);
-        return new GraphResult("hproj-newer-format", "# A format 4 file: refused unless asked, opened as far as known, never written over.\n", problems, 0);
+        return new GraphResult("hproj-newer-format", "# A file of the next format: refused unless asked, opened as far as known, never written over.\n", problems, 0);
     }
 
     private static GraphResult NotProjects()
@@ -292,7 +293,7 @@ public static class ProjectTests
                         // A value at its default is left out of the file (ProjectStore.SkipDefaults); the field-by-field
                         // comparison of what is read back says whether it still means the same.
                         if (!IsDefaultLooking(value))
-                            yield return $"{path}.{key}: in the format 2 file, not in the format 3 one";
+                            yield return $"{path}.{key}: in the format 2 file, not in the current one";
                         continue;
                     }
 
@@ -306,7 +307,7 @@ public static class ProjectTests
                 break;
             case JsonArray arrayExpected when actual is JsonArray arrayActual:
                 if (arrayExpected.Count != arrayActual.Count)
-                    yield return $"{path}: {arrayExpected.Count} items in the format 2 file, {arrayActual.Count} in the format 3 one";
+                    yield return $"{path}: {arrayExpected.Count} items in the format 2 file, {arrayActual.Count} in the current one";
                 for (var i = 0; i < Math.Min(arrayExpected.Count, arrayActual.Count); i++)
                 {
                     if (arrayExpected[i] is { } e && arrayActual[i] is { } f)
@@ -319,7 +320,7 @@ public static class ProjectTests
                 break;
             case JsonValue valueExpected when actual is JsonValue valueActual:
                 if (!SameValue(valueExpected, valueActual))
-                    yield return $"{path}: {valueExpected.ToJsonString()} in the format 2 file, {valueActual.ToJsonString()} in the format 3 one";
+                    yield return $"{path}: {valueExpected.ToJsonString()} in the format 2 file, {valueActual.ToJsonString()} in the current one";
                 break;
             default:
                 yield return $"{path}: not the same kind of value";

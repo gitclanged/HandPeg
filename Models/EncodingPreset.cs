@@ -2,6 +2,36 @@ using System.Text.Json.Serialization;
 
 namespace HandPegApp.Models;
 
+/// <summary>The export's channel choices for encoded audio, saved by these names (4.1.1).</summary>
+public static class AudioChannelChoice
+{
+    /// <summary>Two channels: anything wider is folded down; a stereo or mono track is left as it is.</summary>
+    public const string Stereo = "stereo";
+
+    public const string Mono = "mono";
+
+    /// <summary>As many channels as the source has.</summary>
+    public const string Source = "source";
+
+    public static string Normalize(string? value) => value is Mono or Source ? value : Stereo;
+
+    public static IReadOnlyList<LabeledChoice<string>> Choices { get; } =
+        [new(Stereo, "Stereo (2.0)"), new(Mono, "Mono (1.0)"), new(Source, "Match Source")];
+
+    /// <summary>The sample rates offered, in Hz; 0 is Auto (each track's own; made sound and silence at 48 kHz).</summary>
+    public static IReadOnlyList<LabeledChoice<int>> SampleRates { get; } =
+        [new(0, "Auto (Match Source / 48 kHz)"), new(48000, "48000 Hz"), new(44100, "44100 Hz")];
+
+    public static int NormalizeRate(int value) => value is 48000 or 44100 ? value : 0;
+}
+
+/// <summary>A choice for a box: the value saved (<see cref="Key"/>) and the words shown (<see cref="Value"/>), which are
+/// also what it reads as wherever a box falls back to the item itself (screen readers, a template without a path).</summary>
+public sealed record LabeledChoice<T>(T Key, string Value)
+{
+    public override string ToString() => Value;
+}
+
 /// <summary>
 /// A named snapshot of the Dimensions, Filters, Video and Audio tabs.
 /// Nothing about the source or its cut points is stored.
@@ -172,6 +202,14 @@ public sealed class EncodingPreset
     public bool MergeAudioTracks { get; set; }
     public bool NormalizeAudio { get; set; }
     public bool DuckAudio { get; set; }
+
+    /// <summary>The sample rate every encoded track is written at, in Hz; 0 (Auto, not written) keeps each track's own.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int AudioSampleRate { get; set; }
+
+    /// <summary>The channels of every encoded track (<see cref="AudioChannelChoice"/>); null (not written) is Stereo.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AudioChannels { get; set; }
 
     /// <summary>How far a track set to Auto-Duck is turned down while a voice speaks, in decibels (negative).</summary>
     public double DuckAmountDb { get; set; } = -15;

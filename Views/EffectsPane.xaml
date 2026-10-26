@@ -31,8 +31,12 @@
                     <Border x:Name="AddFlyoutPanel" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="6"
                             Margin="0,2,0,0" MouseLeave="AddFlyout_MouseLeave" PreviewKeyDown="AddFlyout_PreviewKeyDown">
                         <DockPanel TextElement.Foreground="{DynamicResource TextBrush}" Width="240">
-                            <TextBox x:Name="SearchBox" DockPanel.Dock="Top" Margin="0,0,0,6" TextChanged="SearchBox_TextChanged" AutomationProperties.Name="Search Effects"
-                                     ToolTip="Type to find an effect by its name or category." />
+                            <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
+                                <TextBox x:Name="SearchBox" Padding="20,0,0,0" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged" AutomationProperties.Name="Search Effects"
+                                         ToolTip="Type to find an effect by its name or category. Escape, or a click outside, closes the list." />
+                                <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="11" Margin="6,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource MutedTextBrush}" IsHitTestVisible="False" />
+                            </Grid>
                             <ScrollViewer MaxHeight="360" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
                                 <StackPanel x:Name="AddList" />
                             </ScrollViewer>
@@ -45,7 +49,7 @@
                           ToolTip="Bypass All: sets every effect of the stack aside at once, to compare with and without. Nothing is lost; click again to bring them back." />
             <Button x:Name="MoreButton" Content="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="7,4" Click="MoreButton_Click"
                     AutomationProperties.Name="Effect Stack Menu"
-                    ToolTip="Copy Stack, Paste Stack, Paste to Track, Save Effect Preset, Reset." />
+                    ToolTip="Copy Stack, Paste Effects, Paste Selected Effects..., Save Effect Preset, Reset." />
         </docking:PaneTitleRow>
         <TextBlock x:Name="EmptyHint" DockPanel.Dock="Top" TextWrapping="Wrap" Margin="2,2,2,8" Foreground="{DynamicResource MutedTextBrush}" />
         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">

@@ -57,7 +57,7 @@ public partial class MainViewModel : ObservableObject
         nameof(IsEditorMode), nameof(CopyBypassWarning), nameof(ModeButtonText), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips), nameof(IsEncoderMode),
         nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer), nameof(SelectedTextLayer), nameof(IsTextLayerSelected),
         nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(IsSubtitleEditorOpen), nameof(ShowLegacySubtitles), nameof(ShowSubtitleImportRow), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
-        nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName), nameof(SnapClips), nameof(LayerControlsShown), nameof(LoopPlayback), nameof(ShowSafeMargins), nameof(IsPlayerMuted),
+        nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName), nameof(SnapClips), nameof(LayerControlsShown), nameof(LoopPlayback), nameof(ShowSafeMargins), nameof(EditLayersOnPlayer), nameof(IsPlayerMuted),
         nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
         nameof(ShowCutSegmentsPane), nameof(ShowKeyframesPane), nameof(ShowEffectsPane), nameof(ShowMediaBrowser), nameof(IsMediaBrowserVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
         nameof(RecentActions), nameof(HideDroppedTracks), nameof(HasSelectedKeyframe), nameof(SelectedKeyEasing), nameof(PreviewSubtitles),
@@ -145,6 +145,8 @@ public partial class MainViewModel : ObservableObject
             _audioEncoder = settings.DefaultAudioEncoder;
         if (AudioBitrates.Contains(settings.DefaultAudioBitrate))
             _audioBitrate = settings.DefaultAudioBitrate;
+        _audioSampleRate = AudioChannelChoice.NormalizeRate(settings.DefaultAudioSampleRate);
+        _audioChannels = AudioChannelChoice.Normalize(settings.DefaultAudioChannels);
 #pragma warning restore MVVMTK0034
 
         UpdateEncoderPresets();
@@ -166,7 +168,7 @@ public partial class MainViewModel : ObservableObject
         {
             if (PreviewSubtitles && e.PropertyName is nameof(Layer.SizeWidth) or nameof(Layer.SizeHeight)
                     or nameof(Layer.PositionX) or nameof(Layer.PositionY) or nameof(Layer.Opacity)
-                    or nameof(Layer.Shadow) or nameof(Layer.ShadowOffset) or nameof(Layer.ShadowOpacity))
+                    or nameof(Layer.Shadow) or nameof(Layer.ShadowDistance) or nameof(Layer.ShadowAngle) or nameof(Layer.ShadowOpacity))
             {
                 RefreshLiveCaptionsSoon();
             }
@@ -391,6 +393,8 @@ public partial class MainViewModel : ObservableObject
         TenBit = preset.TenBit || preset.NvencTenBit == true;
         AudioEncoder = Pick(AudioEncoders, preset.AudioEncoder, "aac");
         AudioBitrate = Pick(AudioBitrates, preset.AudioBitrate, "160k");
+        AudioSampleRate = AudioChannelChoice.NormalizeRate(preset.AudioSampleRate);
+        AudioChannels = AudioChannelChoice.Normalize(preset.AudioChannels);
         MergeAudioTracks = preset.MergeAudioTracks;
         NormalizeAudio = preset.NormalizeAudio;
         DuckAudio = false;
@@ -929,6 +933,15 @@ public partial class MainViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(IsAudioReencoded))]
     private string _audioEncoder = CopyOption;
     [ObservableProperty] private string _audioBitrate = "160k";
+
+    /// <summary>The export sample rate of every encoded track, in Hz; 0 is Auto (4.1.1). Saved in presets and projects.</summary>
+    [ObservableProperty] private int _audioSampleRate;
+
+    /// <summary>The export channels of every encoded track (<see cref="AudioChannelChoice"/>; 4.1.1). Saved in presets and projects.</summary>
+    [ObservableProperty] private string _audioChannels = AudioChannelChoice.Stereo;
+
+    public IReadOnlyList<LabeledChoice<int>> AudioSampleRates => AudioChannelChoice.SampleRates;
+    public IReadOnlyList<LabeledChoice<string>> AudioChannelChoices => AudioChannelChoice.Choices;
 
     // ----- Chapters -----
 
@@ -1625,6 +1638,8 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Picks up new tool paths after the settings window was saved.</summary>
     public void OnSettingsSaved()
     {
+        OnPropertyChanged(nameof(EditLayersOnPlayer));
+
         // The proxy settings may name another height, format or place: proxies are looked for again under them.
         _proxies.Clear();
         _proxyLooked.Clear();

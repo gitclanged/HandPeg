@@ -685,6 +685,16 @@ public partial class MainViewModel
                 return;
 
             var layer = ActiveKeyLayer;
+
+            // Several keyframes selected in the Keyframes pane (4.1.1-B): each of them takes the easing, as one step.
+            if (SelectedLaneKeys.Count > 1)
+            {
+                Checkpoint($"change the easing of {SelectedLaneKeys.Count} keyframes of {layer.Name}");
+                if (SetSelectedKeysEasing(layer, easing))
+                    Log($"Easing of {SelectedLaneKeys.Count} keyframes set to {EasingChoice.All.First(c => c.Type == easing).Name} ({layer.Name})");
+                return;
+            }
+
             Checkpoint($"change the easing of a keyframe of {layer.Name}");
 
             // The keyframes changing is what redraws the clip and writes the command again. On the All row every motion
@@ -744,6 +754,23 @@ public partial class MainViewModel
 
     /// <summary>The action-safe and title-safe areas are outlined over the picture.</summary>
     [ObservableProperty] private bool _showSafeMargins;
+
+    /// <summary>Layers are moved, resized and turned on the player itself (Settings, the Layout pane, the playback bar; 4.1.1-B).</summary>
+    public bool EditLayersOnPlayer
+    {
+        get => AppSettings.Current.EditLayersOnPlayer;
+        set
+        {
+            if (value == AppSettings.Current.EditLayersOnPlayer)
+                return;
+
+            SaveView(s => s.EditLayersOnPlayer = value);
+            OnPropertyChanged();
+            StatusText = value
+                ? "Edit Layers on Video Preview on: with Live Preview, click a layer on the player to select it, then drag it, its corner, its round handle or its anchor."
+                : "Edit Layers on Video Preview off: layers are arranged in the Layout pane.";
+        }
+    }
 
     /// <summary>The player is silent (the export is not affected).</summary>
     [ObservableProperty] private bool _isPlayerMuted;

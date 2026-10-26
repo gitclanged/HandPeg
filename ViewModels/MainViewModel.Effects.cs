@@ -76,15 +76,27 @@ public partial class MainViewModel
         Log($"Added {element.Name}: its effects (Effects pane) work on everything under it from {start:0.##} s for {element.Duration:0.##} s");
     }
 
-    /// <summary>Gives every clip on a clip's track a copy of a stack (Paste to Track), with the values its cards carry.</summary>
-    public void PasteEffectsToTrack(Layer on, IReadOnlyList<EffectState> cards)
+    /// <summary>Gives every clip on a clip's track a copy of a stack (Paste Effects with Shift, or Paste Selected Effects...), with the values its cards carry.</summary>
+    /// <param name="append">Added to each clip's stack (Paste Selected Effects..., 4.1.1-B), an effect a clip has once at most taking the
+    /// place of the one there; otherwise each clip's stack is replaced (Paste Effects).</param>
+    public void PasteEffectsToTrack(Layer on, IReadOnlyList<EffectState> cards, bool append = false)
     {
         Checkpoint($"paste effects to the track of {on.Name}");
         using var whole = DeferCommand();
         foreach (var clip in GetTrackClips(on))
         {
             using (Layer.Echo())
-                clip.SetEffects([.. cards.Select(clip.AdoptCard)]);
+            {
+                var pasted = cards.Select(clip.AdoptCard).ToList();
+                if (!append)
+                {
+                    clip.SetEffects(pasted);
+                    continue;
+                }
+
+                var once = pasted.Where(c => c.Definition is { Feature: not null }).Select(c => c.Type).ToHashSet();
+                clip.SetEffects(clip.Effects.Where(c => !once.Contains(c.Type)).Concat(pasted).OrderBy(c => (int)(c.Definition?.Zone ?? EffectZone.Look)).ToList());
+            }
         }
     }
 }

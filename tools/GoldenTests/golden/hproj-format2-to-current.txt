@@ -2,7 +2,7 @@
 
 {
   "format": "handpeg-project",
-  "version": 3,
+  "version": 4,
   "writtenBy": "HandPeg <version>",
   "name": "Golden fixture",
   "savedAt": "2026-10-20T12:00:00",

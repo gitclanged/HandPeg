@@ -37,8 +37,14 @@ public partial class EffectsPane : UserControl
     private readonly List<ParamModel> _params = [];
     private readonly HashSet<Guid> _collapsed = [];
 
-    // Copy Stack's cards, for Paste Stack and Paste to Track: shared by every target.
+    // Copy Stack's cards, for Paste Effects and Paste Selected Effects...: shared by every target.
     private static List<EffectState>? _clipboard;
+
+    // The stack menu's "Apply Paste to All Clips on Track" (4.1.1-B), kept while HandPeg runs.
+    private static bool _pasteToTrack;
+
+    // The window whose clicks outside the Add Effect flyout close it, while it is open.
+    private Window? _addOwner;
 
     // The Add Effect flyout closes a moment after the pointer leaves it and its button (the Settings button's 260 ms).
     private readonly DispatcherTimer _addClose = new() { Interval = TimeSpan.FromMilliseconds(260) };
@@ -60,6 +66,8 @@ public partial class EffectsPane : UserControl
     {
         InitializeComponent();
         _addClose.Tick += AddClose_Tick;
+        AddPopup.Opened += AddPopup_Opened;
+        AddPopup.Closed += AddPopup_Closed;
         ReorderBehavior.Reordered += OnReordered;
     }
 
@@ -145,7 +153,7 @@ public partial class EffectsPane : UserControl
                 break;
             case Layer.EffectsChanged or Layer.KeysChanged or nameof(Layer.Opacity) or nameof(Layer.ChromaColor) or nameof(Layer.ChromaSimilarity) or nameof(Layer.ChromaBlend)
                 or nameof(Layer.MaskGrow) or nameof(Layer.MaskInvert) or nameof(Layer.CornerRadius) or nameof(Layer.Feather) or nameof(Layer.FeatherRadius)
-                or nameof(Layer.ShadowOpacity) or nameof(Layer.ShadowOffset):
+                or nameof(Layer.ShadowOpacity) or nameof(Layer.ShadowDistance) or nameof(Layer.ShadowAngle) or nameof(Layer.ShadowSoftness) or nameof(Layer.ShadowColor):
                 QueueRefresh();
                 break;
         }
@@ -668,7 +676,7 @@ public partial class EffectsPane : UserControl
         if (_vm is null || _stack is null)
             return;
 
-        AddPopup.IsOpen = false;
+        CloseAdd();
         _vm.Checkpoint($"add {definition.Name}");
         using (Layer.Echo())
         {
@@ -771,9 +779,18 @@ public partial class EffectsPane : UserControl
         }
 
         var has = _stack is { Count: > 0 };
+        var canPaste = _clipboard is { Count: > 0 } && _stack is not null;
         Item("Copy Stack", "Copies every effect of this stack, with its values, to paste onto another clip or the Sequence Output.", has, CopyStack);
-        Item("Paste Stack", "Replaces this stack with the one copied.", _clipboard is not null && _stack is not null, PasteStack);
-        Item("Paste to Track", "Gives every clip on this clip's track the stack that was copied.", _clipboard is not null && _layer is not null && _vm?.Layers.Contains(_layer) == true, PasteToTrack);
+        Item("Paste Effects", "Replaces this clip's stack with the effects copied. Hold Shift while clicking (or tick Apply Paste to All Clips on Track) to give every clip on this track the copied stack.",
+            canPaste, () => PasteEffects(_pasteToTrack || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)));
+        Item("Paste Selected Effects...", "Lists the copied effects, each with a box, to choose which are added to this clip (or every clip on its track).", canPaste, PasteSelected);
+        var toTrack = new MenuItem
+        {
+            Header = "Apply Paste to All Clips on Track", IsCheckable = true, IsChecked = _pasteToTrack, StaysOpenOnClick = true, IsEnabled = CanPasteToTrack,
+            ToolTip = "While ticked, Paste Effects gives every clip on the selected clip's track the copied stack, not only the clip.",
+        };
+        toTrack.Click += (_, _) => _pasteToTrack = toTrack.IsChecked;
+        menu.Items.Add(toTrack);
         menu.Items.Add(new Separator());
         Item("Save Effect Preset...", $"Saves this stack as a .hpfx file in {AppPaths.EffectPresets}; it is then listed under Presets in Add Effect.", has, SavePreset);
         Item("Reset", "Removes every effect of this stack (Ctrl+Z brings them back).", has, ResetStack);
@@ -786,22 +803,48 @@ public partial class EffectsPane : UserControl
     {
         _clipboard = CaptureStack();
         if (_vm is not null)
-            _vm.StatusText = $"Copied {_clipboard.Count} effect{(_clipboard.Count == 1 ? "" : "s")}: Paste Stack puts them on another clip.";
+            _vm.StatusText = $"Copied {_clipboard.Count} effect{(_clipboard.Count == 1 ? "" : "s")}: Paste Effects puts them on another clip.";
     }
 
-    private void PasteStack()
+    /// <summary>Whether the target is a clip on a track (the main video and the Sequence Output are not).</summary>
+    private bool CanPasteToTrack => _layer is not null && _vm?.Layers.Contains(_layer) == true;
+
+    /// <summary>Paste Effects (4.1.1-B, Paste Stack and Paste to Track in one): the copied stack replaces the clip's, or every clip's on its track.</summary>
+    private void PasteEffects(bool toTrack)
     {
         if (_clipboard is null || _vm is null)
             return;
+
+        if (toTrack && CanPasteToTrack)
+        {
+            _vm.PasteEffectsToTrack(_layer!, _clipboard);
+            return;
+        }
 
         _vm.Checkpoint("paste effects");
         ReplaceWith(_clipboard, append: false);
     }
 
-    private void PasteToTrack()
+    /// <summary>Paste Selected Effects... (4.1.1-B): the copied effects ticked in a list are added to the clip, or to every clip on its track.</summary>
+    private void PasteSelected()
     {
-        if (_clipboard is not null && _layer is not null)
-            _vm?.PasteEffectsToTrack(_layer, _clipboard);
+        if (_clipboard is null || _vm is null || _stack is null)
+            return;
+
+        var owner = Window.GetWindow(this) ?? Application.Current.MainWindow;
+        var target = _layer is null ? "the Sequence Output" : _layer.Name;
+        var dialog = new PasteEffectsDialog(_clipboard, target, CanPasteToTrack, _pasteToTrack) { Owner = owner };
+        if (dialog.ShowDialog() != true || dialog.Chosen is not { Count: > 0 } chosen)
+            return;
+
+        if (dialog.ToTrack && CanPasteToTrack)
+        {
+            _vm.PasteEffectsToTrack(_layer!, chosen, append: true);
+            return;
+        }
+
+        _vm.Checkpoint($"paste {chosen.Count} effect{(chosen.Count == 1 ? "" : "s")}");
+        ReplaceWith(chosen, append: true);
     }
 
     /// <summary>Puts cards on the target, adopted by it: what it cannot take is left out (a missing effect is kept); a bound effect it already has is not doubled.</summary>
@@ -819,8 +862,16 @@ public partial class EffectsPane : UserControl
                 var definition = EffectRegistry.Find(state.Type);
                 if (definition is not null && !Fits(definition, ignorePresent: true))
                     continue;
-                if (definition is { Feature: not null } && cards.Any(c => c.Type == state.Type))
-                    continue;
+
+                // An effect a clip has once at most: added again, the pasted one takes the place of the one there (4.1.1-B).
+                if (definition is { Feature: not null } && cards.FindIndex(c => c.Type == state.Type) is var present and >= 0)
+                {
+                    if (!append || present >= keep.Count)
+                        continue;
+                    cards.RemoveAt(present);
+                    keep.RemoveAt(present);
+                }
+
                 cards.Add(_layer?.AdoptCard(state) ?? EffectInstance.FromState(state));
             }
 
@@ -865,7 +916,7 @@ public partial class EffectsPane : UserControl
 
     private void ApplyPreset(string path)
     {
-        AddPopup.IsOpen = false;
+        CloseAdd();
         try
         {
             var states = JsonSerializer.Deserialize<List<EffectState>>(File.ReadAllText(path)) ?? [];
@@ -984,7 +1035,56 @@ public partial class EffectsPane : UserControl
     {
         _addClose.Stop();
         if (!AddHost.IsMouseOver && !AddFlyoutPanel.IsMouseOver && !AddFlyoutPanel.IsKeyboardFocusWithin)
-            AddPopup.IsOpen = false;
+            CloseAdd();
+    }
+
+    /// <summary>
+    /// Closes the Add Effect flyout and takes the keyboard out of its search box (4.1.1-B): a focused search box kept
+    /// the flyout open (see <see cref="AddClose_Tick"/>), and with it closed the typing would go nowhere.
+    /// </summary>
+    private void CloseAdd()
+    {
+        _addClose.Stop();
+        var hadFocus = AddFlyoutPanel.IsKeyboardFocusWithin;
+        AddPopup.IsOpen = false;
+        if (hadFocus)
+            Keyboard.Focus(AddButton);
+    }
+
+    // While the flyout is open, a press anywhere in the window outside it and its button closes it, and so does the
+    // window losing the foreground: a search box with the keyboard otherwise held it open (4.1.1-B). A press inside the
+    // flyout never reaches the window (a popup is a window of its own).
+    private void AddPopup_Opened(object? sender, EventArgs e)
+    {
+        _addOwner = Window.GetWindow(this);
+        if (_addOwner is null)
+            return;
+
+        _addOwner.PreviewMouseDown += AddOwner_PreviewMouseDown;
+        _addOwner.Deactivated += AddOwner_Deactivated;
+    }
+
+    private void AddPopup_Closed(object? sender, EventArgs e)
+    {
+        if (_addOwner is not null)
+        {
+            _addOwner.PreviewMouseDown -= AddOwner_PreviewMouseDown;
+            _addOwner.Deactivated -= AddOwner_Deactivated;
+            _addOwner = null;
+        }
+    }
+
+    private void AddOwner_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!AddHost.IsMouseOver)
+            CloseAdd();
+    }
+
+    private void AddOwner_Deactivated(object? sender, EventArgs e)
+    {
+        // The flyout's own window taking the keyboard deactivates nothing; another window does.
+        if (!AddFlyoutPanel.IsKeyboardFocusWithin)
+            CloseAdd();
     }
 
     private void AddButton_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -1002,7 +1102,7 @@ public partial class EffectsPane : UserControl
             return;
 
         e.Handled = true;
-        AddPopup.IsOpen = false;
+        CloseAdd();
         Keyboard.Focus(AddButton);
     }
 

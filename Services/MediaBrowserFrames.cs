@@ -24,7 +24,7 @@ public static class MediaBrowserFrames
     /// <param name="lane">Background for the tiles on screen; the folder indexer runs it inside its own Idle work.</param>
     public static async Task<(double Seconds, int Width, int Height)?> DescribeAsync(string path, CancellationToken token, WorkLane lane = WorkLane.Background)
     {
-        if (ReadKept(path, "probe", ".txt") is { } kept && Parse(kept) is { } known)
+        if (ReadKept(path, "probe", ".txt") is { } kept && ParseProbe(kept) is { } known)
             return known;
 
         var info = await MediaProbe.ProbeAsync(path, token, lane);
@@ -34,18 +34,38 @@ public static class MediaBrowserFrames
         var result = (Math.Max(info.DurationSeconds, 0), info.Video?.Width ?? 0, info.Video?.Height ?? 0);
         WriteKept(path, "probe", ".txt", string.Create(CultureInfo.InvariantCulture, $"{result.Item1:0.###}|{result.Item2}|{result.Item3}"));
         return result;
-
-        static (double, int, int)? Parse(string text)
-        {
-            var parts = text.Split('|');
-            return parts.Length == 3
-                   && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
-                   && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var width)
-                   && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var height)
-                ? (seconds, width, height)
-                : null;
-        }
     }
+
+    private static (double Seconds, int Width, int Height)? ParseProbe(string text)
+    {
+        var parts = text.Split('|');
+        return parts.Length == 3
+               && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
+               && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var width)
+               && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var height)
+            ? (seconds, width, height)
+            : null;
+    }
+
+    /// <summary>
+    /// A video's tile from what the cache already holds (4.1.1): its kept description and strip, and the poster cut from
+    /// that strip, with no tool run and no wait for anything queued; null when either is not kept. Off the interface.
+    /// </summary>
+    public static (double Seconds, int Width, int Height, string Strip, BitmapSource? Poster)? Kept(string path, int frames, int frameHeight, int height, double at)
+    {
+        if (ReadKept(path, "probe", ".txt") is not { } text || ParseProbe(text) is not { Width: > 0, Height: > 0 } video)
+            return null;
+
+        var shape = (double)video.Width / video.Height;
+        if (FindKept(path, StripKind(frames, frameHeight, shape), ".jpg") is not { } strip)
+            return null;
+
+        return (video.Seconds, video.Width, video.Height, strip, Poster(strip, shape, height, at));
+    }
+
+    // The cache's name for a strip of so many frames, at the height it is made (lowered for a strip too wide for a JPEG).
+    private static string StripKind(int frames, int frameHeight, double shape) =>
+        string.Create(CultureInfo.InvariantCulture, $"frames{frames}h{(int)Math.Min(frameHeight, 60000 / (frames * shape))}");
 
     /// <summary>
     /// The strip of a video's frames: kept, or made now. Null when it could not be made. Its frames are as tall as
@@ -54,8 +74,8 @@ public static class MediaBrowserFrames
     public static async Task<string?> StripAsync(string path, double seconds, int width, int height, int frames, int frameHeight, CancellationToken token, WorkLane lane = WorkLane.Background)
     {
         var shape = width > 0 && height > 0 ? (double)width / height : 16.0 / 9;
+        var kind = StripKind(frames, frameHeight, shape);
         frameHeight = (int)Math.Min(frameHeight, 60000 / (frames * shape));
-        var kind = string.Create(CultureInfo.InvariantCulture, $"frames{frames}h{frameHeight}");
         if (FindKept(path, kind, ".jpg") is { } kept)
             return kept;
 

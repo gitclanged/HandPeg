@@ -106,8 +106,8 @@ public partial class MainViewModel
 
         // The same style a picture has: corners, soft edges and a drop shadow.
         (CaptionLayer.CornerRadius, CaptionLayer.Feather) = (Math.Clamp(state?.CornerRadius ?? 0, 0, 50), state?.Feather ?? false);
-        (CaptionLayer.FeatherRadius, CaptionLayer.Shadow) = (state?.FeatherRadius ?? 12, state?.Shadow ?? false);
-        (CaptionLayer.ShadowOpacity, CaptionLayer.ShadowOffset) = (state?.ShadowOpacity ?? 0.5, state?.ShadowOffset ?? 10);
+        CaptionLayer.FeatherRadius = state?.FeatherRadius ?? 12;
+        CaptionLayer.TakeShadow(state);
         (CaptionLayer.CustomMask, CaptionLayer.MaskPath) = (state?.CustomMask ?? false, state?.MaskPath ?? "");
     }
 
@@ -528,7 +528,7 @@ public partial class MainViewModel
         var textScale = Math.Min(frameWidth, frameHeight) / 1080.0 * (height / (DefaultCaptionHeight * frameHeight));
         var frame = forPlayer
             ? new CaptionFramePlacement(x, y, frameWidth, frameHeight, CaptionLayer.Opacity / 100.0,
-                CaptionLayer.Shadow ? Math.Clamp(CaptionLayer.ShadowOffset, 0, 200) : 0, CaptionLayer.ShadowOpacity)
+                CaptionLayer.Shadow ? CaptionLayer.ShadowShift : (0, 0), CaptionLayer.ShadowOpacity)
             : null;
         CaptionGenerator.WriteAss(words, CaptionStyle, width, height, textScale, assPath, timeOffset, frame, lines);
     }

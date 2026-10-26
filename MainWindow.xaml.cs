@@ -209,6 +209,8 @@ public partial class MainWindow : Window
         _viewModel.Segments.CollectionChanged += (_, _) => RedrawSegments();
         _viewModel.MarkersChanged += OnMarkersChanged;
         InitializePlaybackBar();
+        InitializePlayerLayout();
+        _viewModel.SessionCleared += OnSessionCleared;
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         _viewModel.MediaLoaded += PlayMedia;
 
@@ -267,6 +269,14 @@ public partial class MainWindow : Window
         KeyLanes.KeyToggleRequested += lane => _viewModel.ToggleLaneKey(_viewModel.ActiveKeyLayer, lane.Target);
         KeyLanes.KeyMoved += (lane, from, to) => _viewModel.MoveLaneKey(_viewModel.ActiveKeyLayer, lane.Target, from, to);
         KeyLanes.DeleteRequested += lane => _viewModel.DeleteLaneKey(_viewModel.ActiveKeyLayer, lane.Target);
+
+        // Several keyframes at once (4.1.1-B): the pane's selection, moved, deleted, copied and pasted as one step each.
+        KeyLanes.SelectionChanged += keys => _viewModel.SelectedLaneKeys = [.. keys];
+        KeyLanes.KeysMoved += (keys, delta) => _viewModel.MoveLaneKeys(_viewModel.ActiveKeyLayer, keys, delta);
+        KeyLanes.DeleteSelectedRequested += keys => _viewModel.DeleteLaneKeys(_viewModel.ActiveKeyLayer, keys);
+        KeyLanes.CopyRequested += keys => _viewModel.CopyLaneKeys(_viewModel.ActiveKeyLayer, keys);
+        KeyLanes.PasteRequested += () => _viewModel.PasteLaneKeys(_viewModel.ActiveKeyLayer);
+        KeyLanes.CanPaste = () => _viewModel.HasCopiedKeys;
         KeyLanes.SeekRequested += seconds => _viewModel.PositionMs = Math.Clamp(seconds * 1000, 0, Math.Max(_viewModel.DurationMs, 0));
         KeyLanes.PanRequested += PanTimeline;
         KeyLanes.ZoomRequested += ZoomTimeline;
@@ -766,8 +776,43 @@ public partial class MainWindow : Window
     private async void OpenProjects_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new ProjectManagerWindow(_viewModel) { Owner = this };
-        if (dialog.ShowDialog() == true && dialog.ProjectToLoad is { } project)
+        if (dialog.ShowDialog() != true)
+            return;
+
+        if (dialog.NewProjectRequested)
+            StartNewProject();
+        else if (dialog.ProjectToLoad is { } project)
             await _viewModel.LoadProjectAsync(project);
+    }
+
+    /// <summary>+ New Project: unsaved changes are saved or let go first, as the user says; then the session is emptied.</summary>
+    private void StartNewProject()
+    {
+        if (_viewModel.HasUnsavedChanges)
+        {
+            var name = _viewModel.CurrentProjectPath.Length > 0 ? Path.GetFileNameWithoutExtension(_viewModel.CurrentProjectPath)
+                : _viewModel.HasSource ? Path.GetFileNameWithoutExtension(_viewModel.LocalMediaPath) : "";
+            var ask = new ConfirmDialog("New Project",
+                "What is open has changes that were not saved as a project.\n\nSave them first, or let them go?", "Save, then Start New", "Discard and Start New") { Owner = this };
+            if (ask.ShowDialog() != true)
+                return;
+
+            // A project that could not be saved must not be followed by losing what it was meant to keep.
+            if (!ask.ChoseOther && !_viewModel.SaveProject(name.Length > 0 ? name : $"Project {DateTime.Now:yyyy-MM-dd HH.mm}").StartsWith("Project saved", StringComparison.Ordinal))
+                return;
+        }
+
+        _viewModel.NewProject();
+    }
+
+    // The session emptied (+ New Project): the player lets its file go, and the drop hint is back where the video was.
+    private void OnSessionCleared()
+    {
+        _mpv?.DropFilterGraph();
+        _mpv?.Stop();
+        UpdateVideoVisibility();
+        RedrawLayout();
+        RedrawPlayerLayout();
     }
 
     private void ManualCut_Click(object sender, RoutedEventArgs e) =>
@@ -824,8 +869,10 @@ public partial class MainWindow : Window
 
     // ----- A track's controls: in its row while there is room, in a flyout from its row when there is not -----
 
-    // What a row needs beside its controls: the name block, and a time bar wide enough to be of use.
-    private const double NarrowestTrackList = 232 + 250 + 700;
+    // What a row needs beside its controls: the name block, the controls (416 on the Layers tab since 4.1.1-D, its two
+    // lines of fixed width), and a time bar wide enough to be of use. 1182 in all, as before the block grew from 368: a
+    // 1280 px window keeps its controls in the rows.
+    private const double NarrowestTrackList = 232 + 416 + 534;
 
     private void TrackList_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -1137,7 +1184,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        var at = _viewModel.PositionMs / 1000;
+        AddFilesToTimeline(files, _viewModel.PositionMs / 1000);
+    }
+
+    /// <summary>Files put onto the timeline at a moment: sounds as audio clips, videos and pictures as layers (placed by PlaceClip).</summary>
+    private void AddFilesToTimeline(string[] files, double at)
+    {
         var sounds = files.Where(f => MediaBrowserItem.KindOf(f) == MediaBrowserKind.Audio).ToArray();
         var pictures = files.Except(sounds).ToArray();
         if (pictures.Length > 0)
@@ -1448,6 +1500,17 @@ public partial class MainWindow : Window
                 Dispatcher.BeginInvoke(() => _ = AddDroppedAudioAsync(files, seconds));
                 return;
             }
+        }
+
+        // From the media browser, in Editor Mode with a video or project open (4.1.1-B): the files go onto the timeline at
+        // the playhead, wherever they are let go (the player, the master timeline, a pane), never over what is open.
+        // A project file is still opened as one.
+        if (_viewModel is { HasSource: true, IsEditorMode: true } && e.Data.GetDataPresent(Views.MediaBrowserPane.DragFormat)
+            && files.Where(f => !f.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase)).ToArray() is { Length: > 0 } media)
+        {
+            var at = _viewModel.PositionMs / 1000;
+            Dispatcher.BeginInvoke(() => AddFilesToTimeline(media, at));
+            return;
         }
 
         // The dialog must not open inside the drop itself: Explorer waits, frozen, until the drop handler returns.
@@ -2002,12 +2065,13 @@ public partial class MainWindow : Window
     private void ScheduleLiveFilter()
     {
         // Also with Live Preview off: what the player has open follows the sequence either way.
+        // An edit while paused is shown by the quick graph first, as a jump is; whether it changed the graph at all is
+        // known only once it is built (ApplyLiveFilterNow), so the graph with sound is not given up here (4.1.1: a
+        // finished waveform, a refreshed row or a proxy made swapped to the quick graph and back, each swap moving the
+        // paused frame on).
         if (_mpv is null)
             return;
 
-        // An edit while paused is shown by the quick graph first, as a jump is.
-        if (!PlayerIsPlaying)
-            _soundSettled = false;
         _liveFilterTimer.Stop();
         _liveFilterTimer.Start();
     }
@@ -2032,6 +2096,10 @@ public partial class MainWindow : Window
     }
 
     private void ApplyLiveFilter() => ApplyLiveFilter(null);
+
+    /// <summary>Whether a graph for <paramref name="stamp"/> differs from the running one only in the player's size.</summary>
+    private bool SameButSize(LiveStamp stamp) =>
+        _liveGraph.Length > 0 && stamp with { Width = _liveStamp.Width, Height = _liveStamp.Height } == _liveStamp;
 
     // ----- Paused, ready to play -----
     // A graph with the layers' sound in it (an [ao]) is what playing needs; one without jumps about far faster. So a
@@ -2145,6 +2213,22 @@ public partial class MainWindow : Window
         // graph compares equal to the one running; a jump, or any change to the graph, lays it out afresh
         // from where playback is.
         // Not while one track is played on its own either, nor after mpv has turned such a graph down.
+        // Paused and settled with the sound in, and no seek: a graph that would come out the same is left running (the
+        // version of the settings is taken up); only a change to the picture or the sound goes to the quick graph first.
+        if (seekTo is null && _soundSettled && !player.IsPlaying && !_readyingToPlay && !scrubbing && LiveGraphHasSound
+            && _liveAudioSeekMs is null && _liveAudioFromMs is { } settledFrom)
+        {
+            var settled = new LiveStamp(_liveStateVersion, live, (int)width, (int)height, layers, settledFrom);
+            if (SameButSize(settled) || Build(settledFrom).Text == _liveGraph)
+            {
+                _liveStamp = settled with { Width = _liveStamp.Width, Height = _liveStamp.Height };
+                ApplyAudioTrack();
+                return;
+            }
+
+            _soundSettled = false;
+        }
+
         var wantsSound = (player.IsPlaying || _soundSettled) && !scrubbing && _viewModel.SoloTrack is null && !_liveSoundRefused;
         var (jumpedTo, now) = (_liveAudioSeekMs ?? seekTo?.Ms, at);
         _liveAudioSeekMs = null;
@@ -2153,8 +2237,12 @@ public partial class MainWindow : Window
 
         // Nothing it is built from has changed, and the player is still within what the running graph holds:
         // it stays. (Built afresh it would differ only in where its layers start reading.)
+        // Nor for the player's size alone while paused or while the Layout selector previews layouts (4.1.1): mpv scales
+        // the running graph's frames to the surface, and a new graph moved the paused frame on with every card the
+        // pointer crossed. The new size is taken up by the next graph that is built for anything else.
         var stamp = new LiveStamp(_liveStateVersion, live, (int)width, (int)height, layers, from);
-        if (seekTo is null && _liveGraph.Length > 0 && stamp == _liveStamp && at >= _liveBuiltAtMs - FilterGraphBuilder.LiveLookBehind * 1000 && at < _liveRebuildAt * 1000)
+        var sameOrSize = stamp == _liveStamp || SameButSize(stamp) && (!player.IsPlaying || LayoutSelector.IsOpen);
+        if (seekTo is null && _liveGraph.Length > 0 && sameOrSize && at >= _liveBuiltAtMs - FilterGraphBuilder.LiveLookBehind * 1000 && at < _liveRebuildAt * 1000)
         {
             ApplyAudioTrack();
             return;
@@ -2500,6 +2588,15 @@ public partial class MainWindow : Window
     private void TimelineSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_updatingFromPlayer || _mpv is null)
+            return;
+
+        // Not a move of the playhead (4.1.1): the value pushed down by a timeline that became shorter (the slider
+        // coerces it to its new end; what the sequence does about it is RefreshSequence's), or a step of less than a
+        // millisecond (a position given back in other units). Each was a seek, and while paused a swap to the quick
+        // graph and back, that moved the frame on.
+        if (e.NewValue == TimelineSlider.Maximum && e.OldValue > TimelineSlider.Maximum)
+            return;
+        if (!_isScrubbing && Math.Abs(e.NewValue - e.OldValue) < 1)
             return;
 
         // Magnetism: while dragging, a thumb that comes close enough to an I-frame is pulled onto it.
@@ -4783,50 +4880,12 @@ public partial class MainWindow : Window
         foreach (var element in _viewModel.FrameEngine ? _viewModel.Layers.Where(l => l is { IsAudio: false, IsEmptyTrack: false }).GroupBy(l => l.TrackId)
                      .Where(t => t.Any(c => !c.IsHidden)).Select(t => t.First()).ToList() : [])
         {
-            (int X, int Y, int Width, int Height) Rect() => element.GetOutputRect(frameWidth, frameHeight, _viewModel.SourceWidth, _viewModel.SourceHeight);
             var place = AddArrangeLayer(
                 element.Name, (Style)FindResource("LayerThumb"), element, frame, scale,
-                Rect,
-                (deltaX, deltaY) =>
-                {
-                    // Output pixels to fractions of the frame. Setting them moves the sliders, and the box follows them.
-                    // A layer may be dragged off the frame: what is outside is cut off, and the frame stays as it is.
-                    // Near the frame's middle or a safe margin, an edge or the middle of the box snaps to it (not with Alt).
-                    var (x, y) = (element.PositionX + deltaX / frameWidth, element.PositionY + deltaY / frameHeight);
-                    if (AppSettings.Current.SnapLayoutGuides && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
-                        (x, y) = SnapToGuides(x, y, element.SizeWidth, (double)Rect().Height / frameHeight);
-                    element.PositionX = Math.Clamp(x, -2, 2);
-                    element.PositionY = Math.Clamp(y, -2, 2);
-                },
-                (deltaX, deltaY) =>
-                {
-                    // Ctrl: dragged by its corner, the opposite corner is what stays put.
-                    if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
-                    {
-                        element.FromCorner(() =>
-                        {
-                            element.SizeWidth = Math.Clamp(element.SizeWidth + deltaX / frameWidth, 0.02, 4);
-
-                            // Locked, the height follows the width by itself; unlocked, it is dragged separately.
-                            if (!element.LockAspectRatio)
-                                element.SizeHeight = Math.Clamp(element.SizeHeight + deltaY / frameHeight, 0.01, 4);
-                        });
-                        return;
-                    }
-
-                    // Otherwise about the anchor point, which stays where it is: the corner follows the pointer, so the size
-                    // grows by the pointer's move over the corner's share of it.
-                    element.SizeWidth = Math.Clamp(element.SizeWidth + deltaX / frameWidth / Math.Max(1 - element.AnchorX, 0.1), 0.02, 4);
-                    if (!element.LockAspectRatio)
-                        element.SizeHeight = Math.Clamp(element.SizeHeight + deltaY / frameHeight / Math.Max(1 - element.AnchorY, 0.1), 0.01, 4);
-                },
-                reset: () =>
-                {
-                    // A layer keeps its size; it goes to the middle of the frame.
-                    var (_, _, width, height) = element.GetOutputRect(frameWidth, frameHeight, _viewModel.SourceWidth, _viewModel.SourceHeight);
-                    element.PositionX = (frameWidth - width) / 2.0 / frameWidth;
-                    element.PositionY = (frameHeight - height) / 2.0 / frameHeight;
-                },
+                () => TrackLayerRect(element),
+                (deltaX, deltaY) => MoveTrackLayer(element, deltaX, deltaY, _layoutFrame, _layoutGuides),
+                (deltaX, deltaY) => ResizeTrackLayer(element, deltaX, deltaY),
+                reset: () => CenterTrackLayer(element),
                 rotation: () => element.HasFilters ? element.Rotation : 0,
                 gizmo: element);
 
@@ -4850,11 +4909,12 @@ public partial class MainWindow : Window
     /// safe margin (5% action-safe, 10% title-safe) or edge, and the same down the frame, within six pixels on screen.
     /// The guides it is held to are drawn while it is.
     /// </summary>
-    private (double X, double Y) SnapToGuides(double x, double y, double width, double height)
+    /// <param name="frame">The output frame on the surface the box is dragged on, in its units.</param>
+    /// <param name="view">Where the guides are drawn; none over the player (4.1.1-B), which only snaps.</param>
+    private static (double X, double Y) SnapToGuides(double x, double y, double width, double height, Rect frame, LayoutGuidesView? view)
     {
         double[] lines = [0, 0.05, 0.1, 0.5, 0.9, 0.95, 1];
         var guides = new List<(Point From, Point To)>();
-        var frame = _layoutFrame;
 
         double Snap(double start, double size, double pixels, bool across)
         {
@@ -4880,8 +4940,107 @@ public partial class MainWindow : Window
         }
 
         var snapped = (Snap(x, width, frame.Width, across: true), Snap(y, height, frame.Height, across: false));
-        _layoutGuides?.ShowGuides(guides);
+        view?.ShowGuides(guides);
         return snapped;
+    }
+
+    // ----- A track's layer moved, resized, centred and turned: the same in the layout pane and over the player -----
+
+    private (int X, int Y, int Width, int Height) TrackLayerRect(Layer element) =>
+        element.GetOutputRect(_viewModel.FrameWidth, _viewModel.FrameHeight, _viewModel.SourceWidth, _viewModel.SourceHeight);
+
+    /// <summary>Moves a track's layer by a distance in output pixels, snapping to the guides of the frame it is dragged on.</summary>
+    private void MoveTrackLayer(Layer element, double deltaX, double deltaY, Rect frame, LayoutGuidesView? guides)
+    {
+        // Output pixels to fractions of the frame. Setting them moves the sliders, and the box follows them.
+        // A layer may be dragged off the frame: what is outside is cut off, and the frame stays as it is.
+        // Near the frame's middle or a safe margin, an edge or the middle of the box snaps to it (not with Alt).
+        var (frameWidth, frameHeight) = (_viewModel.FrameWidth, _viewModel.FrameHeight);
+        var (x, y) = (element.PositionX + deltaX / frameWidth, element.PositionY + deltaY / frameHeight);
+        if (AppSettings.Current.SnapLayoutGuides && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
+            (x, y) = SnapToGuides(x, y, element.SizeWidth, (double)TrackLayerRect(element).Height / frameHeight, frame, guides);
+        element.PositionX = Math.Clamp(x, -2, 2);
+        element.PositionY = Math.Clamp(y, -2, 2);
+    }
+
+    /// <summary>Grows a track's layer by a distance in output pixels, dragged by its corner.</summary>
+    private void ResizeTrackLayer(Layer element, double deltaX, double deltaY)
+    {
+        var (frameWidth, frameHeight) = (_viewModel.FrameWidth, _viewModel.FrameHeight);
+
+        // Ctrl: dragged by its corner, the opposite corner is what stays put.
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            element.FromCorner(() =>
+            {
+                element.SizeWidth = Math.Clamp(element.SizeWidth + deltaX / frameWidth, 0.02, 4);
+
+                // Locked, the height follows the width by itself; unlocked, it is dragged separately.
+                if (!element.LockAspectRatio)
+                    element.SizeHeight = Math.Clamp(element.SizeHeight + deltaY / frameHeight, 0.01, 4);
+            });
+            return;
+        }
+
+        // Otherwise about the anchor point, which stays where it is: the corner follows the pointer, so the size
+        // grows by the pointer's move over the corner's share of it.
+        element.SizeWidth = Math.Clamp(element.SizeWidth + deltaX / frameWidth / Math.Max(1 - element.AnchorX, 0.1), 0.02, 4);
+        if (!element.LockAspectRatio)
+            element.SizeHeight = Math.Clamp(element.SizeHeight + deltaY / frameHeight / Math.Max(1 - element.AnchorY, 0.1), 0.01, 4);
+    }
+
+    /// <summary>A double-click on a track's box: the layer keeps its size and goes to the middle of the frame.</summary>
+    private void CenterTrackLayer(Layer element)
+    {
+        var (frameWidth, frameHeight) = (_viewModel.FrameWidth, _viewModel.FrameHeight);
+        var (_, _, width, height) = TrackLayerRect(element);
+        element.PositionX = (frameWidth - width) / 2.0 / frameWidth;
+        element.PositionY = (frameHeight - height) / 2.0 / frameHeight;
+    }
+
+    /// <summary>
+    /// The rotation handle and the anchor dot of a track's box, on whatever surface the box lies (the layout pane's
+    /// canvas or the player's): the angle from the anchor point to the pointer, and the anchor moved inside the box.
+    /// </summary>
+    private void WireGizmo(LayerGizmoAdorner adorner, FrameworkElement box, Layer gizmo, string name, UIElement surface,
+        Func<(int X, int Y, int Width, int Height)> getRect, Action<double, double> resize, double scale)
+    {
+        adorner.ResizeStarted += (_, _) => _viewModel.Checkpoint($"resize {name}");
+        adorner.ResizeDelta += (_, e) => resize(e.HorizontalChange / scale, e.VerticalChange / scale);
+
+        // The rotation handle: the angle from the anchor point to the pointer, the handle pointing up at 0 degrees.
+        adorner.TurnStarted += () => _viewModel.Checkpoint($"turn {name}");
+        adorner.TurnDelta += () =>
+        {
+            if (!gizmo.HasFilters)
+                return;
+
+            var anchor = box.TranslatePoint(new Point(gizmo.AnchorX * box.Width, gizmo.AnchorY * box.Height), surface);
+            var pointer = Mouse.GetPosition(surface);
+            var degrees = Math.Atan2(pointer.Y - anchor.Y, pointer.X - anchor.X) * 180 / Math.PI + 90;
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+                degrees = Math.Round(degrees / 15) * 15;
+            degrees = Math.Round(degrees > 180 ? degrees - 360 : degrees, 1);
+            gizmo.Rotation = degrees;
+            adorner.ShowAngle(degrees);
+        };
+
+        // The anchor dot: where the pointer is in the (unturned) box; the layer stays where it is on the frame. It snaps
+        // to the middle, the edges and the corners (not with Alt).
+        adorner.AnchorStarted += () => _viewModel.Checkpoint($"move the anchor point of {name}");
+        adorner.AnchorDelta += () =>
+        {
+            var pointer = Mouse.GetPosition(box);
+            var (x, y) = (pointer.X / Math.Max(box.Width, 1), pointer.Y / Math.Max(box.Height, 1));
+            if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
+            {
+                double Snap(double value, double pixels) => new[] { 0, 0.5, 1 }.FirstOrDefault(s => Math.Abs(value - s) * pixels <= 6, value);
+                (x, y) = (Snap(x, box.Width), Snap(y, box.Height));
+            }
+
+            var (_, _, width, height) = getRect();
+            gizmo.MoveAnchor(x, y, width, height, _viewModel.FrameWidth, _viewModel.FrameHeight);
+        };
     }
 
     /// <summary>
@@ -5016,41 +5175,7 @@ public partial class MainWindow : Window
         else if (AdornerLayer.GetAdornerLayer(box) is { } gizmoLayer && gizmo is not null)
         {
             var adorner = gizmoAdorner = new LayerGizmoAdorner(box, (Style)FindResource("LayerGrip"), name, () => new Point(gizmo.AnchorX, gizmo.AnchorY));
-            adorner.ResizeStarted += (_, _) => _viewModel.Checkpoint($"resize {name}");
-            adorner.ResizeDelta += (_, e) => resize(e.HorizontalChange / scale, e.VerticalChange / scale);
-
-            // The rotation handle: the angle from the anchor point to the pointer, the handle pointing up at 0 degrees.
-            adorner.TurnStarted += () => _viewModel.Checkpoint($"turn {name}");
-            adorner.TurnDelta += () =>
-            {
-                if (!gizmo.HasFilters)
-                    return;
-
-                var anchor = box.TranslatePoint(new Point(gizmo.AnchorX * box.Width, gizmo.AnchorY * box.Height), LayoutCanvas);
-                var pointer = Mouse.GetPosition(LayoutCanvas);
-                var degrees = Math.Atan2(pointer.Y - anchor.Y, pointer.X - anchor.X) * 180 / Math.PI + 90;
-                if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
-                    degrees = Math.Round(degrees / 15) * 15;
-                degrees = Math.Round(degrees > 180 ? degrees - 360 : degrees, 1);
-                gizmo.Rotation = degrees;
-            };
-
-            // The anchor dot: where the pointer is in the (unturned) box; the layer stays where it is on the frame. It snaps
-            // to the middle, the edges and the corners (not with Alt).
-            adorner.AnchorStarted += () => _viewModel.Checkpoint($"move the anchor point of {name}");
-            adorner.AnchorDelta += () =>
-            {
-                var pointer = Mouse.GetPosition(box);
-                var (x, y) = (pointer.X / Math.Max(box.Width, 1), pointer.Y / Math.Max(box.Height, 1));
-                if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
-                {
-                    double Snap(double value, double pixels) => new[] { 0, 0.5, 1 }.FirstOrDefault(s => Math.Abs(value - s) * pixels <= 6, value);
-                    (x, y) = (Snap(x, box.Width), Snap(y, box.Height));
-                }
-
-                var (_, _, width, height) = getRect();
-                gizmo.MoveAnchor(x, y, width, height, _viewModel.FrameWidth, _viewModel.FrameHeight);
-            };
+            WireGizmo(adorner, box, gizmo, name, LayoutCanvas, getRect, resize, scale);
             gizmoLayer.Add(adorner);
             _arrangeAdorners.Add(adorner);
         }

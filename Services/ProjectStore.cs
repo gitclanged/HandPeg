@@ -24,7 +24,9 @@ public sealed record ProjectEntry(string FilePath, string Name, string SourceNam
 // The formats: 1 was HandPeg 1.x's project, a .txt holding the window's state in another layout (read, as far as it
 // still maps, by LegacyProject). 2 is this layout, written by HandPeg 2.0 to 4.0. 3 (HandPeg 4.1) is the same layout
 // with the name of the HandPeg that wrote it, so that an older HandPeg handed a newer file can say which version it
-// needs. Both 2 and 3 are read; a newer format is opened only when the user asks, and is never written over.
+// needs. 4 (HandPeg 4.1.1) adds the export's sample rate and channels and the 3D drop shadow (distance, angle,
+// softness, colour, in place of the offset). 2, 3 and 4 are read; a newer format is opened only when the user asks, and
+// is never written over. Format 5 is reserved for the TimelineDocument (v4.3.0).
 
 /// <summary>A project as it is written to disk.</summary>
 public sealed class ProjectFile
@@ -32,7 +34,7 @@ public sealed class ProjectFile
     public const string FormatName = "handpeg-project";
 
     /// <summary>The format this version writes.</summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     /// <summary>The oldest format of .hproj this version reads: 2, the first in this layout.</summary>
     public const int OldestVersion = 2;
@@ -635,7 +637,6 @@ public static class ProjectStore
         // The settings without what the sequence already holds.
         var rest = JsonSerializer.Deserialize<EncodingPreset>(JsonSerializer.Serialize(settings))!;
         (rest.Name, rest.Layers, rest.MainLayer, rest.MainVideoIndex, rest.BackgroundHidden, rest.AudioTracks) = ("", [], null, 0, false, []);
-
         var file = new ProjectFile
         {
             Format = ProjectFile.FormatName,

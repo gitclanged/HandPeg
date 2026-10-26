@@ -113,6 +113,9 @@ public sealed class AppSettings
     // Declared before Current: static fields are set in the order they are written, and loading the settings uses this.
     private static readonly System.Reflection.PropertyInfo[] ProfileProperties = typeof(ModeProfile).GetProperties();
 
+    /// <summary>Editor Mode's saved views were brought to 4.1.1's (no status bar, the Audio tab after Layers), once (see <see cref="Load"/>).</summary>
+    public bool Migrated411Defaults { get; set; }
+
     /// <summary>The settings in effect. Replaced as a whole when the user saves the settings window.</summary>
     public static AppSettings Current { get; private set; } = Load();
 
@@ -656,16 +659,21 @@ public sealed class AppSettings
     public List<string>? HiddenTabs { get; set; }
 
     /// <summary>
-    /// What each mode hides until asked: Editor Mode has the Export tab instead of Video, Audio and Chapters (their
-    /// contents are in it); Encoder Mode keeps those and its destination bar, and has no Export tab.
+    /// What each mode hides until asked: Editor Mode has the Export tab instead of Video and Chapters (their contents are
+    /// in it), and keeps the Audio tab, its tracks, after Layers until the unified timeline (4.1.1; the Export tab's Audio
+    /// Export group has the codec and the mix either way); Encoder Mode keeps those and its destination bar, and has no
+    /// Export tab.
     /// </summary>
     public static IReadOnlyList<string> DefaultHiddenTabs(string mode) =>
-        mode == EditorMode ? ["Tab:Video", "Tab:Audio", "Tab:Chapters"] : ["Tab:Export"];
+        mode == EditorMode ? ["Tab:Video", "Tab:Chapters"] : ["Tab:Export"];
 
     /// <summary>The master timeline pane (Tabs and Panes), per mode.</summary>
     public bool ShowMasterTimeline { get; set; } = true;
 
-    /// <summary>The status bar at the bottom of the window, per mode. Hidden, the status and progress are in the title bar (Pass 4.1B).</summary>
+    /// <summary>
+    /// The status bar at the bottom of the window, per mode (Editor Mode starts without it, 4.1.1: ApplyMode). The title
+    /// bar carries the status and the progress either way (Pass 4.1B, always since 4.1.1).
+    /// </summary>
     public bool ShowStatusBar { get; set; } = true;
 
     /// <summary>The Cut Segments pane beside the player. Encoder Mode starts with it; Editor Mode has the Keyframes pane there instead.</summary>
@@ -728,6 +736,12 @@ public sealed class AppSettings
     /// <summary>A layer dragged in the layout pane snaps to the frame's middle and the safe margins (Alt held: no snapping).</summary>
     public bool SnapLayoutGuides { get; set; } = true;
 
+    /// <summary>
+    /// Editor Mode, Live Preview: the layers are moved, resized and turned on the player itself, as in the layout pane;
+    /// only the selected layer's outline and handles are drawn there, and none while playing (4.1.1-B).
+    /// </summary>
+    public bool EditLayersOnPlayer { get; set; } = true;
+
     /// <summary>How tall the master timeline starts out in a mode, 1 to 50.</summary>
     public static int DefaultMasterTimelineHeight(string mode) => mode == EditorMode ? 17 : 1;
 
@@ -754,6 +768,12 @@ public sealed class AppSettings
     public string DefaultAudioEncoder { get; set; } = "";
 
     public string DefaultAudioBitrate { get; set; } = "";
+
+    /// <summary>The export sample rate a new session starts with, in Hz; 0 is Auto (4.1.1).</summary>
+    public int DefaultAudioSampleRate { get; set; }
+
+    /// <summary>The export channels a new session starts with (<see cref="Models.AudioChannelChoice"/>; 4.1.1).</summary>
+    public string DefaultAudioChannels { get; set; } = Models.AudioChannelChoice.Stereo;
 
     // The rest of the default encoding settings (Settings, Export & Hardware), with the three above: what the Video and
     // Audio tabs start with. A blank one leaves HandPeg's own default. An encoding preset applied afterwards always sets
@@ -787,6 +807,9 @@ public sealed class AppSettings
 
     /// <summary>Asks whether to save the project when HandPeg is closed with changes that have not been saved.</summary>
     public bool PromptToSaveOnExit { get; set; } = true;
+
+    /// <summary>The Project Manager shows a picture of each project's main video, scrubbed by the pointer (4.1.1-B).</summary>
+    public bool ShowProjectPreviews { get; set; } = true;
 
     // ----- The Social Sharing Squisher, on the startup dialog -----
 
@@ -864,7 +887,8 @@ public sealed class AppSettings
         StartWithFrameEngine = editor;
         (ShowCutSegmentsPane, ShowKeyframesPane, ShowClipKeyframes) = (!editor, editor, true);
         ShowMediaBrowser = editor;
-        (HiddenTabs, ShowMasterTimeline, ShowStatusBar) = (null, true, true);
+        // Editor Mode starts without the status bar (4.1.1): the title bar carries the status and the progress.
+        (HiddenTabs, ShowMasterTimeline, ShowStatusBar) = (null, true, !editor);
         if (!editor)
             (DefaultVideoEncoder, DefaultAudioEncoder, DefaultAudioBitrate) = ("", "", "");
 
@@ -1062,6 +1086,18 @@ public sealed class AppSettings
                     }
                 }
 
+                // Editor Mode as 4.1.1 starts it, once, for settings saved before: no status bar at the bottom (the title
+                // bar carries the status and the progress) and the Audio tab shown, right after Layers. Both stay the
+                // user's to change under Views, Tabs and Panes. The mode in use holds its values here; the other, in its profile.
+                if (!settings.Migrated411Defaults)
+                {
+                    settings.Migrated411Defaults = true;
+                    if (settings.UiMode == EditorMode)
+                        (settings.ShowStatusBar, settings.HiddenTabs, settings.DockLayout) = (false, WithAudioTab(settings.HiddenTabs), AudioAfterLayers(settings.DockLayout));
+                    if (settings.ModeProfiles.TryGetValue(EditorMode, out var editorProfile))
+                        (editorProfile.ShowStatusBar, editorProfile.HiddenTabs, editorProfile.DockLayout) = (false, WithAudioTab(editorProfile.HiddenTabs), AudioAfterLayers(editorProfile.DockLayout));
+                }
+
                 // Starting in a set mode, whatever was in use when HandPeg was last closed.
                 if (settings.DefaultMode is EncoderMode or EditorMode)
                     settings.SwitchMode(settings.DefaultMode);
@@ -1073,7 +1109,41 @@ public sealed class AppSettings
             // An unreadable settings file must not stop the app from starting; defaults apply.
         }
 
-        return new AppSettings { ShowTimelineThumbnails = false };
+        // No settings yet: already as 4.1.1 starts, so there is nothing to bring over.
+        return new AppSettings { ShowTimelineThumbnails = false, Migrated411Defaults = true };
+    }
+
+    private const string AudioTab = "Tab:Audio", LayersTab = "Tab:Layers";
+
+    /// <summary>The tabs hidden, without the Audio tab (a new list: the profiles share lists); null stays the mode's defaults.</summary>
+    private static List<string>? WithAudioTab(List<string>? hidden) => hidden?.Where(t => t != AudioTab).ToList();
+
+    /// <summary>
+    /// A saved arrangement with the Audio tab right after the Layers tab in Layers' group (4.1.1): moved there from its
+    /// own place unless it is alone in a group (it is shown where it is), or put there when the arrangement lacks it.
+    /// Unchanged when there is no Layers tab or the arrangement cannot be read.
+    /// </summary>
+    private static string? AudioAfterLayers(string? saved)
+    {
+        if (Docking.DockLayoutState.Read(saved) is not { } state)
+            return saved;
+
+        var roots = new[] { state.Main, state.Side, state.SideClosed }.OfType<Docking.DockNode>().ToList();
+        if (roots.Select(r => r.GroupOf(LayersTab)).FirstOrDefault(g => g is not null) is not { } layers)
+            return saved;
+
+        if (roots.Select(r => r.GroupOf(AudioTab)).FirstOrDefault(g => g is not null) is { } audio)
+        {
+            if (!ReferenceEquals(audio, layers) && audio.Panes.Count == 1)
+                return saved;
+
+            audio.Panes.Remove(AudioTab);
+            if (audio.Active == AudioTab)
+                audio.Active = audio.Panes.FirstOrDefault();
+        }
+
+        layers.Panes.Insert(layers.Panes.IndexOf(LayersTab) + 1, AudioTab);
+        return JsonSerializer.Serialize(state);
     }
 
     // Paths are often pasted with the quotes Explorer's "Copy as path" adds.

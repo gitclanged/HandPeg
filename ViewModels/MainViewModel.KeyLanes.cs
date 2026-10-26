@@ -111,8 +111,16 @@ public partial class MainViewModel
     /// <param name="to">Where it was let go, in seconds of the sequence.</param>
     public void MoveLaneKey(Layer layer, object? lane, double from, double to)
     {
-        var (start, end) = (from - layer.StartTime, Math.Max(to - layer.StartTime, 0));
         Checkpoint($"move a keyframe of {layer.Name}");
+        if (MoveOneLaneKey(layer, lane, from - layer.StartTime, Math.Max(to - layer.StartTime, 0)))
+            Log($"Moved a {LaneName(lane)} keyframe of {layer.Name} to {TimeDisplay.Format(to)}");
+        ApplyKeyframes();
+        RefreshSelectedKey();
+    }
+
+    /// <summary>Moves one keyframe of a row from one moment of the clip to another; false when there was none there.</summary>
+    private static bool MoveOneLaneKey(Layer layer, object? lane, double start, double end)
+    {
         bool moved;
         switch (lane)
         {
@@ -143,10 +151,203 @@ public partial class MainViewModel
                 break;
         }
 
-        if (moved)
-            Log($"Moved a {LaneName(lane)} keyframe of {layer.Name} to {TimeDisplay.Format(to)}");
+        return moved;
+    }
+
+    // ----- Several keyframes at once (4.1.1-B): the Keyframes pane's selection -----
+
+    /// <summary>The keyframes selected in the Keyframes pane: each a row (as <see cref="SelectedKeyLane"/>) and its moment in seconds of the sequence.</summary>
+    public IReadOnlyList<(object? Lane, double Time)> SelectedLaneKeys { get; set; } = [];
+
+    // Copied keyframes: each its row, how long after the first one copied it is, and the keyframe itself (value and easing).
+    private static List<(object? Lane, double Offset, Keyframe Key)>? _copiedKeys;
+
+    public bool HasCopiedKeys => _copiedKeys is { Count: > 0 };
+
+    /// <summary>Selected keyframes dragged together: each moves by the same time, as one undo step.</summary>
+    public void MoveLaneKeys(Layer layer, IReadOnlyList<(object? Lane, double Time)> keys, double delta)
+    {
+        if (keys.Count == 0 || Math.Abs(delta) < 0.0005)
+            return;
+
+        Checkpoint($"move {keys.Count} keyframes of {layer.Name}");
+
+        // The ones furthest along the way first, so that none is moved onto another that has yet to move.
+        var moved = 0;
+        foreach (var (lane, time) in delta > 0 ? keys.OrderByDescending(k => k.Time) : keys.OrderBy(k => k.Time))
+        {
+            var start = time - layer.StartTime;
+            if (MoveOneLaneKey(layer, lane, start, Math.Max(start + delta, 0)))
+                moved++;
+        }
+
+        if (moved > 0)
+            Log($"Moved {moved} keyframes of {layer.Name} by {(delta >= 0 ? "+" : "-")}{TimeDisplay.Format(Math.Abs(delta))}");
         ApplyKeyframes();
         RefreshSelectedKey();
+    }
+
+    /// <summary>Delete with keyframes selected: every one of them goes, as one undo step (on All, every motion keyframe at that moment).</summary>
+    public void DeleteLaneKeys(Layer layer, IReadOnlyList<(object? Lane, double Time)> keys)
+    {
+        if (keys.Count == 0)
+            return;
+
+        Checkpoint($"delete {keys.Count} keyframe{(keys.Count == 1 ? "" : "s")} of {layer.Name}");
+        var deleted = 0;
+        foreach (var (lane, time) in keys)
+        {
+            var at = time - layer.StartTime;
+            switch (lane)
+            {
+                case KeyProperty property:
+                    deleted += layer.RemoveKey(property, at) ? 1 : 0;
+                    break;
+
+                case EffectKeyRef value:
+                {
+                    var list = value.Effect.GetKeys(value.Param.Key).ToList();
+                    if (list.RemoveAll(k => Math.Abs(k.Time - at) <= Layer.KeyTolerance) == 0)
+                        break;
+
+                    using (Layer.Echo())
+                    {
+                        // The last keyframe gone, the value stays what it was there.
+                        if (list.Count == 0)
+                            value.Effect.Set(value.Param.Key, EffectValueAt(layer, value, at));
+                        value.Effect.SetKeys(value.Param.Key, list);
+                    }
+
+                    deleted++;
+                    break;
+                }
+
+                default:
+                    if (layer.HasKeyAt(at))
+                    {
+                        layer.RemoveMasterKey(at);
+                        deleted++;
+                    }
+
+                    break;
+            }
+        }
+
+        if (deleted > 0)
+            Log($"Deleted {deleted} keyframe{(deleted == 1 ? "" : "s")} of {layer.Name}");
+        ApplyKeyframes();
+        RefreshSelectedKey();
+    }
+
+    /// <summary>Ctrl+C in the Keyframes pane: the keyframes given (on All, every motion keyframe at that moment) are kept to paste.</summary>
+    public void CopyLaneKeys(Layer layer, IReadOnlyList<(object? Lane, double Time)> keys)
+    {
+        var copied = new List<(object? Lane, double Time, Keyframe Key)>();
+        foreach (var (lane, time) in keys)
+        {
+            var at = time - layer.StartTime;
+            switch (lane)
+            {
+                case KeyProperty property when layer.GetKeyAt(at, property) is { } key:
+                    copied.Add((property, time, key));
+                    break;
+                case EffectKeyRef value when value.Effect.GetKeys(value.Param.Key).FirstOrDefault(k => Math.Abs(k.Time - at) <= Layer.KeyTolerance) is var key && key != default:
+                    copied.Add((value, time, key));
+                    break;
+                case null:
+                    foreach (var property in Enum.GetValues<KeyProperty>())
+                    {
+                        if (layer.GetKeyAt(at, property) is { } motion && !copied.Any(c => Equals(c.Lane, property) && Math.Abs(c.Time - time) <= Layer.KeyTolerance))
+                            copied.Add((property, time, motion));
+                    }
+
+                    break;
+            }
+        }
+
+        if (copied.Count == 0)
+        {
+            StatusText = "No keyframes to copy: select some in the Keyframes pane (Ctrl+click, Shift+click, or drag a box round them).";
+            return;
+        }
+
+        var first = copied.Min(c => c.Time);
+        _copiedKeys = [.. copied.Select(c => (c.Lane, c.Time - first, c.Key))];
+        StatusText = $"Copied {copied.Count} keyframe{(copied.Count == 1 ? "" : "s")}: Ctrl+V in the Keyframes pane puts them in at the playhead, on this clip or another.";
+    }
+
+    /// <summary>
+    /// Ctrl+V in the Keyframes pane: the copied keyframes go in at the playhead, as far apart as they were, with their
+    /// values and easing. On another clip an effect value's keyframes go to its effect of the same kind; when it has none
+    /// they are left out.
+    /// </summary>
+    public void PasteLaneKeys(Layer layer)
+    {
+        if (_copiedKeys is not { Count: > 0 } copied || !HasSource)
+            return;
+
+        Checkpoint($"paste {copied.Count} keyframe{(copied.Count == 1 ? "" : "s")} onto {layer.Name}");
+        var (playhead, pasted) = (Math.Max(ClipClock(layer), 0), 0);
+        foreach (var (lane, offset, key) in copied)
+        {
+            var at = Math.Round(playhead + offset, 3);
+            switch (lane)
+            {
+                case KeyProperty property:
+                    layer.SetKey(property, at, key.Value);
+                    layer.SetEasingAt(at, key.Easing, key.Easing == EasingType.CubicBezier ? EasingCurves.Handles(key) : null, property);
+                    pasted++;
+                    break;
+
+                case EffectKeyRef value when (layer.Effects.Contains(value.Effect) ? value.Effect : layer.Effects.FirstOrDefault(e => e.Type == value.Effect.Type)) is { } effect:
+                {
+                    var list = effect.GetKeys(value.Param.Key).Where(k => Math.Abs(k.Time - at) > Layer.KeyTolerance).Append(key with { Time = at }).OrderBy(k => k.Time).ToList();
+                    using (Layer.Echo())
+                        effect.SetKeys(value.Param.Key, list);
+                    pasted++;
+                    break;
+                }
+            }
+        }
+
+        Log(pasted == copied.Count
+            ? $"Pasted {pasted} keyframe{(pasted == 1 ? "" : "s")} at {TimeDisplay.Format(PositionMs / 1000)} ({layer.Name})"
+            : $"Pasted {pasted} of {copied.Count} keyframes at {TimeDisplay.Format(PositionMs / 1000)} ({layer.Name}): it has no effect of the kind the others were on");
+        ApplyKeyframes();
+        RefreshSelectedKey();
+    }
+
+    /// <summary>The easing box with several keyframes selected: each of them leaves that way. False when none changed.</summary>
+    private bool SetSelectedKeysEasing(Layer layer, EasingType easing)
+    {
+        var changed = false;
+        foreach (var (lane, time) in SelectedLaneKeys)
+        {
+            var at = time - layer.StartTime;
+            if (lane is EffectKeyRef value)
+            {
+                var keys = value.Effect.GetKeys(value.Param.Key).ToList();
+                var index = keys.FindIndex(k => Math.Abs(k.Time - at) <= Layer.KeyTolerance);
+                if (index < 0)
+                    continue;
+
+                var eased = keys[index].WithEasing(easing, easing == EasingType.CubicBezier ? EasingCurves.Handles(keys[index]) : null);
+                if (eased == keys[index])
+                    continue;
+
+                keys[index] = eased;
+                using (Layer.Echo())
+                    value.Effect.SetKeys(value.Param.Key, keys);
+                changed = true;
+            }
+            else
+            {
+                changed |= layer.SetEasingAt(at, easing, null, lane as KeyProperty?);
+            }
+        }
+
+        RefreshSelectedKey(force: true);
+        return changed;
     }
 
     /// <summary>Delete in the Keyframes pane: the selected row's keyframe at the playhead goes.</summary>

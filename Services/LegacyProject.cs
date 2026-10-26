@@ -67,6 +67,10 @@ public static class LegacyProject
         if (Get(root, "SnapToKeyframes") is JsonValue snap && snap.TryGetValue<bool>(out var snapping))
             state.SnapToIFrames = snapping;
 
+        // A 1.x shadow was moved as far right as down: brought over as the distance, angle and softness it is now.
+        foreach (var layer in state.Settings.Layers.Append(state.Settings.MainLayer).Append(state.Settings.CaptionLayer))
+            layer?.FoldEarlierShadow();
+
         state.Segments = ReadSegments(Get(root, "Segments") as JsonArray);
         if (state.LocalMediaPath.Length == 0)
             state.LocalMediaPath = state.SourcePath;

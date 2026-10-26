@@ -36,6 +36,9 @@ public sealed record ExportAudioTrack(
 
     /// <summary>Whether the track is played just as it is in the file: nothing silenced, no slip, no gain or processing.</summary>
     public bool IsPlain => MutedSpans.Count == 0 && Math.Abs(Offset) < 0.001 && !HasProcessing;
+
+    /// <summary>How many channels the stream has in the file (2 when not known).</summary>
+    public int Channels { get; init; } = 2;
 }
 
 /// <summary>
@@ -223,6 +226,15 @@ public sealed record SequenceExportState
     public string MixedAudioCodec { get; init; } = "aac";
 
     public string AudioBitrate { get; init; } = "160k";
+
+    /// <summary>The sample rate every encoded audio stream is written at, in Hz; 0 keeps each stream's own (Auto).</summary>
+    public int AudioSampleRate { get; init; }
+
+    /// <summary>
+    /// The channels of every encoded audio stream (<see cref="AudioChannelChoice"/>): Stereo makes anything wider
+    /// two-channel (a stereo or mono stream is left as it is), Mono makes one channel, Source keeps the source's.
+    /// </summary>
+    public string AudioChannels { get; init; } = AudioChannelChoice.Stereo;
 
     // The session's voiceover (Encoder Mode's): a second input, mixed into the first track.
     public bool IncludeVoiceover { get; init; }
@@ -607,6 +619,11 @@ public static class FilterGraphBuilder
     private double DuckAmountDb => S.DuckAmountDb;
     private string MixedAudioCodec => S.MixedAudioCodec;
     private string AudioBitrate => S.AudioBitrate;
+    private int AudioSampleRate => S.AudioSampleRate;
+    private string AudioChannels => S.AudioChannels;
+
+    /// <summary>The rate silence and loudness-normalized sound are made at: the chosen export rate, or 48 kHz on Auto.</summary>
+    private string MixRate => (S.AudioSampleRate > 0 ? S.AudioSampleRate : 48000).ToString(CultureInfo.InvariantCulture);
     private bool IncludeVoiceover => S.IncludeVoiceover;
     private string VoiceoverPath => S.VoiceoverPath;
     private double VoiceoverDuration => S.VoiceoverDuration;
@@ -695,7 +712,7 @@ public static class FilterGraphBuilder
     }
 
         // loudnorm works at 192 kHz internally and would hand that rate to the encoder; bring it back down.
-        private const string NormalizeFilters = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000";
+        private string NormalizeFilters => $"loudnorm=I=-16:TP=-1.5:LRA=11,aresample={MixRate}";
 
         // Presses the first input down while the second (the side chain) is above the threshold.
         private const string DuckingFilter = "sidechaincompress=threshold=0.05:ratio=8:attack=20:release=400";
@@ -867,7 +884,7 @@ public static class FilterGraphBuilder
                     if (silent)
                     {
                         // The sequence has no sound of its own: silence as long as it is, for the rest to be mixed into.
-                        graph.Add($"anullsrc=r=48000:cl=stereo:d={Number(Math.Max(SequenceSeconds, 0.1))}[asilent]");
+                        graph.Add($"anullsrc=r={MixRate}:cl=stereo:d={Number(Math.Max(SequenceSeconds, 0.1))}[asilent]");
                         label = "[asilent]";
                     }
                     else
@@ -1307,7 +1324,7 @@ public static class FilterGraphBuilder
             var parts = track.IsSilentBase ? [] : TrackParts(track, seen, from);
             if (parts.Count == 0)
             {
-                graph.Add($"anullsrc=r=48000:cl=stereo:d={whole}[{tag}]");
+                graph.Add($"anullsrc=r={MixRate}:cl=stereo:d={whole}[{tag}]");
                 return $"[{tag}]";
             }
 
@@ -1572,6 +1589,41 @@ public static class FilterGraphBuilder
         private int Placed(int pixels) => _liveScale >= 1 ? pixels : (int)Math.Round(pixels * _liveScale);
 
         /// <summary>
+        /// A layer's drop shadow (4.1.1-B), as the chain that makes it from the layer's own picture, and where it is
+        /// laid against the layer: its outline in the shadow's colour at the shadow's opacity, moved along the light's
+        /// angle. A soft shadow is first given room round it (padded, see-through) so its edge can feather outwards,
+        /// and its alpha is blurred twice by a box of the softness (boxblur's power 2: a smooth, nearly Gaussian edge).
+        /// </summary>
+        private (string Chain, int X, int Y) ShadowOf(Layer layer)
+        {
+            var (shiftX, shiftY) = layer.ShadowShift;
+            var soft = Placed(Math.Clamp(layer.ShadowSoftness, 0, 50));
+            var room = soft + (soft & 1); // even, so a 4:2:0 picture is padded exactly
+            var (y, u, v) = ShadowYuv(layer.ShadowColor);
+            var chain = new StringBuilder("format=yuva420p");
+            if (soft > 0)
+                chain.Append(CultureInfo.InvariantCulture, $",pad=w=iw+{2 * room}:h=ih+{2 * room}:x={room}:y={room}:color=black@0");
+            chain.Append(CultureInfo.InvariantCulture, $",lutyuv=y={y}:u={u}:v={v}:a=val*{Number(Math.Clamp(layer.ShadowOpacity, 0, 1))}");
+            chain.Append(soft > 0 ? string.Create(CultureInfo.InvariantCulture, $",boxblur=0:0:0:0:{soft}:2") : "");
+            return (chain.ToString(), Placed(shiftX) - room, Placed(shiftY) - room);
+        }
+
+        /// <summary>A shadow colour (#RRGGBB) as limited-range BT.709 Y, U and V; black (16, 128, 128) when it cannot be read.</summary>
+        private static (int Y, int U, int V) ShadowYuv(string color)
+        {
+            var hex = color.Trim().TrimStart('#');
+            if (hex.Length != 6 || !int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgb))
+                return (16, 128, 128);
+
+            var (r, g, b) = (((rgb >> 16) & 0xFF) / 255.0, ((rgb >> 8) & 0xFF) / 255.0, (rgb & 0xFF) / 255.0);
+            var luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            return ((int)Math.Round(16 + 219 * luma), (int)Math.Round(128 + 224 * (b - luma) / 1.8556), (int)Math.Round(128 + 224 * (r - luma) / 1.5748));
+        }
+
+        /// <summary>A shift added to a placement expression: nothing for 0, "+N" or "-N" otherwise.</summary>
+        private static string Shift(int pixels) => pixels == 0 ? "" : (pixels > 0 ? "+" : "-") + Math.Abs(pixels).ToString(CultureInfo.InvariantCulture);
+
+        /// <summary>
         /// How a picture that is scaled for every frame is scaled: the cheapest way for Live Preview, which is a
         /// preview; the default (bicubic) for an export. Stills and masks are scaled once and keep the default.
         /// </summary>
@@ -1673,7 +1725,7 @@ public static class FilterGraphBuilder
                 // The main video's first track for as long as it is there in this stretch, and silence around it.
                 if (seen.Count == 0)
                 {
-                    graph.Add($"anullsrc=r=48000:cl=stereo:d={Number(to - from)}[pa{i}]");
+                    graph.Add($"anullsrc=r={MixRate}:cl=stereo:d={Number(to - from)}[pa{i}]");
                     continue;
                 }
 
@@ -1921,7 +1973,7 @@ public static class FilterGraphBuilder
 
                 graph.Add($"{string.Concat(inputs)}amix=inputs={inputs.Count}:duration=longest{thenFinishing}[a_mixed]");
                 maps.Add($"-map \"{WithVoice("[a_mixed]")}\"");
-                options.Add(BuildAudioEncodeOptions(0, MixedAudioCodec, AudioBitrate));
+                options.Add(BuildAudioEncodeOptions(0, MixedAudioCodec, AudioBitrate, tracks.Max(t => t.Channels)));
                 return options;
             }
 
@@ -1976,15 +2028,15 @@ public static class FilterGraphBuilder
 
                     maps.Add($"-map \"{WithVoice(label)}\"");
                     options.Add(track.IsPassthrough
-                        ? BuildAudioEncodeOptions(k, MixedAudioCodec, AudioBitrate)
-                        : BuildAudioEncodeOptions(k, track.Codec, track.Bitrate));
+                        ? BuildAudioEncodeOptions(k, MixedAudioCodec, AudioBitrate, track.Channels)
+                        : BuildAudioEncodeOptions(k, track.Codec, track.Bitrate, track.Channels));
                     continue;
                 }
 
                 if (label is not null)
                 {
                     maps.Add($"-map \"{label}\"");
-                    options.Add(BuildAudioEncodeOptions(k, track.Codec, track.Bitrate));
+                    options.Add(BuildAudioEncodeOptions(k, track.Codec, track.Bitrate, track.Channels));
                     continue;
                 }
 
@@ -1997,7 +2049,7 @@ public static class FilterGraphBuilder
                 }
 
                 // Straight from the input, so the track's own processing and the finishing go on as a simple filter.
-                options.Add(BuildAudioEncodeOptions(k, track.Codec, track.Bitrate));
+                options.Add(BuildAudioEncodeOptions(k, track.Codec, track.Bitrate, track.Channels));
                 var simple = track.GetFilterChain().Concat(finishing).ToList();
                 if (simple.Count > 0)
                     options.Add($"-filter:a:{k} \"{string.Join(",", simple)}\"");
@@ -2107,10 +2159,21 @@ public static class FilterGraphBuilder
         private static string BuildRetime(double speed) => $"setpts=(1.0/{speed.ToString("0.######", CultureInfo.InvariantCulture)})*PTS";
 
         /// <param name="outputIndex">Position of the stream among the output's audio streams.</param>
-        private static string BuildAudioEncodeOptions(int outputIndex, string codec, string bitrate) =>
-            codec.StartsWith("pcm_", StringComparison.Ordinal)
+        /// <param name="sourceChannels">How many channels the sound has before it is encoded (the widest of a mix).</param>
+        /// <remarks>On Auto and Stereo, for a sound of two channels or fewer, nothing is added: the command is as it always was.</remarks>
+        private string BuildAudioEncodeOptions(int outputIndex, string codec, string bitrate, int sourceChannels = 2)
+        {
+            var options = codec.StartsWith("pcm_", StringComparison.Ordinal)
                 ? $"-c:a:{outputIndex} {codec}"
                 : $"-c:a:{outputIndex} {codec} -b:a:{outputIndex} {bitrate}";
+            if (AudioSampleRate > 0)
+                options += $" -ar:a:{outputIndex} {AudioSampleRate.ToString(CultureInfo.InvariantCulture)}";
+            if (AudioChannels == AudioChannelChoice.Mono)
+                options += $" -ac:a:{outputIndex} 1";
+            else if (AudioChannels == AudioChannelChoice.Stereo && sourceChannels > 2)
+                options += $" -ac:a:{outputIndex} 2";
+            return options;
+        }
 
         // ----- Video filters -----
 
@@ -2473,9 +2536,9 @@ public static class FilterGraphBuilder
                     (placeX, placeY) = (Number(Math.Round(px)), Number(Math.Round(py)));
                 }
 
-                string At(int offset) => motion.Any
-                    ? $"x='{placeX}{(offset == 0 ? "" : "+" + offset)}':y='{placeY}{(offset == 0 ? "" : "+" + offset)}':eval=frame"
-                    : $"{int.Parse(placeX, CultureInfo.InvariantCulture) + offset}:{int.Parse(placeY, CultureInfo.InvariantCulture) + offset}";
+                string At(int offsetX, int offsetY) => motion.Any
+                    ? $"x='{placeX}{Shift(offsetX)}':y='{placeY}{Shift(offsetY)}':eval=frame"
+                    : $"{(int.Parse(placeX, CultureInfo.InvariantCulture) + offsetX).ToString(CultureInfo.InvariantCulture)}:{(int.Parse(placeY, CultureInfo.InvariantCulture) + offsetY).ToString(CultureInfo.InvariantCulture)}";
 
                 var ending = new StringBuilder();
                 if (layer.IsMainVideo || layer.IsVideo)
@@ -2503,20 +2566,20 @@ public static class FilterGraphBuilder
                 var (under, top) = ($"stage{n}{s}", $"{name}_layer{s}");
                 if (layer.Shadow && layer.FxOn(EffectRegistry.Shadow))
                 {
-                    // The shadow is the layer's own outline in black at reduced opacity, laid down first and offset.
-                    var offset = Placed(Math.Clamp(layer.ShadowOffset, 0, 200));
+                    // The shadow is the layer's own outline in its colour at reduced opacity, feathered, laid down
+                    // first and moved along the light's angle (4.1.1-B).
+                    var (shadowChain, shadowX, shadowY) = ShadowOf(layer);
                     graph.Append($";[{name}_layer{s}]split[{name}_top{s}][{name}_shadow_in{s}]");
-                    graph.Append($";[{name}_shadow_in{s}]format=yuva420p,lutyuv=y=16:u=128:v=128:a=val*{Number(Math.Clamp(layer.ShadowOpacity, 0, 1))},"
-                                 + $"boxblur=2:1:0:0:2:1[{name}_shadow{s}]");
-                    graph.Append($";[stage{n}{s}][{name}_shadow{s}]overlay={At(offset)}{ending}[{name}_shaded{s}]");
+                    graph.Append($";[{name}_shadow_in{s}]{shadowChain}[{name}_shadow{s}]");
+                    graph.Append($";[stage{n}{s}][{name}_shadow{s}]overlay={At(shadowX, shadowY)}{ending}[{name}_shaded{s}]");
                     (under, top) = ($"{name}_shaded{s}", $"{name}_top{s}");
                 }
 
                 // Zone 4's blend mode: Normal is the overlay every layer always had.
                 if (layer.BlendModeName is "multiply" or "screen" or "addition" or "overlay" && !layer.IsMainVideo)
-                    AppendBlend(graph, under, top, $"{name}{s}", $"{At(0)}{ending}", layer.BlendModeName);
+                    AppendBlend(graph, under, top, $"{name}{s}", $"{At(0, 0)}{ending}", layer.BlendModeName);
                 else
-                    graph.Append($";[{under}][{top}]overlay={At(0)}{ending}");
+                    graph.Append($";[{under}][{top}]overlay={At(0, 0)}{ending}");
             }
 
             return ReturnBuilder(graph);
@@ -3650,10 +3713,10 @@ public static class FilterGraphBuilder
             if (!CaptionLayer.Shadow)
                 return $"null[cap_base];{layer}[cap_layer];[cap_base][cap_layer]overlay={x}:{y}:shortest=1";
 
-            var offset = Placed(Math.Clamp(CaptionLayer.ShadowOffset, 0, 200));
+            var (shadowChain, shadowX, shadowY) = ShadowOf(CaptionLayer);
             return $"null[cap_base];{layer},split[cap_layer][cap_shadow_in];"
-                   + $"[cap_shadow_in]format=rgba,colorchannelmixer=rr=0:gg=0:bb=0:aa={Number(Math.Clamp(CaptionLayer.ShadowOpacity, 0, 1))},boxblur=2:1[cap_shadow];"
-                   + $"[cap_base][cap_shadow]overlay={x + offset}:{y + offset}:shortest=1[cap_shaded];"
+                   + $"[cap_shadow_in]{shadowChain}[cap_shadow];"
+                   + $"[cap_base][cap_shadow]overlay={x + shadowX}:{y + shadowY}:shortest=1[cap_shaded];"
                    + $"[cap_shaded][cap_layer]overlay={x}:{y}:shortest=1";
         }
     }

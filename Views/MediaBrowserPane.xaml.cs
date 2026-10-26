@@ -572,7 +572,9 @@ public partial class MediaBrowserPane : UserControl
         _visibleCheck.Start();
     }
 
-    private ScrollViewer? Scroller => VisualTreeHelper.GetChildrenCount(Items) > 0 && VisualTreeHelper.GetChild(Items, 0) is Border { Child: ScrollViewer scroller } ? scroller : null;
+    // The list's template is a decorator around its scroller (a Border, since 4.1.0 a ButtonChrome): taken by what it
+    // holds, never by the decorator's type, or no tile is ever found in sight and no poster made (4.1.1).
+    private ScrollViewer? Scroller => VisualTreeHelper.GetChildrenCount(Items) > 0 && VisualTreeHelper.GetChild(Items, 0) is Decorator { Child: ScrollViewer scroller } ? scroller : null;
 
     // ----- What is held, and for how long -----
     // At rest, only the tiles in view (and one row either side) hold their pictures. Once the pointer comes into the pane,
@@ -744,12 +746,31 @@ public partial class MediaBrowserPane : UserControl
     {
         _working = true;
         var token = _listing.Token;
+
+        // Videos whose strip is not kept yet (4.1.1): their strips are made only after every tile in sight whose strip is
+        // kept has its poster (cut from that strip, no tool run), so one long video's strip never holds up the rest.
+        var unkept = new List<MediaBrowserItem>();
         try
         {
-            while (_queue.Count > 0 && !token.IsCancellationRequested)
+            while (!token.IsCancellationRequested)
             {
-                var item = _queue[0];
-                _queue.RemoveAt(0);
+                MediaBrowserItem item;
+                var waited = false;
+                if (_queue.Count > 0 && (unkept.Count == 0 || _inSight.Contains(_queue[0])))
+                {
+                    item = _queue[0];
+                    _queue.RemoveAt(0);
+                }
+                else if (unkept.Count > 0)
+                {
+                    (item, waited) = (unkept[0], true);
+                    unkept.RemoveAt(0);
+                }
+                else
+                {
+                    break;
+                }
+
                 if (item.PreviewRequested)
                     continue;
 
@@ -758,6 +779,14 @@ public partial class MediaBrowserPane : UserControl
                 if (!_inSight.Contains(item) && (!_prefetching || HeldBytes() >= PosterBudgetBytes))
                 {
                     _queue.RemoveAll(i => !_inSight.Contains(i));
+                    unkept.RemoveAll(i => !_inSight.Contains(i));
+                    continue;
+                }
+
+                if (!waited && item.Kind == MediaBrowserKind.Video && item.StripPath is null)
+                {
+                    if (!await TakeKeptAsync(item, token))
+                        unkept.Add(item);
                     continue;
                 }
 
@@ -784,6 +813,24 @@ public partial class MediaBrowserPane : UserControl
             GiveBackMemory();
     }
 
+    /// <summary>
+    /// A video's tile from the cache alone (4.1.1): its length, shape, strip and poster when its description and strip are
+    /// kept, read and cut away from the interface (a millisecond or so), and shown at once. False when either is not kept.
+    /// </summary>
+    private async Task<bool> TakeKeptAsync(MediaBrowserItem item, CancellationToken token)
+    {
+        var settings = AppSettings.Current;
+        var (path, height) = (item.Path, PictureHeight);
+        var (frames, frameHeight) = (Math.Clamp(settings.BrowserPreviewFrames, 2, 40), Math.Clamp(settings.BrowserPreviewHeight, 90, 1080));
+        if (await Task.Run(() => MediaBrowserFrames.Kept(path, frames, frameHeight, height, 0.3), token) is not { } kept)
+            return false;
+
+        item.PreviewRequested = true;
+        (item.Seconds, item.Info) = (kept.Seconds, kept.Seconds > 0 ? MediaBrowserItem.FormatSeconds(kept.Seconds) : item.Info);
+        (item.Shape, item.StripPath, item.Poster) = ((double)kept.Width / kept.Height, kept.Strip, kept.Poster);
+        return true;
+    }
+
     private async Task PrepareAsync(MediaBrowserItem item, CancellationToken token)
     {
         var height = PictureHeight;
@@ -800,8 +847,10 @@ public partial class MediaBrowserPane : UserControl
                 return;
 
             case MediaBrowserKind.Video:
+                // A tile in sight is what the user is waiting for (4.1.1): its strip goes in the Interactive lane, never
+                // behind the proxies, waveforms and thumbnails of the Background lane.
                 if (item.StripPath is null)
-                    await PrepareStripAsync(item, token, WorkLane.Background);
+                    await PrepareStripAsync(item, token, _inSight.Contains(item) ? WorkLane.Interactive : WorkLane.Background);
 
                 if (item.StripPath is { } strip)
                     item.Poster = await Task.Run(() => MediaBrowserFrames.Poster(strip, item.Shape, height, 0.3), token);
@@ -900,6 +949,9 @@ public partial class MediaBrowserPane : UserControl
 
     private List<MediaBrowserItem> Selected() => [.. Items.SelectedItems.OfType<MediaBrowserItem>()];
 
+    /// <summary>The drag format that marks files dragged out of the media browser (beside the file list itself).</summary>
+    public const string DragFormat = "HandPeg.MediaBrowserFiles";
+
     private void Open(MediaBrowserItem item)
     {
         if (!item.IsFile)
@@ -964,8 +1016,12 @@ public partial class MediaBrowserPane : UserControl
         _keepSelection = false;
         var files = Items.SelectedItems.Contains(pressed) ? Selected().Where(i => i.IsFile).Select(i => i.Path).ToArray() : [pressed.Path];
 
-        // As files from Explorer: whatever takes those (the time bars, the Audio tab, the player) takes these.
-        DragDrop.DoDragDrop(Items, new DataObject(DataFormats.FileDrop, files), DragDropEffects.Copy);
+        // As files from Explorer: whatever takes those (the time bars, the Audio tab, the player) takes these. Marked as
+        // the media browser's, so that in Editor Mode with something open they go onto the timeline wherever they are
+        // let go, never over what is open (4.1.1-B).
+        var data = new DataObject(DataFormats.FileDrop, files);
+        data.SetData(DragFormat, true);
+        DragDrop.DoDragDrop(Items, data, DragDropEffects.Copy);
     }
 
     private void Items_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)

@@ -2,17 +2,52 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
 /// <summary>
-/// Saves the current session as a project and lists the saved ones.
+/// A saved project as the Project Manager lists it (4.1.1-B): its entry, and the picture of its main video, which the
+/// pointer scrubs through while it is across it.
+/// </summary>
+public sealed partial class ProjectRow(ProjectEntry entry) : ObservableObject
+{
+    public ProjectEntry Entry { get; } = entry;
+
+    /// <summary>What the picture shows: the poster, or while the pointer is across it, the frame there.</summary>
+    [ObservableProperty] private ImageSource? _picture;
+
+    [ObservableProperty] private Visibility _pictureVisibility = Visibility.Collapsed;
+
+    public BitmapSource? Poster { get; set; }
+
+    /// <summary>The media browser's strip of the main video's frames (its cache's file), and the video's shape.</summary>
+    public string? Strip { get; set; }
+
+    public double Shape { get; set; } = 16.0 / 9;
+
+    /// <summary>The strip's frames, decoded while the pointer is across the picture and let go when it leaves.</summary>
+    public IReadOnlyList<BitmapSource>? Frames { get; set; }
+
+    public bool DecodingFrames { get; set; }
+}
+
+/// <summary>
+/// Saves the current session as a project, starts a new one, and lists the saved ones: since 4.1.1-B with a 16:9
+/// picture of each project's main video (the media browser's poster and strip, from its cache, made in the background
+/// when not kept), scrubbed by the pointer, while Settings' Show video &amp; hover previews in Project Manager is on.
 /// </summary>
 public partial class ProjectManagerWindow : Window
 {
     private readonly MainViewModel _viewModel;
+    private readonly CancellationTokenSource _closing = new();
+
+    // How tall the pictures are decoded: the list's picture is 72 pixels tall, at up to twice that on a high-DPI screen.
+    private const int PictureHeight = 144;
 
     public ProjectManagerWindow(MainViewModel viewModel)
     {
@@ -22,22 +57,151 @@ public partial class ProjectManagerWindow : Window
         if (viewModel.HasSource)
             NameBox.Text = Path.GetFileNameWithoutExtension(viewModel.LocalMediaPath);
 
+        PreviewsBox.IsChecked = AppSettings.Current.ShowProjectPreviews;
         RefreshList();
 
         // Projects imported while the list is showing appear in it at once.
         ProjectStore.Changed += RefreshList;
-        Closed += (_, _) => ProjectStore.Changed -= RefreshList;
+        Closed += (_, _) =>
+        {
+            ProjectStore.Changed -= RefreshList;
+            _closing.Cancel();
+        };
     }
 
     /// <summary>The project the user chose to open, for the main window to load once this one has closed.</summary>
     public string? ProjectToLoad { get; private set; }
 
+    /// <summary>+ New Project was chosen: the main window empties the session (asking about unsaved changes first).</summary>
+    public bool NewProjectRequested { get; private set; }
+
     private void RefreshList()
     {
-        ProjectList.ItemsSource = ProjectStore.ListRecent();
-        if (ProjectList.Items.Count == 0)
+        var rows = ProjectStore.ListRecent().Select(e => new ProjectRow(e)).ToList();
+        ProjectList.ItemsSource = rows;
+        if (rows.Count == 0)
             MessageText.Text = "No projects saved yet.";
+        if (AppSettings.Current.ShowProjectPreviews)
+            _ = LoadPicturesAsync(rows);
     }
+
+    // ----- The pictures -----
+
+    /// <summary>
+    /// Each project's picture: from the media browser's cache when it is kept there (read off the interface), otherwise
+    /// made in the background (one piece of work for them all), at the browser's own strip settings so that the browser
+    /// and this list share one strip per video.
+    /// </summary>
+    private async Task LoadPicturesAsync(IReadOnlyList<ProjectRow> rows)
+    {
+        var token = _closing.Token;
+        var settings = AppSettings.Current;
+        var (frames, frameHeight) = (Math.Clamp(settings.BrowserPreviewFrames, 2, 40), Math.Clamp(settings.BrowserPreviewHeight, 90, 1080));
+        var missing = new List<ProjectRow>();
+        try
+        {
+            foreach (var row in rows)
+            {
+                var path = row.Entry.SourcePath;
+                var kept = await Task.Run(() => FileState.Exists(path) ? MediaBrowserFrames.Kept(path, frames, frameHeight, PictureHeight, 0.3) : null, token);
+                if (kept is { } found)
+                    Show(row, found.Strip, (double)found.Width / Math.Max(found.Height, 1), found.Poster);
+                else if (await Task.Run(() => FileState.Exists(path), token))
+                    missing.Add(row);
+            }
+
+            if (missing.Count == 0)
+                return;
+
+            await WorkScheduler.Run(new WorkSpec("Project previews", WorkLane.Background) { Key = "project-previews" }, async work =>
+            {
+                foreach (var row in missing)
+                {
+                    work.Token.ThrowIfCancellationRequested();
+                    var path = row.Entry.SourcePath;
+                    if (await MediaBrowserFrames.DescribeAsync(path, work.Token) is not { Width: > 0, Height: > 0 } video)
+                        continue;
+
+                    var strip = await MediaBrowserFrames.StripAsync(path, video.Seconds, video.Width, video.Height, frames, frameHeight, work.Token);
+                    if (strip is null)
+                        continue;
+
+                    var shape = (double)video.Width / video.Height;
+                    var poster = await Task.Run(() => MediaBrowserFrames.Poster(strip, shape, PictureHeight, 0.3), work.Token);
+                    await Dispatcher.InvokeAsync(() => Show(row, strip, shape, poster));
+                }
+            }, token);
+        }
+        catch (OperationCanceledException)
+        {
+            // The window was closed: the rest are made another time.
+        }
+    }
+
+    private void Show(ProjectRow row, string strip, double shape, BitmapSource? poster)
+    {
+        (row.Strip, row.Shape, row.Poster) = (strip, shape, poster);
+        if (poster is null || !AppSettings.Current.ShowProjectPreviews)
+            return;
+
+        (row.Picture, row.PictureVisibility) = (poster, Visibility.Visible);
+    }
+
+    // The pointer across a picture: the frame at that point of the video (the strip decoded once, on the way in).
+    private async void Picture_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: ProjectRow row } picture || row.Strip is not { } strip)
+            return;
+
+        if (row.Frames is null)
+        {
+            if (row.DecodingFrames)
+                return;
+
+            row.DecodingFrames = true;
+            var shape = row.Shape;
+            row.Frames = await Task.Run(() => MediaBrowserFrames.Frames(strip, shape, PictureHeight));
+            row.DecodingFrames = false;
+            if (!picture.IsMouseOver)
+            {
+                row.Frames = null;
+                return;
+            }
+        }
+
+        if (row.Frames is { Count: > 0 } frames)
+        {
+            var at = Math.Clamp(e.GetPosition(picture).X / Math.Max(picture.ActualWidth, 1), 0, 0.999);
+            row.Picture = frames[(int)(at * frames.Count)];
+        }
+    }
+
+    private void Picture_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: ProjectRow row })
+            (row.Picture, row.Frames) = (row.Poster, null);
+    }
+
+    private void PreviewsBox_Changed(object sender, RoutedEventArgs e)
+    {
+        var on = PreviewsBox.IsChecked == true;
+        if (on == AppSettings.Current.ShowProjectPreviews)
+            return;
+
+        AppSettings.Current.ShowProjectPreviews = on;
+        try
+        {
+            AppSettings.Current.SaveAsCurrent();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Not written: the choice holds for this session.
+        }
+
+        RefreshList();
+    }
+
+    // ----- Saving, starting anew, loading, deleting -----
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
@@ -57,8 +221,14 @@ public partial class ProjectManagerWindow : Window
         RefreshList();
     }
 
+    private void NewProject_Click(object sender, RoutedEventArgs e)
+    {
+        NewProjectRequested = true;
+        DialogResult = true;
+    }
+
     private void ProjectList_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
-        LoadButton.IsEnabled = DeleteButton.IsEnabled = ProjectList.SelectedItem is ProjectEntry;
+        LoadButton.IsEnabled = DeleteButton.IsEnabled = ProjectList.SelectedItem is ProjectRow;
 
     private void OpenDirectory_Click(object sender, RoutedEventArgs e)
     {
@@ -76,7 +246,7 @@ public partial class ProjectManagerWindow : Window
 
     private void Delete_Click(object sender, RoutedEventArgs e)
     {
-        if (ProjectList.SelectedItem is not ProjectEntry entry)
+        if (ProjectList.SelectedItem is not ProjectRow { Entry: var entry })
             return;
 
         var answer = MessageBox.Show(this,
@@ -105,7 +275,7 @@ public partial class ProjectManagerWindow : Window
 
     private void LoadSelected()
     {
-        if (ProjectList.SelectedItem is not ProjectEntry entry)
+        if (ProjectList.SelectedItem is not ProjectRow { Entry: var entry })
             return;
 
         // While something is encoding, the project is not loaded into the window: it goes into the

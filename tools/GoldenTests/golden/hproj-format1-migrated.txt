@@ -2,7 +2,7 @@
 
 {
   "format": "handpeg-project",
-  "version": 3,
+  "version": 4,
   "writtenBy": "HandPeg <version>",
   "name": "Old project",
   "savedAt": "2025-03-01T09:30:00",
@@ -59,7 +59,8 @@
           "featherRadius": 10,
           "shadow": true,
           "shadowOpacity": 0.4,
-          "shadowOffset": 8,
+          "shadowDistance": 11,
+          "shadowSoftness": 2,
           "chromaSimilarity": 0.1,
           "chromaBlend": 0.1,
           "flipHorizontal": true,

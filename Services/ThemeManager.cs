@@ -63,43 +63,48 @@ public static partial class ThemeManager
     {
         ["WindowBackgroundBrush"] = "#161619", ["PanelBrush"] = "#212126", ["ControlBrush"] = "#28282E", ["ControlHoverBrush"] = "#35353E",
         ["ControlBorderBrush"] = "#32323A", ["TextBrush"] = "#C2C3C8", ["MutedTextBrush"] = "#787A82", ["DisabledTextBrush"] = "#55565D",
-        ["WarningTextBrush"] = "#E8A33A", ["InsetBrush"] = "#111113", ["CardBrush"] = "#28282E",
+        ["WarningTextBrush"] = "#E8A33A", ["InsetBrush"] = "#111113", ["CardBrush"] = "#28282E", ["TitleBarBrush"] = "#111114",
         ["ButtonFaceBrush"] = "#2B2B32", ["ButtonTextBrush"] = "#C2C3C8", ["ButtonBorderBrush"] = "#3D3D46", ["ButtonBevelBrush"] = "Transparent",
         ["ButtonHoverBrush"] = "#35353E", ["ButtonPressedBrush"] = "#24242A", ["NeutralButtonBrush"] = "#2B2B32", ["NeutralButtonBorderBrush"] = "#3D3D46",
         ["HoverFillBrush"] = "#35353E", ["HoverBorderBrush"] = "#55555F",
         ["SelectedFillBrush"] = "#3A2C2E", ["SelectedBorderBrush"] = "#E64B35", ["SelectedTextBrush"] = "#E6E7EB", ["ActiveTabTraceBrush"] = "#E64B35",
     };
 
-    // A classic studio light (Pass 4.1C, warmed in 4.1C.2): warm tan and putty panels over darker taupe grooves, darker
-    // stone for the tabs not shown and the cards, recessed sand wells (track bars, lists, the ruler, the layout canvas),
-    // soft parchment inputs, never a glaring white or a cool silver; squared tan buttons raised by a lit edge (light top
-    // and left, dark bottom and right), wells and viewports sunk by the reverse; steel-blue under the pointer and on what
-    // is chosen.
+    // A classic studio mid-tone (Pass 4.1C; 4.1.1 took it back from the warm tan of 4.1C.2 to pewter, and 4.1.1-D about a
+    // fifth darker, to cut the glare): pewter panels over darker grooves, a slate title bar apart from the workspace,
+    // darker pewter for the tabs not shown and the cards, each tab outlined, warm taupe wells (track bars, lists, the
+    // ruler, the layout canvas), muted stone inputs, never a glaring white; squared stone buttons raised by a lit edge
+    // (light top and left, dark bottom and right), wells and viewports sunk by the reverse; a soft parchment chosen row;
+    // steel-blue under the pointer and on what is chosen; crisp near-black text.
     private static readonly Dictionary<string, string> RenoPalette = new()
     {
-        ["WindowBackgroundBrush"] = "#9A968C", ["PanelBrush"] = "#C2BEB4", ["ControlBrush"] = "#DAD6CC", ["ControlHoverBrush"] = "#B8CCE0",
-        ["ControlBorderBrush"] = "#858177", ["TextBrush"] = "#1C1B18", ["MutedTextBrush"] = "#4E4C46", ["DisabledTextBrush"] = "#7E7A71",
-        ["WarningTextBrush"] = "#8A4A00", ["InsetBrush"] = "#ABA79D", ["CardBrush"] = "#B0ACA2", ["InactiveTabBrush"] = "#B0ACA2",
-        ["WellBrush"] = "#B4B0A6", ["WellBorderBrush"] = "#5E5A52/#E2DFD6", ["RaisedBorderBrush"] = "#EAE6DC/#646058",
-        ["ButtonFaceBrush"] = "#CAC6BC", ["ButtonTextBrush"] = "#1C1B18", ["ButtonBorderBrush"] = "#EAE6DC/#646058", ["ButtonBevelBrush"] = "Transparent",
-        ["ButtonHoverBrush"] = "#B8CCE0", ["ButtonPressedBrush"] = "#8EB2D6", ["NeutralButtonBrush"] = "#CAC6BC", ["NeutralButtonBorderBrush"] = "#EAE6DC/#646058",
-        ["HoverFillBrush"] = "#B8CCE0", ["HoverBorderBrush"] = "#4A7DA8",
-        ["SelectedFillBrush"] = "#8EB2D6", ["SelectedBorderBrush"] = "#2F6290", ["SelectedTextBrush"] = "#1C1B18", ["ActiveTabTraceBrush"] = "#2F6290",
-        ["SelectedRowBrush"] = "#ECE9E0", ["SelectedRowBorderBrush"] = "#8A867C",
+        ["WindowBackgroundBrush"] = "#7C7E83", ["PanelBrush"] = "#9A9B9E", ["ControlBrush"] = "#ACA9A1", ["ControlHoverBrush"] = "#9AB8D6",
+        ["ControlBorderBrush"] = "#5E6065", ["TextBrush"] = "#141517", ["MutedTextBrush"] = "#383A3E", ["DisabledTextBrush"] = "#5E6064",
+        ["WarningTextBrush"] = "#6A3400", ["InsetBrush"] = "#848179", ["CardBrush"] = "#8C8D91", ["InactiveTabBrush"] = "#8C8D91",
+        ["TitleBarBrush"] = "#6E7075", ["TabEdgeBrush"] = "#B2B3B6/#5A5C61", ["ActiveTabEdgeBrush"] = "#BABBBE/#5A5C61",
+        ["WellBrush"] = "#848179", ["WellBorderBrush"] = "#4A4843/#B0AEA6", ["RaisedBorderBrush"] = "#C6C4BC/#504E49",
+        ["ButtonFaceBrush"] = "#A4A29B", ["ButtonTextBrush"] = "#141517", ["ButtonBorderBrush"] = "#C6C4BC/#504E49", ["ButtonBevelBrush"] = "Transparent",
+        ["ButtonHoverBrush"] = "#9AB8D6", ["ButtonPressedBrush"] = "#7FA6CC", ["NeutralButtonBrush"] = "#A4A29B", ["NeutralButtonBorderBrush"] = "#C6C4BC/#504E49",
+        ["HoverFillBrush"] = "#9AB8D6", ["HoverBorderBrush"] = "#3F6E98",
+        ["SelectedFillBrush"] = "#7FA6CC", ["SelectedBorderBrush"] = "#2F6290", ["SelectedTextBrush"] = "#141517", ["ActiveTabTraceBrush"] = "#2F6290",
+        ["SelectedRowBrush"] = "#C4C1B8", ["SelectedRowBorderBrush"] = "#5E5C55",
     };
 
-    // Reno in the dark (Pass 4.1C): gunmetal surfaces, the same squared buttons raised by a lit edge and wells sunk by the
-    // reverse (4.1C.2), steel-blue under the pointer and on what is chosen.
+    // Reno in the dark (Pass 4.1C; to Reno's measure in 4.1.1): gunmetal surfaces under a near-black title bar, the same
+    // squared buttons raised by a lit edge and wells sunk by the reverse (4.1C.2), darker tabs not shown, each tab
+    // outlined (lit top and left), a warm-grey chosen row, steel-blue under the pointer and on what is checked.
     private static readonly Dictionary<string, string> RenoDarkPalette = new()
     {
-        ["WindowBackgroundBrush"] = "#1A1C20", ["PanelBrush"] = "#24272D", ["ControlBrush"] = "#1E2126", ["ControlHoverBrush"] = "#263B50",
+        ["WindowBackgroundBrush"] = "#1A1C20", ["PanelBrush"] = "#24272D", ["ControlBrush"] = "#1E2126", ["ControlHoverBrush"] = "#2B4A68",
         ["ControlBorderBrush"] = "#3A3F48", ["TextBrush"] = "#E3E6EA", ["MutedTextBrush"] = "#9AA2AD", ["DisabledTextBrush"] = "#5C636D",
-        ["WarningTextBrush"] = "#E0A040", ["InsetBrush"] = "#141619", ["CardBrush"] = "#2A2E35",
-        ["WellBorderBrush"] = "#0B0C0E/#383C46", ["RaisedBorderBrush"] = "#464B55/#101215",
+        ["WarningTextBrush"] = "#E0A040", ["InsetBrush"] = "#141619", ["CardBrush"] = "#2A2E35", ["InactiveTabBrush"] = "#1E2126",
+        ["TitleBarBrush"] = "#111317", ["TabEdgeBrush"] = "#3A3E47/#121418", ["ActiveTabEdgeBrush"] = "#4A505C/#4A505C",
+        ["WellBrush"] = "#1E2126", ["WellBorderBrush"] = "#0B0C0E/#383C46", ["RaisedBorderBrush"] = "#464B55/#101215",
         ["ButtonFaceBrush"] = "#2E323A", ["ButtonTextBrush"] = "#E3E6EA", ["ButtonBorderBrush"] = "#464B55/#101215", ["ButtonBevelBrush"] = "Transparent",
-        ["ButtonHoverBrush"] = "#263B50", ["ButtonPressedBrush"] = "#30506E", ["NeutralButtonBrush"] = "#2E323A", ["NeutralButtonBorderBrush"] = "#464B55/#101215",
-        ["HoverFillBrush"] = "#263B50", ["HoverBorderBrush"] = "#528CC4",
-        ["SelectedFillBrush"] = "#30506E", ["SelectedBorderBrush"] = "#6AA2D8", ["SelectedTextBrush"] = "#F0F3F6", ["ActiveTabTraceBrush"] = "#528CC4",
+        ["ButtonHoverBrush"] = "#2B4A68", ["ButtonPressedBrush"] = "#30506E", ["NeutralButtonBrush"] = "#2E323A", ["NeutralButtonBorderBrush"] = "#464B55/#101215",
+        ["HoverFillBrush"] = "#2B4A68", ["HoverBorderBrush"] = "#5892C8",
+        ["SelectedFillBrush"] = "#2B4A68", ["SelectedBorderBrush"] = "#5892C8", ["SelectedTextBrush"] = "#F0F3F6", ["ActiveTabTraceBrush"] = "#5892C8",
+        ["SelectedRowBrush"] = "#383C44", ["SelectedRowBorderBrush"] = "#5A606E",
     };
 
     /// <summary>
@@ -109,7 +114,7 @@ public static partial class ThemeManager
     /// Light over dark raises a control (buttons, toggles, combo boxes, cards), dark over light sinks a well (lists, text
     /// boxes, check boxes, the player, the layout canvas, the time bars).
     /// </summary>
-    private static readonly string[] EdgeTokens = ["ButtonBorderBrush", "NeutralButtonBorderBrush", "RaisedBorderBrush", "WellBorderBrush"];
+    private static readonly string[] EdgeTokens = ["ButtonBorderBrush", "NeutralButtonBorderBrush", "RaisedBorderBrush", "WellBorderBrush", "TabEdgeBrush", "ActiveTabEdgeBrush"];
 
     private static string LowerOf(string edgeToken) => edgeToken[..^"Brush".Length] + "LowerBrush";
 
@@ -134,14 +139,15 @@ public static partial class ThemeManager
     /// The look of buttons, hovered and chosen things and active tabs (Pass 4.1C), for a theme whose palette does not
     /// give its own: the accent's buttons, as HandPeg always had, flat (no bevel), hover in the control hover colour;
     /// lists on the inputs' colour, their edges, the combo boxes' and the cards' the plain control border, and the tabs
-    /// not shown open to what is behind them (4.1C.2).
+    /// not shown open to what is behind them (4.1C.2), with no outline (4.1.1), the title bar the window's own colour.
     /// </summary>
     private static Dictionary<string, Color> LookDefaults(Dictionary<string, string> palette, Color accent, Color hover, Color pressed, Color onAccent)
     {
         Color Of(string key) => (Color)ColorConverter.ConvertFromString(palette[key]);
         return new()
         {
-            ["CardBrush"] = Of("ControlBrush"), ["InactiveTabBrush"] = Colors.Transparent,
+            ["CardBrush"] = Of("ControlBrush"), ["InactiveTabBrush"] = Colors.Transparent, ["TitleBarBrush"] = Of("WindowBackgroundBrush"),
+            ["TabEdgeBrush"] = Colors.Transparent, ["ActiveTabEdgeBrush"] = Colors.Transparent,
             ["WellBrush"] = Of("ControlBrush"), ["WellBorderBrush"] = Of("ControlBorderBrush"), ["RaisedBorderBrush"] = Of("ControlBorderBrush"),
             ["ButtonFaceBrush"] = accent, ["ButtonTextBrush"] = onAccent, ["ButtonBorderBrush"] = accent, ["ButtonBevelBrush"] = Colors.Transparent,
             ["ButtonHoverBrush"] = hover, ["ButtonPressedBrush"] = pressed,
@@ -173,6 +179,12 @@ public static partial class ThemeManager
 
     /// <summary>The theme in effect: the saved one, or one being previewed (the Layout selector's Themes row).</summary>
     public static string Current { get; private set; } = WindowsSystem;
+
+    /// <summary>The fill of a keyframe's diamond on the time bars and in the Keyframes pane, for the theme in effect (frozen).</summary>
+    public static Brush KeyFill { get; private set; } = Brushes.Gold;
+
+    /// <summary>The fill of an unkeyed property's hollow diamond in the Keyframes pane (frozen).</summary>
+    public static Brush HollowKeyFill { get; private set; } = Brushes.Gold;
 
     /// <summary>Raised after a theme is put into effect (saved or previewed), for what draws with colours of its own.</summary>
     public static event Action? Applied;
@@ -239,7 +251,7 @@ public static partial class ThemeManager
                 resources[key] = Brush(color);
         }
 
-        // The chosen row of a list (a track, a segment, a tile): the chosen fill unless the palette gives its own (Reno: warm off-white).
+        // The chosen row of a list (a track, a segment, a tile): the chosen fill unless the palette gives its own (Reno: soft parchment).
         foreach (var (row, fill) in new[] { ("SelectedRowBrush", "SelectedFillBrush"), ("SelectedRowBorderBrush", "SelectedBorderBrush") })
         {
             if (!chosen.Palette.ContainsKey(row))
@@ -250,6 +262,13 @@ public static partial class ThemeManager
         resources["CardCornerRadius"] = new CornerRadius(chosen.CardRadius);
         resources["TabCornerRadius"] = new CornerRadius(chosen.TabRadius, chosen.TabRadius, 0, 0);
         resources["WellEdgeThickness"] = new Thickness(chosen.WellEdge);
+        resources["TabEdgeThickness"] = chosen.Palette.ContainsKey("TabEdgeBrush") ? new Thickness(1, 1, 1, 0) : new Thickness(0);
+
+        // The keyframe accent (4.1.1): gold on a dark palette; on a light one a deep amber (diamonds) and a darker one for
+        // text (Key All), which pale gold on grey never was.
+        KeyFill = Brush(chosen.Dark ? Colors.Gold : Color.FromRgb(0xB8, 0x6E, 0x00));
+        HollowKeyFill = Brush(chosen.Dark ? Color.FromArgb(90, 255, 215, 0) : Color.FromArgb(110, 0xB8, 0x6E, 0x00));
+        resources["KeyAccentBrush"] = chosen.Dark ? KeyFill : Brush(Color.FromRgb(0x8A, 0x4F, 0x00));
 
         foreach (Window window in application.Windows)
             ApplyTitleBar(window);

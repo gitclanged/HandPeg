@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -40,6 +41,11 @@ public sealed class KeyLane
 /// the selected row, when switched on, the graph of its value over time, eased as the export eases it. It shows the
 /// time bars' stretch of the sequence (their zoom and scroll), and scrolls them when a keyframe is dragged to an edge.
 /// Everything is drawn in OnRender and found by arithmetic: no element per keyframe.
+/// Since 4.1.1-B, several keyframes can be selected, on one row or several: Ctrl+click adds or takes one away,
+/// Shift+click takes every keyframe between the last one clicked and this one (on those rows and the rows between),
+/// and a drag on empty lane space draws a box round the ones to take (with Ctrl or Shift: added to those already
+/// selected). Dragging one of them moves them all; Ctrl+C, Ctrl+V (at the playhead), Delete and the right-click
+/// menu work on them all, as the window wires them (SelectionChanged and the requests).
 /// </summary>
 public sealed class KeyLanesView : TimelineBar
 {
@@ -60,7 +66,8 @@ public sealed class KeyLanesView : TimelineBar
     private static readonly Pen CurvePen = Frozen(new Pen(FrozenBrush(Color.FromRgb(0x4F, 0xC3, 0xF7)), 1.5));
     private static readonly Pen GuidePen = Frozen(new Pen(FrozenBrush(Color.FromArgb(50, 255, 255, 255)), 1) { DashStyle = DashStyles.Dash });
     private static readonly Pen SelectedKeyPen = Frozen(new Pen(Brushes.White, 1.5));
-    private static readonly Brush HollowKey = FrozenBrush(Color.FromArgb(90, 255, 215, 0));
+    private static readonly Brush MarqueeFill = FrozenBrush(Color.FromArgb(40, 0x4F, 0xC3, 0xF7));
+    private static readonly Pen MarqueePen = Frozen(new Pen(FrozenBrush(Color.FromArgb(200, 0x4F, 0xC3, 0xF7)), 1));
 
     private IReadOnlyList<KeyLane> _lanes = [];
     private double _start, _span;
@@ -71,6 +78,15 @@ public sealed class KeyLanesView : TimelineBar
     // A diamond being dragged: its row, where it was, where it is now, and whether it has moved past a click's wobble.
     private (int Lane, double From, double At, double PointerX, bool Moved)? _drag;
     private bool _seeking;
+
+    // The keyframes selected (4.1.1-B): each a row's target and its moment in seconds of the sequence. The one last
+    // clicked is where a Shift+click's range starts.
+    private readonly List<(object? Lane, double Time)> _selected = [];
+    private (object? Lane, double Time)? _rangeFrom;
+
+    // A box being drawn round keyframes on empty lane space: where it started, where the pointer is, and whether the
+    // keyframes already selected stay (Ctrl or Shift held).
+    private (Point From, Point To, bool Add)? _marquee;
     private Point _lastPointer;
     private readonly DispatcherTimer _autoScroll = new() { Interval = TimeSpan.FromMilliseconds(40) };
 
@@ -108,6 +124,27 @@ public sealed class KeyLanesView : TimelineBar
     /// <summary>Ctrl + wheel: the time bars zoom by a factor about a point (a fraction of the time's width).</summary>
     public event Action<double, double>? ZoomRequested;
 
+    /// <summary>The keyframes selected changed (4.1.1-B): each a row's target and its moment in seconds of the sequence.</summary>
+    public event Action<IReadOnlyList<(object? Lane, double Time)>>? SelectionChanged;
+
+    /// <summary>Several selected keyframes dragged together, by so many seconds (one undo step).</summary>
+    public event Action<IReadOnlyList<(object? Lane, double Time)>, double>? KeysMoved;
+
+    /// <summary>Delete (or the menu's Delete) with several keyframes selected: every one of them goes.</summary>
+    public event Action<IReadOnlyList<(object? Lane, double Time)>>? DeleteSelectedRequested;
+
+    /// <summary>Ctrl+C (or the menu's Copy): the selected keyframes (or, with none, the selected row's at the playhead) are copied.</summary>
+    public event Action<IReadOnlyList<(object? Lane, double Time)>>? CopyRequested;
+
+    /// <summary>Ctrl+V (or the menu's Paste): the copied keyframes go in at the playhead.</summary>
+    public event Action? PasteRequested;
+
+    /// <summary>Whether there are keyframes copied to paste, for the menu (set by the window).</summary>
+    public Func<bool>? CanPaste { get; set; }
+
+    /// <summary>The keyframes selected, each a row's target and its moment in seconds of the sequence.</summary>
+    public IReadOnlyList<(object? Lane, double Time)> SelectedKeys => _selected;
+
     /// <summary>
     /// Shows rows over a stretch of the sequence (<paramref name="start"/>, <paramref name="span"/> seconds across), the
     /// clip's own stretch shaded, and the playhead. The selected row is kept by its target when it is still there.
@@ -124,6 +161,10 @@ public sealed class KeyLanesView : TimelineBar
         }
 
         (_start, _span, _clip, _clipFill) = (start, span, clip, clipFill);
+
+        // A selected keyframe that is no longer there (another clip, a keyframe moved or deleted) is let go.
+        if (_drag is null && _selected.RemoveAll(s => !lanes.Any(l => Equals(l.Target, s.Lane) && l.Times.Any(t => Math.Abs(t - s.Time) <= Models.Layer.KeyTolerance))) > 0)
+            SelectionChanged?.Invoke(_selected);
         if (_drag is null)
             InvalidateMeasure();
         MovePlayhead(playhead);
@@ -227,28 +268,41 @@ public sealed class KeyLanesView : TimelineBar
 
             // The name, with the diamond that keys the row at the playhead: filled when it has a keyframe there.
             var keyed = KeyedAtPlayhead(lane);
-            drawing.DrawGeometry(keyed ? Brushes.Gold : HollowKey, KeyOutline, Diamonds([NameWidth - 12], double.MaxValue, middle, 5));
+            drawing.DrawGeometry(keyed ? HandPegApp.Services.ThemeManager.KeyFill : HandPegApp.Services.ThemeManager.HollowKeyFill, KeyOutline, Diamonds([NameWidth - 12], double.MaxValue, middle, 5));
             var name = Text(lane.Name, lane.IsAll ? NameBrush : MutedBrush, dpi, NameWidth - 22);
             drawing.DrawText(name, new Point(5, middle - name.Height / 2));
 
             // The row's keyframes, the one at the playhead on the selected row outlined in white.
             drawing.PushClip(new RectangleGeometry(new Rect(NameWidth, top, TimeWidth, LaneHeight)));
             var xs = new List<double>(lane.Times.Count);
+            var chosen = new List<double>();
             foreach (var time in lane.Times)
             {
-                var moved = _drag is { } drag && drag.Lane == i && Math.Abs(time - drag.From) <= Models.Layer.KeyTolerance;
-                xs.Add(X(moved ? _drag!.Value.At : time));
+                // Dragged: the diamond itself, or every selected one with it, moved by as much.
+                var isSelected = IsSelected(lane.Target, time);
+                var moved = _drag is { } drag && drag.Moved
+                            && (drag.Lane == i && Math.Abs(time - drag.From) <= Models.Layer.KeyTolerance || isSelected && DragMovesSelection(drag));
+                var x = X(moved ? time + (_drag!.Value.At - _drag.Value.From) : time);
+                xs.Add(x);
+                if (isSelected)
+                    chosen.Add(x);
             }
 
             if (xs.Count > 0)
-                drawing.DrawGeometry(Brushes.Gold, KeyOutline, Diamonds(xs, ActualWidth, middle, lane.IsAll ? 6 : 5));
-            if (i == SelectedLane && keyed)
+                drawing.DrawGeometry(HandPegApp.Services.ThemeManager.KeyFill, KeyOutline, Diamonds(xs, ActualWidth, middle, lane.IsAll ? 6 : 5));
+            if (chosen.Count > 0)
+                drawing.DrawGeometry(null, SelectedKeyPen, Diamonds(chosen, ActualWidth, middle, 7));
+            if (i == SelectedLane && keyed && !IsSelected(lane.Target, _playhead))
                 drawing.DrawGeometry(null, SelectedKeyPen, Diamonds([X(_playhead)], ActualWidth, middle, 7));
             drawing.Pop();
 
             if (HasGraph && i == SelectedLane)
                 DrawGraph(drawing, lane, top + LaneHeight, dpi);
         }
+
+        // The box being drawn round keyframes.
+        if (_marquee is { } box)
+            drawing.DrawRectangle(MarqueeFill, MarqueePen, new Rect(box.From, box.To));
 
         drawing.Pop();
     }
@@ -299,7 +353,7 @@ public sealed class KeyLanesView : TimelineBar
         drawing.PushClip(new RectangleGeometry(new Rect(NameWidth, top, TimeWidth, GraphHeight)));
         drawing.DrawGeometry(null, CurvePen, curve);
         for (var k = 0; k < lane.Times.Count && k < lane.Values.Count; k++)
-            drawing.DrawEllipse(Brushes.Gold, KeyOutline, new Point(X(lane.Times[k]), Y(lane.Values[k])), 3.5, 3.5);
+            drawing.DrawEllipse(HandPegApp.Services.ThemeManager.KeyFill, KeyOutline, new Point(X(lane.Times[k]), Y(lane.Values[k])), 3.5, 3.5);
         drawing.Pop();
 
         var highText = Text(lane.Format(high), MutedBrush, dpi, NameWidth - 10);
@@ -347,22 +401,145 @@ public sealed class KeyLanesView : TimelineBar
 
         e.Handled = true;
         _lastPointer = point;
+        var modifiers = Keyboard.Modifiers;
         if (!inGraph && KeyNear(lane, point.X) is { } key)
         {
-            // A diamond: the playhead goes to it, and it can be dragged along its row.
+            // A diamond: chosen (Ctrl: added or taken away; Shift: the range from the one last clicked), the playhead
+            // goes to it, and it can be dragged along its row (with the others selected, when it is one of them).
+            var target = _lanes[lane].Target;
+            if (modifiers.HasFlag(ModifierKeys.Control))
+            {
+                if (!Unselect(target, key))
+                    _selected.Add((target, key));
+            }
+            else if (modifiers.HasFlag(ModifierKeys.Shift) && _rangeFrom is { } from)
+            {
+                SelectRange(from, (target, key));
+            }
+            else if (!IsSelected(target, key))
+            {
+                _selected.Clear();
+                _selected.Add((target, key));
+            }
+
+            if (!modifiers.HasFlag(ModifierKeys.Shift))
+                _rangeFrom = (target, key);
+            SelectionChanged?.Invoke(_selected);
             _drag = (lane, key, key, point.X, false);
             SeekRequested?.Invoke(key);
+            InvalidateVisual();
             return;
         }
 
-        _seeking = true;
+        // Empty lane space: the playhead goes there, and a drag draws a box round the keyframes to take.
+        if (!inGraph)
+            _marquee = (point, point, modifiers.HasFlag(ModifierKeys.Control) || modifiers.HasFlag(ModifierKeys.Shift));
+        else
+            _seeking = true;
         SeekRequested?.Invoke(Math.Max(TimeAt(Math.Max(point.X, NameWidth)), 0));
     }
+
+    // ----- The selection -----
+
+    private bool IsSelected(object? lane, double time) =>
+        _selected.Any(s => Equals(s.Lane, lane) && Math.Abs(s.Time - time) <= Models.Layer.KeyTolerance);
+
+    private bool Unselect(object? lane, double time) =>
+        _selected.RemoveAll(s => Equals(s.Lane, lane) && Math.Abs(s.Time - time) <= Models.Layer.KeyTolerance) > 0;
+
+    /// <summary>Whether a drag moves the whole selection: the diamond dragged is one of several selected.</summary>
+    private bool DragMovesSelection((int Lane, double From, double At, double PointerX, bool Moved) drag) =>
+        _selected.Count > 1 && drag.Lane < _lanes.Count && IsSelected(_lanes[drag.Lane].Target, drag.From);
+
+    /// <summary>Shift+click: every keyframe between two, in time, on their rows and the rows between them.</summary>
+    private void SelectRange((object? Lane, double Time) from, (object? Lane, double Time) to)
+    {
+        var (a, b) = (IndexOf(from.Lane), IndexOf(to.Lane));
+        if (a < 0 || b < 0)
+            return;
+
+        var (first, last) = (Math.Min(a, b), Math.Max(a, b));
+        var (early, late) = (Math.Min(from.Time, to.Time) - Models.Layer.KeyTolerance, Math.Max(from.Time, to.Time) + Models.Layer.KeyTolerance);
+        for (var i = first; i <= last; i++)
+        {
+            foreach (var time in _lanes[i].Times.Where(t => t >= early && t <= late))
+            {
+                if (!IsSelected(_lanes[i].Target, time))
+                    _selected.Add((_lanes[i].Target, time));
+            }
+        }
+    }
+
+    private int IndexOf(object? lane)
+    {
+        for (var i = 0; i < _lanes.Count; i++)
+        {
+            if (Equals(_lanes[i].Target, lane))
+                return i;
+        }
+
+        return -1;
+    }
+
+    /// <summary>Every keyframe the box drawn on empty lane space covers: its rows (by their middles) and its stretch of time.</summary>
+    private void TakeMarquee((Point From, Point To, bool Add) box)
+    {
+        if (!box.Add)
+            _selected.Clear();
+
+        var area = new Rect(box.From, box.To);
+        for (var i = 0; i < _lanes.Count; i++)
+        {
+            var middle = Top(i) + LaneHeight / 2;
+            if (middle < area.Top || middle > area.Bottom)
+                continue;
+
+            foreach (var time in _lanes[i].Times)
+            {
+                var x = X(time);
+                if (x >= area.Left - Reach && x <= area.Right + Reach && !IsSelected(_lanes[i].Target, time))
+                    _selected.Add((_lanes[i].Target, time));
+            }
+        }
+
+        SelectionChanged?.Invoke(_selected);
+    }
+
+    /// <summary>Selects every keyframe on every row (Ctrl+A).</summary>
+    public void SelectAll()
+    {
+        _selected.Clear();
+        foreach (var lane in _lanes)
+            _selected.AddRange(lane.Times.Select(t => (lane.Target, t)));
+        SelectionChanged?.Invoke(_selected);
+        InvalidateVisual();
+    }
+
+    public void ClearSelection()
+    {
+        if (_selected.Count == 0)
+            return;
+
+        _selected.Clear();
+        SelectionChanged?.Invoke(_selected);
+        InvalidateVisual();
+    }
+
+    /// <summary>What Copy and Delete work on: the selected keyframes, or with none the selected row's at the playhead.</summary>
+    private List<(object? Lane, double Time)> Working() =>
+        _selected.Count > 0 ? [.. _selected] : Selected is { } lane && KeyedAtPlayhead(lane) ? [(lane.Target, _playhead)] : [];
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
         var point = e.GetPosition(this);
+        if (_marquee is { } box)
+        {
+            _marquee = box with { To = new Point(Math.Clamp(point.X, NameWidth, ActualWidth), Math.Clamp(point.Y, 0, ActualHeight)) };
+            InvalidateVisual();
+            return;
+        }
+
         if (_drag is null && !_seeking)
         {
             var lane = LaneAt(point.Y, out var inGraph);
@@ -421,24 +598,61 @@ public sealed class KeyLanesView : TimelineBar
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonUp(e);
-        var drag = _drag;
-        (_drag, _seeking) = (null, false);
+        var (drag, box) = (_drag, _marquee);
+        (_drag, _seeking, _marquee) = (null, false, null);
         _autoScroll.Stop();
         if (IsMouseCaptured)
             ReleaseMouseCapture();
+
+        // A box drawn (past a click's wobble) takes the keyframes in it; a plain click on empty space lets them all go.
+        if (box is { } drawn)
+        {
+            if (Math.Abs(drawn.To.X - drawn.From.X) > 3 || Math.Abs(drawn.To.Y - drawn.From.Y) > 3)
+                TakeMarquee(drawn);
+            else if (!drawn.Add)
+                ClearSelection();
+        }
+
+        // A plain click on one of several selected keyframes, not dragged: it alone stays selected.
+        if (drag is { Moved: false } click && Keyboard.Modifiers == ModifierKeys.None && _selected.Count > 1 && click.Lane < _lanes.Count
+            && IsSelected(_lanes[click.Lane].Target, click.From))
+        {
+            _selected.Clear();
+            _selected.Add((_lanes[click.Lane].Target, click.From));
+            SelectionChanged?.Invoke(_selected);
+        }
+
         if (drag is { Moved: true } done && Math.Abs(done.At - done.From) > 0.0005 && done.Lane < _lanes.Count)
-            KeyMoved?.Invoke(_lanes[done.Lane], done.From, done.At);
+        {
+            if (DragMovesSelection(done))
+            {
+                var delta = done.At - done.From;
+                var moved = _selected.ToList();
+                _selected.Clear();
+                _selected.AddRange(moved.Select(s => (s.Lane, Math.Max(s.Time + delta, 0))));
+                KeysMoved?.Invoke(moved, delta);
+                SelectionChanged?.Invoke(_selected);
+            }
+            else
+            {
+                Unselect(_lanes[done.Lane].Target, done.From);
+                _selected.Add((_lanes[done.Lane].Target, Math.Max(done.At, 0)));
+                KeyMoved?.Invoke(_lanes[done.Lane], done.From, done.At);
+                SelectionChanged?.Invoke(_selected);
+            }
+        }
+
         InvalidateVisual();
     }
 
     protected override void OnLostMouseCapture(MouseEventArgs e)
     {
         base.OnLostMouseCapture(e);
-        if (_drag is null && !_seeking)
+        if (_drag is null && !_seeking && _marquee is null)
             return;
 
         // Taken away mid-drag: the diamond goes back.
-        (_drag, _seeking) = (null, false);
+        (_drag, _seeking, _marquee) = (null, false, null);
         _autoScroll.Stop();
         InvalidateVisual();
     }
@@ -458,9 +672,36 @@ public sealed class KeyLanesView : TimelineBar
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (e.Key is Key.Delete or Key.Back && Selected is { } lane && KeyedAtPlayhead(lane))
+        var control = Keyboard.Modifiers == ModifierKeys.Control;
+        if (e.Key is Key.Delete or Key.Back && _selected.Count > 0)
+        {
+            DeleteSelectedRequested?.Invoke([.. _selected]);
+            e.Handled = true;
+        }
+        else if (e.Key is Key.Delete or Key.Back && Selected is { } lane && KeyedAtPlayhead(lane))
         {
             DeleteRequested?.Invoke(lane);
+            e.Handled = true;
+        }
+        else if (control && e.Key == Key.C)
+        {
+            if (Working() is { Count: > 0 } keys)
+                CopyRequested?.Invoke(keys);
+            e.Handled = true;
+        }
+        else if (control && e.Key == Key.V)
+        {
+            PasteRequested?.Invoke();
+            e.Handled = true;
+        }
+        else if (control && e.Key == Key.A)
+        {
+            SelectAll();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape && _selected.Count > 0)
+        {
+            ClearSelection();
             e.Handled = true;
         }
         else if (e.Key is Key.Up or Key.Down && _lanes.Count > 0)
@@ -471,6 +712,51 @@ public sealed class KeyLanesView : TimelineBar
             LaneSelected?.Invoke(_lanes[SelectedLane]);
             e.Handled = true;
         }
+    }
+
+    // The right-click menu: Copy, Paste (at the playhead), Delete, Select All.
+    protected override void OnMouseRightButtonUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseRightButtonUp(e);
+        if (_lanes.Count == 0)
+            return;
+
+        // A right-click on a diamond not selected takes it alone, as a click would.
+        var point = e.GetPosition(this);
+        var lane = LaneAt(point.Y, out var inGraph);
+        if (lane >= 0 && !inGraph && KeyNear(lane, point.X) is { } key && !IsSelected(_lanes[lane].Target, key))
+        {
+            _selected.Clear();
+            _selected.Add((_lanes[lane].Target, key));
+            _rangeFrom = (_lanes[lane].Target, key);
+            SelectionChanged?.Invoke(_selected);
+            InvalidateVisual();
+        }
+
+        Focus();
+        var working = Working();
+        var menu = new ContextMenu { PlacementTarget = this };
+        void Item(string header, string gesture, bool enabled, Action action)
+        {
+            var item = new MenuItem { Header = header, InputGestureText = gesture, IsEnabled = enabled };
+            item.Click += (_, _) => action();
+            menu.Items.Add(item);
+        }
+
+        var count = working.Count;
+        Item(count > 1 ? $"Copy {count} Keyframes" : "Copy Keyframe", "Ctrl+C", count > 0, () => CopyRequested?.Invoke(working));
+        Item("Paste at Playhead", "Ctrl+V", CanPaste?.Invoke() == true, () => PasteRequested?.Invoke());
+        Item(count > 1 ? $"Delete {count} Keyframes" : "Delete Keyframe", "Delete", count > 0, () =>
+        {
+            if (_selected.Count > 0)
+                DeleteSelectedRequested?.Invoke(working);
+            else if (Selected is { } row)
+                DeleteRequested?.Invoke(row);
+        });
+        menu.Items.Add(new Separator());
+        Item("Select All Keyframes", "Ctrl+A", _lanes.Any(l => l.Times.Count > 0), SelectAll);
+        menu.IsOpen = true;
+        e.Handled = true;
     }
 
     private static Brush FrozenBrush(Color color)

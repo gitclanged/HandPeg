@@ -148,6 +148,8 @@
                     <TextBlock Text="Projects and saving" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Prompt to save before closing" IsChecked="{Binding PromptToSaveOnExit}"
                               ToolTip="When HandPeg is closed while the open video has cuts, layers or settings that were not saved as a project, asks whether to save them first." />
+                    <CheckBox Content="Show video &amp; hover previews in Project Manager" IsChecked="{Binding ShowProjectPreviews}" AutomationProperties.Name="Show Video and Hover Previews in Project Manager"
+                              ToolTip="The Project Manager shows a 16:9 picture of each project's main video; with the pointer across it, the frames along the video. They are the media browser's pictures, kept in its cache (Caches, below), and made in the background when not kept. Also a box in the Project Manager itself." />
                     <StackPanel Style="{StaticResource Row}">
                         <CheckBox Content="Enable Autosave" IsChecked="{Binding AutosaveEnabled}" VerticalAlignment="Center" AutomationProperties.Name="Enable Autosave"
                                   ToolTip="Writes the open project to a file beside it named after it (Name.autosave.hproj) every so often, when it has changed. Written in the background; the project itself, and what can be undone, are left as they are." />
@@ -261,6 +263,8 @@
                     <TextBlock Text="Player" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Use GPU acceleration in the video player" IsChecked="{Binding PlayerHardwareAcceleration}"
                               ToolTip="The graphics card decodes the video as well as drawing it (Direct3D 11), which keeps high-resolution and high-frame-rate footage smooth and the processor free. With Live Preview on, the card still decodes and each frame is handed to the filters. Turn this off if the picture is green, garbled or stutters: the processor then decodes. Applied when you press Save." />
+                    <CheckBox Content="Edit Layers on Video Preview (Editor Mode)" IsChecked="{Binding EditLayersOnPlayer}" AutomationProperties.Name="Edit Layers on Video Preview"
+                              ToolTip="With Live Preview on, click a layer on the player to select it, then drag it to move it, its corner to resize it, its round handle to turn it and its gold dot to move its anchor, as in the Layout pane. Only the selected layer's outline and handles are drawn over the video, and none while it plays; a click on the video away from it hides them. Also in the Layout pane's title row and the playback bar." />
                     <CheckBox Content="Show advanced playback controls" IsChecked="{Binding ShowAdvancedPlayback}"
                               ToolTip="A transport row centred under the player: reload player, previous I-frame, back one frame, play/pause, forward one frame, next I-frame and render preview, with a playback speed selector (0.25x to 2x) beside it." />
                     <StackPanel Style="{StaticResource Row}"
@@ -521,6 +525,16 @@
                         <TextBlock Text="Bitrate:" Style="{StaticResource FieldLabel}" Margin="20,0,8,0" />
                         <ComboBox x:Name="DefaultBitrateBox" MinWidth="130" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
                                   SelectedValue="{Binding DefaultAudioBitrate}" AutomationProperties.Name="Default Audio Bitrate" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Sample Rate:" Style="{StaticResource FieldLabel}" Width="120" />
+                        <ComboBox x:Name="DefaultSampleRateBox" MinWidth="200" Margin="0" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                  SelectedValue="{Binding DefaultAudioSampleRate}" AutomationProperties.Name="Default Audio Sample Rate"
+                                  ToolTip="The sample rate every encoded audio track is written at in a new session (-ar). Auto keeps each track's own, and makes mixed sound and silence at 48 kHz. Copied tracks are left as they are. Each project and preset keeps its own (the Export tab's Audio Export)." />
+                        <TextBlock Text="Channels:" Style="{StaticResource FieldLabel}" Margin="20,0,8,0" />
+                        <ComboBox x:Name="DefaultChannelsBox" MinWidth="130" Margin="0" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                  SelectedValue="{Binding DefaultAudioChannels}" AutomationProperties.Name="Default Audio Channels"
+                                  ToolTip="The channels of every encoded audio track in a new session (-ac). Stereo folds anything wider down to two and leaves stereo and mono tracks as they are; Mono makes one channel; Match Source keeps the source's. Copied tracks are left as they are." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Audio Tracks:" Style="{StaticResource FieldLabel}" Width="120" />

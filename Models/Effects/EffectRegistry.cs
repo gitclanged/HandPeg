@@ -462,11 +462,15 @@ public static partial class EffectRegistry
 
         Register(new(Shadow, "Drop Shadow", "Composite", EffectZone.Composite,
             [
+                new("distance", "Distance", Min: 0, Max: 100, Default: LayerState.DefaultShadowDistance, Step: 1, Unit: "px") { Bind = nameof(Layer.ShadowDistance) },
+                new("angle", "Angle", Min: 0, Max: 360, Default: LayerState.DefaultShadowAngle, Step: 1, Unit: "\u00B0") { Bind = nameof(Layer.ShadowAngle) },
+                new("softness", "Softness", Min: 0, Max: 50, Default: LayerState.DefaultShadowSoftness, Step: 1, Unit: "px") { Bind = nameof(Layer.ShadowSoftness) },
                 new("opacity", "Shadow Opacity", Min: 0, Max: 1, Default: 0.5) { Bind = nameof(Layer.ShadowOpacity) },
-                new("offset", "Offset", Min: 0, Max: 200, Default: 10, Step: 1, Unit: "px") { Bind = nameof(Layer.ShadowOffset) },
+                new("color", "Shadow Color", ParamKind.Color) { Bind = nameof(Layer.ShadowColor), TextDefault = "#000000" },
             ], EffectCost.Amber)
         {
-            Feature = nameof(Layer.Shadow), Description = "The layer's outline in black, softened and offset under it.",
+            Feature = nameof(Layer.Shadow),
+            Description = "The layer's outline in a colour under it: Distance and Angle say where it falls (135\u00B0 is lit from the upper left, so it falls right and down), Softness feathers its edge (0 is hard).",
         });
 
         Register(new(BlendMode, "Blend Mode", "Composite", EffectZone.Composite,

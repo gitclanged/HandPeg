@@ -610,6 +610,9 @@ public sealed class MpvPlayer
     /// <summary>Silences the player, or lets it be heard again.</summary>
     public void SetMute(bool muted) => SetProperty("mute", muted ? "yes" : "no");
 
+    /// <summary>Lets the file go (+ New Project, 4.1.1-B): nothing is played until the next Open.</summary>
+    public void Stop() => Command(ReplyNone, "stop");
+
     /// <summary>Saves the frame on screen as a picture, as the filters make it but without the subtitles drawn over it.</summary>
     public void SaveFrame(string path) => Command(ReplyNone, "screenshot-to-file", path, "video");
 

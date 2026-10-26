@@ -1093,7 +1093,38 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private int _featherRadius = 12;
     [ObservableProperty] private bool _shadow;
     [ObservableProperty] private double _shadowOpacity = 0.5;
-    [ObservableProperty] private int _shadowOffset = 10;
+
+    /// <summary>How far the drop shadow falls from the layer, in output pixels, 0 to 100 (4.1.1-B; it was one offset on both axes).</summary>
+    [ObservableProperty] private int _shadowDistance = LayerState.DefaultShadowDistance;
+
+    /// <summary>
+    /// Where the light comes from, in degrees, as design tools write it: 135 lights the layer from the upper left, so
+    /// the shadow falls right and down (as every shadow did before 4.1.1-B). See <see cref="ShadowShift"/>.
+    /// </summary>
+    [ObservableProperty] private double _shadowAngle = LayerState.DefaultShadowAngle;
+
+    /// <summary>How far the shadow's edge is feathered, in output pixels, 0 (a hard edge) to 50.</summary>
+    [ObservableProperty] private int _shadowSoftness = LayerState.DefaultShadowSoftness;
+
+    [ObservableProperty] private string _shadowColor = "#000000";
+
+    /// <summary>How far the shadow is moved from the layer, in output pixels: <see cref="ShadowDistance"/> along <see cref="ShadowAngle"/>.</summary>
+    public (int X, int Y) ShadowShift => ShadowShiftOf(ShadowDistance, ShadowAngle);
+
+    public static (int X, int Y) ShadowShiftOf(int distance, double angle)
+    {
+        var d = Math.Clamp(distance, 0, 100);
+        var radians = (double.IsFinite(angle) ? angle : LayerState.DefaultShadowAngle) * Math.PI / 180;
+        return ((int)Math.Round(-d * Math.Cos(radians), MidpointRounding.AwayFromZero), (int)Math.Round(d * Math.Sin(radians), MidpointRounding.AwayFromZero));
+    }
+
+    /// <summary>Takes a saved layer's drop shadow: distance, angle, softness and colour, or those that keep the look of one saved with an offset.</summary>
+    public void TakeShadow(LayerState? state)
+    {
+        state ??= new LayerState();
+        (Shadow, ShadowOpacity) = (state.Shadow, Math.Clamp(state.ShadowOpacity, 0, 1));
+        (ShadowDistance, ShadowAngle, ShadowSoftness, ShadowColor) = (state.ReadShadowDistance(), state.ReadShadowAngle(), state.ReadShadowSoftness(), state.ReadShadowColor());
+    }
 
     /// <summary>The width as a whole percentage of the frame width, for typing.</summary>
     public int SizePercent
@@ -1177,7 +1208,10 @@ public sealed partial class Layer : ObservableObject
         FeatherRadius = FeatherRadius,
         Shadow = Shadow,
         ShadowOpacity = ShadowOpacity,
-        ShadowOffset = ShadowOffset,
+        ShadowDistance = ShadowDistance,
+        ShadowAngle = ShadowAngle,
+        ShadowSoftness = ShadowSoftness,
+        ShadowColor = ShadowColor,
         ChromaKey = ChromaKey,
         ChromaColor = ChromaColor,
         ChromaSimilarity = ChromaSimilarity,
@@ -1245,7 +1279,8 @@ public sealed partial class Layer : ObservableObject
     {
         state ??= new LayerState();
         (CornerRadius, Opacity) = (Math.Clamp(state.CornerRadius, 0, 50), Math.Clamp(state.Opacity, 0, 100));
-        (Feather, FeatherRadius, Shadow, ShadowOpacity, ShadowOffset) = (state.Feather, state.FeatherRadius, state.Shadow, state.ShadowOpacity, state.ShadowOffset);
+        (Feather, FeatherRadius) = (state.Feather, state.FeatherRadius);
+        TakeShadow(state);
         (ChromaKey, ChromaColor) = (state.ChromaKey, string.IsNullOrWhiteSpace(state.ChromaColor) ? "#00FF00" : state.ChromaColor);
         (ChromaSimilarity, ChromaBlend) = (Math.Clamp(state.ChromaSimilarity, 0.01, 1), Math.Clamp(state.ChromaBlend, 0, 1));
         (CustomMask, MaskPath, IsHidden) = (state.CustomMask, state.MaskPath ?? "", state.IsHidden);
@@ -1284,7 +1319,10 @@ public sealed partial class Layer : ObservableObject
             FeatherRadius = state.FeatherRadius,
             Shadow = state.Shadow,
             ShadowOpacity = state.ShadowOpacity,
-            ShadowOffset = state.ShadowOffset,
+            ShadowDistance = state.ReadShadowDistance(),
+            ShadowAngle = state.ReadShadowAngle(),
+            ShadowSoftness = state.ReadShadowSoftness(),
+            ShadowColor = state.ReadShadowColor(),
             ChromaKey = state.ChromaKey,
             ChromaColor = string.IsNullOrWhiteSpace(state.ChromaColor) ? "#00FF00" : state.ChromaColor,
             ChromaSimilarity = Math.Clamp(state.ChromaSimilarity, 0.01, 1),
@@ -1395,7 +1433,58 @@ public sealed class LayerState
     public int FeatherRadius { get; set; } = 12;
     public bool Shadow { get; set; }
     public double ShadowOpacity { get; set; } = 0.5;
-    public int ShadowOffset { get; set; } = 10;
+
+    /// <summary>The shadow's offset on both axes, as layers saved before 4.1.1-B have it. Read into the distance; never written.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? ShadowOffset { get; set; }
+
+    /// <summary>Null in layers saved before 4.1.1-B (their <see cref="ShadowOffset"/> then says how far).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? ShadowDistance { get; set; }
+
+    public double ShadowAngle { get; set; } = DefaultShadowAngle;
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? ShadowSoftness { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? ShadowColor { get; set; }
+
+    // A new shadow: 14 px at 135 degrees is the 10 px right and 10 px down every shadow had before, now feathered by 8 px.
+    public const int DefaultShadowDistance = 14;
+    public const double DefaultShadowAngle = 135;
+    public const int DefaultShadowSoftness = 8;
+
+    /// <summary>The softness a shadow saved before 4.1.1-B is given: the 2 px blur it was always drawn with.</summary>
+    private const int EarlierShadowSoftness = 2;
+
+    /// <summary>
+    /// The distance, or for a layer saved with an offset on both axes the distance that moves it just as far
+    /// (at 135 degrees: an offset of 10 is a distance of 14, which comes back as 10 right and 10 down).
+    /// </summary>
+    public int ReadShadowDistance() =>
+        ShadowDistance is { } distance ? Math.Clamp(distance, 0, 100)
+        : ShadowOffset is { } offset ? Math.Clamp((int)Math.Round(Math.Max(offset, 0) * Math.Sqrt(2), MidpointRounding.AwayFromZero), 0, 100)
+        : DefaultShadowDistance;
+
+    public double ReadShadowAngle() => ShadowDistance is null || !double.IsFinite(ShadowAngle) ? DefaultShadowAngle : ((ShadowAngle % 360) + 360) % 360;
+
+    public int ReadShadowSoftness() => Math.Clamp(ShadowSoftness ?? (ShadowDistance is null && ShadowOffset is not null ? EarlierShadowSoftness : DefaultShadowSoftness), 0, 50);
+
+    public string ReadShadowColor() => string.IsNullOrWhiteSpace(ShadowColor) ? "#000000" : ShadowColor;
+
+    /// <summary>
+    /// A shadow saved with an offset on both axes, put in the fields it is written with now (distance, angle, softness;
+    /// 4.1.1-D), so a project brought over from 1.x is written as one saved from the app is (<see cref="HandPegApp.Services.LegacyProject"/>).
+    /// </summary>
+    public void FoldEarlierShadow()
+    {
+        if (ShadowOffset is null || ShadowDistance is not null)
+            return;
+
+        (ShadowDistance, ShadowAngle, ShadowSoftness) = (ReadShadowDistance(), DefaultShadowAngle, ReadShadowSoftness());
+        ShadowOffset = null;
+    }
 
     public bool ChromaKey { get; set; }
     public string ChromaColor { get; set; } = "#00FF00";

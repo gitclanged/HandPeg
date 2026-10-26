@@ -18,17 +18,23 @@ encoded by FFmpeg on export. The window paints in well under a second and HandPe
 - **Smart proxies:** heavy files (above 1080p, AV1, VP9, ProRes, 10-bit HEVC) get a small editing copy made in the
   background, for the player only; exports always read the originals. An optional composed proxy of the whole timeline.
 - **Effect stacks in zones:** each clip's effects are cards, applied in order: key, mask, color, blur, blend modes,
-  adjustment layers and a Sequence Output stack, each animatable over its own time range.
+  adjustment layers and a Sequence Output stack, each animatable over its own time range. Copy a stack and paste it
+  whole, onto a whole track, or just the cards you pick.
+- **Edit right on the video:** click a layer on the preview to select it, then drag, resize, turn it or move its
+  anchor there; drop shadows with distance, angle, softness and colour.
 - **Keyframe lanes and curves:** a lane per property with a graph of the value over time, easings from Hold to Bounce
-  and Custom Bezier, and an anchor point that layers turn and scale about.
+  and Custom Bezier, and an anchor point that layers turn and scale about. Select keyframes across rows to move, ease,
+  copy or delete them together.
 - **Fades and transitions at a clip's corners:** drag a clip's top corners to fade its picture and sound; dissolves,
   wipes, slides, zooms and blur dissolves, crossfades on one track or across tracks.
 - **Dockable layouts:** every part of the window is a pane you can dock, tab together or move to a side window. Built-in
   layouts (Standard Editing, Color & Effects, Assembly & Media) and three of your own per mode, previewed live from the
   Layout button before you keep one.
 - **Five themes:** Windows System, OLED Black, Leonardo, Reno and Reno Dark, chosen from the Layout button's Themes row.
-- **One Export tab:** video, audio, output, chapters and the Save As / Start Encode / Add to Queue buttons in one place,
-  with the progress of an export as a dimmed fill across the full width of the title bar.
+- **One Export tab:** video, audio (codec, bitrate, sample rate, channels), output, chapters and the Save As / Start
+  Encode / Add to Queue buttons in one place, with the progress of an export as a dimmed fill across the full width of
+  the title bar.
+- **Projects at a glance:** the Project Manager shows a picture of each project's video that scrubs under the pointer.
 - **Auto-captions** with whisper.cpp, styled and previewed in the player, burned in on export.
 - **Hardware encoders** (NVENC, AMF, Quick Sync) tested on your PC, with a software fallback.
 - **Crash diagnostics without personal data:** a crash writes a small plain-text report to your PC with no file names,

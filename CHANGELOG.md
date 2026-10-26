@@ -3,6 +3,39 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v4.1.1
+
+### Highlights
+- **Drop shadows in 3D.** A shadow now has a distance, an angle (where the light comes from), a softness that feathers its edge, and a colour, on the Drop Shadow card and in Layer Properties. Shadows from older projects look exactly as they did.
+- **Edit layers on the video.** In Editor Mode, click a layer on the Preview Player to select it, then drag, resize, turn it or move its anchor right there (Edit on Video, in the Layout pane, the playback bar and Settings). Only the selected layer is outlined, and nothing shows while playing.
+- **Keyframes, several at a time.** Ctrl-click, Shift-click or draw a box to select keyframes across rows; drag them together, set their easing at once, copy them to another clip, delete them in one step.
+- **Paste effects your way.** Paste Effects replaces a clip's stack (hold Shift, or tick Apply Paste to All Clips on Track, for the whole track); Paste Selected Effects... adds just the cards you tick.
+- **A calmer Reno.** Reno is now a relaxed mid-tone studio palette: pewter panels, warm stone inputs and buttons, taupe wells, a soft parchment selected row and a slate title bar, with no glare. Reno and Reno Dark outline every tab.
+
+### New
+- **Export sample rate and channels:** Auto (Match Source / 48 kHz), 48000 or 44100 Hz; Stereo (2.0), Mono (1.0) or Match Source. On the Export tab's Audio Export group and the Audio tab, saved with projects and presets, with defaults in Settings > Export & Hardware.
+- **Project Manager:** a 16:9 picture of each project's video that scrubs under the pointer (Show video & hover previews), and **+ New Project**, which asks about unsaved changes first.
+- **Media pane to timeline:** in Editor Mode, files dragged from the Media pane onto the player or the master timeline go onto the timeline at the playhead.
+- The rotation handle stays reachable when a layer touches the frame's top edge, and shows the angle while it turns.
+- **Project format 4** (`.hproj`): sample rate, channels and the new shadow settings.
+
+### Changed
+- Editor Mode starts without the bottom status bar (the title bar shows the status and progress) and with the Audio tab after Layers. Settings saved by 4.1.0 are brought over once; Status Bar stays in Views > Tabs and Panes.
+- The Export tab always has the audio codec, bitrate, mix and normalize options.
+- Changing the codec or bitrate for all tracks keeps the tracks you set yourself, and a dropped track stays dropped.
+- Tabs show the move pointer only while held; the border above the master timeline resizes the rows around it.
+- Keyframe diamonds stay readable on light themes.
+
+### Fixed
+- The Media pane showed no pictures on its tiles; posters now appear at once from the cache.
+- The Sample Rate and Channels boxes showed raw values like `[0, Auto ...]` instead of their names.
+- The layer rows' Size % label was cut off at the left.
+- The paused picture could step forward on its own when a waveform finished or the layout or theme previews changed.
+- The Add Effect flyout stayed open after a click elsewhere.
+
+### Compatibility
+- Projects from 4.1.0, 4.0 and 3.x open in 4.1.1. Projects saved by 4.1.1 are format 4: open them in 4.1.1 or later (4.1.0 offers to open them read-only).
+
 ## HandPeg v4.1.0
 
 ### Highlights

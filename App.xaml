@@ -79,6 +79,10 @@
         <SolidColorBrush x:Key="SelectedTextBrush" po:Freeze="True" Color="#FFFFFF" />
         <SolidColorBrush x:Key="ActiveTabTraceBrush" po:Freeze="True" Color="#0078D7" />
         <SolidColorBrush x:Key="InactiveTabBrush" po:Freeze="True" Color="Transparent" />
+        <SolidColorBrush x:Key="TabEdgeBrush" po:Freeze="True" Color="Transparent" />
+        <SolidColorBrush x:Key="ActiveTabEdgeBrush" po:Freeze="True" Color="Transparent" />
+        <SolidColorBrush x:Key="TitleBarBrush" po:Freeze="True" Color="#1E1E1E" />
+        <SolidColorBrush x:Key="KeyAccentBrush" po:Freeze="True" Color="Gold" />
         <SolidColorBrush x:Key="WellBrush" po:Freeze="True" Color="#2D2D2D" />
         <SolidColorBrush x:Key="WellBorderBrush" po:Freeze="True" Color="#3F3F3F" />
         <SolidColorBrush x:Key="RaisedBorderBrush" po:Freeze="True" Color="#3F3F3F" />
@@ -88,7 +92,10 @@
         <x:Null x:Key="NeutralButtonBorderLowerBrush" />
         <x:Null x:Key="RaisedBorderLowerBrush" />
         <x:Null x:Key="WellBorderLowerBrush" />
+        <x:Null x:Key="TabEdgeLowerBrush" />
+        <x:Null x:Key="ActiveTabEdgeLowerBrush" />
         <Thickness x:Key="WellEdgeThickness">0</Thickness>
+        <Thickness x:Key="TabEdgeThickness">0</Thickness>
         <CornerRadius x:Key="ControlCornerRadius">4</CornerRadius>
         <CornerRadius x:Key="CardCornerRadius">6</CornerRadius>
         <CornerRadius x:Key="TabCornerRadius">6,6,0,0</CornerRadius>
@@ -254,7 +261,9 @@
                             </ToggleButton>
                             <ContentPresenter IsHitTestVisible="False" Margin="10,6,28,6" VerticalAlignment="Center"
                                               HorizontalAlignment="Left" Content="{TemplateBinding SelectionBoxItem}"
-                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" />
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                              ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}" />
                             <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True" Focusable="False"
                                    IsOpen="{TemplateBinding IsDropDownOpen}" PopupAnimation="Fade">
                                 <Border MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}"
@@ -338,10 +347,14 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabItem">
-                        <!-- The tab shown is traced along its top edge (2 px, ActiveTabTraceBrush); the others keep the room for it. -->
-                        <Border x:Name="border" Background="{DynamicResource InactiveTabBrush}" CornerRadius="{DynamicResource TabCornerRadius}" BorderThickness="0,2,0,0"
-                                BorderBrush="Transparent" Padding="16,6,16,8" Margin="0,0,2,0">
-                            <ContentPresenter ContentSource="Header" RecognizesAccessKey="True" />
+                        <!-- The tab shown is traced along its top edge (2 px, ActiveTabTraceBrush); the others keep the room for it.
+                             Outlined where the theme gives tab edges (TabEdgeThickness, 4.1.1: Reno, Reno Dark). -->
+                        <Border x:Name="edge" BorderBrush="{DynamicResource TabEdgeBrush}" BorderThickness="{DynamicResource TabEdgeThickness}"
+                                CornerRadius="{DynamicResource TabCornerRadius}" Margin="0,0,2,0">
+                            <Border x:Name="border" Background="{DynamicResource InactiveTabBrush}" CornerRadius="{DynamicResource TabCornerRadius}" BorderThickness="0,2,0,0"
+                                    BorderBrush="Transparent" Padding="16,6,16,8">
+                                <ContentPresenter ContentSource="Header" RecognizesAccessKey="True" />
+                            </Border>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -350,6 +363,7 @@
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="border" Property="Background" Value="{DynamicResource PanelBrush}" />
                                 <Setter TargetName="border" Property="BorderBrush" Value="{DynamicResource ActiveTabTraceBrush}" />
+                                <Setter TargetName="edge" Property="BorderBrush" Value="{DynamicResource ActiveTabEdgeBrush}" />
                                 <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">

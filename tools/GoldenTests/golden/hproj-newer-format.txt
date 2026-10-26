@@ -1,1 +1,1 @@
-# A format 4 file: refused unless asked, opened as far as known, never written over.
+# A file of the next format: refused unless asked, opened as far as known, never written over.

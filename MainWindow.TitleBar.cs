@@ -47,14 +47,14 @@ public partial class MainWindow
     /// <summary>The status bar, or the status in the title bar: whichever the mode in use has.</summary>
     private void ApplyStatusBar()
     {
+        // The title bar's status and its progress fill are there with the status bar shown or hidden (4.1.1); only the
+        // update button moves between them.
         var shown = StatusBarShown;
         StatusBar.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
-        TitleStatus.Visibility = shown ? Visibility.Collapsed : Visibility.Visible;
+        TitleStatus.Visibility = Visibility.Visible;
         TitleUpdateButton.Visibility = !shown && UpdateNotice.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
         TitleUpdateButton.Content = UpdateActionButton.Content;
         TitleUpdateButton.ToolTip = UpdateNoticeText.Text;
-        if (shown && WorkFlyout.IsOpen && ReferenceEquals(WorkFlyout.PlacementTarget, TitleStatus))
-            WorkFlyout.IsOpen = false;
         UpdateTitleStatus();
     }
 
@@ -72,12 +72,6 @@ public partial class MainWindow
     /// <summary>The middle of the title bar: the work under way ("Encoding clip.mp4 42%, 2 more"), or else the last status.</summary>
     private void UpdateTitleStatus()
     {
-        if (StatusBarShown)
-        {
-            TitleProgress.Visibility = Visibility.Collapsed;
-            return;
-        }
-
         var work = WorkScheduler.Summary;
         TitleStatusText.Text = work.IsVisible
             ? string.Join("  ", new[] { work.Title, work.PercentText, work.MoreText.Length > 0 ? "+" + work.MoreText : "" }.Where(p => p.Length > 0))

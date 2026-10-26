@@ -32,14 +32,47 @@ public partial class MainViewModel
     /// <summary>False for stream copy and for editing codecs, which have no quality or bitrate setting.</summary>
     public bool HasRateControl => IsVideoReencoded && VideoEncoder.Family != EncoderFamily.Intermediate;
 
-    // The "All tracks" codec and bitrate at the top of the Audio tab are pushed to every track.
-    partial void OnAudioEncoderChanged(string value) => ApplyAudioDefaultsToTracks();
-    partial void OnAudioBitrateChanged(string value) => ApplyAudioDefaultsToTracks();
+    // The "All tracks" codec and bitrate (the Audio tab, the Export tab's Audio Export) are pushed to every track that
+    // still follows them (4.1.1): a track given a codec or bitrate of its own keeps it, and a dropped track stays dropped;
+    // its gain, offset, filters and ducking are never touched here.
+    partial void OnAudioEncoderChanged(string value) => ApplyAudioDefaultsToTracks(followersOnly: true);
+    partial void OnAudioBitrateChanged(string value) => ApplyAudioDefaultsToTracks(followersOnly: true);
 
-    private void ApplyAudioDefaultsToTracks()
+    // The codec and bitrate last pushed to the tracks: a track still on them follows the next change.
+    private (string Encoder, string Bitrate)? _trackDefaults;
+
+    /// <summary>
+    /// Puts the "All tracks" codec and bitrate on the tracks: on every one (a preset, the default settings, a source
+    /// loaded), or, with <paramref name="followersOnly"/>, on those still as the last push left them.
+    /// </summary>
+    private void ApplyAudioDefaultsToTracks(bool followersOnly = false)
     {
+        var before = _trackDefaults;
         foreach (var track in AudioTracks)
-            ApplyAudioDefaults(track);
+        {
+            if (!followersOnly || before is not { } last)
+            {
+                ApplyAudioDefaults(track);
+                continue;
+            }
+
+            if (track.IsDropped)
+                continue;
+
+            var followsCodec = last.Encoder == CopyOption ? track.Action == AudioTrack.Passthrough : track.Action == AudioTrack.Reencode && track.Codec == last.Encoder;
+            if (followsCodec)
+            {
+                if (AudioEncoder == CopyOption)
+                    track.Action = AudioTrack.Passthrough;
+                else
+                    (track.Action, track.Codec) = (AudioTrack.Reencode, AudioEncoder);
+            }
+
+            if (track.Bitrate == last.Bitrate)
+                track.Bitrate = AudioBitrate;
+        }
+
+        _trackDefaults = (AudioEncoder, AudioBitrate);
     }
 
     private void ApplyAudioDefaults(AudioTrack track)
@@ -55,6 +88,7 @@ public partial class MainViewModel
         }
 
         track.Bitrate = AudioBitrate;
+        _trackDefaults = (AudioEncoder, AudioBitrate);
     }
 
     /// <summary>
@@ -109,6 +143,8 @@ public partial class MainViewModel
         if (settings.DefaultMergeAudio is "on" or "off")
             MergeAudioTracks = settings.DefaultMergeAudio == "on";
         NormalizeAudio = settings.DefaultNormalizeAudio;
+        AudioSampleRate = AudioChannelChoice.NormalizeRate(settings.DefaultAudioSampleRate);
+        AudioChannels = AudioChannelChoice.Normalize(settings.DefaultAudioChannels);
         ApplyAudioDefaultsToTracks();
     }
 

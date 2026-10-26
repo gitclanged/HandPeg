@@ -175,6 +175,22 @@
             </Setter>
         </Style>
 
+        <!--
+            A layer's box over the player (Edit Layers on Video Preview, 4.1.1-B): nearly see-through, so it takes the click;
+            outlined in the accent only while it is the selected layer (its BorderThickness, set from code).
+        -->
+        <Style x:Key="PlayerLayerThumb" TargetType="Thumb">
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="#01000000" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Play while paused, pause while playing: one button whose symbol follows the player. -->
         <Style x:Key="PlayPauseButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
@@ -398,12 +414,12 @@
     <DockPanel x:Name="ChromeRoot">
     <!--
         The title bar (WindowChrome, 32 px): HandPeg's name at the left, the caption buttons at the right (Maximize answers
-        as Windows' own, so Snap Layouts open from it: TitleBarHook). While the status bar is hidden it carries the status
-        at its middle (dimmed) and the progress of the work under way as a dim fill across its whole height; resting on
+        as Windows' own, so Snap Layouts open from it: TitleBarHook). It carries the status at its middle (dimmed) and the
+        progress of the work under way as a dim fill across its whole height, status bar or none (4.1.1); resting on
         the status opens the work flyout, a right-click on it brings the status bar back. Dragging anywhere else moves the
         window; a double-click maximizes it.
     -->
-    <Grid x:Name="TitleBar" DockPanel.Dock="Top" Height="32" Background="{DynamicResource WindowBackgroundBrush}">
+    <Grid x:Name="TitleBar" DockPanel.Dock="Top" Height="32" Background="{DynamicResource TitleBarBrush}">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
@@ -715,6 +731,17 @@
                                 <Rectangle x:Name="CropRectangle" Stroke="Red" StrokeThickness="2" Fill="#18FF0000" IsHitTestVisible="False" />
                             </Canvas>
                         </AdornerDecorator>
+                        <!--
+                            Edit Layers on Video Preview (4.1.1-B, MainWindow.PlayerLayout.cs): a box per layer on screen, nearly
+                            see-through so a click on a layer selects it; only the selected one is outlined and has the handles.
+                            The canvas itself takes clicks (and passes files dropped on it to the window) only while an outline
+                            shows, so a click elsewhere on the video hides it.
+                        -->
+                        <AdornerDecorator ClipToBounds="True">
+                            <Canvas x:Name="PlayerLayoutCanvas" Visibility="Collapsed" ClipToBounds="True" AllowDrop="True" SizeChanged="PlayerLayoutCanvas_SizeChanged"
+                                    MouseLeftButtonDown="PlayerLayoutCanvas_MouseLeftButtonDown"
+                                    DragEnter="DropHint_DragOver" DragOver="DropHint_DragOver" Drop="Window_Drop" />
+                        </AdornerDecorator>
                         <!-- Safe Margins: the action-safe (90%) and title-safe (80%) areas of the picture as it is shown. Placed from code. -->
                         <Canvas x:Name="SafeMarginsCanvas" IsHitTestVisible="False" Visibility="Collapsed" SizeChanged="SafeMarginsCanvas_SizeChanged">
                             <Rectangle x:Name="ActionSafeRectangle" Stroke="#B0FFFFFF" StrokeThickness="1" StrokeDashArray="4 3" />
@@ -879,6 +906,15 @@
                     </Button>
                     <ToggleButton local:OverflowStrip.Priority="10" Content="&#xE8B3;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="14,0,3,0" IsChecked="{Binding ShowSafeMargins}" Visibility="{Binding PlaybackControls[SafeMargins], Converter={StaticResource BoolToVisibility}}"
                                   ToolTip="Safe Margins: outlines the action-safe (90%) and title-safe (80%) areas of the frame over the picture." AutomationProperties.Name="Safe Margins" />
+                    <ToggleButton local:OverflowStrip.Priority="10" Content="&#xE7AD;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0,3,0" IsChecked="{Binding EditLayersOnPlayer}"
+                                  ToolTip="Edit Layers on Video Preview: with Live Preview on, click a layer on the player to select it, then move, resize or turn it there. Only the selected layer is outlined, and nothing while playing." AutomationProperties.Name="Edit Layers on Video Preview">
+                        <ToggleButton.Visibility>
+                            <MultiBinding Converter="{StaticResource AllTrueToVisibility}">
+                                <Binding Path="IsEditorMode" />
+                                <Binding Path="PlaybackControls[EditOnVideo]" />
+                            </MultiBinding>
+                        </ToggleButton.Visibility>
+                    </ToggleButton>
                     <Button local:OverflowStrip.Priority="10" Style="{StaticResource TransportButton}" Content="&#xE722;" Tag="ExportFrame" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[ExportFrame], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Export Frame: saves the frame as it is shown (with Live Preview: as the layout makes it) as a PNG in the output's folder." AutomationProperties.Name="Export Frame" />
                     <Button local:OverflowStrip.Priority="55" Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
@@ -984,6 +1020,9 @@
                     <!-- A title row holding only the tabs: the header joins it when it sits right above this pane. -->
                     <docking:PaneTitleRow DockPanel.Dock="Top" Margin="0,0,0,2">
                         <docking:PaneTitleSlot PaneId="Layout" />
+                        <CheckBox Content="Edit on Video" IsChecked="{Binding EditLayersOnPlayer}" Margin="10,0,4,0" VerticalAlignment="Center"
+                                  docking:PaneTitleRow.Optional="True" AutomationProperties.Name="Edit Layers on Video Preview"
+                                  ToolTip="Edit Layers on Video Preview: with Live Preview on, the selected layer is moved, resized and turned on the player itself too (only its outline and handles are drawn there, and none while playing)." />
                     </docking:PaneTitleRow>
                     <TextBlock DockPanel.Dock="Top" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
                                Text="Drag a layer to move it, its corner handle to resize it. Double-click to center." />
@@ -1297,7 +1336,7 @@
                     <local:OverflowStrip HorizontalAlignment="Center" Margin="0,8,0,0">
                         <Button Content="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,0,4,0" Click="PreviousKeyframe_Click" local:OverflowStrip.Priority="80"
                                 AutomationProperties.Name="Previous Keyframe" ToolTip="Previous Keyframe: moves the playhead to the keyframe before it." />
-                        <Button Content="&#x2666; Key All" Padding="10,4" Margin="0,0,4,0" Click="ToggleKeyframe_Click" Foreground="Gold" local:OverflowStrip.Priority="100"
+                        <Button Content="&#x2666; Key All" Padding="10,4" Margin="0,0,4,0" Click="ToggleKeyframe_Click" Foreground="{DynamicResource KeyAccentBrush}" local:OverflowStrip.Priority="100"
                                 AutomationProperties.Name="Key All" ToolTip="Key All: sets a keyframe at the playhead holding the clip's place, size, rotation and opacity as they are there; on a keyframe, removes it. A single property is keyed with the diamond at its row's name." />
                         <Button Content="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,0,10,0" Click="NextKeyframe_Click" local:OverflowStrip.Priority="80"
                                 AutomationProperties.Name="Next Keyframe" ToolTip="Next Keyframe: moves the playhead to the keyframe after it." />
@@ -2108,7 +2147,7 @@
                             <StackPanel x:Name="KeyBarInline" Orientation="Horizontal" Margin="10,0,0,0">
                                 <Button Content="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,6" Margin="0,0,4,0" Click="PreviousKeyframe_Click"
                                         AutomationProperties.Name="Previous Keyframe (Bar)" ToolTip="Previous Keyframe of the selected clip." />
-                                <Button Content="&#x2666;" FontSize="14" Padding="12,4" Margin="0,0,4,0" Click="ToggleKeyframe_Click" Foreground="Gold"
+                                <Button Content="&#x2666;" FontSize="14" Padding="12,4" Margin="0,0,4,0" Click="ToggleKeyframe_Click" Foreground="{DynamicResource KeyAccentBrush}"
                                         AutomationProperties.Name="Add or Remove Keyframe (Bar)" ToolTip="Add / Remove Keyframe: sets a keyframe for the selected clip at the playhead, or removes the one that is there." />
                                 <Button Content="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,6" Margin="0,0,4,0" Click="NextKeyframe_Click"
                                         AutomationProperties.Name="Next Keyframe (Bar)" ToolTip="Next Keyframe of the selected clip." />
@@ -2239,18 +2278,24 @@
                             added by hand with the main video among them, and the blurred background at the bottom.
                             The main video is a row like the others, named after its file.
                         -->
+                        <!-- The scroll bar always has its room (4.1.1): the Text Settings shown under the list, or a row more, never moves the rows sideways -->
                         <ListBox ItemsSource="{Binding LayerRows}" x:Name="LayersList" SizeChanged="TrackList_SizeChanged" AllowDrop="True" SelectionChanged="LayersList_SelectionChanged" Grid.IsSharedSizeScope="True"
                                  VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling"
                                  VirtualizingPanel.ScrollUnit="Pixel" ScrollViewer.CanContentScroll="True"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="Layers">
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Visible" AutomationProperties.Name="Layers">
                             <ListBox.Resources>
                                 <!--
-                                    A layer's controls: what it is (its buttons) on a first line, where it sits (size, X, Y,
-                                    turn) under it. No wider than this; what does not fit on a line goes onto the next. Shown
-                                    in the layer's row, or, when the window is too narrow for that, in a flyout from the row.
+                                    A layer's controls (4.1.1): two lines in a block of one width in every row (so every
+                                    time bar spans the same stretch and nothing moves sideways when a row changes). The
+                                    first line is what it is (its buttons, and the aspect lock); the second where it sits:
+                                    each value a label and its box that never part (a label right-aligned to a fixed width,
+                                    a 50 px box, which holds -200.0), so the values line up from row to row. 416 px holds
+                                    all five pairs (an unlocked layer shows H %) with nothing cut (4.1.1-D: at 368, the X,
+                                    Y and Rot boxes' own 8 px margins pushed line 2 past the block's left edge). Shown in
+                                    the layer's row, or, when the window is too narrow for that, in a flyout from the row.
                                 -->
                                 <DataTemplate x:Key="LayerControls">
-                                    <StackPanel MaxWidth="226" VerticalAlignment="Center" TextElement.FontSize="11.5">
+                                    <StackPanel Width="416" VerticalAlignment="Center" TextElement.FontSize="11.5">
                                             <!-- An empty track has nothing to set: its controls keep their room, so its time bar lines up with the others -->
                                             <StackPanel.Style>
                                                 <Style TargetType="StackPanel">
@@ -2261,83 +2306,100 @@
                                                     </Style.Triggers>
                                                 </Style>
                                             </StackPanel.Style>
-                                            <WrapPanel HorizontalAlignment="Right">
+                                            <StackPanel.Resources>
+                                                <Style x:Key="PairLabel" TargetType="TextBlock">
+                                                    <Setter Property="VerticalAlignment" Value="Center" />
+                                                    <Setter Property="TextAlignment" Value="Right" />
+                                                    <Setter Property="Margin" Value="0,0,3,0" />
+                                                </Style>
+                                            </StackPanel.Resources>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Height="22">
 
                                             <!-- The background: its blur, here where it is in the stack -->
-                                            <StackPanel Grid.Column="2" Orientation="Horizontal" Visibility="{Binding IsBackground, Converter={StaticResource BoolToVisibility}}">
-                                                <TextBlock Text="Blur Radius:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                            <StackPanel Orientation="Horizontal" Visibility="{Binding IsBackground, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="Blur Radius:" VerticalAlignment="Center" Margin="0,0,6,0" />
                                                 <Slider Width="60" Minimum="5" Maximum="50" VerticalAlignment="Center"
                                                         Value="{Binding DataContext.BlurRadius, RelativeSource={RelativeSource AncestorType=ListBox}}"
                                                         AutomationProperties.Name="Background Blur Radius" local:NumericInput.Default="20"
                                                         ToolTip="How far the blur of the background reaches, in pixels. Larger is softer. The background shows wherever the main video does not cover the frame." />
-                                                <TextBox Style="{StaticResource ValueBox}" Width="46"
+                                                <TextBox Style="{StaticResource ValueBox}" Width="46" Margin="4,0,0,0"
                                                          Text="{Binding DataContext.BlurRadius, RelativeSource={RelativeSource AncestorType=ListBox}, StringFormat={}{0:0}}"
                                                          AutomationProperties.Name="Background Blur Radius Value"
                                                          local:NumericInput.Default="20" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="5" local:NumericInput.Maximum="50" />
-                                                <Button Content="More..." Padding="7,1" Margin="8,0,0,0" Click="BlurSettings_Click"
+                                                <Button Content="More..." Padding="7,1" Margin="4,0,0,0" Click="BlurSettings_Click"
                                                         ToolTip="Blur passes and how much the background is darkened." />
                                             </StackPanel>
                                             <!-- Only a piece of the video has a place in the source to mark -->
-                                            <Button Grid.Column="3" Content="Draw Target" Padding="7,1"
+                                            <Button Content="Draw Target" Padding="7,1" Margin="4,0,0,0"
                                                     Visibility="{Binding IsVideo, Converter={StaticResource BoolToVisibility}}"
                                                     ToolTip="Drag a rectangle on the video to mark what this layer shows."
                                                     Command="{Binding DataContext.DrawTargetCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
                                                     CommandParameter="{Binding}" />
                                             <!-- A video from a file runs at a speed of its own -->
-                                            <StackPanel Grid.Column="3" Orientation="Horizontal" Visibility="{Binding HasSpeed, Converter={StaticResource BoolToVisibility}}"
+                                            <StackPanel Orientation="Horizontal" Margin="6,0,0,0" Visibility="{Binding HasSpeed, Converter={StaticResource BoolToVisibility}}"
                                                         ToolTip="Speed: how many times as fast as recorded this clip runs, from 0.1 to 10. Its block on the timeline gets shorter as it gets faster, and longer as it gets slower. On a track with several clips this is the first one; right-click a clip for its own.">
-                                                <TextBlock Text="Speed x" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                                <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding ClipSpeed, StringFormat={}{0:0.##}}" AutomationProperties.Name="Clip Speed"
+                                                <TextBlock Text="Speed x" Style="{StaticResource PairLabel}" />
+                                                <TextBox Style="{StaticResource ValueBox}" Width="52" Text="{Binding ClipSpeed, StringFormat={}{0:0.##}}" AutomationProperties.Name="Clip Speed"
                                                          local:NumericInput.Default="1" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="10" />
                                             </StackPanel>
-                                            <Button Grid.Column="4" Content="Properties" Padding="7,1" Margin="4,0,0,2" Click="LayerProperties_Click"
+                                            <Button Content="Properties" Padding="7,1" Margin="4,0,0,0" Click="LayerProperties_Click"
                                                     Visibility="{Binding HasStyle, Converter={StaticResource BoolToVisibility}}"
                                                     ToolTip="Opacity, rounded corners, soft edges and a drop shadow, for every layer including the subtitles; and for pictures and videos, a chroma key and a custom mask. The captions' font and colors are under Caption Style Settings on the Subtitles tab." />
-                                            <Button Grid.Column="5" Content="Remove" Padding="7,1" Margin="4,0,0,2" Click="RemoveTrack_Click"
+                                            <Button Content="Remove" Padding="7,1" Margin="4,0,0,0" Click="RemoveTrack_Click"
                                                     Visibility="{Binding IsRemovable, Converter={StaticResource BoolToVisibility}}"
                                                     ToolTip="Removes this track: the layer, and every clip it was split into." />
-                                            </WrapPanel>
-                                        <WrapPanel Margin="0,3,0,0" HorizontalAlignment="Right" Visibility="{Binding HasPlacement, Converter={StaticResource BoolToVisibility}}">
-                                            <TextBlock Text="Size %" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                                <TextBox Style="{StaticResource ValueBox}" Width="46" Margin="0"
+                                            <ToggleButton Content="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="11" Padding="6,1" Margin="4,0,0,0"
+                                                          IsChecked="{Binding LockAspectRatio}" AutomationProperties.Name="Lock Aspect"
+                                                          Visibility="{Binding IsRemovable, Converter={StaticResource BoolToVisibility}}"
+                                                          ToolTip="Lock Aspect. On: the layer keeps its own shape. Off: its width and height can be stretched separately with the corner handle in the Layout Pane." />
+                                            </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0" HorizontalAlignment="Right" Height="22" Visibility="{Binding HasPlacement, Converter={StaticResource BoolToVisibility}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="Size %" Width="34" Style="{StaticResource PairLabel}" />
+                                                <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0"
                                                          Text="{Binding SizePercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Layer Size"
                                                          local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="400"
                                                          ToolTip="Width of the layer as a percentage of the frame's width. The layer grows and shrinks about its middle. Drag sideways to adjust, or click to type." />
-                                                <!-- A layer that is not held to its shape (and so always the caption box) has a height of its own -->
-                                                <StackPanel Orientation="Horizontal" Visibility="{Binding IsFreeHeight, Converter={StaticResource BoolToVisibility}}">
-                                                    <TextBlock Text="H %" VerticalAlignment="Center" Margin="6,0,4,0" />
-                                                    <TextBox Style="{StaticResource ValueBox}" Width="46" Margin="0"
-                                                             Text="{Binding SizeHeightPercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Layer Height"
-                                                             local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="200"
-                                                             ToolTip="Height of the layer as a percentage of the frame's height. For the caption box, a taller box makes the words larger." />
-                                                </StackPanel>
                                             </StackPanel>
-                                            <CheckBox Grid.Column="2" Content="Lock Aspect" IsChecked="{Binding LockAspectRatio}" Margin="10,0,0,0"
-                                                      Visibility="{Binding IsRemovable, Converter={StaticResource BoolToVisibility}}"
-                                                      ToolTip="On: the layer keeps its own shape. Off: its width and height can be stretched separately with the corner handle in the Layout Pane." />
-                                            <TextBlock Grid.Column="3" Text="X %" VerticalAlignment="Center" Margin="8,0,4,0" />
-                                            <StackPanel Grid.Column="5" Orientation="Horizontal">
-                                                <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding PositionXPercent, StringFormat={}{0:0.#}}"
+                                            <!-- A layer that is not held to its shape (and so always the caption box) has a height of its own -->
+                                            <StackPanel Orientation="Horizontal" Margin="5,0,0,0" Visibility="{Binding IsFreeHeight, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="H %" Width="22" Style="{StaticResource PairLabel}" />
+                                                <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0"
+                                                         Text="{Binding SizeHeightPercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Layer Height"
+                                                         local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="200"
+                                                         ToolTip="Height of the layer as a percentage of the frame's height. For the caption box, a taller box makes the words larger." />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="5,0,0,0">
+                                                <TextBlock Text="X %" Width="22" Style="{StaticResource PairLabel}" />
+                                                <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0" Text="{Binding PositionXPercent, StringFormat={}{0:0.#}}"
                                                          AutomationProperties.Name="Layer X Value"
                                                          local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
                                             </StackPanel>
-                                            <TextBlock Grid.Column="6" Text="Y %" VerticalAlignment="Center" Margin="8,0,4,0" />
-                                            <StackPanel Grid.Column="8" Orientation="Horizontal">
-                                                <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding PositionYPercent, StringFormat={}{0:0.#}}"
+                                            <StackPanel Orientation="Horizontal" Margin="5,0,0,0">
+                                                <TextBlock Text="Y %" Width="22" Style="{StaticResource PairLabel}" />
+                                                <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0" Text="{Binding PositionYPercent, StringFormat={}{0:0.#}}"
                                                          AutomationProperties.Name="Layer Y Value"
                                                          local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
                                             </StackPanel>
-                                            <!-- Every picture but the caption box can be turned -->
-                                            <StackPanel Grid.Column="9" Orientation="Horizontal" Visibility="{Binding HasFilters, Converter={StaticResource BoolToVisibility}}">
-                                                <TextBlock Text="Rot &#176;" VerticalAlignment="Center" Margin="8,0,4,0" />
-                                                <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding Rotation, StringFormat={}{0:0.#}}"
+                                            <!-- Every picture but the caption box can be turned; the caption box keeps the room, so its values line up with the others' -->
+                                            <StackPanel Orientation="Horizontal" Margin="5,0,0,0">
+                                                <StackPanel.Style>
+                                                    <Style TargetType="StackPanel">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding HasFilters}" Value="False">
+                                                                <Setter Property="Visibility" Value="Hidden" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </StackPanel.Style>
+                                                <TextBlock Text="Rot &#176;" Width="26" Style="{StaticResource PairLabel}" />
+                                                <TextBox Style="{StaticResource ValueBox}" Width="50" Margin="0" Text="{Binding Rotation, StringFormat={}{0:0.#}}"
                                                          AutomationProperties.Name="Layer Rotation"
                                                          local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-360" local:NumericInput.Maximum="360"
                                                          ToolTip="Degrees the layer is turned clockwise about its middle." />
                                             </StackPanel>
-                                        </WrapPanel>
-                                                                            </StackPanel>
+                                        </StackPanel>
+                                    </StackPanel>
                                 </DataTemplate>
                             </ListBox.Resources>
                             <ListBox.ItemTemplate>
@@ -2513,9 +2575,13 @@
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="All tracks:" Style="{StaticResource FieldLabel}" />
                             <ComboBox Margin="0" ItemsSource="{Binding AudioEncoders}" SelectedItem="{Binding AudioEncoder}"
-                                      ToolTip="Sets every track below to this codec. Also the codec of the mixed track when mixing." />
+                                      ToolTip="Sets every track below that follows the default to this codec (a track given a codec or bitrate of its own keeps it; a dropped track stays dropped). Also the codec of the mixed track when mixing." />
                             <ComboBox Margin="8,0,0,0" MinWidth="90" ItemsSource="{Binding AudioBitrates}" SelectedItem="{Binding AudioBitrate}"
                                       IsEnabled="{Binding IsAudioReencoded}" />
+                            <ComboBox Margin="8,0,0,0" MinWidth="70" ItemsSource="{Binding AudioSampleRates}" DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding AudioSampleRate}"
+                                      AutomationProperties.Name="Audio Sample Rate" ToolTip="The sample rate every encoded track is written at (the same box as the Export tab's). Auto keeps each track's own." />
+                            <ComboBox Margin="8,0,0,0" MinWidth="70" ItemsSource="{Binding AudioChannelChoices}" DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding AudioChannels}"
+                                      AutomationProperties.Name="Audio Channels" ToolTip="The channels of every encoded track (the same box as the Export tab's)." />
                         </StackPanel>
                         <Grid Grid.Column="1" x:Name="AudioOptionsHost" ClipToBounds="True" Margin="24,0,10,0" SizeChanged="AudioOptionsHost_SizeChanged">
                             <StackPanel x:Name="AudioOptionsInline" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
@@ -3184,6 +3250,32 @@
             <TabItem Header="Export" x:Name="ExportTab">
                 <DockPanel x:Name="ExportPanel">
                     <Border DockPanel.Dock="Bottom" x:Name="ExportBarSlot" Margin="0,4,0,0" />
+                    <!-- The sound's encoding, always here (4.1.1), whether the Audio tab (the tracks) is shown or not -->
+                    <GroupBox DockPanel.Dock="Bottom" x:Name="ExportAudioGroup" Header="Audio Export" Margin="0,6,0,0">
+                        <WrapPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,2,16,2">
+                                <TextBlock Text="Codec:" Style="{StaticResource FieldLabel}" />
+                                <ComboBox Margin="0" ItemsSource="{Binding AudioEncoders}" SelectedItem="{Binding AudioEncoder}" AutomationProperties.Name="Export Audio Codec"
+                                          ToolTip="The codec of every track that follows the default (a track given one of its own on the Audio tab keeps it). Also the codec of the mixed track when mixing." />
+                                <ComboBox Margin="8,0,0,0" MinWidth="90" ItemsSource="{Binding AudioBitrates}" SelectedItem="{Binding AudioBitrate}" IsEnabled="{Binding IsAudioReencoded}"
+                                          AutomationProperties.Name="Export Audio Bitrate" ToolTip="The bitrate of every re-encoded track that follows the default, and of the mix." />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,2,16,2">
+                                <TextBlock Text="Sample Rate:" Style="{StaticResource FieldLabel}" />
+                                <ComboBox Margin="0" MinWidth="120" ItemsSource="{Binding AudioSampleRates}" DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding AudioSampleRate}"
+                                          AutomationProperties.Name="Export Audio Sample Rate"
+                                          ToolTip="The sample rate every encoded track is written at (-ar). Auto keeps each track's own, and makes mixed sound and silence at 48 kHz. Copied tracks are left as they are. Saved with the project and in presets." />
+                                <TextBlock Text="Channels:" Style="{StaticResource FieldLabel}" Margin="8,0,8,0" />
+                                <ComboBox Margin="0" MinWidth="100" ItemsSource="{Binding AudioChannelChoices}" DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding AudioChannels}"
+                                          AutomationProperties.Name="Export Audio Channels"
+                                          ToolTip="The channels of every encoded track (-ac). Stereo folds anything wider down to two and leaves stereo and mono tracks as they are; Mono makes one channel; Match Source keeps the source's. Copied tracks are left as they are." />
+                            </StackPanel>
+                            <CheckBox Content="Mix Selected Tracks" IsChecked="{Binding MergeAudioTracks}" Margin="0,2,16,2" VerticalAlignment="Center" AutomationProperties.Name="Export Mix Selected Tracks"
+                                      ToolTip="Merges / mixes the selected tracks into a single track: every track that is not set to Ignore / Drop goes into one output track (amix). The mix is always encoded." />
+                            <CheckBox Content="Normalize audio" IsChecked="{Binding NormalizeAudio}" Margin="0,2,16,2" VerticalAlignment="Center" AutomationProperties.Name="Export Normalize Audio"
+                                      ToolTip="Evens out the loudness to the EBU R128 standard: loudnorm (I=-16, TP=-1.5, LRA=11), applied to re-encoded and mixed tracks. Copied tracks are left as they are." />
+                        </WrapPanel>
+                    </GroupBox>
                     <StackPanel DockPanel.Dock="Top" x:Name="ExportSections" Orientation="Horizontal" Margin="0,0,0,6" AutomationProperties.Name="Export Sections" />
                     <Border x:Name="ExportSectionHost">
                         <TextBlock x:Name="ExportNoSections" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="4,8"

@@ -416,6 +416,9 @@ public partial class SettingsWindow : Window
         DefaultRateControlBox.ItemsSource = With("Built-in default", viewModel.RateControls);
         DefaultFramerateBox.ItemsSource = With("Built-in default (same as source)", viewModel.Framerates);
         DefaultMergeBox.ItemsSource = new List<Choice> { new("", "As the mode starts"), new("on", "Mix into one track"), new("off", "Keep them apart") };
+        (DefaultSampleRateBox.ItemsSource, DefaultChannelsBox.ItemsSource) = (AudioChannelChoice.SampleRates, AudioChannelChoice.Choices);
+        _settings.DefaultAudioSampleRate = AudioChannelChoice.NormalizeRate(_settings.DefaultAudioSampleRate);
+        _settings.DefaultAudioChannels = AudioChannelChoice.Normalize(_settings.DefaultAudioChannels);
         (DefaultContainerBox.SelectedValue, DefaultRateControlBox.SelectedValue, DefaultFramerateBox.SelectedValue, DefaultMergeBox.SelectedValue) =
             (_settings.DefaultContainer, _settings.DefaultRateControl, _settings.DefaultFramerate, _settings.DefaultMergeAudio);
         DefaultQualityBox.Text = _settings.DefaultQuality?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
@@ -479,6 +482,7 @@ public partial class SettingsWindow : Window
         (_settings.DefaultOutputWidth, _settings.DefaultOutputHeight, _settings.DefaultVerticalVideo) = (current.OutputWidth, current.OutputHeight, current.UseVerticalResolution == true);
         (_settings.DefaultAudioEncoder, _settings.DefaultAudioBitrate, _settings.DefaultMergeAudio, _settings.DefaultNormalizeAudio) =
             (current.AudioEncoder == MainViewModel.CopyOption ? "" : current.AudioEncoder, current.AudioBitrate, current.MergeAudioTracks ? "on" : "off", current.NormalizeAudio);
+        (_settings.DefaultAudioSampleRate, _settings.DefaultAudioChannels) = (current.AudioSampleRate, AudioChannelChoice.Normalize(current.AudioChannels));
         RefreshEncodingDefaults();
     }
 
@@ -489,6 +493,7 @@ public partial class SettingsWindow : Window
         (_settings.DefaultHardwareDecoding, _settings.DefaultContainer, _settings.DefaultWebOptimized) = (true, "", true);
         (_settings.DefaultOutputWidth, _settings.DefaultOutputHeight, _settings.DefaultVerticalVideo) = ("", "", false);
         (_settings.DefaultAudioEncoder, _settings.DefaultAudioBitrate, _settings.DefaultMergeAudio, _settings.DefaultNormalizeAudio) = ("", "", "", false);
+        (_settings.DefaultAudioSampleRate, _settings.DefaultAudioChannels) = (0, AudioChannelChoice.Stereo);
         RefreshEncodingDefaults();
     }
 

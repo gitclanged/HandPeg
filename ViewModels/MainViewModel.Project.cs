@@ -54,6 +54,8 @@ public partial class MainViewModel
         TenBit = TenBit,
         AudioEncoder = AudioEncoder,
         AudioBitrate = AudioBitrate,
+        AudioSampleRate = AudioSampleRate,
+        AudioChannels = AudioChannels == AudioChannelChoice.Stereo ? null : AudioChannels,
         MergeAudioTracks = MergeAudioTracks,
         NormalizeAudio = NormalizeAudio,
         DuckAudio = DuckAudio,
@@ -345,6 +347,44 @@ public partial class MainViewModel
 
     /// <summary>The file the open project was last saved to or opened from; empty for work that has never been saved.</summary>
     public string CurrentProjectPath { get; private set; } = "";
+
+    /// <summary>Raised when the session has been emptied for a new project: the window lets the player's file go and shows the drop hint.</summary>
+    public event Action? SessionCleared;
+
+    /// <summary>
+    /// + New Project (the Project Manager, 4.1.1-B): the session emptied as HandPeg starts, with nothing open: no main
+    /// video, no clips, cuts, markers or subtitles, nothing to undo, and the encoding settings back to the defaults
+    /// (Settings, Export &amp; Hardware). The window asks about unsaved changes first. False while an operation runs.
+    /// </summary>
+    public bool NewProject()
+    {
+        if (IsBusy)
+        {
+            StatusText = "Wait for the running operation to finish, or cancel it, before starting a new project.";
+            return false;
+        }
+
+        using (DeferCommand())
+        {
+            ResetForNewSource();
+            SetLayers([]);
+            (SourcePath, LocalMediaPath, DestinationPath, CurrentProjectPath, EditingJob) = ("", "", "", "", null);
+            SetMediaInfo(null);
+            ApplySubtitles(null);
+            KeyLayer = null;
+            SelectedLaneKeys = [];
+            SelectedPreset = null;
+            IsCommandManuallyEdited = false;
+            ApplyEncodingDefaults();
+        }
+
+        _undo.Clear();
+        _redo.Clear();
+        MarkSaved();
+        SessionCleared?.Invoke();
+        Log("New project: nothing is open. Drop a video on the player, or use Add Media, to start.");
+        return true;
+    }
 
     /// <summary>
     /// Saves the project to a file of the user's choosing (Save As), which is from then on where Save puts it.

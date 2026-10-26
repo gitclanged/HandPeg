@@ -121,6 +121,7 @@ public partial class MainViewModel
                 ReferenceEquals(t, _silentBase), t.HasProcessing, t.BuildEditChain(), t.GetFilterChain())
             {
                 Offset = t.OffsetSeconds,
+                Channels = t.Stream.Channels > 0 ? t.Stream.Channels : 2,
                 MutedSpans = t.Pieces.Where(p => p.Muted).Select(p => (p.Start, p.End)).ToList(),
             })
             .ToList();
@@ -199,6 +200,8 @@ public partial class MainViewModel
             DuckAmountDb = DuckAmountDb,
             MixedAudioCodec = MixedAudioCodec,
             AudioBitrate = AudioBitrate,
+            AudioSampleRate = AudioSampleRate,
+            AudioChannels = AudioChannels,
             IncludeVoiceover = IncludeVoiceover,
             VoiceoverPath = VoiceoverPath,
             VoiceoverDuration = VoiceoverDuration,
