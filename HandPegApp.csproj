@@ -49,16 +49,15 @@
     <Using Remove="System.Drawing" />
   </ItemGroup>
 
-  <!-- Built as a Page instead of the application definition: that keeps InitializeComponent and drops the generated Main. -->
-  <ItemGroup>
-    <ApplicationDefinition Remove="App.xaml" />
-    <Page Include="App.xaml" />
-  </ItemGroup>
+  <!--
+      App.xaml is built as a Page instead of the application definition: that keeps InitializeComponent and drops the
+      generated Main. Living in src\, it is one by default (only a root App.xaml defaults to the application definition).
+  -->
 
   <!-- Mask pictures shipped for the built-in HUD presets (HudGame.BundledMask), read with GetManifestResourceStream. -->
   <ItemGroup>
-    <EmbeddedResource Include="Resources\overwatch_hud_mask.png" LogicalName="HandPegApp.Masks.overwatch_hud_mask.png" />
-    <EmbeddedResource Include="Resources\overwatch_vertical_style.json" LogicalName="HandPegApp.Styles.overwatch_vertical_style.json" />
+    <EmbeddedResource Include="src\Resources\overwatch_hud_mask.png" LogicalName="HandPegApp.Masks.overwatch_hud_mask.png" />
+    <EmbeddedResource Include="src\Resources\overwatch_vertical_style.json" LogicalName="HandPegApp.Styles.overwatch_vertical_style.json" />
   </ItemGroup>
 
   <!--

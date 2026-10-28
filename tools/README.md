@@ -30,7 +30,7 @@ one: `gblur` in a mask chain crashed it (fixed in 3.0); test new filters here be
 
 ## hud_mask_check.py
 
-`python tools/hud_mask_check.py Services/HudLibrary.cs <outdir>` draws each game's outlines from
+`python tools/hud_mask_check.py src/Services/HudLibrary.cs <outdir>` draws each game's outlines from
 `HudLibrary.cs` into a 1280 x 720 grey picture, to overlay on a screenshot with FFmpeg and check the tracing.
 
 ## GoldenTests.ps1 (golden-file tests of the graphs, the project format and the runner)

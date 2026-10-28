@@ -94,15 +94,18 @@ function Xaml([string]$path) {
 # The body: one block per file, in groups; the table of contents (each file's line in this index) is put above it.
 $body = [System.Collections.Generic.List[string]]::new()
 $toc = [System.Collections.Generic.List[object]]::new()
+$src = Join-Path $root 'src'
 $groups = [ordered]@{
-    'Root (windows, dialogs, controls)' = { param($f) $f.DirectoryName -eq $root }
-    'Docking' = { param($f) $f.DirectoryName -like '*\Docking' }
-    'Views' = { param($f) $f.DirectoryName -like '*\Views' }
-    'ViewModels' = { param($f) $f.DirectoryName -like '*\ViewModels' }
-    'Services' = { param($f) $f.DirectoryName -like '*\Services' }
-    'Models' = { param($f) $f.DirectoryName -like '*\Models' -or $f.DirectoryName -like '*\Models\*' }
+    'src/ (entry point, app, main window)' = { param($f) $f.DirectoryName -eq $src }
+    'src/Controls/' = { param($f) $f.DirectoryName -eq "$src\Controls" }
+    'src/Dialogs/' = { param($f) $f.DirectoryName -eq "$src\Dialogs" }
+    'src/Docking/' = { param($f) $f.DirectoryName -eq "$src\Docking" }
+    'src/Views/' = { param($f) $f.DirectoryName -eq "$src\Views" }
+    'src/ViewModels/' = { param($f) $f.DirectoryName -eq "$src\ViewModels" }
+    'src/Services/' = { param($f) $f.DirectoryName -eq "$src\Services" }
+    'src/Models/' = { param($f) $f.DirectoryName -eq "$src\Models" -or $f.DirectoryName -like "$src\Models\*" }
 }
-$files = Get-ChildItem $root -Recurse -Include *.cs, *.xaml | Where-Object { $_.FullName -notmatch '[\\/](obj|bin|tools)[\\/]' -and $_.Name -ne 'AssemblyInfo.cs' } | Sort-Object FullName
+$files = Get-ChildItem $src -Recurse -Include *.cs, *.xaml | Where-Object { $_.FullName -notmatch '[\\/](obj|bin)[\\/]' -and $_.Name -ne 'AssemblyInfo.cs' } | Sort-Object FullName
 foreach ($group in $groups.Keys) {
     $body.Add(''); $body.Add("### $group")
     foreach ($file in $files | Where-Object { & $groups[$group] $_ }) {

@@ -1,0 +1,203 @@
+<Window x:Class="HandPegApp.FirstRunWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:HandPegApp"
+        Title="Welcome to HandPeg" Width="820" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <!-- A choice as a card: outlined in the accent colour while it is the one chosen. -->
+        <Style x:Key="ChoiceCard" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Padding" Value="18,16" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="card" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}"
+                                BorderThickness="2" CornerRadius="{DynamicResource CardCornerRadius}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="card" Property="BorderBrush" Value="{DynamicResource AccentHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="card" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                <Setter TargetName="card" Property="Background" Value="{DynamicResource ControlHoverBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- The smaller cards of the workspace layouts: two to a row. -->
+        <Style x:Key="LayoutCard" TargetType="RadioButton" BasedOn="{StaticResource ChoiceCard}">
+            <Setter Property="Padding" Value="14,10" />
+            <Setter Property="Margin" Value="0,0,12,12" />
+            <Setter Property="GroupName" Value="Workspace" />
+        </Style>
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,22,0,2" />
+        </Style>
+        <Style x:Key="SectionText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
+        <Style x:Key="CardTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="17" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+        </Style>
+        <Style x:Key="LayoutTitle" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,3" />
+        </Style>
+        <Style x:Key="CardText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <Style x:Key="CardBadge" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+        </Style>
+    </Window.Resources>
+
+    <!-- Scrolls on a screen too short for all of it; the window is never taller than the work area. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+    <StackPanel Margin="24">
+        <TextBlock Text="Welcome to HandPeg" FontSize="22" FontWeight="SemiBold" />
+        <TextBlock Style="{StaticResource SectionText}" Margin="0,4,0,0"
+                   Text="A few choices before you start. Every one of them can be changed later, in Settings or from the Layout button." />
+
+        <!-- ===== Theme and the workspace the window starts with ===== -->
+        <TextBlock Text="Theme &amp; Starting Workspace" Style="{StaticResource SectionTitle}" />
+        <TextBlock Style="{StaticResource SectionText}"
+                   Text="The theme changes at once, so you can see it. The workspace is how the window's panes are arranged when HandPeg opens." />
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+            <TextBlock Text="Theme:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <ComboBox x:Name="ThemeBox" MinWidth="190" Margin="0" SelectionChanged="ThemeBox_SelectionChanged" AutomationProperties.Name="Theme"
+                      ToolTip="Windows System follows Windows' own light or dark mode and accent colour; the others always look the same. The window changes at once so you can see it." />
+        </StackPanel>
+        <UniformGrid Columns="2" Margin="0,0,-12,-12">
+            <RadioButton x:Name="StandardLayoutCard" Style="{StaticResource LayoutCard}" Tag="Standard Editing" IsChecked="True"
+                         AutomationProperties.Name="Standard Editing Workspace" Checked="Workspace_Checked">
+                <StackPanel>
+                    <TextBlock Text="Standard Editing" Style="{StaticResource LayoutTitle}" />
+                    <TextBlock Style="{StaticResource CardText}" Text="The player at the top left, the Canvas and effects beside it, media at the right, the timeline and tabs below." />
+                </StackPanel>
+            </RadioButton>
+            <RadioButton x:Name="ColorLayoutCard" Style="{StaticResource LayoutCard}" Tag="Color &amp; Effects"
+                         AutomationProperties.Name="Color and Effects Workspace" Checked="Workspace_Checked">
+                <StackPanel>
+                    <TextBlock Text="Color &amp; Effects" Style="{StaticResource LayoutTitle}" />
+                    <TextBlock Style="{StaticResource CardText}" Text="A large player with tall effect, keyframe and media columns beside it, and a short timeline." />
+                </StackPanel>
+            </RadioButton>
+            <RadioButton x:Name="AssemblyLayoutCard" Style="{StaticResource LayoutCard}" Tag="Assembly &amp; Media"
+                         AutomationProperties.Name="Assembly and Media Workspace" Checked="Workspace_Checked">
+                <StackPanel>
+                    <TextBlock Text="Assembly &amp; Media" Style="{StaticResource LayoutTitle}" />
+                    <TextBlock Style="{StaticResource CardText}" Text="A wide media column beside the player, for gathering clips; a full-width timeline over the Layers tab." />
+                </StackPanel>
+            </RadioButton>
+            <RadioButton x:Name="ShortsLayoutCard" Style="{StaticResource LayoutCard}" Tag="Vertical &amp; Shorts Studio"
+                         AutomationProperties.Name="Vertical and Shorts Studio Workspace" Checked="Workspace_Checked">
+                <StackPanel>
+                    <TextBlock Text="Vertical &amp; Shorts Studio" Style="{StaticResource LayoutTitle}" />
+                    <TextBlock Style="{StaticResource CardText}" Text="For 9:16 shorts: a tall player and Canvas side by side, and a full-width timeline." />
+                </StackPanel>
+            </RadioButton>
+        </UniformGrid>
+
+        <!-- ===== The components: nothing ships with HandPeg, so this is where they are fetched. Two packages of them. ===== -->
+        <TextBlock Text="Required Components" Style="{StaticResource SectionTitle}" />
+        <TextBlock Style="{StaticResource SectionText}"
+                   Text="HandPeg plays and exports video with free open-source engines, downloaded once and checked against their published checksums. Pick a package; anything left out can be added later in Settings." />
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <RadioButton x:Name="MinimalTier" GroupName="Tier" Style="{StaticResource ChoiceCard}" IsChecked="True"
+                         AutomationProperties.Name="Core Video and Playback Engine" Checked="Tier_Checked">
+                <StackPanel>
+                    <TextBlock Text="Core Video &amp; Playback Engine" Style="{StaticResource CardTitle}" />
+                    <TextBlock Text="Required" Style="{StaticResource CardBadge}" />
+                    <TextBlock Style="{StaticResource CardText}"
+                               Text="FFmpeg, the encoding and filter engine; libmpv, the live GPU preview player; and yt-dlp, for importing a video from a link. Everything editing and exporting needs." />
+                    <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0" Text="About 120 MB" />
+                </StackPanel>
+            </RadioButton>
+            <RadioButton Grid.Column="2" x:Name="EditorTier" GroupName="Tier" Style="{StaticResource ChoiceCard}"
+                         AutomationProperties.Name="Core Engine and Local AI Auto-Captions" Checked="Tier_Checked">
+                <StackPanel>
+                    <TextBlock Text="Core Engine + Local AI Auto-Captions" Style="{StaticResource CardTitle}" />
+                    <TextBlock Text="Recommended" Style="{StaticResource CardBadge}" />
+                    <TextBlock Style="{StaticResource CardText}"
+                               Text="The core engine, plus the whisper.cpp speech-to-text engine, silence detection and two speech models (Base and Medium) for automatic subtitles on the timeline. Runs on this PC; nothing is uploaded." />
+                    <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0" Text="About 1.6 GB" />
+                </StackPanel>
+            </RadioButton>
+        </Grid>
+
+        <local:DependencyPanel x:Name="Dependencies" Margin="0,10,0,0" OffersExistingFfmpeg="True" />
+
+        <!-- ===== The encoders: the hardware ones are always looked for before this window closes ===== -->
+        <TextBlock Text="Video Encoder" Style="{StaticResource SectionTitle}" />
+        <TextBlock Style="{StaticResource SectionText}"
+                   Text="The encoder exports start with. HandPeg looks for the graphics card's own encoders (NVENC, QuickSync, AMF) as soon as FFmpeg is here, lists the ones that work first, and chooses the best." />
+        <StackPanel Orientation="Horizontal">
+            <ComboBox x:Name="EncoderBox" MinWidth="300" Margin="0" SelectionChanged="EncoderBox_SelectionChanged" AutomationProperties.Name="Default Video Encoder"
+                      ToolTip="The video encoder selected when HandPeg starts. It can be changed for any export on the Export tab." />
+            <ProgressBar x:Name="ProbeBar" Width="70" Height="8" Margin="14,0,0,0" IsIndeterminate="True" VerticalAlignment="Center" Visibility="Collapsed"
+                         AutomationProperties.Name="Hardware Encoder Check Progress" />
+            <TextBlock x:Name="EncoderStatusText" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}"
+                       AutomationProperties.AutomationId="EncoderStatus" />
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+            <TextBlock Text="Audio Encoder:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <ComboBox x:Name="AudioEncoderBox" MinWidth="170" Margin="0" AutomationProperties.Name="Default Audio Encoder"
+                      ToolTip="The audio codec HandPeg starts with. Editing sound (moving it, silencing part of it, mixing in a layer or a voiceover) needs it encoded, so Copy is not offered here; it can still be chosen for any export." />
+            <ComboBox x:Name="AudioBitrateBox" MinWidth="90" Margin="8,0,0,0" AutomationProperties.Name="Default Audio Bitrate" ToolTip="The bitrate that goes with it." />
+        </StackPanel>
+        <TextBlock x:Name="CopyWarningText" Visibility="Collapsed" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0"
+                   Text="Warning: The Frame and Layer Engine features will be unavailable during 'Copy' exports unless the encoder is changed in the project settings." />
+
+        <!-- ===== Behaviour ===== -->
+        <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+            <CheckBox x:Name="PromptBox" Content="Prompt to save before closing"
+                      ToolTip="Asks whether to save the project when HandPeg is closed with changes that were not saved." />
+            <CheckBox x:Name="FallbackBox" Content="Allow software encoding fallback" Margin="32,0,0,0"
+                      ToolTip="If an encode fails on a hardware encoder (NVENC, QuickSync, AMF), try once more with the matching software encoder." />
+        </StackPanel>
+
+        <!-- Crash reports (written here, kept on this PC), what they cost and what is in them, beside the button that starts HandPeg -->
+        <DockPanel Margin="0,22,0,0">
+            <StackPanel DockPanel.Dock="Right" VerticalAlignment="Center">
+                <Button x:Name="StartButton" Content="Start HandPeg" MinWidth="140" Padding="18,8" IsDefault="True" Click="Start_Click" HorizontalAlignment="Right" />
+                <TextBlock x:Name="StartStatusText" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Right"
+                           Visibility="Collapsed" AutomationProperties.AutomationId="StartStatus" />
+            </StackPanel>
+            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                <StackPanel Orientation="Horizontal">
+                    <CheckBox x:Name="CrashReportsBox" Content="Save anonymous crash reports" VerticalAlignment="Center"
+                              AutomationProperties.Name="Send Crash Reports"
+                              ToolTip="When HandPeg falls over, a crash report is written to the crash reports folder: the error, the parts of HandPeg that were running, its last few steps, the kind of media open (container, codecs, resolution) and the computer (processor, memory, graphics cards, display, engine versions), with no file names, paths, names, serial numbers or words from your media. Reports stay on this PC; HandPeg never sends them. Can be changed later in Settings, General tab, or in the Privacy Policy." />
+                    <TextBlock VerticalAlignment="Center" Margin="12,0,0,0">
+                        <Hyperlink Click="PrivacyPolicy_Click" Foreground="{DynamicResource AccentBrush}" AutomationProperties.Name="Privacy Policy">Privacy Policy</Hyperlink>
+                    </TextBlock>
+                </StackPanel>
+                <TextBlock Foreground="{DynamicResource MutedTextBrush}" FontSize="12" Margin="22,3,0,0" TextWrapping="Wrap"
+                           Text="Uses 0% CPU during normal editing, 20 KB of shared memory, and a ~6.8 MB idle background sentinel process." />
+            </StackPanel>
+        </DockPanel>
+    </StackPanel>
+    </ScrollViewer>
+</Window>

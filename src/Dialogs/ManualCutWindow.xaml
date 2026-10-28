@@ -1,0 +1,70 @@
+<Window x:Class="HandPegApp.ManualCutWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Split / Trim by Exact Timecode" Width="470" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Resources>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="0,0,12,0" />
+        </Style>
+        <!-- An I-frame suggestion: reads as a link, fills the time box when clicked. -->
+        <Style x:Key="Suggestion" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource AccentHoverBrush}" />
+            <Setter Property="FontFamily" Value="Consolas" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Margin" Value="10,0,0,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <TextBlock x:Name="text" Text="{TemplateBinding Content}" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="text" Property="TextDecorations" Value="Underline" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <StackPanel Margin="16">
+        <TextBlock x:Name="ClipText" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,4" />
+        <TextBlock x:Name="FormatText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12" />
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Text="At:" Style="{StaticResource FieldLabel}" />
+            <TextBox Grid.Column="1" x:Name="TimeBox" Width="150" HorizontalAlignment="Left" FontFamily="Consolas" FontSize="14"
+                     TextChanged="TimeBox_TextChanged" AutomationProperties.Name="Timecode" />
+            <StackPanel Grid.Row="1" Grid.Column="1" x:Name="Suggestions" Orientation="Horizontal" Margin="0,4,0,12">
+                <TextBlock Text="I-frames:" Foreground="{DynamicResource MutedTextBrush}" />
+                <Button x:Name="FloorLink" Style="{StaticResource Suggestion}" Click="Suggestion_Click" ToolTip="The I-frame at or before this time" />
+                <Button x:Name="CeilingLink" Style="{StaticResource Suggestion}" Click="Suggestion_Click" ToolTip="The I-frame after this time" />
+            </StackPanel>
+        </Grid>
+
+        <StackPanel Margin="0,0,0,6">
+            <RadioButton x:Name="SplitChoice" Content="Split the clip in two here" IsChecked="True" Margin="0,2" />
+            <RadioButton x:Name="TrimStartChoice" Content="Trim the clip's start to here (what comes before goes)" Margin="0,2" />
+            <RadioButton x:Name="TrimEndChoice" Content="Trim the clip's end to here (what comes after goes)" Margin="0,2" />
+        </StackPanel>
+
+        <TextBlock x:Name="ErrorText" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,6,0,0" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Apply" MinWidth="88" IsDefault="True" Click="Apply_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>
