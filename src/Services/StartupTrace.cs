@@ -46,9 +46,11 @@ public static class StartupTrace
         lock (Gate)
         {
             var at = Now;
-            // The heap: what is in use; committed: what the collector holds from the system (in use, or kept for later).
+            // The heap: what is in use; committed: what the collector holds from the system (in use, or kept for later). Then
+            // the collections so far (generations 0/1/2), the time they paused the process, and how often a thread waited
+            // for a lock: a moment that took long with none of them moving was spent elsewhere (a native call, the disk).
             var line = string.Create(CultureInfo.InvariantCulture,
-                $"{at,8:0.0} ms  {Environment.WorkingSet / 1048576.0,6:0.0} MB ws  {GC.GetTotalMemory(false) / 1048576.0,6:0.0} MB heap  {GC.GetGCMemoryInfo().TotalCommittedBytes / 1048576.0,6:0.0} MB committed  {moment}");
+                $"{at,8:0.0} ms  {Environment.WorkingSet / 1048576.0,6:0.0} MB ws  {GC.GetTotalMemory(false) / 1048576.0,6:0.0} MB heap  {GC.GetGCMemoryInfo().TotalCommittedBytes / 1048576.0,6:0.0} MB committed  gc {GC.CollectionCount(0)}/{GC.CollectionCount(1)}/{GC.CollectionCount(2)} {GC.GetTotalPauseDuration().TotalMilliseconds,5:0.0} ms  locks {Monitor.LockContentionCount,3}  {moment}");
             if (_flushed)
                 AppLog.Write("Startup trace: " + line);
             else

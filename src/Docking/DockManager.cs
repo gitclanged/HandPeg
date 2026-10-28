@@ -811,8 +811,23 @@ public sealed class DockManager
         var (above, under) = (parts.Take(k).LastOrDefault(p => !p.Fits).Element, parts.Skip(k).FirstOrDefault(p => !p.Fits).Element);
         if ((before.Fits || after.Fits) && split.Vertical && above is not null && under is not null)
         {
-            var thumb = new Thumb { Height = 10, Cursor = Cursors.SizeNS, Template = SplitterLook(), ToolTip = "Drag to share the room between the parts above and below" };
-            thumb.DragDelta += (_, e) => ShareRows(grid, parts, above, under, e.VerticalChange);
+            // Ctrl held (4.2B-2): the pane beside it that fits its content is made taller or shorter instead (the master
+            // timeline, through its height setting), dragged away from it or towards it.
+            var (fitting, below) = before.Fits ? (split.Children[before.Index], false) : (split.Children[after.Index], true);
+            var resize = fitting.AllPanes().Select(p => _panes[p].ResizeBy).FirstOrDefault(r => r is not null);
+            var thumb = new Thumb
+            {
+                Height = 10, Cursor = Cursors.SizeNS, Template = SplitterLook(),
+                ToolTip = resize is null ? "Drag to share the room between the parts above and below"
+                    : "Drag to share the room between the parts above and below; Ctrl+drag to make the timeline taller or shorter",
+            };
+            thumb.DragDelta += (_, e) =>
+            {
+                if (resize is not null && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+                    resize(below ? -e.VerticalChange : e.VerticalChange);
+                else
+                    ShareRows(grid, parts, above, under, e.VerticalChange);
+            };
             thumb.DragCompleted += (_, _) => TakeSizes(grid, split, parts);
             border = thumb;
         }
@@ -1246,12 +1261,12 @@ public sealed class DockManager
             Add($"Close {info.Title}", close);
         menu.Items.Add(new Separator());
         Add("Reset Panes Layout", Reset);
-        ExtendTabMenu?.Invoke(menu);
+        ExtendTabMenu?.Invoke(menu, pane);
         menu.IsOpen = true;
     }
 
-    /// <summary>Adds the window's own items to a tab's right-click menu (the main window's Tabs and Panes list).</summary>
-    public Action<ContextMenu>? ExtendTabMenu { get; set; }
+    /// <summary>Adds the window's own items to a tab's right-click menu (the pane's own settings, 4.2B-2, and the main window's Tabs and Panes list).</summary>
+    public Action<ContextMenu, string>? ExtendTabMenu { get; set; }
 
     // ----- Dragging a pane -----
 

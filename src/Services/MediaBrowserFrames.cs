@@ -90,6 +90,51 @@ public static class MediaBrowserFrames
         return made;
     }
 
+    /// <summary>The least height of a poster made on its own (4.2D): taller tiles get a taller one, in steps of this.</summary>
+    public const int PosterOnlyHeight = 144;
+
+    /// <summary>
+    /// A video's poster on its own, before its strip (4.2D, the first of two passes): one frame at 30 % of its length (1 s
+    /// when the length is not known), at least <see cref="PosterOnlyHeight"/> pixels tall, kept in the browser's cache as
+    /// <c>posterh144.jpg</c> (or taller), or made now. The path of the JPEG; null when it could not be made.
+    /// </summary>
+    public static async Task<string?> PosterOnlyAsync(string path, double seconds, int height, CancellationToken token, WorkLane lane)
+    {
+        height = PosterHeightFor(height);
+        var kind = string.Create(CultureInfo.InvariantCulture, $"posterh{height}");
+        if (FindKept(path, kind, ".jpg") is { } kept)
+            return kept;
+
+        var made = Path.Combine(SessionFolder, $"{Guid.NewGuid():N}.jpg");
+        if (!await FfmpegRunner.GeneratePosterFrameAsync(path, made, seconds > 0 ? seconds * 0.3 : 1.0, height, token, lane))
+            return null;
+
+        if (PreviewCache.Browser.IsEnabled)
+            return PreviewCache.Browser.Keep(path, kind, ".jpg", made);
+
+        SessionFiles[Key(path, kind)] = made;
+        return made;
+    }
+
+    /// <summary>
+    /// A video's tile from a kept description and a kept poster made on its own (4.2D), when its strip is not kept yet: the
+    /// poster at once, the strip after (the second pass). Null when either is not kept. Off the interface.
+    /// </summary>
+    public static (double Seconds, int Width, int Height, BitmapSource? Poster)? KeptPosterOnly(string path, int height)
+    {
+        if (ReadKept(path, "probe", ".txt") is not { } text || ParseProbe(text) is not { Width: > 0, Height: > 0 } video)
+            return null;
+
+        if (FindKept(path, string.Create(CultureInfo.InvariantCulture, $"posterh{PosterHeightFor(height)}"), ".jpg") is not { } poster)
+            return null;
+
+        return (video.Seconds, video.Width, video.Height, DecodeAt(poster, height));
+    }
+
+    // The height a poster is made at for a tile so many pixels tall: whole steps of PosterOnlyHeight, so a few sizes serve all.
+    private static int PosterHeightFor(int height) =>
+        Math.Max(PosterOnlyHeight, (height + PosterOnlyHeight - 1) / PosterOnlyHeight * PosterOnlyHeight);
+
     /// <summary>
     /// The frames of a strip, each a picture of its own at the given height. The strip's frames are told apart by the
     /// video's shape. Decoded small (JPEG can be decoded at a fraction of its size): it is for a tile. Frozen.

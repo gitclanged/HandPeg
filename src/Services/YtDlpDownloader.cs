@@ -29,10 +29,10 @@ public static partial class YtDlpDownloader
     /// remembers the request, so loading the same URL again finds the file wherever it was saved.
     /// </param>
     public static Task<string> DownloadAsync(
-        string url, string resolution, bool downloadSubtitles, string sponsorBlockCategories, string saveFolder,
+        string url, string resolution, bool downloadSubtitles, string sponsorBlockCategories, bool markSponsorBlock, string saveFolder,
         IProgress<string> progress, CancellationToken cancellationToken) =>
         WorkScheduler.Run(new WorkSpec($"Downloading {url}", WorkLane.Interactive), work =>
-            DownloadNowAsync(url, resolution, downloadSubtitles, sponsorBlockCategories, saveFolder, new Progress<string>(line =>
+            DownloadNowAsync(url, resolution, downloadSubtitles, sponsorBlockCategories, markSponsorBlock, saveFolder, new Progress<string>(line =>
             {
                 progress.Report(line);
                 work.Report(line);
@@ -48,11 +48,11 @@ public static partial class YtDlpDownloader
     private static partial System.Text.RegularExpressions.Regex DownloadPercent();
 
     private static async Task<string> DownloadNowAsync(
-        string url, string resolution, bool downloadSubtitles, string sponsorBlockCategories, string saveFolder,
+        string url, string resolution, bool downloadSubtitles, string sponsorBlockCategories, bool markSponsorBlock, string saveFolder,
         IProgress<string> progress, CancellationToken cancellationToken)
     {
         // Everything that changes what yt-dlp would produce.
-        var request = $"{url}\n{resolution}\n{downloadSubtitles}\n{sponsorBlockCategories}";
+        var request = $"{url}\n{resolution}\n{downloadSubtitles}\n{sponsorBlockCategories}{(markSponsorBlock ? "\nmark" : "")}";
         if (FindCached(request) is { } cached)
         {
             progress.Report("Using the copy downloaded earlier.");
@@ -77,8 +77,11 @@ public static partial class YtDlpDownloader
         // Embedded rather than left as loose files, so the subtitles show up as tracks of the download.
         string[] subtitleArguments = downloadSubtitles ? ["--write-subs", "--write-auto-subs", "--embed-subs"] : [];
 
-        // yt-dlp cuts the chosen SponsorBlock segments out of the file after downloading it.
-        string[] sponsorBlockArguments = sponsorBlockCategories.Length > 0 ? ["--sponsorblock-remove", sponsorBlockCategories] : [];
+        // yt-dlp cuts the chosen SponsorBlock segments out of the file after downloading it, or (4.2B-2) marks them as
+        // named chapters of the file, which Copy YouTube Timestamps then lists.
+        string[] sponsorBlockArguments = sponsorBlockCategories.Length == 0 ? []
+            : markSponsorBlock ? ["--sponsorblock-mark", sponsorBlockCategories, "--embed-chapters"]
+            : ["--sponsorblock-remove", sponsorBlockCategories];
 
         // One run of yt-dlp, with cookies or without; what it last said and whether it was a sign-in wall are kept.
         string? lastError = null;

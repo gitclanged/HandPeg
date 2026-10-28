@@ -58,7 +58,6 @@ public sealed class PlaybackControlSet : ObservableObject
             new("Mute", "Mute", "Sound", "Silences the player (not the export)."),
             new("Volume", "Volume", "Sound", "The player's volume."),
             new("Speed", "Playback Speed", "Sound", "How fast the player plays (0.25x to 2x)."),
-            new("TimelineHeight", "Timeline Height", "Sound", "How tall the master timeline is."),
         ];
         _byId = Options.ToDictionary(o => o.Id);
         foreach (var option in Options)
@@ -81,7 +80,7 @@ public sealed class PlaybackControlSet : ObservableObject
 
     // What the bar starts with.
     private static readonly string[] Defaults =
-        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "LivePreview", "RenderPreview", "Reload", "Volume", "Speed", "TimelineHeight", "MarkIn", "MarkOut", "AddMarker", "EditOnVideo"];
+        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "LivePreview", "RenderPreview", "Reload", "Volume", "Speed", "MarkIn", "MarkOut", "AddMarker", "EditOnVideo"];
 
     /// <summary>Shows the controls named in a saved list; null for the defaults.</summary>
     public void Load(string? saved)

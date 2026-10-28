@@ -477,6 +477,10 @@ public partial class MainWindow : Window
         // A dark or a light title bar, to match the theme.
         ThemeManager.ApplyTitleBar(this);
 
+        // The working area of the monitor the window is really on (SystemParameters.WorkArea is the main one's, at
+        // the system's DPI): the window is kept inside it before it is first shown.
+        KeepInside(WorkAreaOf(new WindowInteropHelper(this).Handle));
+
         // Before the first layout: the encoders an earlier launch found, so the tabs are drawn with the one they keep.
         _viewModel.TakeEarlyHardwareEncoders();
         StartupTrace.Mark("hardware encoders as found before: " + (_viewModel.VideoEncoder.Name));
@@ -845,7 +849,10 @@ public partial class MainWindow : Window
         }
 
         iFrames.Sort();
-        var dialog = new ManualCutWindow(clip.Name, start, end, _viewModel.SourceFrameRate, iFrames, _viewModel.PositionMs / 1000) { Owner = this };
+
+        // The box starts at the playhead when it is on the clip, else at the clip's nearer end (Pass 4.2C).
+        var at = Math.Clamp(_viewModel.PositionMs / 1000, start, Math.Max(start, end));
+        var dialog = new ManualCutWindow(clip.Name, start, end, _viewModel.SourceFrameRate, iFrames, at) { Owner = this };
         if (dialog.ShowDialog() != true)
             return;
 
@@ -953,23 +960,50 @@ public partial class MainWindow : Window
 
     // ----- The window's size at startup -----
 
+    /// <summary>
+    /// The size and place the window opens at (Pass 4.2B-2): never larger than the working area beside the taskbar,
+    /// centred on it and never above its top, so the title bar (the only way to move the window) is always on screen.
+    /// A 16" 1920 x 1200 laptop at 150 % has 1280 x 752 of it, less than the window's least size in the XAML: the
+    /// least size gives way. A size that fills nearly all of it (95 %) opens maximized, which is what it was for.
+    /// </summary>
     private void ApplyStartupWindowSize()
     {
         var settings = AppSettings.Current;
+        var work = SystemParameters.WorkArea;
+        (MinWidth, MinHeight) = (Math.Min(MinWidth, work.Width), Math.Min(MinHeight, work.Height));
+        var maximized = false;
         switch (settings.StartupWindowSize)
         {
             case AppSettings.MaximizedWindow:
-                WindowState = WindowState.Maximized;
+                maximized = true;
                 break;
             case AppSettings.RememberWindowSize when settings.LastWindowWidth >= MinWidth && settings.LastWindowHeight >= MinHeight:
-                // No larger than the screen it opens on, should that be a smaller one than it was left on.
-                Width = Math.Min(settings.LastWindowWidth, SystemParameters.VirtualScreenWidth);
-                Height = Math.Min(settings.LastWindowHeight, SystemParameters.VirtualScreenHeight);
-                WindowStartupLocation = WindowStartupLocation.CenterScreen;
-                if (settings.LastWindowMaximized)
-                    WindowState = WindowState.Maximized;
+                (Width, Height, maximized) = (settings.LastWindowWidth, settings.LastWindowHeight, settings.LastWindowMaximized);
                 break;
         }
+
+        if (Width >= work.Width * NearlyFullScreen || Height >= work.Height * NearlyFullScreen)
+            maximized = true;
+        (Width, Height) = (Math.Min(Width, work.Width), Math.Min(Height, work.Height));
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        (Left, Top) = (work.Left + (work.Width - Width) / 2, work.Top + (work.Height - Height) / 2);
+        KeepInside(work);
+        if (maximized)
+            WindowState = WindowState.Maximized;
+    }
+
+    private const double NearlyFullScreen = 0.95;
+
+    /// <summary>Not maximized, the window wholly inside a working area (in this window's DIPs): its top never above the area's.</summary>
+    private void KeepInside(Rect work)
+    {
+        if (WindowState != WindowState.Normal || work.IsEmpty)
+            return;
+
+        (MinWidth, MinHeight) = (Math.Min(MinWidth, work.Width), Math.Min(MinHeight, work.Height));
+        (Width, Height) = (Math.Min(Width, work.Width), Math.Min(Height, work.Height));
+        Left = Math.Clamp(Left, work.Left, Math.Max(work.Left, work.Right - Width));
+        Top = Math.Clamp(Top, work.Top, Math.Max(work.Top, work.Bottom - Height));
     }
 
     /// <summary>
@@ -1653,15 +1687,23 @@ public partial class MainWindow : Window
         _queueWindow.Activate();
     }
 
-    private void OpenSettings_Click(object sender, RoutedEventArgs e)
+    private void OpenSettings_Click(object sender, RoutedEventArgs e) => OpenSettings();
+
+    /// <summary>The Settings window, at one of its tabs when named (a pane's "More ... Settings...", 4.2B-2).</summary>
+    private void OpenSettings(string? tab = null)
     {
         CrashReporter.Note("settings", "opened");
-        var saved = new SettingsWindow(_viewModel) { Owner = this }.ShowDialog() == true;
+        var window = new SettingsWindow(_viewModel) { Owner = this };
+        if (tab is not null)
+            window.ShowTab(tab);
+        var saved = window.ShowDialog() == true;
         CrashReporter.Note("settings", saved ? "saved" : "closed");
         if (saved)
         {
             _viewModel.OnSettingsSaved();
             _mpv?.SetHardwareAcceleration(AppSettings.Current.PlayerHardwareAcceleration);
+            if (_dock.IsRealized(ExportId))
+                FillExportSection();
         }
 
         // Crash reports switched on or off there (or in the first-run window it can open): the sentinel follows.
@@ -1740,6 +1782,9 @@ public partial class MainWindow : Window
 
     private bool PlayerIsPlaying => _mpv is { IsPlaying: true };
 
+    // Whether the paused player was last sent to an exact moment by the user, which the playhead then keeps.
+    private bool _pausedOnUsersMoment;
+
     private void PlayerSetPause(bool paused) => _mpv?.SetPause(paused);
 
     /// <summary>
@@ -1753,8 +1798,9 @@ public partial class MainWindow : Window
             return;
 
         // A jump while paused is answered by the quick graph without sound; the one ready to play follows when it settles.
+        // The moment it was sent to is the user's from then on (see OnPlayerTimeChanged).
         if (!PlayerIsPlaying)
-            _soundSettled = false;
+            (_soundSettled, _pausedOnUsersMoment) = (false, exact);
 
         // The layers' sound is laid out in the graph from one moment on: after a jump it is laid out again, from
         // where the jump lands.
@@ -2557,6 +2603,15 @@ public partial class MainWindow : Window
         if (_isScrubbing || _shuttle < 0)
             return;
 
+        // Paused on a moment the user sent it to (a seek, a frame or key step, a click on the timeline), the playhead
+        // stays exactly there: the frame mpv shows for it is stamped a few milliseconds off (58.434 for 58.420), and a
+        // graph swapped in while paused restarts the player, so its reports would move the playhead off a keyframe it
+        // was put on (4.2D). Paused by Pause, the position it stopped at is still taken.
+        if (PlayerIsPlaying)
+            _pausedOnUsersMoment = false;
+        else if (_pausedOnUsersMoment)
+            return;
+
         _updatingFromPlayer = true;
         _viewModel.PositionMs = timeMs;
         _updatingFromPlayer = false;
@@ -3272,7 +3327,7 @@ public partial class MainWindow : Window
     private System.Windows.Controls.Primitives.ToggleButton KeyBarButton = null!;
     private Grid AddLayerHost = null!;
     private System.Windows.Controls.Primitives.Popup AddLayerPopup = null!;
-    private Border AddLayerFlyoutPanel = null!;
+    private ButtonChrome AddLayerFlyoutPanel = null!;
 
     private void AudioOptionsHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -4292,8 +4347,10 @@ public partial class MainWindow : Window
             foreach (var each in TransitionStyles.All)
             {
                 var chosen = each;
-                items.Add(Item(TransitionStyles.Label(chosen), () => setStyle(chosen), ticked: seconds > 0.005 && chosen == style,
-                    tip: seconds > 0.005 ? null : $"Adds a fade {name.ToLowerInvariant()} of the default transition length (Settings > Timeline & Player), in this style."));
+                var styleItem = Item(TransitionStyles.Label(chosen), () => setStyle(chosen), ticked: seconds > 0.005 && chosen == style,
+                    tip: seconds > 0.005 ? null : $"Adds a fade {name.ToLowerInvariant()} of the default transition length (Settings > Timeline & Player), in this style.");
+                styleItem.Icon = TransitionIcon(chosen, styleItem);
+                items.Add(styleItem);
             }
 
             items.Add(new Separator());
@@ -4313,6 +4370,28 @@ public partial class MainWindow : Window
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// A transition style's drawn picture for its menu item (4.2B-3, <see cref="TransitionStyles.IconGeometry"/>), stroked
+    /// and filled in the item's own text colour, so it turns with the words when the item is highlighted. The colour is bound to
+    /// the item itself: a FindAncestor binding is tried while the icon is not yet in the item's tree, fails, and is never tried again.
+    /// </summary>
+    private static System.Windows.Shapes.Path TransitionIcon(TransitionStyle style, MenuItem item)
+    {
+        var icon = new System.Windows.Shapes.Path
+        {
+            Data = TransitionStyles.IconGeometry(style),
+            Width = EasingCurves.IconWidth,
+            Height = EasingCurves.IconHeight,
+            StrokeThickness = 1.1,
+            StrokeLineJoin = PenLineJoin.Round,
+            SnapsToDevicePixels = true,
+        };
+        var colour = new System.Windows.Data.Binding(nameof(Foreground)) { Source = item };
+        icon.SetBinding(System.Windows.Shapes.Shape.StrokeProperty, colour);
+        icon.SetBinding(System.Windows.Shapes.Shape.FillProperty, colour);
+        return icon;
     }
 
     /// <summary>

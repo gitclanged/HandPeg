@@ -106,6 +106,30 @@ public sealed class ButtonChrome : Decorator
         set => SetValue(OutlineTakesRoomProperty, value);
     }
 
+    public static readonly DependencyProperty DottedOutlineBrushProperty = DependencyProperty.Register(
+        nameof(DottedOutlineBrush), typeof(Brush), typeof(ButtonChrome), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    /// <summary>
+    /// The classic 1 px dotted rectangle inside the face (4.2B-3), one pixel on and one off, square-cornered, drawn over the
+    /// content: the theme's DottedFocusBrush, set by triggers on what is focused, checked or chosen (Reno, Reno Dark;
+    /// transparent, so not drawn, in the flat themes). Drawn whether or not there is an outline.
+    /// </summary>
+    public Brush? DottedOutlineBrush
+    {
+        get => (Brush?)GetValue(DottedOutlineBrushProperty);
+        set => SetValue(DottedOutlineBrushProperty, value);
+    }
+
+    public static readonly DependencyProperty DottedInsetProperty = DependencyProperty.Register(
+        nameof(DottedInset), typeof(double), typeof(ButtonChrome), new FrameworkPropertyMetadata(3.0, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    /// <summary>How far inside the edge the dotted rectangle runs, in device pixels (3: just inside a button's outline).</summary>
+    public double DottedInset
+    {
+        get => (double)GetValue(DottedInsetProperty);
+        set => SetValue(DottedInsetProperty, value);
+    }
+
     private bool HasOutline => BorderThickness is { Left: > 0 } or { Top: > 0 } or { Right: > 0 } or { Bottom: > 0 };
 
     // The room around the content: the padding, and the outline's pixel when it takes room.
@@ -135,7 +159,7 @@ public sealed class ButtonChrome : Decorator
     }
 
     // Pens kept while their brush stays the same (the theme's brushes are frozen, so the same brush is the same colour).
-    private Pen? _outlinePen, _bevelPen, _lowerPen;
+    private Pen? _outlinePen, _bevelPen, _lowerPen, _dottedPen;
 
     // The outline's pens end square (half a pixel past their ends), so each half of a lit outline covers its corner
     // pixels whole; a closed outline has no ends, so it is unchanged by that.
@@ -162,7 +186,8 @@ public sealed class ButtonChrome : Decorator
         if (Background is { } fill)
             drawing.DrawRoundedRectangle(fill, null, new Rect(0, 0, width, height), radius, radius);
 
-        if (!HasOutline || width < 2 || height < 2)
+        var dotted = DottedOutlineBrush is SolidColorBrush { Color.A: > 0 } dots ? dots : null;
+        if ((!HasOutline && dotted is null) || width < 2 || height < 2)
             return;
 
         // Lines on the middle of whole device pixels: a 1 px line at x.5 covers exactly one pixel column.
@@ -172,6 +197,32 @@ public sealed class ButtonChrome : Decorator
         guidelines.Freeze();
         drawing.PushGuidelineSet(guidelines);
 
+        if (HasOutline)
+            DrawOutline(drawing, width, height, radius, scale, half);
+
+        if (dotted is not null)
+        {
+            // Square-cornered and on whole pixels: a zero-length dash with square caps is one pixel, its gap another.
+            var inset = DottedInset / scale.DpiScaleX + half;
+            var box = new Rect(inset, inset, width - 2 * inset, height - 2 * inset);
+            if (box.Width >= 4 / scale.DpiScaleX && box.Height >= 4 / scale.DpiScaleX)
+            {
+                if (_dottedPen is null || !ReferenceEquals(_dottedPen.Brush, dotted) || _dottedPen.Thickness != 1 / scale.DpiScaleX)
+                {
+                    _dottedPen = new Pen(dotted, 1 / scale.DpiScaleX) { DashStyle = DashStyles.Dot, DashCap = PenLineCap.Square };
+                    _dottedPen.Freeze();
+                }
+
+                drawing.DrawRectangle(null, _dottedPen, box);
+            }
+        }
+
+        drawing.Pop();
+    }
+
+    // The bevel just inside the outline, then the outline itself (lit from the top left when the lower brush differs).
+    private void DrawOutline(DrawingContext drawing, double width, double height, double radius, DpiScale scale, double half)
+    {
         if (BevelBrush is SolidColorBrush { Color.A: > 0 } bevel)
         {
             // The top and left edges just inside the outline, turning round the top-left corner as the outline does.
@@ -198,8 +249,6 @@ public sealed class ButtonChrome : Decorator
             else
                 drawing.DrawRoundedRectangle(null, PenFor(ref _outlinePen, outline, true), line, r, r);
         }
-
-        drawing.Pop();
     }
 
     private static bool SameColour(Brush a, Brush b) =>

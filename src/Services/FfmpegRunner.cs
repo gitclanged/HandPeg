@@ -437,6 +437,29 @@ public static partial class FfmpegRunner
         }, cancellationToken);
 
     /// <summary>
+    /// One frame of a video as a JPEG <paramref name="height"/> pixels tall: a media browser tile's poster, before its strip
+    /// is made (4.2D). A seek on the input (to the I-frame before <paramref name="atSeconds"/>, then decoded up to it) and
+    /// one frame decoded by the processor: far quicker than a strip, and than opening a decoder on the card for one frame.
+    /// </summary>
+    public static Task<bool> GeneratePosterFrameAsync(string videoPath, string imagePath, double atSeconds, int height, CancellationToken cancellationToken,
+        WorkLane lane = WorkLane.Interactive) =>
+        WorkScheduler.Run(new WorkSpec($"Poster of {Path.GetFileName(videoPath)}", lane) { Key = $"poster|{videoPath}|{height}|{imagePath}" }, async work =>
+        {
+            if (!File.Exists(DependencyUpdater.FfmpegPath))
+                return false;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
+            var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
+                .WithArguments(["-hide_banner", "-loglevel", "error", "-y", .. GpuAdapters.BackgroundThreadArguments,
+                    "-ss", Math.Max(atSeconds, 0).ToString("0.###", CultureInfo.InvariantCulture), "-i", videoPath,
+                    "-an", "-sn", "-frames:v", "1", "-vf", string.Create(CultureInfo.InvariantCulture, $"scale=-2:{height}"), "-q:v", "4", imagePath])
+                .WithValidation(CommandResultValidation.None),
+                work.Token);
+
+            return result.ExitCode == 0 && File.Exists(imagePath) && new FileInfo(imagePath).Length > 0;
+        }, cancellationToken);
+
+    /// <summary>
     /// A strip of frames from a video, evenly spread over its length and set side by side in one picture:
     /// what a video's block on the timeline is drawn with. The background graphics card decodes where it can;
     /// when that does not work out (a format the card does not take, a driver that will not open eight decoders

@@ -18,6 +18,11 @@ public sealed partial class ProjectRow(ProjectEntry entry) : ObservableObject
 {
     public ProjectEntry Entry { get; } = entry;
 
+    /// <summary>The project's name: what the row is called to screen readers and UI Automation (4.2B-3), not the type's name.</summary>
+    public string Name => Entry.Name;
+
+    public override string ToString() => Name;
+
     /// <summary>What the picture shows: the poster, or while the pointer is across it, the frame there.</summary>
     [ObservableProperty] private ImageSource? _picture;
 
@@ -53,6 +58,7 @@ public partial class ProjectManagerWindow : Window
     {
         InitializeComponent();
         _viewModel = viewModel;
+        SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
 
         if (viewModel.HasSource)
             NameBox.Text = Path.GetFileNameWithoutExtension(viewModel.LocalMediaPath);
@@ -77,7 +83,10 @@ public partial class ProjectManagerWindow : Window
 
     private void RefreshList()
     {
-        var rows = ProjectStore.ListRecent().Select(e => new ProjectRow(e)).ToList();
+        // With previews on, every row has its picture's place from the start (dark until its picture comes, and dark for a
+        // source that has none, such as a link): the rows are one height and do not grow as their pictures arrive.
+        var previews = AppSettings.Current.ShowProjectPreviews ? Visibility.Visible : Visibility.Collapsed;
+        var rows = ProjectStore.ListRecent().Select(e => new ProjectRow(e) { PictureVisibility = previews }).ToList();
         ProjectList.ItemsSource = rows;
         if (rows.Count == 0)
             MessageText.Text = "No projects saved yet.";

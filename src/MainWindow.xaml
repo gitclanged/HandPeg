@@ -230,22 +230,31 @@
             <Setter Property="VerticalAlignment" Value="Stretch" />
             <Setter Property="Margin" Value="0,1,1,1" />
             <Setter Property="Padding" Value="8,0" />
+            <!--
+                Part of the field, not a button set into it (4.2D): no edge or bevel, the field's own well showing through at
+                rest, a faint fill under the pointer, the field's text colour; Reno's dotted rectangle when it has the keyboard.
+            -->
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="0,3,3,0"
-                                Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+                        <local:ButtonChrome x:Name="border" Background="{TemplateBinding Background}" BorderThickness="0" CornerRadius="0,3,3,0"
+                                            Padding="{TemplateBinding Padding}" DottedInset="2" SnapsToDevicePixels="True">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True" />
-                        </Border>
+                        </local:ButtonChrome>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="border" Property="Background" Value="{DynamicResource ButtonHoverBrush}" />
+                                <Setter TargetName="border" Property="Background" Value="{DynamicResource HoverFillBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="border" Property="Background" Value="{DynamicResource ButtonPressedBrush}" />
+                                <Setter TargetName="border" Property="Background" Value="{DynamicResource ControlHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="border" Property="DottedOutlineBrush" Value="{DynamicResource DottedFocusBrush}" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="border" Property="Background" Value="{DynamicResource NeutralButtonBrush}" />
                                 <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -466,8 +475,7 @@
             WorkChip_MouseEnter places it): every piece of work under way, its progress and cancel, the lanes' pause switches.
         -->
         <Popup x:Name="WorkFlyout" DataContext="{x:Static services:WorkScheduler.Summary}" PlacementTarget="{Binding ElementName=WorkChip}" Placement="Top" AllowsTransparency="True" StaysOpen="True">
-            <Border x:Name="WorkFlyoutPanel" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1"
-                    CornerRadius="6" Padding="10,8" Margin="0,0,0,4" MinWidth="380" MaxWidth="520" MouseLeave="WorkFlyout_MouseLeave">
+            <local:ButtonChrome x:Name="WorkFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="10,8" Margin="0,0,0,4" MinWidth="380" MaxWidth="520" MouseLeave="WorkFlyout_MouseLeave">
                 <StackPanel>
                     <DockPanel>
                         <Button DockPanel.Dock="Right" Content="Open Queue" Padding="10,2" Click="WorkFlyoutQueue_Click"
@@ -516,7 +524,7 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </StackPanel>
-            </Border>
+            </local:ButtonChrome>
         </Popup>
 
         <!--
@@ -526,7 +534,7 @@
         <Popup x:Name="ViewsPopup" StaysOpen="False"
                AllowsTransparency="True" IsOpen="{Binding IsChecked, ElementName=ViewsButton, Mode=TwoWay}"
                Opened="ViewsPopup_Opened" Closed="ViewsPopup_Closed">
-            <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
+            <local:ButtonChrome Style="{StaticResource FlyoutChrome}" Padding="12,10">
                 <StackPanel TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="250">
                     <!-- The timeline's checkboxes, while the playback bar has no room for them. -->
                     <StackPanel x:Name="ViewsPlaybackOptions" Visibility="Collapsed" Margin="0,0,0,8">
@@ -565,7 +573,7 @@
                             AutomationProperties.Name="Reset Panes Layout"
                             ToolTip="Puts every pane back where this mode starts with it (the Standard Editing layout), at the size it starts with." />
                 </StackPanel>
-            </Border>
+            </local:ButtonChrome>
         </Popup>
 
         <!--
@@ -574,7 +582,7 @@
             layouts, the user's own (rows made in code: FillLayoutRows), Save Current Layout and Reset Layout.
         -->
         <Popup x:Name="LayoutFlyout" AllowsTransparency="True" StaysOpen="True" Placement="Bottom" VerticalOffset="6">
-            <Border x:Name="LayoutFlyoutPanel" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="6"
+            <local:ButtonChrome x:Name="LayoutFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6"
                     KeyDown="LayoutFlyout_KeyDown" TextElement.Foreground="{DynamicResource TextBrush}">
                 <StackPanel MinWidth="220">
                     <StackPanel.Resources>
@@ -600,7 +608,7 @@
                     <Button Content="Reset Layout" Click="ResetPanesLayout_Click" AutomationProperties.Name="Reset Layout"
                             ToolTip="Puts every pane back where this mode starts with it (the Standard Editing layout), at the size it starts with." />
                 </StackPanel>
-            </Border>
+            </local:ButtonChrome>
         </Popup>
 
         <!--
@@ -613,7 +621,7 @@
         -->
         <Popup x:Name="LayoutSelector" AllowsTransparency="True" StaysOpen="True" Placement="Relative" PlacementTarget="{Binding ElementName=MainDockHost}"
                Closed="LayoutSelector_Closed">
-            <Border x:Name="LayoutSelectorPanel" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="8" Padding="10,8,10,10"
+            <local:ButtonChrome x:Name="LayoutSelectorPanel" Style="{StaticResource FlyoutChrome}" Padding="10,8,10,10"
                     KeyDown="LayoutSelector_KeyDown" TextElement.Foreground="{DynamicResource TextBrush}">
                 <StackPanel>
                     <DockPanel Margin="4,0,4,6">
@@ -624,7 +632,7 @@
                     <TextBlock Text="Themes" FontWeight="SemiBold" Margin="4,8,4,4" />
                     <UniformGrid x:Name="ThemeCards" Rows="1" Width="576" Background="Transparent" MouseLeave="ThemeCards_MouseLeave" AutomationProperties.Name="Themes" />
                 </StackPanel>
-            </Border>
+            </local:ButtonChrome>
         </Popup>
 
 
@@ -744,8 +752,7 @@
                 </Grid>
                 </DockPanel>
                 <!--
-                    The controls, each shown or not as chosen with the settings button at the right end (PlaybackControls,
-                    per mode). On one line, always: what the row has no room for is left out of it, least wanted first, and listed
+                    The controls, each shown or not as chosen with the settings button at the right end (PlaybackControls). On one line, always: what the row has no room for is left out of it, least wanted first, and listed
                     in the menu of its last button (see OverflowStrip and FitTransport).
                 -->
                 <local:OverflowStrip Grid.Column="1" x:Name="TransportCenter" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -863,14 +870,7 @@
                             </Style>
                         </ToggleButton.Style>
                     </ToggleButton>
-                    <!-- How tall the master timeline is -->
-                    <StackPanel Orientation="Horizontal" Visibility="{Binding PlaybackControls[TimelineHeight], Converter={StaticResource BoolToVisibility}}">
-                        <TextBlock Text="&#xE1D8;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center"
-                                   Foreground="{DynamicResource MutedTextBrush}" ToolTip="Timeline height" />
-                        <Slider Width="64" Margin="6,0,12,0" VerticalAlignment="Center" Minimum="1" Maximum="50" SmallChange="1" LargeChange="5"
-                                IsMoveToPointEnabled="True" Value="{Binding MasterTimelineHeight}" AutomationProperties.Name="Timeline Height"
-                                ToolTip="Timeline height: how tall the master timeline is, from a slim bar to room for a readable waveform. Double-click to reset." />
-                    </StackPanel>
+                    <!-- How tall the master timeline is: no slider here since 4.2B-2; the border beside it (Ctrl-drag) and its tab's right-click menu. -->
                     <StackPanel Orientation="Horizontal" Visibility="{Binding PlaybackControls[Volume], Converter={StaticResource BoolToVisibility}}">
                         <TextBlock Text="&#xE767;" FontFamily="Segoe MDL2 Assets" FontSize="15" VerticalAlignment="Center"
                                    Foreground="{DynamicResource MutedTextBrush}" ToolTip="Volume" />
@@ -1099,7 +1099,7 @@
                 <Grid Margin="6,0,0,6" x:Name="AddMediaHost">
                     <Popup x:Name="AddMediaFlyout" PlacementTarget="{Binding ElementName=AddMediaHost}" Placement="Bottom" VerticalOffset="6"
                            AllowsTransparency="True" StaysOpen="True" Opened="AddMediaFlyout_Opened">
-                        <Border x:Name="AddMediaFlyoutPanel" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,8"
+                        <local:ButtonChrome x:Name="AddMediaFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="10,8"
                                 Width="380" KeyDown="AddMediaFlyout_KeyDown"
                                 TextElement.Foreground="{DynamicResource TextBrush}">
                             <StackPanel>
@@ -1120,15 +1120,15 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="SourcePaneBox" HorizontalAlignment="Stretch" VerticalContentAlignment="Center" Padding="6,6,4,6" KeyDown="SourcePaneBox_KeyDown"
+                                    <TextBox x:Name="SourcePaneBox" Grid.ColumnSpan="2" HorizontalAlignment="Stretch" VerticalContentAlignment="Center" Padding="7,7,76,7" KeyDown="SourcePaneBox_KeyDown"
                                              Text="{Binding SourcePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Source URL or File Path"
                                              ToolTip="Type or paste a path or URL and press Enter, or drop a video file anywhere on the window. A web address is downloaded with yt-dlp." />
-                                    <Button x:Name="SourceActionButton" Grid.Column="1" Style="{StaticResource InFieldButton}" Content="{Binding SourceActionText}" HorizontalAlignment="Stretch" Margin="-1,0,0,0" Padding="12,0"
+                                    <Button x:Name="SourceActionButton" Grid.Column="1" Style="{StaticResource InFieldButton}" Content="{Binding SourceActionText}" MinWidth="64" Padding="12,0"
                                             Click="SourceAction_Click" AutomationProperties.Name="Browse or Load Source"
                                             ToolTip="Browse: opens the file browser, while the box is empty. Load: loads the path or URL in the box (Enter does the same)." />
                                 </Grid>
                             </StackPanel>
-                        </Border>
+                        </local:ButtonChrome>
                     </Popup>
                     <Button x:Name="AddMediaButton" Padding="9,6" Click="AddMedia_Click" AutomationProperties.Name="Add Media"
                             ToolTip="Add Media: choose files to add (with nothing open, the first is opened as the main video; with a video open, they go onto the timeline at the playhead). Rest the pointer here for a box to paste a path or a web address into.">
@@ -1157,7 +1157,7 @@
                 <Grid Margin="6,0,0,6" x:Name="SettingsHost">
                     <Popup x:Name="SettingsFlyout" PlacementTarget="{Binding ElementName=SettingsHost}" Placement="Bottom" HorizontalOffset="-150" VerticalOffset="6"
                            AllowsTransparency="True" StaysOpen="True">
-                        <Border x:Name="SettingsFlyoutPanel" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="6">
+                        <local:ButtonChrome x:Name="SettingsFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6">
                             <StackPanel MinWidth="180">
                                 <StackPanel.Resources>
                                     <Style TargetType="Button" BasedOn="{StaticResource FlyoutRowButton}" />
@@ -1173,7 +1173,7 @@
                                 <Button Content="Social Squisher" Click="FlyoutSquisher_Click" AutomationProperties.Name="Social Squisher"
                                         ToolTip="Opens the startup dialog with the Social Sharing Squisher: drop a video on a preset to squeeze it under that size." />
                             </StackPanel>
-                        </Border>
+                        </local:ButtonChrome>
                     </Popup>
                     <Button x:Name="SettingsButton" Content="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="15" Padding="10,6"
                             Click="OpenSettings_Click" ToolTip="Settings: dependencies, tool paths, update sources and automation. Rest the pointer here for Autosave, the Queue and the Social Squisher."
@@ -1187,7 +1187,7 @@
             </StackPanel>
             <!--
                 The media browser (Views menu): a folder's videos, sounds and pictures, to drag onto the
-                timeline. It shares the column's height with the Keyframes and Cut Segments panes, by the border under it.
+                timeline. It shares the column's height with the Keyframes pane, by the border under it.
             -->
             <Border Grid.Row="2" x:Name="MediaBrowserPanel" Style="{StaticResource Panel}" Margin="0,0,0,0">
                 <views:MediaBrowserPane x:Name="MediaBrowser" />
@@ -1243,8 +1243,19 @@
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0" ToolTipService.ShowOnDisabled="True"
                                 ToolTip="Easing: how the clip gets from the selected keyframe to the next one. Linear moves at one speed; the others start or end slowly. The selected keyframe is the one the playhead is on: step onto one with the previous and next keyframe buttons.">
                         <TextBlock Text="Easing:" VerticalAlignment="Center" Margin="0,0,8,0" />
-                        <ComboBox MinWidth="140" Margin="0" ItemsSource="{Binding EasingChoices}" DisplayMemberPath="Name" SelectedValuePath="Type"
-                                  SelectedValue="{Binding SelectedKeyEasing}" IsEnabled="{Binding HasSelectedKeyframe}" AutomationProperties.Name="Keyframe Easing" />
+                        <!-- Each easing with its curve drawn beside its name (EasingChoice.Icon, from the formula: 4.2B-3), in the text's colour. -->
+                        <ComboBox MinWidth="140" Margin="0" ItemsSource="{Binding EasingChoices}" SelectedValuePath="Type"
+                                  SelectedValue="{Binding SelectedKeyEasing}" IsEnabled="{Binding HasSelectedKeyframe}" AutomationProperties.Name="Keyframe Easing">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Data="{Binding Icon}" Width="16" Height="12" VerticalAlignment="Center" Margin="0,0,8,0" StrokeThickness="1.3"
+                                              StrokeLineJoin="Round" Stroke="{Binding (TextElement.Foreground), RelativeSource={RelativeSource Self}}" />
+                                        <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
                     </StackPanel>
                     <!-- A Custom Bezier's handles, as CSS writes them: cubic-bezier(x1, y1, x2, y2); a preset to start from. -->
                     <WrapPanel Margin="0,6,0,0" Visibility="{Binding IsBezierSelected, Converter={StaticResource BoolToVisibility}}"
@@ -1762,6 +1773,18 @@
                                       ToolTip="Gives the output one chapter per kept segment, so a player can jump from cut to cut." />
                             <CheckBox Content="Generate Chapters at Markers" IsChecked="{Binding ChaptersAtMarkers}"
                                       ToolTip="Gives the output a chapter at each marker (M puts one at the playhead), named after it. Markers in removed stretches are left out; with Chapters at Cut Points as well, both kinds are there." />
+                            <!-- 4.2B-2: the chapters as a YouTube description lists them, and what downloads do with SponsorBlock. -->
+                            <WrapPanel Margin="0,6,0,0">
+                                <Button Content="Copy YouTube Timestamps" Command="{Binding CopyYouTubeTimestampsCommand}" Margin="0,2,12,2" Padding="10,3"
+                                        AutomationProperties.Name="Copy YouTube Timestamps"
+                                        ToolTip="Copies '00:00 Intro', '01:24 Gameplay'... for a YouTube description: every marker at its time in the output, after the cuts (clip speeds included), and SponsorBlock chapters when they are kept. Always starts at 00:00." />
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
+                                    <TextBlock Text="SponsorBlock:" Style="{StaticResource FieldLabel}" />
+                                    <ComboBox Margin="0" MinWidth="150" ItemsSource="{Binding SponsorBlockModes}" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                              SelectedValue="{Binding SponsorBlockMode}" AutomationProperties.Name="SponsorBlock Segments"
+                                              ToolTip="What the next download does with the SponsorBlock categories ticked in Settings (Downloads): cut them out of the file, keep them as named chapters (listed by Copy YouTube Timestamps), or leave SponsorBlock alone. With none ticked, cutting or keeping ticks sponsor, self-promotion and interaction reminders." />
+                                </StackPanel>
+                            </WrapPanel>
                         </StackPanel>
                     </GroupBox>
                     </StackPanel>
@@ -1855,7 +1878,7 @@
                                     </StackPanel>
                                 </Button>
                                 <Popup x:Name="AddLayerPopup" StaysOpen="True" AllowsTransparency="True" Placement="Top" PlacementTarget="{Binding ElementName=AddLayerHost}">
-                                    <Border x:Name="AddLayerFlyoutPanel" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="6"
+                                    <local:ButtonChrome x:Name="AddLayerFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6"
                                             Margin="0,0,0,2" PreviewKeyDown="AddLayerFlyout_PreviewKeyDown">
                                         <StackPanel TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="190">
                                             <StackPanel.Resources>
@@ -1883,7 +1906,7 @@
                                             <Button Content="HUD Layers from a Mask..." Tag="MaskLayers" Click="AddLayerMenu_Click"
                                                     ToolTip="Choose a mask of the whole frame, white (or painted, on transparency) over the HUD: one layer is made for each HUD element it shows, all sharing the mask." />
                                         </StackPanel>
-                                    </Border>
+                                    </local:ButtonChrome>
                                 </Popup>
                             </Grid>
                             <Button Content="HUD Masks" Padding="12,5" Margin="6,2,0,2" Click="HudMasks_Click" IsEnabled="{Binding IsVideoReencoded}"
@@ -2081,6 +2104,21 @@
                                  VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling"
                                  VirtualizingPanel.ScrollUnit="Pixel" ScrollViewer.CanContentScroll="True"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Visible" AutomationProperties.Name="Layers">
+                            <!--
+                                The row's right-click menu is on the item rather than inside it, so the Menu key and Shift+F10 open it for the focused row as a
+                                right-click does (a right-click inside the row reaches it all the same); and a screen reader reads the row by its name.
+                            -->
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                    <Setter Property="ContextMenu">
+                                        <Setter.Value>
+                                            <ContextMenu />
+                                        </Setter.Value>
+                                    </Setter>
+                                    <EventSetter Event="ContextMenuOpening" Handler="LayerRow_ContextMenuOpening" />
+                                </Style>
+                            </ListBox.ItemContainerStyle>
                             <ListBox.Resources>
                                 <!--
                                     A layer's controls (4.1.1): two lines in a block of one width in every row (so every
@@ -2206,10 +2244,7 @@
                                         A layer's row, laid out as a sound's is on the Audio tab: what it is on the left, its
                                         time bar across the middle, taking the row's height, and its controls in a block on the right.
                                     -->
-                                    <Grid x:Name="layerRow" Background="Transparent" ContextMenuOpening="LayerRow_ContextMenuOpening" ToolTip="X and Y place the layer's top-left corner, and Size sets its width, all as a share of the output frame, so the layout holds at any resolution. The Canvas does the same by dragging.">
-                                        <Grid.ContextMenu>
-                                            <ContextMenu />
-                                        </Grid.ContextMenu>
+                                    <Grid x:Name="layerRow" Background="Transparent" ToolTip="X and Y place the layer's top-left corner, and Size sets its width, all as a share of the output frame, so the layout holds at any resolution. The Canvas does the same by dragging.">
                                         <!-- The controls' column is as wide in every row, so that every time bar spans the same stretch of the screen. -->
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="232" />
@@ -2616,6 +2651,21 @@
                              VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling"
                              VirtualizingPanel.ScrollUnit="Pixel" ScrollViewer.CanContentScroll="True"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
+                        <!--
+                            The row's right-click menu is on the item rather than inside it, so the Menu key and Shift+F10 open it for the focused row as a
+                            right-click does (a right-click inside the row reaches it all the same); and a screen reader reads the row by its name.
+                        -->
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                <Setter Property="ContextMenu">
+                                    <Setter.Value>
+                                        <ContextMenu />
+                                    </Setter.Value>
+                                </Setter>
+                                <EventSetter Event="ContextMenuOpening" Handler="AudioRow_ContextMenuOpening" />
+                            </Style>
+                        </ListBox.ItemContainerStyle>
                         <ListBox.Resources>
                             <!--
                                 A sound is heard or muted, and how it is encoded is the export's business. Mute,
@@ -2668,11 +2718,7 @@
                         </ListBox.Resources>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Grid Height="{Binding DataContext.AudioTrackRowHeight, RelativeSource={RelativeSource AncestorType=ListBox}}" Background="Transparent"
-                                      ContextMenuOpening="AudioRow_ContextMenuOpening">
-                                    <Grid.ContextMenu>
-                                        <ContextMenu />
-                                    </Grid.ContextMenu>
+                                <Grid Height="{Binding DataContext.AudioTrackRowHeight, RelativeSource={RelativeSource AncestorType=ListBox}}" Background="Transparent">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="232" />
                                         <ColumnDefinition Width="*" />
@@ -2928,11 +2974,16 @@
                                     Transcribes now, into a subtitle track that can be seen and edited before
                                     the export, which then draws that track instead of transcribing again.
                                 -->
-                                <Button Margin="0,2,14,2" Padding="14,5" Command="{Binding GenerateCaptionsCommand}" AutomationProperties.Name="Generate Captions"
-                                        Background="{DynamicResource AccentBrush}" Foreground="{DynamicResource OnAccentBrush}" FontWeight="SemiBold"
+                                <!-- The theme's own button (embossed in Reno), bold, with a drawn glyph: a caption box of two lines and a spark (4.2B-3). -->
+                                <Button Margin="0,2,14,2" Padding="14,5" Command="{Binding GenerateCaptionsCommand}" AutomationProperties.Name="Generate Captions" FontWeight="Bold"
                                         ToolTip="Transcribes the speech now, with the model chosen above, into a subtitle track, and ticks Generate Auto-Captions. The track is shown in the player, can be edited in the Subtitle Editor, and is saved with the project. Exports and queued jobs draw it exactly as it stands and never transcribe again; pressing this again replaces it.">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="&#xE8D4;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" FontWeight="Normal" />
+                                        <Grid Width="16" Height="14" VerticalAlignment="Center">
+                                            <Path Data="M 0.5,4.5 L 10,4.5 L 10,13.5 L 0.5,13.5 Z M 2.5,8 L 8,8 M 2.5,10.75 L 6.5,10.75" StrokeThickness="1.2" StrokeLineJoin="Round"
+                                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" SnapsToDevicePixels="True" />
+                                            <Path Data="M 13,0.5 Q 13.4,3.1 16,3.5 Q 13.4,3.9 13,6.5 Q 12.6,3.9 10,3.5 Q 12.6,3.1 13,0.5 Z"
+                                                  Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                                        </Grid>
                                         <TextBlock Text="Generate Captions" Margin="8,0,0,0" VerticalAlignment="Center" />
                                     </StackPanel>
                                 </Button>
@@ -2980,11 +3031,29 @@
                                       ToolTip="Evens out the loudness to the EBU R128 standard: loudnorm (I=-16, TP=-1.5, LRA=11), applied to re-encoded and mixed tracks. Copied tracks are left as they are." />
                         </WrapPanel>
                     </GroupBox>
+                    <!--
+                        Easy Social Export | Advanced Export (4.2B-2, AppSettings.UseEasySocialExport): the 1-click cards
+                        (MainViewModel.SocialExportTargets, made in MainWindow.Export.cs) or the Video and Audio sections
+                        with every setting. A card only sets those settings; Advanced shows them as it left them.
+                    -->
+                    <StackPanel DockPanel.Dock="Top" x:Name="ExportModeBar" Orientation="Horizontal" Margin="0,0,0,6" AutomationProperties.Name="Export Mode">
+                        <RadioButton x:Name="EasyExportButton" Style="{StaticResource ExportSectionButton}" GroupName="ExportMode" Content="Easy Social Export"
+                                     Checked="ExportMode_Checked" AutomationProperties.Name="Easy Social Export"
+                                     ToolTip="One click per platform: each card sets the size, frame rate, encoder, quality or file size, and sound for it." />
+                        <RadioButton x:Name="AdvancedExportButton" Style="{StaticResource ExportSectionButton}" GroupName="ExportMode" Content="Advanced Export"
+                                     Checked="ExportMode_Checked" AutomationProperties.Name="Advanced Export"
+                                     ToolTip="Every encoder, picture, sound and chapter setting, as the cards (or you) left them." />
+                    </StackPanel>
                     <StackPanel DockPanel.Dock="Top" x:Name="ExportSections" Orientation="Horizontal" Margin="0,0,0,6" AutomationProperties.Name="Export Sections" />
-                    <Border x:Name="ExportSectionHost">
-                        <TextBlock x:Name="ExportNoSections" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="4,8"
-                                   Text="Video and Audio each have a tab of their own now (Tabs and Panes). Hide one there to see it here again." />
-                    </Border>
+                    <Grid>
+                        <ScrollViewer x:Name="EasyExportPanel" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <WrapPanel x:Name="EasyExportCards" AutomationProperties.Name="Easy Social Export Cards" />
+                        </ScrollViewer>
+                        <Border x:Name="ExportSectionHost">
+                            <TextBlock x:Name="ExportNoSections" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="4,8"
+                                       Text="Video and Audio each have a tab of their own now (Tabs and Panes). Hide one there to see it here again." />
+                        </Border>
+                    </Grid>
                 </DockPanel>
             </TabItem>
 
@@ -3058,7 +3127,7 @@
         </Border>
 
         <!-- Status bar -->
-        <!-- Right-click: hide it (Tabs and Panes, per mode); the status and the progress then move into the title bar. -->
+        <!-- Right-click: hide it (Tabs and Panes); the status and the progress then move into the title bar. -->
         <Grid Grid.Row="1" Grid.ColumnSpan="2" x:Name="StatusBar" Margin="2,10,0,0" Background="Transparent">
             <Grid.ContextMenu>
                 <ContextMenu>

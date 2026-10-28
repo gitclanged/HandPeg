@@ -35,6 +35,7 @@ public partial class ManualCutWindow : Window
     {
         _iFrames = iFrames;
         InitializeComponent();
+        SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
         (_start, _end, _frameRate) = (start, end, frameRate > 0 ? frameRate : 30);
 
         ClipText.Text = end > start

@@ -7,5 +7,9 @@ namespace HandPegApp;
 /// </summary>
 public partial class QueueWindow : Window
 {
-    public QueueWindow() => InitializeComponent();
+    public QueueWindow()
+    {
+        InitializeComponent();
+        SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
+    }
 }

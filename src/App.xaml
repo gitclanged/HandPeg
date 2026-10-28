@@ -88,6 +88,16 @@
         <SolidColorBrush x:Key="RaisedBorderBrush" po:Freeze="True" Color="#3F3F3F" />
         <SolidColorBrush x:Key="SelectedRowBrush" po:Freeze="True" Color="#005A9E" />
         <SolidColorBrush x:Key="SelectedRowBorderBrush" po:Freeze="True" Color="#0078D7" />
+        <!--
+            4.2B-3: a ticked check box's fill, edge and mark (the accent filled with white in the flat themes; Reno and Reno Dark
+            keep the sunken well and draw a dark or a light-blue mark in it), and the classic 1 px dotted rectangle drawn inside
+            what is focused, checked or chosen (ButtonChrome.DottedOutlineBrush; transparent, so never drawn, in the flat themes).
+        -->
+        <SolidColorBrush x:Key="CheckedBoxBrush" po:Freeze="True" Color="#0078D7" />
+        <SolidColorBrush x:Key="CheckedBoxBorderBrush" po:Freeze="True" Color="#0078D7" />
+        <SolidColorBrush x:Key="CheckMarkBrush" po:Freeze="True" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="DottedFocusBrush" po:Freeze="True" Color="Transparent" />
+        <x:Null x:Key="CheckedBoxBorderLowerBrush" />
         <x:Null x:Key="ButtonBorderLowerBrush" />
         <x:Null x:Key="NeutralButtonBorderLowerBrush" />
         <x:Null x:Key="RaisedBorderLowerBrush" />
@@ -101,6 +111,46 @@
         <CornerRadius x:Key="TabCornerRadius">6,6,0,0</CornerRadius>
 
         <!--
+            The keyboard focus rectangle of buttons, toggle buttons and check boxes (4.2B-3): WPF's own dotted rectangle, in the
+            theme's text colour. ThemeFocusVisual is what the styles read: this one in the flat themes, and NoFocusVisual (draws
+            nothing) in Reno and Reno Dark (ThemeManager.Apply), whose dotted rectangle is drawn by the control's own face instead.
+            Not null: a resource set to null counts as missing to DynamicResource, and the control then falls back on WPF's
+            default black dashed rectangle, a second ring around the whole control (Pass 4.2C).
+        -->
+        <Style x:Key="NoFocusVisual">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate />
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="StandardFocusVisual">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Rectangle Margin="2" StrokeDashArray="1 2" Stroke="{DynamicResource TextBrush}" StrokeThickness="1" SnapsToDevicePixels="True" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <StaticResource x:Key="ThemeFocusVisual" ResourceKey="StandardFocusVisual" />
+
+        <!--
+            A flyout's or a menu's surface (4.2B-3): the panel colour, raised by the theme's lit edge (RaisedBorderBrush over
+            RaisedBorderLowerBrush) with the cards' rounding, drawn by one element as a button's face is. Every header flyout,
+            the Views menu, the Add Effect and Add Layer flyouts and the right-click menus wear it.
+        -->
+        <Style x:Key="FlyoutChrome" TargetType="local:ButtonChrome">
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource RaisedBorderBrush}" />
+            <Setter Property="LowerBorderBrush" Value="{DynamicResource RaisedBorderLowerBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="OutlineTakesRoom" Value="True" />
+            <Setter Property="CornerRadius" Value="{DynamicResource CardCornerRadius}" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+        </Style>
+
+        <!--
             A button: the theme's face in a 1 px outline, with its bevel (a light top and left edge) just inside, drawn by
             one element (ButtonChrome). The outline and the bevel are drawn over the face, so they take no room: a button
             is as large as it always was. A button with BorderThickness 0 (a row of a flyout's menu) has neither.
@@ -111,6 +161,7 @@
             <Setter Property="BorderBrush" Value="{DynamicResource ButtonBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Padding" Value="14,6" />
+            <Setter Property="FocusVisualStyle" Value="{DynamicResource ThemeFocusVisual}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -132,6 +183,9 @@
                                 <Setter TargetName="chrome" Property="LowerBorderBrush" Value="{x:Null}" />
                                 <Setter TargetName="chrome" Property="BevelBrush" Value="{x:Null}" />
                             </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="chrome" Property="DottedOutlineBrush" Value="{DynamicResource DottedFocusBrush}" />
+                            </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="chrome" Property="Background" Value="{DynamicResource NeutralButtonBrush}" />
                                 <Setter TargetName="chrome" Property="BorderBrush" Value="{DynamicResource NeutralButtonBorderBrush}" />
@@ -144,10 +198,11 @@
             </Setter>
         </Style>
 
-        <!-- A button that stays down: the chosen fill while on, the neutral embossed face while off. -->
+        <!-- A button that stays down: the chosen fill while on, the neutral embossed face while off; dotted inside while focused (Reno). -->
         <Style TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="Padding" Value="14,6" />
+            <Setter Property="FocusVisualStyle" Value="{DynamicResource ThemeFocusVisual}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ToggleButton">
@@ -170,6 +225,9 @@
                                 <Setter TargetName="chrome" Property="BevelBrush" Value="{x:Null}" />
                                 <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
                             </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="chrome" Property="DottedOutlineBrush" Value="{DynamicResource DottedFocusBrush}" />
+                            </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45" />
                             </Trigger>
@@ -186,7 +244,13 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CaretBrush" Value="{DynamicResource TextBrush}" />
             <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}" />
-            <Setter Property="Padding" Value="5,4" />
+            <!-- Applied once, by the text view itself (4.2D): the template gives PART_ContentHost no margin of its own. -->
+            <Setter Property="Padding" Value="6,5" />
+            <!--
+                One line of text sits in the middle of its box (4.2B-3), so the caret, the typed text and a hint laid over the box
+                (the search boxes) share one centre line in a box taller than its text; a box of several lines starts at the top.
+            -->
+            <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TextBox">
@@ -194,7 +258,12 @@
                         <local:ButtonChrome x:Name="border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
                                             LowerBorderBrush="{DynamicResource WellBorderLowerBrush}" OutlineTakesRoom="True"
                                             BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{DynamicResource ControlCornerRadius}" SnapsToDevicePixels="True">
-                            <ScrollViewer x:Name="PART_ContentHost" Focusable="False" Margin="{TemplateBinding Padding}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                            <!--
+                                Centred unless the box says otherwise (VerticalContentAlignment: Center by default, Top for several lines).
+                                No Margin or Padding here: the TextBox's text view insets the text by Padding already, so a margin bound to
+                                it counted it twice (4.2C finding 3).
+                            -->
+                            <ScrollViewer x:Name="PART_ContentHost" Focusable="False" Margin="0" Padding="0" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                           HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" />
                         </local:ButtonChrome>
                         <ControlTemplate.Triggers>
@@ -209,6 +278,11 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="AcceptsReturn" Value="True">
+                    <Setter Property="VerticalContentAlignment" Value="Top" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <Style TargetType="ComboBoxItem">
@@ -289,24 +363,35 @@
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Margin" Value="0,6" />
+            <Setter Property="FocusVisualStyle" Value="{DynamicResource ThemeFocusVisual}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="CheckBox">
+                        <!--
+                            The box is a sunken well (WellBrush in the theme's well edge). Ticked, the flat themes fill it with the
+                            accent and a white mark; Reno and Reno Dark keep the well and draw a crisp mark in it (CheckedBoxBrush,
+                            CheckedBoxBorderBrush, CheckMarkBrush, 4.2B-3). Focused, the label is ringed by the dotted rectangle.
+                        -->
                         <StackPanel Orientation="Horizontal" Background="Transparent">
                             <local:ButtonChrome x:Name="box" Width="18" Height="18" VerticalAlignment="Center" CornerRadius="{DynamicResource ControlCornerRadius}"
-                                                Background="{DynamicResource ControlBrush}" BorderBrush="{DynamicResource WellBorderBrush}"
+                                                Background="{DynamicResource WellBrush}" BorderBrush="{DynamicResource WellBorderBrush}"
                                                 LowerBorderBrush="{DynamicResource WellBorderLowerBrush}" BorderThickness="1" OutlineTakesRoom="True" SnapsToDevicePixels="True">
                                 <Path x:Name="check" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center"
-                                      Data="M0,4 L3.5,7.5 L10,0" Stroke="{DynamicResource OnAccentBrush}" StrokeThickness="2" />
+                                      Data="M0,4 L3.5,7.5 L10,0" Stroke="{DynamicResource CheckMarkBrush}" StrokeThickness="2" />
                             </local:ButtonChrome>
-                            <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True" />
+                            <local:ButtonChrome x:Name="label" BorderThickness="0" DottedInset="0" Padding="2,1" Margin="6,-1,0,-1" VerticalAlignment="Center">
+                                <ContentPresenter RecognizesAccessKey="True" />
+                            </local:ButtonChrome>
                         </StackPanel>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="check" Property="Visibility" Value="Visible" />
-                                <Setter TargetName="box" Property="Background" Value="{DynamicResource AccentBrush}" />
-                                <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-                                <Setter TargetName="box" Property="LowerBorderBrush" Value="{x:Null}" />
+                                <Setter TargetName="box" Property="Background" Value="{DynamicResource CheckedBoxBrush}" />
+                                <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource CheckedBoxBorderBrush}" />
+                                <Setter TargetName="box" Property="LowerBorderBrush" Value="{DynamicResource CheckedBoxBorderLowerBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="label" Property="DottedOutlineBrush" Value="{DynamicResource DottedFocusBrush}" />
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource AccentHoverBrush}" />
@@ -381,11 +466,15 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ListBoxItem">
-                        <!-- A 1 px edge kept for the chosen row's trace (SelectedBorderBrush), so choosing a row never moves it. -->
-                        <Border x:Name="border" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" CornerRadius="{DynamicResource ControlCornerRadius}"
-                                Padding="7,2" SnapsToDevicePixels="True">
+                        <!--
+                            A 1 px edge kept for the chosen row's trace (SelectedBorderBrush), so choosing a row never moves it; the
+                            chosen row (a track, a tile) of the list with the focus is also ringed by the theme's dotted rectangle just
+                            inside it (4.2B-3, Reno).
+                        -->
+                        <local:ButtonChrome x:Name="border" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" OutlineTakesRoom="True"
+                                            CornerRadius="{DynamicResource ControlCornerRadius}" DottedInset="2" Padding="7,2" SnapsToDevicePixels="True">
                             <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
-                        </Border>
+                        </local:ButtonChrome>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="border" Property="Background" Value="{DynamicResource HoverFillBrush}" />
@@ -395,6 +484,14 @@
                                 <Setter TargetName="border" Property="BorderBrush" Value="{DynamicResource SelectedRowBorderBrush}" />
                                 <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
                             </Trigger>
+                            <!-- Ringed only while its list has the focus: the dotted rectangle is on one thing at a time, the last one clicked. -->
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsSelected" Value="True" />
+                                    <Condition Property="Selector.IsSelectionActive" Value="True" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="border" Property="DottedOutlineBrush" Value="{DynamicResource DottedFocusBrush}" />
+                            </MultiTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -490,17 +587,17 @@
         </Style>
 
         <!-- The number box that sits beside a slider: type a value, or drag it sideways (see NumericInput). -->
-        <!-- Right-click menus, in the colours of the theme -->
+        <!-- Right-click menus, in the colours of the theme: the flyouts' raised surface (FlyoutChrome, 4.2B-3). -->
         <Style TargetType="ContextMenu">
             <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource RaisedBorderBrush}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ContextMenu">
-                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="{DynamicResource CardCornerRadius}" Padding="3">
+                        <local:ButtonChrome Style="{StaticResource FlyoutChrome}" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" Padding="3">
                             <StackPanel IsItemsHost="True" />
-                        </Border>
+                        </local:ButtonChrome>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -510,10 +607,42 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="MenuItem">
+                        <!--
+                            The words, with (4.2B-3) a drawn icon before them when the item has one (Icon: a Path, e.g. a transition's
+                            glyph), a tick in the left margin when the item is checked, and, for an item with items of its own, an
+                            arrow and the submenu beside it on the flyouts' raised surface.
+                        -->
                         <Border x:Name="back" Background="Transparent" CornerRadius="{DynamicResource ControlCornerRadius}" Padding="14,6,22,6">
-                            <ContentPresenter ContentSource="Header" RecognizesAccessKey="True" />
+                            <Grid>
+                                <Path x:Name="tick" Data="M0,3.5 L2.75,6.25 L8,0.5" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.6" HorizontalAlignment="Left"
+                                      VerticalAlignment="Center" Margin="-11,0,0,0" Visibility="Collapsed" />
+                                <DockPanel>
+                                    <ContentPresenter x:Name="icon" DockPanel.Dock="Left" ContentSource="Icon" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                    <Path x:Name="arrow" DockPanel.Dock="Right" Data="M0,0 L3.5,3.5 L0,7" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.4"
+                                          VerticalAlignment="Center" Margin="14,0,-12,0" Visibility="Collapsed" />
+                                    <ContentPresenter ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center" />
+                                </DockPanel>
+                                <Popup x:Name="PART_Popup" PlacementTarget="{Binding ElementName=back}" Placement="Right" HorizontalOffset="-2" VerticalOffset="-4"
+                                       IsOpen="{Binding IsSubmenuOpen, RelativeSource={RelativeSource TemplatedParent}}" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
+                                    <local:ButtonChrome Style="{StaticResource FlyoutChrome}" Padding="3" TextElement.Foreground="{DynamicResource TextBrush}">
+                                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
+                                    </local:ButtonChrome>
+                                </Popup>
+                            </Grid>
                         </Border>
                         <ControlTemplate.Triggers>
+                            <Trigger Property="Icon" Value="{x:Null}">
+                                <Setter TargetName="icon" Property="Visibility" Value="Collapsed" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="tick" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="Role" Value="SubmenuHeader">
+                                <Setter TargetName="arrow" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="Role" Value="TopLevelHeader">
+                                <Setter TargetName="arrow" Property="Visibility" Value="Visible" />
+                            </Trigger>
                             <Trigger Property="IsHighlighted" Value="True">
                                 <Setter TargetName="back" Property="Background" Value="{DynamicResource SelectedFillBrush}" />
                                 <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />

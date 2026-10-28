@@ -73,6 +73,9 @@ public sealed class Scene(string name)
     public string Container { get; init; } = "mp4";
     public string VideoCodecArguments { get; init; } = "-c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p";
 
+    /// <summary>The picture format a hardware encoder is handed (yuv420p or p010le), as the view model's HardwarePixelFormat gives it; null for software.</summary>
+    public string? EncoderPixelFormat { get; init; }
+
     // ----- Building the timeline -----
 
     /// <summary>The main video's audio tracks, re-encoded to AAC, as many as asked.</summary>
@@ -243,6 +246,7 @@ public sealed class Scene(string name)
             AudioLinked = AudioLinked,
             MergeAudioTracks = MergeAudioTracks,
             VideoCodecArguments = VideoCodecArguments,
+            EncoderPixelFormat = EncoderPixelFormat,
             Container = Container,
             OutputPath = $"D:/out/{Name}.{Container}",
             ExistingFiles = ExistingFiles,

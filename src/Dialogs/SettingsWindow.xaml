@@ -49,7 +49,8 @@
 
         <!-- Type here to find an option: what does not match is hidden, on every tab -->
         <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
-            <TextBox x:Name="SearchBox" Padding="26,5,8,5" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged"
+            <!-- The text starts 29 DIP in, where the hint does (26 + the edge and the text view's caret room). -->
+            <TextBox x:Name="SearchBox" Padding="26,7,8,7" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged"
                      AutomationProperties.Name="Search Settings" ToolTip="Type part of an option's name or description. Tabs with nothing that matches are hidden; clear the box to see everything again." />
             <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13" Margin="9,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
                        Foreground="{DynamicResource MutedTextBrush}" IsHitTestVisible="False" />
@@ -469,7 +470,11 @@
             <!-- ===== Export & Hardware: what an encode starts with, and which hardware does the work ===== -->
             <TabItem Header="Export &amp; Hardware">
                 <StackPanel>
-                    <TextBlock Text="Default encoding settings" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
+                    <TextBlock Text="Export tab" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
+                    <CheckBox Content="Start the Export tab in Easy Social Export" IsChecked="{Binding UseEasySocialExport}" AutomationProperties.Name="Use Easy Social Export"
+                              ToolTip="The Export tab shows the 1-click platform cards (Short-Form Vertical, YouTube Master, Chat &amp; Discord Share, Social Feed HD, Lossless Archive) instead of the Video and Audio sections. The switch at the top of the tab changes it too. Default: off (Advanced Export)." />
+
+                    <TextBlock Text="Default encoding settings" Style="{StaticResource SectionTitle}" Margin="0,10,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
                                Text="What the Video and Audio tabs start with when HandPeg is launched (the encoder and audio codec were first chosen in the first-run window). Built-in default leaves HandPeg's own. An encoding preset always sets its own over these; a style preset does too, unless the box under them is ticked. A project brings back what it was saved with. Applies the next time HandPeg starts." />
                     <StackPanel Style="{StaticResource Row}">
@@ -961,6 +966,12 @@
                         <CheckBox Content="Self-promotion" IsChecked="{Binding SponsorBlockSelfPromo}" Margin="0,2,24,2" />
                         <CheckBox Content="Interaction reminders (like, subscribe)" IsChecked="{Binding SponsorBlockInteraction}" Margin="0,2,24,2" />
                     </WrapPanel>
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="What a download does with the categories ticked above: cuts them out of the file (--sponsorblock-remove), keeps them as named chapters of the file (--sponsorblock-mark; Copy YouTube Timestamps in the Chapters group lists them), or leaves SponsorBlock alone. Also in the Chapters group. Default: Cut Out.">
+                        <TextBlock Text="SponsorBlock Segments:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="230" Margin="0" ItemsSource="{x:Static services:AppSettings.SponsorBlockModes}" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                  SelectedValue="{Binding SponsorBlockMode}" AutomationProperties.Name="SponsorBlock Segments Setting" />
+                    </StackPanel>
 
                     <TextBlock Text="Backup and export" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"

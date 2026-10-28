@@ -3,6 +3,44 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v4.2.0
+
+### Highlights
+- **One dedicated editor.** Encoder Mode, its top bar and the mode switch are gone from HandPeg: the window is the editor, with one set of panes and layouts. The header is four buttons (Add Media, Layout, Project, Settings), the spatial pane is now called **Canvas**, and a fourth built-in layout, **Vertical & Shorts Studio**, joins the other three. Saved workspaces carry over.
+- **A setup wizard.** First run picks a theme and a starting workspace (each shown live), downloads the core engines (or core + local auto-captions), and always finishes knowing your GPU's hardware encoders. It also opens on a PC where both engines are missing.
+- **Easy Social Export.** An Easy Social Export | Advanced Export switch on the Export tab: one-click cards for short-form vertical (1080 x 1920, 60 fps), a YouTube master, chat and Discord shares under 10, 25 or 50 MB, social feed HD and a lossless archive. Every value they set stays editable in Advanced Export.
+- **Copy YouTube timestamps.** One click copies chapter lines for your markers, placed through every cut, with SponsorBlock segments cut out, kept as named chapters, or ignored.
+- **Timeline trims.** Shift-drag trims or moves frame by frame with no snapping; Ctrl-drag ripples. The main video's pieces trim from both edges, and neighbouring clips on one track crossfade.
+
+### New
+- **Mask Offset X / Y** (-50 % to +50 %) on the mask card and in Layer Properties, to nudge a HUD mask without redrawing it.
+- **Signed-in downloads:** a link behind a sign-in or age gate is tried again with your browser's cookies (Waterfox, Firefox, Edge, Chrome, Brave) or a cookies.txt file (Settings > Preview & Cache > Downloads).
+- **Split / Trim by Exact Timecode...** on a clip's right-click menu, with I-frame suggestions.
+- **Pane settings on the tab menu:** right-click a pane's tab for its settings (Media, Timeline, Player and Canvas, Effects and Keyframes) and a link to the rest.
+- **Curve icons:** every easing in the Keyframes pane and every transition in the fade menus is drawn as a small icon of its own curve or motion.
+- **Media pane:** middle-click auto-scroll; posters come in two passes, a single frame for every tile first and the hover-scrub strips after (at once for a tile you hover).
+- Timeline height by Ctrl-dragging the border beside it, or Compact / Medium / Tall from the Timeline tab's menu.
+
+### Changed
+- Reno and Reno Dark: sunken check boxes with crisp ticks, one classic dotted focus rectangle, raised flyouts and menus; dialogs' title bars follow the theme in every theme.
+- Text boxes apply their inner padding once, so text, caret and hints line up; the Browse / Load button sits inside the source box.
+- On a small or high-DPI screen the window opens inside the work area (maximized when it nearly fills it), and an auto-hide taskbar wakes when the window is maximized.
+- The Cut Segments pane and the Video Combinator are retired from the editor. Settings shows the right version.
+- Lower idle memory, and a startup that no longer stalls while the graphics driver loads.
+
+### Fixed
+- **A paused seek or keyframe step drifted up to two seconds forward** a moment later, off the keyframe, greying the Easing box.
+- Clip submenus (Fade In / Fade Out, Speed, Proxy) never opened; their ticks and icons now show.
+- Hardware exports of 4:4:4 or odd-sized screen recordings showed coloured stripes.
+- Hover-scrub frames slid to the right inside their tile.
+- + New Project now resets everything (vertical video, crop, look, captions, voiceover, markers, solo).
+- The Layout Selector opened in the wrong place at 150 % scaling; the Media pane's Project | Folder switch was cut off in narrow panes.
+- A Chat card asked for a size the timeline is too long to reach without saying so; it now does.
+- Layer, audio and media rows read as type names to screen readers.
+
+### Compatibility
+- Projects stay **format 4**. Projects from 4.1.x, 4.0 and 3.x open in 4.2.0, and 4.2.0's projects open in 4.1.1; a layer's Mask Offset is the one thing 4.1.1 leaves out (the mask shows un-nudged).
+
 ## HandPeg v4.1.1
 
 ### Highlights

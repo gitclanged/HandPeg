@@ -152,14 +152,14 @@
                                  AutomationProperties.Name="Folder Browser" ToolTip="Folder Browser: the media files of a folder on disk, with its path above them." />
                 </StackPanel>
             </Border>
-            <ComboBox x:Name="SortBox" MinWidth="78" Margin="0" SelectionChanged="SortBox_SelectionChanged"
+            <ComboBox x:Name="SortBox" docking:PaneTitleRow.Optional="True" MinWidth="78" Margin="0" SelectionChanged="SortBox_SelectionChanged"
                       AutomationProperties.Name="Media Browser Sort" ToolTip="What the files are sorted by. Folders stay first.">
                 <ComboBoxItem Content="Name" />
                 <ComboBoxItem Content="Date" />
                 <ComboBoxItem Content="Size" />
                 <ComboBoxItem Content="Type" />
             </ComboBox>
-            <ToggleButton x:Name="SortDirectionButton" FontFamily="Segoe MDL2 Assets" FontSize="11" Padding="6,4" Margin="3,0,0,0"
+            <ToggleButton x:Name="SortDirectionButton" docking:PaneTitleRow.Optional="True" FontFamily="Segoe MDL2 Assets" FontSize="11" Padding="6,4" Margin="3,0,0,0"
                           Checked="SortDirection_Changed" Unchecked="SortDirection_Changed" AutomationProperties.Name="Sort Descending">
                 <ToggleButton.Style>
                     <Style TargetType="ToggleButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
@@ -174,12 +174,19 @@
                     </Style>
                 </ToggleButton.Style>
             </ToggleButton>
-            <TextBlock docking:PaneTitleRow.Optional="True" Text="&#xE8B9;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Margin="10,0,0,0"
-                       Foreground="{DynamicResource MutedTextBrush}" ToolTip="Size" />
-            <!-- How large the files are shown, as the timeline's height is set: the smallest few steps are a list, then tiles that grow. -->
-            <Slider x:Name="SizeSlider" Width="70" Margin="6,0,0,0" VerticalAlignment="Center" Minimum="0" Maximum="100" SmallChange="2" LargeChange="10"
-                    IsMoveToPointEnabled="True" ValueChanged="SizeSlider_ValueChanged" AutomationProperties.Name="Media Browser Size"
-                    ToolTip="How large the files are shown: all the way left is a list, then tiles from small to large. Move the pointer across a video's picture to see through it." />
+            <!--
+                How large the files are shown, as the timeline's height is set: the smallest few steps are a list, then tiles that grow.
+                The sort box, its direction and the size (glyph and slider together) are optional (4.2B-2): in a narrow column
+                (a 150 % laptop) they leave before the Project | Folder switch could be cut. The size is also in the tab's
+                right-click menu.
+            -->
+            <StackPanel docking:PaneTitleRow.Optional="True" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="&#xE8B9;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Margin="10,0,0,0"
+                           Foreground="{DynamicResource MutedTextBrush}" ToolTip="Size" />
+                <Slider x:Name="SizeSlider" Width="70" Margin="6,0,0,0" VerticalAlignment="Center" Minimum="0" Maximum="100" SmallChange="2" LargeChange="10"
+                        IsMoveToPointEnabled="True" ValueChanged="SizeSlider_ValueChanged" AutomationProperties.Name="Media Browser Size"
+                        ToolTip="How large the files are shown: all the way left is a list, then tiles from small to large. Move the pointer across a video's picture to see through it." />
+            </StackPanel>
             <Button Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="8,4" Margin="8,0,0,0" Click="Refresh_Click"
                     AutomationProperties.Name="Refresh Media Browser" ToolTip="Reads the folder (or the project's files) again." />
         </docking:PaneTitleRow>
@@ -211,6 +218,8 @@
                  ItemTemplate="{StaticResource TileTemplate}" ItemsPanel="{StaticResource TilePanel}"
                  VirtualizingPanel.ScrollUnit="Pixel" AutomationProperties.Name="Media Files"
                  PreviewMouseLeftButtonDown="Items_PreviewMouseLeftButtonDown" PreviewMouseMove="Items_PreviewMouseMove" PreviewMouseLeftButtonUp="Items_PreviewMouseLeftButtonUp"
+                 PreviewMouseDown="Items_PreviewMouseDown" PreviewMouseUp="Items_PreviewMouseUp" PreviewKeyDown="Items_PreviewKeyDown"
+                 LostMouseCapture="Items_LostMouseCapture"
                  KeyDown="Items_KeyDown" ContextMenuOpening="Items_ContextMenuOpening">
             <ListBox.ContextMenu>
                 <ContextMenu />
@@ -218,6 +227,7 @@
             <ListBox.ItemContainerStyle>
                 <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
                     <Setter Property="Padding" Value="1" />
+                    <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
                     <EventSetter Event="MouseDoubleClick" Handler="Item_MouseDoubleClick" />
                 </Style>
             </ListBox.ItemContainerStyle>

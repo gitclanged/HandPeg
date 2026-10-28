@@ -19,6 +19,7 @@ public partial class CaptionStyleDialog : Window
     public CaptionStyleDialog(CaptionStyle style)
     {
         InitializeComponent();
+        SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
         EditedStyle = style.Clone();
 
         // The fonts on this computer; a style made elsewhere may name one that is not, and keeps it all the same.

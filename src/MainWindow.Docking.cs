@@ -78,7 +78,11 @@ public partial class MainWindow
         UpdateTabVisibility();
         foreach (var (_, tab) in _tabPanes)
             DependencyPropertyDescriptor.FromProperty(VisibilityProperty, typeof(TabItem)).AddValueChanged(tab, (_, _) => _dock.ScheduleRebuild());
-        _dock.ExtendTabMenu = AddTabsAndPanesMenu;
+        _dock.ExtendTabMenu = (menu, pane) =>
+        {
+            AddTabsAndPanesMenu(menu);
+            AddPaneSettingsMenu(menu, pane);
+        };
 
         _dock.Changed += () => _viewModel.SavePaneLayout(s => s.DockLayout = _dock.Save());
         _dock.SideChanged += () =>
@@ -179,7 +183,7 @@ public partial class MainWindow
             return;
 
         _timelineResizeRest -= steps;
-        _viewModel.MasterTimelineHeight = Math.Clamp(_viewModel.MasterTimelineHeight + steps, 1, 50);
+        _viewModel.MasterTimelineHeight = Math.Clamp(_viewModel.MasterTimelineHeight + steps, ViewModels.MainViewModel.CompactMasterTimeline, ViewModels.MainViewModel.TallMasterTimeline);
     }
 
     /// <summary>A pane was put on screen: the Canvas draws its frame once it has a size.</summary>
@@ -222,7 +226,7 @@ public partial class MainWindow
             KeyBarButton = (System.Windows.Controls.Primitives.ToggleButton)content.FindName(nameof(KeyBarButton));
             AddLayerHost = (Grid)content.FindName(nameof(AddLayerHost));
             AddLayerPopup = (System.Windows.Controls.Primitives.Popup)content.FindName(nameof(AddLayerPopup));
-            AddLayerFlyoutPanel = (Border)content.FindName(nameof(AddLayerFlyoutPanel));
+            AddLayerFlyoutPanel = (ButtonChrome)content.FindName(nameof(AddLayerFlyoutPanel));
             LayersList = (ListBox)content.FindName(nameof(LayersList));
             _addLayerHover = new HoverFlyout(AddLayerHost, AddLayerPopup, AddLayerFlyoutPanel) { HoldsWhileFocused = true };
         }
@@ -252,6 +256,12 @@ public partial class MainWindow
     /// run again for a long while and kept about 40 MB of the start's garbage committed: 10 s after the first frame
     /// HandPeg read 212 to 215 MB where the collection leaves it under 200 (the Media pane did the same by chance in
     /// 4.0, after making its pictures). Done once per start, at ApplicationIdle, as the Media pane's GiveBackMemory.
+    ///
+    /// 4.2D: 4.2's panes brought the 10 s reading back to 213 to 219 MB (4.2C), so the give-back goes further. The large
+    /// object heap is compacted too (the start's big buffers: XAML, the JIT profile, the dock's first measure), the process
+    /// heap is compacted (the native side's start: libmpv's and WPF's own allocations), and the pages the start touched
+    /// once and never again (start-up code, resources read once) leave the working set. They stay in memory as standby
+    /// pages, so what is touched again comes back at once, from RAM, without a disk read.
     /// </summary>
     private void GiveBackStartupMemory()
     {
@@ -261,13 +271,31 @@ public partial class MainWindow
         _startupMemoryGivenBack = true;
         Task.Run(() =>
         {
+            System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
             GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
             GC.WaitForPendingFinalizers();
             GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+
+            HeapCompact(GetProcessHeap(), 0);
+            K32EmptyWorkingSet(GetCurrentProcess());
         });
     }
 
     private bool _startupMemoryGivenBack;
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    private static partial IntPtr GetProcessHeap();
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    private static partial nuint HeapCompact(IntPtr heap, uint flags);
+
+    // The pseudo-handle of this process (-1): never closed, needs no rights beyond the process's own.
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    private static partial IntPtr GetCurrentProcess();
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static partial bool K32EmptyWorkingSet(IntPtr process);
 
     // ----- The side window -----
 

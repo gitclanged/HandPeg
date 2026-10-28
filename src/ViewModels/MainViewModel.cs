@@ -93,8 +93,7 @@ public partial class MainViewModel : ObservableObject
         // brings in the whole of networking. Both begin once the window has been laid out and drawn.
         System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(() =>
         {
-            if (!_hardwareEncodersEarly)
-                _ = ProbeHardwareEncodersAsync();
+            _ = _hardwareEncodersEarly ? RecheckEarlyEncodersAsync() : ProbeHardwareEncodersAsync();
             _ = CheckDependencyUpdatesAsync();
             _ = AutoUpdateDependenciesLaterAsync();
             _ = UploadCrashReportsLaterAsync();
@@ -1170,6 +1169,16 @@ public partial class MainViewModel : ObservableObject
         ApplyHardwareEncoders(saved.Supported, saved.Problems);
     }
 
+    /// <summary>
+    /// The encoders taken before the first frame were matched on FFmpeg alone (EncoderProber.LoadSavedResultEarly): the
+    /// cards and drivers are compared now, away from this thread, and a change since the probe that found them probes again.
+    /// </summary>
+    private async Task RecheckEarlyEncodersAsync()
+    {
+        if (!await Task.Run(EncoderProber.CardsStillMatch))
+            await ProbeHardwareEncodersAsync();
+    }
+
     /// <summary>Tests the GPU encoders in the background and offers the working ones in the Video tab.</summary>
     private async Task ProbeHardwareEncodersAsync()
     {
@@ -1339,8 +1348,8 @@ public partial class MainViewModel : ObservableObject
             IsProgressIndeterminate = true;
             StatusText = "Starting yt-dlp...";
             var progress = new Progress<string>(ReportStatus);
-            var (resolution, subtitles, sponsorBlock, folder) = (DownloadResolution, DownloadSubtitles, AppSettings.Current.SponsorBlockCategories, AppSettings.Current.DownloadFolder);
-            path = await Task.Run(() => YtDlpDownloader.DownloadAsync(url, resolution, subtitles, sponsorBlock, folder, progress, cancellationToken), cancellationToken);
+            var (resolution, subtitles, (sponsorBlock, markSponsorBlock), folder) = (DownloadResolution, DownloadSubtitles, AppSettings.Current.SponsorBlockRequest, AppSettings.Current.DownloadFolder);
+            path = await Task.Run(() => YtDlpDownloader.DownloadAsync(url, resolution, subtitles, sponsorBlock, markSponsorBlock, folder, progress, cancellationToken), cancellationToken);
             return $"Downloaded {Path.GetFileName(path)}";
         });
 
@@ -1432,9 +1441,9 @@ public partial class MainViewModel : ObservableObject
             // The progress object is made here, on the UI thread, so its reports come back to it;
             // the download itself, and the handling of yt-dlp's output, run on the thread pool.
             var progress = new Progress<string>(ReportStatus);
-            var (resolution, subtitles, sponsorBlock, folder) = (DownloadResolution, DownloadSubtitles, AppSettings.Current.SponsorBlockCategories, AppSettings.Current.DownloadFolder);
+            var (resolution, subtitles, (sponsorBlock, markSponsorBlock), folder) = (DownloadResolution, DownloadSubtitles, AppSettings.Current.SponsorBlockRequest, AppSettings.Current.DownloadFolder);
             localPath = await Task.Run(
-                () => YtDlpDownloader.DownloadAsync(source, resolution, subtitles, sponsorBlock, folder, progress, cancellationToken),
+                () => YtDlpDownloader.DownloadAsync(source, resolution, subtitles, sponsorBlock, markSponsorBlock, folder, progress, cancellationToken),
                 cancellationToken);
         }
         else
@@ -1599,6 +1608,7 @@ public partial class MainViewModel : ObservableObject
     public void OnSettingsSaved()
     {
         OnPropertyChanged(nameof(EditLayersOnPlayer));
+        OnPropertyChanged(nameof(SponsorBlockMode));
 
         // The proxy settings may name another height, format or place: proxies are looked for again under them.
         _proxies.Clear();

@@ -28,7 +28,7 @@
                     </StackPanel>
                 </Button>
                 <Popup x:Name="AddPopup" StaysOpen="True" AllowsTransparency="True" Placement="Bottom" PlacementTarget="{Binding ElementName=AddHost}">
-                    <Border x:Name="AddFlyoutPanel" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="6"
+                    <local:ButtonChrome x:Name="AddFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6"
                             Margin="0,2,0,0" MouseLeave="AddFlyout_MouseLeave" PreviewKeyDown="AddFlyout_PreviewKeyDown">
                         <DockPanel TextElement.Foreground="{DynamicResource TextBrush}" Width="240">
                             <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
@@ -41,7 +41,7 @@
                                 <StackPanel x:Name="AddList" />
                             </ScrollViewer>
                         </DockPanel>
-                    </Border>
+                    </local:ButtonChrome>
                 </Popup>
             </Grid>
             <ToggleButton x:Name="BypassButton" Content="&#xE7B3;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="7,4" Margin="0,0,4,0" Click="BypassButton_Click"

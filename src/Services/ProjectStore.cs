@@ -25,9 +25,10 @@ public sealed record ProjectEntry(string FilePath, string Name, string SourceNam
 // still maps, by LegacyProject). 2 is this layout, written by HandPeg 2.0 to 4.0. 3 (HandPeg 4.1) is the same layout
 // with the name of the HandPeg that wrote it, so that an older HandPeg handed a newer file can say which version it
 // needs. 4 (HandPeg 4.1.1) adds the export's sample rate and channels and the 3D drop shadow (distance, angle,
-// softness, colour, in place of the offset). 5 (HandPeg 4.2.0) adds a layer's Mask Offset (MaskOffsetX / MaskOffsetY,
-// left out at 0), which an older HandPeg would drop, showing the mask un-nudged. 2 to 5 are read; a newer format is
-// opened only when the user asks, and is never written over. The TimelineDocument (v4.3.0) takes the next format.
+// softness, colour, in place of the offset), and stays HandPeg 4.2.0's: its one addition, a layer's Mask Offset
+// (MaskOffsetX / MaskOffsetY), is optional and left out at 0, so a project that uses none is the same file, and 4.1.1
+// opens one that does with the mask un-nudged (the user's call, 4.2D). 2 to 4 are read; a newer format is opened only
+// when the user asks, and is never written over. The TimelineDocument (v4.3.0) takes format 5.
 
 /// <summary>A project as it is written to disk.</summary>
 public sealed class ProjectFile
@@ -35,7 +36,7 @@ public sealed class ProjectFile
     public const string FormatName = "handpeg-project";
 
     /// <summary>The format this version writes.</summary>
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 4;
 
     /// <summary>The oldest format of .hproj this version reads: 2, the first in this layout.</summary>
     public const int OldestVersion = 2;

@@ -868,9 +868,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(SelectedBezierPreset));
     }
 
-    // Which panes are open beside the player, and whether clips show their keyframes: per mode, and remembered.
-
-    /// <summary>The Cut Segments pane beside the player.</summary>
+    // Which panes are open beside the player, and whether clips show their keyframes: remembered.
 
     /// <summary>The Keyframes pane beside the player.</summary>
     [ObservableProperty] private bool _showKeyframesPane = AppSettings.Current.ShowKeyframesPane;

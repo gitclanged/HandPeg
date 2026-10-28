@@ -30,8 +30,10 @@ public partial class MainViewModel
     /// <summary>Whether waveforms are drawn at all: the timeline's and the Audio tab's go on and off together.</summary>
     public bool ShowWaveforms => AppSettings.Current.ShowTimelineWaveform;
 
-    // The three height sliders: the master timeline's beside the volume, and the track heights in the bottom
-    // bars of the Layers and Audio tabs. Each runs 1 to 50 and is remembered.
+    // The three heights: the master timeline's, and the track heights in the bottom bars of the Layers and Audio tabs.
+    // Each runs 1 to 50 and is remembered. The master timeline's has no slider since 4.2B-2: the border beside it
+    // (Ctrl-drag, or a plain drag where it is at the top or bottom) and its tab's right-click presets set it, from
+    // Compact to Tall (44 to 160 px, TimelineAreaHeight).
 
     /// <summary>How tall the master timeline is, 1 to 50.</summary>
     public double MasterTimelineHeight
@@ -39,6 +41,9 @@ public partial class MainViewModel
         get => Math.Clamp(AppSettings.Current.MasterTimelineHeight is > 0 and var set ? set : 4 * AppSettings.Current.TimelineHeight - 3, 1, 50);
         set => SetHeight(s => s.MasterTimelineHeight, (s, v) => s.MasterTimelineHeight = v, value, nameof(MasterTimelineHeight), nameof(TimelineAreaHeight));
     }
+
+    /// <summary>The master timeline's presets (its tab's menu) and the range a drag keeps to: 44, 88 and 160 px.</summary>
+    public const int CompactMasterTimeline = 6, MediumMasterTimeline = AppSettings.DefaultMasterTimelineHeight, TallMasterTimeline = 35;
 
     /// <summary>How tall each track's time bar is on the Layers tab, 1 to 50.</summary>
     public double LayerTrackHeight

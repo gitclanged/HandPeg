@@ -118,7 +118,20 @@ public partial class MainWindow
             var at = (uint)Math.Round(96 * dpi.DpiScaleX);
             var across = GetSystemMetricsForDpi(SmCxSizeFrame, at) + GetSystemMetricsForDpi(SmCxPaddedBorder, at);
             var down = GetSystemMetricsForDpi(SmCySizeFrame, at) + GetSystemMetricsForDpi(SmCxPaddedBorder, at);
-            ChromeRoot.Margin = new Thickness(across / dpi.DpiScaleX, down / dpi.DpiScaleY, across / dpi.DpiScaleX, down / dpi.DpiScaleY);
+            var margin = new Thickness(across / dpi.DpiScaleX, down / dpi.DpiScaleY, across / dpi.DpiScaleX, down / dpi.DpiScaleY);
+
+            // Beside a taskbar that hides itself the window stops a pixel short of the screen's edge (OnWindowPosChanging),
+            // so nothing of it reaches past that edge to be kept in.
+            var handle = new WindowInteropHelper(this).Handle;
+            switch (handle == IntPtr.Zero ? null : AutoHideEdge(MonitorFromWindow(handle, MonitorDefaultToNearest)))
+            {
+                case AbeLeft: margin.Left = 0; break;
+                case AbeTop: margin.Top = 0; break;
+                case AbeRight: margin.Right = 0; break;
+                case AbeBottom: margin.Bottom = 0; break;
+            }
+
+            ChromeRoot.Margin = margin;
         }
         else
         {
@@ -134,6 +147,127 @@ public partial class MainWindow
 
     [LibraryImport("user32.dll")]
     private static partial int GetSystemMetricsForDpi(int index, uint dpi);
+
+    // ----- A taskbar that hides itself, and the monitor's working area (Pass 4.2B-2) -----
+    // Maximized, the window reaches past every edge of its monitor by its resize border. When the monitor's taskbar
+    // hides itself (the working area is then the whole monitor), Windows takes such a window for a full-screen one and
+    // keeps the taskbar hidden: moving the pointer to that edge no longer brings it up. So, maximized beside a taskbar
+    // that hides, the window stops one pixel short of that edge; the pointer reaching it wakes the taskbar.
+
+    private const int WmWindowPosChanging = 0x0046;
+    private const uint SwpNoSize = 0x0001, SwpNoMove = 0x0002;
+    private const uint MonitorDefaultToNearest = 2;
+    private const uint AbmGetState = 4, AbmGetAutoHideBarEx = 0x0B, AbsAutoHide = 1;
+    private const int AbeLeft = 0, AbeTop = 1, AbeRight = 2, AbeBottom = 3;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public NativeRect Monitor, Work;
+        public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AppBarData
+    {
+        public int Size;
+        public IntPtr Window;
+        public uint CallbackMessage, Edge;
+        public NativeRect Rect;
+        public IntPtr Param;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowPos
+    {
+        public IntPtr Window, InsertAfter;
+        public int X, Y, Width, Height;
+        public uint Flags;
+    }
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr MonitorFromWindow(IntPtr window, uint flags);
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr MonitorFromRect(in NativeRect rect, uint flags);
+
+    [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool IsZoomed(IntPtr window);
+
+    [LibraryImport("shell32.dll")]
+    private static partial nuint SHAppBarMessage(uint message, ref AppBarData data);
+
+    private static bool TryMonitorInfo(IntPtr monitor, out MonitorInfo info)
+    {
+        info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        return monitor != IntPtr.Zero && GetMonitorInfo(monitor, ref info);
+    }
+
+    /// <summary>The edge of a monitor (AbeLeft ... AbeBottom) that has a taskbar which hides itself, or null.</summary>
+    private static int? AutoHideEdge(IntPtr monitor)
+    {
+        var state = new AppBarData { Size = Marshal.SizeOf<AppBarData>() };
+        if ((SHAppBarMessage(AbmGetState, ref state) & AbsAutoHide) == 0 || !TryMonitorInfo(monitor, out var info))
+            return null;
+
+        for (var edge = AbeLeft; edge <= AbeBottom; edge++)
+        {
+            var bar = new AppBarData { Size = Marshal.SizeOf<AppBarData>(), Edge = (uint)edge, Rect = info.Monitor };
+            if (SHAppBarMessage(AbmGetAutoHideBarEx, ref bar) != 0)
+                return edge;
+        }
+
+        return null;
+    }
+
+    /// <summary>The working area of the monitor a window is on (or nearest to), in that window's DIPs; empty when unknown.</summary>
+    private Rect WorkAreaOf(IntPtr window)
+    {
+        if (window == IntPtr.Zero || !TryMonitorInfo(MonitorFromWindow(window, MonitorDefaultToNearest), out var info))
+            return Rect.Empty;
+
+        var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(this);
+        var work = info.Work;
+        return new Rect(work.Left / dpi.DpiScaleX, work.Top / dpi.DpiScaleY, (work.Right - work.Left) / dpi.DpiScaleX, (work.Bottom - work.Top) / dpi.DpiScaleY);
+    }
+
+    /// <summary>Maximized beside a taskbar that hides itself, the window's place is made to stop a pixel short of that edge.</summary>
+    private static void OnWindowPosChanging(IntPtr window, IntPtr place)
+    {
+        var pos = Marshal.PtrToStructure<WindowPos>(place);
+        if ((pos.Flags & (SwpNoSize | SwpNoMove)) != 0 || !IsZoomed(window))
+            return;
+
+        var rect = new NativeRect { Left = pos.X, Top = pos.Y, Right = pos.X + pos.Width, Bottom = pos.Y + pos.Height };
+        var monitorHandle = MonitorFromRect(rect, MonitorDefaultToNearest);
+        if (AutoHideEdge(monitorHandle) is not { } edge || !TryMonitorInfo(monitorHandle, out var info))
+            return;
+
+        var monitor = info.Monitor;
+        switch (edge)
+        {
+            case AbeLeft when rect.Left < monitor.Left + 1: rect.Left = monitor.Left + 1; break;
+            case AbeTop when rect.Top < monitor.Top + 1: rect.Top = monitor.Top + 1; break;
+            case AbeRight when rect.Right > monitor.Right - 1: rect.Right = monitor.Right - 1; break;
+            case AbeBottom when rect.Bottom > monitor.Bottom - 1: rect.Bottom = monitor.Bottom - 1; break;
+            default: return;
+        }
+
+        (pos.X, pos.Y, pos.Width, pos.Height) = (rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+        Marshal.StructureToPtr(pos, place, false);
+    }
 
     // ----- Snap Layouts: the Maximize button as Windows' own -----
 
@@ -151,6 +285,9 @@ public partial class MainWindow
     {
         switch (message)
         {
+            case WmWindowPosChanging:
+                OnWindowPosChanging(hwnd, lParam);
+                break;
             case WmNcHitTest when IsOverMaximize(lParam):
                 handled = true;
                 return HtMaxButton;

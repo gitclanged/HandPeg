@@ -130,22 +130,160 @@ public partial class MainWindow
             ExportSections.Children.Add(button);
         }
 
-        // A single section needs no button to choose it.
-        ExportSections.Visibility = inExport.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+        // A single section needs no button to choose it; Easy Social Export shows none.
+        ExportSections.Visibility = inExport.Count > 1 && !EasyExport ? Visibility.Visible : Visibility.Collapsed;
         if (_dock.IsRealized(ExportId))
             FillExportSection();
     }
 
-    /// <summary>The Export tab's middle: the chosen section's content, or the hint that each section has a tab of its own.</summary>
+    /// <summary>
+    /// The Export tab's middle: Easy Social Export's cards, or the chosen section's content, or the hint that each section
+    /// has a tab of its own. While the cards are shown no section is made or moved in (nothing made that is not on screen).
+    /// </summary>
     private void FillExportSection()
     {
         if (ExportTab.Visibility != Visibility.Visible)
+            return;
+
+        ApplyExportMode();
+        if (EasyExport)
             return;
 
         if (SectionTabs.All(s => TabOf(s.Id).Visibility == Visibility.Visible))
             ExportSectionHost.Child = ExportNoSections;
         else
             Put(_exportSection, ExportSectionHost);
+    }
+
+    // ----- Easy Social Export | Advanced Export (Pass 4.2B-2) -----
+
+    private static bool EasyExport => AppSettings.Current.UseEasySocialExport;
+
+    private bool _applyingExportMode;
+
+    /// <summary>The switch, the cards or the sections, as AppSettings.UseEasySocialExport says.</summary>
+    private void ApplyExportMode()
+    {
+        var easy = EasyExport;
+        _applyingExportMode = true;
+        try
+        {
+            (EasyExportButton.IsChecked, AdvancedExportButton.IsChecked) = (easy, !easy);
+        }
+        finally
+        {
+            _applyingExportMode = false;
+        }
+
+        EasyExportPanel.Visibility = easy ? Visibility.Visible : Visibility.Collapsed;
+        ExportSectionHost.Visibility = easy ? Visibility.Collapsed : Visibility.Visible;
+        if (easy)
+        {
+            ExportSections.Visibility = Visibility.Collapsed;
+            MakeSocialCards();
+        }
+        else
+        {
+            ExportSections.Visibility = ExportSections.Children.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    private void ExportMode_Checked(object sender, RoutedEventArgs e)
+    {
+        var easy = ReferenceEquals(sender, EasyExportButton);
+        if (_applyingExportMode || easy == EasyExport)
+            return;
+
+        _viewModel.SetViewSetting(s => s.UseEasySocialExport = easy);
+        FillExportSection();
+    }
+
+    // The cards, made once (their words are the view model's); the chosen one marked again after each click.
+    private readonly List<(SocialExportTarget Target, FrameworkElement Card, List<(int SizeMb, Button Button)> Sizes)> _socialCards = [];
+
+    private void MakeSocialCards()
+    {
+        if (_socialCards.Count == 0)
+        {
+            foreach (var target in _viewModel.SocialExportTargets)
+            {
+                var sizes = new List<(int, Button)>();
+                FrameworkElement card;
+                if (target.SizesMb.Count == 0)
+                {
+                    var button = new Button { Content = SocialCardFace(target, null) };
+                    button.SetResourceReference(StyleProperty, "LayoutCard");
+                    button.Click += (_, _) => ChooseSocialExport(target, 0);
+                    AutomationProperties.SetName(button, target.Title);
+                    card = button;
+                }
+                else
+                {
+                    // A card of several sizes: each size is its own one-click button.
+                    var row = new WrapPanel { Margin = new Thickness(26, 6, 0, 0) };
+                    foreach (var size in target.SizesMb)
+                    {
+                        var button = new Button { Content = $"< {size} MB", Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 6, 0) };
+                        button.Click += (_, _) => ChooseSocialExport(target, size);
+                        AutomationProperties.SetName(button, $"{target.Title} under {size} MB");
+                        button.ToolTip = $"Aims the file under {size} MB: an average bitrate worked out from the output's length and the sound's.";
+                        row.Children.Add(button);
+                        sizes.Add((size, button));
+                    }
+
+                    var box = new Border { BorderThickness = new Thickness(1.5), Padding = new Thickness(6, 6, 6, 5), Margin = new Thickness(4), Child = SocialCardFace(target, row) };
+                    box.SetResourceReference(Border.BackgroundProperty, "ControlBrush");
+                    box.SetResourceReference(Border.CornerRadiusProperty, "CardCornerRadius");
+                    card = box;
+                }
+
+                card.Width = 260;
+                card.ToolTip = target.Detail;
+                EasyExportCards.Children.Add(card);
+                _socialCards.Add((target, card, sizes));
+            }
+        }
+
+        MarkSocialChoice();
+    }
+
+    /// <summary>A card's face: the glyph, the title and what it does (and, for a card of sizes, their buttons under them).</summary>
+    private static FrameworkElement SocialCardFace(SocialExportTarget target, FrameworkElement? below)
+    {
+        var glyph = new TextBlock { Text = target.Glyph, FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"), FontSize = 18, Width = 26, Margin = new Thickness(0, 1, 0, 0) };
+        glyph.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
+        var title = new TextBlock { Text = target.Title, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
+        var detail = new TextBlock { Text = target.Detail, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) };
+        detail.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+        var words = new StackPanel { Children = { title, detail } };
+        DockPanel.SetDock(glyph, Dock.Left);
+        var face = new DockPanel { Children = { glyph, words }, HorizontalAlignment = HorizontalAlignment.Stretch };
+        if (below is null)
+            return face;
+
+        return new StackPanel { Children = { face, below } };
+    }
+
+    private void ChooseSocialExport(SocialExportTarget target, int sizeMb)
+    {
+        _viewModel.ApplySocialExport(target, sizeMb);
+        MarkSocialChoice();
+    }
+
+    /// <summary>The card chosen last, outlined as the layout in use is (LayoutCard's "active"); a card of sizes, its size in bold.</summary>
+    private void MarkSocialChoice()
+    {
+        var choice = _viewModel.SocialExportChoice;
+        foreach (var (target, card, sizes) in _socialCards)
+        {
+            var chosen = choice?.Id == target.Id;
+            if (card is Button button)
+                button.Tag = chosen ? "active" : null;
+            else if (card is Border box)
+                box.SetResourceReference(Border.BorderBrushProperty, chosen ? "SelectedBorderBrush" : "ControlBorderBrush");
+            foreach (var (size, sizeButton) in sizes)
+                sizeButton.FontWeight = chosen && choice?.SizeMb == size ? FontWeights.SemiBold : FontWeights.Normal;
+        }
     }
 
     /// <summary>The Export tab's pane content, made when first shown (or at idle): its middle filled then.</summary>

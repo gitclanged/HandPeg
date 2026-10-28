@@ -7,7 +7,9 @@ namespace HandPegApp.Tools.AvSync;
 /// The steps the app takes within a session, played by libmpv in real time (no window, no speakers), each as the app
 /// sends it (Services/MpvPlayer.cs: the seek first, then its graph):
 ///   paused  - a seek while paused with the quick graph without sound, the graph with sound 300 ms later (ArmSoundSettle:
-///             laid out from the moment, with an exact seek to it), then Play;
+///             laid out from the moment, with an exact seek to it, sent again after its restart: 4.2D), then Play;
+///   hold    - the same paused steps off the I-frame grid (target + 0.42 s), then a second's rest: the position must stay
+///             on the frame asked for (--hold-offset, --hold-tolerance in ms; --no-seek-again for the pre-4.2D sends);
 ///   seek    - a seek while playing, with the graph with sound laid out from where it lands;
 ///   rebuild - playing on past the moment the graph holds (LiveGraph.RebuildAt), then the graph built again for where
 ///             playback is, with an exact seek there.
@@ -28,6 +30,7 @@ internal static class Session
         var points = options.Get("points", "100,300,600,1500").Split(',', StringSplitOptions.RemoveEmptyEntries)
             .Select(p => double.Parse(p, CultureInfo.InvariantCulture)).ToList();
         var proxies = options.Has("proxies") && options.Get("proxies") == "on";
+        _seekAgain = !options.Has("no-seek-again");
 
         using var project = ProjectSession.Open(Path.GetFullPath(options.Get("project")), Console.Out);
         project.WaitForFacts(TimeSpan.FromSeconds(90));
@@ -59,7 +62,7 @@ internal static class Session
             // later, then Play.
             var quick = Send(mpv, project.Graph(at, surface, sound: false).Text, at);
             Thread.Sleep(300);
-            Send(mpv, project.Graph(at, surface).Text, at);
+            SendTakingSound(mpv, project.Graph(at, surface).Text, at);
             mpv.SetProperty("pause", "no");
             rows.Add(("paused", at, Read(mpv, TimeSpan.FromSeconds(3)) with { RestartMs = quick }));
 
@@ -69,6 +72,22 @@ internal static class Session
             rows.Add(("seek", jump, Read(mpv, TimeSpan.FromSeconds(3)) with { RestartMs = playing }));
 
             mpv.SetProperty("pause", "yes");
+        }
+
+        // Paused and left paused (4.2D): a seek off the I-frame grid (a key reached by Previous / Next), the quick graph, the
+        // graph with sound 300 ms later, then a second of rest. The picture must stay on the frame asked for: before 4.2D
+        // it moved on to the next I-frame (58.420 -> 59.417 -> 60.417 s), and the keyframe under the playhead was lost.
+        var holds = new List<(double Target, double Quick, double Settled, double Rested)>();
+        foreach (var at in points)
+        {
+            var target = Math.Round(at + options.Number("hold-offset", 0.42), 3);
+            Send(mpv, project.Graph(target, surface, sound: false).Text, target);
+            var quickAt = Number(mpv.Get("time-pos")) ?? double.NaN;
+            Thread.Sleep(300);
+            SendTakingSound(mpv, project.Graph(target, surface).Text, target);
+            var settledAt = Number(mpv.Get("time-pos")) ?? double.NaN;
+            Thread.Sleep(1000);
+            holds.Add((target, quickAt, settledAt, Number(mpv.Get("time-pos")) ?? double.NaN));
         }
 
         // Played on past what the graph holds (a clip about to end or begin), then built again for where playback is.
@@ -107,8 +126,23 @@ internal static class Session
             Console.WriteLine($"{step,-8} {at,8:0.###}  {r.Samples,7}  {r.Median,34:+0.0;-0.0;0.0}  {r.Worst,6:+0.0;-0.0;0.0}  {apart,18:+0.0;-0.0;0.0}  {r.AvsyncMedian,19:+0.0;-0.0;0.0}  {r.AvsyncWorst,6:+0.0;-0.0;0.0}  {(step == "plain" ? "" : r.RestartMs.ToString(CultureInfo.InvariantCulture)),12}  {(passes ? "PASS" : "FAIL")}");
         }
 
+        // A paused position may rest on the frame shown for the moment asked (hr-seek shows the one that covers it), so
+        // within one frame of a 30 fps source, never on an I-frame a second away.
+        var holdTolerance = options.Number("hold-tolerance", 34);
+        Console.WriteLine();
+        Console.WriteLine("hold      target (s)   quick (s)   settled (s)   after 1 s (s)   off (ms)  result");
+        var heldWrong = 0;
+        foreach (var (target, quickAt, settledAt, rested) in holds)
+        {
+            var off = (rested - target) * 1000;
+            var passes = Math.Abs(off) <= holdTolerance && Math.Abs(settledAt - target) * 1000 <= holdTolerance;
+            heldWrong += passes ? 0 : 1;
+            Console.WriteLine($"paused   {target,11:0.000}  {quickAt,10:0.000}  {settledAt,12:0.000}  {rested,14:0.000}  {off,9:+0.0;-0.0;0.0}  {(passes ? "PASS" : "FAIL")}");
+        }
+
         Console.WriteLine(failed == 0 ? $"PASS: every step within {tolerance:0.#} ms." : $"FAIL: {failed} of {rows.Count} steps outside {tolerance:0.#} ms.");
-        return failed == 0 ? 0 : 1;
+        Console.WriteLine(heldWrong == 0 ? $"PASS: every paused seek held its frame (within {holdTolerance:0.#} ms)." : $"FAIL: {heldWrong} of {holds.Count} paused seeks moved off their frame.");
+        return failed == 0 && heldWrong == 0 ? 0 : 1;
     }
 
     /// <summary>
@@ -122,6 +156,26 @@ internal static class Session
         mpv.SetProperty("lavfi-complex", graph);
         return mpv.WaitRestarts(restarts, TimeSpan.FromSeconds(30));
     }
+
+    /// <summary>
+    /// The paused sound settle as MpvPlayer sends it since 4.2D: a graph that takes the sound tracks the quick graph left
+    /// alone, with its exact seek, and once that restart is over the same exact seek again (the first lands on the next
+    /// I-frame: mpv's refresh seek for the newly selected tracks). Without --no-seek-again, to see the old behaviour.
+    /// </summary>
+    private static long SendTakingSound(MpvSession mpv, string graph, double at)
+    {
+        var waited = Send(mpv, graph, at);
+        if (_seekAgain)
+        {
+            var restarts = mpv.Restarts;
+            mpv.Seek((long)Math.Round(at * 1000), exact: true);
+            mpv.WaitRestarts(restarts, TimeSpan.FromSeconds(30));
+        }
+
+        return waited;
+    }
+
+    private static bool _seekAgain = true;
 
     private readonly record struct Reading(int Samples, double Median, double Worst, double AvsyncMedian, double AvsyncWorst)
     {

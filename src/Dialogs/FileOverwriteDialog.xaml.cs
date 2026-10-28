@@ -15,6 +15,7 @@ public partial class FileOverwriteDialog : Window
     public FileOverwriteDialog(string existingPath)
     {
         InitializeComponent();
+        SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
         _folder = Path.GetDirectoryName(existingPath) ?? "";
 
         ExistingPathText.Text = existingPath;

@@ -35,6 +35,7 @@ public partial class FramePreviewDialog : Window
     public FramePreviewDialog(MainViewModel viewModel)
     {
         InitializeComponent();
+        SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
         _viewModel = viewModel;
         DataContext = viewModel;
 

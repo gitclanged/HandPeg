@@ -12,6 +12,7 @@ public partial class LayerPropertiesDialog : Window
     public LayerPropertiesDialog()
     {
         InitializeComponent();
+        SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
     }
 
     /// <summary>Hides or shows the layer's whole track (the main window's, so it is a step of Undo); none: no eye.</summary>

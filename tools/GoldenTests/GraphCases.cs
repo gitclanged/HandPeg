@@ -47,6 +47,8 @@ public static class GraphCases
         yield return Export(KeyframesScene(), "export-keyframes", "Keyframes on place, size, turn and opacity with every kind of easing (closed form, pieced, a custom Bezier), about an anchor point off the middle.");
         yield return Export(TransitionsScene(), "export-transitions", "Fades in and out in each family of style: dissolve, wipe, slide, zoom, blur dissolve; the main video fading too.");
         yield return Export(CrossfadeScene(), "export-crossfade", "A crossfade between two clips of one track (laid over each other across the cut) and one across tracks (the lower keeps its picture).");
+        yield return Export(HardwareScene(tenBit: false), "export-hardware", "A hardware encoder (h264_nvenc) on an odd-sized 4:4:4 screen recording: the picture ends cropped to even sides and converted to yuv420p with full chroma filtering.");
+        yield return Export(HardwareScene(tenBit: true), "export-hardware-10bit", "The same with 10-bit on (hevc_nvenc): the tail ends in p010le.");
 
         // ----- Live, at a seek, with sound -----
         var live = LiveScene(proxies: false);
@@ -164,6 +166,18 @@ public static class GraphCases
         lower.FadeOutSeconds = 1;
         var upper = scene.AddImage(3, "D:/media/upper.png", 640, 360, 15, 8, (0.5, 0.5, 0.4));
         upper.FadeInSeconds = 1;
+        return scene;
+    }
+
+    private static Scene HardwareScene(bool tenBit)
+    {
+        var scene = new Scene(tenBit ? "hardware-10bit" : "hardware")
+        {
+            FrameWidth = 1919, FrameHeight = 1079, Main = Media.Mp4("D:/media/screen.mp4", 60),
+            VideoCodecArguments = tenBit ? "-c:v hevc_nvenc -preset p5 -rc vbr -cq 23 -b:v 0 -pix_fmt p010le" : "-c:v h264_nvenc -preset p5 -rc vbr -cq 23 -b:v 0 -pix_fmt yuv420p",
+            EncoderPixelFormat = tenBit ? "p010le" : "yuv420p",
+        }.WithMainAudio(1);
+        scene.AddImage(1, "D:/media/logo.png", 400, 200, 2, 10, (0.75, 0.05, 0.2));
         return scene;
     }
 

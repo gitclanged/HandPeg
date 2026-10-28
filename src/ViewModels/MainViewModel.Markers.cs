@@ -1,7 +1,9 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using HandPegApp.Models;
+using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
@@ -146,21 +148,7 @@ public partial class MainViewModel
         {
             foreach (var marker in Markers)
             {
-                // Where the marker's moment ends up in the output: inside a kept segment, or nowhere.
-                double? inOutput = segments.Count == 0 ? marker.Seconds : null;
-                var before = 0.0;
-                foreach (var segment in segments)
-                {
-                    if (marker.Seconds >= segment.Start.TotalSeconds && marker.Seconds < segment.End.TotalSeconds)
-                    {
-                        inOutput = before + marker.Seconds - segment.Start.TotalSeconds;
-                        break;
-                    }
-
-                    before += segment.Duration.TotalSeconds;
-                }
-
-                if (inOutput is not { } start)
+                if (OutputTimeOf(marker.Seconds, segments) is not { } start)
                     continue;
 
                 var same = chapters.FindIndex(c => Math.Abs(c.Start - start) < 0.5);
@@ -177,5 +165,144 @@ public partial class MainViewModel
         if (chapters.Count > 0 && chapters[0].Start > 0.5)
             chapters.Insert(0, (0, "Start"));
         return chapters;
+    }
+
+    /// <summary>
+    /// Where a moment of the sequence ends up in the output: inside a kept segment (counted from the output's start, the
+    /// removed stretches before it taken out), or null when it is cut away. A clip's speed is already in the sequence's
+    /// time. With no segments the whole sequence is kept.
+    /// </summary>
+    private static double? OutputTimeOf(double seconds, List<CutSegment> segments)
+    {
+        if (segments.Count == 0)
+            return seconds;
+
+        var before = 0.0;
+        foreach (var segment in segments)
+        {
+            if (seconds >= segment.Start.TotalSeconds && seconds < segment.End.TotalSeconds)
+                return before + seconds - segment.Start.TotalSeconds;
+            before += segment.Duration.TotalSeconds;
+        }
+
+        return null;
+    }
+
+    // ----- YouTube description timestamps and SponsorBlock (Pass 4.2B-2) -----
+
+    /// <summary>The SponsorBlock choices of the Chapters group, as AppSettings.SponsorBlockMode stores them.</summary>
+    public IReadOnlyList<KeyValuePair<string, string>> SponsorBlockModes => AppSettings.SponsorBlockModes;
+
+    /// <summary>
+    /// What the next download does with SponsorBlock (an app setting, shown in the Chapters group and in Settings >
+    /// Downloads). Choosing to cut or mark with no category ticked ticks the usual three (sponsor, self-promotion,
+    /// interaction reminders), so the one click does something; each stays a box of its own in Settings.
+    /// </summary>
+    public string SponsorBlockMode
+    {
+        get => AppSettings.Current.SponsorBlockMode is AppSettings.SponsorBlockChapters or AppSettings.SponsorBlockIgnore
+            ? AppSettings.Current.SponsorBlockMode : AppSettings.SponsorBlockCut;
+        set
+        {
+            if (value == SponsorBlockMode || SponsorBlockModes.All(m => m.Key != value))
+                return;
+
+            SetViewSetting(s =>
+            {
+                s.SponsorBlockMode = value;
+                if (value != AppSettings.SponsorBlockIgnore && s.SponsorBlockCategories.Length == 0)
+                    (s.SponsorBlockSponsor, s.SponsorBlockSelfPromo, s.SponsorBlockInteraction) = (true, true, true);
+            }, nameof(SponsorBlockMode));
+            StatusText = value switch
+            {
+                AppSettings.SponsorBlockChapters => $"SponsorBlock: the next download keeps {AppSettings.Current.SponsorBlockCategories} as named chapters.",
+                AppSettings.SponsorBlockIgnore => "SponsorBlock: the next download is left as it is.",
+                _ => $"SponsorBlock: the next download has {AppSettings.Current.SponsorBlockCategories} cut out.",
+            };
+        }
+    }
+
+    /// <summary>
+    /// The output's chapters as a YouTube description lists them ("00:00 Intro", "01:24 Gameplay", h:mm:ss past an
+    /// hour), copied to the clipboard: every marker in what is kept, at its time in the output (after the cuts; clip
+    /// speeds are in the sequence's time already), and, with SponsorBlock kept as chapters, the main video's own
+    /// chapters (the SponsorBlock ones among them) where they land. Always opens with 00:00, "Intro" when nothing is
+    /// there; two lines on the same second keep the marker's.
+    /// </summary>
+    [RelayCommand]
+    private void CopyYouTubeTimestamps()
+    {
+        var segments = GetMergedSegments();
+        var lines = new List<(int Second, string Title)>();
+        void Add(double sequenceSeconds, string title)
+        {
+            if (OutputTimeOf(sequenceSeconds, segments) is not { } at || string.IsNullOrWhiteSpace(title))
+                return;
+
+            var second = (int)Math.Floor(at + 0.0005);
+            if (lines.All(l => l.Second != second))
+                lines.Add((second, title.Trim()));
+        }
+
+        foreach (var marker in Markers)
+            Add(marker.Seconds, marker.Name);
+
+        if (SponsorBlockMode == AppSettings.SponsorBlockChapters && _mediaInfo is { Chapters.Count: > 0 } info)
+        {
+            foreach (var chapter in info.Chapters)
+            {
+                if (SequenceTimeOfMainSource(chapter.Start) is { } at)
+                    Add(at, YouTubeChapterTitle(chapter.Title));
+            }
+        }
+
+        if (lines.Count == 0 && !HasSource)
+        {
+            StatusText = "Nothing to copy yet: load a video and put markers (M) where the chapters begin.";
+            return;
+        }
+
+        lines.Sort((a, b) => a.Second.CompareTo(b.Second));
+        if (lines.Count == 0 || lines[0].Second > 0)
+            lines.Insert(0, (0, "Intro"));
+
+        var text = string.Join(Environment.NewLine, lines.Select(l => $"{YouTubeTime(l.Second)} {l.Title}"));
+        try
+        {
+            System.Windows.Clipboard.SetText(text);
+        }
+        catch (System.Runtime.InteropServices.COMException)
+        {
+            StatusText = "The clipboard is busy (another program has it open): try Copy YouTube Timestamps again.";
+            return;
+        }
+
+        StatusText = lines.Count >= 3
+            ? $"Copied {lines.Count} chapter timestamps to clipboard"
+            : $"Copied {lines.Count} chapter timestamps to clipboard (YouTube shows chapters from 3 on: put markers with M)";
+    }
+
+    /// <summary>mm:ss, or h:mm:ss from an hour on, as YouTube reads them.</summary>
+    private static string YouTubeTime(int seconds) => seconds >= 3600
+        ? string.Create(CultureInfo.InvariantCulture, $"{seconds / 3600}:{seconds / 60 % 60:00}:{seconds % 60:00}")
+        : string.Create(CultureInfo.InvariantCulture, $"{seconds / 60:00}:{seconds % 60:00}");
+
+    /// <summary>A chapter title as yt-dlp writes a SponsorBlock one ("[SponsorBlock]: Sponsor"), without its prefix.</summary>
+    private static string YouTubeChapterTitle(string title)
+    {
+        const string prefix = "[SponsorBlock]:";
+        return title.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? title[prefix.Length..].Trim() : title;
+    }
+
+    /// <summary>Where a moment of the main video's file is on the sequence: in the clip of it that holds it, or null when no clip does.</summary>
+    private double? SequenceTimeOfMainSource(double fileSeconds)
+    {
+        foreach (var clip in GetMainClips())
+        {
+            if (fileSeconds >= clip.Offset - 0.0005 && fileSeconds < clip.Offset + (clip.End - clip.Start))
+                return clip.Start + Math.Max(fileSeconds - clip.Offset, 0);
+        }
+
+        return null;
     }
 }

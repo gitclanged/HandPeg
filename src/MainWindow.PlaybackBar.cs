@@ -71,7 +71,7 @@ public partial class MainWindow
                 _viewModel.PositionMs = segment.End.TotalMilliseconds;
                 break;
             case "GoToOut":
-                _viewModel.StatusText = "Select a cut segment (on the timeline or in the Cut Segments pane) to go to its end.";
+                _viewModel.StatusText = "Select a cut segment on the timeline to go to its end.";
                 break;
             case "PlayInOut":
                 PlayStartToStop();
@@ -94,7 +94,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The cut segment selected: on the timeline, or else in the Cut Segments pane.</summary>
+    /// <summary>The cut segment selected: on the timeline, or else the one the view model holds as selected.</summary>
     private CutSegment? SelectedSegment() => _selectedClip as CutSegment ?? _viewModel.SelectedSegment;
 
     /// <summary>The start point being set, or the start of the selected cut segment, in milliseconds.</summary>

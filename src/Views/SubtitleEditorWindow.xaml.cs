@@ -47,6 +47,7 @@ public partial class SubtitleEditorWindow : Window
     public SubtitleEditorWindow(MainViewModel viewModel)
     {
         InitializeComponent();
+        SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
         _viewModel = viewModel;
         _images = viewModel.SubtitlesAreImages;
 

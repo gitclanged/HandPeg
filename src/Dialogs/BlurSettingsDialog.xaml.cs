@@ -7,5 +7,9 @@ namespace HandPegApp;
 /// </summary>
 public partial class BlurSettingsDialog : Window
 {
-    public BlurSettingsDialog() => InitializeComponent();
+    public BlurSettingsDialog()
+    {
+        InitializeComponent();
+        SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
+    }
 }

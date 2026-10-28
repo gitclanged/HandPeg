@@ -15,6 +15,7 @@ public partial class StyleImportDialog : Window
     public StyleImportDialog(StylePreset settings, string? fileName)
     {
         InitializeComponent();
+        SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
 
         var isExport = fileName is null;
         Title = isExport ? "Export Style Preset" : "Import Style Preset";

@@ -21,6 +21,7 @@ public partial class PreviewPlayerWindow : Window
     public PreviewPlayerWindow(string path)
     {
         InitializeComponent();
+        SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
         _path = path;
         _timer.Tick += (_, _) => ShowPosition();
 

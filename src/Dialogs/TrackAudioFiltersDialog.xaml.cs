@@ -18,6 +18,7 @@ public partial class TrackAudioFiltersDialog : Window
     public TrackAudioFiltersDialog(string heading, TrackAudioFilters filters)
     {
         InitializeComponent();
+        SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
         TrackText.Text = heading;
         DataContext = Filters = filters.Clone();
     }

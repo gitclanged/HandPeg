@@ -1,3 +1,6 @@
+using System.Windows;
+using System.Windows.Media;
+
 namespace HandPegApp.Models;
 
 /// <summary>
@@ -43,6 +46,9 @@ public enum EasingType
 /// <summary>An easing as the Keyframes pane's drop-down offers it.</summary>
 public sealed record EasingChoice(EasingType Type, string Name)
 {
+    /// <summary>The curve's 16 x 12 picture beside its name (4.2B-3, <see cref="EasingCurves.IconGeometry"/>).</summary>
+    public Geometry Icon => EasingCurves.IconGeometry(Type);
+
     public static IReadOnlyList<EasingChoice> All { get; } =
     [
         new(EasingType.Linear, "Linear"),
@@ -226,4 +232,46 @@ public static class EasingCurves
     };
 
     private static string Number(double value) => value.ToString("0.#######", System.Globalization.CultureInfo.InvariantCulture);
+
+    // ----- The curves' pictures -----
+
+    /// <summary>How wide and how tall a curve's picture is, in DIPs.</summary>
+    public const double IconWidth = 16, IconHeight = 12;
+
+    private static readonly Dictionary<EasingType, Geometry> Icons = [];
+
+    /// <summary>
+    /// A frozen 16 x 12 picture of an easing (4.2B-3): its curve sampled from <see cref="Evaluate"/> at <see cref="Pieces"/>
+    /// + 1 points from 0 to 1 (Bounce at its own pieces, landings included; Hold as the step it is), time across and value
+    /// up, scaled so that 0 to 1 and any overshoot fill the height. Drawn from the formula alone, no picture file; made once
+    /// per easing, on the UI thread, and kept (a Custom Bézier shows its default handles).
+    /// </summary>
+    public static Geometry IconGeometry(EasingType type)
+    {
+        if (Icons.TryGetValue(type, out var kept))
+            return kept;
+
+        var key = new Keyframe(0, 0, type);
+        (double U, double E)[] points = type switch
+        {
+            EasingType.Hold => [(0, 0), (1, 0), (1, 1)],
+            EasingType.Bounce => PiecesOf(key),
+            _ => [.. Enumerable.Range(0, Pieces + 1).Select(i => ((double)i / Pieces, Evaluate((double)i / Pieces, key)))],
+        };
+
+        // Half a pixel in from each side, so a 1 px stroke stays inside the picture.
+        var (low, high) = (Math.Min(0, points.Min(p => p.E)), Math.Max(1, points.Max(p => p.E)));
+        Point At((double U, double E) p) => new(0.5 + p.U * (IconWidth - 1), IconHeight - 0.5 - (p.E - low) / (high - low) * (IconHeight - 1));
+
+        var curve = new StreamGeometry();
+        using (var context = curve.Open())
+        {
+            context.BeginFigure(At(points[0]), false, false);
+            context.PolyLineTo([.. points.Skip(1).Select(At)], true, true);
+        }
+
+        curve.Freeze();
+        Icons[type] = curve;
+        return curve;
+    }
 }

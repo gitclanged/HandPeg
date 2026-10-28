@@ -374,6 +374,7 @@ public sealed class MpvPlayer
             SetProperty("lavfi-complex", "");
         }
 
+        (_graphTakesSound, _seekAgain) = (false, null);
         _path = path;
         IsLoading = true;
         IsEnded = false;
@@ -509,6 +510,19 @@ public sealed class MpvPlayer
             (_seekInFlight, _seekSentAt, _inFlightOvertakable) = (true, Environment.TickCount64, overtakable);
         }
 
+        // A graph that takes the sound tracks the running one left alone makes mpv select them, and its demuxer seeks
+        // again for them (a refresh seek): the restart after it lands on the next I-frame, not the frame asked for
+        // (4.2D: 58.420 -> 59.417 s while paused, the paused sound settle). Asked once more after that restart, with
+        // the tracks now taken, the same exact seek lands on its frame. Only while paused: playing on, it is not seen.
+        _seekAgain = null;
+        if (graph is not null)
+        {
+            var tookSound = _graphTakesSound;
+            _graphTakesSound = graph.Contains("[ao]", StringComparison.Ordinal);
+            if (_graphTakesSound && !tookSound && IsPaused && seek is { Exact: true } again)
+                _seekAgain = again;
+        }
+
         if (graph is not null)
         {
             // HANDPEG_LOG_GRAPH=1: each graph is written to the log in full before mpv is given it, so that one the
@@ -532,6 +546,12 @@ public sealed class MpvPlayer
         lock (_sendLock)
         {
             _seekInFlight = false;
+
+            // The seek that a graph taking the sound tracks threw off (see SendPendingLocked), unless a newer one waits.
+            if (_seekAgain is { } again && _pendingSeek is null && IsPaused && !_closing)
+                _pendingSeek = again;
+            _seekAgain = null;
+
             if (_pendingGraph is not null || _pendingSeek is not null)
                 SendPendingLocked();
         }
@@ -546,13 +566,18 @@ public sealed class MpvPlayer
             if (!_hasGraph)
                 return;
 
-            _hasGraph = false;
+            (_hasGraph, _graphTakesSound) = (false, false);
             SetProperty("lavfi-complex", "");
         }
     }
 
     private bool _hasGraph;
     private bool _awaitingFirstFrame;
+
+    // Whether the graph given last takes the sound tracks, and the exact seek to send again once the restart in flight
+    // is over (see SendPendingLocked).
+    private bool _graphTakesSound;
+    private (long Ms, bool Exact)? _seekAgain;
 
     private static readonly bool LogGraphs = Environment.GetEnvironmentVariable("HANDPEG_LOG_GRAPH") == "1";
 

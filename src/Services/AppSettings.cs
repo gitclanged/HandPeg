@@ -914,6 +914,31 @@ public sealed class AppSettings
         SponsorBlockInteraction ? "interaction" : null,
     }.Where(c => c is not null));
 
+    public const string SponsorBlockCut = "cut", SponsorBlockChapters = "chapters", SponsorBlockIgnore = "ignore";
+
+    /// <summary>
+    /// What a download does with the ticked SponsorBlock categories (Pass 4.2B-2): cuts them out (--sponsorblock-remove,
+    /// as before), keeps them as named chapters of the file (--sponsorblock-mark; Copy YouTube Timestamps lists them), or
+    /// leaves SponsorBlock alone. An unknown value is taken as cut.
+    /// </summary>
+    public string SponsorBlockMode { get; set; } = SponsorBlockCut;
+
+    /// <summary>The choices for <see cref="SponsorBlockMode"/>, with the words shown for them.</summary>
+    public static IReadOnlyList<KeyValuePair<string, string>> SponsorBlockModes { get; } =
+    [
+        new(SponsorBlockCut, "Cut Out SponsorBlock Segments"),
+        new(SponsorBlockChapters, "Keep as Named Chapters"),
+        new(SponsorBlockIgnore, "Ignore"),
+    ];
+
+    /// <summary>What a download asks yt-dlp for: the categories (none when ignored or none ticked), and whether they are marked rather than cut.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public (string Categories, bool Mark) SponsorBlockRequest =>
+        SponsorBlockMode == SponsorBlockIgnore ? ("", false) : (SponsorBlockCategories, SponsorBlockMode == SponsorBlockChapters);
+
+    /// <summary>The Export tab shows the Easy Social Export cards instead of the Video and Audio sections (Pass 4.2B-2).</summary>
+    public bool UseEasySocialExport { get; set; }
+
     /// <summary>
     /// The preset to apply automatically to a source. A rule for a folder the file is in wins over a rule
     /// for a keyword, which wins over a rule for the extension; when none matches, the default applies.

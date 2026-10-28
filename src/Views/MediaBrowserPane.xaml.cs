@@ -44,6 +44,11 @@ public partial class MediaBrowserPane : UserControl
     private bool? _listView;
     private double _tileWidth = 200;
     private readonly List<MediaBrowserItem> _queue = [];
+
+    // The second pass (4.2D): videos whose tile shows a poster made on its own, waiting for their strip (Background lane),
+    // and those whose strip is being made because the pointer crossed them first (Interactive).
+    private readonly List<MediaBrowserItem> _stripsWanted = [];
+    private readonly HashSet<MediaBrowserItem> _stripsOnDemand = [];
     private readonly LinkedList<(MediaBrowserItem Item, IReadOnlyList<BitmapSource> Frames)> _strips = new();
     private CancellationTokenSource _listing = new();
     private bool _working, _started;
@@ -145,6 +150,7 @@ public partial class MediaBrowserPane : UserControl
         _listing = new CancellationTokenSource();
         var token = _listing.Token;
         _queue.Clear();
+        _stripsWanted.Clear();
         _strips.Clear();
         _items.Clear();
 
@@ -194,6 +200,13 @@ public partial class MediaBrowserPane : UserControl
 
     /// <summary>A file was asked to be opened as the main video.</summary>
     public event Action<string>? LoadRequested;
+
+    /// <summary>How large the files are shown (the size slider, 0 a list to 100 the largest tiles): the Media tab's menu sets it (4.2B-2).</summary>
+    public double TileSize
+    {
+        get => SizeSlider.Value;
+        set => SizeSlider.Value = Math.Clamp(value, SizeSlider.Minimum, SizeSlider.Maximum);
+    }
 
     /// <summary>Files were asked to be put on the timeline at the playhead: as clips, or (true) as sound on the Audio tab.</summary>
     public event Action<IReadOnlyList<string>, bool>? AddRequested;
@@ -265,6 +278,7 @@ public partial class MediaBrowserPane : UserControl
         _listing = new CancellationTokenSource();
         var token = _listing.Token;
         _queue.Clear();
+        _stripsWanted.Clear();
         _strips.Clear();
         _items.Clear();
 
@@ -737,7 +751,7 @@ public partial class MediaBrowserPane : UserControl
                 (item.Poster, item.PreviewRequested) = (null, false);
         }
 
-        if (!_working && _queue.Count > 0)
+        if (!_working && (_queue.Count > 0 || _stripsWanted.Any(_inSight.Contains)))
             _ = WorkAsync();
     }
 
@@ -747,8 +761,11 @@ public partial class MediaBrowserPane : UserControl
         _working = true;
         var token = _listing.Token;
 
-        // Videos whose strip is not kept yet (4.1.1): their strips are made only after every tile in sight whose strip is
-        // kept has its poster (cut from that strip, no tool run), so one long video's strip never holds up the rest.
+        // Videos whose strip is not kept yet (4.1.1): their posters are made only after every tile in sight whose strip or
+        // poster is kept has its poster (no tool run), so one long video never holds up the rest. Since 4.2D those posters
+        // are one frame each (PreparePosterAsync), and the strips come in a second pass, once every tile in sight has its
+        // poster on screen: in the Background lane, a tile in sight first; at once, in the Interactive lane, for a tile the
+        // pointer crosses before its strip is there (Picture_MouseMove).
         var unkept = new List<MediaBrowserItem>();
         try
         {
@@ -765,6 +782,12 @@ public partial class MediaBrowserPane : UserControl
                 {
                     (item, waited) = (unkept[0], true);
                     unkept.RemoveAt(0);
+                }
+                else if (NextStripWanted() is { } wanted)
+                {
+                    if (wanted.StripPath is null && !_stripsOnDemand.Contains(wanted))
+                        await PrepareStripAsync(wanted, token, WorkLane.Background);
+                    continue;
                 }
                 else
                 {
@@ -815,20 +838,51 @@ public partial class MediaBrowserPane : UserControl
 
     /// <summary>
     /// A video's tile from the cache alone (4.1.1): its length, shape, strip and poster when its description and strip are
-    /// kept, read and cut away from the interface (a millisecond or so), and shown at once. False when either is not kept.
+    /// kept, read and cut away from the interface (a millisecond or so), and shown at once. Since 4.2D also a poster made
+    /// on its own and kept, its strip then wanted in the second pass. False when neither is kept.
     /// </summary>
     private async Task<bool> TakeKeptAsync(MediaBrowserItem item, CancellationToken token)
     {
         var settings = AppSettings.Current;
         var (path, height) = (item.Path, PictureHeight);
         var (frames, frameHeight) = (Math.Clamp(settings.BrowserPreviewFrames, 2, 40), Math.Clamp(settings.BrowserPreviewHeight, 90, 1080));
-        if (await Task.Run(() => MediaBrowserFrames.Kept(path, frames, frameHeight, height, 0.3), token) is not { } kept)
+        if (await Task.Run(() => MediaBrowserFrames.Kept(path, frames, frameHeight, height, 0.3), token) is { } kept)
+        {
+            item.PreviewRequested = true;
+            (item.Seconds, item.Info) = (kept.Seconds, kept.Seconds > 0 ? MediaBrowserItem.FormatSeconds(kept.Seconds) : item.Info);
+            (item.Shape, item.StripPath, item.Poster) = ((double)kept.Width / kept.Height, kept.Strip, kept.Poster);
+            return true;
+        }
+
+        if (await Task.Run(() => MediaBrowserFrames.KeptPosterOnly(path, height), token) is not { Poster: not null } poster)
             return false;
 
         item.PreviewRequested = true;
-        (item.Seconds, item.Info) = (kept.Seconds, kept.Seconds > 0 ? MediaBrowserItem.FormatSeconds(kept.Seconds) : item.Info);
-        (item.Shape, item.StripPath, item.Poster) = ((double)kept.Width / kept.Height, kept.Strip, kept.Poster);
+        (item.Seconds, item.Info) = (poster.Seconds, poster.Seconds > 0 ? MediaBrowserItem.FormatSeconds(poster.Seconds) : item.Info);
+        (item.Shape, item.Poster) = ((double)poster.Width / poster.Height, poster.Poster);
+        WantStrip(item);
         return true;
+    }
+
+    /// <summary>A video whose tile shows a poster made on its own: its strip is made in the second pass.</summary>
+    private void WantStrip(MediaBrowserItem item)
+    {
+        if (item.StripPath is null && !_stripsWanted.Contains(item))
+            _stripsWanted.Add(item);
+    }
+
+    /// <summary>
+    /// The next video whose strip the second pass makes: one in sight first, else (while the pointer has been in the pane,
+    /// so pictures out of sight are being made too) the first waiting. Those out of sight otherwise wait for their tile to
+    /// come into view again, or for the folder indexer.
+    /// </summary>
+    private MediaBrowserItem? NextStripWanted()
+    {
+        _stripsWanted.RemoveAll(i => i.StripPath is not null || !_items.Contains(i));
+        var next = _stripsWanted.FirstOrDefault(_inSight.Contains) ?? (_prefetching ? _stripsWanted.FirstOrDefault() : null);
+        if (next is not null)
+            _stripsWanted.Remove(next);
+        return next;
     }
 
     private async Task PrepareAsync(MediaBrowserItem item, CancellationToken token)
@@ -847,15 +901,51 @@ public partial class MediaBrowserPane : UserControl
                 return;
 
             case MediaBrowserKind.Video:
-                // A tile in sight is what the user is waiting for (4.1.1): its strip goes in the Interactive lane, never
-                // behind the proxies, waveforms and thumbnails of the Background lane.
+                // A tile in sight is what the user is waiting for (4.1.1): its poster goes in the Interactive lane, never
+                // behind the proxies, waveforms and thumbnails of the Background lane. One frame first (4.2D); the strip
+                // follows in the second pass. Only when no poster could be made on its own is the strip made at once.
+                var lane = _inSight.Contains(item) ? WorkLane.Interactive : WorkLane.Background;
                 if (item.StripPath is null)
-                    await PrepareStripAsync(item, token, _inSight.Contains(item) ? WorkLane.Interactive : WorkLane.Background);
+                {
+                    if (await PreparePosterAsync(item, token, lane, height))
+                    {
+                        WantStrip(item);
+                        return;
+                    }
+
+                    if (item.Shape <= 0 || item.Info == "cannot be read")
+                        return;
+                    await PrepareStripAsync(item, token, lane);
+                }
 
                 if (item.StripPath is { } strip)
                     item.Poster = await Task.Run(() => MediaBrowserFrames.Poster(strip, item.Shape, height, 0.3), token);
                 return;
         }
+    }
+
+    /// <summary>
+    /// The first pass for a video whose strip is not kept (4.2D): its length and shape, and one frame as its poster (kept,
+    /// or made now). False when the file cannot be read or the frame could not be made.
+    /// </summary>
+    private static async Task<bool> PreparePosterAsync(MediaBrowserItem item, CancellationToken token, WorkLane lane, int height)
+    {
+        if (await MediaBrowserFrames.DescribeAsync(item.Path, token, lane) is not { } video)
+        {
+            item.Info = "cannot be read";
+            return false;
+        }
+
+        (item.Seconds, item.Info) = (video.Seconds, video.Seconds > 0 ? MediaBrowserItem.FormatSeconds(video.Seconds) : item.Info);
+        if (video.Width <= 0 || video.Height <= 0)
+            return false;
+
+        item.Shape = (double)video.Width / video.Height;
+        if (await MediaBrowserFrames.PosterOnlyAsync(item.Path, video.Seconds, height, token, lane) is not { } poster)
+            return false;
+
+        item.Poster = await Task.Run(() => MediaBrowserFrames.Picture(poster, height), token);
+        return item.Poster is not null;
     }
 
     /// <summary>A video's length and shape, and its strip of frames (kept, or made now): what scrubbing across its tile needs.</summary>
@@ -881,6 +971,14 @@ public partial class MediaBrowserPane : UserControl
 
     private void Picture_MouseMove(object sender, MouseEventArgs e)
     {
+        // A tile showing a poster made on its own (4.2D): its strip is made now, in the Interactive lane, not left to wait
+        // for the second pass.
+        if (sender is FrameworkElement { DataContext: MediaBrowserItem { IsVideo: true, StripPath: null, Poster: not null } waiting })
+        {
+            _ = MakeStripNowAsync(waiting);
+            return;
+        }
+
         if (sender is not FrameworkElement { DataContext: MediaBrowserItem { IsVideo: true, StripPath: not null } item, ActualWidth: > 0 } picture)
             return;
 
@@ -891,6 +989,30 @@ public partial class MediaBrowserPane : UserControl
             item.HoverFrame = frames[Math.Min((int)(fraction * frames.Count), frames.Count - 1)];
         else
             _ = DecodeStripAsync(item);
+    }
+
+    /// <summary>A hovered video's strip, made at once (the second pass would have made it later); then scrubbing works.</summary>
+    private async Task MakeStripNowAsync(MediaBrowserItem item)
+    {
+        if (!_stripsOnDemand.Add(item))
+            return;
+
+        _stripsWanted.Remove(item);
+        try
+        {
+            await PrepareStripAsync(item, _listing.Token, WorkLane.Interactive);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            AppLog.Write($"Media browser: {ex.Message}");
+        }
+        finally
+        {
+            _stripsOnDemand.Remove(item);
+        }
     }
 
     private void Picture_MouseLeave(object sender, MouseEventArgs e)
@@ -1033,6 +1155,107 @@ public partial class MediaBrowserPane : UserControl
         }
 
         (_pressAt, _keepSelection) = (null, false);
+    }
+
+    // ----- Middle-click auto-scroll (Pass 4.2B-2) -----
+    // The middle button pressed over the files sets an anchor: the list scrolls on its own, as fast as the pointer is
+    // far above or below it (a few DIPs around it stand still). Held and moved, letting go stops it; clicked, it goes on
+    // until the next click of any button, Escape, or the list losing the pointer. Each frame (CompositionTarget) moves
+    // it by the time since the last, so the speed is the same at any frame rate.
+
+    private Point? _autoScrollAnchor;
+    private Point _autoScrollPointer;
+    private bool _autoScrollDragged;
+    private TimeSpan _autoScrollLast;
+    private const double AutoScrollStill = 8, AutoScrollSpeed = 8, AutoScrollMaxSpeed = 6000;
+
+    private void Items_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_autoScrollAnchor is not null)
+        {
+            // Any press while scrolling ends it, and does nothing else.
+            StopAutoScroll();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.ChangedButton != MouseButton.Middle || Scroller is not { ScrollableHeight: > 0 } || !Items.CaptureMouse())
+            return;
+
+        _autoScrollAnchor = _autoScrollPointer = e.GetPosition(Items);
+        (_autoScrollDragged, _autoScrollLast) = (false, TimeSpan.Zero);
+        Items.Cursor = Cursors.ScrollNS;
+        Items.PreviewMouseMove += AutoScroll_MouseMove;
+        CompositionTarget.Rendering += AutoScroll_Rendering;
+        e.Handled = true;
+    }
+
+    private void AutoScroll_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_autoScrollAnchor is not { } anchor)
+            return;
+
+        _autoScrollPointer = e.GetPosition(Items);
+        if (e.MiddleButton == MouseButtonState.Pressed && Math.Abs(_autoScrollPointer.Y - anchor.Y) > AutoScrollStill)
+            _autoScrollDragged = true;
+    }
+
+    private void Items_PreviewMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Middle || _autoScrollAnchor is null)
+            return;
+
+        // Held and dragged: letting go ends it. A click: it goes on until the next click.
+        if (_autoScrollDragged)
+            StopAutoScroll();
+        e.Handled = true;
+    }
+
+    private void Items_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape || _autoScrollAnchor is null)
+            return;
+
+        StopAutoScroll();
+        e.Handled = true;
+    }
+
+    private void Items_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (_autoScrollAnchor is not null && !ReferenceEquals(Mouse.Captured, Items))
+            StopAutoScroll();
+    }
+
+    private void AutoScroll_Rendering(object? sender, EventArgs e)
+    {
+        if (_autoScrollAnchor is not { } anchor || Scroller is not { } scroller || !IsVisible)
+        {
+            StopAutoScroll();
+            return;
+        }
+
+        var now = e is RenderingEventArgs rendering ? rendering.RenderingTime : TimeSpan.Zero;
+        var seconds = _autoScrollLast == TimeSpan.Zero ? 0 : Math.Min((now - _autoScrollLast).TotalSeconds, 0.1);
+        _autoScrollLast = now;
+        var distance = _autoScrollPointer.Y - anchor.Y;
+        if (seconds <= 0 || Math.Abs(distance) <= AutoScrollStill)
+            return;
+
+        var speed = Math.Clamp((distance - Math.Sign(distance) * AutoScrollStill) * AutoScrollSpeed, -AutoScrollMaxSpeed, AutoScrollMaxSpeed);
+        scroller.ScrollToVerticalOffset(Math.Clamp(scroller.VerticalOffset + speed * seconds, 0, scroller.ScrollableHeight));
+    }
+
+    private void StopAutoScroll()
+    {
+        if (_autoScrollAnchor is null)
+            return;
+
+        _autoScrollAnchor = null;
+        CompositionTarget.Rendering -= AutoScroll_Rendering;
+        Items.PreviewMouseMove -= AutoScroll_MouseMove;
+        Items.ClearValue(CursorProperty);
+        if (ReferenceEquals(Mouse.Captured, Items))
+            Items.ReleaseMouseCapture();
     }
 
     private void Items_ContextMenuOpening(object sender, ContextMenuEventArgs e)

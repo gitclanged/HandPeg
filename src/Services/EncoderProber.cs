@@ -112,20 +112,34 @@ public static class EncoderProber
     private static string SavedPath => Path.Combine(AppPaths.Cache, "encoder-probe.json");
 
     /// <summary>What the result was found for: this FFmpeg (where, how large, when written) and these cards with these drivers.</summary>
-    private static string MachineKey()
+    private static string MachineKey() => FfmpegKey() + "|" + GpuAdapters.Fingerprint;
+
+    // The key without its last part, the cards (GpuAdapters.Fingerprint, which has no '|' in it).
+    private static string FfmpegKey()
     {
         var ffmpeg = new FileInfo(DependencyUpdater.FfmpegPath);
         return string.Create(System.Globalization.CultureInfo.InvariantCulture,
-            $"{TestsVersion}|{ffmpeg.FullName}|{(ffmpeg.Exists ? ffmpeg.Length : 0)}|{(ffmpeg.Exists ? ffmpeg.LastWriteTimeUtc.Ticks : 0)}|{GpuAdapters.Fingerprint}");
+            $"{TestsVersion}|{ffmpeg.FullName}|{(ffmpeg.Exists ? ffmpeg.Length : 0)}|{(ffmpeg.Exists ? ffmpeg.LastWriteTimeUtc.Ticks : 0)}");
     }
 
     private static Task<(List<string> Supported, List<string> Problems)?>? _early;
 
+    // The key of a result taken at launch for this FFmpeg, its cards not yet compared (see CardsStillMatch).
+    private static string? _cardsUnchecked;
+
     /// <summary>
-    /// Starts reading the saved result away from the calling thread, at launch: with it, the cards are listed (DXGI, up to
-    /// a quarter of a second while a card wakes up), so that the window can have its encoders before its first frame.
+    /// Starts reading the saved result away from the calling thread, at launch, so that the window can have its encoders
+    /// before its first frame. Only FFmpeg's part of what it was found for is compared then: listing the cards (DXGI) loads
+    /// each card's driver, up to a quarter of a second while a card wakes up, and the window's thread, loading its own
+    /// libraries meanwhile, waited for it (Pass 4.2C). The cards are compared after the first frame (<see cref="CardsStillMatch"/>).
     /// </summary>
-    public static void LoadSavedResultEarly() => _early = Task.Run(LoadSavedResult);
+    public static void LoadSavedResultEarly() => _early = Task.Run(() => LoadSaved(checkCards: false));
+
+    /// <summary>
+    /// After the first frame, away from the window's thread: whether a result taken at launch was found for these cards and
+    /// drivers too. False when one has changed since: the hardware encoders are then probed again.
+    /// </summary>
+    public static bool CardsStillMatch() => Interlocked.Exchange(ref _cardsUnchecked, null) is not { } key || key == MachineKey();
 
     /// <summary>
     /// The saved result read at launch, once, when it is there within <paramref name="patience"/>; null when there is none
@@ -138,12 +152,14 @@ public static class EncoderProber
     /// The result saved by an earlier probe for this FFmpeg and these drivers, put back in place (what each
     /// encoder can do, the OpenCL blur); null when there is none or it was found for something else.
     /// </summary>
-    public static (List<string> Supported, List<string> Problems)? LoadSavedResult()
+    public static (List<string> Supported, List<string> Problems)? LoadSavedResult() => LoadSaved(checkCards: true);
+
+    private static (List<string> Supported, List<string> Problems)? LoadSaved(bool checkCards)
     {
         try
         {
             if (!File.Exists(SavedPath) || System.Text.Json.JsonSerializer.Deserialize<SavedResult>(File.ReadAllText(SavedPath)) is not { } saved
-                || saved.Key != MachineKey())
+                || !(checkCards ? saved.Key == MachineKey() : saved.Key.LastIndexOf('|') is var bar and >= 0 && saved.Key[..bar] == FfmpegKey()))
             {
                 return null;
             }
@@ -152,7 +168,8 @@ public static class EncoderProber
             (_lastSupported, _lastProblems, _openClKnown) = (saved.Supported, saved.Problems, saved.OpenClKnown);
             if (saved.OpenClKnown)
                 (OpenClBlurAvailable, _openClDevice) = (saved.OpenClBlur, OpenClDevices.Contains(saved.OpenClDevice) ? saved.OpenClDevice : OpenClDevices[0]);
-            Log($"Hardware encoders as found before for this FFmpeg and these drivers: {(saved.Supported.Count > 0 ? string.Join(", ", saved.Supported) : "none")}.");
+            _cardsUnchecked = checkCards ? null : saved.Key;
+            Log($"Hardware encoders as found before for this FFmpeg{(checkCards ? " and these drivers" : " (its cards compared after the first frame)")}: {(saved.Supported.Count > 0 ? string.Join(", ", saved.Supported) : "none")}.");
             return (saved.Supported, saved.Problems);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or NotSupportedException)

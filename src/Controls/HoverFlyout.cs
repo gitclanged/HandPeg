@@ -31,7 +31,7 @@ public sealed class HoverFlyout
     {
     }
 
-    /// <summary>One flyout for several buttons (the same button in two places, one per mode): it opens from whichever the pointer rests on.</summary>
+    /// <summary>One flyout for several buttons (the same button in two places): it opens from whichever the pointer rests on.</summary>
     public HoverFlyout(IReadOnlyList<FrameworkElement> hosts, Popup popup, FrameworkElement panel)
     {
         _popup = popup;

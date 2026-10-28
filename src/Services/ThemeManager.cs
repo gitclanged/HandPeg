@@ -75,7 +75,8 @@ public static partial class ThemeManager
     // darker pewter for the tabs not shown and the cards, each tab outlined, warm taupe wells (track bars, lists, the
     // ruler, the layout canvas), muted stone inputs, never a glaring white; squared stone buttons raised by a lit edge
     // (light top and left, dark bottom and right), wells and viewports sunk by the reverse; a soft parchment chosen row;
-    // steel-blue under the pointer and on what is chosen; crisp near-black text.
+    // steel-blue under the pointer and on what is chosen; crisp near-black text. 4.2B-3: a ticked box stays a sunken well
+    // with a near-black mark, and what is focused, checked or chosen is ringed by a classic 1 px dotted rectangle.
     private static readonly Dictionary<string, string> RenoPalette = new()
     {
         ["WindowBackgroundBrush"] = "#7C7E83", ["PanelBrush"] = "#9A9B9E", ["ControlBrush"] = "#ACA9A1", ["ControlHoverBrush"] = "#9AB8D6",
@@ -88,11 +89,13 @@ public static partial class ThemeManager
         ["HoverFillBrush"] = "#9AB8D6", ["HoverBorderBrush"] = "#3F6E98",
         ["SelectedFillBrush"] = "#7FA6CC", ["SelectedBorderBrush"] = "#2F6290", ["SelectedTextBrush"] = "#141517", ["ActiveTabTraceBrush"] = "#2F6290",
         ["SelectedRowBrush"] = "#C4C1B8", ["SelectedRowBorderBrush"] = "#5E5C55",
+        ["CheckedBoxBrush"] = "#848179", ["CheckedBoxBorderBrush"] = "#4A4843/#B0AEA6", ["CheckMarkBrush"] = "#141517", ["DottedFocusBrush"] = "#2B2D32",
     };
 
     // Reno in the dark (Pass 4.1C; to Reno's measure in 4.1.1): gunmetal surfaces under a near-black title bar, the same
     // squared buttons raised by a lit edge and wells sunk by the reverse (4.1C.2), darker tabs not shown, each tab
-    // outlined (lit top and left), a warm-grey chosen row, steel-blue under the pointer and on what is checked.
+    // outlined (lit top and left), a warm-grey chosen row, steel-blue under the pointer and on what is checked; 4.2B-3: a
+    // ticked box stays a sunken well with a light-blue mark, and a pale dotted rectangle rings what is focused or chosen.
     private static readonly Dictionary<string, string> RenoDarkPalette = new()
     {
         ["WindowBackgroundBrush"] = "#1A1C20", ["PanelBrush"] = "#24272D", ["ControlBrush"] = "#1E2126", ["ControlHoverBrush"] = "#2B4A68",
@@ -105,6 +108,7 @@ public static partial class ThemeManager
         ["HoverFillBrush"] = "#2B4A68", ["HoverBorderBrush"] = "#5892C8",
         ["SelectedFillBrush"] = "#2B4A68", ["SelectedBorderBrush"] = "#5892C8", ["SelectedTextBrush"] = "#F0F3F6", ["ActiveTabTraceBrush"] = "#5892C8",
         ["SelectedRowBrush"] = "#383C44", ["SelectedRowBorderBrush"] = "#5A606E",
+        ["CheckedBoxBrush"] = "#1E2126", ["CheckedBoxBorderBrush"] = "#0B0C0E/#383C46", ["CheckMarkBrush"] = "#7CC0FF", ["DottedFocusBrush"] = "#A8B2C2",
     };
 
     /// <summary>
@@ -114,7 +118,8 @@ public static partial class ThemeManager
     /// Light over dark raises a control (buttons, toggles, combo boxes, cards), dark over light sinks a well (lists, text
     /// boxes, check boxes, the player, the layout canvas, the time bars).
     /// </summary>
-    private static readonly string[] EdgeTokens = ["ButtonBorderBrush", "NeutralButtonBorderBrush", "RaisedBorderBrush", "WellBorderBrush", "TabEdgeBrush", "ActiveTabEdgeBrush"];
+    private static readonly string[] EdgeTokens = ["ButtonBorderBrush", "NeutralButtonBorderBrush", "RaisedBorderBrush", "WellBorderBrush", "TabEdgeBrush", "ActiveTabEdgeBrush",
+        "CheckedBoxBorderBrush"];
 
     private static string LowerOf(string edgeToken) => edgeToken[..^"Brush".Length] + "LowerBrush";
 
@@ -139,7 +144,8 @@ public static partial class ThemeManager
     /// The look of buttons, hovered and chosen things and active tabs (Pass 4.1C), for a theme whose palette does not
     /// give its own: the accent's buttons, as HandPeg always had, flat (no bevel), hover in the control hover colour;
     /// lists on the inputs' colour, their edges, the combo boxes' and the cards' the plain control border, and the tabs
-    /// not shown open to what is behind them (4.1C.2), with no outline (4.1.1), the title bar the window's own colour.
+    /// not shown open to what is behind them (4.1C.2), with no outline (4.1.1), the title bar the window's own colour; a
+    /// ticked check box filled with the accent and a mark in the colour on it, and no dotted rectangle (4.2B-3).
     /// </summary>
     private static Dictionary<string, Color> LookDefaults(Dictionary<string, string> palette, Color accent, Color hover, Color pressed, Color onAccent)
     {
@@ -154,6 +160,7 @@ public static partial class ThemeManager
             ["NeutralButtonBrush"] = Of("ControlHoverBrush"), ["NeutralButtonBorderBrush"] = Of("ControlBorderBrush"),
             ["HoverFillBrush"] = Of("ControlHoverBrush"), ["HoverBorderBrush"] = accent,
             ["SelectedFillBrush"] = pressed, ["SelectedBorderBrush"] = accent, ["SelectedTextBrush"] = onAccent, ["ActiveTabTraceBrush"] = accent,
+            ["CheckedBoxBrush"] = accent, ["CheckedBoxBorderBrush"] = accent, ["CheckMarkBrush"] = onAccent, ["DottedFocusBrush"] = Colors.Transparent,
         };
     }
 
@@ -264,6 +271,9 @@ public static partial class ThemeManager
         resources["WellEdgeThickness"] = new Thickness(chosen.WellEdge);
         resources["TabEdgeThickness"] = chosen.Palette.ContainsKey("TabEdgeBrush") ? new Thickness(1, 1, 1, 0) : new Thickness(0);
 
+        // A theme that draws its own dotted rectangle (4.2B-3) drops WPF's focus rectangle, so focus is never ringed twice.
+        resources["ThemeFocusVisual"] = resources[chosen.Palette.ContainsKey("DottedFocusBrush") ? "NoFocusVisual" : "StandardFocusVisual"];
+
         // The keyframe accent (4.1.1): gold on a dark palette; on a light one a deep amber (diamonds) and a darker one for
         // text (Key All), which pale gold on grey never was.
         KeyFill = Brush(chosen.Dark ? Colors.Gold : Color.FromRgb(0xB8, 0x6E, 0x00));
@@ -288,7 +298,10 @@ public static partial class ThemeManager
     [LibraryImport("dwmapi.dll")]
     private static partial int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
-    /// <summary>Gives a window the dark or the light title bar, to match. For a window whose handle exists.</summary>
+    /// <summary>
+    /// Gives a window the dark or the light title bar, to match; and a window with Windows' own title bar the theme's title
+    /// colours, as the main window draws its own (TitleBarBrush, its words in TextBrush). For a window whose handle exists.
+    /// </summary>
     public static void ApplyTitleBar(Window window)
     {
         var handle = new WindowInteropHelper(window).Handle;
@@ -298,7 +311,27 @@ public static partial class ThemeManager
         // DWMWA_USE_IMMERSIVE_DARK_MODE
         var dark = IsDark ? 1 : 0;
         _ = DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int));
+
+        // DWMWA_CAPTION_COLOR and DWMWA_TEXT_COLOR (Windows 11; earlier versions refuse them and keep their own). Not for a
+        // window that draws its title bar itself (WindowChrome) or has none.
+        if (window.WindowStyle == WindowStyle.None || System.Windows.Shell.WindowChrome.GetWindowChrome(window) is not null)
+            return;
+
+        if (window.TryFindResource("TitleBarBrush") is SolidColorBrush bar)
+        {
+            var caption = ColorRef(bar.Color);
+            _ = DwmSetWindowAttribute(handle, 35, ref caption, sizeof(int));
+        }
+
+        if (window.TryFindResource("TextBrush") is SolidColorBrush text)
+        {
+            var words = ColorRef(text.Color);
+            _ = DwmSetWindowAttribute(handle, 36, ref words, sizeof(int));
+        }
     }
+
+    // A COLORREF: 0x00BBGGRR.
+    private static int ColorRef(Color color) => color.R | color.G << 8 | color.B << 16;
 
     /// <summary>
     /// Hides a window from the screen while it keeps being drawn (DWMWA_CLOAK), or shows it again: a window cloaked

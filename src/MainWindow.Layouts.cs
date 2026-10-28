@@ -475,26 +475,42 @@ public partial class MainWindow
     /// the header while that is a strip; kept inside the panes' area. Placed once: it stays there while the window takes
     /// layout after layout under it (the button itself may move), so the card under the pointer never changes by itself.
     /// </summary>
+    /// <remarks>
+    /// All in DIPs of the panes' area (Pass 4.2B-2): the button's corners taken into <c>MainDockHost</c> (through the
+    /// screen when the button is in another window, the side window), and the popup's own content measured, so its right
+    /// edge is the button's at any DPI. At 150 % the selector flew left over the player.
+    /// </remarks>
     private void PlaceLayoutSelector(FrameworkElement button)
     {
-        LayoutSelectorPanel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        var (width, height) = (LayoutSelectorPanel.DesiredSize.Width, LayoutSelectorPanel.DesiredSize.Height);
-        var corner = button.TranslatePoint(new Point(0, 0), MainDockHost);
+        var panel = (FrameworkElement)LayoutSelector.Child;
+        panel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var (width, height) = (panel.DesiredSize.Width, panel.DesiredSize.Height);
+        var corner = InDockHost(button, new Point(0, 0));
+        var far = InDockHost(button, new Point(button.ActualWidth, button.ActualHeight));
+        var (roomWidth, roomHeight) = (MainDockHost.ActualWidth, MainDockHost.ActualHeight);
         double x, y;
         if (ReferenceEquals(button, LayoutButton) && _headerShape == PaneShape.Column)
         {
-            var onRight = corner.X + button.ActualWidth / 2 > MainDockHost.ActualWidth / 2;
-            (x, y) = (onRight ? corner.X - width - 6 : corner.X + button.ActualWidth + 6, corner.Y);
+            var onRight = (corner.X + far.X) / 2 > roomWidth / 2;
+            (x, y) = (onRight ? corner.X - width - 6 : far.X + 6, corner.Y);
         }
         else
         {
-            (x, y) = (corner.X + button.ActualWidth - width, corner.Y + button.ActualHeight + 6);
+            (x, y) = (far.X - width, far.Y + 6);
         }
 
-        // Inside the panes' area.
-        LayoutSelector.HorizontalOffset = Math.Clamp(x, 0, Math.Max(MainDockHost.ActualWidth - width, 0));
-        LayoutSelector.VerticalOffset = Math.Min(y, Math.Max(MainDockHost.ActualHeight - height, 0));
+        // Inside the panes' area, 8 DIPs from its left.
+        LayoutSelector.HorizontalOffset = Math.Max(SelectorEdge, Math.Min(x, roomWidth - width));
+        LayoutSelector.VerticalOffset = Math.Max(0, Math.Min(y, roomHeight - height));
     }
+
+    private const double SelectorEdge = 8;
+
+    /// <summary>A point of an element in the panes' area's DIPs, whichever window the element is in.</summary>
+    private Point InDockHost(FrameworkElement element, Point point) =>
+        MainDockHost.IsAncestorOf(element) || ReferenceEquals(element, MainDockHost)
+            ? element.TranslatePoint(point, MainDockHost)
+            : MainDockHost.PointFromScreen(element.PointToScreen(point));
 
     /// <summary>The pointer came onto a card: the window takes its layout, nothing saved.</summary>
     private void PreviewLayout(int index)

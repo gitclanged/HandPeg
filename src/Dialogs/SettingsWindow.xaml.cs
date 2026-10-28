@@ -257,9 +257,23 @@ public partial class SettingsWindow : Window
         ? $"{style.FontName} {style.FontSize}, {style.Animation}, up to {style.MaxWordsPerLine} words"
         : "the built-in style";
 
+    /// <summary>Opens at the tab whose header begins with the given words ("Timeline", "Preview"...): a pane's "More ... Settings..." (4.2B-2).</summary>
+    public void ShowTab(string header)
+    {
+        foreach (var item in SettingsTabs.Items.OfType<TabItem>())
+        {
+            if (item.Header is string text && text.StartsWith(header, StringComparison.OrdinalIgnoreCase))
+            {
+                SettingsTabs.SelectedItem = item;
+                return;
+            }
+        }
+    }
+
     public SettingsWindow(MainViewModel viewModel)
     {
         InitializeComponent();
+        SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
         _viewModel = viewModel;
         DataContext = _settings;
 

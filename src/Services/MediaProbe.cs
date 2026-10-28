@@ -23,7 +23,13 @@ public sealed record MediaInfo(
 
     /// <summary>Where the container's clock starts, in seconds: the earliest of its streams. A seek point (movie='s sp=) is counted from here.</summary>
     public double ContainerStartSeconds { get; init; }
+
+    /// <summary>The file's chapters (4.2B-2), in seconds from its start: a download's own, and the SponsorBlock ones yt-dlp marked.</summary>
+    public IReadOnlyList<MediaChapter> Chapters { get; init; } = [];
 }
+
+/// <summary>A chapter of a file: where it starts and ends, in seconds from the file's start, and its title (may be empty).</summary>
+public sealed record MediaChapter(double Start, double End, string Title);
 
 /// <summary>
 /// Everything known about seeking in one video file, as it was when learnt (its size and last write, so that a changed
@@ -90,7 +96,7 @@ public static class MediaProbe
 
         var result = await WorkScheduler.Run(new WorkSpec($"Inspecting {Path.GetFileName(path)}", lane) { Visible = false },
             work => ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfprobePath)
-                .WithArguments(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", path])
+                .WithArguments(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", path])
                 .WithValidation(CommandResultValidation.None), work.Token), cancellationToken);
         if (result.ExitCode != 0)
             return null;
@@ -403,6 +409,21 @@ public static class MediaProbe
 
         var hasFormat = root.TryGetProperty("format", out var format);
         var containerStart = hasFormat ? Number(format, "start_time") : 0;
+        if (!double.IsFinite(containerStart))
+            containerStart = 0;
+
+        // Chapters count from the container's clock: from the file's start here.
+        var chapters = new List<MediaChapter>();
+        if (root.TryGetProperty("chapters", out var chapterList) && chapterList.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var chapter in chapterList.EnumerateArray())
+            {
+                var (start, end) = (Number(chapter, "start_time") - containerStart, Number(chapter, "end_time") - containerStart);
+                if (double.IsFinite(start) && double.IsFinite(end) && end > start)
+                    chapters.Add(new MediaChapter(Math.Max(start, 0), end, Tag(chapter, "title").Trim()));
+            }
+        }
+
         return new MediaInfo(
             hasFormat ? Text(format, "format_long_name") : "",
             hasFormat ? Number(format, "duration") : 0,
@@ -410,7 +431,8 @@ public static class MediaProbe
             video, audio, subtitles)
         {
             VideoStartSeconds = double.IsFinite(videoStart) ? videoStart : 0,
-            ContainerStartSeconds = double.IsFinite(containerStart) ? containerStart : 0,
+            ContainerStartSeconds = containerStart,
+            Chapters = chapters,
         };
     }
 

@@ -1,0 +1,51 @@
+# A hardware encoder (h264_nvenc) on an odd-sized 4:4:4 screen recording: the picture ends cropped to even sides and converted to yuv420p with full chroma filtering.
+# reads the cuts list: no; the chapters list: no
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -i
+  D:/media/screen.mp4
+  -map
+  0:v:0
+  -map
+  0:a:0?
+  -vf <graph 1>
+  -c:v
+  h264_nvenc
+  -preset
+  p5
+  -rc
+  vbr
+  -cq
+  23
+  -b:v
+  0
+  -pix_fmt
+  yuv420p
+  -metadata:s:a:0
+  title=Track 1
+  -c:a:0
+  aac
+  -b:a:0
+  160k
+  -map_chapters
+  -1
+  D:/out/hardware.mp4
+
+graph 1 (-vf): 6 chains, 427 characters
+  1| null[center_in]
+  2| color=c=black:s=1919x1079:r=30:d=60
+   |   ,format=yuv420p[stage0]
+  3| [center_in]scale=1919:1080
+   |   ,format=yuva420p[center_layer]
+  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
+  5| movie='D\:/media/logo.png'
+   |   ,scale=384:192
+   |   ,format=yuva420p[ui1_layer]
+  6| [stage1][ui1_layer]overlay=1439:54:enable='between(t,2,12)'
+   |   ,setsar=1
+   |   ,crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0
+   |   ,scale=flags=bicubic+accurate_rnd+full_chroma_int
+   |   ,format=yuv420p
