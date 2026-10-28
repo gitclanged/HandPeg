@@ -444,3 +444,6 @@ publish_output/
 
 # The design north star (UX notes) is local only, beside the repository (C:\Claude\HandPeg\DESIGN_NORTH_STAR.md).
 DESIGN_NORTH_STAR.md
+
+# Local design notes (never published)
+docs/
