@@ -49,6 +49,8 @@ public static class Program
         results.AddRange(graphs);
         results.AddRange(ProjectTests.All(Path.Combine(root, "fixtures"), Path.Combine(data, "scratch")));
         results.AddRange(RunnerTests.All(graphs));
+        results.AddRange(TimelineDocumentTests.All());
+        results.AddRange(TimelineGraphCases.All());
         if (filter is not null)
             results = results.Where(r => r.Golden.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 

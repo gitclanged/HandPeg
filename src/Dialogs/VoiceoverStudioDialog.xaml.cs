@@ -37,12 +37,12 @@ public partial class VoiceoverStudioDialog : Window
         // The bar follows the recording and the cuts for as long as the window is open.
         _timer.Tick += (_, _) => UpdateCursor();
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
-        _viewModel.Segments.CollectionChanged += Segments_CollectionChanged;
+        _viewModel.TimelineChanged += RedrawRecordBar;
         Closed += (_, _) =>
         {
             _timer.Stop();
             _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
-            _viewModel.Segments.CollectionChanged -= Segments_CollectionChanged;
+            _viewModel.TimelineChanged -= RedrawRecordBar;
         };
         SyncRecordClock();
     }
@@ -67,7 +67,6 @@ public partial class VoiceoverStudioDialog : Window
             RedrawRecordBar();
     }
 
-    private void Segments_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e) => RedrawRecordBar();
 
     private void RecordBar_SizeChanged(object sender, SizeChangedEventArgs e) => RedrawRecordBar();
 
@@ -100,10 +99,10 @@ public partial class VoiceoverStudioDialog : Window
     {
         var total = _viewModel.OutputDurationSeconds;
         var cuts = _viewModel.GetCutSplitFractions();
-        DurationText.Text = string.Create(CultureInfo.InvariantCulture, $"Total Cut Segment Duration: {total:0.#}s")
+        DurationText.Text = string.Create(CultureInfo.InvariantCulture, $"Timeline Duration: {total:0.#}s")
                             + (total <= 0 ? "  (load a video first)"
-                                : _viewModel.Segments.Count == 0 ? "  (no cuts: the whole video)"
-                                : $"  ({cuts.Count + 1} segment{(cuts.Count == 0 ? "" : "s")})");
+                                : cuts.Count == 0 ? "  (the main video in one clip)"
+                                : $"  (the main video in {cuts.Count + 1} clips)");
 
         RecordBar.Children.Clear();
         var (width, height) = (RecordBar.ActualWidth, RecordBar.ActualHeight);

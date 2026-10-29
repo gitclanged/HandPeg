@@ -1,0 +1,18 @@
+# Folds (4.3D, Split & Mark): stretches taken out of every track and kept at their seams, a fold rolled back, the file round trip, then each put back.
+
+== Set up at 25 fps: the talk, a logo over it from 5 s, music under both
+  Video 1: [T 0-20 @0]
+  Video 2: [L 5-15]
+  Audio 1: [M 0-30 @0]
+
+== Fold 12-13 s (12.01 lands on frame 300) and then 4-6.4 s out of every track, the later first
+  Video 1: [T 0-4 @0] [T2 4-9.6 @6.4] [T3 9.6-16.6 @13]
+  Video 2: [L2 4-9.6] [L3 9.6-11.6]
+  Audio 1: [M 0-4 @0] [M2 4-9.6 @6.4] [M3 9.6-26.6 @13]
+fold at 4 s (2.4 s): [Video 1: Talk 0-2.4 @4] [Video 2: Logo 1-2.4 @0] [Audio 1: Music 0-2.4 @4]
+fold at 9.6 s (1 s): [Video 1: Talk 0-1 @12] [Video 2: Logo 0-1 @0] [Audio 1: Music 0-1 @12]
+
+== Put both back, the later first
+  Video 1: [T 0-4 @0] [T4 4-6.4 @4] [T2 6.4-12 @6.4] [T5 12-13 @12] [T3 13-20 @13]
+  Video 2: [L 5-6.4] [L2 6.4-12] [L4 12-13] [L3 13-15]
+  Audio 1: [M 0-4 @0] [M4 4-6.4 @4] [M2 6.4-12 @6.4] [M5 12-13 @12] [M3 13-30 @13]

@@ -88,7 +88,7 @@ public partial class MainViewModel
                 var ranges = GetCaptionRanges();
                 if (HasTextCues)
                 {
-                    var lines = GetCueCaptions(ranges);
+                    var lines = GetCueCaptions();
                     WriteCaptionFile(lines.SelectMany(l => l).ToList(), lines, own, 0, forPlayer: false);
                 }
                 else
@@ -126,7 +126,7 @@ public partial class MainViewModel
         }
 
         return new QueueJob(
-            SourcePath.Trim().Trim('"'), DestinationPath.Trim().Trim('"'), Segments.Count, command,
+            SourcePath.Trim().Trim('"'), DestinationPath.Trim().Trim('"'), command,
             TimeSpan.FromSeconds(GetOutputDuration()), CaptureState()) { Captions = captions };
     }
 

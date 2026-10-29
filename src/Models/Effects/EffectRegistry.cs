@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 
 namespace HandPegApp.Models.Effects;
@@ -54,6 +55,72 @@ public enum ParamAnimation
     Command,
 }
 
+/// <summary>
+/// The v5.0 compositor's shader for an effect or a transition (HandPeg.Compositor.exe, see ARCHITECTURE_CONTRACTS.md): the
+/// id a <see cref="GpuEffectPacket"/> names its pixel shader by. The FFmpeg graph is compiled from the same definitions.
+/// </summary>
+/// <remarks>A contract with the compositor: the numbers are fixed, new slots are added at the end, and none is renumbered.</remarks>
+public enum GpuShaderSlot
+{
+    /// <summary>Nothing to draw: an effect without a shader, switched off, or outside its stretch of the clip.</summary>
+    None = 0,
+
+    /// <summary>The layer's own pass: its transform (the motion keys) and its opacity.</summary>
+    TransformComposite = 1,
+    Flip = 2,
+    Lut3D = 3,
+    Denoise = 4,
+    ColorGrade = 5,
+    ColorBalance = 6,
+    ColorTemperature = 7,
+    Vignette = 8,
+
+    /// <summary>Reserved: no built-in effect yet.</summary>
+    FilmGrain = 9,
+    ChromaKey = 10,
+
+    /// <summary>Reserved: the Chroma Key packet carries its despill (its fourth lane), run as this pass after the key.</summary>
+    Despill = 11,
+    MatteChoke = 12,
+    MatteSmooth = 13,
+    LayerMask = 14,
+    CornerFeather = 15,
+    DropShadow = 16,
+    BlendMode = 17,
+    HueSaturation = 18,
+    ToneCurve = 19,
+    BoxBlur = 20,
+    Sharpen = 21,
+
+    // Transitions (TransitionStyles.GpuSlot): a block of their own.
+    TransitionDissolve = 64,
+    TransitionWipe = 65,
+    TransitionSlide = 66,
+    TransitionZoom = 67,
+    TransitionBlurDissolve = 68,
+}
+
+/// <summary>
+/// One effect's values at one moment, as the v5.0 compositor's shared-memory control plane takes them: a shader and
+/// eight lanes, blittable (36 bytes) into an HLSL cbuffer. The lanes are the definition's parameters in their order
+/// (<see cref="EffectParam.GpuLanes"/>); an effect with more than eight is several packets in a row with the same slot.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public readonly record struct GpuEffectPacket(GpuShaderSlot Slot, float P0, float P1, float P2, float P3, float P4, float P5, float P6, float P7)
+{
+    public const int Lanes = 8;
+
+    public const int SizeInBytes = sizeof(int) + Lanes * sizeof(float);
+
+    /// <summary>A packet from a slot and up to eight lanes (the rest 0).</summary>
+    public static GpuEffectPacket From(GpuShaderSlot slot, ReadOnlySpan<float> lanes)
+    {
+        Span<float> l = stackalloc float[Lanes];
+        lanes[..Math.Min(lanes.Length, Lanes)].CopyTo(l);
+        return new(slot, l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7]);
+    }
+}
+
 /// <param name="Key">The name the value is kept under.</param>
 /// <param name="Step">The slider's step, which also gives the value box its decimals.</param>
 public sealed record EffectParam(
@@ -64,7 +131,17 @@ public sealed record EffectParam(
     /// A property of the layer that holds this value, for the effects whose settings were the layer's before stacks
     /// (the key, the mask, the edges, the shadow): Layer Properties, the layout pane and the mask tools keep using them.
     /// </summary>
-    public string? Bind { get; init; }
+    public string? Bind
+    {
+        get => _bind;
+        init => (_bind, _binding) = (value, LayerBinding.Of(value));
+    }
+
+    private readonly string? _bind;
+    private readonly LayerBinding? _binding;
+
+    /// <summary>How the bound property is read and written, found once from <see cref="Bind"/>; null when it is not bound.</summary>
+    public LayerBinding? Binding => _binding;
 
     /// <summary>For a choice: the values, as FFmpeg names them, each with what the card shows.</summary>
     public IReadOnlyList<(string Value, string Label)> Choices { get; init; } = [];
@@ -74,6 +151,18 @@ public sealed record EffectParam(
     public string Tip { get; init; } = "";
 
     public int Decimals => Step >= 1 ? 0 : Step >= 0.1 ? 1 : Step >= 0.01 ? 2 : 3;
+
+    /// <summary>
+    /// How many lanes of a <see cref="GpuEffectPacket"/> it takes: a number, a switch or a choice (its index in
+    /// <see cref="Choices"/>) one, a colour three (red, green, blue from 0 to 1); a file, a text or a button none (the
+    /// compositor loads those as textures of its own).
+    /// </summary>
+    public int GpuLanes => Kind switch
+    {
+        ParamKind.Number or ParamKind.Toggle or ParamKind.Choice => 1,
+        ParamKind.Color => 3,
+        _ => 0,
+    };
 }
 
 /// <summary>
@@ -107,6 +196,25 @@ public sealed record EffectDefinition(
 
     /// <summary>Whether it can go on the Sequence Output or an adjustment layer: the colour effects, not keys, mattes or composites.</summary>
     public bool ForWholePicture => Zone == EffectZone.Look;
+
+    /// <summary>Its shader in the v5.0 compositor; <see cref="GpuShaderSlot.None"/> for an effect that has none yet.</summary>
+    public GpuShaderSlot GpuSlot { get; init; }
+
+    /// <summary>The lanes its parameters take, in their order (<see cref="EffectParam.GpuLanes"/>).</summary>
+    /// <remarks>Counted by index: it is asked for on every packet, and an enumerator of the list would be a new object each time.</remarks>
+    public int GpuLaneCount
+    {
+        get
+        {
+            var lanes = 0;
+            for (var i = 0; i < Params.Count; i++)
+                lanes += Params[i].GpuLanes;
+            return lanes;
+        }
+    }
+
+    /// <summary>How many packets in a row it is sent as: one for every eight lanes; none without a shader.</summary>
+    public int GpuPacketCount => GpuSlot == GpuShaderSlot.None ? 0 : Math.Max((GpuLaneCount + GpuEffectPacket.Lanes - 1) / GpuEffectPacket.Lanes, 1);
 
     public EffectParam? Param(string key) => Params.FirstOrDefault(p => p.Key == key);
 }
@@ -237,14 +345,14 @@ public static partial class EffectRegistry
             [new("h", "Flip Horizontally", ParamKind.Toggle), new("v", "Flip Vertically", ParamKind.Toggle)], EffectCost.Green,
             (_, fx) => [.. (fx.IsOn("h") ? ["hflip"] : Array.Empty<string>()), .. (fx.IsOn("v") ? ["vflip"] : Array.Empty<string>())])
         {
-            Geometric = true, Description = "Mirrors the picture left to right, or upside down.",
+            GpuSlot = GpuShaderSlot.Flip, Geometric = true, Description = "Mirrors the picture left to right, or upside down.",
         });
 
         Register(new(Lut, "LUT 3D", "Color", EffectZone.Look,
             [new("file", "LUT File", ParamKind.File) { Tip = "A .cube file whose look is given to the picture." }], EffectCost.Amber,
             (context, fx) => fx.GetText("file").Trim().Trim('"') is { Length: > 0 } file && context.Exists(file) ? [$"lut3d=file='{context.EscapePath(file)}'"] : null)
         {
-            Description = "A colour look from a .cube file.",
+            GpuSlot = GpuShaderSlot.Lut3D, Description = "A colour look from a .cube file.",
         });
 
         Register(new(Denoise, "Denoise", "Detail", EffectZone.Look,
@@ -252,7 +360,7 @@ public static partial class EffectRegistry
             (_, fx) => fx.Get("strength") is var strength && strength < 0.05 ? null
                 : [Math.Abs(strength - 4) < 0.01 ? "hqdn3d" : $"hqdn3d={N(Math.Clamp(strength, 0, 20))}"])
         {
-            Description = "Smooths grain and compression noise, between frames as well as within them.",
+            GpuSlot = GpuShaderSlot.Denoise, Description = "Smooths grain and compression noise, between frames as well as within them.",
         });
 
         Register(new(Grade, "Color Grade", "Color", EffectZone.Look,
@@ -263,7 +371,7 @@ public static partial class EffectRegistry
                 new("gamma", "Gamma", Min: 0.1, Max: 3, Default: 1, Animation: ParamAnimation.Expression),
             ], EffectCost.Green, CompileGrade)
         {
-            Description = "Contrast, brightness, saturation and gamma.",
+            GpuSlot = GpuShaderSlot.ColorGrade, Description = "Contrast, brightness, saturation and gamma.",
         });
 
         Register(new(Hue, "Hue", "Color", EffectZone.Look,
@@ -272,7 +380,7 @@ public static partial class EffectRegistry
                 new("s", "Saturation", Min: 0, Max: 10, Default: 1, Animation: ParamAnimation.Expression),
             ], EffectCost.Green, CompileHue)
         {
-            Description = "Turns every colour round the colour wheel.",
+            GpuSlot = GpuShaderSlot.HueSaturation, Description = "Turns every colour round the colour wheel.",
         });
 
         string[] balanceKeys = ["rs", "gs", "bs", "rm", "gm", "bm", "rh", "gh", "bh"];
@@ -304,7 +412,7 @@ public static partial class EffectRegistry
                     : [commands, $"colorbalance@{context.InstanceName}={string.Join(":", set)}"];
             })
         {
-            Description = "Pushes the shadows, midtones and highlights towards red, green or blue.",
+            GpuSlot = GpuShaderSlot.ColorBalance, Description = "Pushes the shadows, midtones and highlights towards red, green or blue.",
         });
 
         Register(new(Temperature, "Color Temperature", "Color", EffectZone.Look,
@@ -325,7 +433,7 @@ public static partial class EffectRegistry
                     : [$"colortemperature={options}"];
             })
         {
-            Description = "Warmer (lower) or cooler (higher) than daylight's 6500 K.",
+            GpuSlot = GpuShaderSlot.ColorTemperature, Description = "Warmer (lower) or cooler (higher) than daylight's 6500 K.",
         });
 
         Register(new(Curves, "Curves", "Color", EffectZone.Look,
@@ -354,7 +462,7 @@ public static partial class EffectRegistry
                 return options.Count == 0 ? null : [$"curves={string.Join(":", options)}"];
             })
         {
-            Description = "A tone curve: one of FFmpeg's presets, or points of your own.",
+            GpuSlot = GpuShaderSlot.ToneCurve, Description = "A tone curve: one of FFmpeg's presets, or points of your own.",
         });
 
         Register(new(Blur, "Blur", "Blur", EffectZone.Look,
@@ -373,14 +481,14 @@ public static partial class EffectRegistry
                 return box > 0 ? [$"boxblur={box}:2"] : null;
             })
         {
-            Description = "Softens the picture (a box blur run twice).",
+            GpuSlot = GpuShaderSlot.BoxBlur, Description = "Softens the picture (a box blur run twice).",
         });
 
         Register(new(Sharpen, "Sharpen", "Detail", EffectZone.Look,
             [new("strength", "Strength", Min: 0, Max: 1)], EffectCost.Amber,
             (_, fx) => fx.Get("strength") < 0.005 ? null : [$"cas=strength={N(Math.Clamp(fx.Get("strength"), 0, 1))}"])
         {
-            Description = "Contrast-adaptive sharpening: crisper edges without halos.",
+            GpuSlot = GpuShaderSlot.Sharpen, Description = "Contrast-adaptive sharpening: crisper edges without halos.",
         });
 
         Register(new(Vignette, "Vignette", "Look", EffectZone.Look,
@@ -388,7 +496,7 @@ public static partial class EffectRegistry
             (context, fx) => fx.Get("angle") < 0.005 && !fx.HasKeys("angle") ? null
                 : [$"vignette=angle={context.Value(fx, "angle", 0, 1.5708)}{(fx.HasKeys("angle") ? ":eval=frame" : "")}"])
         {
-            Description = "Darkens the corners, as an old lens does.",
+            GpuSlot = GpuShaderSlot.Vignette, Description = "Darkens the corners, as an old lens does.",
         });
 
         // ----- Key & Matte -----
@@ -400,7 +508,7 @@ public static partial class EffectRegistry
                 new("despill", "Despill", Min: 0, Max: 1, Default: 0) { Tip = "Takes the key colour's spill off the edges that remain (a linear despill)." },
             ], EffectCost.Amber)
         {
-            Feature = nameof(Layer.ChromaKey), Description = "Makes one colour transparent: a green or blue screen.",
+            GpuSlot = GpuShaderSlot.ChromaKey, Feature = nameof(Layer.ChromaKey), Description = "Makes one colour transparent: a green or blue screen.",
         });
 
         Register(new(Choke, "Matte Choke", "Matte", EffectZone.KeyAndMatte,
@@ -414,7 +522,7 @@ public static partial class EffectRegistry
                 return Enumerable.Repeat(amount > 0 ? "erosion" : "dilation", passes).ToList();
             })
         {
-            AlphaOnly = true, Description = "Pulls the edge of what shows in, or pushes it out, by so many pixels.",
+            GpuSlot = GpuShaderSlot.MatteChoke, AlphaOnly = true, Description = "Pulls the edge of what shows in, or pushes it out, by so many pixels.",
         });
 
         Register(new(Smooth, "Matte Smooth", "Matte", EffectZone.KeyAndMatte,
@@ -430,7 +538,7 @@ public static partial class EffectRegistry
                 return [$"tmix=frames={frames}:weights='{string.Join(" ", weights)}'"];
             })
         {
-            AlphaOnly = true, Description = "Averages the transparency over a few frames, so a keyed edge stops crawling.",
+            GpuSlot = GpuShaderSlot.MatteSmooth, AlphaOnly = true, Description = "Averages the transparency over a few frames, so a keyed edge stops crawling.",
         });
 
         Register(new(Mask, "Mask", "Matte", EffectZone.KeyAndMatte,
@@ -444,7 +552,7 @@ public static partial class EffectRegistry
                     { Bind = nameof(Layer.MaskOffsetY), Tip = "Moves the mask picture up (negative) or down, in percent of the layer's height." },
             ], EffectCost.Amber)
         {
-            Feature = nameof(Layer.CustomMask), Description = "A drawn, picture or whole-frame mask: the layer shows where it is white.",
+            GpuSlot = GpuShaderSlot.LayerMask, Feature = nameof(Layer.CustomMask), Description = "A drawn, picture or whole-frame mask: the layer shows where it is white.",
         });
 
         Register(new(Edges, "Rounded & Feathered Edges", "Matte", EffectZone.KeyAndMatte,
@@ -454,14 +562,14 @@ public static partial class EffectRegistry
                 new("featherRadius", "Feather Radius", Min: 1, Max: 100, Default: 12, Step: 1, Unit: "px") { Bind = nameof(Layer.FeatherRadius) },
             ], EffectCost.Amber)
         {
-            Feature = "Edges", Description = "Rounds the corners, and lets the outline fade out.",
+            GpuSlot = GpuShaderSlot.CornerFeather, Feature = "Edges", Description = "Rounds the corners, and lets the outline fade out.",
         });
 
         // ----- Composite -----
         Register(new(Opacity, "Opacity", "Composite", EffectZone.Composite,
             [new("opacity", "Opacity", Min: 0, Max: 100, Default: 100, Step: 1, Unit: "%", Animation: ParamAnimation.Expression) { Bind = nameof(Layer.Opacity) }], EffectCost.Green)
         {
-            Pinned = true, Description = "How solid the layer is; its keyframes are the layer's Opacity keyframes.",
+            GpuSlot = GpuShaderSlot.TransformComposite, Pinned = true, Description = "How solid the layer is; its keyframes are the layer's Opacity keyframes.",
         });
 
         Register(new(Shadow, "Drop Shadow", "Composite", EffectZone.Composite,
@@ -473,7 +581,7 @@ public static partial class EffectRegistry
                 new("color", "Shadow Color", ParamKind.Color) { Bind = nameof(Layer.ShadowColor), TextDefault = "#000000" },
             ], EffectCost.Amber)
         {
-            Feature = nameof(Layer.Shadow),
+            GpuSlot = GpuShaderSlot.DropShadow, Feature = nameof(Layer.Shadow),
             Description = "The layer's outline in a colour under it: Distance and Angle say where it falls (135\u00B0 is lit from the upper left, so it falls right and down), Softness feathers its edge (0 is hard).",
         });
 
@@ -486,7 +594,7 @@ public static partial class EffectRegistry
                 },
             ], EffectCost.Amber)
         {
-            Description = "How the layer's colours mix with the picture under it. Any mode but Normal works in RGB over the whole frame.",
+            GpuSlot = GpuShaderSlot.BlendMode, Description = "How the layer's colours mix with the picture under it. Any mode but Normal works in RGB over the whole frame.",
         });
     }
 

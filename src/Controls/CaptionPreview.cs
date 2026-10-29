@@ -14,7 +14,18 @@ public sealed class CaptionPreview : FrameworkElement
     private static readonly string[] Sample = ["NO", "WAY", "HE", "MISSED"];
 
     // Which sample word is "being spoken" in the picture.
-    private const int SpokenWord = 2;
+    private int _spokenWord = 2;
+
+    /// <summary>Which sample word is being spoken (0 to 3): the Settings window's preview stage steps it along, as captions play (4.3-0B).</summary>
+    public int SpokenWord
+    {
+        get => _spokenWord;
+        set
+        {
+            _spokenWord = value;
+            InvalidateVisual();
+        }
+    }
 
     private CaptionStyle _style = new();
 

@@ -166,6 +166,113 @@ public sealed partial class EffectInstance : ObservableObject
             copy.Keys[key] = [.. value];
         return copy;
     }
+
+    // ----- The card as the v5.0 compositor takes it (ARCHITECTURE_CONTRACTS.md) -----
+
+    /// <summary>
+    /// The card's values at a moment of its clip as a <see cref="GpuEffectPacket"/>: every parameter in its order, an
+    /// animated one evaluated along its keyframes (<see cref="EasingCurves.ValueAt"/>, as the graph does), held to its
+    /// range. An effect with more than eight lanes is sent as several packets: <paramref name="packet"/> picks which.
+    /// Off, outside its stretch of the clip, without a shader, or missing, it is a packet of <see cref="GpuShaderSlot.None"/>.
+    /// </summary>
+    /// <param name="clipTimeSeconds">Seconds from where the clip begins (of the sequence, for the Sequence Output).</param>
+    /// <param name="layer">The card's layer, for the values a bound card keeps on it (the key colour, the shadow, the opacity).</param>
+    /// <remarks>
+    /// Ready to be called for every card on every frame (Pass 4.3-0B): no reflection (a bound value is read through its
+    /// parameter's <see cref="EffectParam.Binding"/>) and nothing allocated: the lists are walked by index, a colour is
+    /// read from a span and the pieced curves are evaluated on the stack (<see cref="EasingCurves.Evaluate"/>).
+    /// </remarks>
+    public GpuEffectPacket EvaluateGpuPacket(double clipTimeSeconds, Layer? layer = null, int packet = 0)
+    {
+        if (!Enabled || Definition is not { } definition || packet < 0 || packet >= definition.GpuPacketCount
+            || Range is { } range && (clipTimeSeconds < range.Start || clipTimeSeconds > range.End))
+            return default;
+
+        Span<float> lanes = stackalloc float[GpuEffectPacket.Lanes];
+        var (first, lane) = (packet * GpuEffectPacket.Lanes, 0);
+        var parameters = definition.Params;
+        for (var i = 0; i < parameters.Count && lane < first + GpuEffectPacket.Lanes; i++)
+        {
+            var param = parameters[i];
+            if (param.GpuLanes == 0)
+                continue;
+
+            if (param.Kind == ParamKind.Color)
+            {
+                var (r, g, b) = GpuColor(GpuText(param, layer));
+                Put(lanes, first, lane, r);
+                Put(lanes, first, lane + 1, g);
+                Put(lanes, first, lane + 2, b);
+            }
+            else if (param.Kind == ParamKind.Choice)
+            {
+                Put(lanes, first, lane, ChoiceIndex(param, GpuText(param, layer)));
+            }
+            else
+            {
+                var value = GpuValue(param, clipTimeSeconds, layer);
+                Put(lanes, first, lane, param.Kind == ParamKind.Toggle ? (value >= 0.5 ? 1 : 0) : Math.Clamp(value, param.Min, param.Max));
+            }
+
+            lane += param.GpuLanes;
+        }
+
+        return GpuEffectPacket.From(definition.GpuSlot, lanes);
+    }
+
+    private static void Put(Span<float> lanes, int first, int lane, double value)
+    {
+        if (lane >= first && lane < first + GpuEffectPacket.Lanes)
+            lanes[lane - first] = (float)value;
+    }
+
+    // In the order the Effects pane shows a value: the card's keyframes, then the layer's property it is bound to, then the card's own.
+    private double GpuValue(EffectParam param, double time, Layer? layer)
+    {
+        if (layer is not null && param.Bind == nameof(Layer.Opacity))
+            return layer.Evaluate(KeyProperty.Opacity, time);
+        if (Keys.TryGetValue(param.Key, out var keys) && keys.Count > 0)
+            return EasingCurves.ValueAt(keys, time);
+        if (layer is not null && param.Binding?.Number is { } bound)
+            return bound(layer);
+
+        return Values.TryGetValue(param.Key, out var value) ? value : param.Default;
+    }
+
+    // A colour's or a choice's words: the layer's property it is bound to, else the card's own (GetText, without looking the parameter up again).
+    private string GpuText(EffectParam param, Layer? layer) =>
+        layer is not null && param.Binding?.Text is { } bound && bound(layer) is { } text ? text
+        : Texts.TryGetValue(param.Key, out var own) ? own : param.TextDefault;
+
+    // A choice's index in its list; the default's when the value is not one of them, else the first.
+    private static int ChoiceIndex(EffectParam param, string value)
+    {
+        var choices = param.Choices;
+        for (var i = 0; i < choices.Count; i++)
+        {
+            if (choices[i].Value == value)
+                return i;
+        }
+
+        for (var i = 0; i < choices.Count; i++)
+        {
+            if (choices[i].Value == param.TextDefault)
+                return i;
+        }
+
+        return 0;
+    }
+
+    /// <summary>A colour written #RRGGBB (or #AARRGGBB, the alpha left out) as red, green and blue from 0 to 1; black when it is not one.</summary>
+    private static (double R, double G, double B) GpuColor(string text)
+    {
+        var hex = text.AsSpan().Trim().TrimStart('#');
+        if (hex.Length == 8)
+            hex = hex[2..];
+        return hex.Length == 6 && int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var rgb)
+            ? (((rgb >> 16) & 0xFF) / 255.0, ((rgb >> 8) & 0xFF) / 255.0, (rgb & 0xFF) / 255.0)
+            : (0, 0, 0);
+    }
 }
 
 /// <summary>

@@ -73,7 +73,7 @@ public partial class MainWindow
         _viewModel.EditLayersOnPlayer && _viewModel.LivePreview && _viewModel.FrameEngine && _viewModel.HasSource
         && !_viewModel.IsPlaying && CurrentOverlayMode == OverlayMode.None && _viewModel.FrameWidth > 0 && _viewModel.FrameHeight > 0;
 
-    /// <summary>Each track's clip on screen at the playhead (shown, a picture): the boxes the player has.</summary>
+    /// <summary>Each track's clip on screen at the playhead (shown, a picture): the boxes the player has, the main video's track's among them (4.3D).</summary>
     private List<Layer> PlayerClips()
     {
         var at = _viewModel.PositionMs / 1000;

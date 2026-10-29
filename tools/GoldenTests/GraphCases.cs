@@ -15,8 +15,8 @@ public sealed record GraphResult(string Golden, string Text, IReadOnlyList<strin
 
 /// <summary>
 /// The fixtures of FilterGraphBuilder: timelines written in code (neutral paths, files that need not exist), each made into
-/// an export command, a live graph at a moment, or a Render Preview command. Exports without cuts and live graphs with
-/// sound are also run through the A/V check (<see cref="AvCheck"/>).
+/// an export command, a live graph at a moment, or a Render Preview command. Exports and live graphs with sound are also
+/// run through the A/V check (<see cref="AvCheck"/>).
 /// </summary>
 public static class GraphCases
 {
@@ -28,7 +28,7 @@ public static class GraphCases
     private static readonly Media Music = Media.Mp4("D:/media/music.m4a", 240);
 
     /// <summary>The live request the player makes: its size, where it plays from, and its sound laid out from there.</summary>
-    private static LiveGraphRequest Live(double at, LiveLayerMode layers = LiveLayerMode.Live) => new()
+    internal static LiveGraphRequest Live(double at, LiveLayerMode layers = LiveLayerMode.Live) => new()
     {
         SurfaceWidth = 960, SurfaceHeight = 540, AudioFrom = layers == LiveLayerMode.Live ? at : null, MainAudioTrack = 0,
         VideoFrom = at, Layers = layers, DecodeThreads = 2,
@@ -36,9 +36,8 @@ public static class GraphCases
 
     public static IEnumerable<GraphResult> All()
     {
-        // ----- Cuts -----
-        yield return Export(CutsScene(engine: false), "export-cuts", "Encoder Mode: three kept stretches, two close together in the file (one opening) and one far (another), two audio tracks, chapters at the cuts.");
-        yield return Export(CutsScene(engine: true), "export-cuts-engine", "The same cuts with the Layer Engine on and a picture on the timeline: each stretch composed on its own clock.");
+        // ----- Cuts, as splits -----
+        yield return Export(BakedCutsScene(), "export-baked-cuts", "4.2.0's cuts baked into splits: the main video in three butted clips from three stretches of its file (5-12, 14-20, 80-95 s), a picture split with them, two audio tracks, a chapter at each clip.");
 
         // ----- Layers -----
         yield return Export(LayersScene(), "export-layers", "Vertical frame: a video clip with sound, a picture (rotated, see-through, a quote in its name), words (quotes, a colon, two lines) and music.");
@@ -49,6 +48,8 @@ public static class GraphCases
         yield return Export(CrossfadeScene(), "export-crossfade", "A crossfade between two clips of one track (laid over each other across the cut) and one across tracks (the lower keeps its picture).");
         yield return Export(HardwareScene(tenBit: false), "export-hardware", "A hardware encoder (h264_nvenc) on an odd-sized 4:4:4 screen recording: the picture ends cropped to even sides and converted to yuv420p with full chroma filtering.");
         yield return Export(HardwareScene(tenBit: true), "export-hardware-10bit", "The same with 10-bit on (hevc_nvenc): the tail ends in p010le.");
+        yield return Export(LoopScene(), "export-loop-to-end", "A 2 s video with sound to the end of a 60 s timeline, fading in and out: written as its rounds (4.2.0's loop as clips), read as the one repeating source 4.2.0 made of it.");
+        yield return LiveGraph(LoopScene(), "live-loop-to-end-at-30", "The same live at 30 s: one repeating source, not one for each round.", Live(30));
 
         // ----- Live, at a seek, with sound -----
         var live = LiveScene(proxies: false);
@@ -68,12 +69,17 @@ public static class GraphCases
 
     // ----- The fixtures -----
 
-    private static Scene CutsScene(bool engine)
+    /// <summary>
+    /// What 4.2.0's cut list (kept: 5-12, 14-20 and 80-95 s of the sequence, with a logo from 6 to 86 s) is once 4.3C bakes
+    /// it into splits: the main video as three butted clips of the stretches of its file that were kept, the rest closed
+    /// up, and the logo split the same way (what of it lay in each kept stretch, where that stretch now is).
+    /// </summary>
+    private static Scene BakedCutsScene()
     {
-        var scene = new Scene("cuts") { FrameEngine = engine, Main = MainVideo, ChaptersAtCuts = true }.WithMainAudio(2);
-        scene.Segments.AddRange([(5, 12), (14, 20), (80, 95)]);
-        if (engine)
-            scene.AddImage(1, "D:/media/logo.png", 400, 200, 6, 80, (0.75, 0.05, 0.2));
+        var scene = new Scene("baked-cuts") { Main = MainVideo, MainClip = (0, 5, 7), ChaptersAtCuts = true }.WithMainAudio(2);
+        scene.MoreMainClips.AddRange([(7, 14, 6), (13, 80, 15)]);
+        foreach (var (start, duration) in new[] { (1.0, 6.0), (7.0, 6.0), (13.0, 6.0) })
+            scene.AddImage(1, "D:/media/logo.png", 400, 200, start, duration, (0.75, 0.05, 0.2));
         return scene;
     }
 
@@ -181,6 +187,14 @@ public static class GraphCases
         return scene;
     }
 
+    private static Scene LoopScene()
+    {
+        var scene = new Scene("loop") { Main = Media.Mp4("D:/media/main.mp4", 60) }.WithMainAudio(1);
+        var spinner = scene.AddVideo(1, Media.Mp4("D:/media/spinner.mp4", 2), start: 5, duration: 0, offset: 0.5, place: (0.8, 0.05, 0.15));
+        (spinner.FadeInSeconds, spinner.FadeOutSeconds) = (0.5, 1);
+        return scene;
+    }
+
     private static Scene LiveScene(bool proxies)
     {
         var main = Media.Mp4("D:/media/session.mp4", 1900);
@@ -201,9 +215,12 @@ public static class GraphCases
 
     // ----- Building and checking -----
 
-    private static GraphResult Export(Scene scene, string golden, string description)
+    private static GraphResult Export(Scene scene, string golden, string description) =>
+        Export(scene.Compile(), scene.Clips.Select(c => c.Media).OfType<Media>(), golden, description);
+
+    /// <summary>An export of a state made by hand (a timeline written as a document), its files given for the A/V check.</summary>
+    internal static GraphResult Export(SequenceExportState state, IEnumerable<Media> files, string golden, string description)
     {
-        var state = scene.Compile();
         var command = FilterGraphBuilder.BuildExportCommand(state);
         var graphs = new List<string>();
         var text = new StringBuilder();
@@ -211,17 +228,17 @@ public static class GraphCases
         text.Append("# reads the cuts list: ").Append(command.UsesCutsFile ? "yes" : "no").Append("; the chapters list: ").AppendLine(command.UsesChaptersFile ? "yes" : "no");
         text.AppendLine().Append(GoldenText.Command(command.CommandLine, graphs));
 
-        // The A/V check follows the sequence's clock through the graph; with cuts the output's clock is another.
-        var problems = new List<string>();
-        var moments = 0;
-        if (state.Segments.Count == 0)
-            problems.AddRange(AvCheck.Check(scene, state, graphs, live: false, at: null, audioFrom: 0, out moments));
+        // The A/V check follows the sequence's clock through the graph, which is the output's.
+        var problems = AvCheck.Check(files, state, graphs, live: false, at: null, audioFrom: 0, out var moments);
         return new GraphResult(golden, text.ToString(), problems, moments) { CommandLine = command.CommandLine };
     }
 
-    private static GraphResult LiveGraph(Scene scene, string golden, string description, LiveGraphRequest request)
+    private static GraphResult LiveGraph(Scene scene, string golden, string description, LiveGraphRequest request) =>
+        LiveGraph(scene.Compile(), scene.Clips.Select(c => c.Media).OfType<Media>(), golden, description, request);
+
+    /// <summary>A live graph of a state made by hand, its files given for the A/V check.</summary>
+    internal static GraphResult LiveGraph(SequenceExportState state, IEnumerable<Media> files, string golden, string description, LiveGraphRequest request)
     {
-        var state = scene.Compile();
         var graph = FilterGraphBuilder.BuildLiveGraph(state, request);
         var text = new StringBuilder();
         text.Append("# ").AppendLine(description);
@@ -234,7 +251,7 @@ public static class GraphCases
         var problems = new List<string>();
         var moments = 0;
         if (request is { AudioFrom: { } from, Layers: LiveLayerMode.Live })
-            problems.AddRange(AvCheck.Check(scene, state, [graph.Text], live: true, at: request.VideoFrom, audioFrom: from, out moments));
+            problems.AddRange(AvCheck.Check(files, state, [graph.Text], live: true, at: request.VideoFrom, audioFrom: from, out moments));
         return new GraphResult(golden, text.ToString(), problems, moments);
     }
 

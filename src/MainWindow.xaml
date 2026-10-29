@@ -540,9 +540,7 @@
                     <StackPanel x:Name="ViewsPlaybackOptions" Visibility="Collapsed" Margin="0,0,0,8">
                         <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,0,0,4" />
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="0,2"
-                                  ToolTip="Cut points move onto I-frames, which is what a stream copy needs for the output to match the times listed." />
-                        <CheckBox Content="Play only cut segments" IsChecked="{Binding PlayOnlySegments}" Margin="0,2"
-                                  ToolTip="Playback jumps over everything outside the cut segments, so what plays is what the encode will keep." />
+                                  ToolTip="Splits and in and out points move onto the main videos I-frames, which is what a stream copy needs to cut without encoding." />
                         <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="0,2"
                                   ToolTip="Draws a thin line on the timeline at every I-frame." />
                     </StackPanel>
@@ -743,9 +741,7 @@
                 <Grid x:Name="TimelineOptionsHost" ClipToBounds="True" SizeChanged="TimelineOptionsHost_SizeChanged">
                     <StackPanel x:Name="TimelineOptionsInline" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="0"
-                                  ToolTip="Cut points move onto I-frames, which is what a stream copy needs for the output to match the times listed. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
-                        <CheckBox Content="Play only cut segments" IsChecked="{Binding PlayOnlySegments}" Margin="14,0,0,0"
-                                  ToolTip="Playback jumps over everything outside the cut segments, so what plays is what the encode will keep. While on, what is skipped is shaded on the timeline." />
+                                  ToolTip="Splits and in and out points move onto the main videos I-frames, which is what a stream copy needs to cut without encoding. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
                         <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="14,0,0,0"
                                   ToolTip="Draws a thin line on the timeline at every I-frame. Settings (Timeline) can tie timeline snapping to this box." />
                     </StackPanel>
@@ -775,7 +771,7 @@
                     <Button local:OverflowStrip.Priority="60" Style="{StaticResource TransportButton}" Content="&#xEB9E;" Tag="JumpStart" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[JumpStart], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Go to Start (Home)" AutomationProperties.Name="Go to Start" />
                     <Button local:OverflowStrip.Priority="50" Style="{StaticResource TransportButton}" FontFamily="Segoe UI Symbol" FontSize="15" Padding="10,4" Content="&#x21E4;" Tag="PrevEdit" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PrevEdit], Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Previous Edit Point: the nearest start or end of a clip or cut segment before the playhead (Up)" AutomationProperties.Name="Previous Edit Point" />
+                            ToolTip="Previous Edit Point: the nearest start or end of a clip before the playhead (Up)" AutomationProperties.Name="Previous Edit Point" />
                     <Button local:OverflowStrip.Priority="70" Style="{StaticResource TransportButton}" Content="&#xE892;" Click="PreviousIFrame_Click" Visibility="{Binding PlaybackControls[PrevIFrame], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Previous I-Frame" AutomationProperties.Name="Previous I-Frame" />
                     <Button local:OverflowStrip.Priority="90" Style="{StaticResource TransportButton}" Content="&#xE76B;" Click="StepBack_Click" Visibility="{Binding PlaybackControls[StepBack], Converter={StaticResource BoolToVisibility}}"
@@ -792,21 +788,21 @@
                     <Button local:OverflowStrip.Priority="70" Style="{StaticResource TransportButton}" Content="&#xE893;" Click="NextIFrame_Click" Visibility="{Binding PlaybackControls[NextIFrame], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Next I-Frame" AutomationProperties.Name="Next I-Frame" />
                     <Button local:OverflowStrip.Priority="50" Style="{StaticResource TransportButton}" FontFamily="Segoe UI Symbol" FontSize="15" Padding="10,4" Content="&#x21E5;" Tag="NextEdit" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[NextEdit], Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Next Edit Point: the nearest start or end of a clip or cut segment after the playhead (Down)" AutomationProperties.Name="Next Edit Point" />
+                            ToolTip="Next Edit Point: the nearest start or end of a clip after the playhead (Down)" AutomationProperties.Name="Next Edit Point" />
                     <Button local:OverflowStrip.Priority="60" Style="{StaticResource TransportButton}" Content="&#xEB9D;" Tag="JumpEnd" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[JumpEnd], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Go to End (End)" AutomationProperties.Name="Go to End" />
                     <ToggleButton local:OverflowStrip.Priority="45" Content="&#xE8EE;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0" IsChecked="{Binding LoopPlayback}" Visibility="{Binding PlaybackControls[Loop], Converter={StaticResource BoolToVisibility}}"
-                                  ToolTip="Loop Playback: at the end, playback starts again from the beginning: of the selected cut segment, or of the whole sequence." AutomationProperties.Name="Loop Playback" />
+                                  ToolTip="Loop Playback: at the end, playback starts again from the beginning: of the selected clip, or of the whole sequence." AutomationProperties.Name="Loop Playback" />
                     <Button local:OverflowStrip.Priority="35" Style="{StaticResource TextTransport}" Content="[" Margin="14,0,3,0" Command="{Binding AddStartPointCommand}" Visibility="{Binding PlaybackControls[MarkIn], Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Add Start Point (I): a new cut segment begins at the playhead." AutomationProperties.Name="Add Start Point (Playback Bar)" />
+                            ToolTip="Add In Point (I): the stretch to split out begins at the playhead." AutomationProperties.Name="Add Start Point (Playback Bar)" />
                     <Button local:OverflowStrip.Priority="35" Style="{StaticResource TextTransport}" Content="]" Command="{Binding AddStopPointCommand}" Visibility="{Binding PlaybackControls[MarkOut], Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Add Stop Point (O): the segment begun with the start point ends at the playhead." AutomationProperties.Name="Add Stop Point (Playback Bar)" />
+                            ToolTip="Add Out Point (O): every unlocked track is split at the in point and at the playhead, so the stretch between is clips of its own." AutomationProperties.Name="Add Stop Point (Playback Bar)" />
                     <Button local:OverflowStrip.Priority="25" Style="{StaticResource TextTransport}" Content="&#x2190;[" Tag="GoToIn" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[GoToIn], Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Go to Start Point: the start point being set, or the start of the selected cut segment." AutomationProperties.Name="Go to Start Point" />
+                            ToolTip="Go to In Point: the in point being set, or the start of the selected clip." AutomationProperties.Name="Go to Start Point" />
                     <Button local:OverflowStrip.Priority="25" Style="{StaticResource TextTransport}" Content="]&#x2192;" Tag="GoToOut" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[GoToOut], Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Go to Stop Point: the end of the selected cut segment." AutomationProperties.Name="Go to Stop Point" />
+                            ToolTip="Go to Out Point: the end of the selected clip." AutomationProperties.Name="Go to Stop Point" />
                     <Button local:OverflowStrip.Priority="25" Style="{StaticResource TextTransport}" Content="[&#x25B6;]" Tag="PlayInOut" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PlayInOut], Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Play Start to Stop: plays the selected cut segment (or from the start point being set to the playhead) and stops at its end." AutomationProperties.Name="Play Start to Stop" />
+                            ToolTip="Play In to Out: plays the selected clip (or from the in point being set to the playhead) and stops at its end." AutomationProperties.Name="Play Start to Stop" />
                     <Button local:OverflowStrip.Priority="30" Style="{StaticResource TransportButton}" Content="&#xE8C6;" Tag="Split" Click="PlaybackControl_Click"
                             ToolTip="Split at Playhead (S): cuts the selected block in two at the playhead." AutomationProperties.Name="Split at Playhead (Playback Bar)">
                         <Button.Visibility>
@@ -1042,7 +1038,7 @@
                             </ItemsControl>
                             <Image Source="{Binding TimelineWaveform}" Stretch="Fill" Margin="5,0,5,6" Opacity="0.75"
                                    IsHitTestVisible="False" AutomationProperties.Name="Timeline Waveform" />
-                            <!-- What playback skips, shaded while Play only cut segments is on; and the stretch a right-drag is marking. Drawn from code. -->
+                            <!-- The stretch a right-drag is marking (split at both its ends when let go). Drawn from code. -->
                             <Canvas x:Name="ShadeCanvas" Margin="5,0,5,6" ClipToBounds="True" IsHitTestVisible="False" SizeChanged="SegmentCanvas_SizeChanged" />
                             <Slider x:Name="TimelineSlider" Style="{StaticResource TimelineSlider}" Minimum="0" Maximum="{Binding TimelineMaximum}"
                                     Value="{Binding PositionMs}" SmallChange="1000" LargeChange="5000"
@@ -1054,7 +1050,7 @@
                                     PreviewMouseRightButtonDown="TimelineSlider_RightButtonDown" PreviewMouseRightButtonUp="TimelineSlider_RightButtonUp"
                                     LostMouseCapture="TimelineSlider_LostMouseCapture"
                                     ToolTipService.InitialShowDelay="1200"
-                                    ToolTip="Click or drag anywhere to scrub. Drag with the right mouse button to mark a new cut segment." />
+                                    ToolTip="Click or drag anywhere to scrub. Drag with the right mouse button to mark a stretch: every track is split at both its ends." />
                             <!-- The markers, as small flags along the top: a click goes to one, a right-click renames or deletes it. Drawn from code. -->
                             <Canvas x:Name="MarkerCanvas" Margin="5,0" ClipToBounds="False" VerticalAlignment="Stretch" SizeChanged="SegmentCanvas_SizeChanged" />                            <!-- Thumbnail of the moment under the pointer, cut from the sheet made when the video loaded -->
                             <Popup x:Name="PreviewPopup" PlacementTarget="{Binding ElementName=TimelineSlider}" Placement="Relative"
@@ -1077,9 +1073,7 @@
                     <StackPanel Orientation="Horizontal" Margin="0,10,0,0" Visibility="{Binding ShowTimelineOptionsBelow, Converter={StaticResource BoolToVisibility}}">
                         <TextBlock Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="12,0,0,0" />
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="24,0,0,0"
-                                  ToolTip="Cut points move onto I-frames, which is what a stream copy needs for the output to match the times listed. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
-                        <CheckBox Content="Play only cut segments" IsChecked="{Binding PlayOnlySegments}" Margin="16,0,0,0"
-                                  ToolTip="Playback jumps over everything outside the cut segments, so what plays is what the encode will keep. While on, what is skipped is shaded on the timeline." />
+                                  ToolTip="Splits and in and out points move onto the main videos I-frames, which is what a stream copy needs to cut without encoding. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
                         <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="16,0,0,0"
                                   ToolTip="Draws a thin line on the timeline at every I-frame. Settings (Timeline) can tie timeline snapping to this box." />
                     </StackPanel>
@@ -1855,7 +1849,7 @@
                         <Border DockPanel.Dock="Top" Margin="0,0,0,6" Padding="10,6" CornerRadius="4" Background="{DynamicResource InsetBrush}"
                                 Visibility="{Binding IsVideoReencoded, Converter={StaticResource InverseBoolToVisibility}}">
                             <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}"
-                                       Text="The video is copied as it is (Video tab: Copy), so layers, moves and splits of the main video are not rendered. Mark what to keep with [ and ] (or I and O), Split, Trim and Delete work on the cut segments. Choose a video encoder to edit with layers." />
+                                       Text="The video is copied as it is (Video tab: Copy), so layers, filters and fades are not rendered: the main videos clips are joined end to end, each from the I-frame at or before its start. Choose a video encoder to edit with layers." />
                         </Border>
                         <!--
                             Everything below the layers in one panel: what adds a layer, and the editing tools.
@@ -1913,19 +1907,19 @@
                                     ToolTip="Takes a game's HUD apart into layers (killfeed, health, abilities, ultimate), all sharing one mask traced round the game's HUD, so each can be moved on its own. For Overwatch, Apex Legends, Marvel Rivals, The Finals and Counter-Strike 2, or from a mask of your own." />
                             <!-- The editing tools, as icons: each works on whatever block is selected on a time bar -->
                             <Button Content="[" FontFamily="Consolas" FontWeight="Bold" FontSize="14" Padding="11,5" Margin="18,0,4,0" Command="{Binding AddStartPointCommand}"
-                                    AutomationProperties.Name="Add Start Point" ToolTip="Add Start Point (I): a new cut segment of the main video begins at the playhead." />
+                                    AutomationProperties.Name="Add Start Point" ToolTip="Add In Point (I): the stretch to split out begins at the playhead." />
                             <Button Content="]" FontFamily="Consolas" FontWeight="Bold" FontSize="14" Padding="11,5" Margin="0,0,4,0" Command="{Binding AddStopPointCommand}"
-                                    AutomationProperties.Name="Add Stop Point" ToolTip="Add Stop Point (O): the segment begun with the start point ends at the playhead." />
+                                    AutomationProperties.Name="Add Stop Point" ToolTip="Add Out Point (O): every unlocked track is split at the in point and at the playhead, so the stretch between is clips of its own." />
                             <Button Content="&#xE70F;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="ManualCut_Click" IsEnabled="{Binding HasSource}"
                                     AutomationProperties.Name="Split / Trim by Exact Timecode" ToolTip="Split / Trim by Exact Timecode: type the time to split the selected clip at (or the main video, with nothing selected), or to trim its start or end to. The I-frames either side of the time are offered. Also on a track's right-click menu." />
                             <Button Content="&#xE8C6;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="SplitClip_Click" IsEnabled="{Binding HasSource}"
-                                    AutomationProperties.Name="Split at Playhead" ToolTip="Split at Playhead (S): cuts the selected block in two at the playhead. A layer becomes two layers, a cut segment two segments, an audio track two parts. With nothing selected, the main video is split." />
+                                    AutomationProperties.Name="Split at Playhead" ToolTip="Split at Playhead (S): cuts the selected block in two at the playhead. A clip becomes two clips, an audio track two parts. With nothing selected, the main videos clip at the playhead is split." />
                             <Button Content="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="TrimStart_Click" IsEnabled="{Binding HasSource}"
-                                    AutomationProperties.Name="Trim Start to Playhead" ToolTip="Trim Start to Playhead: the selected layer or segment begins at the playhead; what came before goes." />
+                                    AutomationProperties.Name="Trim Start to Playhead" ToolTip="Trim Start to Playhead: the selected clip begins at the playhead; what came before goes." />
                             <Button Content="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="TrimEnd_Click" IsEnabled="{Binding HasSource}"
-                                    AutomationProperties.Name="Trim End to Playhead" ToolTip="Trim End to Playhead: the selected layer or segment ends at the playhead; what came after goes." />
+                                    AutomationProperties.Name="Trim End to Playhead" ToolTip="Trim End to Playhead: the selected clip ends at the playhead; what came after goes." />
                             <Button Content="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="DeleteClip_Click" IsEnabled="{Binding HasSource}"
-                                    AutomationProperties.Name="Delete Selected" ToolTip="Delete (Del): removes the selected layer or cut segment, or silences the selected part of an audio track." />
+                                    AutomationProperties.Name="Delete Selected" ToolTip="Delete (Del): removes the selected clip (into the recycle bin), or silences the selected part of an audio track." />
                             <Button Content="&#xE74F;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="0,0,4,0" Click="RemoveDeadAir_Click" IsEnabled="{Binding HasSource}"
                                     AutomationProperties.Name="Remove Dead Air" ToolTip="Remove Dead Air: finds the silences in the selected track (a video layer, an audio track, or otherwise the main video) and either marks them as skipped or removes them." />
                             <Button Content="&#xE7A7;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="10,6" Margin="10,0,4,0" Click="Undo_Click"
@@ -2310,7 +2304,7 @@
                                         <!--
                                             The track in time: a bar as long as the video, with the layer as a block on it from
                                             when it appears to when it goes; a layer that was split is two blocks on the same bar.
-                                            The Main Video's bar shows the cut segments. A block is dragged to move it and by its
+                                            The main video's clips are blocks like any other. A block is dragged to move it and by its
                                             right edge to change how long it stays; a click on the bar moves the playhead there.
                                             A video layer's block is drawn with frames from its file. Drawn from code.
                                         -->

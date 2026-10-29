@@ -38,7 +38,8 @@ one: `gblur` in a mask chain crashed it (fixed in 3.0); test new filters here be
 `pwsh -NoProfile -File tools\GoldenTests.ps1 [-Update] [-Filter <part of a name>] [-NoBuild]`
 
 Builds `tools\GoldenTests` (a console program referencing the app's build, so it tests the very code HandPeg runs)
-once, then runs it; the tests themselves take about 0.4 s. Each case writes a text file and compares it with its
+once, then runs it; the tests themselves take under 2 s (about 1.3 s of it the timeline model's 30,000 splits and
+frame loops). Each case writes a text file and compares it with its
 golden file in `tools\GoldenTests\golden`; a difference is printed as a line diff (`-` golden, `+` now). `-Update`
 writes the golden files anew from what the code makes now: after a change meant to change the graphs, run it and
 review the golden files' diff in git before committing them (that diff is the review). Close HandPeg first: the build
@@ -47,25 +48,47 @@ writes `HandPeg.dll`.
 What is covered:
 
 - **FilterGraphBuilder** (`GraphCases.cs`, timelines written in code with neutral paths such as `D:/media/clip1.mp4`;
-  the builder never reads files): cuts (`PlanCutInputs`), video, picture and text layers, effect cards in every zone,
+  the builder never reads files): 4.2.0s cuts baked into split points of the main video, video, picture and text layers, effect cards in every zone,
   keyframes with every easing about an off-centre anchor point, fades and transitions (dissolve, wipe, slide, zoom,
   blur dissolve), crossfades on a track and across tracks, the live graph after a seek with sound (the layers' `amovie`
-  and the main video's tracks) with proxies off and on, scrubbing, Render Preview and the composed timeline proxy.
-  `Scene.Compile` makes the builder's state as `MainViewModel.CompileExportState` does, and calls the view model's own
-  preparation of the copies (`LayLaterClipsOver`, `ApplyCrossfades`, `PairLayerCrossfades`) by reflection: when one is
-  renamed, the tests say so.
-- **The A/V invariant** (`AvCheck.cs`, `Timing.cs`), checked by code on every export without cuts and every live graph
-  with sound: for each video clip with sound, a moment of its file is followed through the graph by its time stamps,
+  and the main video's tracks) with proxies off and on, scrubbing, Render Preview, the composed timeline proxy, and a
+  short video repeating to the end (4.2.0's loop, read as one source). The fixtures are written in 4.2.0's terms (a
+  `Scene`: the main video's clip and pieces, layers by track id); `Scene.Compile` makes the builder's state as
+  `MainViewModel.CompileExportState` does, its timeline the `TimelineDocument` the test-only adapter
+  `LegacyFixtures.cs` writes of the scene (4.3Bs conventions; the view model has held a document of its own since 4.3C); the builder lowers and
+  prepares it itself (`FilterGraphBuilder.Timeline.cs`). `TimelineGraphCases.cs` writes documents by hand
+  (`*-timeline-native*`): what only the document can say (gaps on Video 1, J/L cuts, slips, a picture in picture of the
+  main video's own file under it, a crossfade on an Audio track).
+- **The A/V invariant** (`AvCheck.cs`, `Timing.cs`), checked by code on every export and every live graph
+  with sound: for each video clip with sound on the timeline (the document's; an unlinked clip's sound where its slip
+  puts it), a moment of its file is followed through the graph by its time stamps,
   the picture from its `movie=` to the overlay that lays it on the canvas, the sound from its `amovie=` to the `amix`;
   both must land where the timeline puts that moment (the clip's start plus the distance into it at its speed), within
   2 ms. A failure names the moment, where it is seen and heard, and which is late.
-- **The .hproj format** (`ProjectTests.cs`): a format 2 file (`fixtures\format2.hproj`) read and written as format 3,
-  read again and compared field by field; a HandPeg 1.x project (`fixtures\format1.txt`, written by hand in the 1.x
-  layout) brought over; a newer format refused, opened only when asked and never written over; files that are not
-  projects refused; seek indexes written and taken up again.
+- **The .hproj format** (`ProjectTests.cs`, format 5 since 4.3C): a format 5 file (`fixtures\format5.hproj`, written by
+  hand: two clips of the main video, a track of clips with keys, effects (an unknown one's own settings kept), a mask, a
+  bin entry, the envelope) read and written, read again and compared field by field and against the fixture; a newer
+  format (6) refused, opened only when asked and never written over; formats 1-4, files that are not projects and a
+  format 5 file without a timeline refused; seek indexes of every clip's file written and taken up again, and masks
+  carried without the document in memory being changed.
 - **FfmpegRunner** (`RunnerTests.cs`): every fixture's command and 4,000 random argument lists of the characters
   quoting gets wrong, quoted by CliWrap and split again as FFmpeg splits its command line (`CommandLineToArgvW`), come
   back unchanged; how a command's graphs are given to each kind of FFmpeg in files.
+- **The timeline document** (`TimelineDocumentTests.cs`, the model of v4.3, which the builder compiles since 4.3B), each
+  case writing down what it did:
+  - `timeline-frame-rate`: the NTSC fractions, frames and quantizing, and 10,000 splits at 59.94, 29.97 and 60 fps
+    with every cut one exact double on its frame.
+  - `timeline-edits`: the transaction's edits step by step on track 1 and the tracks above it (split, trims, ripple,
+    roll, slip, J/L, moves across tracks, crossfades, gaps, locks, a new track, nesting, rollback), and the viewport
+    search on 2,000 clips against a full scan.
+  - `timeline-edge-cases`: file ends at 60, 59.94 and 23.976 fps, free (precision) edits, J/L limits, ripples held
+    back by another track, track-only commits, refusals that leave nothing changed, and a rollback of every property.
+  - `timeline-json-round-trip`: a document written with the project files' JSON options, read back and written again;
+    the golden file shows the timeline's shape in format 5.
+  - `timeline-folds` (4.3D): stretches folded out of every track and kept at their seams, a fold rolled back, the folds
+    through the project file's JSON and a copy, then each put back, every track playing what it played before.
+  - `timeline-split-keys` (4.3D): a clip split between two keyframes, then its second half again, for every easing: each
+    half's keys, the key on each cut, its part of the curve as FFmpeg reads it, and no stray from the whole clip's motion.
 
 The timing model (what each filter does to time stamps) was checked against FFmpeg 8 on an MPEG-TS file whose clock
 starts at 1.4 s: `movie=` and `amovie=` give the file's own time stamps (`trim` / `atrim` cut on them), `sp=` and

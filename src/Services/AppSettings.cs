@@ -616,8 +616,8 @@ public sealed class AppSettings
 
 
     // What a freshly started window begins with. Unlike the settings above these are only starting points:
-    // the boxes they stand for are on the main window and can be changed there for the session.
-    public bool StartWithPlayOnlySegments { get; set; }
+    // the boxes they stand for are on the main window and can be changed there for the session. (4.2.0's "Play only cut
+    // segments" went with the cut list in 4.3C; a settings file that has it is read without it.)
     public bool StartWithSnapToIFrames { get; set; } = true;
     public bool StartWithChapterMarkers { get; set; } = true;
     public bool StartWithChaptersAtCuts { get; set; }
@@ -864,7 +864,6 @@ public sealed class AppSettings
         ShowAdvancedFiltersTab = true;
         ShowTimelineWaveform = true;
         ShowAdvancedPlayback = true;
-        StartWithPlayOnlySegments = true;
         StartWithSnapToIFrames = true;
         SnapTimelineToIFrames = true;
         AutoToggleTimelineSnap = true;

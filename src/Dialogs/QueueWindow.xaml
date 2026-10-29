@@ -29,7 +29,7 @@
             </Grid.ColumnDefinitions>
             <TextBlock Text="Source" Foreground="{DynamicResource MutedTextBrush}" />
             <TextBlock Grid.Column="1" Text="Target" Foreground="{DynamicResource MutedTextBrush}" />
-            <TextBlock Grid.Column="2" Text="Cuts" Foreground="{DynamicResource MutedTextBrush}" />
+            <TextBlock Grid.Column="2" Text="Length" Foreground="{DynamicResource MutedTextBrush}" />
             <TextBlock Grid.Column="3" Text="Status" Foreground="{DynamicResource MutedTextBrush}" />
         </Grid>
 
@@ -47,7 +47,7 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="{Binding Source}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0" />
                         <TextBlock Grid.Column="1" Text="{Binding Target}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0" />
-                        <TextBlock Grid.Column="2" Text="{Binding SegmentCount}" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Text="{Binding LengthText}" VerticalAlignment="Center" />
                         <StackPanel Grid.Column="3" VerticalAlignment="Center" Margin="0,0,10,0">
                             <TextBlock x:Name="status" Text="{Binding Status}" ToolTip="{Binding Detail}" />
                             <ProgressBar x:Name="progress" Height="6" Margin="0,3,0,0" Minimum="0" Maximum="100"

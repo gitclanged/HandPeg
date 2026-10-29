@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
@@ -198,6 +200,18 @@ internal sealed class LayoutGuidesView : FrameworkElement
 
     /// <summary>A dot clicked without moving it: the playhead goes to its keyframe.</summary>
     public event Action<double>? DotClicked;
+
+    // UI Automation sees one element with a name and its place on screen; the guides and dots drawn on it have no peers.
+    protected override AutomationPeer OnCreateAutomationPeer() => new GuidesPeer(this);
+
+    private sealed class GuidesPeer(LayoutGuidesView owner) : FrameworkElementAutomationPeer(owner)
+    {
+        protected override string GetClassNameCore() => nameof(LayoutGuidesView);
+
+        protected override string GetNameCore() => AutomationProperties.GetName(owner) is { Length: > 0 } name ? name : "Canvas guides and motion path";
+
+        protected override List<AutomationPeer>? GetChildrenCore() => null;
+    }
 
     public LayoutGuidesView() => Cursor = Cursors.SizeAll;
 

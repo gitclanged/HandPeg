@@ -8,7 +8,7 @@ namespace HandPegApp.Models;
 /// changes to the settings or to the loaded source do not affect it.
 /// </summary>
 public sealed partial class QueueJob(
-    string source, string target, int segmentCount, string command, TimeSpan expectedDuration, ProjectState state)
+    string source, string target, string command, TimeSpan expectedDuration, ProjectState state)
     : ObservableObject
 {
     /// <summary>The window state the job was made from, so it can be loaded back for editing.</summary>
@@ -24,12 +24,14 @@ public sealed partial class QueueJob(
 
     public string Source { get; } = source;
     public string Target { get; } = target;
-    public int SegmentCount { get; } = segmentCount;
     /// <summary>Rewritten only by the hardware fallback, when the job is retried on a software encoder.</summary>
     [ObservableProperty] private string _command = command;
 
     /// <summary>Length of the output, used to turn FFmpeg's timestamps into a percentage.</summary>
     public TimeSpan ExpectedDuration { get; } = expectedDuration;
+
+    /// <summary>The output's length as the queue lists it (where 4.2.0 listed how many cut segments it kept).</summary>
+    public string LengthText => TimeDisplay.Format(ExpectedDuration.TotalSeconds);
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanRemove))]

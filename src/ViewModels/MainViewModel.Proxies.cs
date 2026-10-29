@@ -63,7 +63,7 @@ public partial class MainViewModel
         foreach (var layer in Layers.Where(l => l.IsVideoFile && !l.IsDeleted))
             Add(layer.ImagePath, layer.ProxyChoice);
         if (HasSource && _mediaInfo is { Video: not null } && AppSettings.Current.ProxyScope == AppSettings.ProxyAllVideos)
-            Add(LocalMediaPath, _mainVideoRow.ProxyChoice);
+            Add(LocalMediaPath, MainLayer.ProxyChoice);
         return files;
     }
 

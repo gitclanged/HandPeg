@@ -1,0 +1,89 @@
+# 4.2.0's cuts baked into splits: the main video in three butted clips from three stretches of its file (5-12, 14-20, 80-95 s), a picture split with them, two audio tracks, a chapter at each clip.
+# reads the cuts list: no; the chapters list: yes
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -i
+  D:/media/main.mp4
+  -i
+  D:/session/chapters.txt
+  -filter_complex <graph 1>
+  -map
+  0:v:0
+  -map
+  [aedit0]
+  -map
+  [aedit1]
+  -vf <graph 2>
+  -c:v
+  libx264
+  -preset
+  medium
+  -crf
+  23
+  -pix_fmt
+  yuv420p
+  -metadata:s:a:0
+  title=Track 1
+  -c:a:0
+  aac
+  -b:a:0
+  160k
+  -metadata:s:a:1
+  title=Track 2
+  -c:a:1
+  aac
+  -b:a:1
+  160k
+  -map_chapters
+  1
+  D:/out/baked-cuts.mp4
+
+graph 1 (-filter_complex): 10 chains, 767 characters
+  1| [0:a:0]asplit=3[aedit0_c0][aedit0_c1][aedit0_c2]
+  2| [aedit0_c0]atrim=start=5:end=12
+   |   ,asetpts=PTS-STARTPTS[aedit0_p0]
+  3| [aedit0_c1]atrim=start=14:end=20
+   |   ,asetpts=PTS-STARTPTS
+   |   ,adelay=7000:all=1[aedit0_p1]
+  4| [aedit0_c2]atrim=start=80:end=95
+   |   ,asetpts=PTS-STARTPTS
+   |   ,adelay=13000:all=1[aedit0_p2]
+  5| [aedit0_p0][aedit0_p1][aedit0_p2]amix=inputs=3:normalize=0:dropout_transition=0
+   |   ,asetpts=N/SR/TB[aedit0]
+  6| [0:a:1]asplit=3[aedit1_c0][aedit1_c1][aedit1_c2]
+  7| [aedit1_c0]atrim=start=5:end=12
+   |   ,asetpts=PTS-STARTPTS[aedit1_p0]
+  8| [aedit1_c1]atrim=start=14:end=20
+   |   ,asetpts=PTS-STARTPTS
+   |   ,adelay=7000:all=1[aedit1_p1]
+  9| [aedit1_c2]atrim=start=80:end=95
+   |   ,asetpts=PTS-STARTPTS
+   |   ,adelay=13000:all=1[aedit1_p2]
+ 10| [aedit1_p0][aedit1_p1][aedit1_p2]amix=inputs=3:normalize=0:dropout_transition=0
+   |   ,asetpts=N/SR/TB[aedit1]
+
+graph 2 (-vf): 10 chains, 709 characters
+  1| select='gte(t,5)*lt(t,12)+gte(t,14)*lt(t,20)+gte(t,80)*lt(t,95)'
+   |   ,setpts='PTS+(-5-2*gte(T,14)-60*gte(T,80))/TB'
+   |   ,null[center_in]
+  2| color=c=black:s=1920x1080:r=30:d=28
+   |   ,format=yuv420p[stage0]
+  3| [center_in]scale=1920:1080
+   |   ,format=yuva420p[center_layer]
+  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
+  5| movie='D\:/media/logo.png'
+   |   ,scale=384:192
+   |   ,format=yuva420p[ui1_layer]
+  6| [stage1][ui1_layer]overlay=1440:54:enable='between(t,1,7)'[stage2]
+  7| movie='D\:/media/logo.png'
+   |   ,scale=384:192
+   |   ,format=yuva420p[ui2_layer]
+  8| [stage2][ui2_layer]overlay=1440:54:enable='between(t,7,13)'[stage3]
+  9| movie='D\:/media/logo.png'
+   |   ,scale=384:192
+   |   ,format=yuva420p[ui3_layer]
+ 10| [stage3][ui3_layer]overlay=1440:54:enable='between(t,13,19)'
+   |   ,setsar=1

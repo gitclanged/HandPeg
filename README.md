@@ -1,7 +1,7 @@
 # HandPeg
 
 [![Latest release](https://img.shields.io/github/v/release/gitclanged/HandPeg?label=release)](https://github.com/gitclanged/HandPeg/releases/latest)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20x64-0078D4)](#getting-started)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20x64%20%7C%20ARM64-0078D4)](#getting-started)
 [![.NET 8](https://img.shields.io/badge/.NET-8%20WPF-512BD4)](https://dotnet.microsoft.com/download/dotnet/8.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -12,13 +12,18 @@ There is no middleware: every edit compiles straight to an FFmpeg filter graph, 
 and encoded by FFmpeg on export. The window paints its first, final frame in under half a second, and HandPeg idles
 well under 200 MB of memory.
 
-**v4.2.0, "The Great Cleave":** HandPeg is now one dedicated editor. The old Encoder Mode has been retired from the
-editor (a standalone converter is planned), the first-run setup is a short wizard, and the source tree lives in `src/`.
+**v4.3.0, "One Timeline":** every edit now lives in one timeline document, from the clips you drag to the graph that
+exports them. Track 1 is a track like any other (its own box on the video, its own keyframes and effects per clip), a
+split keeps each half's animation exactly, Remove Dead Air can fold silences away and give them back, and HandPeg runs
+natively on Windows on ARM.
 
 ## What it does
 - **One multi-track timeline:** video, image, text and audio layers with a live preview of the finished picture and
   sound. Trim any clip from either edge (Shift for frame-by-frame without snapping, Ctrl to ripple), crossfade
-  neighbouring clips on one track, split or trim at an exact timecode from a clip's menu.
+  neighbouring clips on one track, split or trim at an exact timecode from a clip's menu. Splitting a keyframed clip
+  keeps both halves' motion exactly, and cuts are just split points: what is on the timeline is what renders.
+- **Game styles in one drop:** drop a gameplay video on a game's style and get a tall frame, the HUD pieces cut out with
+  the game's mask, and a blurred background, all made from your video, even after you split or restyle its pieces.
 - **Live preview that keeps up:** seeks land inside each file at the nearest I-frame (remembered per file and in saved
   projects), so long timelines and long recordings play and scrub at once, with the sound in step with the picture to
   the millisecond, and a paused playhead stays exactly on the frame or keyframe you put it on.
@@ -52,7 +57,8 @@ Download the installer (`HandPeg-win-Setup.exe`) or the portable zip from the
 [Releases page](https://github.com/gitclanged/HandPeg/releases). The first-run wizard lets you pick a theme and a
 starting workspace, downloads the engines HandPeg uses (FFmpeg, libmpv, yt-dlp and, if you want captions, whisper.cpp),
 pinned to builds tested with this version, and finds your GPU's hardware encoders. HandPeg updates itself from the same
-page. It needs Windows 10 or 11 (x64) and the .NET 8 Desktop Runtime.
+page. It needs Windows 10 or 11 (x64) and the .NET 8 Desktop Runtime. On Windows on ARM, use the ARM64 portable zip: it
+runs natively and downloads the ARM64 builds of its engines.
 
 ## Building from source
 ```

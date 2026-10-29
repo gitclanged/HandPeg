@@ -1,20 +1,9 @@
+using HandPegApp.Models.Timeline;
+
 namespace HandPegApp.Models;
 
-/// <summary>
-/// A further clip of the main video: what a split leaves after the first. Where it starts on the sequence,
-/// how long it stays, and how far into the file it begins, all in seconds; and its fades, as a layer's clip has them
-/// (the first clip's are the main video row's own, Layer.FadeInSeconds and the rest).
-/// </summary>
-public sealed record MainPiece(double Start, double Duration, double Offset)
-{
-    public double FadeIn { get; init; }
-    public double FadeOut { get; init; }
-    public TransitionStyle FadeInStyle { get; init; }
-    public TransitionStyle FadeOutStyle { get; init; }
-
-    /// <summary>A crossfade from the main video's clip that ends where this one starts, in seconds (0: a plain cut).</summary>
-    public double TransitionIn { get; init; }
-}
+// MainClip and MainCrossfade are the graph builder's: the primary chain as it lowers it (FilterGraphBuilder.Timeline.cs),
+// read by the player's sequence and AvSync. The view model's timeline is a TimelineDocument (4.3C).
 
 /// <summary>
 /// One clip of the main video as it lies on the sequence: where it starts and ends there, and how far into the
@@ -30,6 +19,9 @@ public readonly record struct MainClip(int Index, double Start, double End, doub
 
     /// <summary>A crossfade from the clip of the main video that ends where this one starts, in seconds (0: a plain cut).</summary>
     public double TransitionIn { get; init; }
+
+    /// <summary>The gain of its sound, in decibels: its clip's and its track's (4.3B, lowered from a TimelineClip; 0 for 4.2.0's clips).</summary>
+    public double GainDb { get; init; }
 }
 
 /// <summary>
@@ -40,10 +32,11 @@ public readonly record struct MainClip(int Index, double Start, double End, doub
 public readonly record struct MainCrossfade(double From, double To, double Source);
 
 /// <summary>
-/// A clip that was deleted from the timeline and waits in the recycle bin: a layer's clip as it was (with
-/// its place in the list), or a clip of the main video.
+/// A clip that was deleted from the timeline and waits in the recycle bin (4.3C): the clip as it was, and the track it
+/// was on (its id, its kind, and where it was in the stacking order), so that it can go back there, or onto a new
+/// track of its kind at that place when its own has gone or has no room for it.
 /// </summary>
-public sealed record DeletedClip(LayerState? Layer, MainPiece? Main, int Index);
+public sealed record DeletedClip(TimelineClip Clip, Guid TrackId, TimelineTrackKind TrackKind, int TrackIndex);
 
 /// <summary>A deleted clip as the recycle bin's drawer lists it.</summary>
 public sealed class BinItem(DeletedClip clip, string name, string timeText, System.Windows.Media.ImageSource? preview)

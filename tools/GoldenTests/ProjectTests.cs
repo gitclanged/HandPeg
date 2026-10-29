@@ -5,100 +5,120 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HandPegApp.Models;
+using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
 
 namespace HandPegGoldenTests;
 
 /// <summary>
-/// The .hproj format: a format 2 file read and written in the current format (against a golden), read again and compared field by
-/// field; a HandPeg 1.x project brought over; a newer format refused, opened only when asked, and never written over;
-/// the seek indexes always written and taken up again. The files the projects name need not exist, except where seek
-/// indexes are concerned (they are kept only for files exactly as they were), which use files made in the temp folder.
+/// The .hproj format, 5: the format 5 fixture read and written again (against a golden), read once more and compared field by
+/// field; a newer format refused, opened only when asked, and never written over; files of formats 1 to 4, and files that are
+/// not projects, refused with the reason; the seek indexes and the masks always written, the state's own looks left as they
+/// were, and both taken up again on opening. The files the projects name need not exist, except where seek indexes and masks
+/// are concerned (they are kept only for files that are there), which use files made in the scratch folder.
 /// </summary>
 public static class ProjectTests
 {
     /// <summary>What a golden project file writes for the HandPeg that wrote it, so that a new version number does not change the golden.</summary>
     public const string WriterPlaceholder = "HandPeg <version>";
 
+    /// <summary>The key the fixture carries its mask under: its file's name and the first bytes of its picture's hash (MaskStore).</summary>
+    private const string FixtureMaskKey = "inset-mask_8fe91432.png";
+
+    // Two mask pictures (2 by 2 grey PNGs, one the other's negative), as Base64.
+    private const string MaskPicture = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAAAAABX3VL4AAAADklEQVR42mP4z8DA8B8ABgAB/2U0+PcAAAAASUVORK5CYII=";
+    private const string OtherMaskPicture = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAAAAABX3VL4AAAADklEQVR42mNg+M/wnwEABgAB/5KZsuwAAAAASUVORK5CYII=";
+
+    /// <summary>A HandPeg 1.x project (format 1): the window's state as it then was, in PascalCase, naming no format.</summary>
+    private const string OneX = """{"SourcePath":"D:/media/old source.mkv","LocalMediaPath":"D:/media/old source.mkv","DestinationPath":"D:/out/old source_HandPeg.mp4","Segments":[{"StartMs":5000,"EndMs":12000,"Skipped":false}],"SnapToKeyframes":true,"Settings":{"VideoEncoder":"libx265"}}""";
+
     public static IEnumerable<GraphResult> All(string fixtures, string scratch)
     {
-        yield return Format2RoundTrip(fixtures);
-        yield return Format1Migration(fixtures);
+        yield return Format5RoundTrip(fixtures);
         yield return NewerFormat(fixtures, scratch);
-        yield return NotProjects();
+        yield return NotProjects(scratch);
         yield return SeekIndexes(scratch);
     }
 
-    private static GraphResult Format2RoundTrip(string fixtures)
+    private static GraphResult Format5RoundTrip(string fixtures)
     {
         var problems = new List<string>();
-        var original = File.ReadAllText(Path.Combine(fixtures, "format2.hproj"));
-        var first = ProjectStore.Deserialize(original);
+        var original = File.ReadAllText(Path.Combine(fixtures, "format5.hproj"));
+
+        // Opened as the window opens a project: the mask it carries goes into the masks folder (the test's own), and is
+        // carried again from there when it is written.
+        var first = ProjectStore.Deserialize(original, unpackMasks: true);
+        var mask = first.Timeline.Tracks[1].Clips[0].State.MaskPath;
         var written = ProjectStore.Serialize(first);
         var header = JsonNode.Parse(written)!.AsObject();
+        var names = header.Select(p => p.Key).ToList();
+        Expect(problems, names is ["format", "version", "writtenBy", ..] && names[^1] == "timeline",
+            $"what says which file it is comes first, and the timeline last ({string.Join(", ", names)})");
         Expect(problems, header["format"]?.GetValue<string>() == ProjectFile.FormatName, "the written file says it is a HandPeg project");
-        Expect(problems, header["version"]?.GetValue<int>() == ProjectFile.CurrentVersion, $"the written file is format {ProjectFile.CurrentVersion} (it says {header["version"]})");
+        Expect(problems, header["version"]?.GetValue<int>() == 5 && header["version"]?.GetValue<int>() == ProjectFile.CurrentVersion,
+            $"the written file is format 5 (it says {header["version"]})");
         Expect(problems, header["writtenBy"]?.GetValue<string>() == ProjectStore.WriterName, $"the written file names the HandPeg that wrote it ({header["writtenBy"]})");
 
-        // Values that a careless writer loses: a setting written under an older name (VerticalFramer is the Layer Engine), and
-        // a Linear keyframe on an effect card, which 4.0 left out of the file as if it were the default and so read back as
-        // Ease In-Out (a keyframe's constructor default).
+        // Values that a careless writer loses: a setting written under an older name (VerticalFramer is the Layer Engine), a
+        // Linear keyframe on an effect card (4.0 left it out of the file as if it were the default, so it read back as Ease
+        // In-Out, a keyframe's constructor default), an effect no version knows yet with a setting of its own, and a Custom
+        // Bézier's handles.
         Expect(problems, first.Settings.FrameEngine, "the Layer Engine setting is read (VerticalFramer in the file)");
-        var brightness = header["sequence"]?["tracks"]?[0]?["look"]?["effects"]?[0]?["keys"]?["brightness"]?.AsArray();
+        var clips = header["timeline"]?["tracks"]?[1]?["clips"];
+        var brightness = clips?[0]?["state"]?["effects"]?[0]?["keys"]?["brightness"]?.AsArray();
         Expect(problems, brightness is { Count: 2 } && brightness[0]?["easing"]?.GetValue<string>() == "EaseIn" && brightness[1]?["easing"]?.GetValue<string>() == "Linear",
             $"an effect card's Linear keyframe is written as Linear ({brightness?.ToJsonString()})");
+        Expect(problems, first.Timeline.Tracks[1].Clips[0].State.Effects is [_, _, { Type: "plugin.future.glow", Extra: { } extra }] && extra.ContainsKey("extraSetting"),
+            "an effect this version does not know keeps a setting of its own");
+        Expect(problems, first.Timeline.Tracks[1].Clips[1].State.KeysScale is [{ Easing: EasingType.CubicBezier, BezierX1: 0.7, BezierX2: 0.3, BezierY2: 1 }, { Easing: EasingType.Linear }],
+            "a Custom Bézier keyframe keeps its handles");
 
-        var second = ProjectStore.Deserialize(written);
+        // The mask the file carries: unpacked on opening, carried again under the same key (its picture's), while the state's
+        // own look goes on naming the file on the disk.
+        Expect(problems, Path.GetDirectoryName(mask) == AppPaths.Masks && File.Exists(mask), $"the mask the project carries is unpacked into the masks folder ({mask})");
+        Expect(problems, clips?[0]?["state"]?["maskPath"]?.GetValue<string>() == FixtureMaskKey && header["masks"]?[FixtureMaskKey]?.GetValue<string>() == JsonNode.Parse(original)!["masks"]?[FixtureMaskKey]?.GetValue<string>(),
+            "written, the clip's look names the mask by its key, and the file carries the picture as it was");
+        Expect(problems, first.Timeline.Tracks[1].Clips[0].State.MaskPath == mask, "writing the file leaves the state's own look as it was");
+
+        // The document's own: its markers, and the recycle bin beside it, its clip with the track it was on.
+        Expect(problems, first.Timeline.Markers is [{ Name: "Intro" }, { Name: "Highlight" }], "the markers are the timeline's");
+        Expect(problems, first.Deleted is [{ TrackIndex: 1, TrackKind: TimelineTrackKind.Video, Clip.Id: var binned }] && binned == Fixed(91),
+            "the recycle bin keeps its clip and the track it was on");
+        var timelineProblems = first.Timeline.FindProblems(requireFrames: true);
+        Expect(problems, timelineProblems.Count == 0, $"the timeline has no problems, and its edges are on frames ({string.Join("; ", timelineProblems)})");
+
+        // Read again and written again: the same state, the same file.
+        var second = ProjectStore.Deserialize(written, unpackMasks: true);
         problems.AddRange(Compare(first, second, "state"));
+        Expect(problems, ProjectStore.Serialize(second) == written, "read and written again, the file is the same");
 
-        // Formats 2 to 4 share their layout (4 only adds fields): everything the format 2 file said is still said, in the same words.
-        problems.AddRange(Contains(JsonNode.Parse(original)!, JsonNode.Parse(written)!, "file", ignore: ["version"]));
+        // Everything the fixture says is still said, in the same words. Its seek index is for a file that is not on this
+        // machine: it is not taken up, and so not written again (seek facts are written for files as they are).
+        problems.AddRange(Contains(JsonNode.Parse(original)!, JsonNode.Parse(written)!, "file", ignore: ["writtenBy", "seekIndexes"]));
 
-        return new GraphResult("hproj-format2-to-current", "# The format 2 fixture (fixtures/format2.hproj) as this version writes it.\n\n" + Pretty(written), problems, 0);
-    }
+        // A recycle bin entry of 4.2.0's shape (a layer, or a piece of the main video), left in a file translated by hand, has
+        // no clip to put back, and is passed over.
+        var withOld = JsonNode.Parse(original)!.AsObject();
+        withOld["sequence"]!["deleted"]!.AsArray().Add(new JsonObject { ["layer"] = new JsonObject { ["name"] = "old" }, ["index"] = 2 });
+        Expect(problems, ProjectStore.Deserialize(withOld.ToJsonString()).Deleted.Count == 1, "a recycle bin entry of 4.2.0's shape is left out");
 
-    private static GraphResult Format1Migration(string fixtures)
-    {
-        var problems = new List<string>();
-        var path = Path.Combine(fixtures, "format1.txt");
-        var text = File.ReadAllText(path);
-        Expect(problems, LegacyProject.IsLegacyFile(path), "the HandPeg 1.x project is recognised by its shape");
-        Expect(problems, ProjectStore.IsProjectFile(path), "Open Project and drops take the HandPeg 1.x project");
-
-        var state = ProjectStore.Deserialize(text);
-        Expect(problems, state.SourcePath == "D:/media/old source.mkv" && state.DestinationPath == "D:/out/old source_HandPeg.mp4", "its source and output come over");
-        Expect(problems, state.Segments.Count == 2 && state.Segments[0] == new SegmentState(5000, 12000) && state.Segments[1] == new SegmentState(30000, 45500, true),
-            $"its two good cuts come over, the skipped one still skipped, the one that ends before it starts left out ({string.Join(", ", state.Segments)})");
-        Expect(problems, state.SnapToIFrames, "snapping to \"keyframes\" became snapping to I-frames");
-        Expect(problems, state is { WebOptimized: true, ChaptersAtCuts: true, Container: "mp4" }, "its output settings come over");
-        var settings = state.Settings;
-        Expect(problems, settings is { VideoEncoder: "libx265", EncoderPreset: "slow", Quality: 26, AudioBitrate: "192k", NormalizeAudio: true, Denoise: true, FadeIn: true },
-            "its encoding settings come over");
-        Expect(problems, settings.Layers is [{ Name: "Inset", Kind: LayerKind.Video, CornerRadius: 12, Opacity: 90, Shadow: true, TrackId: 1 }], "its layer comes over");
-        Expect(problems, settings is { FrameEngine: true, UseVerticalResolution: true, BlurRadius: 30, CaptionStyle.FontName: "Verdana" } && Math.Abs(settings.CenterZoom - 1.5) < 1e-9,
-            "the frame, its background and the caption style come over (under their 1.x names, VerticalFramer and VerticalZoom)");
-        Expect(problems, settings.Layers.Count == 1 && settings.Layers[0].FlipHorizontal && Math.Abs(settings.Layers[0].FilterContrast - 1.1) < 1e-9,
-            "the layer's old filters come over (they become effect cards when the layer is made)");
-        Expect(problems, settings.MainVideoIndex == 1 && settings.AudioTracks.Count == 2 && state.AudioTracks[1].Action == "Drop" && state.CaptionAudioTrackIndex == 1,
-            "the stack order, the audio tracks and the captions' track come over");
-
-        // The other way of writing cuts in a 1.x project: times as text.
-        var asTimes = ProjectStore.Deserialize(text.Replace("{ \"StartMs\": 5000, \"EndMs\": 12000, \"Skipped\": false }", "{ \"Start\": \"00:00:05.500\", \"End\": \"00:00:12\" }"));
-        Expect(problems, asTimes.Segments.Count == 2 && asTimes.Segments[0] == new SegmentState(5500, 12000), $"cuts written as times come over ({string.Join(", ", asTimes.Segments)})");
-
-        var written = ProjectStore.Serialize(state);
-        problems.AddRange(Compare(state, ProjectStore.Deserialize(written), "migrated state"));
-        return new GraphResult("hproj-format1-migrated", "# The HandPeg 1.x fixture (fixtures/format1.txt) brought over and written as this version writes it.\n\n" + Pretty(written), problems, 0);
+        return new GraphResult("hproj-format5-round-trip", "# The format 5 fixture (fixtures/format5.hproj) as this version writes it.\n\n" + Pretty(written), problems, 0);
     }
 
     private static GraphResult NewerFormat(string fixtures, string scratch)
     {
         var problems = new List<string>();
-        var newer = JsonNode.Parse(File.ReadAllText(Path.Combine(fixtures, "format2.hproj")))!.AsObject();
+        var fixture = File.ReadAllText(Path.Combine(fixtures, "format5.hproj"));
+        var newer = JsonNode.Parse(fixture)!.AsObject();
         var newerVersion = ProjectFile.CurrentVersion + 1;
         newer["version"] = newerVersion;
         newer["writtenBy"] = "HandPeg 9.9.9";
+
+        // What the next format might add, at the top, in the timeline and on a clip: passed over, the file read as far as this
+        // version knows it.
         newer["fromTheFuture"] = new JsonObject { ["something"] = "this version does not know" };
+        newer["timeline"]!["fromTheFuture"] = new JsonArray(1, 2, 3);
+        newer["timeline"]!["tracks"]![0]!["clips"]![0]!["fromTheFuture"] = "a clip's own new value";
         var text = newer.ToJsonString();
 
         try
@@ -114,8 +134,27 @@ public static class ProjectTests
         }
 
         var opened = ProjectStore.Deserialize(text, allowNewer: true);
-        problems.AddRange(Compare(ProjectStore.Deserialize(File.ReadAllText(Path.Combine(fixtures, "format2.hproj"))), opened, "opened anyway"));
+        problems.AddRange(Compare(ProjectStore.Deserialize(fixture), opened, "opened anyway"));
         Expect(problems, ProjectStore.IsProject(newer), "the backup importer takes a newer project as one (copied unchanged; it asks before it opens)");
+
+        // What a file says it is decides before anything else of it is read: a newer file whose timeline this version could
+        // not read at all is still refused as newer.
+        var unreadable = new JsonObject
+        {
+            ["format"] = ProjectFile.FormatName, ["version"] = newerVersion, ["writtenBy"] = "HandPeg 9.9.9", ["timeline"] = "not a timeline this version reads",
+        };
+        try
+        {
+            ProjectStore.Deserialize(unreadable.ToJsonString());
+            problems.Add("a newer file this version cannot read was read");
+        }
+        catch (NewerProjectFormatException)
+        {
+        }
+        catch (Exception other)
+        {
+            problems.Add($"a newer file this version cannot read was refused with a {other.GetType().Name}, not as newer: {other.Message}");
+        }
 
         // On disk: what it says it is is read from its first bytes, and saving over it is refused, while Save As elsewhere is not.
         Directory.CreateDirectory(scratch);
@@ -142,28 +181,78 @@ public static class ProjectTests
         return new GraphResult("hproj-newer-format", "# A file of the next format: refused unless asked, opened as far as known, never written over.\n", problems, 0);
     }
 
-    private static GraphResult NotProjects()
+    private static GraphResult NotProjects(string scratch)
     {
         var problems = new List<string>();
-        foreach (var (text, what) in new[]
-                 {
-                     ("{\"name\":\"shopping\",\"items\":[\"milk\",\"bread\"]}", "a JSON file that is not a project"),
-                     ("{\"format\":\"handpeg-project\",\"version\":1,\"name\":\"x\"}", "a project marked format 1"),
-                     ("{\"SourcePath\":\"D:/a.mkv\",\"Settings\":{},\"Notes\":[]}", "a text file with some of a 1.x project's names"),
-                 })
+
+        // Each refused as what it is (InvalidDataException), the reason saying so.
+        void Refused(string text, string what, params string[] saying)
         {
             try
             {
                 ProjectStore.Deserialize(text);
                 problems.Add($"{what} was read as a project");
             }
-            catch (InvalidDataException)
+            catch (InvalidDataException refused)
             {
+                foreach (var words in saying.Where(w => !refused.Message.Contains(w, StringComparison.Ordinal)))
+                    problems.Add($"{what}: the refusal does not say \"{words}\": {refused.Message}");
+            }
+            catch (Exception other)
+            {
+                problems.Add($"{what} was refused with a {other.GetType().Name}, not as what it is: {other.Message}");
             }
         }
 
-        Expect(problems, !LegacyProject.IsLegacy(JsonNode.Parse("{\"SourcePath\":\"D:/a.mkv\",\"Settings\":{},\"Notes\":[]}")!.AsObject()), "a partial match is not a 1.x project");
+        Refused("{\"name\":\"shopping\",\"items\":[\"milk\",\"bread\"]}", "a JSON file that is not a project", "not a HandPeg project");
+        Refused("Words, not JSON.", "a text that is not JSON", "not a HandPeg project");
+        Refused(OneX, "a HandPeg 1.x project (format 1, which names no format)", "not a HandPeg project");
+
+        // Formats 2 to 4 (HandPeg 2.0 to 4.2.0) are not converted: refused, the reason naming the format and the one opened.
+        foreach (var version in new[] { 2, 3, 4 })
+            Refused(Older(version), $"a format {version} project", $"format {version}", $"format {ProjectFile.CurrentVersion} projects only", "not converted");
+
+        // What a file says it is is read before anything else of it: a format 4 file whose sequence this version could not read
+        // at all is refused as format 4, not for what in it did not fit.
+        Refused(new JsonObject { ["format"] = ProjectFile.FormatName, ["version"] = 4, ["sequence"] = "not a sequence this version reads" }.ToJsonString(),
+            "a format 4 file this version could not read", "format 4");
+
+        // A format 5 project keeps its tracks and clips in its timeline: one without is not a project.
+        Refused(new JsonObject { ["format"] = ProjectFile.FormatName, ["version"] = 5, ["writtenBy"] = "HandPeg 4.3.0", ["name"] = "No timeline" }.ToJsonString(),
+            "a format 5 project without a timeline", "no timeline");
+        Refused("{\"format\":\"handpeg-project\",\"version\":5,\"name\":\"Null timeline\",\"timeline\":null}", "a format 5 project whose timeline is null", "no timeline");
+        Refused("{\"format\":\"handpeg-project\",\"name\":\"No number\",\"timeline\":{}}", "a project that does not say which format it is", "does not say which format");
+
+        Expect(problems, !ProjectStore.IsProject(JsonNode.Parse(Older(4))!.AsObject()), "the backup importer does not take a format 4 project as one");
+        Expect(problems, ProjectStore.IsProject(new JsonObject { ["format"] = ProjectFile.FormatName, ["version"] = 5 }), "it takes a format 5 project");
+
+        // Open Project, drops and the address box take .hproj files only: a .txt, even a HandPeg 1.x project, is not one.
+        Directory.CreateDirectory(scratch);
+        var oneX = Path.Combine(scratch, "old project.txt");
+        File.WriteAllText(oneX, OneX);
+        Expect(problems, !ProjectStore.IsProjectFile(oneX), "a .txt, even a HandPeg 1.x project, is not a project file");
+        var there = Path.Combine(scratch, "there.hproj");
+        File.WriteAllText(there, "{}");
+        Expect(problems, ProjectStore.IsProjectFile(there) && !ProjectStore.IsProjectFile(Path.Combine(scratch, "not there.hproj")), "a .hproj that is there is one");
+
         return new GraphResult("hproj-not-projects", "# Files that are not projects this version reads are refused with a reason.\n", problems, 0);
+    }
+
+    /// <summary>
+    /// A project as HandPeg 2.0 to 4.2.0 wrote it (3 and 4 name their writer; 4 only adds values to 2's layout): its cut list,
+    /// the main video's track, a track of layers with keys as arrays of numbers, and a recycle bin of that shape.
+    /// </summary>
+    private static string Older(int version)
+    {
+        var file = new JsonObject { ["format"] = ProjectFile.FormatName, ["version"] = version };
+        if (version >= 3)
+            file["writtenBy"] = version == 3 ? "HandPeg 4.1.0" : "HandPeg 4.2.0";
+        file["name"] = "Older";
+        file["source"] = new JsonObject { ["path"] = "D:/media/main.mp4" };
+        file["sequence"] = JsonNode.Parse(
+            """{"cuts":[[5000,12000],[14000,20000,1]],"markers":[{"seconds":12.5,"name":"Intro"}],"main":{"look":{"name":"main.mp4","kind":"MainVideo"},"clips":[{"duration":40}]},"mainIndex":1,"tracks":[{"id":1,"look":{"name":"clip1.mp4","kind":"VideoFile","imagePath":"D:/media/clip1.mp4"},"clips":[{"start":10,"duration":12,"keysX":[0,0.05,4,0.4],"easeX":[1,0]}]}],"deleted":[{"layer":{"name":"gone"},"index":0}]}""");
+        file["settings"] = new JsonObject { ["videoEncoder"] = "libx264" };
+        return file.ToJsonString();
     }
 
     private static GraphResult SeekIndexes(string scratch)
@@ -171,17 +260,103 @@ public static class ProjectTests
         var problems = new List<string>();
         Directory.CreateDirectory(scratch);
 
-        // Written: the seek facts known for a project's video files go into the file, always.
+        // Written: the seek facts known for a project's video files go into the file, always: the main video's (the file read,
+        // and its two clips), and the file of a clip on another track, which only the timeline names.
         var written = Path.Combine(scratch, "written.mp4");
         File.WriteAllBytes(written, new byte[4096]);
         var info = new FileInfo(written);
         var iframes = new[] { 0.0, 2.002, 4.004, 6.006 };
         Expect(problems, MediaProbe.Adopt(new SeekFacts(written, info.Length, info.LastWriteTimeUtc.Ticks, 0.0, 0.0, 8.0, iframes)), "the facts of an existing file are adopted");
-        var state = new ProjectState { Name = "Seek", SourcePath = written, LocalMediaPath = written };
-        var json = JsonNode.Parse(ProjectStore.Serialize(state))!.AsObject();
-        var kept = json["seekIndexes"]?.AsArray().FirstOrDefault()?.AsObject();
-        Expect(problems, kept is not null && kept["length"]?.GetValue<long>() == info.Length && MediaProbe.UnpackTimes(kept["iFrames"]!.GetValue<string>()).SequenceEqual(iframes),
-            "the project carries the file's I-frames, with its size");
+        var layer = Path.Combine(scratch, "layer.mp4");
+        File.WriteAllBytes(layer, new byte[2048]);
+        var layerInfo = new FileInfo(layer);
+        var layerFrames = new[] { 0.0, 1.0, 2.0 };
+        Expect(problems, MediaProbe.Adopt(new SeekFacts(layer, layerInfo.Length, layerInfo.LastWriteTimeUtc.Ticks, 0.1, 0.1, 3.0, layerFrames)), "the facts of a clip's file are adopted");
+
+        // Masks: one on a clip's look (and on a clip in the recycle bin), another on a track's shared look.
+        var clipMask = Path.Combine(scratch, "clip mask.png");
+        var trackMask = Path.Combine(scratch, "track mask.png");
+        File.WriteAllBytes(clipMask, Convert.FromBase64String(MaskPicture));
+        File.WriteAllBytes(trackMask, Convert.FromBase64String(OtherMaskPicture));
+        var timeline = new TimelineDocument
+        {
+            Tracks =
+            [
+                new TimelineTrackModel
+                {
+                    Id = Fixed(1), TrackNumber = 1,
+                    Clips =
+                    [
+                        new TimelineClip
+                        {
+                            Id = Fixed(11), ContentKind = LayerKind.MainVideo, SourcePath = written, AudioStreamIndex = 0, End = 4, SourceDuration = 8,
+                            State = new LayerState { Name = "Main", Kind = LayerKind.MainVideo },
+                        },
+                        new TimelineClip
+                        {
+                            Id = Fixed(12), ContentKind = LayerKind.MainVideo, SourcePath = written, AudioStreamIndex = 0, Start = 4, End = 6, MediaOffset = 6, SourceDuration = 8,
+                            State = new LayerState { Name = "Main", Kind = LayerKind.MainVideo },
+                        },
+                    ],
+                },
+                new TimelineTrackModel
+                {
+                    Id = Fixed(2), TrackNumber = 2,
+                    TrackLook = new LayerState { Name = "Inset", CustomMask = true, MaskPath = trackMask },
+                    Clips =
+                    [
+                        new TimelineClip
+                        {
+                            Id = Fixed(21), SourcePath = layer, End = 3, SourceDuration = 3,
+                            State = new LayerState { Name = "layer.mp4", Kind = LayerKind.VideoFile, ImagePath = layer, CustomMask = true, MaskPath = clipMask },
+                        },
+                    ],
+                },
+            ],
+        };
+        var binned = new TimelineClip
+        {
+            Id = Fixed(31), SourcePath = layer, Start = 3, End = 4, SourceDuration = 3,
+            State = new LayerState { Name = "deleted", Kind = LayerKind.VideoFile, ImagePath = layer, CustomMask = true, MaskPath = clipMask },
+        };
+        var state = new ProjectState
+        {
+            Name = "Seek", SourcePath = written, LocalMediaPath = written, Timeline = timeline, Deleted = [new DeletedClip(binned, Fixed(2), TimelineTrackKind.Video, 1)],
+        };
+        var text = ProjectStore.Serialize(state);
+        var json = JsonNode.Parse(text)!.AsObject();
+        var seeks = json["seekIndexes"]?.AsArray().OfType<JsonObject>().ToList() ?? [];
+        JsonObject? FactsOf(string path) => seeks.FirstOrDefault(s => string.Equals(s["path"]?.GetValue<string>(), path, StringComparison.OrdinalIgnoreCase));
+        Expect(problems, FactsOf(written) is { } kept && kept["length"]?.GetValue<long>() == info.Length && MediaProbe.UnpackTimes(kept["iFrames"]!.GetValue<string>()).SequenceEqual(iframes),
+            "the project carries the main video's I-frames, with its size");
+        Expect(problems, FactsOf(layer) is { } layerKept && MediaProbe.UnpackTimes(layerKept["iFrames"]!.GetValue<string>()).SequenceEqual(layerFrames),
+            "and the I-frames of a clip's video file, found on the timeline");
+        Expect(problems, seeks.Count == 2, $"each file once ({seeks.Count} written)");
+
+        // The masks: carried in the file under keys made from their pictures, the written looks naming those keys, while the
+        // state's own looks go on naming the files on the disk.
+        var masks = json["masks"]?.AsObject();
+        var clipKey = json["timeline"]?["tracks"]?[1]?["clips"]?[0]?["state"]?["maskPath"]?.GetValue<string>();
+        var trackKey = json["timeline"]?["tracks"]?[1]?["trackLook"]?["maskPath"]?.GetValue<string>();
+        var binKey = json["sequence"]?["deleted"]?[0]?["clip"]?["state"]?["maskPath"]?.GetValue<string>();
+        Expect(problems, masks is { Count: 2 } && clipKey is not null && trackKey is not null && clipKey != trackKey && masks.ContainsKey(clipKey) && masks.ContainsKey(trackKey),
+            $"the clip's mask and the track's are carried, each under its own key ({clipKey}, {trackKey}; {masks?.Count ?? 0} carried)");
+        Expect(problems, clipKey is not null && masks?[clipKey]?.GetValue<string>() == MaskPicture, "the clip's mask is carried byte for byte");
+        Expect(problems, binKey == clipKey, $"a clip in the recycle bin names its mask by the same key: one picture, carried once ({binKey})");
+        Expect(problems, timeline.Tracks[1].Clips[0].State.MaskPath == clipMask && timeline.Tracks[1].TrackLook?.MaskPath == trackMask && binned.State.MaskPath == clipMask,
+            "writing the file leaves the state's own looks naming the files on the disk");
+
+        // Opened: the masks go into the masks folder, and the looks name them there.
+        var maskedPath = Path.Combine(scratch, "masked.hproj");
+        File.WriteAllText(maskedPath, text);
+        var opened = ProjectStore.Load(maskedPath);
+        var openedMask = opened.Timeline.Tracks[1].Clips[0].State.MaskPath;
+        var openedTrackMask = opened.Timeline.Tracks[1].TrackLook?.MaskPath ?? "";
+        Expect(problems, Path.GetDirectoryName(openedMask) == AppPaths.Masks && File.Exists(openedMask) && File.ReadAllBytes(openedMask).SequenceEqual(File.ReadAllBytes(clipMask)),
+            $"opened, the clip's mask is unpacked into the masks folder ({openedMask})");
+        Expect(problems, Path.GetDirectoryName(openedTrackMask) == AppPaths.Masks && File.Exists(openedTrackMask) && File.ReadAllBytes(openedTrackMask).SequenceEqual(File.ReadAllBytes(trackMask)),
+            $"and so is the track's ({openedTrackMask})");
+        Expect(problems, opened.Deleted is [{ Clip.State.MaskPath: var openedBin }] && openedBin == openedMask, "and the recycle bin's clip names the same file");
 
         // Taken up: a project opened carries facts for a file still exactly as it was, and they are known at once.
         var read = Path.Combine(scratch, "read.mp4");
@@ -209,6 +384,8 @@ public static class ProjectTests
         if (!held)
             problems.Add("not so: " + what);
     }
+
+    private static Guid Fixed(int n) => new(string.Create(CultureInfo.InvariantCulture, $"00000000-0000-0000-0000-{n:D12}"));
 
     /// <summary>Two objects field by field (public properties, lists, dictionaries, records), naming each difference by its path.</summary>
     public static List<string> Compare(object? a, object? b, string path)
@@ -278,7 +455,7 @@ public static class ProjectTests
         _ => value.ToString() ?? "",
     };
 
-    /// <summary>Every value the first JSON holds is in the second, at the same place (the second may hold more).</summary>
+    /// <summary>Every value the first JSON (the fixture) holds is in the second (what was written), at the same place; the second may hold more.</summary>
     private static IEnumerable<string> Contains(JsonNode expected, JsonNode actual, string path, string[] ignore)
     {
         switch (expected)
@@ -293,7 +470,7 @@ public static class ProjectTests
                         // A value at its default is left out of the file (ProjectStore.SkipDefaults); the field-by-field
                         // comparison of what is read back says whether it still means the same.
                         if (!IsDefaultLooking(value))
-                            yield return $"{path}.{key}: in the format 2 file, not in the current one";
+                            yield return $"{path}.{key}: in the fixture, not in what was written";
                         continue;
                     }
 
@@ -307,7 +484,7 @@ public static class ProjectTests
                 break;
             case JsonArray arrayExpected when actual is JsonArray arrayActual:
                 if (arrayExpected.Count != arrayActual.Count)
-                    yield return $"{path}: {arrayExpected.Count} items in the format 2 file, {arrayActual.Count} in the current one";
+                    yield return $"{path}: {arrayExpected.Count} items in the fixture, {arrayActual.Count} in what was written";
                 for (var i = 0; i < Math.Min(arrayExpected.Count, arrayActual.Count); i++)
                 {
                     if (arrayExpected[i] is { } e && arrayActual[i] is { } f)
@@ -320,7 +497,7 @@ public static class ProjectTests
                 break;
             case JsonValue valueExpected when actual is JsonValue valueActual:
                 if (!SameValue(valueExpected, valueActual))
-                    yield return $"{path}: {valueExpected.ToJsonString()} in the format 2 file, {valueActual.ToJsonString()} in the current one";
+                    yield return $"{path}: {valueExpected.ToJsonString()} in the fixture, {valueActual.ToJsonString()} in what was written";
                 break;
             default:
                 yield return $"{path}: not the same kind of value";
@@ -340,8 +517,9 @@ public static class ProjectTests
     private static bool SameValue(JsonValue a, JsonValue b) =>
         a.ToJsonString() == b.ToJsonString()
         || (a.TryGetValue<double>(out var x) && b.TryGetValue<double>(out var y) && x.Equals(y))
-        || (a.TryGetValue<string>(out var s) && b.TryGetValue<string>(out var t) && DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var ds)
-            && DateTime.TryParse(t, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dt) && ds == dt);
+        || (a.TryGetValue<string>(out var s) && b.TryGetValue<string>(out var t)
+            && (s == t || (DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var ds)
+                           && DateTime.TryParse(t, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dt) && ds == dt)));
 
     /// <summary>A project's JSON indented, a value to a line, with the writer's version as a placeholder.</summary>
     private static string Pretty(string json)

@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -193,6 +195,24 @@ public abstract class TimelineBar : FrameworkElement
         geometry.Freeze();
         return geometry;
     }
+
+    // ----- UI Automation -----
+    // A bar is one element with a name and its place on screen; what it draws has no peers (and the playhead is a visual,
+    // not an element), so its peer never walks its children.
+
+    /// <summary>What UI Automation calls the bar when no AutomationProperties.Name is set on it.</summary>
+    protected abstract string AutomationName { get; }
+
+    protected override AutomationPeer OnCreateAutomationPeer() => new TimelineBarPeer(this);
+
+    private sealed class TimelineBarPeer(TimelineBar owner) : FrameworkElementAutomationPeer(owner)
+    {
+        protected override string GetClassNameCore() => owner.GetType().Name;
+
+        protected override string GetNameCore() => AutomationProperties.GetName(owner) is { Length: > 0 } name ? name : owner.AutomationName;
+
+        protected override List<AutomationPeer>? GetChildrenCore() => null;
+    }
 }
 
 /// <summary>
@@ -343,6 +363,8 @@ public sealed class TimelineBlock
 /// </summary>
 public sealed class TimelineTrack : TimelineBar
 {
+    protected override string AutomationName => "Timeline track";
+
     /// <summary>How close to a block's right edge the pointer has to be to take hold of its length.</summary>
     public const double EdgePixels = 7;
 
@@ -1403,6 +1425,8 @@ public sealed class TimelineTrack : TimelineBar
 /// </summary>
 public sealed class TimelineRuler : TimelineBar
 {
+    protected override string AutomationName => "Timeline ruler";
+
     private static readonly Typeface Face = new("Segoe UI");
     private static readonly Pen Tick = Frozen(new Pen(FrozenBrush(Color.FromArgb(150, 255, 255, 255)), 1));
     private static readonly Pen MinorTick = Frozen(new Pen(FrozenBrush(Color.FromArgb(80, 255, 255, 255)), 1));

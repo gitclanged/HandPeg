@@ -108,7 +108,11 @@ public static class EasingCurves
     /// How far a stretch has gone in value, given how far through its time it is (both 0 to 1, though Back, Elastic and
     /// a Bézier may run past 1 or below 0 on the way). The keyframe the stretch leaves gives the easing and the handles.
     /// </summary>
-    public static double Evaluate(double progress, in Keyframe from)
+    public static double Evaluate(double progress, in Keyframe from) =>
+        from.IsPart ? EvaluatePart(progress, from) : EvaluateWhole(progress, from);
+
+    /// <summary><see cref="Evaluate"/> over the whole of the keyframe's curve, whatever part of it the keyframe takes.</summary>
+    private static double EvaluateWhole(double progress, in Keyframe from)
     {
         var u = Math.Clamp(progress, 0, 1);
         switch (from.Easing)
@@ -122,7 +126,9 @@ public static class EasingCurves
             case EasingType.Elastic: return 1 + Math.Pow(2, -10 * u) * Math.Sin((10 * u - 0.75) * ElasticPeriod) - u * ElasticRest;
             case EasingType.Bounce:
             case EasingType.CubicBezier:
-                var points = PiecesOf(from);
+                // The same points as PiecesOf, on the stack: this runs for every keyframed value of every frame (4.3-0B).
+                Span<(double U, double E)> points = stackalloc (double U, double E)[Pieces + 1];
+                WritePieces(from, points);
                 for (var i = 1; i < points.Length; i++)
                 {
                     if (u <= points[i].U || i == points.Length - 1)
@@ -171,36 +177,58 @@ public static class EasingCurves
     /// </summary>
     public static (double U, double E)[] PiecesOf(in Keyframe from)
     {
+        var points = new (double U, double E)[Pieces + 1];
+        WritePieces(from, points);
+        if (!from.IsPart)
+            return points;
+
+        // A part of the curve (4.3D): its own ends and the points between them, scaled so the part runs from 0 to 1.
+        var (start, end) = from.Part;
+        var (first, last) = (EvaluateWhole(start, from), EvaluateWhole(end, from));
+        var rise = Math.Abs(last - first) < 1e-9 ? 1 : last - first;
+        List<(double U, double E)> part = [(0, 0)];
+        foreach (var (u, e) in points)
+        {
+            if (u > start + 1e-9 && u < end - 1e-9)
+                part.Add(((u - start) / (end - start), (e - first) / rise));
+        }
+
+        part.Add((1, 1));
+        return [.. part];
+    }
+
+    // PiecesOf's points (always Pieces + 1 of them) written into room the caller has, so that Evaluate needs no array.
+    private static void WritePieces(in Keyframe from, Span<(double U, double E)> points)
+    {
         if (from.Easing == EasingType.Bounce)
         {
             // easeOutBounce: four arcs of one parabola, landing at 1/2.75, 2/2.75, 2.5/2.75 and 1; 4 + 4 + 2 + 2 pieces.
             Span<double> cuts = [0, 1 / 2.75, 2 / 2.75, 2.5 / 2.75, 1];
             Span<int> pieces = [4, 4, 2, 2];
-            var points = new List<(double, double)>(Pieces + 1) { (0, 0) };
+            points[0] = (0, 0);
+            var next = 1;
             for (var arc = 0; arc < 4; arc++)
             {
                 for (var k = 1; k <= pieces[arc]; k++)
                 {
                     var u = cuts[arc] + (cuts[arc + 1] - cuts[arc]) * k / pieces[arc];
-                    points.Add((u, BounceAt(u)));
+                    points[next++] = (u, BounceAt(u));
                 }
             }
 
-            return [.. points];
+            return;
         }
 
         var (x1, y1, x2, y2) = Handles(from);
-        var sampled = new (double U, double E)[Pieces + 1];
         for (var i = 0; i <= Pieces; i++)
         {
             var s = (double)i / Pieces;
             var (a, b, c) = (3 * (1 - s) * (1 - s) * s, 3 * (1 - s) * s * s, s * s * s);
-            sampled[i] = (a * x1 + b * x2 + c, a * y1 + b * y2 + c);
+            points[i] = (a * x1 + b * x2 + c, a * y1 + b * y2 + c);
         }
 
-        sampled[0] = (0, 0);
-        sampled[Pieces] = (1, 1);
-        return sampled;
+        points[0] = (0, 0);
+        points[Pieces] = (1, 1);
     }
 
     /// <summary>A Bézier keyframe's handles, held to what makes a curve that runs forwards in time; the default ones when it has none.</summary>
@@ -208,6 +236,51 @@ public static class EasingCurves
         key.BezierX1 == 0 && key.BezierY1 == 0 && key.BezierX2 == 0 && key.BezierY2 == 0
             ? DefaultHandles
             : (Math.Clamp(key.BezierX1, 0, 1), Math.Clamp(key.BezierY1, -2, 3), Math.Clamp(key.BezierX2, 0, 1), Math.Clamp(key.BezierY2, -2, 3));
+
+    // ----- A part of a curve (a clip split between two keyframes, 4.3D) -----
+    // A stretch cut in two by a split keeps its curve: each half's stretch is the part of the curve that falls on its side
+    // (Keyframe.PartStart / PartEnd), its progress rescaled to the part's, so both halves move exactly as the whole did.
+
+    /// <summary>
+    /// The stretch a keyframe leaves cut at <paramref name="progress"/> of its time into the two keyframes the halves leave
+    /// by: each the same easing (and handles) over its part of the curve. Linear and Hold are themselves on either side.
+    /// </summary>
+    public static (Keyframe First, Keyframe Second) Cut(in Keyframe from, double progress)
+    {
+        if (from.Easing is EasingType.Linear or EasingType.Hold)
+            return (from, from);
+
+        var (start, end) = from.Part;
+        var at = start + Math.Clamp(progress, 0, 1) * (end - start);
+        return (from.WithPart(start, at), from.WithPart(at, end));
+    }
+
+    /// <summary>
+    /// <see cref="Evaluate"/> for a keyframe whose stretch is a part of its curve: the curve's progress over the part,
+    /// scaled so the part runs from 0 to 1 (as the whole curve's does; flat when the part does not move).
+    /// </summary>
+    private static double EvaluatePart(double progress, in Keyframe from)
+    {
+        var (start, end) = from.Part;
+        var (first, last) = (EvaluateWhole(start, from), EvaluateWhole(end, from));
+        var rise = last - first;
+        var u = Math.Clamp(progress, 0, 1);
+        return Math.Abs(rise) < 1e-9 ? u : (EvaluateWhole(start + u * (end - start), from) - first) / rise;
+    }
+
+    /// <summary>A keyframe's curve as FFmpeg evaluates it (see <see cref="Expression(string, EasingType)"/>), over its part when it is one.</summary>
+    public static string Expression(string p, in Keyframe from)
+    {
+        if (!from.IsPart)
+            return Expression(p, from.Easing);
+
+        var (start, end) = from.Part;
+        var (first, last) = (EvaluateWhole(start, from), EvaluateWhole(end, from));
+        var rise = last - first;
+        if (Math.Abs(rise) < 1e-9)
+            return p;
+        return $"(({Expression($"({Number(start)}+{p}*{Number(end - start)})", from.Easing)}-{Number(first)})*{Number(1 / rise)})";
+    }
 
     private static double BounceAt(double u)
     {

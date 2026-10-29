@@ -167,9 +167,9 @@ public partial class MainViewModel
     {
         _mediaInfo = info;
 
-        // The main video is a clip like the others, and is called what its file is.
-        _mainVideoRow.MediaDuration = Math.Max(info?.DurationSeconds ?? 0, 0);
-        _mainVideoRow.Name = HasSource ? System.IO.Path.GetFileName(LocalMediaPath) : "Main Video";
+        // The main video is clips like the others: as long as its file is, with its sound or none (what the file is, not
+        // an edit: no undo step).
+        TakeMainFile(info);
         (SourceWidth, SourceHeight, IsSourceHdr) = (info?.Video?.Width ?? 0, info?.Video?.Height ?? 0, info?.Video?.IsHdr ?? false);
 
         foreach (var track in AudioTracks)
@@ -259,7 +259,7 @@ public partial class MainViewModel
 
         SourceInfoRows.Add(new("Container", info.Container));
         SourceInfoRows.Add(new("Original file size", GetSourceFileSize()));
-        SourceInfoRows.Add(new("Duration", CutSegment.FormatTime(TimeSpan.FromSeconds(info.DurationSeconds))));
+        SourceInfoRows.Add(new("Duration", TimeDisplay.Format(info.DurationSeconds)));
         SourceInfoRows.Add(new("Overall bitrate", info.BitRate > 0 ? $"{info.BitRate / 1000:N0} kb/s" : "Unknown"));
 
         if (info.Video is { } video)
@@ -315,7 +315,7 @@ public partial class MainViewModel
             : copyVideo && _mediaInfo?.Video is { } video ? $"{video.Codec} (copied)"
             : VideoEncoder.DisplayName));
         OutputInfoRows.Add(new("Audio", audio));
-        OutputInfoRows.Add(new("Duration", duration > 0 ? CutSegment.FormatTime(TimeSpan.FromSeconds(duration)) : "Unknown"));
+        OutputInfoRows.Add(new("Duration", duration > 0 ? TimeDisplay.Format(duration) : "Unknown"));
         OutputInfoRows.Add(new("Estimated file size", EstimateOutputSize(size, frameRate, duration, tracks, mixAudio)));
     }
 
@@ -461,15 +461,18 @@ public partial class MainViewModel
         return _mediaInfo?.Video?.FrameRate ?? 0;
     }
 
-    /// <summary>Length of the output in seconds: the kept segments, or the whole source.</summary>
-    private double GetOutputDuration()
-    {
-        var segments = GetMergedSegments();
-        if (segments.Count > 0)
-            return segments.Sum(s => s.Duration.TotalSeconds);
+    /// <summary>
+    /// Length of the output in seconds: the timeline's (4.3C: nothing is cut out of it on the way), or, for a Copy export
+    /// of a main video in clips (joined end to end from its file: FilterGraphBuilder.BuildCutsList), those clips end to end.
+    /// </summary>
+    private double GetOutputDuration() =>
+        VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput && FrameEngine && GetMainClips() is { Count: > 0 } clips && !IsWholePicture(clips)
+            ? clips.Sum(c => c.End - c.Start)
+            : SequenceSeconds;
 
-        return SequenceSeconds;
-    }
+    /// <summary>Whether the main video plays as one clip of its whole file from the timeline's start (what a Copy export reads as it is, as the builder decides it).</summary>
+    private bool IsWholePicture(IReadOnlyList<MainClip> clips) =>
+        clips is [var only] && only.Start < 0.001 && only.Offset < 0.001 && (MainMediaSeconds <= 0 || Math.Abs(only.End - only.Start - MainMediaSeconds) < 0.02);
 
     /// <summary>Size of the loaded file, in the same MB/GB form as the estimate it sits beside.</summary>
     private string GetSourceFileSize()

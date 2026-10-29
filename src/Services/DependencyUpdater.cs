@@ -1,6 +1,7 @@
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -62,7 +63,11 @@ public enum PinState
 /// A build of a tool that this version of HandPeg installs by default. The first one listed for a tool (or for a kind
 /// of it) is the one it was tested with; those after it stand in, in order, when upstream no longer publishes it.
 /// </summary>
-/// <param name="Variant">Which build of the tool: <see cref="DependencyUpdater.OlderNvidiaVariant"/> for the FFmpeg that older NVIDIA drivers take, the file's name for whisper.cpp (a build per kind of hardware); empty otherwise.</param>
+/// <param name="Variant">
+/// Which build of the tool: <see cref="DependencyUpdater.OlderNvidiaVariant"/> for the FFmpeg that older NVIDIA drivers take,
+/// <see cref="DependencyUpdater.Arm64Variant"/> for FFmpeg's and libmpv's ARM64 builds, the file's name for whisper.cpp (a
+/// build per kind of hardware); empty otherwise.
+/// </param>
 /// <param name="Repository">The GitHub repository that publishes it, as owner/name.</param>
 /// <param name="Tag">The release that carries it. Only dated or numbered releases, whose files never change.</param>
 /// <param name="Asset">The file attached to that release.</param>
@@ -110,11 +115,33 @@ public static partial class DependencyUpdater
     private const string MpvLibraryName = "libmpv-2.dll";
 
     [GeneratedRegex(@"^mpv-dev-x86_64-\d{8}-git-[0-9a-f]+\.7z$")]
-    private static partial Regex MpvAssetRegex();
+    private static partial Regex MpvX64AssetRegex();
 
-    private const string YtDlpAssetName = "yt-dlp.exe";
-    private const string FfmpegAssetName = "ffmpeg-master-latest-win64-gpl.zip";
-    private const string WhisperAssetName = "whisper-bin-x64.zip";
+    [GeneratedRegex(@"^mpv-dev-aarch64-\d{8}-git-[0-9a-f]+\.7z$")]
+    private static partial Regex MpvArm64AssetRegex();
+
+    // ----- ARM64 (4.3D): a win-arm64 HandPeg takes the ARM64 build of every tool -----
+    // libmpv runs inside HandPeg, so an ARM64 process can load only an ARM64 build of it; FFmpeg, yt-dlp and whisper.cpp
+    // run beside it and would run emulated (Prism) as x64, but each publishes an ARM64 build, which is what is installed.
+    // The tools of an ARM64 HandPeg have folders of their own (ToolFolder), so neither build ever lands in the other's.
+
+    /// <summary>The variant of FFmpeg and libmpv built for ARM64 Windows (<see cref="PinnedBuild.Variant"/>).</summary>
+    public const string Arm64Variant = "arm64";
+
+    /// <summary>HandPeg runs as an ARM64 process (the win-arm64 build, on Windows on ARM): its tools are the ARM64 builds.</summary>
+    public static bool IsArm64 => RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
+
+    private static Regex MpvAssetRegex() => IsArm64 ? MpvArm64AssetRegex() : MpvX64AssetRegex();
+
+    private static string YtDlpAssetName => IsArm64 ? "yt-dlp_arm64.exe" : "yt-dlp.exe";
+    private static string FfmpegAssetName => IsArm64 ? "ffmpeg-master-latest-winarm64-gpl.zip" : "ffmpeg-master-latest-win64-gpl.zip";
+
+    // whisper.cpp's plain build (on the processor alone): the one every computer can run.
+    private const string WhisperX64AssetName = "whisper-bin-x64.zip";
+    private const string WhisperArm64AssetName = "whisper-bin-win-cpu-arm64.zip";
+    private const string WhisperArm64CudaAssetName = "whisper-bin-win-cuda-13.4-arm64.zip";
+    private const string WhisperArm64AdrenoAssetName = "whisper-bin-win-opencl-adreno-arm64.zip";
+    private static string WhisperAssetName => IsArm64 ? WhisperArm64AssetName : WhisperX64AssetName;
 
     // The builds of FFmpeg's numbered releases, published beside the newest one: "ffmpeg-n8.1-latest-win64-gpl-8.1.zip".
     [GeneratedRegex(@"^ffmpeg-n(?<version>\d+\.\d+)-latest-win64-gpl-\k<version>\.zip$")]
@@ -160,6 +187,10 @@ public static partial class DependencyUpdater
     private static readonly DateTime MonthEndFfmpegDate = new(2026, 9, 30, 13, 9, 24, DateTimeKind.Utc);
     private static readonly DateTime TestedWhisperDate = new(2026, 10, 6, 16, 51, 27, DateTimeKind.Utc);
 
+    // The ARM64 builds of the same releases (4.3D), their SHA-256 as GitHub reports it for each file (the x64 pins agree).
+    private static readonly DateTime TestedFfmpegArm64Date = new(2026, 10, 23, 13, 4, 36, DateTimeKind.Utc);
+    private static readonly DateTime MonthEndFfmpegArm64Date = new(2026, 9, 30, 13, 8, 23, DateTimeKind.Utc);
+
     /// <summary>
     /// The builds HandPeg 4.1 installs, a list per tool and variant, the tested build first and its stand-ins after it in
     /// the order they are taken. Raised with each version of HandPeg, once the new builds have been tested with it.
@@ -195,8 +226,30 @@ public static partial class DependencyUpdater
             "afef0b881c500958921c3f5523b50e59ee2ec9b6f5cbd25b324c51ed308a957a", 684913404, "b5454", TestedWhisperDate, "b5454 (CUDA)"),
         new(Whisper, "whisper-blas-bin-x64.zip", "ggml-org/whisper.cpp", "b5454", "whisper-blas-bin-x64.zip",
             "b1158bd10edf92c9799149a6fc5d3e58da3f495241d6fb3423088130e88ffbf3", 21715607, "b5454", TestedWhisperDate, "b5454 (OpenBLAS)"),
-        new(Whisper, WhisperAssetName, "ggml-org/whisper.cpp", "b5454", WhisperAssetName,
+        new(Whisper, WhisperX64AssetName, "ggml-org/whisper.cpp", "b5454", WhisperX64AssetName,
             "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb", 8928640, "b5454", TestedWhisperDate, "b5454"),
+
+        // ARM64 (4.3D): FFmpeg's master build of the same two days, libmpv's aarch64 builds of the same two releases.
+        new(Ffmpeg, Arm64Variant, "BtbN/FFmpeg-Builds", "autobuild-2026-10-23-13-04", "ffmpeg-N-127957-g935f29eaae-winarm64-gpl.zip",
+            "b5b208ab10d60e0d7a920823d6e9688041a951a2b9f7f6ee063805324373946d", 141597500, "N-127957-g935f29eaae-20261023", TestedFfmpegArm64Date,
+            "N-127957 (2026-10-23, ARM64)"),
+        new(Ffmpeg, Arm64Variant, "BtbN/FFmpeg-Builds", "autobuild-2026-09-30-13-08", "ffmpeg-N-127021-ge0c94b2d1c-winarm64-gpl.zip",
+            "5e6560100382843f6bc6e163c958ed4f0f5a2e479e63faf101b998d349915a43", 139295788, "N-127021-ge0c94b2d1c-20260930", MonthEndFfmpegArm64Date,
+            "N-127021 (2026-09-30, ARM64)"),
+        new(Mpv, Arm64Variant, "shinchiro/mpv-winbuild-cmake", "20261021", "mpv-dev-aarch64-20261021-git-e471496c56.7z",
+            "015f133399b3525021b6d937cf54ace2761d4f70224d5e62f5df24191b28f398", 26183268, "20261021", new(2026, 10, 21, 0, 54, 42, DateTimeKind.Utc),
+            "20261021 (ARM64)"),
+        new(Mpv, Arm64Variant, "shinchiro/mpv-winbuild-cmake", "20261018", "mpv-dev-aarch64-20261018-git-01e2533f31.7z",
+            "062b07022d1fadefd341485602658a51d973c216bb4282859e10daa09ad55478", 26166873, "20261018", new(2026, 10, 18, 0, 35, 12, DateTimeKind.Utc),
+            "20261018 (ARM64)"),
+
+        // whisper.cpp b5454 for ARM64: CUDA (an NVIDIA card), OpenCL on Qualcomm's Adreno graphics, and the processor alone.
+        new(Whisper, WhisperArm64CudaAssetName, "ggml-org/whisper.cpp", "b5454", WhisperArm64CudaAssetName,
+            "6184ae8887d38ea9add68e883b9c846e7bf562ba1bf619ffc7ee9f8ec7e1699c", 291157544, "b5454", TestedWhisperDate, "b5454 (CUDA, ARM64)"),
+        new(Whisper, WhisperArm64AdrenoAssetName, "ggml-org/whisper.cpp", "b5454", WhisperArm64AdrenoAssetName,
+            "915b48289f362c5f4cf33f3ffdd30f1f43de68f6103a3088858e346635719007", 4944716, "b5454", TestedWhisperDate, "b5454 (Adreno OpenCL, ARM64)"),
+        new(Whisper, WhisperArm64AssetName, "ggml-org/whisper.cpp", "b5454", WhisperArm64AssetName,
+            "28c37e7b598c3d9bbfef94f3bd67f2ee6f12b7c86f3da5edcf5e4308d615ff6d", 4371193, "b5454", TestedWhisperDate, "b5454 (ARM64)"),
     ];
 
     // The files a stand-in from outside the list may be: the same kind of build as the pinned one.
@@ -205,6 +258,9 @@ public static partial class DependencyUpdater
 
     [GeneratedRegex(@"^ffmpeg-n8\.1(?:\.\d+)*(?:-\d+-g[0-9a-f]+)?-win64-gpl-8\.1\.zip$")]
     private static partial Regex FfmpegOlderNvidiaAssetRegex();
+
+    [GeneratedRegex(@"^ffmpeg-N-\d+-g[0-9a-f]+-winarm64-gpl\.zip$")]
+    private static partial Regex FfmpegArm64AssetRegex();
 
     /// <summary>The speech models offered for download: English-only ones first (smaller and better for English), then multilingual.</summary>
     public static IReadOnlyList<string> WhisperModels { get; } =
@@ -220,10 +276,30 @@ public static partial class DependencyUpdater
     /// faster on the processor, and a plain one. There is no published build for AMD or Intel graphics
     /// (Vulkan), so on those the OpenBLAS build is the fastest there is to download; a Vulkan build made
     /// elsewhere can still be set by hand in Settings (Tools), and is used on the graphics card as it is.
+    /// For ARM64 (4.3D) it publishes CUDA, OpenCL for Qualcomm's Adreno graphics (which needs the graphics driver's
+    /// OpenCL, in the system folder) and a plain build: the first that this computer can run.
     /// </summary>
-    public static IReadOnlyList<string> WhisperAssetNames { get; } = HasNvidiaCuda
-        ? ["whisper-cublas-12.4.0-bin-x64.zip", "whisper-bin-win-cuda-12.4.0-x64.zip", "whisper-blas-bin-x64.zip", WhisperAssetName]
-        : ["whisper-blas-bin-x64.zip", WhisperAssetName];
+    public static IReadOnlyList<string> WhisperAssetNames { get; } = IsArm64
+        ? [.. (HasNvidiaCuda ? [WhisperArm64CudaAssetName] : Array.Empty<string>()), .. (HasSystemOpenCl ? [WhisperArm64AdrenoAssetName] : Array.Empty<string>()), WhisperArm64AssetName]
+        : HasNvidiaCuda
+            ? ["whisper-cublas-12.4.0-bin-x64.zip", "whisper-bin-win-cuda-12.4.0-x64.zip", "whisper-blas-bin-x64.zip", WhisperX64AssetName]
+            : ["whisper-blas-bin-x64.zip", WhisperX64AssetName];
+
+    /// <summary>The graphics driver's OpenCL is installed: its loader is in the system folder (what the Adreno build of whisper.cpp needs).</summary>
+    private static bool HasSystemOpenCl
+    {
+        get
+        {
+            try
+            {
+                return File.Exists(Path.Combine(Environment.SystemDirectory, "OpenCL.dll"));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+    }
 
     /// <summary>An NVIDIA driver with CUDA is installed: its runtime library is in the system folder.</summary>
     private static bool HasNvidiaCuda
@@ -269,7 +345,7 @@ public static partial class DependencyUpdater
     // ----- Where things are -----
 
     /// <summary>The folder this class keeps a tool in.</summary>
-    public static string ToolFolder(string tool) => Path.Combine(AppPaths.Deps, tool);
+    public static string ToolFolder(string tool) => Path.Combine(AppPaths.Deps, IsArm64 ? $"{tool}-{Arm64Variant}" : tool);
 
     private static string ModelsFolder => Path.Combine(AppPaths.Deps, "models");
     private static string StagingRoot => Path.Combine(AppPaths.Deps, ".staging");
@@ -431,8 +507,13 @@ public static partial class DependencyUpdater
     /// <summary>Whether a file of a release is the same kind of build as a variant's pinned ones: what a stand-in from outside the list may be.</summary>
     private static bool IsVariantAsset(string tool, string variant, string name) => tool switch
     {
-        Ffmpeg => variant == OlderNvidiaVariant ? FfmpegOlderNvidiaAssetRegex().IsMatch(name) : FfmpegMasterAssetRegex().IsMatch(name),
-        Mpv => MpvAssetRegex().IsMatch(name),
+        Ffmpeg => variant switch
+        {
+            OlderNvidiaVariant => FfmpegOlderNvidiaAssetRegex().IsMatch(name),
+            Arm64Variant => FfmpegArm64AssetRegex().IsMatch(name),
+            _ => FfmpegMasterAssetRegex().IsMatch(name),
+        },
+        Mpv => variant == Arm64Variant ? MpvArm64AssetRegex().IsMatch(name) : MpvX64AssetRegex().IsMatch(name),
         Whisper => name == variant,
         _ => false,
     };
@@ -581,10 +662,11 @@ public static partial class DependencyUpdater
         _ => false,
     };
 
-    /// <summary>The variants of a tool wanted on this computer, the best first: whisper.cpp's kinds of build, FFmpeg's for the driver.</summary>
+    /// <summary>The variants of a tool wanted on this computer, the best first: whisper.cpp's kinds of build, FFmpeg's for the driver, ARM64's.</summary>
     private static IReadOnlyList<string> WantedVariants(string tool) => tool switch
     {
-        Ffmpeg => [AppSettings.Current.UseFfmpegForOlderNvidiaDrivers ? OlderNvidiaVariant : ""],
+        Ffmpeg => [IsArm64 ? Arm64Variant : AppSettings.Current.UseFfmpegForOlderNvidiaDrivers ? OlderNvidiaVariant : ""],
+        Mpv => [IsArm64 ? Arm64Variant : ""],
         Whisper => WhisperAssetNames.Where(name => PinnedBuilds.Any(b => b.Tool == Whisper && b.Variant == name)).ToList(),
         _ => [""],
     };
@@ -764,7 +846,7 @@ public static partial class DependencyUpdater
         var releaseUrl = ReleaseUrl(tool);
 
         // The same release answers differently when the build for older NVIDIA drivers is wanted from it.
-        var olderFfmpeg = tool == Ffmpeg && AppSettings.Current.UseFfmpegForOlderNvidiaDrivers;
+        var olderFfmpeg = tool == Ffmpeg && AppSettings.Current.UseFfmpegForOlderNvidiaDrivers && !IsArm64;
         var answerKey = olderFfmpeg ? releaseUrl + "|older" : releaseUrl;
         lock (Answers)
         {

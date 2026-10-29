@@ -1,0 +1,58 @@
+# A 2 s video with sound to the end of a 60 s timeline, fading in and out: written as its rounds (4.2.0's loop as clips), read as the one repeating source 4.2.0 made of it.
+# reads the cuts list: no; the chapters list: no
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -i
+  D:/media/main.mp4
+  -filter_complex <graph 1>
+  -map
+  0:v:0
+  -map
+  [amixed0]
+  -vf <graph 2>
+  -c:v
+  libx264
+  -preset
+  medium
+  -crf
+  23
+  -pix_fmt
+  yuv420p
+  -metadata:s:a:0
+  title=Track 1
+  -c:a:0
+  aac
+  -b:a:0
+  160k
+  -map_chapters
+  -1
+  D:/out/loop.mp4
+
+graph 1 (-filter_complex): 2 chains, 216 characters
+  1| amovie='D\:/media/spinner.mp4'
+   |   ,atrim=start=0.5
+   |   ,asetpts=PTS-0.5/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,afade=t=in:st=0:d=0.5
+   |   ,adelay=5000:all=1[alayer0]
+  2| [0:a:0][alayer0]amix=inputs=2:duration=first:normalize=0[amixed0]
+
+graph 2 (-vf): 6 chains, 499 characters
+  1| null[center_in]
+  2| color=c=black:s=1920x1080:r=30:d=60
+   |   ,format=yuv420p[stage0]
+  3| [center_in]scale=1920:1080
+   |   ,format=yuva420p[center_layer]
+  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
+  5| movie='D\:/media/spinner.mp4':loop=0
+   |   ,setpts=N/FRAME_RATE/TB
+   |   ,setpts=PTS+4.5/TB
+   |   ,scale=288:162
+   |   ,format=yuva420p
+   |   ,fade=t=in:st=5:d=0.5:alpha=1:enable='between(t,5,5.5)'
+   |   ,fade=t=out:st=59:d=1:alpha=1:enable='between(t,59,60)'[ui1_layer]
+  6| [stage1][ui1_layer]overlay=1536:54:shortest=1:enable='between(t,5,1e9)'
+   |   ,setsar=1

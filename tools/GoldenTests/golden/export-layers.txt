@@ -45,7 +45,7 @@ graph 1 (-filter_complex): 3 chains, 346 characters
    |   ,afade=t=out:st=57:d=3[alayer1]
   3| [0:a:0][alayer0][alayer1]amix=inputs=3:duration=first:normalize=0[amixed0]
 
-graph 2 (-vf): 12 chains, 1266 characters
+graph 2 (-vf): 12 chains, 1292 characters
   1| split=2[bg_in][center_in]
   2| color=c=black:s=1080x1920:r=30:d=120
    |   ,format=yuv420p[base]
@@ -68,7 +68,7 @@ graph 2 (-vf): 12 chains, 1266 characters
    |   ,format=yuva420p
    |   ,lutyuv=a=val*0.8
    |   ,rotate=12*PI/180:ow=294:oh=190:c=black@0[ui2_layer]
- 10| [stage2][ui2_layer]overlay=744:11[stage3]
+ 10| [stage2][ui2_layer]overlay=744:11:enable='between(t,0,120)'[stage3]
  11| color=c=0x000000@0:s=864x218:r=1
    |   ,format=yuva444p
    |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Hello, “world”\: it\'\''s 50%':expansion=none:fontsize=81.75:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=2:x=(w-text_w)/2:y=90.339-ascent

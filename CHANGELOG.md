@@ -3,6 +3,42 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v4.3.0
+
+### Highlights
+- **One timeline document.** The whole timeline (every track, clip, look, fade and crossfade) is now one model that the
+  player, the export, undo and the project file all read. There is no cut list any more: cuts are split points, and what is
+  on the timeline is what renders.
+- **Track 1 is a track like any other.** The main video's track has its own box on the Canvas and over the player, with the
+  rotation handle and anchor point; each of its clips can have its own keyframes and effects. The HUD pieces and blurred
+  background of a game style stay on through every piece, however you style it.
+- **Splits keep the motion.** Splitting between two keyframes gives each half a keyframe on the cut and its exact part of the
+  curve, for every easing, so neither half jumps or changes speed. Effect ranges across the cut are split too.
+- **Fold dead air away.** Remove Dead Air's Split & Mark now takes the silences out and closes the gaps, keeping each one at
+  its cut: right-click the clip after a cut and choose Restore Folded Silence to put a word back.
+- **Windows on ARM.** A native ARM64 build, which downloads ARM64 builds of FFmpeg, libmpv, yt-dlp and whisper.cpp (Adreno
+  OpenCL or CPU), each pinned to a checked build. This is its first release: it has not yet been tried on ARM hardware here.
+
+### New
+- **Full-window Settings** with a category rail, search, a live preview stage of what each setting does, and a folded Advanced section.
+- **Restore All Folded Silences** on a clip's menu when there are several.
+- Chapters at Cut Points: a chapter at every clip edge on any video track (edges within half a second count once).
+
+### Changed
+- Render Preview starts at the in point while one is set, otherwise at the playhead (from the start when the playhead is at the end).
+- Presets and styles are put on the timeline as templates; a style chosen before any video keeps its place for the video
+  (its layers under or over it as the style says, the video's look), and layers that ran to the end follow the video's end.
+- `[` and `]` (and a right-drag on the timeline) split every unlocked track at both points; nothing is taken out by them.
+- The Play Only Cut Segments option is gone: playback always shows the timeline as it is.
+
+### Fixed
+- A game style's HUD pieces and blurred background vanished over a piece of the main video given an effect of its own.
+- A style chosen before opening a video put the HUD pieces over the video and stopped them after 5 seconds.
+
+### Compatibility
+- Projects are now **format 5** (the timeline document). HandPeg 4.3.0 opens format 5 only; formats 1 to 4 are refused
+  with a message, and earlier versions cannot open format 5. There is no converter in HandPeg.
+
 ## HandPeg v4.2.0
 
 ### Highlights

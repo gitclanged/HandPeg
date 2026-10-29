@@ -7,7 +7,7 @@
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <StackPanel Margin="16">
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
-                   Text="Finds the silent stretches of the first audio track and replaces the cut list with everything in between. A microphone is never perfectly quiet, so set the threshold just above its background noise: raise it (towards -20 dB) if silences are being missed, lower it (towards -60 dB) if quiet speech is being cut." />
+                   Text="Finds the silent stretches of the first audio track and takes them out of the timeline, what follows closing up behind them. A microphone is never perfectly quiet, so set the threshold just above its background noise: raise it (towards -20 dB) if silences are being missed, lower it (towards -60 dB) if quiet speech is being cut." />
 
         <Grid>
             <Grid.ColumnDefinitions>
@@ -42,11 +42,11 @@
         </Grid>
 
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,10,0,0"
-                   Text="With Play only cut segments ticked, what was removed is shaded on the timeline. Both values are remembered." />
+                   Text="Deleted, the silences are gone. Split &amp; Mark folds them out the same way and keeps each one at its cut: right-click the clip after a cut and choose Restore Folded Silence to put one back. Both values are remembered." />
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button x:Name="MarkButton" Content="Split &amp; Mark" MinWidth="120" Margin="0,0,6,0" Click="Mark_Click"
-                    ToolTip="Cuts at the silences and marks the silent stretches as skipped: they stay on the timeline, greyed out, are left out of the output, and can each be brought back." />
+                    ToolTip="Cuts at the silences and folds the silent stretches out of the timeline (what is on the timeline is what renders): what follows closes up, and each silence is kept at its cut, to be put back with a right-click on the clip after it." />
             <Button x:Name="ConfirmButton" Content="Delete Dead Air" MinWidth="130" IsDefault="True" Click="Confirm_Click"
                     ToolTip="Cuts at the silences and removes the silent stretches." />
             <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />

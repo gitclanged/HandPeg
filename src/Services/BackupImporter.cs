@@ -64,7 +64,8 @@ public static class BackupImporter
     /// <summary>
     /// Copies project files into the projects folder. A file written by Export All Projects is taken apart
     /// into the projects it holds. A project whose name is already taken is added beside it under a
-    /// numbered name; nothing already in the folder is replaced.
+    /// numbered name; nothing already in the folder is replaced. Projects of a format this version does not open
+    /// (formats 1 to 4: HandPeg 4.2 and earlier) are left out and counted as skipped.
     /// </summary>
     public static (int Imported, int Skipped) ImportProjects(IEnumerable<string> paths)
     {
@@ -88,19 +89,12 @@ public static class BackupImporter
                     else
                         skipped++;
                 }
-                else if (root is not null && LegacyProject.IsLegacy(root))
-                {
-                    // A HandPeg 1.x project: brought in as a project of today's format, as far as it still maps. The .txt stays where it was.
-                    if (AddProject(Path.GetFileNameWithoutExtension(path), ProjectStore.Serialize(ProjectStore.Deserialize(text))))
-                        imported++;
-                    else
-                        skipped++;
-                }
                 else if (root is not null && GetBundledProjects(root) is { Count: > 0 } bundled)
                 {
+                    // Each project of a format this version opens is brought in; one of an older format is left out, and the rest still come.
                     foreach (var (name, project) in bundled)
                     {
-                        if (AddProject(name, project!.ToJsonString(JsonOptions)))
+                        if (project is JsonObject readable && IsProject(readable) && AddProject(name, readable.ToJsonString(JsonOptions)))
                             imported++;
                         else
                             skipped++;
@@ -135,18 +129,23 @@ public static class BackupImporter
     }
 
     /// <summary>
-    /// The projects in a file written by Export All Projects, by name; empty when the file is something else.
-    /// The version marker beside them is not a project and is passed over.
+    /// The projects in a file written by Export All Projects, by name; empty when the file is something else. Each says it
+    /// is a .hproj project, of whatever format (the caller leaves out those this version does not open). The version
+    /// marker beside them is not a project and is passed over.
     /// </summary>
     private static List<KeyValuePair<string, JsonNode?>> GetBundledProjects(JsonObject root)
     {
         var entries = root.Where(entry => entry.Key != BackupExporter.SchemaVersionKey).ToList();
-        return entries.All(entry => entry.Value is JsonObject project && IsProject(project)) ? entries : [];
+        return entries.All(entry => entry.Value is JsonObject project && SaysItIsAProject(project)) ? entries : [];
     }
 
+    /// <summary>Whether JSON says it is a .hproj project, of any format: it names the format (HandPeg 1.x's projects did not).</summary>
+    private static bool SaysItIsAProject(JsonObject node) =>
+        node["format"] is JsonValue format && format.TryGetValue<string>(out var name) && name == ProjectFile.FormatName;
+
     /// <summary>
-    /// A .hproj project says that it is one and can be read as such. One of a newer format is taken as it is (its file is
-    /// copied unchanged, and asks before it opens); HandPeg 1.x projects are converted by the caller instead.
+    /// A .hproj project of a format this version opens (format 5) says that it is one and can be read as such. One of a newer
+    /// format is taken as it is (its file is copied unchanged, and asks before it opens).
     /// </summary>
     private static bool IsProject(JsonObject node)
     {

@@ -316,7 +316,7 @@ public partial class MainViewModel
         // Written for the caption box alone, not the frame: the editor's player shows a picture of the box's
         // shape, so the words fill it and are large enough to read, however small the box is on the frame.
         var path = Path.Combine(_workFolder, name + ".ass");
-        var lines = GetCueCaptions([]);
+        var lines = GetCueCaptions();
         WriteCaptionFile(lines.SelectMany(l => l).ToList(), lines, path, 0, forPlayer: false);
         return path;
     }
@@ -388,38 +388,15 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The text cues as captions: one per cue, its words spread over its time by their length. With ranges
-    /// (the kept segments of a cut encode, which are played end to end) each cue is moved to where its moment
-    /// falls in the output, and one that is cut out is left out.
+    /// The text cues as captions: one per cue, its words spread over its time by their length. The cues are timed on the
+    /// timeline, which is the output's clock (4.3C: nothing is cut out of it on the way).
     /// </summary>
-    private List<List<CaptionWord>> GetCueCaptions(IReadOnlyList<(double Start, double End)> ranges)
+    private List<List<CaptionWord>> GetCueCaptions()
     {
         var captions = new List<List<CaptionWord>>();
         foreach (var cue in SubtitleCues.OrderBy(c => c.Start))
         {
             var (start, end) = (cue.Start + SubtitleOffsetSeconds, cue.End + SubtitleOffsetSeconds);
-            if (ranges.Count > 0)
-            {
-                // Where the part of the cue that is kept begins and ends, on the output's clock.
-                double? from = null, to = null;
-                var before = 0.0;
-                foreach (var range in ranges)
-                {
-                    var (a, b) = (Math.Max(start, range.Start), Math.Min(end, range.End));
-                    if (b - a > 0.01)
-                    {
-                        from ??= before + a - range.Start;
-                        to = before + b - range.Start;
-                    }
-
-                    before += range.End - range.Start;
-                }
-
-                if (from is null || to is null)
-                    continue;
-                (start, end) = (from.Value, to.Value);
-            }
-
             start = Math.Max(start, 0);
             var words = cue.GetWords();
             if (words.Length == 0 || end - start < 0.02)

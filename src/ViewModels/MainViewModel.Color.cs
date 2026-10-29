@@ -124,10 +124,10 @@ public partial class MainViewModel
             CenterOffsetY = CenterOffsetY,
             SourceAspectRatio = GetLayoutSourceAspect(),
             Vertical = UseVerticalResolution,
-            MainVideoIndex = MainVideoIndex,
-            MainLayer = _mainVideoRow.ToState(),
+            MainVideoIndex = TemplateMainIndex(),
+            MainLayer = MainLayer.ToState(),
             BackgroundHidden = _backgroundRow.IsHidden,
-            Layers = Layers.Select(e => e.ToState()).ToList(),
+            Layers = TemplateLayers(),
         },
         Color = new ColorSection
         {
@@ -405,11 +405,9 @@ public partial class MainViewModel
                 UseVerticalResolution = vertical;
 
             ExtractMasks(preset);
-            SetLayers(layers.Layers ?? []);
-            _mainVideoRow.ApplyLook(layers.MainLayer);
+            PlaceTemplate(layers.Layers ?? [], Math.Max(layers.MainVideoIndex ?? (layers.Layers?.Count ?? 0), 0));
+            TakeMainLook(layers.MainLayer);
             _backgroundRow.IsHidden = layers.BackgroundHidden;
-            if (layers.MainVideoIndex is { } under)
-                MainVideoIndex = Math.Clamp(under, 0, Layers.Count);
             _layoutSourceAspect = layers.SourceAspectRatio;
 
             // A layout is only seen through the engine.

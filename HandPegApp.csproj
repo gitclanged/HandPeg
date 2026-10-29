@@ -12,9 +12,9 @@
     <RootNamespace>HandPegApp</RootNamespace>
     <Product>HandPeg</Product>
     <AssemblyTitle>HandPeg</AssemblyTitle>
-    <Version>4.2.0</Version>
-    <AssemblyVersion>4.2.0.0</AssemblyVersion>
-    <FileVersion>4.2.0.0</FileVersion>
+    <Version>4.3.0</Version>
+    <AssemblyVersion>4.3.0.0</AssemblyVersion>
+    <FileVersion>4.3.0.0</FileVersion>
 
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>
@@ -22,8 +22,10 @@
     <!-- Windows Forms is referenced for two things WPF lacks: the system colour picker and tray notifications. -->
     <UseWindowsForms>true</UseWindowsForms>
 
-    <!-- 64-bit Intel/AMD only: that is what the tools and the player library HandPeg downloads are built for. -->
+    <!-- 64-bit Intel/AMD, or 64-bit ARM when published for win-arm64 (4.3D): the tools and the player library HandPeg
+         downloads are the builds for the processor it runs on (DependencyUpdater.IsArm64). -->
     <PlatformTarget>x64</PlatformTarget>
+    <PlatformTarget Condition="'$(RuntimeIdentifier)' == 'win-arm64'">ARM64</PlatformTarget>
     <!-- For the native calls: libmpv through function pointers, Windows through generated [LibraryImport] code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>

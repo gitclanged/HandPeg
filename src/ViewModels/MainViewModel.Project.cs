@@ -3,6 +3,7 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using HandPegApp.Models;
+using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
@@ -62,10 +63,12 @@ public partial class MainViewModel
         DuckAmountDb = DuckAmountDb,
         FrameEngine = FrameEngine,
         CenterZoom = CenterZoom,
-        Layers = Layers.Select(e => e.ToState()).ToList(),
-        MainLayer = _mainVideoRow.ToState(),
+        // The layout, for a preset (a project's are its timeline, and ProjectStore leaves these out): every clip but the
+        // main video's as a template, the main video's look, and how many pictures lie under it.
+        Layers = TemplateLayers(),
+        MainLayer = MainLayer.ToState(),
         BackgroundHidden = _backgroundRow.IsHidden,
-        MainVideoIndex = MainVideoIndex,
+        MainVideoIndex = TemplateMainIndex(),
         LayoutSourceAspectRatio = GetLayoutSourceAspect(),
         AutoCaptions = AutoCaptions,
         CaptionStyle = CaptionStyle.Clone(),
@@ -99,42 +102,87 @@ public partial class MainViewModel
         TargetFileSize = AppSettings.Current.SaveTargetSizeInPresets ? TargetFileSize : "",
     };
 
+    /// <summary>The timeline's clips but the main video's, each with its track's number and its timing, as a preset carries a layout.</summary>
+    private List<LayerState> TemplateLayers() =>
+        Layers.Where(l => !l.IsMainVideo && !l.IsEmptyTrack && ClipOf(l) is not null).Select(l => l.ToState()).ToList();
+
+    /// <summary>How many of a preset's layout's pictures lie under the main video (all of them when it has no clip).</summary>
+    private int TemplateMainIndex()
+    {
+        var pictures = Layers.Where(l => !l.IsAudio && !l.IsEmptyTrack && ClipOf(l) is not null).ToList();
+        var main = pictures.FindIndex(l => l.IsMainVideo);
+        return main < 0 ? pictures.Count : pictures.Take(main).Count(l => !l.IsMainVideo);
+    }
+
     /// <summary>What is set track by track: action, codec, bitrate, title, gain and processing.</summary>
     private List<AudioTrackState> CaptureAudioTracks() =>
         AudioTracks.Select(t => new AudioTrackState(t.Index, t.Action, t.Codec, t.Bitrate, t.Title, t.GainDb, t.Filters.IsActive ? t.Filters.Clone() : null,
             t.OffsetSeconds, t.Pieces.Count > 0 ? [.. t.Pieces] : null, t.AutoDuck, t.IsVoice)).ToList();
 
-    /// <summary>A snapshot of the source, the cuts and every setting.</summary>
-    public ProjectState CaptureState(string name = "") => new()
+    /// <summary>
+    /// A snapshot of the source, the timeline and every setting. The timeline is a copy of its own (its looks too), so
+    /// what holds the state (a queued job, an autosave being written away from the interface) is never reached by later edits.
+    /// </summary>
+    public ProjectState CaptureState(string name = "")
     {
-        Name = name,
-        SavedAt = DateTime.Now,
-        SourcePath = SourcePath.Trim().Trim('"'),
-        LocalMediaPath = LocalMediaPath,
-        DestinationPath = DestinationPath,
-        DownloadResolution = DownloadResolution,
-        DownloadSubtitles = DownloadSubtitles,
-        Segments = Segments.Select(s => new SegmentState(s.Start.TotalMilliseconds, s.End.TotalMilliseconds, s.IsSkipped)).ToList(),
-        SnapToIFrames = SnapToIFrames,
-        Container = Container,
-        WebOptimized = WebOptimized,
-        ChapterMarkers = ChapterMarkers,
-        ChaptersAtCuts = ChaptersAtCuts,
-        ChaptersAtMarkers = ChaptersAtMarkers,
-        Markers = [.. Markers],
-        Subtitles = CaptureSubtitles(),
-        TargetFileSize = TargetFileSize,
-        Settings = CaptureSettings(name),
-        AudioTracks = CaptureAudioTracks(),
-        SubtitleTracks = SubtitleTracks.Select(t => new SubtitleTrackState(t.Index, t.Action)).ToList(),
-        CaptionAudioPath = CaptionAudioPath,
-        CaptionUseExternalAudio = CaptionUseExternalAudio,
-        CaptionAudioTrackIndex = CaptionAudioTrack?.Index ?? 0,
-        AudioLinked = AudioLinked,
-        MainPieces = [.. _mainPieces],
-        Deleted = RecycleBin.Select(i => i.Clip).ToList(),
-        ManualCommand = IsCommandManuallyEdited ? CommandPreview : null,
-    };
+        FlushLooks();
+        return new ProjectState
+        {
+            Name = name,
+            SavedAt = DateTime.Now,
+            SourcePath = SourcePath.Trim().Trim('"'),
+            LocalMediaPath = LocalMediaPath,
+            DestinationPath = DestinationPath,
+            DownloadResolution = DownloadResolution,
+            DownloadSubtitles = DownloadSubtitles,
+            Timeline = Document.Clone(deep: true),
+            SnapToIFrames = SnapToIFrames,
+            Container = Container,
+            WebOptimized = WebOptimized,
+            ChapterMarkers = ChapterMarkers,
+            ChaptersAtCuts = ChaptersAtCuts,
+            ChaptersAtMarkers = ChaptersAtMarkers,
+            Subtitles = CaptureSubtitles(),
+            TargetFileSize = TargetFileSize,
+            Settings = CaptureSettings(name),
+            AudioTracks = CaptureAudioTracks(),
+            SubtitleTracks = SubtitleTracks.Select(t => new SubtitleTrackState(t.Index, t.Action)).ToList(),
+            CaptionAudioPath = CaptionAudioPath,
+            CaptionUseExternalAudio = CaptionUseExternalAudio,
+            CaptionAudioTrackIndex = CaptionAudioTrack?.Index ?? 0,
+            Deleted = RecycleBin.Select(i => i.Clip with { Clip = CopyOfClip(i.Clip.Clip) }).ToList(),
+            ManualCommand = IsCommandManuallyEdited ? CommandPreview : null,
+        };
+    }
+
+    /// <summary>
+    /// A state's timeline as it is opened: a copy of its own; the main video's clips playing the file this session opened
+    /// (a link's download may lie at another path now); and, for a file put together by hand, its tracks' clips in order of
+    /// their starts and each id once (what the timeline's searches rely on). What is still wrong with it is written to the log.
+    /// </summary>
+    private TimelineDocument TimelineToOpen(ProjectState state)
+    {
+        var timeline = state.Timeline.Clone(deep: true);
+        var ids = new HashSet<Guid>();
+        foreach (var track in timeline.Tracks)
+        {
+            track.Clips.Sort((a, b) => a.Start.CompareTo(b.Start));
+            foreach (var clip in track.Clips)
+            {
+                if (!ids.Add(clip.Id))
+                    clip.Id = Guid.NewGuid();
+                if (clip.ContentKind == LayerKind.MainVideo && !string.Equals(state.LocalMediaPath, LocalMediaPath, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(clip.SourcePath, state.LocalMediaPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    clip.SourcePath = LocalMediaPath;
+                }
+            }
+        }
+
+        if (timeline.FindProblems() is { Count: > 0 } problems)
+            AppLog.Write($"The project's timeline has {problems.Count} problem(s): {string.Join(" ", problems.Take(5))}");
+        return timeline;
+    }
 
     /// <summary>Whether a source is loaded, so there is something worth saving or queueing.</summary>
     public bool HasSource => !string.IsNullOrWhiteSpace(LocalMediaPath);
@@ -157,19 +205,16 @@ public partial class MainViewModel
         ChapterMarkers = state.ChapterMarkers;
         ChaptersAtCuts = state.ChaptersAtCuts;
         ChaptersAtMarkers = state.ChaptersAtMarkers;
-        SetMarkers(state.Markers);
         ApplySubtitles(state.Subtitles);
 
+        // The project's settings, without a layout of their own: its timeline is its own, put in place after them (a
+        // copy, so a queued job's state stays as it was queued), with its markers and the Sequence Output's effects.
         SelectedPreset = null;
-        ApplyPreset(state.Settings);
-
-        // What a preset leaves alone, being about one video and not a look: where the main video sits in time, and how it moves.
-        _mainVideoRow.ApplyTiming(state.Settings.MainLayer);
-        _mainPieces.Clear();
-        _mainPieces.AddRange(state.MainPieces ?? []);
-        InvalidateMainClips();
+        ApplyPreset(state.Settings, withLayout: false);
+        _backgroundRow.IsHidden = state.Settings.BackgroundHidden;
+        InstallDocument(TimelineToOpen(state));
+        TakeMainFile(_mediaInfo);
         SetBin(state.Deleted);
-        AudioLinked = state.AudioLinked;
         TargetFileSize = state.TargetFileSize;
         CaptionAudioPath = state.CaptionAudioPath ?? "";
         CaptionUseExternalAudio = state.CaptionUseExternalAudio ?? CaptionAudioPath.Length > 0;
@@ -183,9 +228,6 @@ public partial class MainViewModel
             if (SubtitleTracks.FirstOrDefault(t => t.Index == saved.Index) is { } track && track.Actions.Contains(saved.Action))
                 track.Action = saved.Action;
         }
-
-        foreach (var segment in state.Segments.OrderBy(s => s.StartMs))
-            Segments.Add(new CutSegment(TimeSpan.FromMilliseconds(segment.StartMs), TimeSpan.FromMilliseconds(segment.EndMs)) { IsSkipped = segment.Skipped });
 
         if (!string.IsNullOrWhiteSpace(state.DestinationPath))
             DestinationPath = state.DestinationPath;
@@ -344,7 +386,7 @@ public partial class MainViewModel
         using (DeferCommand())
         {
             ResetForNewSource();
-            SetLayers([]);
+            InstallDocument(NewDocument());
             (SourcePath, LocalMediaPath, DestinationPath, CurrentProjectPath, EditingJob) = ("", "", "", "", null);
             SetMediaInfo(null);
             ApplySubtitles(null);
@@ -392,10 +434,9 @@ public partial class MainViewModel
         ResetCrop();
         ResetCenterVideo();
         ResetBlurSettings();
-        _mainVideoRow.ApplyLook(null);
         _backgroundRow.IsHidden = false;
-        MainVideoIndex = 0;
         _layoutSourceAspect = 0;
+        _mainLookToCome = null;
 
         ResetColor();
         LutPath = "";
@@ -413,6 +454,7 @@ public partial class MainViewModel
         (VoiceoverGainDb, MixVoiceover, VoiceoverStatus) = (0, true, "");
 
         SetMarkers(null);
+        Document.Markers = [];
         _soloed.Clear();
         ApplySolo();
         AudioLinked = true;
@@ -526,15 +568,12 @@ public partial class MainViewModel
             CrashReporter.KeepOut(CrashSummaries.FilesIn(state));
             CrashReporter.Note("project", "opened: " + CrashSummaries.Project(state));
 
-            // An autosave is opened as work that has no file yet: Save then asks where, and the autosave is not overwritten by hand. So is a
-            // HandPeg 1.x project (its .txt is left as it was; the project is saved as a .hproj), and one of a newer format (never written over).
-            var isLegacy = filePath.EndsWith(ProjectStore.LegacyExtension, StringComparison.OrdinalIgnoreCase);
+            // An autosave is opened as work that has no file yet: Save then asks where, and the autosave is not overwritten by
+            // hand. So is a project of a newer format (never written over).
             var isNewer = ProjectStore.PeekHeader(filePath) is { Version: > ProjectFile.CurrentVersion };
-            CurrentProjectPath = isLegacy || isNewer || Path.GetFileNameWithoutExtension(filePath).EndsWith(ProjectStore.AutosaveSuffix, StringComparison.OrdinalIgnoreCase)
+            CurrentProjectPath = isNewer || Path.GetFileNameWithoutExtension(filePath).EndsWith(ProjectStore.AutosaveSuffix, StringComparison.OrdinalIgnoreCase)
                 ? ""
                 : filePath;
-            if (isLegacy)
-                opened = "HandPeg 1.x project loaded (the source, cuts and settings that still apply; Save writes it as a new .hproj project)";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException)
         {
@@ -570,8 +609,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Adds a segment typed in by hand. With snapping on it grows to the surrounding I-frames, the same
-    /// "prefer longer" rule used when the checkbox is ticked. Returns an error message, or null on success.
+    /// A stretch marked by hand (a right-drag along the timeline, or typed in): every unlocked track is split at its start
+    /// and its end (4.3C: what 4.2.0 made a cut segment of), so it can be deleted, moved or kept on its own. With snapping
+    /// on it grows to the surrounding I-frames ("prefer longer"). Returns an error message, or null on success.
     /// </summary>
     public string? AddManualSegment(double startSeconds, double stopSeconds)
     {
@@ -591,20 +631,9 @@ public partial class MainViewModel
         if (duration > 0 && startSeconds >= duration)
             return "The start point is past the end of the video.";
 
-        var segment = new CutSegment(TimeSpan.FromSeconds(startSeconds), TimeSpan.FromSeconds(stopSeconds));
-        Checkpoint("add a segment");
-        InsertSegment(segment);
+        if (!SplitAt(startSeconds, stopSeconds))
+            return StatusText;
         PendingStartMs = null;
-        Log($"Added segment {segment.Display}");
         return null;
-    }
-
-    /// <summary>Adds a segment, keeping the list ordered by start time.</summary>
-    private void InsertSegment(CutSegment segment)
-    {
-        var index = 0;
-        while (index < Segments.Count && Segments[index].Start <= segment.Start)
-            index++;
-        Segments.Insert(index, segment);
     }
 }

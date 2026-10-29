@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:HandPegApp"
         xmlns:services="clr-namespace:HandPegApp.Services"
-        Title="HandPeg Settings" Width="980" Height="780" MinWidth="620" MinHeight="420" ResizeMode="CanResizeWithGrip"
+        Title="HandPeg Settings" Width="1280" Height="800" MinWidth="720" MinHeight="460" ResizeMode="CanResizeWithGrip"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
-        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" KeyDown="Window_KeyDown">
     <Window.Resources>
         <Style x:Key="FieldLabel" TargetType="TextBlock">
             <Setter Property="VerticalAlignment" Value="Center" />
@@ -33,32 +33,157 @@
         <Style x:Key="WideLabel" TargetType="TextBlock" BasedOn="{StaticResource FieldLabel}">
             <Setter Property="Width" Value="140" />
         </Style>
+
+        <!--
+            The pages of the full-window screen (4.3-0B): the category rail on the left picks them, so no strip of tabs is
+            shown. The tabs stay in the tree, unseen and taking no room, so that the selection works as a TabControl's does.
+        -->
+        <ControlTemplate x:Key="RailPages" TargetType="TabControl">
+            <Grid>
+                <TabPanel IsItemsHost="True" Height="0" Visibility="Hidden" />
+                <ContentPresenter x:Name="PART_SelectedContentHost" ContentSource="SelectedContent" Margin="{TemplateBinding Padding}" />
+            </Grid>
+        </ControlTemplate>
+        <Style x:Key="RailItem" TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+            <Setter Property="Padding" Value="10,9" />
+            <Setter Property="Margin" Value="0,1" />
+        </Style>
+
+        <!-- A section that starts folded: a chevron and a title, the options under it once opened -->
+        <Style x:Key="FoldedSection" TargetType="Expander">
+            <Setter Property="Margin" Value="0,16,0,2" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Expander">
+                        <StackPanel>
+                            <ToggleButton IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" Cursor="Hand"
+                                          AutomationProperties.Name="{Binding Header, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="Transparent" Padding="0,3">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock x:Name="chevron" Text="&#xE76C;" FontFamily="Segoe MDL2 Assets" FontSize="10" VerticalAlignment="Center"
+                                                           RenderTransformOrigin="0.5,0.5" Foreground="{DynamicResource MutedTextBrush}" />
+                                                <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="chevron" Property="RenderTransform">
+                                                    <Setter.Value>
+                                                        <RotateTransform Angle="90" />
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Trigger>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="chevron" Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                                <ContentPresenter ContentSource="Header" TextElement.FontWeight="SemiBold" TextElement.FontSize="14" />
+                            </ToggleButton>
+                            <ContentPresenter x:Name="body" Visibility="Collapsed" Margin="18,0,0,0" />
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="body" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <!--
+        The full-window settings screen (4.3-0B), over the editor: a bar with Back to Editor (which saves) and Cancel; the
+        category rail with the search box; the options of the chosen category; and the live preview stage, which shows
+        what the option under the pointer or with the focus does.
+
         Every tab is one flat StackPanel: a section title, then the options under it, one element each. That is
-        the shape the search box walks (an option is a child of the tab's panel; see SearchBox_TextChanged), and
-        it keeps the window's tree shallow. A tab too tall for the window is put in a scroller by the code-behind.
+        the shape the search box walks (an option is a child of the tab's panel, or of a folded section's; see
+        SearchBox_TextChanged), and the stage names its options by it. A tab is put in a scroller by the code-behind.
     -->
-    <DockPanel Margin="14">
-        <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
-            <Button DockPanel.Dock="Right" Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
-            <Button DockPanel.Dock="Right" Content="Save" MinWidth="88" IsDefault="True" Click="Save_Click" />
-            <TextBlock x:Name="ErrorText" Foreground="{DynamicResource WarningTextBrush}" VerticalAlignment="Center" TextWrapping="Wrap" />
-        </DockPanel>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="200" />
+            <ColumnDefinition x:Name="ListColumn" Width="55*" MinWidth="380" />
+            <ColumnDefinition x:Name="StageColumn" Width="45*" />
+        </Grid.ColumnDefinitions>
 
-        <!-- Type here to find an option: what does not match is hidden, on every tab -->
-        <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
-            <!-- The text starts 29 DIP in, where the hint does (26 + the edge and the text view's caret room). -->
-            <TextBox x:Name="SearchBox" Padding="26,7,8,7" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged"
-                     AutomationProperties.Name="Search Settings" ToolTip="Type part of an option's name or description. Tabs with nothing that matches are hidden; clear the box to see everything again." />
-            <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13" Margin="9,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
-                       Foreground="{DynamicResource MutedTextBrush}" IsHitTestVisible="False" />
-            <TextBlock x:Name="SearchHint" Text="Search settings" Margin="29,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
-                       Foreground="{DynamicResource MutedTextBrush}" IsHitTestVisible="False" />
-        </Grid>
+        <!-- Back to the editor (saving), what went wrong, and Cancel -->
+        <Border Grid.ColumnSpan="3" Background="{DynamicResource TitleBarBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="0,0,0,1">
+            <DockPanel Margin="12,8">
+                <Button x:Name="BackButton" DockPanel.Dock="Left" Padding="12,5" IsDefault="True" Click="Save_Click" AutomationProperties.Name="Back to Editor (Save and Close)"
+                        ToolTip="Saves every change and goes back to the editor. Escape does the same.">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE72B;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" />
+                        <TextBlock Text="Back to Editor (Save &amp; Close)" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <Button DockPanel.Dock="Right" Content="Cancel" MinWidth="88" Click="Cancel_Click" AutomationProperties.Name="Cancel"
+                        ToolTip="Goes back to the editor without saving: every change made here is dropped." />
+                <TextBlock Text="Settings" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Margin="18,0" />
+                <TextBlock x:Name="ErrorText" Foreground="{DynamicResource WarningTextBrush}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0" />
+            </DockPanel>
+        </Border>
 
-        <TabControl x:Name="SettingsTabs">
+        <!-- The category rail: the search box, then a category for each tab (made by the code-behind, from the tabs) -->
+        <Border Grid.Row="1" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="0,0,1,0">
+            <DockPanel Margin="10,12">
+                <!-- Type here to find an option: what does not match is hidden, on every tab -->
+                <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
+                    <!-- The text starts 29 DIP in, where the hint does (26 + the edge and the text view's caret room). -->
+                    <TextBox x:Name="SearchBox" Padding="26,7,8,7" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged"
+                             AutomationProperties.Name="Search Settings" ToolTip="Type part of an option's name or description. Categories with nothing that matches are hidden; clear the box (or press Escape in it) to see everything again." />
+                    <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13" Margin="9,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
+                               Foreground="{DynamicResource MutedTextBrush}" IsHitTestVisible="False" />
+                    <TextBlock x:Name="SearchHint" Text="Search settings..." Margin="29,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
+                               Foreground="{DynamicResource MutedTextBrush}" IsHitTestVisible="False" />
+                </Grid>
+                <ListBox x:Name="CategoryRail" Background="Transparent" BorderThickness="0" ItemContainerStyle="{StaticResource RailItem}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" SelectionChanged="CategoryRail_SelectionChanged" AutomationProperties.Name="Settings Categories" />
+            </DockPanel>
+        </Border>
+
+        <!-- The live preview stage: the option looked at, its default, what it does, and a picture of it -->
+        <Border x:Name="StagePanel" Grid.Row="1" Grid.Column="2" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1,0,0,0">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                <StackPanel Margin="22,18">
+                    <DockPanel>
+                        <ToggleButton x:Name="StageWideToggle" DockPanel.Dock="Right" Padding="7,4" Click="StageWide_Click" AutomationProperties.Name="Widen Preview Stage"
+                                      ToolTip="Gives the preview stage more of the window (65%), or its usual share (45%) again.">
+                            <TextBlock Text="&#xE740;" FontFamily="Segoe MDL2 Assets" FontSize="11" />
+                        </ToggleButton>
+                        <TextBlock x:Name="StageCategory" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
+                    <TextBlock x:Name="StageTitle" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,8,0,0" />
+                    <Border x:Name="StageDefaultBadge" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="9,2" CornerRadius="9"
+                            Background="{DynamicResource WellBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
+                        <TextBlock x:Name="StageDefaultText" FontSize="11" />
+                    </Border>
+                    <TextBlock x:Name="StageDescription" TextWrapping="Wrap" Margin="0,12,0,0" LineHeight="19" />
+                    <Border x:Name="StageCard" Margin="0,18,0,0" Padding="14" CornerRadius="6"
+                            Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock x:Name="StageCardTitle" FontWeight="SemiBold" Margin="0,0,0,12" />
+                            <Border x:Name="StageCaptionFrame" Visibility="Collapsed" Margin="0,0,0,14" SizeChanged="StageCaptionFrame_SizeChanged">
+                                <local:CaptionPreview x:Name="StageCaptions" />
+                            </Border>
+                            <local:SettingsStagePreview x:Name="StagePreview" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <TabControl x:Name="SettingsTabs" Grid.Row="1" Grid.Column="1" Template="{StaticResource RailPages}" Padding="24,10,12,10"
+                    SelectionChanged="SettingsTabs_SelectionChanged">
 
             <!-- ===== General: how HandPeg looks, starts and looks after a project ===== -->
             <TabItem Header="General">
@@ -127,11 +252,12 @@
                     <TextBlock Style="{StaticResource Hint}"
                                Text="What each of these is set to when HandPeg starts. Each can still be changed in the main window for the session." />
                     <WrapPanel>
-                        <CheckBox Content="Play only cut segments" IsChecked="{Binding StartWithPlayOnlySegments}" Margin="0,2,24,2" />
-                        <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding StartWithSnapToIFrames}" Margin="0,2,24,2" />
+                        <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding StartWithSnapToIFrames}" Margin="0,2,24,2"
+                                  ToolTip="The playhead, the razor and the in and out points ([ and ]) land on the main video's I-frames, where a Copy export can cut it without encoding." />
                         <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="0,2,24,2" />
                         <CheckBox Content="Create chapter markers" IsChecked="{Binding StartWithChapterMarkers}" Margin="0,2,24,2" />
-                        <CheckBox Content="Chapters at cut points" IsChecked="{Binding StartWithChaptersAtCuts}" Margin="0,2,24,2" />
+                        <CheckBox Content="Chapters at cut points" IsChecked="{Binding StartWithChaptersAtCuts}" Margin="0,2,24,2"
+                                  ToolTip="A chapter at the start of each clip of the main video, once it has been split." />
                         <CheckBox Content="Auto-captions controls on the Subtitles tab" IsChecked="{Binding ShowAutoCaptions}" Margin="0,2,24,2" />
                         <CheckBox Content="Open the Canvas by itself" IsChecked="{Binding AutoOpenLayoutPane}" Margin="0,2,24,2"
                                   ToolTip="Opens the Canvas beside the player as soon as there is a layout to edit." />
@@ -906,55 +1032,61 @@
                 <StackPanel>
                     <TextBlock Text="Dependencies" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Everything HandPeg downloads, and what is installed. Nothing ships with HandPeg itself. FFmpeg, libmpv and whisper.cpp come from the builds this version of HandPeg was tested with (pinned, each checked against its SHA-256), unless untested updates are allowed; yt-dlp from its newest release. One button installs what is missing and replaces what is not the build to have; a tool with a path of your own under Tool paths is left alone." />
+                               Text="Everything HandPeg downloads, and what is installed. Nothing ships with HandPeg itself. FFmpeg, libmpv and whisper.cpp come from the builds this version of HandPeg was tested with (pinned, each checked against its SHA-256), unless untested updates are allowed; yt-dlp from its newest release. One button installs what is missing and replaces what is not the build to have; a tool with a path of your own (Advanced, below) is left alone." />
                     <local:DependencyPanel x:Name="Dependencies" />
 
-                    <TextBlock Text="Tool paths" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="Leave a field blank to use the copy HandPeg downloads. A path set here is used as is, and is never replaced by Install / Update All Dependencies." />
-                    <DockPanel Style="{StaticResource WideRow}">
-                        <TextBlock Text="yt-dlp.exe:" Style="{StaticResource WideLabel}" />
-                        <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=YtDlpPathBox}" Click="Browse_Click" />
-                        <TextBox x:Name="YtDlpPathBox" Text="{Binding YtDlpPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="yt-dlp.exe Path" />
-                    </DockPanel>
-                    <DockPanel Style="{StaticResource WideRow}">
-                        <TextBlock Text="ffmpeg.exe:" Style="{StaticResource WideLabel}" />
-                        <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=FfmpegPathBox}" Click="Browse_Click" />
-                        <TextBox x:Name="FfmpegPathBox" Text="{Binding FfmpegPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="ffmpeg.exe Path" />
-                    </DockPanel>
-                    <DockPanel Style="{StaticResource WideRow}">
-                        <TextBlock Text="ffprobe.exe:" Style="{StaticResource WideLabel}" />
-                        <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=FfprobePathBox}" Click="Browse_Click" />
-                        <TextBox x:Name="FfprobePathBox" Text="{Binding FfprobePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="ffprobe.exe Path"
-                                 ToolTip="When blank, an ffprobe.exe next to a custom ffmpeg.exe is used if there is one." />
-                    </DockPanel>
-                    <DockPanel Style="{StaticResource WideRow}">
-                        <TextBlock Text="whisper.exe:" Style="{StaticResource WideLabel}" />
-                        <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=WhisperPathBox}" Click="Browse_Click" />
-                        <TextBox x:Name="WhisperPathBox" AutomationProperties.Name="whisper.exe Path" TextChanged="WhisperPathBox_TextChanged"
-                                 Text="{Binding WhisperPath, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="Your own whisper.cpp program (whisper-cli.exe, or a GPU build), for auto-captions. When blank, the one HandPeg downloads is used." />
-                    </DockPanel>
+                    <!-- Folded until opened (4.3-0B); the search box opens it when something inside matches -->
+                    <Expander x:Name="AdvancedToolsExpander" Header="Advanced: Custom Tool Paths &amp; Update URLs" IsExpanded="False" Style="{StaticResource FoldedSection}"
+                              ToolTip="Your own copies of yt-dlp, FFmpeg, ffprobe and whisper.cpp, and the addresses HandPeg downloads them from. Most people never need these.">
+                        <StackPanel x:Name="AdvancedToolsPanel">
+                        <TextBlock Text="Tool paths" Style="{StaticResource SectionTitle}" Margin="0,6,0,2" />
+                        <TextBlock Style="{StaticResource Hint}"
+                                   Text="Leave a field blank to use the copy HandPeg downloads. A path set here is used as is, and is never replaced by Install / Update All Dependencies." />
+                        <DockPanel Style="{StaticResource WideRow}">
+                            <TextBlock Text="yt-dlp.exe:" Style="{StaticResource WideLabel}" />
+                            <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=YtDlpPathBox}" Click="Browse_Click" />
+                            <TextBox x:Name="YtDlpPathBox" Text="{Binding YtDlpPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="yt-dlp.exe Path" />
+                        </DockPanel>
+                        <DockPanel Style="{StaticResource WideRow}">
+                            <TextBlock Text="ffmpeg.exe:" Style="{StaticResource WideLabel}" />
+                            <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=FfmpegPathBox}" Click="Browse_Click" />
+                            <TextBox x:Name="FfmpegPathBox" Text="{Binding FfmpegPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="ffmpeg.exe Path" />
+                        </DockPanel>
+                        <DockPanel Style="{StaticResource WideRow}">
+                            <TextBlock Text="ffprobe.exe:" Style="{StaticResource WideLabel}" />
+                            <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=FfprobePathBox}" Click="Browse_Click" />
+                            <TextBox x:Name="FfprobePathBox" Text="{Binding FfprobePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="ffprobe.exe Path"
+                                     ToolTip="When blank, an ffprobe.exe next to a custom ffmpeg.exe is used if there is one." />
+                        </DockPanel>
+                        <DockPanel Style="{StaticResource WideRow}">
+                            <TextBlock Text="whisper.exe:" Style="{StaticResource WideLabel}" />
+                            <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Tag="{Binding ElementName=WhisperPathBox}" Click="Browse_Click" />
+                            <TextBox x:Name="WhisperPathBox" AutomationProperties.Name="whisper.exe Path" TextChanged="WhisperPathBox_TextChanged"
+                                     Text="{Binding WhisperPath, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Your own whisper.cpp program (whisper-cli.exe, or a GPU build), for auto-captions. When blank, the one HandPeg downloads is used." />
+                        </DockPanel>
 
-                    <TextBlock Text="Update URLs" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="GitHub API release addresses. Leave blank for the defaults. Tools are downloaded and run from whatever these point at, so only use sources you trust. A tool given an address of your own is installed from its newest release there, not from its pinned build." />
-                    <DockPanel Style="{StaticResource WideRow}">
-                        <TextBlock Text="yt-dlp release:" Style="{StaticResource WideLabel}" />
-                        <TextBox Text="{Binding YtDlpReleaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="yt-dlp Release URL" />
-                    </DockPanel>
-                    <TextBlock x:Name="YtDlpDefaultText" Style="{StaticResource Hint}" Margin="152,0,0,6" />
-                    <DockPanel Style="{StaticResource WideRow}">
-                        <TextBlock Text="FFmpeg release:" Style="{StaticResource WideLabel}" />
-                        <TextBox Text="{Binding FfmpegReleaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="FFmpeg Release URL" />
-                    </DockPanel>
-                    <TextBlock x:Name="FfmpegDefaultText" Style="{StaticResource Hint}" Margin="152,0,0,6" />
-                    <DockPanel Style="{StaticResource WideRow}">
-                        <TextBlock Text="whisper.cpp releases:" Style="{StaticResource WideLabel}" />
-                        <TextBox Text="{Binding WhisperReleaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="whisper.cpp Release URL"
-                                 ToolTip="One release, or a list of releases: the newest one that has whisper-bin-x64.zip is used." />
-                    </DockPanel>
-                    <TextBlock x:Name="WhisperDefaultText" Style="{StaticResource Hint}" Margin="152,0,0,6" />
+                        <TextBlock Text="Update URLs" Style="{StaticResource SectionTitle}" />
+                        <TextBlock Style="{StaticResource Hint}"
+                                   Text="GitHub API release addresses. Leave blank for the defaults. Tools are downloaded and run from whatever these point at, so only use sources you trust. A tool given an address of your own is installed from its newest release there, not from its pinned build." />
+                        <DockPanel Style="{StaticResource WideRow}">
+                            <TextBlock Text="yt-dlp release:" Style="{StaticResource WideLabel}" />
+                            <TextBox Text="{Binding YtDlpReleaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="yt-dlp Release URL" />
+                        </DockPanel>
+                        <TextBlock x:Name="YtDlpDefaultText" Style="{StaticResource Hint}" Margin="152,0,0,6" />
+                        <DockPanel Style="{StaticResource WideRow}">
+                            <TextBlock Text="FFmpeg release:" Style="{StaticResource WideLabel}" />
+                            <TextBox Text="{Binding FfmpegReleaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="FFmpeg Release URL" />
+                        </DockPanel>
+                        <TextBlock x:Name="FfmpegDefaultText" Style="{StaticResource Hint}" Margin="152,0,0,6" />
+                        <DockPanel Style="{StaticResource WideRow}">
+                            <TextBlock Text="whisper.cpp releases:" Style="{StaticResource WideLabel}" />
+                            <TextBox Text="{Binding WhisperReleaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="whisper.cpp Release URL"
+                                     ToolTip="One release, or a list of releases: the newest one that has whisper-bin-x64.zip is used." />
+                        </DockPanel>
+                        <TextBlock x:Name="WhisperDefaultText" Style="{StaticResource Hint}" Margin="152,0,0,6" />
+                        </StackPanel>
+                    </Expander>
 
                     <TextBlock Text="SponsorBlock" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
@@ -1005,5 +1137,5 @@
                 </StackPanel>
             </TabItem>
         </TabControl>
-    </DockPanel>
+    </Grid>
 </Window>

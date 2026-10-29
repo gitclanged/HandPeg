@@ -1,0 +1,127 @@
+# A timeline written as a document: Video 1 with a gap first and between clips, a picture, a clip at double speed and another file's clip of its own; J and L cuts, a slip, a crossfade into the chain and one on an Audio track.
+# reads the cuts list: no; the chapters list: no
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -i
+  D:/media/main.mp4
+  -filter_complex <graph 1>
+  -map
+  0:v:0
+  -map
+  [amixed0]
+  -vf <graph 2>
+  -c:v
+  libx264
+  -preset
+  medium
+  -crf
+  23
+  -pix_fmt
+  yuv420p
+  -metadata:s:a:0
+  title=Track 1
+  -c:a:0
+  aac
+  -b:a:0
+  160k
+  -map_chapters
+  -1
+  D:/out/timeline.mp4
+
+graph 1 (-filter_complex): 10 chains, 1157 characters
+  1| [0:a:0]asplit=2[aedit0_c0][aedit0_c1]
+  2| [aedit0_c0]atrim=start=30:end=40
+   |   ,asetpts=PTS-STARTPTS
+   |   ,adelay=2000:all=1[aedit0_p0]
+  3| [aedit0_c1]atrim=start=59:end=70.5
+   |   ,asetpts=PTS-STARTPTS
+   |   ,afade=t=in:st=0:d=0.5
+   |   ,adelay=15000:all=1[aedit0_p1]
+  4| [aedit0_p0][aedit0_p1]amix=inputs=2:normalize=0:dropout_transition=0
+   |   ,asetpts=N/SR/TB
+   |   ,apad=whole_dur=40[aedit0]
+  5| amovie='D\:/media/main.mp4'
+   |   ,atrim=start=80:end=88
+   |   ,asetpts=PTS-80/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,atempo=2
+   |   ,adelay=26000:all=1[alayer0]
+  6| amovie='D\:/media/clip2.mp4'
+   |   ,atrim=start=3:end=11
+   |   ,asetpts=PTS-3/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,adelay=30250:all=1[alayer1]
+  7| amovie='D\:/media/clip1.mp4'
+   |   ,atrim=start=1.5:end=13
+   |   ,asetpts=PTS-1.5/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,afade=t=in:st=0:d=0.5
+   |   ,adelay=4500:all=1[alayer2]
+  8| amovie='D\:/media/music.m4a'
+   |   ,atrim=end=21
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,volume=-6dB
+   |   ,afade=t=out:st=19:d=2[alayer3]
+  9| amovie='D\:/media/music.m4a'
+   |   ,atrim=start=99:end=120
+   |   ,asetpts=PTS-99/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,volume=-6dB
+   |   ,afade=t=in:st=0:d=2
+   |   ,adelay=19000:all=1[alayer4]
+ 10| [aedit0][alayer0][alayer1][alayer2][alayer3][alayer4]amix=inputs=6:duration=first:normalize=0[amixed0]
+
+graph 2 (-vf): 16 chains, 1767 characters
+  1| select='gte(t,30)*lt(t,40)+gte(t,60)*lt(t,70)'
+   |   ,setpts='PTS+(-28-16*gte(T,60))/TB'
+   |   ,split=2[bg_in][center_in]
+  2| color=c=black:s=1920x1080:r=30:d=40
+   |   ,format=yuv420p[base]
+  3| [bg_in]scale=1920:1080:force_original_aspect_ratio=increase
+   |   ,crop=1920:1080
+   |   ,boxblur=20:2
+   |   ,eq=brightness=-0.15
+   |   ,format=yuva420p
+   |   ,fade=t=in:st=16:d=0.5:alpha=1:enable='between(t,16,16.5)'[bg]
+  4| [base][bg]overlay=0:0:eof_action=pass:enable='gte(t,2)*lt(t,12)+gte(t,16)*lt(t,26)'[stage0]
+  5| movie='D\:/media/main.mp4':sp=49
+   |   ,trim=start=50:end=53
+   |   ,setpts=PTS-47/TB
+   |   ,scale=480:270
+   |   ,format=yuva420p[ui0_layer]
+  6| [stage0][ui0_layer]overlay=1344:756:eof_action=pass:enable='between(t,3,6)'[stage1]
+  7| [center_in]scale=1920:1080
+   |   ,format=yuva420p
+   |   ,fade=t=in:st=16:d=0.5:alpha=1:enable='between(t,16,16.5)'[center_layer]
+  8| [stage1][center_layer]overlay=0:0:eof_action=pass:enable='gte(t,2)*lt(t,12)+gte(t,16)*lt(t,26)'[stage2]
+  9| movie='D\:/media/still.png'
+   |   ,scale=1920:1080
+   |   ,format=yuva420p
+   |   ,loop=loop=-1:size=1
+   |   ,setpts=N/(30*TB)
+   |   ,format=yuva420p
+   |   ,fade=t=out:st=15.5:d=0.5:alpha=1:enable='between(t,15.5,16)'[ui2_layer]
+ 10| [stage2][ui2_layer]overlay=0:0:shortest=1:enable='between(t,13,16)'[stage3]
+ 11| movie='D\:/media/main.mp4':sp=79
+   |   ,trim=start=80:end=88
+   |   ,setpts=(PTS-80/TB)/2+26/TB
+   |   ,scale=1920:1080
+   |   ,format=yuva420p[ui3_layer]
+ 12| [stage3][ui3_layer]overlay=0:0:eof_action=pass:enable='between(t,26,30)'[stage4]
+ 13| movie='D\:/media/clip2.mp4':sp=2
+   |   ,trim=start=3:end=11
+   |   ,setpts=PTS+27/TB
+   |   ,scale=960:540
+   |   ,format=yuva420p[ui4_layer]
+ 14| [stage4][ui4_layer]overlay=96:54:eof_action=pass:enable='between(t,30,38)'[stage5]
+ 15| movie='D\:/media/clip1.mp4':sp=1
+   |   ,trim=start=2:end=12
+   |   ,setpts=PTS+3/TB
+   |   ,scale=672:378
+   |   ,format=yuva420p
+   |   ,fade=t=in:st=5:d=0.5:alpha=1:enable='between(t,5,5.5)'[ui5_layer]
+ 16| [stage5][ui5_layer]overlay=1152:54:eof_action=pass:enable='between(t,5,15)'
+   |   ,setsar=1

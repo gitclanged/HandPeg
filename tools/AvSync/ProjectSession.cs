@@ -65,10 +65,10 @@ internal sealed class ProjectSession : IDisposable
         List<string> Missing()
         {
             var missing = new List<string>();
-            var state = State();
-            if (!state.IsMainWholeSequence && !PlayerSource.Contains("clock_", StringComparison.OrdinalIgnoreCase))
+            var timeline = FilterGraphBuilder.Lowering(State());
+            if (!timeline.IsMainWholeSequence && !PlayerSource.Contains("clock_", StringComparison.OrdinalIgnoreCase))
                 missing.Add("the stand-in clock file");
-            foreach (var layer in state.Stack.Where(l => l.IsVideoFile))
+            foreach (var layer in timeline.Stack.Where(l => l.IsVideoFile))
             {
                 var file = layer.ImagePath.Trim().Trim('"');
                 if (MediaProbe.KnownVideoStart(file) is null)

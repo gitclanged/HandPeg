@@ -14,7 +14,8 @@ namespace HandPegGoldenTests;
 ///   adelay           pushes everything later by its delay (counted in samples: its own time stamps are not usable);
 ///   aresample        with first_pts, the stream starts exactly there (filled with silence or cut), time stamps kept;
 ///   atempo           time from the stream's first moment divided by the tempo;
-///   amix             adds its inputs up sample for sample from each one's first sample, whatever their time stamps;
+///   amix             adds its inputs up sample for sample from each one's first sample, whatever their time stamps (a
+///                    moment followed through one is its distance from its input's first sample: where the mix counts it);
 ///   overlay          shows the frame of its upper input whose time stamp is the time of the picture under it.
 ///
 /// Everything else leaves time stamps alone. Times are in seconds (TB is taken as 1).
@@ -138,6 +139,10 @@ public static class Timing
                 var tempo = double.Parse(o.Get("tempo", 0) ?? "1", CultureInfo.InvariantCulture);
                 return clock with { T = clock.First + (clock.T - clock.First) / tempo };
             }
+
+            // Followed through (not stopped at): its output counted from its first sample, which is each input's first.
+            case "amix":
+                return new Clock(clock.T - clock.First, 0);
 
             case "tpad":
             case "apad" when o.Get("pad_dur") is null:

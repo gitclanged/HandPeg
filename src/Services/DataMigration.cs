@@ -3,11 +3,12 @@ using System.IO;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Brings over what earlier builds kept next to the program (appsettings.json, presets.json, the projects
-/// folder and the "bin" folder of tools) and in %TEMP%\Handpeg, once per old location. Settings, presets and
-/// projects are copied, so the originals stay as they were; the tools and downloaded videos, which are large
-/// and can be fetched again, are moved. Nothing already in a new location is replaced. A portable copy's first
-/// start brings over the installed places' settings (<see cref="CopyInstalledIntoPortable"/>).
+/// Brings over what earlier builds kept next to the program (appsettings.json, presets.json and the "bin" folder
+/// of tools) and in %TEMP%\Handpeg, once per old location. Settings and presets are copied, so the originals stay
+/// as they were; the tools and downloaded videos, which are large and can be fetched again, are moved. Nothing
+/// already in a new location is replaced. The projects HandPeg 1.x kept there (a projects folder of .txt files)
+/// are not brought over: this version opens format 5 projects only. A portable copy's first start brings over the
+/// installed places' settings (<see cref="CopyInstalledIntoPortable"/>).
 /// </summary>
 public static class DataMigration
 {
@@ -71,10 +72,9 @@ public static class DataMigration
     {
         var settings = Path.Combine(folder, "appsettings.json");
         var presets = Path.Combine(folder, "presets.json");
-        var projects = Path.Combine(folder, "projects");
         var tools = Path.Combine(folder, "bin");
 
-        if (!File.Exists(settings) && !File.Exists(presets) && !Directory.Exists(projects) && !Directory.Exists(tools))
+        if (!File.Exists(settings) && !File.Exists(presets) && !Directory.Exists(tools))
             return;
 
         var key = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
@@ -83,12 +83,6 @@ public static class DataMigration
             return;
 
         var copied = CopyIfAbsent(settings, AppPaths.SettingsFile) + CopyIfAbsent(presets, AppPaths.PresetsFile);
-        if (Directory.Exists(projects))
-        {
-            foreach (var file in Directory.EnumerateFiles(projects, "*.txt"))
-                copied += CopyIfAbsent(file, Path.Combine(AppPaths.Projects, Path.GetFileName(file)));
-        }
-
         var moved = 0;
         if (Directory.Exists(tools))
         {

@@ -26,7 +26,7 @@ command:
   +faststart
   D:/session/previews/preview.mp4
 
-graph 1 (-filter_complex): 26 chains, 2775 characters
+graph 1 (-filter_complex): 26 chains, 2830 characters
   1| [0:v:0]trim=end=4
    |   ,setpts=PTS-STARTPTS
    |   ,split=2[bg_in0][center_in0]
@@ -51,7 +51,7 @@ graph 1 (-filter_complex): 26 chains, 2775 characters
    |   ,format=yuva420p
    |   ,lutyuv=a=val*0.8
    |   ,rotate=12*PI/180:ow=294:oh=190:c=black@0[ui2_layer0]
- 10| [stage20][ui2_layer0]overlay=744:11[stage30]
+ 10| [stage20][ui2_layer0]overlay=744:11:enable='between(t,-10,110)'[stage30]
  11| color=c=0x000000@0:s=864x218:r=1
    |   ,format=yuva444p
    |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Hello, “world”\: it\'\''s 50%':expansion=none:fontsize=81.75:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=2:x=(w-text_w)/2:y=90.339-ascent
@@ -84,7 +84,7 @@ graph 1 (-filter_complex): 26 chains, 2775 characters
    |   ,format=yuva420p
    |   ,lutyuv=a=val*0.8
    |   ,rotate=12*PI/180:ow=294:oh=190:c=black@0[ui2_layer1]
- 22| [stage21][ui2_layer1]overlay=744:11[stage31]
+ 22| [stage21][ui2_layer1]overlay=744:11:enable='between(t,-60,60)'[stage31]
  23| color=c=0x000000@0:s=864x218:r=1
    |   ,format=yuva444p
    |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Hello, “world”\: it\'\''s 50%':expansion=none:fontsize=81.75:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=2:x=(w-text_w)/2:y=90.339-ascent

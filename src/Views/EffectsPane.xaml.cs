@@ -104,7 +104,7 @@ public partial class EffectsPane : UserControl
     private bool IsSequence => SequenceToggle.IsChecked == true;
 
     /// <summary>Seconds into the target at the playhead: into the clip, or into the sequence.</summary>
-    private double ClipTime => (_vm?.PositionMs ?? 0) / 1000 - (_layer is { IsMainVideo: false } layer ? layer.StartTime : 0);
+    private double ClipTime => (_vm?.PositionMs ?? 0) / 1000 - (_layer?.StartTime ?? 0);
 
     // ----- The target -----
 

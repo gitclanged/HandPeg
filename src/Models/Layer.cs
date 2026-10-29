@@ -47,12 +47,28 @@ public readonly record struct Keyframe(
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double BezierX1 = 0,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double BezierY1 = 0,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double BezierX2 = 0,
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double BezierY2 = 0)
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double BezierY2 = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double PartStart = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double PartEnd = 0)
 {
-    /// <summary>The same keyframe leaving by another easing (a Custom Bézier with these handles).</summary>
+    /// <summary>The same keyframe leaving by another easing (a Custom Bézier with these handles), the whole of its curve.</summary>
     public Keyframe WithEasing(EasingType easing, (double X1, double Y1, double X2, double Y2)? handles = null) => handles is { } h
-        ? this with { Easing = easing, BezierX1 = h.X1, BezierY1 = h.Y1, BezierX2 = h.X2, BezierY2 = h.Y2 }
-        : this with { Easing = easing };
+        ? this with { Easing = easing, BezierX1 = h.X1, BezierY1 = h.Y1, BezierX2 = h.X2, BezierY2 = h.Y2, PartStart = 0, PartEnd = 0 }
+        : this with { Easing = easing, PartStart = 0, PartEnd = 0 };
+
+    /// <summary>
+    /// Whether the stretch this keyframe leaves is a part of its easing's curve (4.3D): what is left on one side of a split
+    /// made between two keyframes (EasingCurves.Cut), so the half moves exactly as the whole did.
+    /// </summary>
+    public bool IsPart => PartEnd > PartStart && (PartStart > 0 || PartEnd < 1);
+
+    /// <summary>The part of the curve the stretch is, as fractions of the curve's time: (0, 1) for the whole of it.</summary>
+    public (double Start, double End) Part => IsPart ? (PartStart, PartEnd) : (0, 1);
+
+    /// <summary>The same keyframe leaving by the part of its curve between two fractions of its time (the whole curve: 0 to 1).</summary>
+    public Keyframe WithPart(double start, double end) => end - start >= 1 - 1e-12 || end <= start
+        ? this with { PartStart = 0, PartEnd = 0 }
+        : this with { PartStart = Math.Clamp(start, 0, 1), PartEnd = Math.Clamp(end, 0, 1) };
 }
 
 /// <summary>What of a layer can be animated with keyframes.</summary>
@@ -191,6 +207,18 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private int _trackId;
 
     /// <summary>
+    /// The clip of the timeline document this layer is the view of (4.3C: MainViewModel.Document); empty for a layer that
+    /// is no clip (the caption box, the background, an empty track's row, a layer of a preset or of the graph builder).
+    /// </summary>
+    public Guid ClipId { get; set; }
+
+    /// <summary>
+    /// What a speed set in a box (<see cref="ClipSpeed"/>) does to a layer that is a clip's view: an edit of the clip, which
+    /// the view then follows. Null for a layer that is no clip's, which changes its own speed (<see cref="SetSpeed"/>).
+    /// </summary>
+    public Action<Layer, double>? SpeedEditor { get; set; }
+
+    /// <summary>
     /// What belongs to one clip alone, and is not copied to the others on its track when it changes. The file a
     /// clip plays is its own too: clips of different files can follow each other on one track.
     /// </summary>
@@ -231,8 +259,17 @@ public sealed partial class Layer : ObservableObject
     public double ClipSpeed
     {
         get => Speed;
-        set => SetSpeed(value);
+        set
+        {
+            if (SpeedEditor is { } edit)
+                edit(this, value);
+            else
+                SetSpeed(value);
+        }
     }
+
+    /// <summary>Says again what the speed is, for a box that asked for one that could not be (its clip's edit was refused).</summary>
+    public void NotifySpeed() => OnPropertyChanged(nameof(ClipSpeed));
 
     /// <summary>
     /// Changes the speed, and with it everything that is counted in the timeline's seconds: the clip plays the
@@ -321,7 +358,8 @@ public sealed partial class Layer : ObservableObject
     /// <summary>
     /// On a copy a graph is built from only (never saved): the picture stays as it is through its fade in (or out), only
     /// its sound fading, because the clip laid over it fades in (or out) across the same stretch and carries the
-    /// picture's side of that crossfade. See MainViewModel.ApplyCrossfades and PairLayerCrossfades.
+    /// picture's side of that crossfade. Set by the graph builder's lowering of the timeline (FilterGraphBuilder.Timeline.cs:
+    /// LayOverAcrossCut and PairLayerCrossfades).
     /// </summary>
     public bool PictureFadeInOff { get; set; }
 
@@ -330,7 +368,7 @@ public sealed partial class Layer : ObservableObject
     /// <summary>
     /// A crossfade from the clip just before it on its track (the one whose end meets its start), this many seconds long,
     /// centred on the cut: both run on into what their files have beyond it, the picture dissolving from the one to the
-    /// other and the sound crossfading. 0 for a plain cut. See MainViewModel.ApplyCrossfades.
+    /// other and the sound crossfading. 0 for a plain cut. Laid out by FilterGraphBuilder.Timeline.cs (LayOverAcrossCut).
     /// </summary>
     [ObservableProperty] private double _transitionIn;
 
@@ -1420,6 +1458,12 @@ public sealed partial class Layer : ObservableObject
 /// <summary>A layer as it is written to presets and projects.</summary>
 public sealed class LayerState
 {
+    /// <summary>
+    /// A copy whose own values can be set without touching this one's, sharing its lists (keys, effects, filters): for
+    /// a layer to be made from a look with some values changed, by <see cref="Layer.FromState"/>, which copies the lists.
+    /// </summary>
+    internal LayerState ShallowCopy() => (LayerState)MemberwiseClone();
+
     public string Name { get; set; } = "Layer";
 
     public LayerKind Kind { get; set; }
@@ -1493,19 +1537,6 @@ public sealed class LayerState
     public int ReadShadowSoftness() => Math.Clamp(ShadowSoftness ?? (ShadowDistance is null && ShadowOffset is not null ? EarlierShadowSoftness : DefaultShadowSoftness), 0, 50);
 
     public string ReadShadowColor() => string.IsNullOrWhiteSpace(ShadowColor) ? "#000000" : ShadowColor;
-
-    /// <summary>
-    /// A shadow saved with an offset on both axes, put in the fields it is written with now (distance, angle, softness;
-    /// 4.1.1-D), so a project brought over from 1.x is written as one saved from the app is (<see cref="HandPegApp.Services.LegacyProject"/>).
-    /// </summary>
-    public void FoldEarlierShadow()
-    {
-        if (ShadowOffset is null || ShadowDistance is not null)
-            return;
-
-        (ShadowDistance, ShadowAngle, ShadowSoftness) = (ReadShadowDistance(), DefaultShadowAngle, ReadShadowSoftness());
-        ShadowOffset = null;
-    }
 
     public bool ChromaKey { get; set; }
     public string ChromaColor { get; set; } = "#00FF00";

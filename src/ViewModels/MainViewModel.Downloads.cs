@@ -105,8 +105,15 @@ public partial class MainViewModel
             string Moved(string path) => copies.TryGetValue(path.Trim().Trim('"'), out var copy) ? copy : path;
             state.LocalMediaPath = Moved(state.LocalMediaPath);
             state.CaptionAudioPath = Moved(state.CaptionAudioPath);
-            foreach (var layer in state.Settings.Layers)
-                layer.ImagePath = Moved(layer.ImagePath);
+
+            // Every clip's file, on the state's own copy of the timeline (its looks are its own: CaptureState).
+            foreach (var clip in state.Timeline.Tracks.SelectMany(t => t.Clips))
+            {
+                if (clip.SourcePath is { } path)
+                    clip.SourcePath = Moved(path);
+                clip.State.ImagePath = Moved(clip.State.ImagePath);
+            }
+
             ProjectStore.SaveTo(state, CurrentProjectPath);
             Log($"Copied {copies.Count} downloaded video{(copies.Count == 1 ? "" : "s")} into {folder}; the project now uses the copies");
         }

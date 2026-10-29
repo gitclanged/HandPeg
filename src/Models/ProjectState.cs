@@ -1,8 +1,8 @@
 namespace HandPegApp.Models;
 
 /// <summary>
-/// Everything needed to bring the main window back to a given state: the source, the cut segments and
-/// all settings. Saved as a project file, and kept with each queued job so the job can be edited later.
+/// Everything needed to bring the main window back to a given state: the source, the timeline and all
+/// settings. Saved as a project file (format 5), and kept with each queued job so the job can be edited later.
 /// </summary>
 public sealed class ProjectState
 {
@@ -19,8 +19,13 @@ public sealed class ProjectState
     public string DownloadResolution { get; set; } = "Best";
     public bool DownloadSubtitles { get; set; }
 
-    // Cuts
-    public List<SegmentState> Segments { get; set; } = [];
+    /// <summary>
+    /// The timeline (4.3C): every track and clip, the main video's included, its markers and the Sequence Output's
+    /// effects. Always a copy of its own (<see cref="Timeline.TimelineDocument.Clone"/>): what holds a state (a queued
+    /// job, an autosave being written) is never reached by later edits.
+    /// </summary>
+    public Timeline.TimelineDocument Timeline { get; set; } = new();
+
     public bool SnapToIFrames { get; set; }
 
     // Settings
@@ -29,9 +34,6 @@ public sealed class ProjectState
     public bool ChapterMarkers { get; set; } = true;
     public bool ChaptersAtCuts { get; set; }
     public bool ChaptersAtMarkers { get; set; }
-
-    /// <summary>The markers on the timeline.</summary>
-    public List<TimelineMarker> Markers { get; set; } = [];
 
     /// <summary>The imported or hand-made subtitle track; null when there is none.</summary>
     public SubtitleTrackData? Subtitles { get; set; }
@@ -57,20 +59,12 @@ public sealed class ProjectState
     /// <summary>Which of the video's audio tracks captions listen to.</summary>
     public int CaptionAudioTrackIndex { get; set; }
 
-    /// <summary>The clips of the main video after its first: what splitting it has made.</summary>
-    public List<MainPiece> MainPieces { get; set; } = [];
-
     /// <summary>The recycle bin: clips deleted from the timeline, kept so that they can be put back.</summary>
     public List<DeletedClip> Deleted { get; set; } = [];
-
-    /// <summary>Whether sound follows its picture on the timeline, or has been unlinked from it.</summary>
-    public bool AudioLinked { get; set; } = true;
 
     /// <summary>The command text when it had been edited by hand; null when it was the generated one.</summary>
     public string? ManualCommand { get; set; }
 }
-
-public sealed record SegmentState(double StartMs, double EndMs, bool Skipped = false);
 
 public sealed record AudioTrackState(
     int Index, string Action, string Codec, string Bitrate, string? Title = null, double GainDb = 0, TrackAudioFilters? Filters = null,

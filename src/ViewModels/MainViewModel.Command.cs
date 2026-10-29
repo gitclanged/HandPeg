@@ -14,13 +14,13 @@ public partial class MainViewModel
     // ----- The sequence as the builder is given it -----
 
     /// <summary>
-    /// Gathers everything a filter graph is built from into one snapshot. The sequence comes first: how long
-    /// it is, the frame it is composed on and the rate its canvas ticks at, and what is cropped. Those four are
-    /// worked out here and passed as numbers, so that the black canvas the builder lays every clip on is as
-    /// long, as large and as fast as the timeline says, whatever the main video is doing on it.
+    /// Gathers everything a filter graph is built from into one snapshot. The sequence comes first: a copy of the timeline
+    /// document (TimelineForBuilder: its tracks of clips, the frame it is composed on and the rate its canvas ticks at),
+    /// which the builder lowers into the graph (FilterGraphBuilder.Timeline.cs), so that the black canvas it lays every
+    /// clip on is as long, as large and as fast as the timeline says, whatever the main video is doing on it.
     ///
-    /// The layers are copied: the snapshot's are its own, so the builder cannot be handed a layer that changes
-    /// while it works, nor change one itself.
+    /// The document copy and the caption box are made for the snapshot: its own, so the builder cannot be handed a clip
+    /// that changes while it works (it keeps what it lowers by the document), nor change one itself.
     /// </summary>
     private SequenceExportState CompileExportState()
     {
@@ -40,31 +40,10 @@ public partial class MainViewModel
 
         EnsureDrawnMasks();
 
-        // One copy of each layer, however many of the lists below it is in.
-        var copies = new Dictionary<Layer, Layer>(ReferenceEqualityComparer.Instance);
-        Layer Snapshot(Layer layer)
-        {
-            if (!copies.TryGetValue(layer, out var copy))
-            {
-                copies[layer] = copy = Layer.FromState(layer.ToState(), SourceWidth, SourceHeight, frameWidth, frameHeight);
-
-                // Keyframes that change nothing are not compiled: see FilterGraphBuilder.FoldConstantKeys.
-                FilterGraphBuilder.FoldConstantKeys(copy);
-            }
-
-            return copy;
-        }
-
         // A clip that is still being looked at has no size or length yet, and is not rendered.
-        var stack = GetStack().Where(l => l is { IsLoading: false, IsEmptyTrack: false }).Select(Snapshot).ToList();
-        var sounds = GetLayerAudioSources().Select(Snapshot).ToList();
-        var caption = Snapshot(CaptionLayer);
-
-        // Crossfades lay two clips of a track over each other across their cut, the later one on top; across tracks the
-        // lower clip of a crossfade keeps its picture (the upper one's fade is the picture's side of it).
-        LayLaterClipsOver(stack);
-        ApplyCrossfades(copies.Values);
-        PairLayerCrossfades(stack);
+        var stack = GetStack().Where(l => l is { IsLoading: false, IsEmptyTrack: false }).ToList();
+        var caption = Layer.FromState(CaptionLayer.ToState(), SourceWidth, SourceHeight, frameWidth, frameHeight);
+        FilterGraphBuilder.FoldConstantKeys(caption);
 
         // Which of the files the layers name are there: the builder leaves out a mask or a LUT that is missing.
         var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -126,14 +105,10 @@ public partial class MainViewModel
             })
             .ToList();
 
-        var (mainClips, mainCrossfades) = GetMainClipsForGraph();
         return new SequenceExportState
         {
-            // The sequence: its length, its frame, its clock, its crop.
-            SequenceSeconds = SequenceSeconds,
-            OutputDuration = GetOutputDuration(),
-            FrameWidth = frameWidth,
-            FrameHeight = frameHeight,
+            // The sequence: its tracks of clips, its frame, its clock; its crop.
+            Timeline = TimelineForBuilder(frameWidth, frameHeight),
             SourceFrameRate = SourceFrameRate,
             TargetFramerate = GetTargetFramerate(),
             SourceWidth = SourceWidth,
@@ -142,28 +117,20 @@ public partial class MainViewModel
             OutputHeight = OutputHeight,
             RequestedSize = GetRequestedSize(),
             OutputSize = GetOutputSize(),
-            UseVerticalResolution = UseVerticalResolution,
             SampleAspectRatio = GetSampleAspectRatio(),
             HasCrop = HasCrop,
             CropFractions = GetCropFractions(),
 
-            // The main video on it.
+            // The main video's file, and where its clips sit on the frame.
             LocalMediaPath = LocalMediaPath,
             HasSource = HasSource,
             SourceHasNoVideo = _mediaInfo is { Video: null },
             SourceMayHaveAudio = _mediaInfo is not { Audio.Count: 0 },
             MainMediaSeconds = MainMediaSeconds,
-            MainClips = mainClips,
-            MainCrossfades = mainCrossfades,
-            MainShift = MainShift,
-            IsMainSpliced = IsMainSpliced,
-            IsMainWholeSequence = IsMainWholeSequence,
             CenterRect = GetCenterRect(),
 
-            // What is laid on the canvas.
+            // What is laid on the canvas besides the clips.
             FrameEngine = FrameEngine,
-            Stack = stack,
-            MainLayer = Snapshot(_mainVideoRow),
             BackgroundHidden = _backgroundRow.IsHidden,
             BlurRadius = BlurRadius,
             BlurPasses = BlurPasses,
@@ -181,9 +148,7 @@ public partial class MainViewModel
             FadeIn = FadeIn,
             FadeOut = FadeOut,
 
-            // Cuts, chapters, subtitles.
-            Segments = GetMergedSegments().Select(s => new ExportSegment(s.Start, s.End)).ToList(),
-            HasCutSegments = Segments.Count > 0,
+            // Chapters (at the main video's clips, and at the markers), the Copy export's cuts list, subtitles.
             ChapterMarkers = ChapterMarkers,
             ChaptersAtCuts = ChaptersAtCuts,
             ChaptersAtMarkers = ChaptersAtMarkers && Markers.Count > 0,
@@ -194,8 +159,6 @@ public partial class MainViewModel
 
             // Sound.
             AudioTracks = tracks,
-            LayerAudio = sounds,
-            AudioLinked = AudioLinked,
             MergeAudioTracks = MergeAudioTracks,
             NormalizeAudio = NormalizeAudio,
             DuckAudio = DuckAudio,
@@ -234,7 +197,6 @@ public partial class MainViewModel
             // Read by Live Preview only: an export reads the originals.
             PreviewPaths = new Dictionary<string, string>(_proxiesInUse, StringComparer.OrdinalIgnoreCase),
             MainPreviewHeight = MainProxyHeight,
-            SequenceEffects = SequenceEffectsBypassed ? [] : [.. SequenceEffects.Select(e => e.Clone())],
         };
     }
 
@@ -312,11 +274,12 @@ public partial class MainViewModel
     /// </summary>
     private string BuildFfmpegCommand()
     {
-        var command = FilterGraphBuilder.BuildExportCommand(CompileExportState());
+        var state = CompileExportState();
+        var command = FilterGraphBuilder.BuildExportCommand(state);
         if (command.UsesCutsFile)
-            WriteCutsFile(string.IsNullOrWhiteSpace(LocalMediaPath) ? "<source>" : LocalMediaPath, GetMergedSegments());
+            WriteCutsFile(state);
         if (command.UsesChaptersFile)
-            WriteChaptersFile(GetMergedSegments());
+            WriteChaptersFile(command.UsesCutsFile);
         return command.CommandLine;
     }
 

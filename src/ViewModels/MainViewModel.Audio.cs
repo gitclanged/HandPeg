@@ -237,22 +237,33 @@ public partial class MainViewModel
     {
         // As they are stacked, front first: the captions over everything, then the layers with the main video
         // among them, and the blurred background behind it all.
-        // A row is a track: its first clip stands for it, and the others are drawn on the same time bar.
-        LayerRows.Clear();
+        // A row is a track: its first clip stands for it, and the others are drawn on the same time bar. The lists are
+        // only filled again when their rows are other rows (every edit asks): a row re-made loses its selection and a
+        // box being dragged in it.
+        var rows = new List<Layer>();
         if (AutoCaptions)
-            LayerRows.Add(CaptionLayer);
+            rows.Add(CaptionLayer);
         foreach (var track in Enumerable.Reverse(GetStackTracks()))
-            LayerRows.Add(track[0]);
-        LayerRows.Add(_backgroundRow);
+            rows.Add(track[0]);
+        rows.Add(_backgroundRow);
+        if (!rows.SequenceEqual(LayerRows))
+        {
+            LayerRows.Clear();
+            foreach (var row in rows)
+                LayerRows.Add(row);
+        }
 
         // A video layer that has sound is a sound on the timeline too: it gets a row of its own on the Audio
         // tab, which is the layer itself seen as its sound. So the sound is where the picture is, as long as
         // the picture is, and goes where the picture goes; there is nothing to keep in step.
-        AudioClipRows.Clear();
-        foreach (var track in Layers.Where(l => l is { IsVideoFile: true, HasAudio: true }).GroupBy(l => l.TrackId))
-            AudioClipRows.Add(track.First());
-        foreach (var track in Layers.Where(l => l.IsAudio).GroupBy(l => l.TrackId))
-            AudioClipRows.Add(track.First());
+        var sounds = Layers.Where(l => l is { IsVideoFile: true, HasAudio: true }).GroupBy(l => l.TrackId).Select(t => t.First())
+            .Concat(Layers.Where(l => l.IsAudio).GroupBy(l => l.TrackId).Select(t => t.First())).ToList();
+        if (!sounds.SequenceEqual(AudioClipRows))
+        {
+            AudioClipRows.Clear();
+            foreach (var sound in sounds)
+                AudioClipRows.Add(sound);
+        }
         OnPropertyChanged(nameof(HasAudioClips));
         RefreshAudioRows();
         RefreshAnyKeys();
@@ -575,23 +586,24 @@ public partial class MainViewModel
 
     // ----- The voiceover against the timeline -----
 
-    /// <summary>Length of the finished video in seconds: the kept segments end to end, or the whole source.</summary>
+    /// <summary>Length of the finished video in seconds (see GetOutputDuration).</summary>
     public double OutputDurationSeconds => GetOutputDuration();
 
-    /// <summary>Where one kept segment ends and the next begins in the finished video, each as a fraction (0 to 1) of its length.</summary>
+    /// <summary>
+    /// Where one clip of the main video ends and the next begins in the finished video (the cuts of the main video,
+    /// 4.3C: what 4.2.0's kept segments were), each as a fraction (0 to 1) of its length.
+    /// </summary>
     public List<double> GetCutSplitFractions()
     {
-        var segments = GetMergedSegments();
-        var total = segments.Sum(s => s.Duration.TotalSeconds);
+        var total = SequenceSeconds;
         var splits = new List<double>();
         if (total <= 0)
             return splits;
 
-        var reached = 0.0;
-        foreach (var segment in segments.SkipLast(1))
+        foreach (var clip in GetMainClips().Skip(1))
         {
-            reached += segment.Duration.TotalSeconds;
-            splits.Add(reached / total);
+            if (clip.Start > 0.001 && clip.Start < total - 0.001)
+                splits.Add(clip.Start / total);
         }
 
         return splits;
@@ -633,29 +645,14 @@ public partial class MainViewModel
             return;
         }
 
-        var start = OutputToSourceSeconds(VoiceoverStartSeconds);
-        var end = Math.Max(OutputToSourceSeconds(VoiceoverStartSeconds + (to - from) * VoiceoverDuration), start);
+        // The finished video is the timeline (4.3C: nothing is cut out of it on the way).
+        var start = VoiceoverStartSeconds;
+        var end = Math.Max(VoiceoverStartSeconds + (to - from) * VoiceoverDuration, start);
         VoiceoverMixWaveform = kept;
         VoiceoverMixStart = Math.Clamp(start / total, 0, 1);
         VoiceoverMixWidth = Math.Clamp((end - start) / total, 0, 1 - VoiceoverMixStart);
     }
 
-    /// <summary>The moment of the source that is on screen at a time in the finished video.</summary>
-    private double OutputToSourceSeconds(double seconds)
-    {
-        var segments = GetMergedSegments();
-        if (segments.Count == 0)
-            return seconds;
-
-        foreach (var segment in segments)
-        {
-            if (seconds <= segment.Duration.TotalSeconds)
-                return segment.Start.TotalSeconds + Math.Max(seconds, 0);
-            seconds -= segment.Duration.TotalSeconds;
-        }
-
-        return segments[^1].End.TotalSeconds;
-    }
     /// <summary>Takes a wave file as the session's voiceover: measures it, draws it, and opens the trim to its whole length.</summary>
     private async Task LoadVoiceoverAsync(string path, string verb)
     {
@@ -678,35 +675,6 @@ public partial class MainViewModel
             $"{verb} {info.DurationSeconds:0.0} s. Drag the handles to trim it; Starts At moves it along the finished video.");
     }
 
-    // ----- Smart playback -----
-
-    /// <summary>While on, playback jumps over everything outside the cut segments, so what plays is what will be kept.</summary>
-    [ObservableProperty] private bool _playOnlySegments;
-
-    /// <summary>
-    /// Where playback should jump to from a position that lies outside every segment: the start of the next
-    /// segment, in milliseconds. Null when the position is inside a segment, or smart playback does not apply.
-    /// </summary>
-    /// <param name="isPastLast">True when there is no segment after the position: playback has nothing left to show.</param>
-    public double? GetSegmentSkipTarget(double positionMs, out bool isPastLast)
-    {
-        isPastLast = false;
-        if (!PlayOnlySegments || Segments.Count == 0)
-            return null;
-
-        var ordered = GetMergedSegments();
-        if (ordered.Any(s => positionMs >= s.Start.TotalMilliseconds && positionMs < s.End.TotalMilliseconds))
-            return null;
-
-        var next = ordered.FirstOrDefault(s => s.Start.TotalMilliseconds > positionMs);
-        if (next is null)
-        {
-            isPastLast = true;
-            return null;
-        }
-
-        return next.Start.TotalMilliseconds;
-    }
 
     // ----- Resolution presets -----
 

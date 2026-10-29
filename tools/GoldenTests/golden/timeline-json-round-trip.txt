@@ -1,0 +1,181 @@
+# A TimelineDocument written as project files write JSON, read back and written again: the timeline of format 5.
+
+{
+  "width": 1080,
+  "height": 1920,
+  "useVerticalResolution": true,
+  "frameRate": {
+    "numerator": 30000,
+    "denominator": 1001
+  },
+  "tracks": [
+    {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "trackNumber": 1,
+      "trackLook": {
+        "name": "Main video",
+        "cornerRadius": 8,
+        "sizeWidth": 1,
+        "sizeHeight": 1
+      },
+      "clips": [
+        {
+          "id": "00000000-0000-0000-0000-000000000011",
+          "sourcePath": "D:/media/main.mp4",
+          "audioStreamIndex": 0,
+          "end": 10.01,
+          "mediaOffset": 2.5,
+          "sourceDuration": 600,
+          "fadeInSeconds": 0.5,
+          "fadeInStyle": "WipeLeft",
+          "state": {
+            "name": "Opening",
+            "keysScale": [
+              {
+                "value": 1
+              },
+              {
+                "time": 2,
+                "value": 1.2,
+                "easing": "Linear"
+              }
+            ]
+          }
+        },
+        {
+          "id": "00000000-0000-0000-0000-000000000012",
+          "sourcePath": "D:/media/main.mp4",
+          "audioStreamIndex": 0,
+          "start": 10.01,
+          "end": 15.015,
+          "mediaOffset": 20,
+          "speed": 1.5,
+          "sourceDuration": 600,
+          "audioLeadInSeconds": 0.5005,
+          "fadeOutSeconds": 1,
+          "fadeOutStyle": "SlideUp",
+          "transitionIn": 0.5,
+          "proxyChoice": "Make",
+          "state": {
+            "name": "Second",
+            "effects": [
+              {
+                "type": "builtin.look.vignette",
+                "id": "00000000-0000-0000-0000-000000000091",
+                "on": false,
+                "keys": {
+                  "angle": [
+                    {
+                      "value": 30
+                    },
+                    {
+                      "time": 2,
+                      "value": 60,
+                      "easing": "Hold"
+                    }
+                  ]
+                },
+                "range": [
+                  1,
+                  3
+                ]
+              }
+            ],
+            "effectsBypassed": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "trackNumber": 1,
+      "name": "Music",
+      "kind": "Audio",
+      "gainDb": -3,
+      "duckAgainstVoice": true,
+      "duckAmountDb": -12,
+      "audioFilters": {
+        "compressor": true,
+        "highPass": true,
+        "equalizerGains": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "isActive": true,
+        "activeCount": 2
+      },
+      "clips": [
+        {
+          "id": "00000000-0000-0000-0000-000000000021",
+          "contentKind": "Audio",
+          "sourcePath": "D:/media/music.wav",
+          "audioStreamIndex": 0,
+          "end": 30.03,
+          "sourceDuration": 240,
+          "fadeOutSeconds": 3,
+          "gainDb": -6,
+          "state": {
+            "name": "Music"
+          }
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000003",
+      "trackNumber": 1,
+      "kind": "Adjustment",
+      "clips": [
+        {
+          "id": "00000000-0000-0000-0000-000000000031",
+          "contentKind": "Adjustment",
+          "start": 2.002,
+          "end": 8.008,
+          "isHidden": true,
+          "state": {
+            "name": "Grade",
+            "kind": "Adjustment"
+          }
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000004",
+      "trackNumber": 1,
+      "kind": "Subtitle",
+      "clips": [
+        {
+          "id": "00000000-0000-0000-0000-000000000041",
+          "contentKind": "Captions",
+          "end": 30.03,
+          "state": {
+            "name": "Captions",
+            "kind": "Captions"
+          }
+        }
+      ]
+    }
+  ],
+  "sequenceEffects": [
+    {
+      "type": "builtin.color.eq",
+      "id": "00000000-0000-0000-0000-000000000090",
+      "values": {
+        "contrast": 1.2
+      }
+    }
+  ],
+  "markers": [
+    {
+      "seconds": 1.5015,
+      "name": "Intro"
+    }
+  ]
+}

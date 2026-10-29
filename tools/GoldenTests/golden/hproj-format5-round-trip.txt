@@ -1,0 +1,392 @@
+# The format 5 fixture (fixtures/format5.hproj) as this version writes it.
+
+{
+  "format": "handpeg-project",
+  "version": 5,
+  "writtenBy": "HandPeg <version>",
+  "name": "Golden fixture",
+  "savedAt": "2026-10-28T12:00:00",
+  "source": {
+    "path": "D:/media/main.mp4"
+  },
+  "output": {
+    "path": "D:/out/main_HandPeg.mp4",
+    "webOptimized": true,
+    "chaptersAtCuts": true,
+    "subtitles": {
+      "cues": [
+        {
+          "start": 1.5,
+          "end": 3.25,
+          "text": "First line"
+        },
+        {
+          "start": 4,
+          "end": 6,
+          "text": "Second, with a comma"
+        }
+      ]
+    }
+  },
+  "sequence": {
+    "snapToIFrames": true,
+    "audio": [
+      {
+        "action": "Re-encode",
+        "codec": "aac",
+        "bitrate": "192k",
+        "title": "Main mix",
+        "gainDb": -3,
+        "offset": 0.3,
+        "pieces": [
+          {
+            "end": 10
+          },
+          {
+            "start": 10,
+            "end": 12,
+            "muted": true
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "action": "Re-encode",
+        "codec": "aac",
+        "bitrate": "192k",
+        "title": "Commentary",
+        "isVoice": true
+      }
+    ],
+    "deleted": [
+      {
+        "clip": {
+          "id": "00000000-0000-0000-0000-000000000091",
+          "sourcePath": "D:/media/outtake.mp4",
+          "audioStreamIndex": 0,
+          "start": 44,
+          "end": 48,
+          "mediaOffset": 2,
+          "sourceDuration": 20,
+          "state": {
+            "name": "outtake.mp4",
+            "kind": "VideoFile",
+            "imagePath": "D:/media/outtake.mp4",
+            "imageWidth": 1920,
+            "imageHeight": 1080,
+            "positionX": 0.6,
+            "positionY": 0.6,
+            "sizeWidth": 0.3,
+            "hasAudio": true,
+            "mediaDuration": 20,
+            "audioCodec": "aac",
+            "audioChannels": "stereo"
+          }
+        },
+        "trackId": "00000000-0000-0000-0000-000000000002",
+        "trackIndex": 1
+      }
+    ],
+    "captionAudioTrack": 1
+  },
+  "settings": {
+    "cropPercent": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "useVerticalResolution": false,
+    "VerticalFramer": true,
+    "layoutSourceAspectRatio": 1.7778,
+    "captionStyle": {},
+    "captionLayer": {
+      "name": "Subtitles",
+      "kind": "Captions",
+      "positionX": 0.05,
+      "positionY": 0.7,
+      "sizeWidth": 0.9,
+      "sizeHeight": 0.2,
+      "lockAspectRatio": false
+    },
+    "videoEncoder": "hevc_nvenc",
+    "quality": 24,
+    "audioBitrate": "192k",
+    "mergeAudioTracks": true
+  },
+  "masks": {
+    "inset-mask_8fe91432.png": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAAAAABX3VL4AAAADklEQVR42mP4z8DA8B8ABgAB/2U0+PcAAAAASUVORK5CYII="
+  },
+  "timeline": {
+    "frameRate": {
+      "numerator": 30,
+      "denominator": 1
+    },
+    "tracks": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "trackNumber": 1,
+        "clips": [
+          {
+            "id": "00000000-0000-0000-0000-000000000011",
+            "contentKind": "MainVideo",
+            "sourcePath": "D:/media/main.mp4",
+            "audioStreamIndex": 0,
+            "end": 40,
+            "sourceDuration": 120,
+            "fadeOutSeconds": 1,
+            "fadeOutStyle": "WipeLeft",
+            "state": {
+              "name": "main.mp4",
+              "kind": "MainVideo",
+              "mediaDuration": 120
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000012",
+            "contentKind": "MainVideo",
+            "sourcePath": "D:/media/main.mp4",
+            "audioStreamIndex": 0,
+            "start": 50,
+            "end": 80,
+            "mediaOffset": 60,
+            "sourceDuration": 120,
+            "fadeInSeconds": 0.5,
+            "state": {
+              "name": "main.mp4",
+              "kind": "MainVideo",
+              "mediaDuration": 120
+            }
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "trackNumber": 2,
+        "name": "Clips",
+        "clips": [
+          {
+            "id": "00000000-0000-0000-0000-000000000021",
+            "sourcePath": "D:/media/clip1.mp4",
+            "audioStreamIndex": 0,
+            "start": 10,
+            "end": 22,
+            "mediaOffset": 3,
+            "sourceDuration": 30,
+            "fadeInSeconds": 1,
+            "fadeOutSeconds": 1.5,
+            "fadeInStyle": "SlideRight",
+            "fadeOutStyle": "Zoom",
+            "state": {
+              "name": "clip1.mp4",
+              "kind": "VideoFile",
+              "imagePath": "D:/media/clip1.mp4",
+              "imageWidth": 1920,
+              "imageHeight": 1080,
+              "cornerRadius": 8,
+              "positionX": 0.05,
+              "positionY": 0.05,
+              "sizeWidth": 0.9,
+              "customMask": true,
+              "maskPath": "inset-mask_8fe91432.png",
+              "hasAudio": true,
+              "mediaDuration": 30,
+              "rotation": 5,
+              "anchorX": 0.25,
+              "effects": [
+                {
+                  "type": "builtin.color.eq",
+                  "id": "00000001-0000-0000-0000-000000000000",
+                  "values": {
+                    "contrast": 1.2,
+                    "saturation": 1.1
+                  },
+                  "keys": {
+                    "brightness": [
+                      {
+                        "easing": "EaseIn"
+                      },
+                      {
+                        "time": 2,
+                        "value": 0.2,
+                        "easing": "Linear"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "builtin.blur.box",
+                  "id": "00000002-0000-0000-0000-000000000000",
+                  "values": {
+                    "radius": 3
+                  },
+                  "range": [
+                    1,
+                    4
+                  ]
+                },
+                {
+                  "type": "plugin.future.glow",
+                  "id": "00000003-0000-0000-0000-000000000000",
+                  "values": {
+                    "amount": 0.7
+                  },
+                  "extraSetting": "kept as it was"
+                }
+              ],
+              "audioCodec": "aac",
+              "audioChannels": "stereo",
+              "keysX": [
+                {
+                  "value": 0.05
+                },
+                {
+                  "time": 4,
+                  "value": 0.4,
+                  "easing": "Linear"
+                }
+              ],
+              "keysOpacity": [
+                {
+                  "easing": "EaseOut"
+                },
+                {
+                  "time": 1,
+                  "value": 100,
+                  "easing": "Linear"
+                }
+              ]
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000022",
+            "sourcePath": "D:/media/clip2.mp4",
+            "audioStreamIndex": 0,
+            "start": 22,
+            "end": 42,
+            "mediaOffset": 1,
+            "speed": 1.5,
+            "sourceDuration": 60,
+            "transitionIn": 1,
+            "proxyChoice": "Original",
+            "state": {
+              "name": "clip2.mp4",
+              "kind": "VideoFile",
+              "imagePath": "D:/media/clip2.mp4",
+              "imageWidth": 1280,
+              "imageHeight": 720,
+              "positionX": 0.05,
+              "positionY": 0.05,
+              "sizeWidth": 0.9,
+              "hasAudio": true,
+              "mediaDuration": 60,
+              "audioCodec": "opus",
+              "audioChannels": "stereo",
+              "keysScale": [
+                {
+                  "value": 0.9,
+                  "easing": "CubicBezier",
+                  "bezierX1": 0.7,
+                  "bezierX2": 0.3,
+                  "bezierY2": 1
+                },
+                {
+                  "time": 3,
+                  "value": 0.5,
+                  "easing": "Linear"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-0000-0000-000000000003",
+        "trackNumber": 3,
+        "name": "Title",
+        "clips": [
+          {
+            "id": "00000000-0000-0000-0000-000000000031",
+            "contentKind": "Text",
+            "start": 2,
+            "end": 10,
+            "state": {
+              "name": "Text",
+              "kind": "Text",
+              "imageWidth": 520,
+              "imageHeight": 110,
+              "textContent": "Hello, \"world\"",
+              "fontFamily": "Arial",
+              "fontSize": 64,
+              "opacity": 80,
+              "positionX": 0.1,
+              "positionY": 0.75,
+              "sizeWidth": 0.8,
+              "keysRotation": [
+                {
+                  "easing": "Bounce"
+                },
+                {
+                  "time": 2,
+                  "value": 90,
+                  "easing": "Linear"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-0000-0000-000000000004",
+        "trackNumber": 1,
+        "name": "Music",
+        "kind": "Audio",
+        "gainDb": -6,
+        "duckAgainstVoice": true,
+        "duckAmountDb": -12,
+        "clips": [
+          {
+            "id": "00000000-0000-0000-0000-000000000041",
+            "contentKind": "Audio",
+            "sourcePath": "D:/media/music.m4a",
+            "audioStreamIndex": 0,
+            "end": 60,
+            "mediaOffset": 4,
+            "sourceDuration": 240,
+            "fadeInSeconds": 2,
+            "fadeOutSeconds": 3,
+            "gainDb": -2,
+            "state": {
+              "name": "music.m4a",
+              "kind": "Audio",
+              "imagePath": "D:/media/music.m4a",
+              "hasAudio": true,
+              "mediaDuration": 240,
+              "audioCodec": "aac",
+              "audioChannels": "stereo"
+            }
+          }
+        ]
+      }
+    ],
+    "sequenceEffects": [
+      {
+        "type": "builtin.color.eq",
+        "id": "00000000-0000-0000-0000-000000000090",
+        "values": {
+          "saturation": 1.1
+        }
+      }
+    ],
+    "markers": [
+      {
+        "seconds": 12.5,
+        "name": "Intro"
+      },
+      {
+        "seconds": 31.25,
+        "name": "Highlight"
+      }
+    ]
+  }
+}

@@ -295,6 +295,25 @@ public static partial class ThemeManager
         return (Of("WindowBackgroundBrush"), Of("PanelBrush"), chosen.Accent ?? MakeUsable(ReadAccent()), Of("TextBrush"));
     }
 
+    /// <summary>
+    /// A theme's look tokens as colours, without applying it: what the Settings window's live preview stage draws its
+    /// miniature workspace with (4.3-0B). The same colours <see cref="Apply(string)"/> sets (an edge given as two colours
+    /// by its upper one), and the theme's corner rounding of controls and tabs.
+    /// </summary>
+    public static (IReadOnlyDictionary<string, Color> Tokens, double ControlRadius, double TabRadius) Look(string theme)
+    {
+        var chosen = Resolve(theme);
+        var tokens = new Dictionary<string, Color>();
+        foreach (var (key, value) in chosen.Palette)
+            tokens[key] = ColorOf(value.Split('/')[0]);
+
+        var accent = chosen.Accent ?? MakeUsable(ReadAccent());
+        tokens["AccentBrush"] = accent;
+        foreach (var (key, color) in LookDefaults(chosen.Palette, accent, Mix(accent, Colors.White, 0.16), Mix(accent, Colors.Black, 0.25), chosen.OnAccent))
+            tokens.TryAdd(key, color);
+        return (tokens, chosen.ControlRadius, chosen.TabRadius);
+    }
+
     [LibraryImport("dwmapi.dll")]
     private static partial int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 

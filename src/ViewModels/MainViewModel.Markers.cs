@@ -128,19 +128,50 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The chapters of the output: one at each kept segment (Chapters at Cut Points), and one at each marker in what
-    /// is kept (Chapters at Markers), all in the output's own time; a marker where a segment begins names that chapter.
+    /// The chapters of the output: one at every edge of a clip on any video track (Chapters at Cut Points: where 4.2.0's
+    /// kept segments began, now that cuts are split points; 4.3D: every track alike, edges within half a second of each
+    /// other one chapter), and one at each marker (Chapters at Markers), all in the timeline's time, which is the
+    /// output's; a marker where a clip begins names that chapter. A Copy export through the cuts list (the main video's
+    /// clips end to end, <paramref name="throughCuts"/>) has them on its own clock, at its clips: a marker in a gap has none.
     /// </summary>
-    private List<(double Start, string Title)> BuildChapters(List<CutSegment> segments)
+    private List<(double Start, string Title)> BuildChapters(bool throughCuts = false)
     {
         var chapters = new List<(double Start, string Title)>();
-        if (ChaptersAtCuts && segments.Count > 0)
+        var clips = GetMainClips();
+        double? OutputTime(double seconds)
         {
-            var at = 0.0;
-            for (var i = 0; i < segments.Count; i++)
+            if (!throughCuts)
+                return seconds;
+
+            var before = 0.0;
+            foreach (var clip in clips)
             {
-                chapters.Add((at, string.Create(CultureInfo.InvariantCulture, $"Segment {i + 1}")));
-                at += segments[i].Duration.TotalSeconds;
+                if (seconds >= clip.Start - 0.0005 && seconds < clip.End)
+                    return before + Math.Max(seconds - clip.Start, 0);
+                before += clip.End - clip.Start;
+            }
+
+            return null;
+        }
+
+        if (ChaptersAtCuts)
+        {
+            // Through the cuts list only the main video's clips are there; otherwise every video track's edges, in order.
+            var length = SequenceSeconds;
+            var edges = throughCuts
+                ? clips.Select(c => c.Start)
+                : Document.Tracks.Where(t => t.Kind is Models.Timeline.TimelineTrackKind.Video or Models.Timeline.TimelineTrackKind.Switch)
+                    .SelectMany(t => t.Clips).SelectMany(c => (double[])[c.Start, c.End]);
+            var last = double.NegativeInfinity;
+            foreach (var edge in edges.Where(e => e > 0.0005 && e < length - 0.5).Order())
+            {
+                if (edge - last < 0.5 || OutputTime(edge) is not { } at)
+                    continue;
+                if (chapters.Count == 0)
+                    chapters.Add((0, "Part 1"));
+                if (at - chapters[^1].Start >= 0.5)
+                    chapters.Add((at, string.Create(CultureInfo.InvariantCulture, $"Part {chapters.Count + 1}")));
+                last = edge;
             }
         }
 
@@ -148,7 +179,7 @@ public partial class MainViewModel
         {
             foreach (var marker in Markers)
             {
-                if (OutputTimeOf(marker.Seconds, segments) is not { } start)
+                if (marker.Seconds < 0 || marker.Seconds > SequenceSeconds || OutputTime(marker.Seconds) is not { } start)
                     continue;
 
                 var same = chapters.FindIndex(c => Math.Abs(c.Start - start) < 0.5);
@@ -165,27 +196,6 @@ public partial class MainViewModel
         if (chapters.Count > 0 && chapters[0].Start > 0.5)
             chapters.Insert(0, (0, "Start"));
         return chapters;
-    }
-
-    /// <summary>
-    /// Where a moment of the sequence ends up in the output: inside a kept segment (counted from the output's start, the
-    /// removed stretches before it taken out), or null when it is cut away. A clip's speed is already in the sequence's
-    /// time. With no segments the whole sequence is kept.
-    /// </summary>
-    private static double? OutputTimeOf(double seconds, List<CutSegment> segments)
-    {
-        if (segments.Count == 0)
-            return seconds;
-
-        var before = 0.0;
-        foreach (var segment in segments)
-        {
-            if (seconds >= segment.Start.TotalSeconds && seconds < segment.End.TotalSeconds)
-                return before + seconds - segment.Start.TotalSeconds;
-            before += segment.Duration.TotalSeconds;
-        }
-
-        return null;
     }
 
     // ----- YouTube description timestamps and SponsorBlock (Pass 4.2B-2) -----
@@ -224,7 +234,7 @@ public partial class MainViewModel
 
     /// <summary>
     /// The output's chapters as a YouTube description lists them ("00:00 Intro", "01:24 Gameplay", h:mm:ss past an
-    /// hour), copied to the clipboard: every marker in what is kept, at its time in the output (after the cuts; clip
+    /// hour), copied to the clipboard: every marker, at its time on the timeline (which is the output's; clip
     /// speeds are in the sequence's time already), and, with SponsorBlock kept as chapters, the main video's own
     /// chapters (the SponsorBlock ones among them) where they land. Always opens with 00:00, "Intro" when nothing is
     /// there; two lines on the same second keep the marker's.
@@ -232,11 +242,10 @@ public partial class MainViewModel
     [RelayCommand]
     private void CopyYouTubeTimestamps()
     {
-        var segments = GetMergedSegments();
         var lines = new List<(int Second, string Title)>();
-        void Add(double sequenceSeconds, string title)
+        void Add(double at, string title)
         {
-            if (OutputTimeOf(sequenceSeconds, segments) is not { } at || string.IsNullOrWhiteSpace(title))
+            if (at < 0 || string.IsNullOrWhiteSpace(title))
                 return;
 
             var second = (int)Math.Floor(at + 0.0005);

@@ -1,0 +1,22 @@
+# The edges of the edits: file ends at 60, 59.94 and 23.976 fps, free edits, J/L cuts, held-back ripples, commits, guards.
+
+At a file's ends:
+  60/1: the whole file's end to 5 s: 0; the next clip's head (its file from 0) sooner: 0; the cut 1 s later: 0; a clip asked for its file's 101 frames lasts 101; a J-cut asked for 100 s leads 400 frames (its start); a 3-frame clip trimmed shorter: 0
+  60000/1001: the whole file's end to 5 s: 0; the next clip's head (its file from 0) sooner: 0; the cut 1 s later: 0; a clip asked for its file's 101 frames lasts 101; a J-cut asked for 100 s leads 400 frames (its start); a 3-frame clip trimmed shorter: 0
+  24000/1001: the whole file's end to 5 s: 0; the next clip's head (its file from 0) sooner: 0; the cut 1 s later: 0; a clip asked for its file's 101 frames lasts 101; a J-cut asked for 100 s leads 400 frames (its start); a 2-frame clip trimmed shorter: 0
+
+Free edits at 25 fps: A's end to 4.013 s, rippling: 0.013, B follows on the same double; C's head 0.013 s in, rippling: its file now ends at 10 of 10 s; A's end back on a frame (3.48 s), and the gap to B (from 4.013 s, off the frames) closed: 0.533
+
+J/L at 25 fps: a 6 s clip's sound asked to start 100 s inside it: -6.92 / +1 (2 frames of sound left); its tail to 1.6 s, its lead not a number: -6.92 / +1.6
+  a 0.2 s clip with its sound from 1 s inside to 1 s after: -1 / +1; the cut before it a frame later: 0.04, leaving 0.16 s
+  a clip whose sound leads by 1 s, moved to 0.2 s: lands at 1; a ripple delete before it: 0, it stays at 1
+
+Held back: A's end 2 s sooner, rippling every track, while C on Video 2 lies 1 s before D: moved -1; B 3-5 crossfade 0.4; D 5-7; the captions stay 0-8
+  B moved 0.4 s later, then back against A: crossfade 0 (it belonged to the cut it left)
+  D (2 s) dropped at 7.6 s, 0.6 s over the start of E (9-11 s): D 7-9, E crossfades 0.6
+  59.94 fps: a keyframe at 1 s through 60 one-frame trims of its clip's start and 60 back: back at its start 0, the key at 1, never more than a microsecond-scale drift
+
+Commits: adding a track raised 1 commit, naming 1 track; an outer transaction disposed with one open inside it leaves 1 track
+
+Guards: the end of an image trimmed to the largest double: ends at 1000000000 s; then moved to 10^18 s: refused
+  two touching clips 0-1 and 1-2 seen from 1-1, 1-1.5, 0.5-1, -5-0, 2-9, -1-3: [] [2] [1] [] [] [1,2]

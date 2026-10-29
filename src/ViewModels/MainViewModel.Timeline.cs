@@ -2,16 +2,19 @@ using System.IO;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Models;
+using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-/// <summary>The timeline as Undo keeps it: the cuts, the layers and what was done to the audio. Nothing else, and no pictures.</summary>
+/// <summary>
+/// The timeline as Undo keeps it (4.3C): the document (every track and clip, the markers, the Sequence Output's effects),
+/// what was done to the main video's own audio tracks, the background's switch, the recycle bin, the subtitles and the
+/// caption box. Nothing else, and no pictures.
+/// </summary>
 public sealed record TimelineSnapshot(
-    List<SegmentState> Segments, List<LayerState> Layers, int MainVideoIndex, List<AudioEditState> Audio, bool AudioLinked,
-    LayerState? MainLayer = null, bool BackgroundHidden = false, List<MainPiece>? MainPieces = null, List<DeletedClip>? Bin = null,
-    SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null, List<TimelineMarker>? Markers = null,
-    List<Models.Effects.EffectState>? SequenceEffects = null, bool SequenceEffectsBypassed = false);
+    Models.Timeline.TimelineDocument Document, List<AudioEditState> Audio, bool BackgroundHidden = false, List<DeletedClip>? Bin = null,
+    SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null);
 
 /// <summary>What was done to one audio track on the timeline: how far it was slipped, and its pieces.</summary>
 public sealed record AudioEditState(int Index, double Offset, List<AudioPiece> Pieces);
@@ -22,7 +25,10 @@ public enum DeadAirMode
     /// <summary>The cut list becomes everything between the silences (Encoder Mode's way before 4.2; the value at rest).</summary>
     Classic,
 
-    /// <summary>The silences are cut out as pieces of their own and marked as skipped: still there, greyed out, and restorable.</summary>
+    /// <summary>
+    /// The silences are folded out of the timeline (4.3D): cut out, what follows closed up, and each kept at its cut to be
+    /// put back (a FoldedSegment; right-click the clip after the cut). What is on the timeline is what renders.
+    /// </summary>
     SplitAndMark,
 
     /// <summary>The silences are cut out and removed.</summary>
@@ -110,15 +116,25 @@ public partial class MainViewModel
         return JsonSerializer.Deserialize<TimelineSnapshot>(_stateText.WrittenSpan);
     }
 
-    private TimelineSnapshot CaptureSnapshot() => new(
-        Segments.Select(s => new SegmentState(s.Start.TotalMilliseconds, s.End.TotalMilliseconds, s.IsSkipped)).ToList(),
-        Layers.Select(l => l.ToState()).ToList(),
-        MainVideoIndex,
-        AudioTracks.Select(t => new AudioEditState(t.Index, t.OffsetSeconds, [.. t.Pieces])).ToList(),
-        AudioLinked, _mainVideoRow.ToState(), _backgroundRow.IsHidden, [.. _mainPieces], RecycleBin.Select(i => i.Clip).ToList(),
-        CaptureSubtitles(), CaptionLayer.ToState(), CaptionStyle.Clone(), [.. Markers], CaptureSequenceEffects(), SequenceEffectsBypassed);
+    /// <summary>
+    /// The timeline as it is now, the views' looks written into the document first. The document is a copy of its own (its
+    /// tracks and clips; the looks shared, which no edit changes in place): an edit's step is packed only once the edit is
+    /// committed (OnDocumentCommitted), when the document itself has changed.
+    /// </summary>
+    private TimelineSnapshot CaptureSnapshot()
+    {
+        FlushLooks();
+        return new(
+            Document.Clone(),
+            AudioTracks.Select(t => new AudioEditState(t.Index, t.OffsetSeconds, [.. t.Pieces])).ToList(),
+            _backgroundRow.IsHidden, RecycleBin.Select(i => i.Clip).ToList(),
+            CaptureSubtitles(), CaptionLayer.ToState(), CaptionStyle.Clone());
+    }
 
-    /// <summary>Puts an undo step on the stack that brings back the state given, which may be other than the present one.</summary>
+    /// <summary>
+    /// Puts an undo step on the stack that brings back the state given, which may be other than the present one: an edit
+    /// of the document keeps the timeline as it was before it (MainViewModel.Document.cs, OnDocumentCommitted).
+    /// </summary>
     private void Checkpoint(string what, TimelineSnapshot before)
     {
         if (_isBackgroundWorker)
@@ -130,7 +146,11 @@ public partial class MainViewModel
         _redo.Clear();
     }
 
-    /// <summary>Call before changing the timeline: what it looks like now can then be brought back with Undo.</summary>
+    /// <summary>
+    /// Call before changing what is not an edit of the timeline document (a clip's look, its keyframes and effects, the
+    /// subtitles, the caption box, the video's own audio tracks): what it all looks like now can then be brought back with
+    /// Undo. (An edit of the document keeps its own step.)
+    /// </summary>
     /// <param name="what">The change about to be made, in a word or two, for the status bar.</param>
     public void Checkpoint(string what)
     {
@@ -141,6 +161,7 @@ public partial class MainViewModel
         if (_undo.Count > UndoDepth)
             _undo.RemoveAt(0);
         _redo.Clear();
+        _checkpointedAt = Environment.TickCount64;
     }
 
     public void Undo() => Step(_undo, _redo, "Undid");
@@ -178,29 +199,14 @@ public partial class MainViewModel
 
         // One rebuild of the command for the whole step, not one for every clip that is put back.
         using var whole = DeferCommand();
-        Segments.Clear();
-        foreach (var segment in snapshot.Segments)
-            Segments.Add(new CutSegment(TimeSpan.FromMilliseconds(segment.StartMs), TimeSpan.FromMilliseconds(segment.EndMs)) { IsSkipped = segment.Skipped });
-
-        SetLayers(snapshot.Layers);
-        _mainVideoRow.ApplyLook(snapshot.MainLayer);
-        _mainVideoRow.ApplyTiming(snapshot.MainLayer);
-        _mainPieces.Clear();
-        _mainPieces.AddRange(snapshot.MainPieces ?? []);
-        InvalidateMainClips();
+        InstallDocument(snapshot.Document);
         SetBin(snapshot.Bin);
-        SetMarkers(snapshot.Markers);
         _backgroundRow.IsHidden = snapshot.BackgroundHidden;
-        MainVideoIndex = Math.Clamp(snapshot.MainVideoIndex, 0, Layers.Count);
         foreach (var edit in snapshot.Audio)
         {
             if (AudioTracks.FirstOrDefault(t => t.Index == edit.Index) is { } track)
                 track.SetEdits(edit.Offset, edit.Pieces);
         }
-
-        AudioLinked = snapshot.AudioLinked;
-        if (snapshot.SequenceEffects is { } sequenceEffects)
-            SetSequenceEffects(sequenceEffects, snapshot.SequenceEffectsBypassed);
 
         // The subtitles, the caption box and its style, each only where it differs: a step that did not touch
         // them leaves the caption preview as it is.
@@ -222,163 +228,151 @@ public partial class MainViewModel
 
     // ----- Whatever is selected -----
 
-    /// <summary>Removes the selected clip: a layer goes, a cut segment goes (what it kept is no longer kept).</summary>
+    /// <summary>Removes the selected clip: it goes to the recycle bin, its time left empty. Any clip, the main video's too.</summary>
     public bool DeleteClip(object? clip)
     {
-        switch (clip)
+        if (clip is Layer layer && ClipOf(layer) is not null)
         {
-            case Layer { IsRemovable: true } layer when Layers.Contains(layer):
-                Checkpoint($"delete {layer.Name}");
-                MoveToBin(layer);
-                Log($"Deleted clip: {layer.Name} (in the recycle bin; Ctrl+Z brings it back)");
-                return true;
-
-            case CutSegment segment when Segments.Contains(segment):
-                Checkpoint("delete a segment");
-                Segments.Remove(segment);
-                Log($"Deleted segment {segment.Display}");
-                return true;
-
-            default:
-                StatusText = "Select a layer or a cut segment to delete: click its block on the Layers tab.";
+            var name = layer.Name;
+            if (!MoveToBin(layer))
                 return false;
+
+            Log($"Deleted clip: {name} (in the recycle bin; Ctrl+Z brings it back)");
+            return true;
         }
+
+        StatusText = "Select a clip to delete: click its block on the Layers tab.";
+        return false;
     }
 
     /// <summary>
     /// Sets how fast a clip runs. The clip plays the same stretch of its file as before, so its block on the
-    /// timeline is as much shorter or longer as it is faster or slower.
+    /// timeline is as much shorter or longer as it is faster or slower (what it grows into on its track moves on).
     /// </summary>
     public void SetClipSpeed(Layer clip, double speed)
     {
         speed = Math.Round(Math.Clamp(speed, Layer.SlowestSpeed, Layer.FastestSpeed), 3);
-        if (!clip.HasSpeed || Math.Abs(clip.Speed - speed) < 0.0005)
-            return;
-
-        Checkpoint($"change the speed of {clip.Name}");
-        using (DeferCommand())
+        if (ClipOf(clip) is not { PlaysFile: true } model || Math.Abs(model.Speed - speed) < 0.0005)
         {
-            clip.SetSpeed(speed);
-            GenerateCommand();
+            // A box bound to the speed shows what it is.
+            OnViewSpeedRefused(clip);
+            return;
         }
 
-        var (from, to) = clip.GetSpan(SequenceSeconds);
-        Log(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Set speed of {clip.Name} to {speed:0.##}x: it now runs {TimeDisplay.Format(from)} to {TimeDisplay.Format(to)}"));
+        if (Edit($"change the speed of {clip.Name}", edit => edit.SetClipSpeed(model, speed), undoable: TakesUndoStep(clip, nameof(Layer.Speed))))
+            Log(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Set speed of {clip.Name} to {model.Speed:0.##}x: it now runs {TimeDisplay.Format(model.Start)} to {TimeDisplay.Format(model.End)}"));
+        else
+            OnViewSpeedRefused(clip);
+    }
+
+    /// <summary>A view whose speed box asked for what could not be: the box shows the clip's speed again.</summary>
+    private void OnViewSpeedRefused(Layer view)
+    {
+        if (ClipOf(view) is { } clip && Document.TrackOf(clip) is { } track)
+        {
+            _syncingViews = true;
+            try
+            {
+                TakeClip(view, clip, track);
+            }
+            finally
+            {
+                _syncingViews = false;
+            }
+        }
+
+        view.NotifySpeed();
     }
 
     /// <summary>Trims the selected clip to the playhead: its start (everything before goes) or its end (everything after).</summary>
     public bool TrimClip(object? clip, bool start, double seconds)
     {
-        var total = SequenceSeconds;
-
-        // A copied video is cut, not edited: trimming it trims the cut segment under the playhead.
-        if (clip is Layer { IsMainVideo: true } && !IsVideoReencoded)
-            clip = Segments.FirstOrDefault(s => s.Start.TotalSeconds < seconds && s.End.TotalSeconds > seconds);
-
-        switch (clip)
+        if (clip is Layer layer && ClipOf(layer) is { } model && seconds > model.Start + TimelineDocument.MinimumClipSeconds && seconds < model.End - TimelineDocument.MinimumClipSeconds)
         {
-            case Layer { IsMainVideo: true }:
-                if (GetMainClipAt(seconds) is { } under)
-                    return TrimMain(under.Index, start, seconds);
-                break;
+            var moved = 0.0;
+            if (!Edit($"trim {layer.Name}", edit => moved = start ? edit.TrimClipStart(model, seconds) : edit.TrimClipEnd(model, seconds)) || Math.Abs(moved) < 1e-6)
+                return false;
 
-            case Layer { HasTiming: true } layer:
-                var end = layer.GetSpan(total).End;
-                if (seconds <= layer.StartTime + 0.05 || seconds >= end - 0.05)
-                    break;
-
-                Checkpoint($"trim {layer.Name}");
-                using (DeferCommand())
-                {
-                    if (start)
-                    {
-                        // Its keyframes are counted from where it begins, which has just moved.
-                        layer.ShiftKeys(layer.StartTime - seconds);
-                        (layer.MediaOffset, layer.StartTime, layer.Duration) = (layer.MediaOffset + (seconds - layer.StartTime) * layer.Speed, seconds, end - seconds);
-                    }
-                    else
-                    {
-                        layer.Duration = seconds - layer.StartTime;
-                    }
-                }
-
-                Log($"Trimmed clip: {layer.Name} now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}");
-                return true;
-
-            case CutSegment segment when Segments.Contains(segment):
-                var at = TimeSpan.FromSeconds(seconds);
-                if (at <= segment.Start || at >= segment.End)
-                    break;
-
-                Checkpoint("trim a segment");
-                Segments[Segments.IndexOf(segment)] = start
-                    ? new CutSegment(at, segment.End) { IsSkipped = segment.IsSkipped }
-                    : new CutSegment(segment.Start, at) { IsSkipped = segment.IsSkipped };
-                Log($"Trimmed segment: now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}");
-                return true;
+            Log($"Trimmed clip: {layer.Name} now {(start ? "starts" : "ends")} at {TimeDisplay.Format(start ? model.Start : model.End)}");
+            return true;
         }
 
-        StatusText = "Select a layer or a cut segment, and put the playhead inside it, to trim it there.";
+        StatusText = "Select a clip, and put the playhead inside it, to trim it there.";
         return false;
     }
 
-    /// <summary>Marks a cut segment as skipped, or takes the mark off: a skipped segment stays on the timeline but is left out of the output.</summary>
-    public void ToggleSkip(CutSegment segment)
-    {
-        Checkpoint(segment.IsSkipped ? "restore a segment" : "skip a segment");
-        segment.IsSkipped = !segment.IsSkipped;
-        GenerateCommand();
-        StatusText = segment.IsSkipped ? "The segment is skipped: it stays on the timeline, greyed out, and is left out of the output." : "The segment is kept again.";
-    }
-
+    /// <summary>Copies a clip's whole track (every clip on it) onto a new track just above, moved a little on the frame.</summary>
     public void DuplicateLayer(Layer layer)
     {
-        if (!layer.IsRemovable)
+        if (TrackOfRow(layer) is not { } track || track.Clips.Count == 0)
             return;
 
-        Checkpoint($"duplicate {layer.Name}");
-        // The whole track: every clip on it, on a new track just above.
-        var clips = GetTrackClips(layer);
-        var track = Layers.Select(l => l.TrackId).DefaultIfEmpty().Max() + 1;
-        var at = Layers.IndexOf(clips[^1]) + 1;
-        foreach (var clip in clips)
+        FlushLooks();
+        Edit($"duplicate {layer.Name}", edit =>
         {
-            var copy = Layer.FromState(clip.ToState(), SourceWidth, SourceHeight, FrameWidth, FrameHeight);
-            (copy.Name, copy.TrackId) = (clip.Name + " copy", track);
-            (copy.PositionX, copy.PositionY) = (clip.PositionX + 0.03, clip.PositionY + 0.03);
-            (copy.Waveform, copy.Filmstrip) = (clip.Waveform, clip.Filmstrip);
-            Hook(copy);
-            InsertLayer(at++, copy);
-        }
+            var copy = edit.InsertTrack(Document.Tracks.IndexOf(track) + 1, track.Kind == TimelineTrackKind.Switch ? TimelineTrackKind.Video : track.Kind);
+            foreach (var clip in track.Clips.ToList())
+            {
+                var look = TimelineTransaction.CopyOf(clip.State);
+                (look.Name, look.PositionX, look.PositionY) = (look.Name + " copy", look.PositionX + 0.03, look.PositionY + 0.03);
+                var made = CopyOfClip(clip);
+                (made.Id, made.State) = (Guid.NewGuid(), look);
+
+                // A copy of the main video is a picture in picture of its file: a layer of its own.
+                if (made.ContentKind == LayerKind.MainVideo)
+                    made.ContentKind = LayerKind.VideoFile;
+                edit.PlaceClip(copy, made, allowCrossfadeOverlap: false);
+            }
+        });
 
         Log($"Duplicated clip: {layer.Name}");
     }
 
-    /// <summary>Removes a track: every clip on it.</summary>
+    /// <summary>Removes a track: every clip on it goes to the recycle bin, and the track goes.</summary>
     public void RemoveTrack(Layer layer)
     {
-        if (!layer.IsRemovable || !Layers.Contains(layer))
+        if (TrackOfRow(layer) is not { } track)
             return;
 
-        Checkpoint($"remove {layer.Name}");
-        using var whole = DeferCommand();
-        foreach (var clip in GetTrackClips(layer))
-            MoveToBin(clip);
+        var binned = track.Clips.Select(c => (Deleted: Binned(c, track, ViewOf(c)), Name: ViewOf(c)?.Name ?? c.State.Name)).ToList();
+        if (!Edit($"remove {layer.Name}", edit => edit.RemoveTrack(track)))
+            return;
 
-        StatusText = $"Removed {layer.Name}. Its clips are in the recycle bin (the trash can), and Ctrl+Z brings them back.";
+        foreach (var (deleted, name) in binned)
+            AddToBin(deleted.Clip, name, deleted.Preview);
+        StatusText = binned.Count > 0
+            ? $"Removed {layer.Name}. Its clips are in the recycle bin (the trash can), and Ctrl+Z brings them back."
+            : $"Removed {layer.Name}.";
     }
 
     /// <summary>Raised when a track has been hidden or shown: the layout pane draws its boxes again.</summary>
     public event Action? LayerVisibilityChanged;
 
+    /// <summary>
+    /// Hides a row, or shows it again: the background's blur; the main video's picture (its track's switch: its sound,
+    /// its length and its cuts stay); any other track's clips, picture and sound (as 4.2.0 did).
+    /// </summary>
     public void ToggleHidden(Layer layer)
     {
-        Checkpoint(layer.IsHidden ? $"show {layer.Name}" : $"hide {layer.Name}");
         var hide = !layer.IsHidden;
-        foreach (var clip in GetTrackClips(layer))
-            clip.IsHidden = hide;
-        if (layer.IsMainVideo || layer.IsBackground)
+        if (layer.IsBackground || layer.IsCaptions || TrackOfRow(layer) is not { } track)
+        {
+            Checkpoint(hide ? $"hide {layer.Name}" : $"show {layer.Name}");
+            layer.IsHidden = hide;
             GenerateCommand();
+        }
+        else if (!Edit(hide ? $"hide {layer.Name}" : $"show {layer.Name}", edit =>
+                 {
+                     if (layer.IsMainVideo)
+                         edit.SetTrack(track, hidden: hide);
+                     else
+                         foreach (var clip in track.Clips)
+                             edit.SetClipFlags(clip, hidden: hide);
+                 }))
+        {
+            return;
+        }
+
         RefreshLayerRows();
         LayerVisibilityChanged?.Invoke();
         StatusText = !hide ? $"{layer.Name} is shown again."
@@ -420,14 +414,17 @@ public partial class MainViewModel
         if (linked == AudioLinked)
             return;
 
-        var slipped = AudioTracks.Any(t => Math.Abs(t.OffsetSeconds) > 0.001) || Layers.Any(l => Math.Abs(l.AudioOffset) > 0.001);
+        // Every clip with sound has its own link (the document's); this switch sets them all.
+        var clips = Document.Tracks.SelectMany(t => t.Clips.Select(c => (Track: t, Clip: c))).Where(c => c.Clip.HasSound).ToList();
+        var slipped = AudioTracks.Any(t => Math.Abs(t.OffsetSeconds) > 0.001) || clips.Any(c => Math.Abs(c.Clip.AudioSlipSeconds) > 0.001);
+        var choice = 1;
         if (linked && slipped)
         {
             // Which of the two gives way: the sound goes back to its picture, or the picture goes to its sound.
-            var choice = Choose?.Invoke("Link Audio and Video",
+            choice = Choose?.Invoke("Link Audio and Video",
                 "The audio has been moved out of step with its video. Linking puts them back together, one way or the other:\n\n"
                 + "Snap Audio to Video: the sound goes back to where its picture is.\n"
-                + "Snap Video to Audio: each video layer moves to where its sound was put. (The main video is the timeline itself and cannot move: its own audio tracks go back to it.)",
+                + "Snap Video to Audio: each clip moves to where its sound was put. (The main video's own audio tracks go back to it.)",
                 "Snap Audio to Video", "Snap Video to Audio") ?? 0;
             if (choice == 0)
             {
@@ -439,12 +436,31 @@ public partial class MainViewModel
             Checkpoint("link audio and video");
             foreach (var track in AudioTracks)
                 track.OffsetSeconds = 0;
-            foreach (var layer in Layers)
+        }
+
+        // The stream rows' slips were put back with a step of their own just above; the clips' links are one edit.
+        if (!Edit(linked ? "link audio and video" : "unlink audio and video", edit =>
             {
-                if (choice == 2 && Math.Abs(layer.AudioOffset) > 0.001)
-                    layer.StartTime = Math.Round(Math.Max(layer.StartTime + layer.AudioOffset, 0), 2);
-                layer.AudioOffset = 0;
-            }
+                foreach (var (track, clip) in clips)
+                {
+                    var slip = clip.AudioSlipSeconds;
+                    edit.SetAudioLink(clip, linked, linked ? 0 : slip);
+                    if (linked && choice == 2 && Math.Abs(slip) > 0.001 && !track.IsLocked)
+                    {
+                        try
+                        {
+                            edit.MoveClip(clip, track, Math.Max(clip.Start + slip, 0));
+                        }
+                        catch (TimelineEditException)
+                        {
+                            // No room where its sound was: it stays, its sound brought back to it.
+                        }
+                    }
+                }
+            }, undoable: !(linked && slipped)))
+        {
+            OnPropertyChanged(nameof(AudioLinked));
+            return;
         }
 
         AudioLinked = linked;
@@ -473,8 +489,9 @@ public partial class MainViewModel
     /// <summary>Cuts an audio track's block in two at a time, so that either part can be silenced on its own.</summary>
     public bool SplitAudio(AudioTrack track, double seconds)
     {
+        // The track's pieces are in the file's own time: the moment of the file the main video's clip under the playhead shows there.
         var total = MainMediaSeconds;
-        var content = seconds - track.OffsetSeconds - MainShift;
+        var content = GetMainClipAt(seconds) is { } under ? under.Offset + (seconds - under.Start) - track.OffsetSeconds : -1;
         if (content <= 0.05 || content >= total - 0.05)
         {
             StatusText = $"The playhead is not inside {track.Title}.";
@@ -622,9 +639,16 @@ public partial class MainViewModel
 
         // More frames than a layer gets: the main video is usually the longest thing on the timeline.
         var count = Math.Clamp(AppSettings.Current.LayerThumbnailCount * 2, 8, 25);
-        if (await GetFilmstripAsync(path, count, MainMediaSeconds) is { } picture && string.Equals(LocalMediaPath, path, StringComparison.OrdinalIgnoreCase))
-            _mainVideoRow.Filmstrip = picture;
+        if (await GetFilmstripAsync(path, count, MainMediaSeconds) is not { } picture || !string.Equals(LocalMediaPath, path, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        // Every clip of it, whichever asked: one split while the strip was being made is two by now.
+        foreach (var view in Layers.Where(l => l.IsMainVideo))
+            view.Filmstrip = picture;
     }
+
+    /// <summary>The main video's strip of frames, for a view of one of its clips that has none yet (made once, kept for the session).</summary>
+    private Task LoadMainFilmstripAsync() => LoadMainFilmstripAsync(LocalMediaPath);
 
     // The strips that are being made right now, by file: a second clip of a file waits for the first one's.
     private readonly Dictionary<string, Task<System.Windows.Media.ImageSource?>> _filmstripsBeingMade = new(StringComparer.OrdinalIgnoreCase);
@@ -706,55 +730,130 @@ public partial class MainViewModel
             RemoveDeadAirCommand.Execute(null);
     }
 
-    /// <summary>Cuts a video layer at the silences in its own sound: into the parts with sound, and (marked hidden, or left out) the silent ones.</summary>
-    private string ApplyDeadAirToLayer(Layer layer, List<(double Start, double End)> silences, bool keepSilent, double fileSeconds)
+    /// <summary>
+    /// Cuts clips at the silences in their sound (found in their file's own time): each is split where a silence it plays
+    /// begins and ends, and the silent parts are then folded (<paramref name="fold"/>, 4.3D: taken out, what follows closed
+    /// up, each kept at its cut to be put back, <see cref="UnfoldSegment"/>) or taken out. With <paramref name="closeUp"/>
+    /// (the main video's dead air) they go from every unlocked track and what follows on all of them closes up behind them,
+    /// as a cut list's left-out stretches did; otherwise (a layer's) a fold closes up its own track, and a silence taken out
+    /// leaves its time empty, as in 4.2.0. One step of Undo for them all.
+    /// </summary>
+    private string ApplyDeadAir(IReadOnlyList<Layer> views, List<(double Start, double End)> silences, bool fold, bool closeUp)
     {
-        var total = SequenceSeconds;
-        var visibleFor = layer.Duration > 0.001 ? layer.Duration : Math.Max(total - layer.StartTime, 0);
-        // The silences are found in the file's own time; the layer covers it at its speed.
-        var speed = layer.HasSpeed ? Math.Clamp(layer.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
-        var (from, to) = (layer.MediaOffset, Math.Min(layer.MediaOffset + visibleFor * speed, fileSeconds));
+        var clips = views.Select(v => (View: v, Clip: ClipOf(v))).Where(c => c.Clip is { PlaysFile: true }).ToList();
+        if (clips.Count == 0)
+            return "Nothing to cut: select a clip that plays a file.";
 
-        // The layer's stretch of its own video, as alternating parts: sound, silence, sound...
-        var parts = new List<(double Start, double End, bool Silent)>();
-        var cursor = from;
-        foreach (var (start, end) in silences.OrderBy(s => s.Start))
+        // Each clip's silent stretches on the sequence: where in its file it is, at its speed.
+        var cuts = new List<(TimelineClip Clip, double From, double To)>();
+        foreach (var (_, clip) in clips)
         {
-            var (a, b) = (Math.Max(start, from), Math.Min(end, to));
-            if (b - a < 0.05)
-                continue;
-            if (a - cursor >= ShortestKeptSeconds)
-                parts.Add((cursor, a, false));
-            parts.Add((a, b, true));
-            cursor = b;
+            var (start, end, offset, speed) = (clip!.Start, clip.End, clip.MediaOffset, clip.Speed);
+            foreach (var (from, to) in silences.OrderBy(s => s.Start))
+            {
+                var (a, b) = (Math.Max(start + (from - offset) / speed, start), Math.Min(start + (to - offset) / speed, end));
+                if (b - a >= TimelineDocument.MinimumClipSeconds)
+                    cuts.Add((clip, a, b));
+            }
         }
 
-        if (to - cursor >= ShortestKeptSeconds)
-            parts.Add((cursor, to, false));
-        if (parts.Count(p => p.Silent) == 0)
-            return $"No silence found in {layer.Name}.";
-        if (parts.Count > 60)
-            return $"{layer.Name} has too many silences to cut into layers ({parts.Count} parts): raise the shortest silence and try again.";
+        if (cuts.Count == 0)
+            return $"No silence found in {(clips.Count == 1 ? clips[0].View.Name : "the main video")}.";
+        // A layer is cut into clips of its own, which a few dozen keep usable; the main videos silences are taken out of the
+        // timeline (4.2.0s cut list had no limit), however many a long recording has.
+        if (cuts.Count > (clips.Any(c => c.View.IsMainVideo) ? 5000 : 60))
+            return $"{(clips.Count == 1 ? clips[0].View.Name : "The main video")} has too many silences to cut ({cuts.Count}): raise the shortest silence and try again.";
 
-        Checkpoint($"remove dead air from {layer.Name}");
-        using var whole = DeferCommand();
-        var index = Layers.IndexOf(layer);
-        var state = layer.ToState();
-        Detach(layer);
-        foreach (var (start, end, silent) in parts.Where(p => keepSilent || !p.Silent))
+        var name = clips.Count == 1 ? clips[0].View.Name : "the main video";
+        var removed = 0.0;
+        var marked = 0;
+        Edit($"remove dead air from {name}", edit =>
         {
-            var part = Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
-            (part.StartTime, part.Duration, part.MediaOffset) = (layer.StartTime + (start - from) / speed, (end - start) / speed, start);
-            (part.IsHidden, part.Name, part.Waveform, part.Filmstrip) = (silent, state.Name, layer.Waveform, layer.Filmstrip);
-            part.ShiftKeys(layer.StartTime - part.StartTime);
-            Hook(part);
-            InsertLayer(Math.Min(index++, Layers.Count), part);
-        }
+            // Latest first: what is cut out (and closed up behind) never moves a silence still to be cut.
+            foreach (var (clip, from, to) in cuts.OrderByDescending(c => c.From))
+            {
+                if (Document.TrackOf(clip) is null)
+                    continue;
 
-        var removed = parts.Where(p => p.Silent).Sum(p => p.End - p.Start);
-        return keepSilent
-            ? $"{state.Name} was cut at {parts.Count(p => p.Silent)} silent stretches ({removed:0.#} s): they are still there, hidden, and can be shown again."
-            : $"{parts.Count(p => p.Silent)} silent stretches ({removed:0.#} s) were removed from {state.Name}.";
+                // Folded out of the timeline at its cut, to be put back: what is on the timeline is what renders.
+                if (fold)
+                {
+                    try
+                    {
+                        if (edit.FoldStretch(Document.TrackOf(clip)!, from, to, rippleAllUnlockedTracks: closeUp) is { } made)
+                            (marked, removed) = (marked + 1, removed + made.Length);
+                    }
+                    catch (TimelineEditException)
+                    {
+                        // Too near another cut or an edge, or what follows cannot close up: left as it is.
+                    }
+
+                    continue;
+                }
+
+                // Taken out of every unlocked track, and what follows closed up behind it, as 4.2.0s cut list left it out.
+                if (closeUp)
+                {
+                    marked++;
+                    removed += to - from;
+                    TakeOutStretch(edit, from, to);
+                    continue;
+                }
+
+                var silent = clip;
+                try
+                {
+                    if (to < silent.End - TimelineDocument.MinimumClipSeconds)
+                        edit.SplitClipAt(silent, to);
+                    if (from > silent.Start + TimelineDocument.MinimumClipSeconds)
+                        silent = edit.SplitClipAt(silent, from);
+                }
+                catch (TimelineEditException)
+                {
+                    // Too near another cut or an edge to be a clip of its own: left as it is.
+                    continue;
+                }
+
+                marked++;
+                removed += silent.Duration;
+                edit.DeleteClip(silent);
+            }
+        });
+
+        return fold
+            ? string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"{marked} silent stretches ({removed:0.#} s) were folded out of {name}: right-click the clip after a cut and choose Restore Folded Silence to put one back.")
+            : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{marked} silent stretches ({removed:0.#} s) were removed from {name}{(closeUp ? ", and what follows closed up" : "")}.");
+    }
+
+    // ----- Folded silences (4.3D) -----
+
+    /// <summary>The stretches folded out at a clip's cuts (its start, or its end where nothing came after), latest seam first.</summary>
+    public IReadOnlyList<FoldedSegment> FoldsAt(Layer clip) =>
+        ClipOf(clip) is { } model && Document.Folds is { } folds ? [.. folds.Where(f => f.SeamClipId == model.Id)] : [];
+
+    /// <summary>How many stretches are folded out of the timeline at cuts that are still there.</summary>
+    public int FoldCount => Document.Folds?.Count(f => f.SeamIn(Document) is not null) ?? 0;
+
+    /// <summary>Puts a folded stretch back at its cut, as one step of Undo: what follows moves on by its length.</summary>
+    public void UnfoldSegment(FoldedSegment fold)
+    {
+        if (Edit($"put back {fold.Length:0.#} s at a cut", edit => edit.UnfoldSegment(fold)))
+            Log(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Put back {fold.Length:0.#} s at the cut at {TimeDisplay.Format(fold.SeamIn(Document) ?? 0)}"));
+    }
+
+    /// <summary>Puts every folded stretch back, latest first (so none moves a seam still to be opened), as one step of Undo.</summary>
+    public void UnfoldAll()
+    {
+        var folds = (Document.Folds ?? []).Where(f => f.SeamIn(Document) is not null).OrderByDescending(f => f.SeamIn(Document)).ToList();
+        if (folds.Count > 0 && Edit($"put back {folds.Count} folded stretches", edit =>
+            {
+                foreach (var fold in folds)
+                    edit.UnfoldSegment(fold);
+            }))
+        {
+            Log($"Put back {folds.Count} folded stretch{(folds.Count == 1 ? "" : "es")}");
+        }
     }
 
     // ----- Unsaved changes -----

@@ -438,8 +438,6 @@ public partial class MainWindow
         double seconds;
         if (reference is not null && e.GetPosition(reference).X is var x && x >= 0 && x <= reference.ActualWidth)
             seconds = SnapTime(Math.Max(TimeAt(reference, x), 0), reference);
-        else if (row is { IsMainVideo: true })
-            seconds = _viewModel.GetMainSpan().End;
         else if (row is { HasTiming: true, IsEmptyTrack: false })
             seconds = _viewModel.GetTrackClips(row).Max(c => c.GetSpan(_viewModel.DurationMs / 1000).End);
         else

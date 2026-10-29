@@ -42,11 +42,13 @@ internal static partial class Measurement
     {
         var notes = new List<string>();
 
-        // What is to be heard at this moment: a layer's sound (the top one that plays here), or else the main video's.
-        var layer = state.LayerAudio.LastOrDefault(l => l.StartTime <= at + 0.001 && (l.Duration <= 0.001 || at < l.StartTime + l.Duration - 0.5));
+        // What is to be heard at this moment: a layer's sound (the top one that plays here), or else the main video's
+        // (the timeline as the builder lowers it: FilterGraphBuilder.Lowering).
+        var timeline = FilterGraphBuilder.Lowering(state);
+        var layer = timeline.LayerAudio.LastOrDefault(l => l.StartTime <= at + 0.001 && (l.Duration <= 0.001 || at < l.StartTime + l.Duration - 0.5));
         if (layer is not null)
             return MeasureLayer(state, graph, output, at, seconds, layer, proxies, notes);
-        if (state.MainClips.FirstOrDefault(c => c.Start <= at && at < c.End - 0.5) is { End: > 0 } clip)
+        if (timeline.MainClips.FirstOrDefault(c => c.Start <= at && at < c.End - 0.5) is { End: > 0 } clip)
             return MeasureMain(state, graph, output, at, seconds, clip, proxies, notes);
         return new PointResult(at, "nothing", null, null, 0, 0, null, 0, "neither a clip of the main video nor a layer with sound plays here");
     }

@@ -253,9 +253,13 @@ public partial class SettingsWindow : Window
         ShowDefaultCaptionStyle();
     }
 
-    private void ShowDefaultCaptionStyle() => DefaultCaptionStyleText.Text = _settings.DefaultCaptionStyle is { } style
-        ? $"{style.FontName} {style.FontSize}, {style.Animation}, up to {style.MaxWordsPerLine} words"
-        : "the built-in style";
+    private void ShowDefaultCaptionStyle()
+    {
+        DefaultCaptionStyleText.Text = _settings.DefaultCaptionStyle is { } style
+            ? $"{style.FontName} {style.FontSize}, {style.Animation}, up to {style.MaxWordsPerLine} words"
+            : "the built-in style";
+        RefreshStageSoon();
+    }
 
     /// <summary>Opens at the tab whose header begins with the given words ("Timeline", "Preview"...): a pane's "More ... Settings..." (4.2B-2).</summary>
     public void ShowTab(string header)
@@ -436,6 +440,9 @@ public partial class SettingsWindow : Window
         viewModel.PropertyChanged += ViewModel_PropertyChanged;
         Closed += (_, _) => viewModel.PropertyChanged -= ViewModel_PropertyChanged;
         UpdateWhisperStatus();
+
+        // The category rail and the live preview stage (4.3-0B), once every box above holds its value.
+        InitializeScreen();
     }
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -514,14 +521,20 @@ public partial class SettingsWindow : Window
         FillDefaultEncoderPresets();
     }
 
-    /// <summary>Shows how much each preview cache holds now, beside its size limit.</summary>
+    /// <summary>Shows how much each preview cache holds now, beside its size limit (and on the stage's gauges).</summary>
     private void ShowCacheUsage()
     {
+        var held = new long[3];
+        var i = 0;
         foreach (var (cache, text) in new[] { (PreviewCache.Timeline, TimelineCacheUsage), (PreviewCache.Browser, BrowserCacheUsage), (PreviewCache.Proxies, ProxyCacheUsage) })
         {
             var (bytes, files) = cache.Measure();
             text.Text = files == 0 ? "Empty" : $"{PreviewCache.Describe(bytes)} in use";
+            held[i++] = bytes;
         }
+
+        _cacheBytes = (held[0], held[1], held[2]);
+        RefreshStageSoon();
     }
 
     private async void ClearCache_Click(object sender, RoutedEventArgs e)
@@ -635,15 +648,22 @@ public partial class SettingsWindow : Window
 
     // ----- Search -----
 
+    // Whether the folded Advanced section was open before a search opened or closed it, to put it back when the box is cleared.
+    private bool? _advancedOpenBeforeSearch;
+
     /// <summary>
     /// Shows only what matches the search box. An option is one of the things stacked down a tab (a tick box,
     /// a labelled row, a block of text); it matches when its own words, or its tool tip, or the title of the
-    /// section it is under, contain what was typed. Tabs left with nothing are hidden.
+    /// section it is under, contain what was typed. Tabs left with nothing are hidden. A folded section (Tools &amp;
+    /// Backup's Advanced, 4.3-0B) is searched as well: it opens while something in it matches, and goes back to
+    /// how it was when the box is cleared.
     /// </summary>
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         var query = SearchBox.Text.Trim();
         SearchHint.Visibility = SearchBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (query.Length > 0)
+            _advancedOpenBeforeSearch ??= AdvancedToolsExpander.IsExpanded;
 
         TabItem? firstMatch = null;
         foreach (var tab in SettingsTabs.Items.OfType<TabItem>())
@@ -652,37 +672,79 @@ public partial class SettingsWindow : Window
             if (panel is null)
                 continue;
 
-            var any = false;
-            FrameworkElement? title = null;
-            var titleMatches = false;
-            foreach (var child in panel.Children.OfType<FrameworkElement>())
-            {
-                if (child is TextBlock heading && ReferenceEquals(heading.Style, FindResource("SectionTitle")))
-                {
-                    (title, titleMatches) = (heading, Contains(heading.Text, query));
-                    heading.Visibility = query.Length == 0 || titleMatches ? Visibility.Visible : Visibility.Collapsed;
-                    any |= titleMatches && query.Length > 0;
-                    continue;
-                }
-
-                var matches = query.Length == 0 || titleMatches || Contains(TextOf(child), query);
-                child.Visibility = matches ? Visibility.Visible : Visibility.Collapsed;
-                if (matches && query.Length > 0)
-                {
-                    any = true;
-                    if (title is not null)
-                        title.Visibility = Visibility.Visible;
-                }
-            }
-
+            var any = ShowMatches(panel, query, false);
             tab.Visibility = query.Length == 0 || any ? Visibility.Visible : Visibility.Collapsed;
             if (any)
                 firstMatch ??= tab;
         }
 
+        if (query.Length == 0 && _advancedOpenBeforeSearch is { } open)
+        {
+            AdvancedToolsExpander.IsExpanded = open;
+            _advancedOpenBeforeSearch = null;
+        }
+
         // The tab that was open may just have been hidden.
         if (query.Length > 0 && firstMatch is not null && SettingsTabs.SelectedItem is TabItem { Visibility: not Visibility.Visible })
             SettingsTabs.SelectedItem = firstMatch;
+    }
+
+    /// <summary>Shows what matches among one panel's options (a tab's, or a folded section's); whether anything did.</summary>
+    /// <param name="allMatch">The title the panel is under matched: everything in it is shown.</param>
+    private bool ShowMatches(Panel panel, string query, bool allMatch)
+    {
+        var any = false;
+        FrameworkElement? title = null;
+        var titleMatches = allMatch;
+        foreach (var child in panel.Children.OfType<FrameworkElement>())
+        {
+            if (child is TextBlock heading && ReferenceEquals(heading.Style, FindResource("SectionTitle")))
+            {
+                (title, titleMatches) = (heading, allMatch || Contains(heading.Text, query));
+                heading.Visibility = query.Length == 0 || titleMatches ? Visibility.Visible : Visibility.Collapsed;
+                any |= titleMatches && query.Length > 0;
+                continue;
+            }
+
+            // A folded section: its own options are searched (and shown again once the box is cleared); it opens on a match.
+            if (child is Expander { Content: Panel folded } fold)
+            {
+                var found = ShowMatches(folded, query, query.Length > 0 && fold.Header is string header && Contains(header, query)) && query.Length > 0;
+                fold.Visibility = query.Length == 0 || found ? Visibility.Visible : Visibility.Collapsed;
+                if (query.Length > 0)
+                    fold.IsExpanded = found;
+                if (found)
+                {
+                    any = true;
+                    if (title is not null)
+                        title.Visibility = Visibility.Visible;
+                }
+
+                continue;
+            }
+
+            var matches = query.Length == 0 || titleMatches || Contains(TextOf(child), query);
+            child.Visibility = matches ? Visibility.Visible : Visibility.Collapsed;
+            if (matches && query.Length > 0)
+            {
+                any = true;
+                if (title is not null)
+                    title.Visibility = Visibility.Visible;
+            }
+        }
+
+        return any;
+    }
+
+    // A path or an address Save cannot take: the folded section that holds them is opened, on its tab.
+    private void ShowAdvancedTools()
+    {
+        // A search that hid it is cleared first: clearing puts the fold back as it was, so it is opened after.
+        if (AdvancedToolsExpander.Visibility != Visibility.Visible)
+            SearchBox.Clear();
+        AdvancedToolsExpander.IsExpanded = true;
+        ShowTab("Tools");
+        AdvancedToolsExpander.BringIntoView();
     }
 
     private static bool Contains(string text, string query) => text.Contains(query, StringComparison.OrdinalIgnoreCase);
@@ -903,7 +965,7 @@ public partial class SettingsWindow : Window
 
     private void ImportProjects_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Title = "Import Projects", Filter = "Project files|*.hproj;*.txt|All files|*.*", Multiselect = true, InitialDirectory = BackupFolder() };
+        var dialog = new OpenFileDialog { Title = "Import Projects", Filter = "Project files|*.hproj|Exported projects (Export All Projects)|*.txt;*.json|All files|*.*", Multiselect = true, InitialDirectory = BackupFolder() };
         if (dialog.ShowDialog(this) != true)
             return;
 
@@ -921,6 +983,7 @@ public partial class SettingsWindow : Window
             if (cleaned.Length > 0 && !File.Exists(cleaned))
             {
                 ErrorText.Text = $"File not found: {cleaned}";
+                ShowAdvancedTools();
                 return;
             }
         }
@@ -956,6 +1019,7 @@ public partial class SettingsWindow : Window
             if (trimmed.Length > 0 && !(Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps))
             {
                 ErrorText.Text = $"Not an https address: {trimmed}";
+                ShowAdvancedTools();
                 return;
             }
         }

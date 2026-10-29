@@ -65,13 +65,13 @@ public partial class MainWindow
                 _viewModel.PositionMs = start;
                 break;
             case "GoToIn":
-                _viewModel.StatusText = "There is no start point: set one with [ (I), or select a cut segment.";
+                _viewModel.StatusText = "There is no in point: set one with [ (I), or select a clip.";
                 break;
-            case "GoToOut" when SelectedSegment() is { } segment:
-                _viewModel.PositionMs = segment.End.TotalMilliseconds;
+            case "GoToOut" when SelectedStretch() is { } stretch:
+                _viewModel.PositionMs = stretch.To;
                 break;
             case "GoToOut":
-                _viewModel.StatusText = "Select a cut segment on the timeline to go to its end.";
+                _viewModel.StatusText = "Select a clip on the timeline to go to its end.";
                 break;
             case "PlayInOut":
                 PlayStartToStop();
@@ -94,15 +94,16 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The cut segment selected: on the timeline, or else the one the view model holds as selected.</summary>
-    private CutSegment? SelectedSegment() => _selectedClip as CutSegment ?? _viewModel.SelectedSegment;
+    /// <summary>The stretch of the clip selected on the timeline, in milliseconds (what 4.2.0s selected cut segment was); null for none.</summary>
+    private (double From, double To)? SelectedStretch() =>
+        _selectedClip is Layer layer && _viewModel.ClipOf(layer) is { } clip ? (clip.Start * 1000, clip.End * 1000) : null;
 
-    /// <summary>The start point being set, or the start of the selected cut segment, in milliseconds.</summary>
-    private double? InPointMs() => _viewModel.PendingStartMs ?? SelectedSegment()?.Start.TotalMilliseconds;
+    /// <summary>The in point being set, or the start of the selected clip, in milliseconds.</summary>
+    private double? InPointMs() => _viewModel.PendingStartMs ?? SelectedStretch()?.From;
 
     /// <summary>
     /// Moves the playhead to the nearest edit point that way: the start or end of a clip of the main video, of a
-    /// layer, of a cut segment, or of the sequence.
+    /// layer, or of the sequence.
     /// </summary>
     private void GoToEditPoint(bool forward)
     {
@@ -116,24 +117,21 @@ public partial class MainWindow
             points.AddRange([from, to]);
         }
 
-        foreach (var segment in _viewModel.Segments)
-            points.AddRange([segment.Start.TotalSeconds, segment.End.TotalSeconds]);
-
         var at = _viewModel.PositionMs / 1000;
         double? target = forward ? points.Where(p => p > at + 0.02).DefaultIfEmpty(double.NaN).Min() : points.Where(p => p < at - 0.02).DefaultIfEmpty(double.NaN).Max();
         if (target is { } seconds && !double.IsNaN(seconds))
             _viewModel.PositionMs = Math.Clamp(seconds, 0, sequence) * 1000;
     }
 
-    /// <summary>Plays the selected cut segment, or from the start point being set to the playhead, and stops (or, looping, starts again) at its end.</summary>
+    /// <summary>Plays the selected clips stretch, or from the in point being set to the playhead, and stops (or, looping, starts again) at its end.</summary>
     private void PlayStartToStop()
     {
-        (double From, double To)? range = SelectedSegment() is { } segment
-            ? (segment.Start.TotalMilliseconds, segment.End.TotalMilliseconds)
+        (double From, double To)? range = SelectedStretch() is { } selected
+            ? selected
             : _viewModel.PendingStartMs is { } start && _viewModel.PositionMs > start + 50 ? (start, _viewModel.PositionMs) : null;
         if (range is not { } stretch)
         {
-            _viewModel.StatusText = "Select a cut segment to play, or set a start point ([) and move the playhead past it.";
+            _viewModel.StatusText = "Select a clip to play, or set an in point ([) and move the playhead past it.";
             return;
         }
 
@@ -145,7 +143,7 @@ public partial class MainWindow
 
     /// <summary>
     /// While playing: Play Start to Stop stops at its end, and Loop goes back to the start (of the stretch played, of
-    /// the selected cut segment, or of the sequence). True when the position was dealt with.
+    /// the selected clip, or of the sequence). True when the position was dealt with.
     /// </summary>
     private bool KeepPlaybackInRange(long timeMs)
     {
@@ -166,9 +164,9 @@ public partial class MainWindow
             return true;
         }
 
-        if (_viewModel.LoopPlayback && SelectedSegment() is { } segment && timeMs >= segment.End.TotalMilliseconds - 15)
+        if (_viewModel.LoopPlayback && SelectedStretch() is { } stretch && timeMs >= stretch.To - 15)
         {
-            PlayerSeek((long)segment.Start.TotalMilliseconds);
+            PlayerSeek((long)stretch.From);
             return true;
         }
 
@@ -181,7 +179,7 @@ public partial class MainWindow
         if (!_viewModel.LoopPlayback || _mpv is not { } player)
             return;
 
-        var from = _playUntilMs is not null ? (long)_playFromMs : SelectedSegment() is { } segment ? (long)segment.Start.TotalMilliseconds : 0;
+        var from = _playUntilMs is not null ? (long)_playFromMs : SelectedStretch() is { } stretch ? (long)stretch.From : 0;
         _viewModel.PositionMs = from;
         player.SetPause(false);
     }

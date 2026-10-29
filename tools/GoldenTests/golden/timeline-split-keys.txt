@@ -1,0 +1,71 @@
+# A clip split between two keyframes (4.3D): each half keeps its own keys, a key on the cut with the value there, and its part of the curve, for every easing.
+
+== Linear
+  0-2.6:  1:0.1 Linear 2.6:0.34 Linear
+  2.6-4:  0:0.34 Linear 1.4:0.55 Linear
+  4-10:   0:0.55 Linear 1:0.7 Linear 5:0.4 EaseInOut
+  as FFmpeg reads the middle half's first stretch: p
+  most it strays from the whole clip's motion in 1001 moments: none
+
+== EaseInOut
+  0-2.6:  1:0.1 EaseInOut part 0-0.4 2.6:0.307295 EaseInOut
+  2.6-4:  0:0.307295 EaseInOut part 0.4-0.75 1.4:0.612132 EaseInOut
+  4-10:   0:0.612132 EaseInOut part 0.75-1 1:0.7 EaseInOut 5:0.4 EaseInOut
+  as FFmpeg reads the middle half's first stretch: ((((1-cos((0.4+p*0.35)*PI))/2)-0.3454915)*1.9682642)
+  most it strays from the whole clip's motion in 1001 moments: none
+
+== EaseIn
+  0-2.6:  1:0.1 EaseIn part 0-0.4 2.6:0.21459 EaseIn
+  2.6-4:  0:0.21459 EaseIn part 0.4-0.75 1.4:0.47039 EaseIn
+  4-10:   0:0.47039 EaseIn part 0.75-1 1:0.7 EaseIn 5:0.4 EaseInOut
+  as FFmpeg reads the middle half's first stretch: (((1-cos((0.4+p*0.35)*(PI/2)))-0.190983)*2.3455812)
+  most it strays from the whole clip's motion in 1001 moments: none
+
+== EaseOut
+  0-2.6:  1:0.1 EaseOut part 0-0.4 2.6:0.452671 EaseOut
+  2.6-4:  0:0.452671 EaseOut part 0.4-0.75 1.4:0.654328 EaseOut
+  4-10:   0:0.654328 EaseOut part 0.75-1 1:0.7 EaseOut 5:0.4 EaseInOut
+  as FFmpeg reads the middle half's first stretch: ((sin((0.4+p*0.35)*(PI/2))-0.5877853)*2.9753556)
+  most it strays from the whole clip's motion in 1001 moments: none
+
+== Smoothstep
+  0-2.6:  1:0.1 Smoothstep part 0-0.4 2.6:0.3112 Smoothstep
+  2.6-4:  0:0.3112 Smoothstep part 0.4-0.75 1.4:0.60625 Smoothstep
+  4-10:   0:0.60625 Smoothstep part 0.75-1 1:0.7 Smoothstep 5:0.4 EaseInOut
+  as FFmpeg reads the middle half's first stretch: ((((0.4+p*0.35)*(0.4+p*0.35)*(3-2*(0.4+p*0.35)))-0.352)*2.0335536)
+  most it strays from the whole clip's motion in 1001 moments: none
+
+== Hold
+  0-2.6:  1:0.1 Hold 2.6:0.1 Hold
+  2.6-4:  0:0.1 Hold 1.4:0.1 Hold
+  4-10:   0:0.1 Hold 1:0.7 Hold 5:0.4 EaseInOut
+  as FFmpeg reads the middle half's first stretch: p
+  most it strays from the whole clip's motion in 1001 moments: none
+
+== Back
+  0-2.6:  1:0.1 Back part 0-0.4 2.6:0.717417 Back
+  2.6-4:  0:0.717417 Back part 0.4-0.75 1.4:0.738482 Back
+  4-10:   0:0.738482 Back part 0.75-1 1:0.7 Back 5:0.4 EaseInOut
+  as FFmpeg reads the middle half's first stretch: (((1+2.70158*pow((0.4+p*0.35)-1,3)+1.70158*pow((0.4+p*0.35)-1,2))-1.0290275)*28.4826907)
+  most it strays from the whole clip's motion in 1001 moments: none
+
+== Elastic
+  0-2.6:  1:0.1 Elastic part 0-0.4 2.6:0.718633 Elastic
+  2.6-4:  0:0.718633 Elastic part 0.4-0.75 1.4:0.703095 Elastic
+  4-10:   0:0.703095 Elastic part 0.75-1 1:0.7 Elastic 5:0.4 EaseInOut
+  as FFmpeg reads the middle half's first stretch: (((1+pow(2,-10*(0.4+p*0.35))*sin((10*(0.4+p*0.35)-0.75)*2.0943951)-(0.4+p*0.35)*0.0004883)-1.0310547)*-38.6150679)
+  most it strays from the whole clip's motion in 1001 moments: none
+
+== Bounce
+  0-2.6:  1:0.1 Bounce part 0-0.4 2.6:0.655 Bounce
+  2.6-4:  0:0.655 Bounce part 0.4-0.75 1.4:0.690625 Bounce
+  4-10:   0:0.690625 Bounce part 0.75-1 1:0.7 Bounce 5:0.4 EaseInOut
+  as FFmpeg reads the middle half's first stretch: 5 straight pieces
+  most it strays from the whole clip's motion in 1001 moments: none
+
+== CubicBezier
+  0-2.6:  1:0.1 CubicBezier part 0-0.4 2.6:0.310413 CubicBezier
+  2.6-4:  0:0.310413 CubicBezier part 0.4-0.75 1.4:0.651185 CubicBezier
+  4-10:   0:0.651185 CubicBezier part 0.75-1 1:0.7 CubicBezier 5:0.4 EaseInOut
+  as FFmpeg reads the middle half's first stretch: 5 straight pieces
+  most it strays from the whole clip's motion in 1001 moments: none

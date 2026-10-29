@@ -349,14 +349,22 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// What an encode's captions listen to: the kept segments end to end, or everything.
-    /// The voiceover was recorded against the finished timeline, so nothing is cut out of it.
+    /// What an encode's captions listen to, in the file's own seconds: the stretches of the main video's file its clips
+    /// play, in the order they come (joined end to end, which is the timeline while they follow each other without a gap),
+    /// or everything while the main video is the whole file. The voiceover and an audio file of its own were recorded
+    /// against the finished timeline, so nothing is cut out of them.
     /// </summary>
     private List<(double Start, double End)> GetCaptionRanges() =>
-        CaptionUseVoiceover ? [] : GetMergedSegments().Select(s => (s.Start.TotalSeconds, s.End.TotalSeconds)).ToList();
+        CaptionUseVoiceover || CaptionUseExternalAudio == true || IsMainWholeSequence
+            ? []
+            : GetMainClips().Select(c => (c.Offset, c.Offset + (c.End - c.Start))).ToList();
 
-    /// <summary>Where an encode's captions start on the output's clock: with the voiceover, when that is what they are made from.</summary>
-    private double CaptionTimeOffset => CaptionUseVoiceover ? VoiceoverStartSeconds : 0;
+    /// <summary>
+    /// Where an encode's captions start on the output's clock: with the voiceover, when that is what they are made from;
+    /// otherwise where the main video's first clip starts, when its clips are what is listened to.
+    /// </summary>
+    private double CaptionTimeOffset =>
+        CaptionUseVoiceover ? VoiceoverStartSeconds : GetCaptionRanges().Count > 0 && GetMainClips() is [var first, ..] ? first.Start : 0;
 
     /// <summary>
     /// The pipeline: extract the audio that will be heard as a 16 kHz mono wave file, transcribe it with
@@ -372,7 +380,7 @@ public partial class MainViewModel
         // A subtitle track with words is what the captions say: nothing is listened to.
         if (HasTextCues)
         {
-            var lines = GetCueCaptions(ranges);
+            var lines = GetCueCaptions();
             WriteCaptionFile(lines.SelectMany(l => l).ToList(), lines, assPath, 0, forPlayer);
             StatusText = $"Captions: {lines.Count} subtitle cue{(lines.Count == 1 ? "" : "s")} written.";
             return null;

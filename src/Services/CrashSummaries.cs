@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using HandPegApp.Models;
+using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.Services;
 
@@ -45,19 +46,28 @@ public static partial class CrashSummaries
         return text.ToString();
     }
 
-    /// <summary>"format 2, mkv source, mp4 out, 5 segments, 3 layers, 2 audio tracks, 4 markers, subtitles" (the format when it is known).</summary>
+    /// <summary>"format 5, mkv source, mp4 out, 4 tracks, 12 clips, 2 audio streams, 4 markers, subtitles" (the format when it is known).</summary>
     public static string Project(ProjectState state, int? format = null)
     {
         var source = Extension(state.LocalMediaPath.Length > 0 ? state.LocalMediaPath : state.SourcePath);
         var known = format is { } number ? string.Create(CultureInfo.InvariantCulture, $"format {number}, ") : "";
         var subtitles = state.Subtitles is not null ? ", subtitles" : "";
+        var timeline = state.Timeline;
         return string.Create(CultureInfo.InvariantCulture,
-            $"{known}{source} source, {Word(state.Container)} out, {state.Segments.Count} segments, {state.Settings.Layers.Count} layers, {state.AudioTracks.Count} audio tracks, {state.Markers.Count} markers{subtitles}");
+            $"{known}{source} source, {Word(state.Container)} out, {timeline.Tracks.Count} tracks, {timeline.Tracks.Sum(t => t.Clips.Count)} clips, {state.AudioTracks.Count} audio streams, {timeline.Markers.Count} markers{subtitles}");
     }
 
-    /// <summary>The files a project uses (its source, the file actually read, its output, its layers' files, the captions' sound), for <see cref="CrashReporter.KeepOut(IEnumerable{string?})"/>.</summary>
+    /// <summary>
+    /// The files a project uses (its source, the file actually read, its output, the captions' sound, and the file of every
+    /// clip, on the timeline and in the recycle bin, and of every track's shared look), for <see cref="CrashReporter.KeepOut(IEnumerable{string?})"/>.
+    /// </summary>
     public static IEnumerable<string?> FilesIn(ProjectState state) =>
-        [state.SourcePath, state.LocalMediaPath, state.DestinationPath, state.CaptionAudioPath, .. state.Settings.Layers.Select(l => l.ImagePath)];
+    [
+        state.SourcePath, state.LocalMediaPath, state.DestinationPath, state.CaptionAudioPath,
+        .. state.Timeline.Tracks.Select(t => t.TrackLook?.ImagePath),
+        .. state.Timeline.Tracks.SelectMany(t => t.Clips).Concat(state.Deleted.Select(d => d.Clip).OfType<TimelineClip>())
+            .SelectMany(c => new[] { c.SourcePath, c.State?.ImagePath }),
+    ];
 
     /// <summary>
     /// An FFmpeg command as its kind: the video and audio encoders, the output's container, its frame size when the

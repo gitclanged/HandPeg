@@ -54,12 +54,11 @@ public partial class MainViewModel
     {
         var sequence = SequenceSeconds;
         var start = Math.Clamp(PositionMs / 1000, 0, Math.Max(sequence - 1, 0));
+        var length = sequence > 0 ? Math.Min(5, Math.Max(sequence - start, 1)) : 5;
         var element = new Layer
         {
             Kind = LayerKind.Adjustment,
             Name = $"Adjustment {Layers.Count(l => l.IsAdjustment) + 1}",
-            StartTime = start,
-            Duration = sequence > 0 ? Math.Min(5, Math.Max(sequence - start, 1)) : 5,
             PositionX = 0,
             PositionY = 0,
             SizeWidth = 1,
@@ -69,11 +68,12 @@ public partial class MainViewModel
 
         // Something to see at once: a grade, which the Effects pane then shows to be changed.
         element.AddEffect(new EffectInstance { Type = EffectRegistry.Grade });
-        Checkpoint("add an adjustment layer");
-        AttachLayer(element);
+        if (!PlaceLayer(element, start, start + length, "add an adjustment layer"))
+            return;
+
         KeyLayer = element;
         ShowEffectsPane = true;
-        Log($"Added {element.Name}: its effects (Effects pane) work on everything under it from {start:0.##} s for {element.Duration:0.##} s");
+        Log(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Added {element.Name}: its effects (Effects pane) work on everything under it from {element.StartTime:0.##} s for {element.Duration:0.##} s"));
     }
 
     /// <summary>Gives every clip on a clip's track a copy of a stack (Paste Effects with Shift, or Paste Selected Effects...), with the values its cards carry.</summary>

@@ -413,25 +413,28 @@ public sealed partial class Layer
 
     // ----- Cards that carry their layer's values (copy, paste, presets) -----
 
-    private static readonly string[] MaskExtras = [nameof(MaskPath), nameof(MaskShapes), nameof(MaskFrame)];
+    private static readonly LayerBinding[] MaskExtras = [.. new[] { nameof(MaskPath), nameof(MaskShapes), nameof(MaskFrame) }.Select(LayerBinding.Of).OfType<LayerBinding>()];
 
     /// <summary>
     /// A card as Copy Stack and presets keep it: a bound card's values (the key colour, the mask's file and shapes)
-    /// are written into it, so that pasting it gives another clip the same look.
+    /// are written into it, so that pasting it gives another clip the same look. Read through the parameters'
+    /// <see cref="EffectParam.Binding"/>, without reflection (4.3-0B).
     /// </summary>
     public EffectState CaptureCard(EffectInstance effect)
     {
         var copy = effect.Clone();
         if (effect.Definition is { } definition)
         {
-            foreach (var bind in definition.Params.Select(p => p.Bind).OfType<string>().Concat(definition.Type == EffectRegistry.Mask ? MaskExtras : []))
+            foreach (var binding in definition.Params.Select(p => p.Binding).OfType<LayerBinding>().Concat(definition.Type == EffectRegistry.Mask ? MaskExtras : []))
             {
-                switch (typeof(Layer).GetProperty(bind)?.GetValue(this))
+                if (binding.Text is { } text)
                 {
-                    case string text: copy.Texts["@" + bind] = text; break;
-                    case bool on: copy.Values["@" + bind] = on ? 1 : 0; break;
-                    case int whole: copy.Values["@" + bind] = whole; break;
-                    case double number: copy.Values["@" + bind] = number; break;
+                    if (text(this) is { } words)
+                        copy.Texts["@" + binding.Name] = words;
+                }
+                else if (binding.Number is { } number)
+                {
+                    copy.Values["@" + binding.Name] = number(this);
                 }
             }
         }
@@ -439,7 +442,11 @@ public sealed partial class Layer
         return copy.ToState();
     }
 
-    /// <summary>A captured card made into one of this layer's: the values it carries for the layer are set on it, and its switch is turned on.</summary>
+    /// <summary>
+    /// A captured card made into one of this layer's: the values it carries for the layer are set on it, and its switch
+    /// is turned on. Only the bindable properties (<see cref="LayerBinding"/>) are set: a name a preset carries that is
+    /// not one of them is dropped.
+    /// </summary>
     public EffectInstance AdoptCard(EffectState state)
     {
         var card = EffectInstance.FromState(state);
@@ -449,20 +456,13 @@ public sealed partial class Layer
         foreach (var (key, value) in card.Values.Where(v => v.Key.StartsWith('@')).ToList())
         {
             card.Values.Remove(key);
-            var property = typeof(Layer).GetProperty(key[1..]);
-            if (property?.PropertyType == typeof(bool))
-                property.SetValue(this, value >= 0.5);
-            else if (property?.PropertyType == typeof(int))
-                property.SetValue(this, (int)Math.Round(value));
-            else if (property?.PropertyType == typeof(double))
-                property.SetValue(this, value);
+            LayerBinding.Of(key[1..])?.SetNumber?.Invoke(this, value);
         }
 
         foreach (var (key, value) in card.Texts.Where(v => v.Key.StartsWith('@')).ToList())
         {
             card.Texts.Remove(key);
-            if (typeof(Layer).GetProperty(key[1..]) is { PropertyType: var type } property && type == typeof(string))
-                property.SetValue(this, value);
+            LayerBinding.Of(key[1..])?.SetText?.Invoke(this, value);
         }
 
         switch (card.Definition?.Feature)

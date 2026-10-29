@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Media;
+using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Models;
 
@@ -77,6 +78,29 @@ public static class TransitionStyles
         _ when IsSlide(style) => EasingType.EaseOut,
         _ => EasingType.EaseInOut,
     };
+
+    /// <summary>Its shader in the v5.0 compositor (ARCHITECTURE_CONTRACTS.md): one for each family, the direction in the packet.</summary>
+    public static GpuShaderSlot GpuSlot(TransitionStyle style) => style switch
+    {
+        TransitionStyle.Zoom => GpuShaderSlot.TransitionZoom,
+        TransitionStyle.BlurDissolve => GpuShaderSlot.TransitionBlurDissolve,
+        _ when IsWipe(style) => GpuShaderSlot.TransitionWipe,
+        _ when IsSlide(style) => GpuShaderSlot.TransitionSlide,
+        _ => GpuShaderSlot.TransitionDissolve,
+    };
+
+    /// <summary>
+    /// A fade of this style at a moment, as the v5.0 compositor takes it: P0 how much of the clip is there along the
+    /// style's curve (<see cref="Easing"/>, as the graph writes it), P1 and P2 the direction (<see cref="Direction"/>),
+    /// P3 how far through the fade the clock is (0 to 1), P4 1 for a fade in and 0 for a fade out.
+    /// </summary>
+    public static GpuEffectPacket GpuPacket(TransitionStyle style, double progress, bool fadingIn)
+    {
+        var through = Math.Clamp(progress, 0, 1);
+        var shown = EasingCurves.Evaluate(fadingIn ? through : 1 - through, new Keyframe(0, 0, Easing(style)));
+        var (x, y) = Direction(style);
+        return new(GpuSlot(style), (float)shown, x, y, (float)through, fadingIn ? 1 : 0, 0, 0, 0);
+    }
 
     private static readonly Dictionary<TransitionStyle, Geometry> Icons = [];
 

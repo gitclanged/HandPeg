@@ -49,6 +49,8 @@ public sealed class KeyLane
 /// </summary>
 public sealed class KeyLanesView : TimelineBar
 {
+    protected override string AutomationName => "Keyframe lanes";
+
     /// <summary>How tall a row is, and the graph under the selected one.</summary>
     public const double LaneHeight = 20, GraphHeight = 72;
 

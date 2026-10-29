@@ -3,18 +3,19 @@ using System.IO;
 using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Models;
+using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// The sequence: a timeline with a clock of its own, on which the main video is one clip among the others;
-// and motion, the keyframes that move, size and turn a layer as that clock runs.
+// The sequence: a timeline with a clock of its own, on which the main video is clips like any other (the document's,
+// see MainViewModel.Document.cs); and motion, the keyframes that move, size and turn a layer as that clock runs.
 public partial class MainViewModel
 {
     // ----- The sequence clock -----
-    // The timeline is not the main video's any more. It is as long as whatever reaches furthest along it, and
-    // the main video is clips on it like any other: one to begin with, more once it has been split, each
-    // moved, trimmed and deleted on its own. Everything on the timeline is in the sequence's time.
+    // The timeline is not the main video's. It is as long as whatever reaches furthest along it, and the main video is
+    // clips on it like any other: one to begin with, more once it has been split, each moved, trimmed and deleted on its
+    // own. Everything on the timeline is in the sequence's time.
 
     // The length of the main video's file as the player reported it, for a file that could not be inspected.
     private double _playerMediaSeconds;
@@ -22,111 +23,10 @@ public partial class MainViewModel
     /// <summary>How long the main video's file is, in seconds; 0 while that is not known.</summary>
     private double MainMediaSeconds => _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : _playerMediaSeconds;
 
-    // The main video's clips after its first. The first is the row itself (its StartTime, Duration and
-    // MediaOffset), which is also what its keyframes are counted from.
-    private readonly List<MainPiece> _mainPieces = [];
-
-    // Worked out once for each state of the timeline, not once for each of the dozen things that ask.
-    private List<MainClip>? _mainClips;
-
-    private void InvalidateMainClips() => _mainClips = null;
-
     /// <summary>
-    /// The main video's clips in the order they come on the sequence. Where two were put over each other the
-    /// earlier one ends where the later begins. Without the Layer Engine there is no sequence to place them
-    /// on: the file is the whole timeline, from its first frame to its last.
+    /// The player says how long what it opened is. Only needed for a file that could not be inspected: its length is
+    /// then known, and the main video is put on the timeline for it.
     /// </summary>
-    public IReadOnlyList<MainClip> GetMainClips()
-    {
-        if (_mainClips is { } known)
-            return known;
-
-        var media = MainMediaSeconds;
-        var clips = new List<MainClip>(_mainPieces.Count + 1);
-        if (!FrameEngine)
-        {
-            clips.Add(new MainClip(0, 0, media, 0));
-            return _mainClips = clips;
-        }
-
-        void Add(int index, double start, double duration, double offset, (double In, double Out, TransitionStyle InStyle, TransitionStyle OutStyle) fades, double transition)
-        {
-            var left = Math.Max(media - offset, 0);
-            var length = duration > 0.001 ? (media > 0 ? Math.Min(duration, left) : duration) : left;
-            if (length > 0.001 || media <= 0)
-                clips.Add(new MainClip(index, start, start + length, offset) { FadeIn = fades.In, FadeOut = fades.Out, FadeInStyle = fades.InStyle, FadeOutStyle = fades.OutStyle, TransitionIn = transition });
-        }
-
-        var main = _mainVideoRow;
-        Add(0, main.StartTime, main.Duration, main.MediaOffset, (main.FadeInSeconds, main.FadeOutSeconds, main.FadeInStyle, main.FadeOutStyle), main.TransitionIn);
-        for (var i = 0; i < _mainPieces.Count; i++)
-        {
-            var piece = _mainPieces[i];
-            Add(i + 1, piece.Start, piece.Duration, piece.Offset, (piece.FadeIn, piece.FadeOut, piece.FadeInStyle, piece.FadeOutStyle), piece.TransitionIn);
-        }
-
-        clips.Sort((a, b) => a.Start.CompareTo(b.Start));
-        for (var i = clips.Count - 2; i >= 0; i--)
-        {
-            if (clips[i].End > clips[i + 1].Start)
-                clips[i] = clips[i] with { End = Math.Max(clips[i + 1].Start, clips[i].Start) };
-            if (clips[i].End - clips[i].Start < 0.001 && media > 0)
-                clips.RemoveAt(i);
-        }
-
-        return _mainClips = clips;
-    }
-
-    /// <summary>What to add to a time in the main video's file to get the time it is on the sequence, for its first clip.</summary>
-    private double MainShift => FrameEngine ? _mainVideoRow.StartTime - _mainVideoRow.MediaOffset : 0;
-
-    /// <summary>From where the main video first appears on the sequence to where it is last seen, in seconds.</summary>
-    public (double Start, double End) GetMainSpan()
-    {
-        var clips = GetMainClips();
-        return clips.Count == 0 ? (_mainVideoRow.StartTime, _mainVideoRow.StartTime) : (clips[0].Start, clips.Max(c => c.End));
-    }
-
-    /// <summary>Whether the main video has been cut into more than one clip.</summary>
-    private bool IsMainSpliced => FrameEngine && _mainPieces.Count > 0;
-
-    /// <summary>Length of the sequence in seconds: to the end of whichever clip ends last.</summary>
-    public double SequenceSeconds
-    {
-        get
-        {
-            var end = GetMainSpan().End;
-            if (!FrameEngine)
-                return end;
-
-            // A layer with no length of its own stays "to the end", and so does not move the end.
-            foreach (var layer in Layers)
-            {
-                if (layer.Duration > 0.001)
-                    end = Math.Max(end, layer.StartTime + layer.Duration);
-            }
-
-            return end;
-        }
-    }
-
-    /// <summary>Whether the main video is the whole sequence, untouched: then the file can be played and read as it is.</summary>
-    private bool IsMainWholeSequence
-    {
-        get
-        {
-            if (!FrameEngine)
-                return true;
-            if (_mainPieces.Count > 0)
-                return false;
-
-            var (start, end) = GetMainSpan();
-            var media = MainMediaSeconds;
-            return media <= 0 || (start < 0.001 && _mainVideoRow.MediaOffset < 0.001 && Math.Abs(end - media) < 0.02 && SequenceSeconds - end < 0.02);
-        }
-    }
-
-    /// <summary>The player says how long what it opened is. Only needed for a file that could not be inspected.</summary>
     /// <param name="isFile">Whether it is playing the main video's file as it is, not the sequence built around it.</param>
     public void ReportPlayerDuration(double seconds, bool isFile)
     {
@@ -134,7 +34,8 @@ public partial class MainViewModel
             return;
 
         _playerMediaSeconds = seconds;
-        _mainVideoRow.MediaDuration = seconds;
+        if (!MainVideoClips().Any())
+            PlaceMainVideo();
         GenerateCommand();
     }
 
@@ -142,11 +43,33 @@ public partial class MainViewModel
     private List<double> _sourceIFrames = [];
     private int _iFrameLayout;
 
+    /// <summary>
+    /// How the main video's clips lie, as a number that changes when they do: read from the document (cheap, asked after
+    /// every change), so that the builder's lowering is only asked for when there is something to lay out again.
+    /// </summary>
     private int GetMainLayout()
     {
         var hash = new HashCode();
-        foreach (var clip in GetMainClips())
-            hash.Add(clip);
+        hash.Add(FrameEngine);
+        hash.Add(MainMediaSeconds);
+        foreach (var track in Document.Tracks)
+        {
+            hash.Add(track.Kind);
+            hash.Add(track.IsHidden);
+            foreach (var clip in track.Clips)
+            {
+                if (clip.ContentKind != LayerKind.MainVideo)
+                    continue;
+                hash.Add(clip.Start);
+                hash.Add(clip.End);
+                hash.Add(clip.MediaOffset);
+                hash.Add(clip.Speed);
+                hash.Add(clip.IsHidden);
+                hash.Add(clip.TransitionIn);
+                hash.Add(clip.SourcePath);
+            }
+        }
+
         return hash.ToHashCode();
     }
 
@@ -178,9 +101,8 @@ public partial class MainViewModel
     /// <summary>Brings the length of the timeline, and what is drawn along it, up to date with the clips.</summary>
     private void RefreshSequence()
     {
-        InvalidateMainClips();
         var milliseconds = SequenceSeconds * 1000;
-        if (milliseconds > 0 && Math.Abs(DurationMs - milliseconds) > 0.5)
+        if ((milliseconds > 0 || HasSource) && Math.Abs(DurationMs - milliseconds) > 0.5)
         {
             DurationMs = milliseconds;
             if (PositionMs > milliseconds)
@@ -192,44 +114,15 @@ public partial class MainViewModel
             SetSourceIFrames(_sourceIFrames);
     }
 
-    // ----- The main video's clips -----
-
-    /// <summary>The clip of the main video that is on screen at a moment of the sequence, or null when none is.</summary>
+    /// <summary>
+    /// The clip of the main video that is on screen at a moment of the sequence, as the player plays it (the graph
+    /// builder's primary chain), or null when none is.
+    /// </summary>
     public MainClip? GetMainClipAt(double seconds)
     {
         foreach (var clip in GetMainClips())
         {
-            if (seconds >= clip.Start && seconds < clip.End)
-                return clip;
-        }
-
-        return null;
-    }
-
-    private void SetMainClip(int index, double start, double duration, double offset)
-    {
-        var main = _mainVideoRow;
-        if (index == 0)
-        {
-            // Its keyframes are counted from where the row begins: they stay where they are on the sequence.
-            if (Math.Abs(start - main.StartTime) > 0.0005)
-                main.ShiftKeys(main.StartTime - start);
-            (main.StartTime, main.Duration, main.MediaOffset) = (start, duration, offset);
-        }
-        else
-        {
-            // Its fades go where it goes.
-            _mainPieces[index - 1] = _mainPieces[index - 1] with { Start = start, Duration = duration, Offset = offset };
-        }
-
-        InvalidateMainClips();
-    }
-
-    private MainClip? FindMainClip(int index)
-    {
-        foreach (var clip in GetMainClips())
-        {
-            if (clip.Index == index)
+            if (seconds >= clip.Start - 0.0005 && seconds < clip.End)
                 return clip;
         }
 
@@ -237,257 +130,19 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The razor on the main video: the clip under the playhead becomes two clips that meet there, each of
-    /// which can then be moved, trimmed or deleted on its own.
+    /// Puts the main video back as it is when a source is loaded: one clip of the whole file at the start of the timeline,
+    /// its other clips gone (the main video row's "Back to the Start of the Timeline, Whole"). One step of Undo.
     /// </summary>
-    public bool SplitMain(double seconds)
-    {
-        // A copied video is cut, not edited: the cut segments are what is split.
-        if (!IsVideoReencoded)
-            return SplitSegment(null, seconds);
-
-        if (GetMainClipAt(seconds) is not { } clip || seconds - clip.Start < 0.05 || clip.End - seconds < 0.05)
-        {
-            StatusText = "The playhead is not inside the main video: move it to where the video should be split.";
-            return false;
-        }
-
-        Checkpoint("split the main video");
-        using (DeferCommand())
-        {
-            // The fade in stays with the first part, the fade out goes with the second (each no longer than its part).
-            _mainPieces.Add(new MainPiece(Math.Round(seconds, 3), Math.Round(clip.End - seconds, 3), Math.Round(clip.Offset + seconds - clip.Start, 3))
-            {
-                FadeOut = Math.Min(clip.FadeOut, Math.Round(clip.End - seconds, 2)), FadeOutStyle = clip.FadeOutStyle,
-            });
-            SetMainClip(clip.Index, clip.Start, Math.Round(seconds - clip.Start, 3), clip.Offset);
-            SetMainFades(clip.Index, Math.Min(clip.FadeIn, Math.Round(seconds - clip.Start, 2)), 0);
-            GenerateCommand();
-        }
-
-        Log($"Split clip: {_mainVideoRow.Name} at {TimeDisplay.Format(seconds)}");
-        return true;
-    }
-
-    /// <summary>Moves one clip of the main video along the sequence.</summary>
-    public void MoveMain(int index, double bySeconds)
-    {
-        if (FindMainClip(index) is not { } clip)
-            return;
-
-        bySeconds = Math.Max(bySeconds, -clip.Start);
-        if (Math.Abs(bySeconds) < 0.005)
-            return;
-
-        // Let go a little over another of its clips (up to two seconds, and up to half of either): the two are put end
-        // to end with a crossfade of that much at their cut instead, as a layer's clips are (CommitClipMove).
-        var (start, length) = (clip.Start + bySeconds, clip.End - clip.Start);
-        (int Later, double Seconds)? crossfade = null;
-        foreach (var other in GetMainClips())
-        {
-            var overlap = Math.Min(start + length, other.End) - Math.Max(start, other.Start);
-            if (other.Index == index || overlap <= 0.02 || overlap > Math.Min(LongestDragCrossfade, Math.Min(length, other.End - other.Start) / 2))
-                continue;
-
-            if (start > other.Start)
-                (start, crossfade) = (other.End, (index, Math.Round(overlap, 2)));
-            else
-                (start, crossfade) = (other.Start - length, (other.Index, Math.Round(overlap, 2)));
-            break;
-        }
-
-        Checkpoint("move the main video");
-        using (DeferCommand())
-        {
-            SetMainClip(index, Math.Round(Math.Max(start, 0), 3), index == 0 ? _mainVideoRow.Duration : _mainPieces[index - 1].Duration, clip.Offset);
-            if (crossfade is var (later, seconds))
-                SetMainTransition(later, seconds);
-            GenerateCommand();
-        }
-
-        bySeconds = start - clip.Start;
-
-        Log($"Moved clip: {_mainVideoRow.Name} now starts at {TimeDisplay.Format(clip.Start + bySeconds)}");
-    }
-
-    /// <summary>Sets how long one clip of the main video stays, from where it starts: dragging the right edge of its block.</summary>
-    public void SetMainLength(int index, double seconds)
-    {
-        if (FindMainClip(index) is not { } clip)
-            return;
-
-        var left = Math.Max(MainMediaSeconds - clip.Offset, 0);
-        Checkpoint("trim the main video");
-        using (DeferCommand())
-        {
-            // As long as what is left of the file, or longer, is simply "to its end".
-            SetMainClip(index, clip.Start, left > 0 && seconds >= left - 0.02 ? (index == 0 ? 0 : left) : Math.Round(Math.Max(seconds, 0.1), 3), clip.Offset);
-            GenerateCommand();
-        }
-
-        Log($"Trimmed clip: {_mainVideoRow.Name} now ends at {TimeDisplay.Format(FindMainClip(index)?.End ?? 0)}");
-    }
-
-    /// <summary>Trims one clip of the main video to the playhead: its start (what came before goes) or its end.</summary>
-    public bool TrimMain(int index, bool start, double seconds)
-    {
-        if (FindMainClip(index) is not { } clip || seconds <= clip.Start + 0.05 || seconds >= clip.End - 0.05)
-        {
-            StatusText = "Put the playhead inside the clip of the main video to trim it there.";
-            return false;
-        }
-
-        Checkpoint("trim the main video");
-        using (DeferCommand())
-        {
-            if (start)
-                SetMainClip(index, Math.Round(seconds, 3), Math.Round(clip.End - seconds, 3), Math.Round(clip.Offset + seconds - clip.Start, 3));
-            else
-                SetMainClip(index, clip.Start, Math.Round(seconds - clip.Start, 3), clip.Offset);
-            GenerateCommand();
-        }
-
-        Log($"Trimmed clip: {_mainVideoRow.Name} now {(start ? "starts" : "ends")} at {TimeDisplay.Format(seconds)}");
-        return true;
-    }
-
-    /// <summary>
-    /// Drags the left edge of one clip of the main video to a moment of the sequence: later trims what it starts with,
-    /// earlier brings back what of its file was trimmed (as far as the file's start). Its end stays where it is.
-    /// </summary>
-    public void SetMainStart(int index, double seconds)
-    {
-        if (FindMainClip(index) is not { } clip)
-            return;
-
-        // No earlier than the file allows, and at least a tenth of a second before its end.
-        seconds = Math.Clamp(seconds, Math.Max(clip.Start - clip.Offset, 0), clip.End - 0.1);
-        if (Math.Abs(seconds - clip.Start) < 0.0005)
-            return;
-
-        Checkpoint("trim the main video");
-        using (DeferCommand())
-        {
-            SetMainClip(index, Math.Round(seconds, 3), Math.Round(clip.End - seconds, 3), Math.Round(Math.Max(clip.Offset + seconds - clip.Start, 0), 3));
-            GenerateCommand();
-        }
-
-        Log($"Trimmed clip: {_mainVideoRow.Name} now starts at {TimeDisplay.Format(seconds)}");
-    }
-
-    /// <summary>
-    /// The cut between two clips of the main video that meet, moved to a moment of the sequence: the earlier one's end
-    /// and the later one's start go there together (a roll), each taking or giving back what of the file it shows.
-    /// </summary>
-    public void RollMainCut(int earlier, int later, double seconds)
-    {
-        if (FindMainClip(earlier) is not { } first || FindMainClip(later) is not { } second)
-            return;
-
-        var media = MainMediaSeconds;
-        var latest = Math.Min(second.End - 0.1, media > 0 ? first.Start + media - first.Offset : double.MaxValue);
-        seconds = Math.Clamp(seconds, Math.Max(first.Start + 0.1, second.Start - second.Offset), latest);
-        if (Math.Abs(seconds - first.End) < 0.0005)
-            return;
-
-        Checkpoint("roll the cut in the main video");
-        using (DeferCommand())
-        {
-            SetMainClip(earlier, first.Start, Math.Round(seconds - first.Start, 3), first.Offset);
-            SetMainClip(later, Math.Round(seconds, 3), Math.Round(second.End - seconds, 3), Math.Round(Math.Max(second.Offset + seconds - second.Start, 0), 3));
-            GenerateCommand();
-        }
-
-        Log($"Rolled the cut in {_mainVideoRow.Name} to {TimeDisplay.Format(seconds)}");
-    }
-
-    /// <summary>The clip of the main video whose end meets this one's start, or null when none does.</summary>
-    public MainClip? MainClipBefore(int index) =>
-        FindMainClip(index) is { } clip && GetMainClips().FirstOrDefault(c => c.Index != index && Math.Abs(c.End - clip.Start) < 0.011) is { End: > 0 } before ? before : null;
-
-    /// <summary>A crossfade of so many seconds from the clip of the main video before this one (0: a plain cut again).</summary>
-    public void SetMainCrossfade(int index, double seconds)
-    {
-        seconds = Math.Round(Math.Clamp(seconds, 0, 10), 2);
-        if (seconds > 0 && MainClipBefore(index) is null)
-        {
-            StatusText = "That clip of the main video does not meet the one before it: put them end to end first (snapping puts one where the other ends).";
-            return;
-        }
-
-        Checkpoint(seconds > 0 ? "crossfade in the main video" : "remove a crossfade in the main video");
-        using (DeferCommand())
-        {
-            SetMainTransition(index, seconds);
-            GenerateCommand();
-        }
-
-        Log(seconds > 0 ? $"Crossfade of {TimeDisplay.Format(seconds)} between two clips of {_mainVideoRow.Name}, centred on the cut" : $"Removed a crossfade in {_mainVideoRow.Name}");
-    }
-
-    private void SetMainTransition(int index, double seconds)
-    {
-        if (index == 0)
-            _mainVideoRow.TransitionIn = seconds;
-        else if (index - 1 < _mainPieces.Count)
-            _mainPieces[index - 1] = _mainPieces[index - 1] with { TransitionIn = seconds };
-        InvalidateMainClips();
-    }
-
-    /// <summary>
-    /// The main video's clips as a graph is given them, and the crossfades between them. Each pair that meets with a
-    /// crossfade is laid over each other across the cut, as a track's clips are (ApplyCrossfades): the earlier plays on
-    /// past it and the later starts before it, into what the file has there (up to half the crossfade each). In the one
-    /// stream the main video is cut from, the earlier clip runs on to the end of the crossfade and the later begins
-    /// there; the later's head is laid over it from the start of the crossfade, coming up by an opacity ramp
-    /// (<see cref="MainCrossfade"/>). Where the file has nothing beyond the cut, both fade through what is under them.
-    /// </summary>
-    private (List<MainClip> Clips, List<MainCrossfade> Crossfades) GetMainClipsForGraph()
-    {
-        var clips = GetMainClips().ToList();
-        var crossfades = new List<MainCrossfade>();
-        var media = MainMediaSeconds;
-        for (var i = 1; i < clips.Count; i++)
-        {
-            var (before, after) = (clips[i - 1], clips[i]);
-            if (after.TransitionIn <= 0.01 || Math.Abs(before.End - after.Start) >= 0.011)
-                continue;
-
-            var length = Math.Min(after.TransitionIn, Math.Min(before.End - before.Start, after.End - after.Start));
-            var late = Math.Min(length / 2, media > 0 ? Math.Max(media - (before.Offset + before.End - before.Start), 0) : 0);
-            var early = Math.Min(length / 2, after.Offset);
-            if (late + early < 0.04)
-            {
-                clips[i - 1] = before with { FadeOut = Math.Max(before.FadeOut, length / 2) };
-                clips[i] = after with { FadeIn = Math.Max(after.FadeIn, length / 2) };
-                continue;
-            }
-
-            var cut = after.Start;
-            crossfades.Add(new MainCrossfade(Math.Round(cut - early, 3), Math.Round(cut + late, 3), Math.Round(after.Offset - early, 3)));
-            clips[i - 1] = before with { End = Math.Round(cut + late, 3) };
-            clips[i] = after with { Start = Math.Round(cut + late, 3), Offset = Math.Round(after.Offset + late, 3) };
-        }
-
-        return (clips, crossfades);
-    }
-
-    /// <summary>Puts the main video back as a newly opened one is: one clip, whole, at the start of the timeline.</summary>
     public void ResetMainTiming()
     {
-        var main = _mainVideoRow;
-        if (_mainPieces.Count == 0 && main.StartTime < 0.001 && main.MediaOffset < 0.001 && main.Duration < 0.001)
+        if (!HasSource || MainMediaSeconds <= 0.05)
             return;
 
-        Checkpoint("reset the main video's timing");
-        using (DeferCommand())
-        {
-            _mainPieces.Clear();
-            SetMainClip(0, 0, 0, 0);
-            GenerateCommand();
-        }
-
-        StatusText = $"{main.Name} is one clip again, whole, at the start of the timeline.";
+        FlushLooks();
+        var before = CaptureSnapshot();
+        PlaceMainVideo();
+        Checkpoint("put the main video back whole", before);
+        Log("The main video is back at the start of the timeline, whole");
     }
 
     // ----- The recycle bin -----
@@ -502,9 +157,22 @@ public partial class MainViewModel
     /// <summary>What the trash can says beside it: how many clips are in the bin, or nothing.</summary>
     public string RecycleBinText => RecycleBin.Count > 0 ? RecycleBin.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
 
-    private void AddToBin(DeletedClip clip, string name, double start, double end, System.Windows.Media.ImageSource? preview)
+    /// <summary>A clip about to be deleted, as the bin keeps it: a copy of it as it is now, its track, and a picture of it.</summary>
+    private (DeletedClip Clip, System.Windows.Media.ImageSource? Preview) Binned(TimelineClip clip, TimelineTrackModel track, Layer? view)
     {
-        RecycleBin.Insert(0, new BinItem(clip, name, $"{TimeDisplay.Format(start)} to {TimeDisplay.Format(end)}", preview));
+        FlushLooks();
+        return (new DeletedClip(CopyOfClip(clip), track.Id, track.Kind, Document.Tracks.IndexOf(track)), view?.Filmstrip ?? view?.Waveform);
+    }
+
+    /// <summary>A copy of a clip that nothing done to it reaches, the same id (it is put back as itself), its look shared (never changed in place).</summary>
+    private static TimelineClip CopyOfClip(TimelineClip clip) =>
+        System.Text.Json.JsonSerializer.Deserialize<TimelineClip>(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(clip, BinOptions), BinOptions)!;
+
+    private static readonly System.Text.Json.JsonSerializerOptions BinOptions = new() { NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals };
+
+    private void AddToBin(DeletedClip clip, string name, System.Windows.Media.ImageSource? preview)
+    {
+        RecycleBin.Insert(0, new BinItem(clip, name, $"{TimeDisplay.Format(clip.Clip.Start)} to {TimeDisplay.Format(clip.Clip.End)}", preview));
         OnPropertyChanged(nameof(HasDeleted));
         OnPropertyChanged(nameof(RecycleBinText));
     }
@@ -514,15 +182,12 @@ public partial class MainViewModel
         RecycleBin.Clear();
         foreach (var clip in clips ?? [])
         {
-            if (clip.Layer is { } layer)
-            {
-                var end = layer.Duration > 0.001 ? layer.StartTime + layer.Duration : SequenceSeconds;
-                RecycleBin.Add(new BinItem(clip, layer.Name, $"{TimeDisplay.Format(layer.StartTime)} to {TimeDisplay.Format(end)}", GetLayerPicture(layer.ImagePath)));
-            }
-            else if (clip.Main is { } piece)
-            {
-                RecycleBin.Add(new BinItem(clip, _mainVideoRow.Name, $"{TimeDisplay.Format(piece.Start)} to {TimeDisplay.Format(piece.Start + piece.Duration)}", null));
-            }
+            if (clip?.Clip is not { } deleted)
+                continue;
+
+            var name = deleted.ContentKind == LayerKind.MainVideo ? MainVideoName() : deleted.State.Name;
+            var preview = deleted.SourcePath is { } path ? GetLayerPicture(path) : null;
+            RecycleBin.Add(new BinItem(clip, name, $"{TimeDisplay.Format(deleted.Start)} to {TimeDisplay.Format(deleted.End)}", preview));
         }
 
         OnPropertyChanged(nameof(HasDeleted));
@@ -532,88 +197,59 @@ public partial class MainViewModel
     /// <summary>A picture already made of a layer's file this session: frames of its video, or failing that nothing.</summary>
     private System.Windows.Media.ImageSource? GetLayerPicture(string path) => _layerFilmstrips.GetValueOrDefault(path);
 
-    /// <summary>Deletes a layer's clip: it leaves the timeline and waits in the recycle bin.</summary>
-    private void MoveToBin(Layer clip)
+    /// <summary>Deletes a clip: it leaves the timeline, its time left empty, and waits in the recycle bin. One step of Undo.</summary>
+    private bool MoveToBin(Layer view, string? label = null)
     {
-        var index = Layers.IndexOf(clip);
-        if (index < 0)
-            return;
-
-        var state = clip.ToState();
-        state.IsDeleted = true;
-        var (start, end) = clip.GetSpan(SequenceSeconds);
-        var preview = clip.Filmstrip ?? clip.Waveform;
-        Detach(clip);
-        AddToBin(new DeletedClip(state, null, index), clip.Name, start, end, preview);
-    }
-
-    /// <summary>Deletes one clip of the main video. Its last clip cannot go: the main video is hidden instead.</summary>
-    public bool DeleteMainClip(int index)
-    {
-        if (FindMainClip(index) is not { } clip)
+        if (ClipOf(view) is not { } clip || Document.TrackOf(clip) is not { } track)
             return false;
 
-        if (GetMainClips().Count < 2)
-        {
-            StatusText = $"That is all there is of {_mainVideoRow.Name}. To leave its picture out, hide it (right-click its row); to shorten it, trim it.";
+        var deleted = Binned(clip, track, view);
+        if (!Edit(label ?? $"delete {view.Name}", edit => edit.DeleteClip(clip)))
             return false;
-        }
 
-        Checkpoint("delete a clip of the main video");
-        using (DeferCommand())
-        {
-            var main = _mainVideoRow;
-            var deleted = new MainPiece(clip.Start, clip.End - clip.Start, clip.Offset);
-            if (index == 0)
-            {
-                // The row's own clip goes: the next clip along becomes the row's.
-                var next = _mainPieces.MinBy(p => p.Start)!;
-                _mainPieces.Remove(next);
-                SetMainClip(0, next.Start, next.Duration, next.Offset);
-            }
-            else
-            {
-                _mainPieces.RemoveAt(index - 1);
-            }
-
-            InvalidateMainClips();
-            AddToBin(new DeletedClip(null, deleted, 0), main.Name, clip.Start, clip.End, null);
-            GenerateCommand();
-        }
-
-        Log($"Deleted clip of {_mainVideoRow.Name} (in the recycle bin; Ctrl+Z brings it back)");
+        AddToBin(deleted.Clip, view.Name, deleted.Preview);
         return true;
     }
 
-    /// <summary>Puts a deleted clip back on the timeline where it was.</summary>
+    /// <summary>
+    /// Puts a deleted clip back on the timeline where it was: on its track when that is still there and free for it,
+    /// otherwise on a new track of its kind at the place its own had in the stack.
+    /// </summary>
     public void RestoreFromBin(BinItem item)
     {
         if (!RecycleBin.Contains(item))
             return;
 
-        Checkpoint($"restore {item.Name}");
-        using (DeferCommand())
-        {
-            RecycleBin.Remove(item);
-            if (item.Clip.Layer is { } state)
+        // A copy is put back, so the bin's own stays as it was (an undo step can bring it back to the bin).
+        var clip = CopyOfClip(item.Clip.Clip);
+        if (Document.FindClip(clip.Id) is not null)
+            clip.Id = Guid.NewGuid();
+        if (!Edit($"restore {item.Name}", edit =>
             {
-                state.IsDeleted = false;
-                var layer = Layer.FromState(state, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
-                Hook(layer);
-                InsertLayer(item.Clip.Index, layer);
-                _ = LoadLayerPicturesAsync(layer);
-            }
-            else if (item.Clip.Main is { } piece)
-            {
-                _mainPieces.Add(piece);
-                InvalidateMainClips();
-            }
+                if (Document.Tracks.FirstOrDefault(t => t.Id == item.Clip.TrackId) is { IsLocked: false } track && track.Accepts(clip))
+                {
+                    try
+                    {
+                        edit.PlaceClip(track, clip, allowCrossfadeOverlap: false);
+                        return;
+                    }
+                    catch (TimelineEditException)
+                    {
+                        // No room there now: a track of its own.
+                    }
+                }
 
-            OnPropertyChanged(nameof(HasDeleted));
-            OnPropertyChanged(nameof(RecycleBinText));
-            GenerateCommand();
+                var kind = TimelineTrackModel.KindFor(clip.ContentKind);
+                var index = Math.Clamp(item.Clip.TrackIndex, 0, Document.Tracks.Count);
+                edit.PlaceClip(edit.InsertTrack(index, kind == TimelineTrackKind.Subtitle ? TimelineTrackKind.Video : kind), clip, allowCrossfadeOverlap: false);
+            }))
+        {
+            return;
         }
 
+        RecycleBin.Remove(item);
+        OnPropertyChanged(nameof(HasDeleted));
+        OnPropertyChanged(nameof(RecycleBinText));
         Log($"Restored clip: {item.Name}, {item.TimeText}");
     }
 
@@ -647,101 +283,6 @@ public partial class MainViewModel
         }
 
         return unused.Count;
-    }
-
-    // The main video is placed about its middle (zoom and offsets), which is what keeps it centred when the
-    // frame changes shape. Its row shows the same place the way every other layer's does, as a corner and a
-    // width, and the two are kept in step here.
-    private bool _syncingMainRow;
-
-    /// <summary>Writes the main video's place into its row, from the zoom and offsets.</summary>
-    /// <param name="moved">Whether it was moved by hand (dragged in the layout pane, say), which is something a keyframe may have to record.</param>
-    private void SyncMainRow(bool moved = false)
-    {
-        if (_syncingMainRow || _applyingKeys)
-            return;
-
-        var main = _mainVideoRow;
-        var (frameWidth, frameHeight) = ((double)FrameWidth, (double)FrameHeight);
-        var (x, y, width, _) = GetCenterRect();
-        var before = (main.SizeWidth, main.PositionX, main.PositionY);
-        _syncingMainRow = true;
-        try
-        {
-            (main.SizeWidth, main.PositionX, main.PositionY) = (width / frameWidth, x / frameWidth, y / frameHeight);
-        }
-        finally
-        {
-            _syncingMainRow = false;
-        }
-
-        // Not while a preset or a project is being put in place: that is not the user moving it.
-        if (!moved || _commandDeferrals > 0)
-            return;
-
-        if (main.SizeWidth != before.SizeWidth)
-            RecordKey(main, nameof(Layer.SizeWidth));
-        if (main.PositionX != before.PositionX)
-            RecordKey(main, nameof(Layer.PositionX));
-        if (main.PositionY != before.PositionY)
-            RecordKey(main, nameof(Layer.PositionY));
-    }
-
-    partial void OnCenterZoomChanged(double value) => SyncMainRow(moved: true);
-    partial void OnCenterOffsetXChanged(double value) => SyncMainRow(moved: true);
-    partial void OnCenterOffsetYChanged(double value) => SyncMainRow(moved: true);
-
-    private void OnMainRowChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        if (_syncingMainRow)
-            return;
-
-        // A picture of the clip arriving is something to draw, and nothing to do with the command.
-        if (e.PropertyName is nameof(Layer.Waveform) or nameof(Layer.Filmstrip))
-        {
-            TimelineChanged?.Invoke();
-            return;
-        }
-
-        var main = _mainVideoRow;
-        if (Layer.GetKeyProperty(e.PropertyName) is { } property and not (KeyProperty.Rotation or KeyProperty.Opacity))
-        {
-            // Set in the row, or by a keyframe: carried over to the zoom and offsets.
-            _syncingMainRow = true;
-            try
-            {
-                var (frameWidth, frameHeight) = ((double)FrameWidth, (double)FrameHeight);
-                var (sourceWidth, sourceHeight) = GetCroppedSourceSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
-                var zoom = Math.Clamp(main.SizeWidth, SmallestCenterZoom, LargestCenterZoom);
-                if (property == KeyProperty.Scale)
-                    CenterZoom = zoom;
-                else if (property == KeyProperty.X)
-                    CenterOffsetX = Math.Clamp((main.PositionX - (1 - zoom) / 2) * 100, -100, 100);
-                else
-                    CenterOffsetY = Math.Clamp((main.PositionY - (1 - zoom * frameWidth * sourceHeight / sourceWidth / frameHeight) / 2) * 100, -100, 100);
-            }
-            finally
-            {
-                _syncingMainRow = false;
-            }
-
-            // Resized, it grows about its middle: its corner has moved, and so have the keyframes that hold it.
-            if (property == KeyProperty.Scale && !_applyingKeys)
-            {
-                SyncMainRow();
-                RecordKey(main, nameof(Layer.PositionX));
-                RecordKey(main, nameof(Layer.PositionY));
-            }
-        }
-
-        if (_applyingKeys)
-            return;
-
-        if (e.PropertyName == Layer.KeysChanged)
-            RefreshAnyKeys();
-        RecordKey(main, e.PropertyName);
-        TimelineChanged?.Invoke();
-        GenerateCommand();
     }
 
     // ----- Keyframes -----
@@ -786,8 +327,11 @@ public partial class MainViewModel
     /// <summary>The clip whose keyframes the Keyframes pane shows and the keyframe buttons work on: the one last selected, or the main video.</summary>
     [ObservableProperty] private Layer? _keyLayer;
 
+    // The main video's clip the keyframe controls last showed, with nothing selected (see OnPositionMsChanged).
+    private Layer? _mainLayerShown;
+
     /// <summary>The clip the keyframe controls work on.</summary>
-    public Layer ActiveKeyLayer => KeyLayer is { } layer && (layer.IsMainVideo || Layers.Contains(layer)) && layer.IsPicture ? layer : _mainVideoRow;
+    public Layer ActiveKeyLayer => KeyLayer is { } layer && Layers.Contains(layer) && layer.IsPicture && !layer.IsEmptyTrack ? layer : MainLayer;
 
     /// <summary>The text layer that is selected, whose words and font the Text Settings panel edits; null when what is selected is not one.</summary>
     public Layer? SelectedTextLayer => KeyLayer is { IsText: true } layer && Layers.Contains(layer) ? layer : null;
@@ -1010,7 +554,7 @@ public partial class MainViewModel
 
     private void RefreshAnyKeys()
     {
-        _anyKeys = _mainVideoRow.IsAnimated || Layers.Any(l => l.IsAnimated);
+        _anyKeys = Layers.Any(l => l.IsAnimated);
         RefreshSelectedKey();
     }
 
@@ -1019,6 +563,15 @@ public partial class MainViewModel
 
     partial void OnPositionMsChanged(double value)
     {
+        // With nothing selected, the keyframe controls and the Effects pane work on the main video's clip at the playhead:
+        // the playhead crossing into another of its clips is another clip to show.
+        if (KeyLayer is null && !_applyingKeys && !ReferenceEquals(MainLayer, _mainLayerShown))
+        {
+            _mainLayerShown = MainLayer;
+            OnPropertyChanged(nameof(ActiveKeyLayer));
+            RefreshSelectedKey();
+        }
+
         if (!_anyKeys)
             return;
 
@@ -1065,7 +618,6 @@ public partial class MainViewModel
         try
         {
             var seconds = PositionMs / 1000;
-            Apply(_mainVideoRow);
             foreach (var layer in Layers)
                 Apply(layer);
 
@@ -1269,7 +821,8 @@ public partial class MainViewModel
         }
 
         StandIn(SequenceSeconds - reached);
-        return parts.ToString();
+        // Nothing on the timeline at all: the file is played as it is.
+        return parts.Length > 0 ? parts.ToString() : null;
     }
 
     // ----- The stand-in clock -----
@@ -1335,5 +888,5 @@ public partial class MainViewModel
 
     /// <summary>The audio filter that goes with <see cref="PlayerSource"/>: silence where the main video is not there. Empty for none.</summary>
     public string PlayerAudioFilter =>
-        !HasSource || IsMainWholeSequence ? "" : $"lavfi=[volume=0:enable='not({FilterGraphBuilder.BuildMainGate(GetMainClips(), 0, SequenceSeconds)})']";
+        !HasSource || IsMainWholeSequence ? "" : $"lavfi=[volume=0:enable='not({FilterGraphBuilder.BuildMainGate(Lowering.MainHeard, 0, SequenceSeconds)})']";
 }

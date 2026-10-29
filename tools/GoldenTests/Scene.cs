@@ -1,4 +1,3 @@
-using System.Reflection;
 using HandPegApp.Models;
 using HandPegApp.Models.Effects;
 using HandPegApp.Services;
@@ -40,9 +39,10 @@ public sealed record Media(
 public sealed record SceneClip(LayerState State, Media? Media);
 
 /// <summary>
-/// A timeline written as a fixture, made into the <see cref="SequenceExportState"/> the view model would hand the builder:
-/// the same copies of the layers, the same preparation of them (folded keyframes, crossfades laid over each other), the
-/// same derived numbers (the sequence's length, the main video's clips). Only the values a fixture sets differ.
+/// A timeline written as a fixture, in 4.2.0's terms (the main video's clips, layers by track id), made into the
+/// <see cref="SequenceExportState"/> the view model would hand the builder: its timeline the document the fixture makes
+/// of it (LegacyFixtures, 4.3B), which the builder lowers and prepares (crossfades, folded keyframes) itself. Only the
+/// values a fixture sets differ.
 /// </summary>
 public sealed class Scene(string name)
 {
@@ -61,13 +61,16 @@ public sealed class Scene(string name)
     /// <summary>The main video's own clip on the timeline: where it starts, how far into its file, how long (0 for the rest of it).</summary>
     public (double Start, double Offset, double Duration) MainClip { get; init; } = (0, 0, 0);
 
-    public List<MainPiece> MainPieces { get; } = [];
+    /// <summary>The main video's further clips, after its own (<see cref="MainClip"/>): each where it starts, how far into its file, how long.</summary>
+    public List<(double Start, double Offset, double Duration)> MoreMainClips { get; } = [];
+
     public List<SceneClip> Clips { get; } = [];
     public List<ExportAudioTrack> AudioTracks { get; } = [];
-    public List<(double Start, double End)> Segments { get; } = [];
     public Dictionary<string, string> Proxies { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> ExistingFiles { get; } = new(StringComparer.OrdinalIgnoreCase);
     public List<EffectInstance> SequenceEffects { get; } = [];
+
+    /// <summary>A chapter at each clip of the primary chain (the chapters list read beside the command).</summary>
     public bool ChaptersAtCuts { get; init; }
     public bool MergeAudioTracks { get; init; }
     public string Container { get; init; } = "mp4";
@@ -174,76 +177,41 @@ public sealed class Scene(string name)
                 layer.GetOutputRect(frameWidth, frameHeight, sourceWidth, sourceHeight);
         }
 
-        var copies = new Dictionary<Layer, Layer>(ReferenceEqualityComparer.Instance);
-        Layer Snapshot(Layer layer)
-        {
-            if (!copies.TryGetValue(layer, out var copy))
-            {
-                copies[layer] = copy = Layer.FromState(layer.ToState(), sourceWidth, sourceHeight, frameWidth, frameHeight);
-                FilterGraphBuilder.FoldConstantKeys(copy);
-            }
+        var caption = Layer.FromState(captionRow.ToState(), sourceWidth, sourceHeight, frameWidth, frameHeight);
+        FilterGraphBuilder.FoldConstantKeys(caption);
 
-            return copy;
-        }
-
-        var order = layers.Where(l => !l.IsAudio).ToList();
-        order.Insert(Math.Clamp(MainVideoIndex, 0, order.Count), mainRow);
-        var stack = order.Where(l => l is { IsLoading: false, IsEmptyTrack: false }).Select(Snapshot).ToList();
-        var sounds = layers.Where(l => l.CarriesSound && !l.IsHidden && !l.IsSoundMuted).Select(Snapshot).ToList();
-        var caption = Snapshot(captionRow);
-        Prepare("LayLaterClipsOver", stack);
-        Prepare("ApplyCrossfades", (IReadOnlyCollection<Layer>)copies.Values);
-        Prepare("PairLayerCrossfades", stack);
-
+        // The sequence as 4.2.0 measured it, for its "to the end" clips: to the end of the main video and of every clip with a length.
         var mainClips = MainClips(mainRow);
         var sequenceSeconds = mainClips.Count == 0 ? MainClip.Start : mainClips.Max(c => c.End);
         if (FrameEngine)
             sequenceSeconds = layers.Where(l => l.Duration > 0.001).Select(l => l.StartTime + l.Duration).Append(sequenceSeconds).Max();
 
-        var segments = Segments.Select(s => new ExportSegment(TimeSpan.FromSeconds(s.Start), TimeSpan.FromSeconds(s.End))).ToList();
-        var wholeSequence = !FrameEngine || (MainPieces.Count == 0 && (mainClips.Count == 0
-            || (mainClips[0].Start < 0.001 && MainClip.Offset < 0.001 && Math.Abs(mainClips.Max(c => c.End) - Main.Seconds) < 0.02 && sequenceSeconds - mainClips.Max(c => c.End) < 0.02)));
-
         var centerWidth = frameWidth;
         var centerHeight = (int)Math.Round((double)centerWidth * sourceHeight / sourceWidth / 2) * 2;
-        var videoFiles = stack.Where(l => l.IsVideoFile).Select(l => Clips.First(c => c.State.ImagePath == l.ImagePath).Media!).DistinctBy(m => m.Path).ToList();
+        var videoFiles = layers.Where(l => l.IsVideoFile).Select(l => Clips.First(c => c.State.ImagePath == l.ImagePath).Media!).DistinctBy(m => m.Path).ToList();
 
         return new SequenceExportState
         {
-            SequenceSeconds = sequenceSeconds,
-            OutputDuration = segments.Count > 0 ? segments.Sum(s => s.Duration.TotalSeconds) : sequenceSeconds,
-            FrameWidth = frameWidth,
-            FrameHeight = frameHeight,
+            Timeline = LegacyFixtures.ToTimeline(this, mainRow, mainClips, layers, sequenceSeconds),
             SourceFrameRate = FrameRate,
             SourceWidth = sourceWidth,
             SourceHeight = sourceHeight,
             RequestedSize = FrameEngine ? (frameWidth, frameHeight) : null,
             OutputSize = (frameWidth, frameHeight),
-            UseVerticalResolution = frameHeight > frameWidth,
             LocalMediaPath = Main.Path,
             HasSource = true,
             SourceMayHaveAudio = Main.HasAudio,
             MainMediaSeconds = Main.Seconds,
-            MainClips = mainClips,
-            MainShift = FrameEngine ? MainClip.Start - MainClip.Offset : 0,
-            IsMainSpliced = FrameEngine && MainPieces.Count > 0,
-            IsMainWholeSequence = wholeSequence,
             CenterRect = ((frameWidth - centerWidth) / 2, (frameHeight - centerHeight) / 2, centerWidth, centerHeight),
             FrameEngine = FrameEngine,
-            Stack = stack,
-            MainLayer = Snapshot(mainRow),
             BackgroundHidden = BackgroundHidden,
             CaptionLayer = caption,
             FadeIn = FadeIn,
             FadeOut = FadeOut,
-            Segments = segments,
-            HasCutSegments = segments.Count > 0,
             ChaptersAtCuts = ChaptersAtCuts,
             CutsFilePath = "D:/session/cuts.txt",
             ChaptersFilePath = "D:/session/chapters.txt",
             AudioTracks = AudioTracks,
-            LayerAudio = sounds,
-            AudioLinked = AudioLinked,
             MergeAudioTracks = MergeAudioTracks,
             VideoCodecArguments = VideoCodecArguments,
             EncoderPixelFormat = EncoderPixelFormat,
@@ -253,11 +221,10 @@ public sealed class Scene(string name)
             MediaStarts = videoFiles.Where(m => m.Probed).ToDictionary(m => m.Path, m => m.VideoStart, StringComparer.OrdinalIgnoreCase),
             SeekIndexes = videoFiles.Where(m => m.Indexed).ToDictionary(m => m.Path, m => new SeekIndex(m.ContainerStart, m.IFrames), StringComparer.OrdinalIgnoreCase),
             PreviewPaths = new Dictionary<string, string>(Proxies, StringComparer.OrdinalIgnoreCase),
-            SequenceEffects = [.. SequenceEffects.Select(e => e.Clone())],
         };
     }
 
-    /// <summary>The main video's clips as MainViewModel.GetMainClips lays them out.</summary>
+    /// <summary>The main video's clips as 4.2.0's MainViewModel.GetMainClips laid them out.</summary>
     private List<MainClip> MainClips(Layer main)
     {
         var media = Main.Seconds;
@@ -274,10 +241,10 @@ public sealed class Scene(string name)
         }
 
         Add(0, main.StartTime, main.Duration, main.MediaOffset, main.FadeInSeconds, main.FadeOutSeconds, main.FadeInStyle, main.FadeOutStyle);
-        for (var i = 0; i < MainPieces.Count; i++)
+        for (var i = 0; i < MoreMainClips.Count; i++)
         {
-            var piece = MainPieces[i];
-            Add(i + 1, piece.Start, piece.Duration, piece.Offset, piece.FadeIn, piece.FadeOut, piece.FadeInStyle, piece.FadeOutStyle);
+            var (start, offset, duration) = MoreMainClips[i];
+            Add(i + 1, start, duration, offset, 0, 0, default, default);
         }
 
         clips.Sort((a, b) => a.Start.CompareTo(b.Start));
@@ -290,16 +257,5 @@ public sealed class Scene(string name)
         }
 
         return clips;
-    }
-
-    /// <summary>
-    /// The view model's own preparation of the copies (crossfades, the order of a track's clips), called as it is: these
-    /// are private to MainViewModel, and a fixture that prepared its copies some other way would test something else.
-    /// </summary>
-    private static void Prepare(string method, object argument)
-    {
-        var found = typeof(HandPegApp.ViewModels.MainViewModel).GetMethod(method, BindingFlags.NonPublic | BindingFlags.Static)
-                    ?? throw new MissingMethodException($"MainViewModel.{method} is not there any more: Scene.Compile prepares the copies as CompileExportState does, and needs updating with it.");
-        found.Invoke(null, [argument]);
     }
 }

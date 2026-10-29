@@ -28,7 +28,7 @@ public partial class MainViewModel : ObservableObject
     [
         nameof(CommandPreview), nameof(IsCommandManuallyEdited), nameof(StatusText), nameof(SourcePath), nameof(DownloadResolution),
         nameof(PositionMs), nameof(PositionText), nameof(DurationMs), nameof(DurationText), nameof(TimelineMaximum),
-        nameof(PendingStartMs), nameof(PendingStartText), nameof(SelectedSegment),
+        nameof(PendingStartMs), nameof(PendingStartText),
         nameof(IFrameStatusText), nameof(Volume), nameof(EditingJob), nameof(IsEditingQueuedJob),
         nameof(SourceWidth), nameof(SourceHeight), nameof(SourceSizeText), nameof(IsCustomPixelAspectRatio),
         nameof(HardwareEncoderStatusText), nameof(AreSoftwareEncoderOptionsEnabled), nameof(IsVideoReencoded),
@@ -43,7 +43,7 @@ public partial class MainViewModel : ObservableObject
         nameof(CaptionAudioPath), nameof(ShowAutoCaptions), nameof(ShowStandardSubtitles), nameof(CaptionHint), nameof(CaptionStyleSummary),
         nameof(DefaultPresetChoice),
         nameof(TimelineWaveform), nameof(SelectedMicrophone), nameof(IsRecording), nameof(IsRecordingPaused), nameof(VoiceoverStatus),
-        nameof(HasVoiceover), nameof(VoiceoverWaveform), nameof(VoiceoverDuration), nameof(VoiceoverTrimText), nameof(PlayOnlySegments),
+        nameof(HasVoiceover), nameof(VoiceoverWaveform), nameof(VoiceoverDuration), nameof(VoiceoverTrimText),
         nameof(ResolutionPreset), nameof(ShowPresetBarAtTop), nameof(ShowPresetBarInSummary),
         nameof(TimelineAreaHeight), nameof(AudioTrackRowHeight), nameof(ShowWaveforms),
         nameof(WhisperPrompt), nameof(WhisperLanguage), nameof(WhisperTranslate), nameof(CanEditLayout),
@@ -121,7 +121,7 @@ public partial class MainViewModel : ObservableObject
         // Set as fields: nothing is listening yet, and nothing should react as if the user had changed them.
         var settings = AppSettings.Current;
 #pragma warning disable MVVMTK0034
-        (_snapToIFrames, _playOnlySegments) = (settings.StartWithSnapToIFrames, settings.StartWithPlayOnlySegments);
+        _snapToIFrames = settings.StartWithSnapToIFrames;
 
         // The tracks a video is given are mixed into one, which is what an edit is exported as.
         _mergeAudioTracks = true;
@@ -172,19 +172,17 @@ public partial class MainViewModel : ObservableObject
                 RefreshLiveCaptionsSoon();
             }
         };
-        _mainVideoRow.PropertyChanged += OnMainRowChanged;
+        Document.Committed += OnDocumentCommitted;
         LoadPlaybackControls();
         AudioTracks.CollectionChanged += (_, _) => RefreshAudioRows();
         _backgroundRow.PropertyChanged += (_, _) => GenerateCommand();
         Layers.CollectionChanged += (_, _) => GenerateCommand();
-        Segments.CollectionChanged += (_, _) => GenerateCommand();
         GenerateCommand();
         OpenLayoutPaneIfWanted();
 
         // The voiceover's place in the Master Mix View follows the voiceover, its trim and the cuts.
         if (!_isBackgroundWorker)
         {
-            Segments.CollectionChanged += (_, _) => UpdateVoiceoverMix();
             PropertyChanged += (_, e) =>
             {
                 if (e.PropertyName is nameof(DurationMs) or nameof(VoiceoverWaveform) or nameof(VoiceoverPath)
@@ -295,7 +293,8 @@ public partial class MainViewModel : ObservableObject
             Presets.Add(preset);
     }
 
-    private void ApplyPreset(EncodingPreset preset)
+    /// <param name="withLayout">False for a project's own settings: its timeline (layers, the main video's look) is the project's, not a preset's.</param>
+    private void ApplyPreset(EncodingPreset preset, bool withLayout = true)
     {
         // Some sixty settings change here; the command is built once, when they have all been set.
         using var whole = DeferCommand();
@@ -330,12 +329,17 @@ public partial class MainViewModel : ObservableObject
         BlurRadius = Math.Clamp(preset.BlurRadius, 5, 50);
         BlurPasses = Math.Clamp(preset.BlurPasses, 1, 5);
         BackgroundDim = Math.Clamp(preset.BackgroundDim, -0.5, 0);
-        SetLayers(preset.Layers ?? []);
-        _mainVideoRow.ApplyLook(preset.MainLayer);
-        _backgroundRow.IsHidden = preset.BackgroundHidden;
-        MainVideoIndex = Math.Clamp(preset.MainVideoIndex, 0, Layers.Count);
+        // Its layout (app data, not a project): its layers as a template on the timeline, the main video's look on its
+        // clips. A project's settings carry none: its timeline is its own (RestoreStateAsync puts it in place after this).
+        if (withLayout)
+        {
+            PlaceTemplate(preset.Layers ?? [], Math.Max(preset.MainVideoIndex, 0));
+            TakeMainLook(preset.MainLayer);
+            _backgroundRow.IsHidden = preset.BackgroundHidden;
+            AddLegacyWatermark(preset);
+        }
+
         _layoutSourceAspect = preset.LayoutSourceAspectRatio;
-        AddLegacyWatermark(preset);
 
         AutoCaptions = preset.AutoCaptions;
         if (preset.CaptionStyle is { } captionStyle)
@@ -352,7 +356,8 @@ public partial class MainViewModel : ObservableObject
             VideoEncoder = VideoEncoders.First(e => e.Name == preset.VideoEncoder);
 
         LutPath = preset.LutPath;
-        SetSequenceEffects(preset.SequenceEffects, preset.SequenceEffectsBypassed);
+        if (withLayout)
+            SetSequenceEffects(preset.SequenceEffects, preset.SequenceEffectsBypassed);
         ColorContrast = Math.Clamp(preset.ColorContrast, 0, 2);
         ColorBrightness = Math.Clamp(preset.ColorBrightness, -1, 1);
         ColorSaturation = Math.Clamp(preset.ColorSaturation, 0, 3);
@@ -534,55 +539,8 @@ public partial class MainViewModel : ObservableObject
     // On by default, together with the Copy encoders: a fresh launch is set up for lossless cutting.
     [ObservableProperty] private bool _snapToIFrames = true;
 
-    // Snapping only concerns where the cut points sit. Which encoders are used is a separate choice.
-    partial void OnSnapToIFramesChanged(bool value)
-    {
-        if (value)
-            SnapSegmentsToIFrames();
-    }
-
-    /// <summary>
-    /// Moves existing segments onto I-frames, growing them rather than shrinking: the start goes back
-    /// to the I-frame at or before it, the end forward to the I-frame at or after it.
-    /// </summary>
-    private void SnapSegmentsToIFrames()
-    {
-        if (IFrames.Count == 0)
-            return;
-
-        var adjusted = 0;
-        for (var i = 0; i < Segments.Count; i++)
-        {
-            var segment = Segments[i];
-            var start = segment.Start.TotalSeconds;
-            var end = segment.End.TotalSeconds;
-
-            // Segment times are whole milliseconds, so allow for that when matching I-frames.
-            const double tolerance = 0.0005;
-            var floor = IFrames.FindLastIndex(k => k <= start + tolerance);
-            var ceiling = IFrames.FindIndex(k => k >= end - tolerance);
-            var snappedStart = floor >= 0 ? IFrames[floor] : start;
-            var snappedEnd = ceiling >= 0 ? IFrames[ceiling] : end;
-
-            if (Math.Abs(snappedStart - start) <= tolerance && Math.Abs(snappedEnd - end) <= tolerance)
-                continue;
-
-            var snapped = new CutSegment(TimeSpan.FromSeconds(snappedStart), TimeSpan.FromSeconds(snappedEnd)) { IsSkipped = segment.IsSkipped };
-            Segments[i] = snapped;
-            _ = FlashAsync(snapped);
-            adjusted++;
-        }
-
-        if (adjusted > 0)
-            StatusText = adjusted == 1 ? "1 segment was moved onto I-frames." : $"{adjusted} segments were moved onto I-frames.";
-    }
-
-    private static async Task FlashAsync(CutSegment segment)
-    {
-        segment.IsFlashing = true;
-        await Task.Delay(300);
-        segment.IsFlashing = false;
-    }
+    // Snapping only concerns where the playhead, the razor and the in and out points sit (on I-frames of the main
+    // video, for a Copy export's cuts). Which encoders are used is a separate choice.
 
     /// <summary>I-frame timestamps of the loaded source in seconds, ascending. Filled in the background after a load.</summary>
     public List<double> IFrames { get; private set; } = [];
@@ -604,19 +562,16 @@ public partial class MainViewModel : ObservableObject
             IFrameStatusText = "";
     }
 
-    [ObservableProperty] private CutSegment? _selectedSegment;
-
-    public string PositionText => CutSegment.FormatTime(TimeSpan.FromMilliseconds(PositionMs));
-    public string DurationText => CutSegment.FormatTime(TimeSpan.FromMilliseconds(DurationMs));
+    public string PositionText => TimeDisplay.Format(PositionMs / 1000);
+    public string DurationText => TimeDisplay.Format(DurationMs / 1000);
 
     // Never zero, so the thumb rests at the left edge while nothing is loaded.
     public double TimelineMaximum => DurationMs > 0 ? DurationMs : 1;
 
+    /// <summary>The in point set with [ (Add Start Point), while it waits for its out point.</summary>
     public string PendingStartText => PendingStartMs is { } start
-        ? $"Start point: {CutSegment.FormatTime(TimeSpan.FromMilliseconds(start))}"
-        : "No start point set";
-
-    public ObservableCollection<CutSegment> Segments { get; } = [];
+        ? $"In point: {TimeDisplay.Format(start / 1000)}"
+        : "No in point set";
 
     // ----- Summary -----
 
@@ -1023,7 +978,7 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     [ObservableProperty] private bool _isCommandManuallyEdited;
 
-    // ----- Cut points -----
+    // ----- In and out points (4.3C: split points, where 4.2.0 kept a cut list) -----
 
     [RelayCommand(CanExecute = nameof(CanAddStartPoint))]
     private void AddStartPoint()
@@ -1031,11 +986,16 @@ public partial class MainViewModel : ObservableObject
         var position = GetCutPositionMs();
         PendingStartMs = position;
         PositionMs = position;
-        StatusText = $"{PendingStartText}. Scrub forward and add a stop point.";
+        StatusText = $"{PendingStartText}. Scrub forward and add an out point.";
     }
 
     private bool CanAddStartPoint() => DurationMs > 0;
 
+    /// <summary>
+    /// The out point: every clip of every unlocked track is split at the in point and here, as one step of Undo, so the
+    /// stretch between is clips of its own on each track, to be deleted (Shift+Delete closes the gap), moved or kept.
+    /// Nothing is taken out by it.
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanAddStopPoint))]
     private void AddStopPoint()
     {
@@ -1045,22 +1005,33 @@ public partial class MainViewModel : ObservableObject
         var stop = GetCutPositionMs();
         if (stop <= start)
         {
-            StatusText = "The nearest I-frame is not after the start point. Scrub further forward.";
+            StatusText = "The nearest I-frame is not after the in point. Scrub further forward.";
             return;
         }
 
-        var segment = new CutSegment(TimeSpan.FromMilliseconds(start), TimeSpan.FromMilliseconds(stop));
-        Checkpoint("add a segment");
-
-        // Keep the list ordered by start time.
-        var index = 0;
-        while (index < Segments.Count && Segments[index].Start <= segment.Start)
-            index++;
-        Segments.Insert(index, segment);
+        if (!SplitAt(start / 1000, stop / 1000))
+            return;
 
         PendingStartMs = null;
         PositionMs = stop;
-        Log($"Added segment {segment.Display}");
+    }
+
+    /// <summary>Splits every unlocked track at two moments, as one step of Undo (an in and an out point, or a stretch marked on the timeline).</summary>
+    public bool SplitAt(double from, double to)
+    {
+        var count = 0;
+        if (!Edit("split at an in and an out point", edit =>
+            {
+                count = SplitAllAt(to, "split at an out point") + SplitAllAt(from, "split at an in point");
+            }))
+        {
+            return false;
+        }
+
+        Log(count > 0
+            ? $"Split {count} clip{(count == 1 ? "" : "s")} at {TimeDisplay.Format(from)} and {TimeDisplay.Format(to)}: delete what lies between on every track (the gap then closes up), or keep it"
+            : $"Nothing to split at {TimeDisplay.Format(from)} or {TimeDisplay.Format(to)}");
+        return true;
     }
 
     private bool CanAddStopPoint() => PendingStartMs is { } start && PositionMs > start;
@@ -1087,25 +1058,6 @@ public partial class MainViewModel : ObservableObject
         var previous = next - 1;
         var nearest = seconds - IFrames[previous] <= IFrames[next] - seconds ? previous : next;
         return IFrames[nearest] * 1000;
-    }
-
-    /// <summary>Moves playback to the start of a segment so the cut can be checked.</summary>
-    public void SeekToSegment(CutSegment segment) => PositionMs = segment.Start.TotalMilliseconds;
-
-    partial void OnSelectedSegmentChanged(CutSegment? value)
-    {
-        if (value is not null)
-            SeekToSegment(value);
-    }
-
-    [RelayCommand]
-    private void RemoveSegment(CutSegment? segment)
-    {
-        if (segment is not null)
-        {
-            Checkpoint("remove a segment");
-            Segments.Remove(segment);
-        }
     }
 
     // ----- Long-running operations -----
@@ -1458,6 +1410,9 @@ public partial class MainViewModel : ObservableObject
         LocalMediaPath = localPath;
         SetMediaInfo(mediaInfo);
 
+        // The main video on the timeline: one clip of the whole file, where its clips were (the layers stay).
+        PlaceMainVideo();
+
         // For a crash report: what kind of file this is (container, codecs, size, rate, length), never which.
         var mediaSummary = CrashSummaries.Media(localPath, mediaInfo, Layers.Count);
         CrashReporter.SetContext("media", mediaSummary);
@@ -1496,7 +1451,6 @@ public partial class MainViewModel : ObservableObject
             MediaLoaded?.Invoke(localPath);
             _ = ScanIFramesAsync(localPath);
             _ = GenerateSpriteSheetAsync(localPath);
-            _mainVideoRow.Filmstrip = null;
             _ = LoadMainFilmstripAsync(localPath);
             _ = GenerateWaveformsAsync(localPath);
         }
@@ -1570,10 +1524,6 @@ public partial class MainViewModel : ObservableObject
             IFrameStatusText = iFrames.Count > 0
                 ? $"{iFrames.Count} I-frames indexed"
                 : "No I-frame index: cut points will not snap";
-
-            // The box may have been ticked while the index was still being built.
-            if (SnapToIFrames)
-                SnapSegmentsToIFrames();
         }
         catch (OperationCanceledException)
         {
@@ -1684,11 +1634,8 @@ public partial class MainViewModel : ObservableObject
         if (await PrepareCaptionsForEncodeAsync(command, cancellationToken) is { } captionProblem)
             return captionProblem;
 
-        // Progress is measured against what the output should contain: the kept segments, or everything.
-        var segments = GetMergedSegments();
-        var expected = segments.Count > 0
-            ? TimeSpan.FromTicks(segments.Sum(s => s.Duration.Ticks))
-            : TimeSpan.FromMilliseconds(DurationMs);
+        // Progress is measured against what the output should contain (see GetOutputDuration).
+        var expected = TimeSpan.FromSeconds(Math.Max(GetOutputDuration(), 0.001));
 
         IsProgressIndeterminate = true;
         StatusText = "Starting FFmpeg...";
@@ -1871,19 +1818,17 @@ public partial class MainViewModel : ObservableObject
     {
         ForgetProjectProxies();
         _timelineProxy = null;
-        Segments.Clear();
         PendingStartMs = null;
         PositionMs = 0;
         DurationMs = 0;
 
-        // A new main video starts where any does: at the beginning of the timeline, whole, and keeping still.
+        // A new main video starts where any does: at the beginning of the timeline, whole, and keeping still (PlaceMainVideo,
+        // once it has been looked at). The other clips stay; the bin and the markers were the old video's.
         _playerMediaSeconds = 0;
-        _mainPieces.Clear();
         SetBin(null);
         SetMarkers(null);
-        InvalidateMainClips();
-        _mainVideoRow.ApplyTiming(null);
-        _mainVideoRow.MediaDuration = 0;
+        Document.Markers = [];
+        _liveState = null;
     }
 
     // ----- Command generation -----
@@ -1949,9 +1894,11 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        // The timeline is as long as its clips reach, and the main video's row shows where it sits.
+        // The timeline is as long as its clips reach (what the builder reads from it is gathered afresh for this state), and
+        // the main video's clips show where the Center controls put it on the frame as it is now.
+        _liveState = null;
+        PlaceMainViews();
         RefreshSequence();
-        SyncMainRow();
 
         // The Properties tab follows the settings even while the command itself is frozen by a manual edit.
         UpdateProjectedOutput();
@@ -1976,26 +1923,6 @@ public partial class MainViewModel : ObservableObject
             ScheduleCommandText();
     }
 
-    /// <summary>The cut segments in order, with overlapping or touching ones merged.</summary>
-    private List<CutSegment> GetMergedSegments()
-    {
-        var merged = new List<CutSegment>();
-        foreach (var segment in Segments.Where(s => !s.IsSkipped).OrderBy(s => s.Start))
-        {
-            if (merged.Count > 0 && segment.Start <= merged[^1].End)
-            {
-                if (segment.End > merged[^1].End)
-                    merged[^1] = new CutSegment(merged[^1].Start, segment.End);
-            }
-            else
-            {
-                merged.Add(segment);
-            }
-        }
-
-        return merged;
-    }
-
     /// <summary>
     /// The frame rate to convert to, or null to keep the source's. Custom values may be any positive number.
     /// </summary>
@@ -2014,27 +1941,16 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Writes the concat list: the source named once per segment with its in and out points.
-    /// Copied video can only start on an I-frame, so a cut begins at the I-frame at or before its in point.
+    /// Writes the concat list a Copy export reads (4.3C: the main video's clips, as the graph builder lays them: the
+    /// source named once per clip with its in and out points in the file). Copied video can only start on an I-frame, so
+    /// a clip's stretch begins at the I-frame at or before its in point.
     /// </summary>
     private string _writtenCuts = "";
 
-    private void WriteCutsFile(string input, List<CutSegment> segments)
+    private void WriteCutsFile(SequenceExportState state)
     {
-        var list = new StringBuilder("ffconcat version 1.0\n");
-        var file = input.Replace('\\', '/').Replace("'", @"'\''");
-
-        // The cuts are times on the sequence; the list wants them as times in the file.
-        var shift = TimeSpan.FromSeconds(MainShift);
-        foreach (var segment in segments)
-        {
-            list.Append($"file '{file}'\n");
-            list.Append($"inpoint {Seconds(segment.Start - shift < TimeSpan.Zero ? TimeSpan.Zero : segment.Start - shift)}\n");
-            list.Append($"outpoint {Seconds(segment.End - shift)}\n");
-        }
-
-        // The command is rebuilt for every setting that changes; the file is only written when the cuts have.
-        var text = list.ToString();
+        // The command is rebuilt for every setting that changes; the file is only written when the clips have.
+        var text = FilterGraphBuilder.BuildCutsList(state);
         if (text == _writtenCuts && File.Exists(CutsFilePath))
             return;
 
