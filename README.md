@@ -12,10 +12,14 @@ There is no middleware: every edit compiles straight to an FFmpeg filter graph, 
 and encoded by FFmpeg on export. The window paints its first, final frame in under half a second, and HandPeg idles
 well under 200 MB of memory.
 
-**v4.3.0, "One Timeline":** every edit now lives in one timeline document, from the clips you drag to the graph that
-exports them. Track 1 is a track like any other (its own box on the video, its own keyframes and effects per clip), a
-split keeps each half's animation exactly, Remove Dead Air can fold silences away and give them back, and HandPeg runs
-natively on Windows on ARM.
+![The HandPeg v4.3.0 editor with a project open: player, Canvas, Media pane and the multi-track timeline](docs/screenshots/workspace-v4.3.png)
+
+![The full-window Settings screen of v4.3.0, with its category rail and live preview stage](docs/screenshots/settings-v4.3.png)
+
+**New in v4.3.0:** full-window Settings with a live preview stage, a Voice track found by itself for Auto-Captions and
+Remove Dead Air, dead air folded away and restorable, splits that keep each half's keyframe curve exactly, media drops
+that land at once even while the Media pane is indexing, undo in the Subtitle Editor and every editing dialog, and native
+Windows on ARM. Under the hood, every edit now lives in one timeline document (project format 5).
 
 ## What it does
 - **One multi-track timeline:** video, image, text and audio layers with a live preview of the finished picture and
