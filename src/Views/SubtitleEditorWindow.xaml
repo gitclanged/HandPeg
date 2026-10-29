@@ -54,6 +54,10 @@
                 <Button x:Name="SplitButton" Content="Split" Padding="12,6" Margin="4,0,0,0" Click="Split_Click" ToolTip="Cuts the selected subtitle in two at the playhead: the words said before it stay, the rest become a subtitle of their own." />
                 <Button x:Name="AddWordButton" Content="Add Word" Padding="12,6" Margin="4,0,0,0" Click="AddWord_Click" ToolTip="Adds a word to the end of the selected subtitle, ready to be typed over." />
                 <Button x:Name="DeleteButton" Content="Delete" Padding="12,6" Margin="4,0,0,0" Click="Delete_Click" ToolTip="Deletes the word that is picked out in the selected subtitle; with no word picked out, the whole subtitle (Delete)." />
+                <Button x:Name="UndoButton" Content="&#xE7A7;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,6" Margin="14,0,0,0" Click="Undo_Click" IsEnabled="False"
+                        ToolTip="Undo (Ctrl+Z)" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Undo" />
+                <Button x:Name="RedoButton" Content="&#xE7A6;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,6" Margin="4,0,0,0" Click="Redo_Click" IsEnabled="False"
+                        ToolTip="Redo (Ctrl+Y)" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Redo" />
             </StackPanel>
         </DockPanel>
 

@@ -261,7 +261,6 @@
                         <CheckBox Content="Auto-captions controls on the Subtitles tab" IsChecked="{Binding ShowAutoCaptions}" Margin="0,2,24,2" />
                         <CheckBox Content="Open the Canvas by itself" IsChecked="{Binding AutoOpenLayoutPane}" Margin="0,2,24,2"
                                   ToolTip="Opens the Canvas beside the player as soon as there is a layout to edit." />
-                        <CheckBox Content="Live Preview" IsChecked="{Binding LivePreview}" Margin="0,2,24,2" />
                     </WrapPanel>
                     <CheckBox Content="Default to Vertical Video" IsChecked="{Binding DefaultVerticalVideo}"
                               ToolTip="Every video that is opened starts as a vertical one: a tall frame with the picture across its middle over a blurred copy of itself. The same as ticking Vertical Video on the Summary tab." />
@@ -785,6 +784,12 @@
                                   ToolTip="The spoken language a new window starts with (--language). auto lets whisper detect it; the English-only .en models need en. The Subtitles tab overrides it for the video that is open, and a preset or a project brings its own. Applies the next time HandPeg starts." />
                         <TextBlock Text="auto detects the language; a preset or a project sets its own" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
+
+                    <TextBlock Text="Voice track" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="A recording with separate audio tracks (game, microphone, chat) usually names them. Auto-Captions listen to the track marked Voice on the Audio tab, and the sounds marked Duck make room for it. Any track can still be picked on the Subtitles tab, or ticked and unticked by hand." />
+                    <CheckBox Content="Find the voice track by its name when a video is loaded" IsChecked="{Binding AutoMarkVoiceTrack}" AutomationProperties.Name="Find Voice Track by Name"
+                              ToolTip="When a new video is loaded, the audio track named only for a microphone or a voice (Mic, Track 2: Microphone, Voice, Commentary) is marked as its Voice track; failing that, one whose name has such a word among others (Shure SM7B Mic), unless they name game sound, music or the desktop. Chat tracks come last. Nothing is marked when no name fits, or when a preset already marks a voice; a project or a queued job keeps its tracks as saved." />
 
                     <TextBlock Text="Decoding" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"

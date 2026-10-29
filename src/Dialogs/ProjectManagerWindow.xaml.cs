@@ -81,12 +81,46 @@ public partial class ProjectManagerWindow : Window
     /// <summary>+ New Project was chosen: the main window empties the session (asking about unsaved changes first).</summary>
     public bool NewProjectRequested { get; private set; }
 
+    // The listing asked for last: one that finishes after a newer one was asked for is dropped.
+    private int _listing;
+
     private void RefreshList()
     {
+        // Asked from elsewhere (projects imported: ProjectStore.Changed): listed on the window's own thread.
+        if (!Dispatcher.CheckAccess())
+        {
+            _ = Dispatcher.InvokeAsync(RefreshList);
+            return;
+        }
+
+        _ = RefreshListAsync();
+    }
+
+    /// <summary>
+    /// Lists the saved projects. Each project file is read whole to say what it holds, which for a folder of them took
+    /// the interface's thread far past a frame as the window opened (4.3E): they are read on the thread pool, and the list
+    /// is filled once they are.
+    /// </summary>
+    private async Task RefreshListAsync()
+    {
+        var listing = ++_listing;
+        List<ProjectEntry> entries;
+        try
+        {
+            entries = await Task.Run(() => ProjectStore.ListRecent());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            entries = [];
+        }
+
+        if (listing != _listing || _closing.IsCancellationRequested)
+            return;
+
         // With previews on, every row has its picture's place from the start (dark until its picture comes, and dark for a
         // source that has none, such as a link): the rows are one height and do not grow as their pictures arrive.
         var previews = AppSettings.Current.ShowProjectPreviews ? Visibility.Visible : Visibility.Collapsed;
-        var rows = ProjectStore.ListRecent().Select(e => new ProjectRow(e) { PictureVisibility = previews }).ToList();
+        var rows = entries.Select(e => new ProjectRow(e) { PictureVisibility = previews }).ToList();
         ProjectList.ItemsSource = rows;
         if (rows.Count == 0)
             MessageText.Text = "No projects saved yet.";
@@ -239,18 +273,27 @@ public partial class ProjectManagerWindow : Window
     private void ProjectList_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
         LoadButton.IsEnabled = DeleteButton.IsEnabled = ProjectList.SelectedItem is ProjectRow;
 
-    private void OpenDirectory_Click(object sender, RoutedEventArgs e)
+    // On the thread pool (4.3E): making the folder and starting Explorer took the interface's thread for tens of milliseconds.
+    private async void OpenDirectory_Click(object sender, RoutedEventArgs e)
     {
-        try
+        var folder = ProjectStore.Folder;
+        var problem = await Task.Run<string?>(() =>
         {
-            // The folder only comes into being with the first saved project.
-            Directory.CreateDirectory(ProjectStore.Folder);
-            System.Diagnostics.Process.Start("explorer.exe", $"\"{ProjectStore.Folder}\"")?.Dispose();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
-        {
-            MessageText.Text = $"Could not open the folder: {ex.Message}";
-        }
+            try
+            {
+                // The folder only comes into being with the first saved project.
+                Directory.CreateDirectory(folder);
+                System.Diagnostics.Process.Start("explorer.exe", $"\"{folder}\"")?.Dispose();
+                return null;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            {
+                return ex.Message;
+            }
+        });
+
+        if (problem is not null)
+            MessageText.Text = $"Could not open the folder: {problem}";
     }
 
     private void Delete_Click(object sender, RoutedEventArgs e)
@@ -274,8 +317,12 @@ public partial class ProjectManagerWindow : Window
             return;
         }
 
+        // Gone from the list at once (the list read afresh comes a moment later, from the thread pool).
+        var left = ProjectList.Items.OfType<ProjectRow>().Where(r => !ReferenceEquals(r.Entry, entry)).ToList();
+        ProjectList.ItemsSource = left;
+        ProjectList.SelectedItem = null;
         RefreshList();
-        MessageText.Text = ProjectList.Items.Count == 0 ? "No projects saved yet." : $"Deleted project \"{entry.Name}\".";
+        MessageText.Text = left.Count == 0 ? "No projects saved yet." : $"Deleted project \"{entry.Name}\".";
     }
 
     private void ProjectList_MouseDoubleClick(object sender, MouseButtonEventArgs e) => LoadSelected();

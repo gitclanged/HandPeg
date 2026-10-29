@@ -200,7 +200,10 @@ public sealed partial class AudioTrack : ObservableObject
     /// <summary>The track is turned down while a voice is speaking.</summary>
     [ObservableProperty] private bool _autoDuck;
 
-    /// <summary>The track is a voice (a microphone, dialogue): what the ducked tracks make room for.</summary>
+    /// <summary>
+    /// The track is a voice (a microphone, dialogue): what the ducked tracks make room for, and (4.3E) what Auto-Captions
+    /// listen to. Found by its title when a new file is loaded (VoiceTrackScanner), and ticked or unticked by hand.
+    /// </summary>
     [ObservableProperty] private bool _isVoice;
 
     /// <summary>The player is playing this track instead of the first one. Set by the view model.</summary>

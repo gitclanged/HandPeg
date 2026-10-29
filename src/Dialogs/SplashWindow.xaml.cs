@@ -86,7 +86,23 @@ public partial class SplashWindow : Window
         SquisherPanel.Visibility = squish.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         Closed += (_, _) => EndSquish();
 
-        var recent = ProjectStore.ListRecent().Take(12).ToList();
+        // The recent projects are read (every file parsed) off the interface thread, and fill in a moment later (4.3E).
+        RecentButton.IsEnabled = RecentBox.IsEnabled = false;
+        _ = ShowRecentAsync();
+    }
+
+    private async Task ShowRecentAsync()
+    {
+        List<ProjectEntry> recent;
+        try
+        {
+            recent = (await Task.Run(ProjectStore.ListRecent)).Take(12).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            recent = [];
+        }
+
         RecentBox.ItemsSource = recent;
         RecentBox.SelectedIndex = recent.Count > 0 ? 0 : -1;
         RecentButton.IsEnabled = RecentBox.IsEnabled = recent.Count > 0;

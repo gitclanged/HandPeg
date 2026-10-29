@@ -583,8 +583,11 @@ public partial class MainViewModel
         MediaInfo? info = null;
         try
         {
+            // A clip just dropped is what the user waits on (4.3E): its probe starts at once, never behind the media
+            // browser's posters and strips in the Interactive lane, and is answered from memory when the browser has
+            // already inspected the file. A clip brought back unfinished waits its turn.
             var token = _shutdown.Token;
-            info = await Task.Run(() => MediaProbe.ProbeAsync(path, token), token);
+            info = await Task.Run(() => MediaProbe.ProbeAsync(path, token, urgent: !keepLength), token);
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
@@ -673,7 +676,8 @@ public partial class MainViewModel
     /// <param name="name">What the clip is called, when that is not its file's name.</param>
     public async Task<bool> AddAudioLayerAsync(string path, double startSeconds = 0, bool isVoice = false, string? name = null)
     {
-        var info = await MediaProbe.ProbeAsync(path, _shutdown.Token);
+        // Its block waits on this probe, so it is urgent (4.3E): it never queues behind the media browser's work.
+        var info = await MediaProbe.ProbeAsync(path, _shutdown.Token, urgent: true);
         if (info is not { Audio.Count: > 0 })
         {
             StatusText = $"No sound that can be read in: {path}";
@@ -1750,9 +1754,11 @@ public partial class MainViewModel
         if (_mediaInfo is { Audio.Count: 0 })
             return "This video has no audio to analyse.";
 
-        // The main video, listening to the selected audio track, or the first one: every clip of it is cut where the
-        // silences it plays are (heard in the file's own time, each clip placing them where it shows that time).
-        var listenTo = target is AudioTrack chosen && AudioTracks.Contains(chosen) ? chosen.Index : 0;
+        // The main video, listening to the selected audio track, else the Voice track (4.3E: a recording's first track is
+        // usually the game, never silent), else the first one: every clip of it is cut where the silences it plays are
+        // (heard in the file's own time, each clip placing them where it shows that time).
+        var listenTo = target is AudioTrack chosen && AudioTracks.Contains(chosen) ? chosen.Index
+            : AudioTracks.FirstOrDefault(t => t.IsVoice)?.Index ?? 0;
         var silences = (await FfmpegRunner.DetectSilenceAsync(LocalMediaPath, listenTo, noiseDb, minimumSeconds, MainMediaSeconds, cancellationToken))
             .Where(s => s.End - s.Start > 0.05).ToList();
         if (silences.Count == 0)

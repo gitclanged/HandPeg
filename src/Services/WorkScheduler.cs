@@ -37,6 +37,12 @@ public sealed record WorkSpec(string Title, WorkLane Lane)
 
     /// <summary>Its tools are stopped where they are while the player plays, and go on after (a proxy being made).</summary>
     public bool SuspendWhilePlaying { get; init; }
+
+    /// <summary>
+    /// What a user's action is waiting on this moment (4.3E: the probe of a file just dropped): it starts at once, ahead
+    /// of everything waiting and past its lane's limit, and is never paused or held. For short work, once per action.
+    /// </summary>
+    public bool Urgent { get; init; }
 }
 
 /// <summary>What a piece of work is given: its cancellation, and where to say how far it has got.</summary>
@@ -68,9 +74,13 @@ public sealed class WorkContext
 public sealed partial class WorkItem : ObservableObject
 {
     internal WorkItem(WorkSpec spec, CancellationTokenSource cancellation) =>
-        (Title, Lane, Key, Cancellable, Visible, SuspendWhilePlaying, Cancellation) = (spec.Title, spec.Lane, spec.Key, spec.Cancellable, spec.Visible, spec.SuspendWhilePlaying, cancellation);
+        (Title, Lane, Key, Cancellable, Visible, SuspendWhilePlaying, Urgent, Cancellation) = (spec.Title, spec.Lane, spec.Key, spec.Cancellable, spec.Visible, spec.SuspendWhilePlaying, spec.Urgent, cancellation);
 
     internal bool SuspendWhilePlaying { get; }
+
+    // What a user's action waits on this moment: started at once, past its lane's limit (see WorkSpec.Urgent). Set again
+    // when an urgent request finds the same work already asked for.
+    internal bool Urgent { get; set; }
 
     // The tools started for it that are running, and whether they are stopped now.
     internal readonly List<int> Processes = [];
@@ -86,8 +96,9 @@ public sealed partial class WorkItem : ObservableObject
     internal Task? Task { get; set; }
     internal Func<Task>? Start { get; set; }
 
-    // Asked for by foreground or interactive work that may be waiting for it: it does not wait for a pause to end.
-    internal bool BypassPause { get; init; }
+    // Asked for by foreground or interactive work that may be waiting for it, or urgent: it does not wait for a pause to
+    // end, and its tools are never held (see WorkScheduler.HoldBackground).
+    internal bool BypassPause { get; set; }
 
     // Where it was asked for: it is started there (the UI thread, for work that works with the window), or on
     // the thread pool when it was asked for from there.
@@ -193,8 +204,11 @@ public sealed partial class WorkSummary : ObservableObject
 ///   - Idle (indexing, purges, the encoder probe, update checks): 1.
 /// Background and Idle work waiting to start waits while the player plays and while foreground work runs (both
 /// Settings, on by default), and while the user has paused its lane in the progress flyout; work already running
-/// carries on. Work asked for twice under one key is done once. The tools started for a piece of work go into the
-/// job for its lane (see <see cref="JobObjects"/>).
+/// carries on. While a file is dragged and dropped (4.3E, <see cref="HoldBackground()"/>) it waits too, and the tools of
+/// the background and idle work running are stopped where they are until the drop's own work is done. Urgent work (what
+/// a user's action waits on this moment) starts at once, whatever is waiting and whatever the limits. Work asked for
+/// twice under one key is done once. The tools started for a piece of work go into the job for its lane (see
+/// <see cref="JobObjects"/>).
 ///
 /// Work asked for from inside a running piece of work, at its own priority or above, is done right there, in that
 /// piece's place: waiting for a place of its own in a lane its caller already fills could wait for ever.
@@ -260,34 +274,51 @@ public static class WorkScheduler
 
             _playing = value;
             Pump();
+            ApplySuspensions();
+        }
+    }
 
-            List<WorkItem> stoppable;
-            lock (Gate)
-                stoppable = Live.Where(i => i.SuspendWhilePlaying && i.Phase == WorkState.Running).ToList();
-            foreach (var item in stoppable)
+    /// <summary>
+    /// Stops the tools of the work running where they are, or lets them go on, as things stand now: those of work that
+    /// asked for it while the player plays, and those of background and idle work while it is held back for a drag and
+    /// drop (never those of work that foreground or interactive work waits for). Each piece of work's state is worked out
+    /// under its own lock from what is true now, so the last call, whichever thread makes it, leaves things right.
+    /// </summary>
+    private static void ApplySuspensions()
+    {
+        List<WorkItem> running;
+        lock (Gate)
+            running = Live.Where(i => i.Phase == WorkState.Running && (i.SuspendWhilePlaying || i.Lane >= WorkLane.Background)).ToList();
+
+        foreach (var item in running)
+        {
+            bool changed, suspend, playing;
+            lock (item.Processes)
             {
-                lock (item.Processes)
+                playing = item.SuspendWhilePlaying && _playing;
+                suspend = playing || (IsHeld && item.Lane >= WorkLane.Background && !item.BypassPause);
+                changed = item.Suspended != suspend;
+                if (changed)
                 {
-                    if (item.Suspended == value)
-                        continue;
-
-                    item.Suspended = value;
+                    item.Suspended = suspend;
                     foreach (var process in item.Processes)
-                        JobObjects.Suspend(process, value);
+                        JobObjects.Suspend(process, suspend);
                 }
-
-                item.SetDetail(value ? "Paused while the player plays" : "");
             }
+
+            // Only the player's pause is told in the flyout: a hold lasts as long as a drag and drop.
+            if (changed && item.SuspendWhilePlaying && (playing || !suspend))
+                item.SetDetail(playing ? "Paused while the player plays" : "");
         }
     }
 
     /// <summary>
     /// A tool was started (or has ended) for the work running now: it is the work's, to be stopped with it while the
-    /// player plays when the work asked for that.
+    /// player plays when the work asked for that, and while background work is held back when it is background work.
     /// </summary>
     internal static void NoteProcess(int processId, bool running)
     {
-        if (Current.Value is not { SuspendWhilePlaying: true } item)
+        if (Current.Value is not { } item || !(item.SuspendWhilePlaying || item.Lane >= WorkLane.Background))
             return;
 
         lock (item.Processes)
@@ -299,7 +330,7 @@ public static class WorkScheduler
             }
 
             item.Processes.Add(processId);
-            if (item.Suspended)
+            if (item.Suspended && item.Phase == WorkState.Running)
                 JobObjects.Suspend(processId, true);
         }
     }
@@ -321,7 +352,136 @@ public static class WorkScheduler
             return false;
 
         var settings = AppSettings.Current;
-        return (_playing && settings.PauseBackgroundWhilePlaying) || (Running[(int)WorkLane.Foreground] > 0 && settings.PauseBackgroundWhileExporting);
+        return IsHeld || (_playing && settings.PauseBackgroundWhilePlaying) || (Running[(int)WorkLane.Foreground] > 0 && settings.PauseBackgroundWhileExporting);
+    }
+
+    // ----- Held back while a file is dragged and dropped (4.3E) -----
+    // From the moment a file is dragged out of the media browser (or over the window from elsewhere) until what its drop
+    // needs is done (placing the clip, its probe): background and idle work waiting to start waits, and the tools of what
+    // is running are stopped where they are, then go on. They share the disk with the drop's probe (often a hard drive
+    // the folder indexer is reading a strip from, 25 seeks at a time), and the drop is never answered behind them.
+
+    // Holds taken until they are given back (a drag out of the browser, a drop's work), and a hold that ends by itself at a
+    // moment (a drag from another program, renewed as it moves; the moment between a drop and its work). A hold given back
+    // late holds nothing past HoldsAtMost after it was taken (each its own): a drop whose probe never comes back (a share that
+    // does not answer) must not keep every background tool stopped, nor stretch the holds taken after it.
+    private const long HoldsAtMost = 10_000;
+    private static readonly List<Hold> Holds = [];
+    private static long _heldUntil;
+
+    // The timer that looks again when a hold ends by itself, and when it is set to (long.MaxValue: not set).
+    private static readonly object HoldGate = new();
+    private static readonly System.Threading.Timer HoldTimer = new(_ => HoldTimer_Tick());
+    private static long _wakeAt = long.MaxValue;
+
+    /// <summary>Whether background and idle work is held back now: a file is being dragged, or what its drop needs is being done.</summary>
+    public static bool IsHeld
+    {
+        get
+        {
+            var now = Environment.TickCount64;
+            if (now < Interlocked.Read(ref _heldUntil))
+                return true;
+
+            lock (HoldGate)
+                return Holds.Exists(h => now < h.Until);
+        }
+    }
+
+    /// <summary>
+    /// Holds background and idle work back until the hold returned is disposed (on any thread, once), for ten seconds at
+    /// most: waiting work does not start, and the tools of what is running are stopped where they are, and go on after.
+    /// Work that foreground, interactive or urgent work waits for is never held.
+    /// </summary>
+    public static IDisposable HoldBackground()
+    {
+        var hold = new Hold(Environment.TickCount64 + HoldsAtMost);
+        lock (HoldGate)
+            Holds.Add(hold);
+        WakeAt(hold.Until);
+        HoldChanged();
+        return hold;
+    }
+
+    /// <summary>Holds background and idle work back for a while from now, or longer when it already is held that long: cheap to call at every move of a drag.</summary>
+    public static void HoldBackground(TimeSpan span)
+    {
+        var until = Environment.TickCount64 + (long)Math.Max(span.TotalMilliseconds, 0);
+        var held = IsHeld;
+        for (var seen = Interlocked.Read(ref _heldUntil); seen < until; seen = Interlocked.Read(ref _heldUntil))
+        {
+            if (Interlocked.CompareExchange(ref _heldUntil, until, seen) == seen)
+            {
+                WakeAt(until);
+                break;
+            }
+        }
+
+        if (!held)
+            HoldChanged();
+    }
+
+    // Has the timer look again at a moment, unless it is already set to look before it (it then sets itself again).
+    private static void WakeAt(long at)
+    {
+        lock (HoldGate)
+        {
+            var now = Environment.TickCount64;
+            if (_wakeAt > now && _wakeAt <= at)
+                return;
+
+            _wakeAt = at;
+            HoldTimer.Change(Math.Max(at - now, 0), Timeout.Infinite);
+        }
+    }
+
+    // A hold may have ended by itself: the timer is set again for the next end still ahead, and things are made as they are now.
+    private static void HoldTimer_Tick()
+    {
+        lock (HoldGate)
+            _wakeAt = long.MaxValue;
+
+        var now = Environment.TickCount64;
+        var next = long.MaxValue;
+        lock (HoldGate)
+        {
+            // A hold past its time holds nothing more, given back or not.
+            Holds.RemoveAll(h => h.Until <= now);
+            foreach (var hold in Holds)
+                next = Math.Min(next, hold.Until);
+        }
+
+        if (Interlocked.Read(ref _heldUntil) is var held && held > now)
+            next = Math.Min(next, held);
+        if (next != long.MaxValue)
+            WakeAt(next);
+
+        HoldChanged();
+    }
+
+    // A hold began or ended: the running tools are stopped or let go on, and work that may start now does.
+    private static void HoldChanged()
+    {
+        ApplySuspensions();
+        Pump();
+    }
+
+    private sealed class Hold(long until) : IDisposable
+    {
+        private int _released;
+
+        /// <summary>When it holds nothing more, given back or not.</summary>
+        public long Until { get; } = until;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0)
+                return;
+
+            lock (HoldGate)
+                Holds.Remove(this);
+            HoldChanged();
+        }
     }
 
     /// <summary>Pauses a lane (its waiting work does not start) or lets it go on: the flyout's toggles.</summary>
@@ -352,13 +512,24 @@ public static class WorkScheduler
         TaskCompletionSource<T> done;
         lock (Gate)
         {
-            if (spec.Key is { } key && Live.FirstOrDefault(i => i.Key == key && i.Task is Task<T>) is { Task: Task<T> same })
+            if (spec.Key is { } key && Live.FirstOrDefault(i => i.Key == key && i.Task is Task<T>) is { Task: Task<T> same } twin)
+            {
+                // Asked for again by what a user's action waits on: the one asked for first is urgent from now on (it
+                // starts at once, and its tools are let go on). The gate is taken again inside, by this same thread.
+                if (spec.Urgent && !twin.Urgent)
+                {
+                    (twin.Urgent, twin.BypassPause) = (true, true);
+                    ApplySuspensions();
+                    Pump();
+                }
+
                 return same;
+            }
 
             var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
             item = new WorkItem(spec, cancellation)
             {
-                BypassPause = Current.Value is { Lane: WorkLane.Foreground or WorkLane.Interactive },
+                BypassPause = spec.Urgent || Current.Value is { Lane: WorkLane.Foreground or WorkLane.Interactive },
                 Context = SynchronizationContext.Current,
             };
             done = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -422,11 +593,15 @@ public static class WorkScheduler
             item.Cancel();
     }
 
-    /// <summary>Starts whatever may start now, lane by lane.</summary>
+    /// <summary>Starts whatever may start now: urgent work first, whatever the limits; then lane by lane.</summary>
     private static void Pump()
     {
         lock (Gate)
         {
+            // What a user's action waits on this moment starts at once, past its lane's limit (it still counts in it).
+            while (Waiting.Find(i => i.Urgent) is { } urgent)
+                StartLocked(urgent);
+
             foreach (var lane in Enum.GetValues<WorkLane>())
             {
                 var index = (int)lane;
@@ -436,37 +611,45 @@ public static class WorkScheduler
                     if (next is null)
                         break;
 
-                    Waiting.Remove(next);
-                    Running[index]++;
-                    next.SetPhase(WorkState.Running);
-
-                    async Task RunIt(WorkItem item, int lane)
-                    {
-                        try
-                        {
-                            await item.Start!();
-                        }
-                        finally
-                        {
-                            lock (Gate)
-                            {
-                                Running[lane]--;
-                                Live.Remove(item);
-                            }
-
-                            item.Cancellation.Dispose();
-                            Pump();
-                        }
-                    }
-
-                    // Where it was asked for: the UI thread's work stays on the UI thread.
-                    var (started, at) = (next, index);
-                    if (next.Context is { } context)
-                        context.Post(_ => _ = RunIt(started, at), null);
-                    else
-                        _ = Task.Run(() => RunIt(started, at));
+                    StartLocked(next);
                 }
             }
+        }
+    }
+
+    /// <summary>Starts a piece of work that was waiting, where it was asked for: the UI thread's work stays on the UI thread. Under the gate.</summary>
+    private static void StartLocked(WorkItem item)
+    {
+        var lane = (int)item.Lane;
+        Waiting.Remove(item);
+        Running[lane]++;
+        item.SetPhase(WorkState.Running);
+        if (item.Context is { } context)
+            context.Post(_ => _ = RunItAsync(item, lane), null);
+        else
+            _ = Task.Run(() => RunItAsync(item, lane));
+    }
+
+    private static async Task RunItAsync(WorkItem item, int lane)
+    {
+        try
+        {
+            await item.Start!();
+        }
+        finally
+        {
+            lock (Gate)
+            {
+                Running[lane]--;
+                Live.Remove(item);
+            }
+
+            // Ended: nothing started in its name from now on is stopped for it (no later call reaches it to let it go on).
+            lock (item.Processes)
+                item.Suspended = false;
+
+            item.Cancellation.Dispose();
+            Pump();
         }
     }
 
@@ -512,6 +695,7 @@ public static class WorkScheduler
         Summary.PausedNote = !held ? ""
             : _playing && settings.PauseBackgroundWhilePlaying ? "Background work waits while the player plays."
             : Running[(int)WorkLane.Foreground] > 0 && settings.PauseBackgroundWhileExporting ? "Background work waits while the export runs."
+            : IsHeld ? "Background work waits while a file is dragged and dropped."
             : "";
 
         // The lead: the first running piece of work by lane; queued work only when nothing runs.

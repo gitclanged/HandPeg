@@ -624,9 +624,9 @@ public partial class MainWindow
         };
 
         menu.Items.Clear();
-        void Add(string header, Action action, bool enabled = true)
+        void Add(string header, Action action, bool enabled = true, string? tip = null)
         {
-            var item = new MenuItem { Header = header, IsEnabled = enabled };
+            var item = new MenuItem { Header = header, IsEnabled = enabled, ToolTip = tip };
             item.Click += (_, _) =>
             {
                 action();
@@ -796,10 +796,22 @@ public partial class MainWindow
         {
             Add("Duplicate", () => _viewModel.DuplicateLayer(layer));
             if (layer.CarriesSound)
-            {
                 Add("Use Its Sound for Auto-Captions", () => _viewModel.UseLayerAudioForCaptions(layer));
-                Add("Remove Dead Air...", () => RunDeadAir(clip));
-            }
+            if (layer.IsAudio && clip.CarriesSound)
+                Add("Generate Auto-Captions...", () => GenerateCaptionsFrom(clip), _viewModel.HasSource,
+                    "Transcribes this sound's file now, as Generate Captions on the Subtitles tab does, into the subtitle track (Auto-Captions then listen to it: External Audio File).");
+
+            // Remove Dead Air on every track of video or sound (4.3E). A clip with sound of its own is listened to and cut
+            // itself; the main video listens to its file's sound and cuts every unlocked track, the pieces cut from it among
+            // them; a picture cut from the main video, or a video with no sound, has none of its own to listen to.
+            if (clip.CarriesSound && !layer.IsMainVideo)
+                Add("Remove Dead Air / Silence...", () => RunDeadAir(clip), _viewModel.HasSource,
+                    "Finds the silences in this clip's own sound and cuts them out of it: Split & Mark folds them out of its track (each can be put back from the clip's menu), Delete Dead Air takes them out.");
+            else if (layer.IsMainVideo)
+                Add("Remove Dead Air / Silence...", () => RunDeadAir(null), _viewModel.HasSource,
+                    "Finds the silences in the main video's sound (its first audio track: right-click a track on the Audio tab to listen to another) and cuts them out of every unlocked track at once, the HUD pieces and other layers with it.");
+            else if (layer.IsVideo || layer.IsVideoFile)
+                menu.Items.Add(DeadAirWithoutSound(layer));
 
             Separate();
             if (clips.Count > 1)
@@ -825,6 +837,46 @@ public partial class MainWindow
             item.Click += (_, _) => _viewModel.ToggleDucking(sound, voice);
             menu.Items.Add(item);
         }
+    }
+
+    /// <summary>
+    /// Remove Dead Air on a video track with no sound of its own (4.3E): shown on its menu like every video track's, greyed
+    /// out, with where to run it instead. (Nothing links such a track to the video it was cut from yet: 4.4A's child tracks.)
+    /// </summary>
+    private static MenuItem DeadAirWithoutSound(Layer layer)
+    {
+        var item = new MenuItem
+        {
+            Header = "Remove Dead Air / Silence...",
+            IsEnabled = false,
+            ToolTip = $"{(layer.IsVideo ? "This piece of the main video" : "This video")} has no sound of its own to listen to. Run Remove Dead Air on the main video's track: its silences come out of every unlocked track at once, this one with it.",
+        };
+        ToolTipService.SetShowOnDisabled(item, true);
+        return item;
+    }
+
+    /// <summary>
+    /// Generate Auto-Captions from a sound's menu, or from the Add Layer menu (4.3E): the sound given, one of the video's own
+    /// tracks or a sound clip's file, becomes what Auto-Captions listen to; then Generate Captions runs exactly as its button
+    /// on the Subtitles tab does. With none given, they listen to what is set there: the Voice track, once one is marked.
+    /// </summary>
+    private void GenerateCaptionsFrom(object? sound)
+    {
+        switch (sound)
+        {
+            case AudioTrack track:
+                _viewModel.UseTrackForCaptions(track);
+                break;
+            case Layer { CarriesSound: true } clip:
+                _viewModel.UseLayerAudioForCaptions(clip);
+                break;
+            case Layer silent:
+                _viewModel.StatusText = $"{silent.Name} has no sound to make captions from.";
+                return;
+        }
+
+        if (_viewModel.GenerateCaptionsCommand.CanExecute(null))
+            _viewModel.GenerateCaptionsCommand.Execute(null);
     }
 
     /// <summary>A clip's Fade In and Fade Out, each a submenu of what its fade's handle menu offers (see FadeMenuItems).</summary>
@@ -945,7 +997,7 @@ public partial class MainWindow
     /// <summary>
     /// The right-click menu of a row of the Audio tab. The rows are one template; what the menu offers is
     /// what the sound is: a clip from a file has a clip's menu (split, trim, speed, delete), and one of the
-    /// video's own tracks has its ducking.
+    /// video's own tracks has its ducking. Both have Generate Auto-Captions and Remove Dead Air (4.3E).
     /// </summary>
     private void AudioRow_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
@@ -963,6 +1015,26 @@ public partial class MainWindow
 
         menu.Items.Clear();
         AddDuckingItems(menu, track, track.AutoDuck, track.IsVoice);
+
+        // What this track's sound is listened to for (4.3E): the captions, and the silences cut out of the main video.
+        menu.Items.Add(new Separator());
+        foreach (var (header, action, tip) in new (string, Action, string)[]
+                 {
+                     ("Generate Auto-Captions...", () => GenerateCaptionsFrom(track),
+                         "Transcribes this track now, as Generate Captions on the Subtitles tab does, into the subtitle track: Auto-Captions listen to it from now on."),
+                     ("Remove Dead Air / Silence...", () => RunDeadAir(track),
+                         "Finds the silences in this track and cuts them out of the main video, from every unlocked track at once: listening to the microphone's track finds the pauses in the speech."),
+                 })
+        {
+            var item = new MenuItem { Header = header, ToolTip = tip, IsEnabled = _viewModel.HasSource };
+            item.Click += (_, _) =>
+            {
+                action();
+                ScheduleClipRedraw();
+            };
+            menu.Items.Add(item);
+        }
+
         AddRenameItem(menu, track.Title, name => track.Title = name);
     }
 
@@ -1002,8 +1074,10 @@ public partial class MainWindow
             _ => $"change the mask of {layer.Name}",
         });
 
+        var visit = _viewModel.UndoMark;
         var dialog = new LayerToolDialog(layer, _viewModel, tool) { Owner = this };
         dialog.ShowDialog();
+        _viewModel.DropStepIfUnchanged(visit);
         if (dialog.RedrawRequested)
             _viewModel.DrawTargetCommand.Execute(layer);
     }

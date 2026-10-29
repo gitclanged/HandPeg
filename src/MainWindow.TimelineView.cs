@@ -20,6 +20,12 @@ public partial class MainWindow
     /// <summary>The least the time bars can show across, in seconds: a few frames each wide enough to grab.</summary>
     private const double MinViewSpan = 0.5;
 
+    /// <summary>What the rulers show across while the timeline is empty, in seconds (4.3E: a ruler is always shown, with its ticks).</summary>
+    private const double EmptyRulerSeconds = 60;
+
+    /// <summary>The room between the zoom buttons and a ruler that has no time bar to line up with yet, in pixels.</summary>
+    private const double RulerGap = 6;
+
     private double _viewStart, _viewSpan;
     private bool _viewFit = true;
 
@@ -166,10 +172,11 @@ public partial class MainWindow
         _showingView = true;
         try
         {
+            // With nothing on the timeline yet the rulers still read as rulers (4.3E): a minute's ticks, all of it shaded as room to drop clips into.
             var markers = _viewModel.Markers.Select(m => m.Seconds).ToList();
             foreach (var ruler in _rulers)
             {
-                ruler.Show(_viewStart, span, sequence, markers);
+                ruler.Show(_viewStart, span > 0 ? span : EmptyRulerSeconds, sequence, markers);
                 PlaceRulerPlayhead(ruler);
             }
 
@@ -316,7 +323,9 @@ public partial class MainWindow
     /// <summary>
     /// Each ruler and scrollbar is placed over (or under) the time bars of its own tab: as far in from the left as
     /// the bars begin, and as wide as they are. The bars of one tab all span the same stretch of the screen (the
-    /// controls beside them share one width), so any of them that is on screen will do.
+    /// controls beside them share one width), so any of them that is on screen will do. A ruler is always shown (4.3E):
+    /// with no bar on screen to line up with (no tracks yet, or every row scrolled away), it keeps where it was; a
+    /// scrollbar with no bars under it is hidden.
     /// </summary>
     private void AlignTimelineChrome()
     {
@@ -329,7 +338,10 @@ public partial class MainWindow
             var track = _clipTracks.FirstOrDefault(t => t is { IsVisible: true, ActualWidth: > 0 } && tab.IsAncestorOf(t));
             if (track is null || !parent.IsAncestorOf(element))
             {
-                element.Visibility = Visibility.Hidden;
+                if (element is TimelineRuler ruler)
+                    KeepRulerShown(ruler, parent);
+                else
+                    element.Visibility = Visibility.Hidden;
                 continue;
             }
 
@@ -340,6 +352,17 @@ public partial class MainWindow
                 element.Margin = margin;
             element.Visibility = Visibility.Visible;
         }
+    }
+
+    /// <summary>
+    /// A ruler with no time bar on screen to line up with stays shown (4.3E): where it was last lined up, or, before it ever
+    /// was (a tab that has had no tracks yet), just after the zoom buttons that share its row, so it never covers them.
+    /// </summary>
+    private static void KeepRulerShown(TimelineRuler ruler, FrameworkElement parent)
+    {
+        if (ruler.Margin.Left <= 0 && parent is Panel row && row.Children.OfType<StackPanel>().FirstOrDefault() is { ActualWidth: > 0 } buttons)
+            ruler.Margin = new Thickness(buttons.ActualWidth + RulerGap, ruler.Margin.Top, 0, ruler.Margin.Bottom);
+        ruler.Visibility = Visibility.Visible;
     }
 
     private static T? Ancestor<T>(DependencyObject element) where T : DependencyObject

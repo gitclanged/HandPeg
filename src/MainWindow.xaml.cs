@@ -212,6 +212,12 @@ public partial class MainWindow : Window
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         _viewModel.MediaLoaded += PlayMedia;
 
+        // Unsaved changes count from the user's first touch after a load or a save (4.3E): a key, a click, the wheel or a
+        // drop in any of HandPeg's windows (their popups and menus pass theirs up to them).
+        RoutedEventHandler touched = (_, _) => _viewModel.NoteUserInput();
+        foreach (var input in new[] { PreviewMouseDownEvent, PreviewKeyDownEvent, PreviewMouseWheelEvent, DragDrop.PreviewDropEvent })
+            EventManager.RegisterClassHandler(typeof(Window), input, touched, handledEventsToo: true);
+
         // The media browser: what it opens, and what it puts on the timeline at the playhead.
         MediaBrowser.HasVideo = () => _viewModel.HasSource;
         MediaBrowser.SuggestFolder = () => _viewModel.HasSource ? Path.GetDirectoryName(_viewModel.LocalMediaPath) : null;
@@ -512,7 +518,10 @@ public partial class MainWindow : Window
         // which writes the settings file: the arrangement's own save waits half a second, and the app is gone by then.
         _viewModel.SavePaneLayout(s => s.DockLayout = _dock.Save());
         RememberWindowSize();
-        if (!AppSettings.Current.PromptToSaveOnExit || !_viewModel.HasUnsavedChanges)
+        var unsaved = _viewModel.HasUnsavedChanges;
+        if (unsaved)
+            AppLog.Write($"Closing with unsaved changes in {_viewModel.DescribeUnsavedChanges()}.");
+        if (!AppSettings.Current.PromptToSaveOnExit || !unsaved)
         {
             _dock.Shutdown();
             return;
@@ -569,6 +578,45 @@ public partial class MainWindow : Window
     // When a layout box was last nudged with the arrow keys: a run of nudges is one undo step.
     private long _nudgedAt;
 
+    // The text box last typed into, and the undo history as it stood then (MainViewModel.UndoMark): while no step of the
+    // timeline's has been taken, undone or redone since, Ctrl+Z and Ctrl+Y there take back and put back that typing.
+    private (TextBoxBase Box, object? Mark)? _typedIn;
+
+    /// <summary>Null for any other key; false for undo (Ctrl+Z), true for redo (Ctrl+Y, or Ctrl+Shift+Z).</summary>
+    private static bool? UndoKey(KeyEventArgs e)
+    {
+        if (e.Key == Key.Z && Keyboard.Modifiers == ModifierKeys.Control)
+            return false;
+        if ((e.Key == Key.Y && Keyboard.Modifiers == ModifierKeys.Control) || (e.Key == Key.Z && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)))
+            return true;
+        return null;
+    }
+
+    /// <summary>
+    /// Whether Ctrl+Z (or Ctrl+Y) in the focused text box is the box's own: while it has typing to take back (or put back),
+    /// it was the box last typed into, and the timeline has taken no step since (a value typed and handed on with Enter, or
+    /// by leaving the box, takes one when it changes the timeline: that change is then the timeline's to take back).
+    /// </summary>
+    private bool TypingIsNewest(TextBoxBase box, bool redo) =>
+        (redo ? box.CanRedo : box.CanUndo) && _typedIn is { } typed && ReferenceEquals(typed.Box, box) && ReferenceEquals(typed.Mark, _viewModel.UndoMark);
+
+    /// <summary>Whether a key pressed in a text box types into it (a character, Back, Delete, Enter, Ctrl+V, Ctrl+X), not only moves about in it or selects.</summary>
+    private static bool TypesText(KeyEventArgs e)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        var modifiers = Keyboard.Modifiers;
+        var (control, alt) = (modifiers.HasFlag(ModifierKeys.Control), modifiers.HasFlag(ModifierKeys.Alt));
+        if (control && !alt)
+            return key is Key.V or Key.X or Key.Back or Key.Delete;
+
+        // Alt alone is a menu's key; Ctrl+Alt together is AltGr, which types a character on many keyboards.
+        if (alt != control || modifiers.HasFlag(ModifierKeys.Windows))
+            return false;
+
+        return key is Key.Back or Key.Delete or Key.Enter or Key.Space or Key.ImeProcessed or Key.DeadCharProcessed
+            or (>= Key.D0 and <= Key.Z) or (>= Key.NumPad0 and <= Key.Divide) or (>= Key.Oem1 and <= Key.OemBackslash);
+    }
+
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         // Saving, before anything else sees the keys: a text box, which has uses of its own for some key
@@ -589,21 +637,41 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Typing stays typing (a text box has an undo of its own), and a drop-down keeps its own keys.
         var focused = Keyboard.FocusedElement;
-        if (focused is TextBoxBase or ComboBox or ComboBoxItem)
-            return;
 
-        // Undo and redo, for the timeline.
-        if (Keyboard.Modifiers == ModifierKeys.Control && e.Key is Key.Z or Key.Y)
+        // Undo (Ctrl+Z) and redo (Ctrl+Y or Ctrl+Shift+Z), wherever the keyboard is but in an open drop-down (4.3E): the
+        // focused text box's own while what was done last is typing in it (TypingIsNewest), the timeline's otherwise, so a
+        // number box or a search box left holding the keyboard no longer swallows them. Not while a drag is held: what is
+        // dragged would go on being moved from where Undo put it.
+        if (UndoKey(e) is { } redo && focused is not ComboBoxItem)
         {
-            if (e.Key == Key.Z)
-                Undo_Click(this, new RoutedEventArgs());
-            else
-                Redo_Click(this, new RoutedEventArgs());
+            if (focused is TextBoxBase box && TypingIsNewest(box, redo))
+            {
+                if (redo)
+                    box.Redo();
+                else
+                    box.Undo();
+                _typedIn = (box, _viewModel.UndoMark);
+            }
+            else if (Mouse.LeftButton != MouseButtonState.Pressed)
+            {
+                if (redo)
+                    Redo_Click(this, new RoutedEventArgs());
+                else
+                    Undo_Click(this, new RoutedEventArgs());
+            }
+
             e.Handled = true;
             return;
         }
+
+        // A key that types into a text box: the box holds typing newer than the timeline's last step.
+        if (focused is TextBoxBase typedInto && TypesText(e))
+            _typedIn = (typedInto, _viewModel.UndoMark);
+
+        // Typing stays typing, and a drop-down keeps its own keys.
+        if (focused is TextBoxBase or ComboBox or ComboBoxItem)
+            return;
 
         if (e.Key == Key.M && _viewModel.HasSource && Keyboard.Modifiers is ModifierKeys.Shift or (ModifierKeys.Control | ModifierKeys.Shift))
         {
@@ -1860,10 +1928,20 @@ public partial class MainWindow : Window
             KeyBarButton.IsChecked = false;
     }
 
-    /// <summary>Remove Dead Air on what is given: a video layer, an audio track, or (null) the main video.</summary>
+    /// <summary>Remove Dead Air on what is given: a video layer or a sound clip, an audio track, or (null) the main video.</summary>
     private void RunDeadAir(object? target)
     {
-        var name = target switch { Layer layer => layer.Name, AudioTrack track => $"the video, listening to {track.Title}", _ => "the video" };
+        // A clip of the main video is the main video: heard through its file's tracks, and cut on every unlocked track.
+        if (target is Layer { IsMainVideo: true })
+            target = null;
+
+        // With nothing chosen, the main video listens to its Voice track when one is marked (4.3E).
+        var name = (target ?? _viewModel.AudioTracks.FirstOrDefault(t => t.IsVoice)) switch
+        {
+            Layer layer => layer.Name,
+            AudioTrack track => $"the video, listening to {track.Title}",
+            _ => "the video",
+        };
         var dialog = new DeadAirDialog(name) { Owner = this };
         if (dialog.ShowDialog() == true)
             _viewModel.RunDeadAir(dialog.Mode, target);
@@ -1970,6 +2048,7 @@ public partial class MainWindow : Window
             case "Adjustment": _viewModel.AddAdjustmentLayerCommand.Execute(null); break;
             case "Region": _viewModel.AddLayerCommand.Execute(null); break;
             case "MaskLayers": AddLayersFromMask(); break;
+            case "Captions": GenerateCaptionsFrom(null); break;
         }
     }
 
@@ -2094,6 +2173,16 @@ public partial class MainWindow : Window
 
         _voiceoverStudio = new VoiceoverStudioDialog(_viewModel) { Owner = this };
         _voiceoverStudio.Closed += (_, _) => _voiceoverStudio = null;
+
+        // Undo and redo there follow the main window's rule (4.3E): a box's own typing first, the timeline's otherwise. The
+        // studio's other keys stay its own; typing in its boxes is noted for that rule.
+        _voiceoverStudio.PreviewKeyDown += (studio, e) =>
+        {
+            if (UndoKey(e) is not null)
+                MainWindow_PreviewKeyDown(studio, e);
+            else if (Keyboard.FocusedElement is TextBoxBase box && TypesText(e))
+                _typedIn = (box, _viewModel.UndoMark);
+        };
         _voiceoverStudio.Show();
     }
 
@@ -2105,7 +2194,9 @@ public partial class MainWindow : Window
     private void ShowLayerProperties(Layer layer)
     {
         _viewModel.Checkpoint($"change the look of {layer.Name}");
+        var visit = _viewModel.UndoMark;
         new LayerPropertiesDialog { Owner = this, DataContext = layer, ToggleVisibility = _viewModel.ToggleHidden }.ShowDialog();
+        _viewModel.DropStepIfUnchanged(visit);
     }
 
     private void LiveFramePreview_Click(object sender, RoutedEventArgs e)

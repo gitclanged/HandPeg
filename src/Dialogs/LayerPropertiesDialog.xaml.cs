@@ -13,6 +13,9 @@ public partial class LayerPropertiesDialog : Window
     {
         InitializeComponent();
         SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
+
+        // Ctrl+Z and Ctrl+Y take back and redo what is changed here, a press at a time (4.3E).
+        _ = new BoundUndo(this);
     }
 
     /// <summary>Hides or shows the layer's whole track (the main window's, so it is a step of Undo); none: no eye.</summary>

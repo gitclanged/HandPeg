@@ -242,6 +242,10 @@ public partial class MainViewModel
                 ducked.Codec = AudioEncoder;
         }
 
+        // Marked as the voice (a tick, its menu, a preset, or found by its name on loading): Auto-Captions listen to it (4.3E).
+        if (e.PropertyName == nameof(AudioTrack.IsVoice) && sender is AudioTrack { IsVoice: true } voice)
+            ListenToVoice(voice);
+
         // (The command is what the time bars listen to as well: a slipped or split track redraws through it.)
         // A picture arriving is not a change of settings, and nor is which track the player plays.
         if (e.PropertyName is not (nameof(AudioTrack.Waveform) or nameof(AudioTrack.IsSolo) or nameof(AudioTrack.TrackWaveform)

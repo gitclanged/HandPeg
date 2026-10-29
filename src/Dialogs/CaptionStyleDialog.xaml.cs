@@ -20,6 +20,9 @@ public partial class CaptionStyleDialog : Window
     {
         InitializeComponent();
         SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
+
+        // Ctrl+Z and Ctrl+Y take back and redo what is changed here, a press at a time (4.3E).
+        _ = new BoundUndo(this);
         EditedStyle = style.Clone();
 
         // The fonts on this computer; a style made elsewhere may name one that is not, and keeps it all the same.

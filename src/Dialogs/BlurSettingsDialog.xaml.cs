@@ -11,5 +11,8 @@ public partial class BlurSettingsDialog : Window
     {
         InitializeComponent();
         SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
+
+        // Ctrl+Z and Ctrl+Y take back and redo what is changed here, a press at a time (4.3E).
+        _ = new BoundUndo(this);
     }
 }

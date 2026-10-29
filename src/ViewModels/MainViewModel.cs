@@ -1405,7 +1405,8 @@ public partial class MainViewModel : ObservableObject
 
         // A crash report never names the file, not even on its own (a failed probe's message may).
         CrashReporter.KeepOut(localPath);
-        var mediaInfo = await MediaProbe.ProbeAsync(localPath, cancellationToken);
+        // What the user is waiting on: never queued behind the media browser's posters and strips (4.3E).
+        var mediaInfo = await MediaProbe.ProbeAsync(localPath, cancellationToken, urgent: true);
         ResetForNewSource();
         LocalMediaPath = localPath;
         SetMediaInfo(mediaInfo);
@@ -1441,6 +1442,11 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
+        // A track named for a microphone or a voice is the Voice track (4.3E), unless the preset above marked one: only for a
+        // file loaded anew (a project or a queued job is restored without automation, and keeps its tracks as saved).
+        if (applyAutomation && MarkVoiceTrack() is { } voice)
+            message = $"{message.TrimEnd('.')}. {voice}";
+
         // Layers marked on a video of another shape will not sit on the same things in this one.
         if (GetLayoutAspectWarning() is { } warning)
             message += $". {warning}";
@@ -1449,6 +1455,11 @@ public partial class MainViewModel : ObservableObject
         if (!_isBackgroundWorker)
         {
             MediaLoaded?.Invoke(localPath);
+
+            // Live Preview comes on with every video, style or project opened (4.3E): what a style, a layout or a crop does is
+            // only seen with it, and a style dropped on with it off showed the plain source. Once the player is opening the
+            // new file, so it gets its graph when the file is ready instead of being opened twice.
+            LivePreview = true;
             _ = ScanIFramesAsync(localPath);
             _ = GenerateSpriteSheetAsync(localPath);
             _ = LoadMainFilmstripAsync(localPath);

@@ -352,6 +352,10 @@
         </StackPanel>
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button x:Name="UndoButton" Content="&#xE7A7;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,4" Click="Undo_Click" IsEnabled="False"
+                    ToolTip="Undo (Ctrl+Z)" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Undo" />
+            <Button x:Name="RedoButton" Content="&#xE7A6;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,4" Margin="4,0,14,0" Click="Redo_Click" IsEnabled="False"
+                    ToolTip="Redo (Ctrl+Y)" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Redo" />
             <Button Content="Reset" MinWidth="88" Click="Reset_Click" ToolTip="Puts what this window sets back to how a new layer has it." />
             <Button Content="Close" MinWidth="88" Margin="6,0,0,0" IsDefault="True" IsCancel="True" />
         </StackPanel>

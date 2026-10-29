@@ -656,7 +656,12 @@
                         can appear over the native video window. The crop canvas is only present while Interactive
                         Crop is on; its faint fill is what lets it receive the mouse (fully transparent pixels let clicks through).
                     -->
-                    <Grid x:Name="PlayerOverlay">
+                    <!--
+                        Files dropped anywhere on it go to the window's own drop handling (4.3E): over a layer's box, the selected
+                        layer's handles (in the adorner layer, beside the boxes' canvas) or the crop, a drop on the video lands as
+                        it does with Live Preview off (always on now, with the boxes over the video).
+                    -->
+                    <Grid x:Name="PlayerOverlay" AllowDrop="True" DragEnter="DropHint_DragOver" DragOver="DropHint_DragOver" Drop="Window_Drop">
                         <AdornerDecorator ClipToBounds="True">
                             <Canvas x:Name="CropCanvas" Background="#01000000" Visibility="Collapsed" ClipToBounds="True" Cursor="Cross"
                                     MouseLeftButtonDown="CropCanvas_MouseLeftButtonDown" MouseMove="CropCanvas_MouseMove"
@@ -667,13 +672,11 @@
                         <!--
                             Edit Layers on Video Preview (4.1.1-B, MainWindow.PlayerLayout.cs): a box per layer on screen, nearly
                             see-through so a click on a layer selects it; only the selected one is outlined and has the handles.
-                            The canvas itself takes clicks (and passes files dropped on it to the window) only while an outline
-                            shows, so a click elsewhere on the video hides it.
+                            The canvas itself takes clicks only while an outline shows, so a click elsewhere on the video hides it.
                         -->
                         <AdornerDecorator ClipToBounds="True">
-                            <Canvas x:Name="PlayerLayoutCanvas" Visibility="Collapsed" ClipToBounds="True" AllowDrop="True" SizeChanged="PlayerLayoutCanvas_SizeChanged"
-                                    MouseLeftButtonDown="PlayerLayoutCanvas_MouseLeftButtonDown"
-                                    DragEnter="DropHint_DragOver" DragOver="DropHint_DragOver" Drop="Window_Drop" />
+                            <Canvas x:Name="PlayerLayoutCanvas" Visibility="Collapsed" ClipToBounds="True" SizeChanged="PlayerLayoutCanvas_SizeChanged"
+                                    MouseLeftButtonDown="PlayerLayoutCanvas_MouseLeftButtonDown" />
                         </AdornerDecorator>
                         <!-- Safe Margins: the action-safe (90%) and title-safe (80%) areas of the picture as it is shown. Placed from code. -->
                         <Canvas x:Name="SafeMarginsCanvas" IsHitTestVisible="False" Visibility="Collapsed" SizeChanged="SafeMarginsCanvas_SizeChanged">
@@ -761,7 +764,7 @@
                     </local:OverflowStrip.Resources>
                     <ToggleButton local:OverflowStrip.Priority="80" Content="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0" IsChecked="{Binding LivePreview}"
                               AutomationProperties.Name="Enable Live Preview"
-                              ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is.">
+                              ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is. It comes on by itself whenever a video, a style or a project is opened.">
                         <ToggleButton.Visibility>
                             <Binding Path="PlaybackControls[LivePreview]" Converter="{StaticResource BoolToVisibility}" />
                         </ToggleButton.Visibility>
@@ -965,7 +968,7 @@
                                     Visibility="{Binding ShowSimplePlayback, Converter={StaticResource BoolToVisibility}}">
                             <ToggleButton Content="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="9,6" Margin="3,0" IsChecked="{Binding LivePreview}"
                                   AutomationProperties.Name="Enable Live Preview"
-                                  ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is." />
+                                  ToolTip="Enable Live Preview: runs the export's own FFmpeg filters on the picture as it plays, so crop, layout, color, LUT and the rest are seen as you set them, with nothing rendered to disk. The picture is built at the size the player shows it. The filters themselves run on the processor, so a very heavy layout may not keep up at full speed. Off, the player shows the source as it is. It comes on by itself whenever a video, a style or a project is opened." />
                             <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Padding="9,6" Click="ReloadPlayer_Click"
                                     ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
                             <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Padding="9,6" Command="{Binding RenderPreviewCommand}"
@@ -1899,6 +1902,9 @@
                                                     ToolTip="A piece of the source video (a minimap, an ammo counter) lifted onto the frame. Mark it with Draw Target." />
                                             <Button Content="HUD Layers from a Mask..." Tag="MaskLayers" Click="AddLayerMenu_Click"
                                                     ToolTip="Choose a mask of the whole frame, white (or painted, on transparency) over the HUD: one layer is made for each HUD element it shows, all sharing the mask." />
+                                            <!-- 4.3E: the caption layer, made as the Subtitles tab's Generate Captions makes it -->
+                                            <Button Content="Generate Auto-Captions..." Tag="Captions" Click="AddLayerMenu_Click" AutomationProperties.Name="Generate Auto-Captions Layer"
+                                                    ToolTip="Transcribes the speech now with whisper.cpp into the subtitle track, shown as the Subtitles layer, exactly as Generate Captions on the Subtitles tab does. It listens to what is chosen there: the Voice track, once one is marked on the Audio tab." />
                                         </StackPanel>
                                     </local:ButtonChrome>
                                 </Popup>

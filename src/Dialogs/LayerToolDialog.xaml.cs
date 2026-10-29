@@ -74,7 +74,19 @@ public partial class LayerToolDialog : Window
                 MaskFrameBox.Visibility = FrameMaskButtons.Visibility = MaskLayersButton.Visibility = layer.IsVideo ? Visibility.Visible : Visibility.Collapsed;
                 break;
         }
+
+        // The dialog's own Undo (4.3E): each press of the pointer or a key that changes what the shown controls are bound to
+        // (and the drawn mask's shapes, which buttons set) is a step. The whole visit is one step of the main window's Undo,
+        // taken as the dialog opens (MainWindow.OpenLayerTool).
+        _undo = new BoundUndo(this, () => _tool == LayerTool.Mask ? [(_layer, nameof(Layer.MaskShapes))] : []);
+        _undo.Changed += () => (UndoButton.IsEnabled, RedoButton.IsEnabled) = (_undo.CanUndo, _undo.CanRedo);
     }
+
+    private readonly BoundUndo _undo;
+
+    private void Undo_Click(object sender, RoutedEventArgs e) => _undo.Undo();
+
+    private void Redo_Click(object sender, RoutedEventArgs e) => _undo.Redo();
 
     private void BrowseLut_Click(object sender, RoutedEventArgs e)
     {
@@ -145,7 +157,10 @@ public partial class LayerToolDialog : Window
         }
 
         if (Owner is MainWindow main)
+        {
             main.AddLayersFromMask(path, this);
+            _undo.Forget();
+        }
     }
 
     private void ShareMask_Click(object sender, RoutedEventArgs e)
@@ -162,6 +177,7 @@ public partial class LayerToolDialog : Window
 
     private void ShareMask()
     {
+        _undo.Forget();
         var count = _viewModel.ShareFrameMask(_layer);
         _viewModel.StatusText = count == 0
             ? "There are no other layers cut from the video to give the mask to."

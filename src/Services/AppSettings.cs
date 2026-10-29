@@ -57,8 +57,6 @@ public sealed class ModeProfile
     public bool SnapTimelineToIFrames { get; set; }
     public bool AutoToggleTimelineSnap { get; set; }
     public bool SaveTargetSizeInPresets { get; set; }
-    public bool LivePreview { get; set; }
-    public bool StartWithPlayOnlySegments { get; set; }
     public bool StartWithSnapToIFrames { get; set; }
     public bool StartWithChapterMarkers { get; set; }
     public bool StartWithChaptersAtCuts { get; set; }
@@ -188,6 +186,13 @@ public sealed class AppSettings
 
     /// <summary>Milliseconds kept on either side of a stretch of speech, so that words are not clipped.</summary>
     public int VadSpeechPadMs { get; set; } = 30;
+
+    /// <summary>
+    /// When a new video is loaded, the audio track whose title names a microphone or a voice ("Mic", "Track 2: Microphone")
+    /// is marked as its Voice track (4.3E, <see cref="VoiceTrackScanner"/>): Auto-Captions listen to it, and the sounds set
+    /// to Duck make room for it. A project or a queued job keeps its tracks as they were saved.
+    /// </summary>
+    public bool AutoMarkVoiceTrack { get; set; } = true;
 
     /// <summary>The caption style a new window starts with; null for the built-in one. A preset or a project sets its own.</summary>
     public HandPegApp.Models.CaptionStyle? DefaultCaptionStyle { get; set; }
@@ -473,12 +478,6 @@ public sealed class AppSettings
     /// <summary>Which of the style presets HandPeg comes with have been written to the Styles folder; they are written once.</summary>
     public int BuiltInStylesVersion { get; set; }
 
-    /// <summary>
-    /// Live Preview: the player shows the picture with the export's filters applied as they are set.
-    /// Remembered from the box beside the playback controls.
-    /// </summary>
-    public bool LivePreview { get; set; }
-
     public const string ScrubLayersLive = "Live", ScrubLayersStill = "Still frame", ScrubLayersHidden = "Hidden";
 
     /// <summary>
@@ -607,8 +606,9 @@ public sealed class AppSettings
     /// <summary>Takes up a profile kept from before 4.2: its interface settings replace these.</summary>
     private void TakeProfile(ModeProfile profile)
     {
+        // A setting since retired (Play Only Cut Segments, the remembered Live Preview) is left behind with the profile.
         foreach (var property in ProfileProperties)
-            typeof(AppSettings).GetProperty(property.Name)!.SetValue(this, property.GetValue(profile));
+            typeof(AppSettings).GetProperty(property.Name)?.SetValue(this, property.GetValue(profile));
     }
 
     /// <summary>The style presets the drag-and-drop overlay offers, by file name, in the order they are shown. Empty for the most recent ones.</summary>

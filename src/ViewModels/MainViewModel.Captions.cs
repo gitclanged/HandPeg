@@ -135,17 +135,43 @@ public partial class MainViewModel
         return (x, y, Math.Max(width, 16), Math.Max(height, 16));
     }
 
-    /// <summary>Which of the video's audio tracks is transcribed: the first one unless another is chosen.</summary>
+    /// <summary>
+    /// Which of the video's audio tracks is transcribed: the one last marked as the Voice track (4.3E), or else the first,
+    /// unless another is chosen. Its stream is the one whisper's audio is cut from (CaptionGenerator.BuildExtractCommand's "0:a:N").
+    /// </summary>
     [ObservableProperty] private AudioTrack? _captionAudioTrack;
 
     /// <summary>The separate audio file: a clean voice recording in sync with the video, say.</summary>
     [ObservableProperty] private string _captionAudioPath = "";
 
-    /// <summary>After the track list has been rebuilt for a new source: the choice falls back to the first track.</summary>
+    /// <summary>After the track list has been rebuilt for a new source: the choice falls back to the Voice track, or the first track.</summary>
     private void KeepCaptionTrackValid()
     {
         if (CaptionAudioTrack is null || !AudioTracks.Contains(CaptionAudioTrack))
-            CaptionAudioTrack = AudioTracks.FirstOrDefault();
+            CaptionAudioTrack = AudioTracks.FirstOrDefault(t => t.IsVoice) ?? AudioTracks.FirstOrDefault();
+    }
+
+    /// <summary>
+    /// A track of the video has just been marked as the Voice track (a tick on the Audio tab, its menu, a preset, or found by
+    /// its name on loading, 4.3E): Auto-Captions listen to it from now on, while they listen to the video's own tracks. A
+    /// separate audio file or the voiceover, chosen on the Subtitles tab, stays chosen, and any track can still be picked
+    /// there afterwards. A project's own choice is put back after its tracks' flags (RestoreStateAsync), so it wins.
+    /// </summary>
+    private void ListenToVoice(AudioTrack voice)
+    {
+        if (CaptionUseVideoAudio && AudioTracks.Contains(voice))
+            CaptionAudioTrack = voice;
+    }
+
+    /// <summary>Has Auto-Captions listen to one of the video's own audio tracks, as its right-click menu asks (4.3E).</summary>
+    public void UseTrackForCaptions(AudioTrack track)
+    {
+        if (!AudioTracks.Contains(track))
+            return;
+
+        CaptionUseVideoAudio = true;
+        CaptionAudioTrack = track;
+        StatusText = $"Auto-captions now listen to {track.Title} (Subtitles tab: Video Audio Track).";
     }
 
     /// <summary>The Subtitles tab's "Show Advanced" switch. Remembered between sessions.</summary>

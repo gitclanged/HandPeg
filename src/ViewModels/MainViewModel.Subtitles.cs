@@ -191,9 +191,28 @@ public partial class MainViewModel
     // afterwards (CommitSubtitleEdits): what it changed is told apart from what was there by comparing with this.
     private string _committedSubtitles = "null";
 
+    // The one undo step everything done in the Subtitle Editor goes into while it is open (4.3E). The editor is modal, so
+    // nothing else is changed meanwhile, and it keeps finer steps of its own (each typing run, drag, split, addition and
+    // deletion): the main window's Undo then takes back the whole visit at once, instead of the editor's every pause
+    // pushing the timeline's twenty steps out.
+    private byte[]? _subtitleVisitStep;
+
+    // The subtitles as they were when the editor was opened: a visit that leaves them so leaves no step behind.
+    private string _subtitlesAtVisit = "null";
+
+    /// <summary>
+    /// Changes whenever the undo history does (a step taken, undone or redone): the main window tells by it whether typing
+    /// in a text box is newer than the timeline's last step, and so whose Ctrl+Z it is.
+    /// </summary>
+    public object? UndoMark => _undo.Count > 0 ? _undo[^1].State : null;
+
+    /// <summary>Whether the newest undo step is the open Subtitle Editor's one step, which what is done in it now goes into.</summary>
+    private bool InSubtitleVisit => IsSubtitleEditorOpen && _subtitleVisitStep is { } step && _undo.Count > 0 && ReferenceEquals(_undo[^1].State, step);
+
     /// <summary>
     /// Makes an undo step of the edits made to the cues in place since the last step: one that brings back the
-    /// cues as they were then. Nothing when nothing was changed.
+    /// cues as they were then. Nothing when nothing was changed. While the Subtitle Editor is open, the edits go
+    /// into its visit's one step instead.
     /// </summary>
     private void CheckpointSubtitleEdits()
     {
@@ -201,8 +220,42 @@ public partial class MainViewModel
         if (now == _committedSubtitles)
             return;
 
-        Checkpoint("edit the subtitles", CaptureSnapshot() with { Subtitles = JsonSerializer.Deserialize<SubtitleTrackData?>(_committedSubtitles) });
+        if (!IsSubtitleEditorOpen)
+            Checkpoint("edit the subtitles", SnapshotBeforeSubtitleEdits());
+        else if (!InSubtitleVisit)
+            BeginSubtitleVisit(SnapshotBeforeSubtitleEdits());
         _committedSubtitles = now;
+
+        // Taken back in the editor to what they were when it was opened: the visit changed nothing after all.
+        if (InSubtitleVisit && now == _subtitlesAtVisit)
+        {
+            _undo.RemoveAt(_undo.Count - 1);
+            _subtitleVisitStep = null;
+        }
+    }
+
+    /// <summary>The timeline as it is, with the subtitles as the last undo step left them: what undoing the edits made in place since brings back.</summary>
+    private TimelineSnapshot SnapshotBeforeSubtitleEdits() =>
+        CaptureSnapshot() with { Subtitles = JsonSerializer.Deserialize<SubtitleTrackData?>(_committedSubtitles) };
+
+    /// <summary>Takes the open Subtitle Editor's one undo step, bringing back the state given; what is done in the editor from now on goes into it.</summary>
+    private void BeginSubtitleVisit(TimelineSnapshot before)
+    {
+        Checkpoint("edit the subtitles", before);
+        _subtitleVisitStep = !_isBackgroundWorker && _undo.Count > 0 ? _undo[^1].State : null;
+    }
+
+    /// <summary>
+    /// Takes the undo step a change to the cues is made after: a step of its own, named for it; while the Subtitle Editor
+    /// is open, its visit's one step (taken now when the visit has none yet), the editor keeping the change as a step of its own.
+    /// </summary>
+    private void CheckpointSubtitles(string what)
+    {
+        CheckpointSubtitleEdits();
+        if (!IsSubtitleEditorOpen)
+            Checkpoint(what);
+        else if (!InSubtitleVisit)
+            BeginSubtitleVisit(CaptureSnapshot());
     }
 
     private void NotifySubtitlesChanged()
@@ -252,6 +305,11 @@ public partial class MainViewModel
 
     partial void OnIsSubtitleEditorOpenChanged(bool value)
     {
+        // Each visit of the editor is one undo step of its own, measured from the subtitles as it found them.
+        _subtitleVisitStep = null;
+        if (value)
+            _subtitlesAtVisit = JsonSerializer.Serialize(CaptureSubtitles());
+
         // Closed: the main player draws them again, as they now are. Open: it lets go of them.
         if (!value)
             RefreshSubtitlePreview();
@@ -470,8 +528,7 @@ public partial class MainViewModel
     /// <summary>Adds a cue by hand. The first one makes the track; its words are drawn as captions, so captions are switched on for them.</summary>
     public SubtitleCue AddSubtitleCue(double start, double end, string text)
     {
-        CheckpointSubtitleEdits();
-        Checkpoint("add a subtitle");
+        CheckpointSubtitles("add a subtitle");
         var cue = new SubtitleCue { Index = SubtitleCues.Count + 1, Start = Math.Max(start, 0), End = Math.Max(end, start + 0.1), Text = text };
         SubtitleCues.Add(cue);
         if (!AutoCaptions)
@@ -485,8 +542,7 @@ public partial class MainViewModel
         if (!SubtitleCues.Contains(cue))
             return;
 
-        CheckpointSubtitleEdits();
-        Checkpoint("delete a subtitle");
+        CheckpointSubtitles("delete a subtitle");
         SubtitleCues.Remove(cue);
         NotifySubtitlesChanged();
     }
@@ -501,8 +557,7 @@ public partial class MainViewModel
         if (SubtitlesAreImages || !SubtitleCues.Contains(cue) || at <= cue.Start + 0.05 || at >= cue.End - 0.05)
             return null;
 
-        CheckpointSubtitleEdits();
-        Checkpoint("split a subtitle");
+        CheckpointSubtitles("split a subtitle");
         var (words, breaks) = (cue.GetWords(), cue.GetBreaks());
         var share = (at - cue.Start) / (cue.End - cue.Start);
         var second = new SubtitleCue { Start = Math.Round(at, 3), End = cue.End, Text = cue.Text };
@@ -529,8 +584,7 @@ public partial class MainViewModel
         if (SubtitlesAreImages || words.Length < 2 || word < 0 || word >= words.Length)
             return false;
 
-        CheckpointSubtitleEdits();
-        Checkpoint("delete a word");
+        CheckpointSubtitles("delete a word");
 
         // The boundary that goes is the one after the word, or before it when it is the last.
         breaks.RemoveAt(Math.Min(word, breaks.Count - 1));
@@ -538,6 +592,31 @@ public partial class MainViewModel
         cue.WordBreaks = breaks.Count > 0 ? [.. breaks] : null;
         NotifySubtitlesChanged();
         return true;
+    }
+
+    /// <summary>
+    /// Puts the cues (and the offset) back as the Subtitle Editor's own Undo kept them. In place: the cues there are take
+    /// the values in order, so a picture track's cues stay matched to its file's pictures and the editor's timeline goes on
+    /// drawing the same list. Like the editor's other changes, it reaches the main window's Undo when the editor commits
+    /// (CommitSubtitleEdits), in the visit's one step.
+    /// </summary>
+    public void RestoreSubtitleCues(IReadOnlyList<SubtitleCueState> cues, double offsetMs)
+    {
+        for (var i = 0; i < cues.Count; i++)
+        {
+            if (i == SubtitleCues.Count)
+                SubtitleCues.Add(new SubtitleCue { Index = i + 1 });
+
+            // The words before their boundaries: words of another count let go of the boundaries they had.
+            var (cue, state) = (SubtitleCues[i], cues[i]);
+            cue.Text = state.Text ?? "";
+            cue.WordBreaks = (double[]?)state.Breaks?.Clone();
+            (cue.Start, cue.End) = (state.Start, state.End);
+        }
+
+        while (SubtitleCues.Count > cues.Count)
+            SubtitleCues.RemoveAt(SubtitleCues.Count - 1);
+        SubtitleOffsetMs = offsetMs;
     }
 
     /// <summary>The traditional view of the Subtitles tab (the source's own subtitle tracks), for the button that opens it.</summary>

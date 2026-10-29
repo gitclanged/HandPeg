@@ -130,8 +130,14 @@ public partial class MainWindow
             else
                 UpdatePlayerSelection();
         };
-        box.DragStarted += (_, _) => _viewModel.Checkpoint($"move {clip.Name}");
-        box.DragDelta += (_, e) => MoveTrackLayer(clip, e.HorizontalChange / _playerScale, e.VerticalChange / _playerScale, _playerFrame, null);
+        // One undo step for the drag, taken as the box first moves: a press that only selects the layer takes none (DragStep).
+        var moveStep = new DragStep(_viewModel, $"move {clip.Name}");
+        box.DragStarted += (_, _) => moveStep.Pressed();
+        box.DragDelta += (_, e) =>
+        {
+            moveStep.Changing();
+            MoveTrackLayer(clip, e.HorizontalChange / _playerScale, e.VerticalChange / _playerScale, _playerFrame, null);
+        };
         box.MouseDoubleClick += (_, e) =>
         {
             if (e.ChangedButton != MouseButton.Left)

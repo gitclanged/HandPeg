@@ -410,8 +410,10 @@ public partial class MainViewModel
             _backgroundRow.IsHidden = layers.BackgroundHidden;
             _layoutSourceAspect = layers.SourceAspectRatio;
 
-            // A layout is only seen through the engine.
+            // A layout is only seen through the engine, and in the player only with Live Preview (4.3E: always on with a style).
             FrameEngine = true;
+            if (!_isBackgroundWorker && HasSource)
+                LivePreview = true;
             applied.Add($"layout with {Layers.Count} layer{(Layers.Count == 1 ? "" : "s")}");
         }
 

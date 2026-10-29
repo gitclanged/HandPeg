@@ -113,6 +113,9 @@ public sealed class SubtitleTimeline : FrameworkElement
     /// <summary>The strip was dragged: the moment now under the playhead.</summary>
     public event Action<double>? Scrubbed;
 
+    /// <summary>A drag of a cue has begun to move it: raised once, before the cue changes (so that it can be kept as it was, for Undo).</summary>
+    public event Action<SubtitleCue>? CueGrabbed;
+
     /// <summary>A cue is being dragged and has just changed.</summary>
     public event Action<SubtitleCue>? CueDragged;
 
@@ -410,8 +413,13 @@ public sealed class SubtitleTimeline : FrameworkElement
         }
 
         var seconds = (point.X - drag.PointerX) / _zoom.ScaleX;
-        if (Math.Abs(point.X - drag.PointerX) > 1.5)
+        if (!drag.Moved && Math.Abs(point.X - drag.PointerX) > 1.5)
+        {
             drag.Moved = true;
+            if (drag is { Cue: { } grabbed, Grip: not Grip.Pan })
+                CueGrabbed?.Invoke(grabbed);
+        }
+
         if (!drag.Moved)
             return;
 

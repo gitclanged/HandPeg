@@ -46,6 +46,9 @@ public partial class MainWindow
     private Action? _placeCenter;
     private Point? _dragStart;
 
+    // The undo step a press on the video in DrawTarget mode will take once it draws a rectangle; null when taken or none.
+    private string? _drawTargetStep;
+
     private OverlayMode CurrentOverlayMode =>
         _viewModel.IsInteractiveCropActive ? OverlayMode.Crop
         : _viewModel.DrawTargetLayer is not null ? OverlayMode.DrawTarget
@@ -162,9 +165,8 @@ public partial class MainWindow
             return;
         }
 
-        // Marking a layer's area again is a step of Undo.
-        if (mode == OverlayMode.DrawTarget && _viewModel.DrawTargetLayer is { } target)
-            _viewModel.Checkpoint($"redraw the area of {target.Name}");
+        // Marking a layer's area again is a step of Undo, taken when the rectangle is first drawn: a click draws none.
+        _drawTargetStep = mode == OverlayMode.DrawTarget && _viewModel.DrawTargetLayer is { } target ? $"redraw the area of {target.Name}" : null;
 
         _dragStart = ClampTo(area, point);
         CropCanvas.CaptureMouse();
@@ -191,6 +193,12 @@ public partial class MainWindow
 
         if (_viewModel.DrawTargetLayer is { } element)
         {
+            if (_drawTargetStep is { } step)
+            {
+                _drawTargetStep = null;
+                _viewModel.Checkpoint(step);
+            }
+
             // Kept as fractions of the frame, which is all the drawn rectangle really says.
             (element.SourceX, element.SourceY) = ((drawn.Left - area.Left) / area.Width, (drawn.Top - area.Top) / area.Height);
             (element.SourceWidth, element.SourceHeight) = (drawn.Width / area.Width, drawn.Height / area.Height);
@@ -481,16 +489,24 @@ public partial class MainWindow
     private void WireGizmo(LayerGizmoAdorner adorner, FrameworkElement box, Layer gizmo, string name, UIElement surface,
         Func<(int X, int Y, int Width, int Height)> getRect, Action<double, double> resize, double scale)
     {
-        adorner.ResizeStarted += (_, _) => _viewModel.Checkpoint($"resize {name}");
-        adorner.ResizeDelta += (_, e) => resize(e.HorizontalChange / scale, e.VerticalChange / scale);
+        // Each handle's drag is one undo step, taken as it first changes something (DragStep).
+        var resizeStep = new DragStep(_viewModel, $"resize {name}");
+        adorner.ResizeStarted += (_, _) => resizeStep.Pressed();
+        adorner.ResizeDelta += (_, e) =>
+        {
+            resizeStep.Changing();
+            resize(e.HorizontalChange / scale, e.VerticalChange / scale);
+        };
 
         // The rotation handle: the angle from the anchor point to the pointer, the handle pointing up at 0 degrees.
-        adorner.TurnStarted += () => _viewModel.Checkpoint($"turn {name}");
+        var turnStep = new DragStep(_viewModel, $"turn {name}");
+        adorner.TurnStarted += turnStep.Pressed;
         adorner.TurnDelta += () =>
         {
             if (!gizmo.HasFilters)
                 return;
 
+            turnStep.Changing();
             var anchor = box.TranslatePoint(new Point(gizmo.AnchorX * box.Width, gizmo.AnchorY * box.Height), surface);
             var pointer = Mouse.GetPosition(surface);
             var degrees = Math.Atan2(pointer.Y - anchor.Y, pointer.X - anchor.X) * 180 / Math.PI + 90;
@@ -503,9 +519,11 @@ public partial class MainWindow
 
         // The anchor dot: where the pointer is in the (unturned) box; the layer stays where it is on the frame. It snaps
         // to the middle, the edges and the corners (not with Alt).
-        adorner.AnchorStarted += () => _viewModel.Checkpoint($"move the anchor point of {name}");
+        var anchorStep = new DragStep(_viewModel, $"move the anchor point of {name}");
+        adorner.AnchorStarted += anchorStep.Pressed;
         adorner.AnchorDelta += () =>
         {
+            anchorStep.Changing();
             var pointer = Mouse.GetPosition(box);
             var (x, y) = (pointer.X / Math.Max(box.Width, 1), pointer.Y / Math.Max(box.Height, 1));
             if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
@@ -584,8 +602,13 @@ public partial class MainWindow
                 : "Drag to move (it snaps to the middle and the safe margins; Alt: no snapping). The corner handle resizes about the anchor point, the round handle turns it, the gold dot is the anchor. Arrow keys nudge it a pixel (Shift: ten). Double-click to center.",
         };
         System.Windows.Automation.AutomationProperties.SetName(box, name);
-        box.DragStarted += (_, _) => _viewModel.Checkpoint($"move {name}");
-        box.DragDelta += (_, e) => move(e.HorizontalChange / scale, e.VerticalChange / scale);
+        var moveStep = new DragStep(_viewModel, $"move {name}");
+        box.DragStarted += (_, _) => moveStep.Pressed();
+        box.DragDelta += (_, e) =>
+        {
+            moveStep.Changing();
+            move(e.HorizontalChange / scale, e.VerticalChange / scale);
+        };
         box.DragCompleted += (_, _) => _layoutGuides?.ShowGuides([]);
 
         // Chosen with the pointer, the arrow keys nudge it (see MainWindow_PreviewKeyDown): a pixel of the output, ten with Shift.
@@ -643,8 +666,13 @@ public partial class MainWindow
         if (AdornerLayer.GetAdornerLayer(box) is { } layer && gizmo is null)
         {
             var adorner = new ResizeAdorner(box, (Style)FindResource("LayerGrip"), name);
-            adorner.ResizeStarted += (_, _) => _viewModel.Checkpoint($"resize {name}");
-            adorner.ResizeDelta += (_, e) => resize(e.HorizontalChange / scale, e.VerticalChange / scale);
+            var resizeStep = new DragStep(_viewModel, $"resize {name}");
+            adorner.ResizeStarted += (_, _) => resizeStep.Pressed();
+            adorner.ResizeDelta += (_, e) =>
+            {
+                resizeStep.Changing();
+                resize(e.HorizontalChange / scale, e.VerticalChange / scale);
+            };
             layer.Add(adorner);
             _arrangeAdorners.Add(adorner);
         }
@@ -661,6 +689,29 @@ public partial class MainWindow
 
     /// <summary>A layout box's arrow-key nudge: what it moves (its name, for Undo), and how, in pixels of the output.</summary>
     private sealed record LayoutNudge(string Name, Action<double, double> Move);
+
+    /// <summary>
+    /// One drag's undo step, taken as the drag first changes something rather than as it is pressed (4.3E): a Thumb, and
+    /// every handle, says a drag has started the moment it is pressed, and a press that only selects a box (or the first
+    /// press of a double-click) must not leave a step that undoes nothing, or Ctrl+Z seems to do nothing at all.
+    /// </summary>
+    private sealed class DragStep(MainViewModel viewModel, string what)
+    {
+        private bool _taken;
+
+        /// <summary>A press: the next change is the drag's first.</summary>
+        public void Pressed() => _taken = false;
+
+        /// <summary>A change of the drag: the first takes the step, before it is made.</summary>
+        public void Changing()
+        {
+            if (_taken)
+                return;
+
+            _taken = true;
+            viewModel.Checkpoint(what);
+        }
+    }
 
     private void ClearArrangeVisuals()
     {

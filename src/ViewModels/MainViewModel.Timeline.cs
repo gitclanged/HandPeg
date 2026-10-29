@@ -144,6 +144,7 @@ public partial class MainViewModel
         if (_undo.Count > UndoDepth)
             _undo.RemoveAt(0);
         _redo.Clear();
+        _touchedSinceSaved = true;
     }
 
     /// <summary>
@@ -162,6 +163,17 @@ public partial class MainViewModel
             _undo.RemoveAt(0);
         _redo.Clear();
         _checkpointedAt = Environment.TickCount64;
+        _touchedSinceSaved = true;
+    }
+
+    /// <summary>
+    /// After a dialog whose visit was one step (<see cref="Checkpoint(string)"/> as it opened, <see cref="UndoMark"/> just
+    /// after): that step goes again when nothing was changed in it (4.3E), so Ctrl+Z never seems to do nothing.
+    /// </summary>
+    public void DropStepIfUnchanged(object? mark)
+    {
+        if (mark is byte[] packed && _undo.Count > 0 && ReferenceEquals(_undo[^1].State, packed) && Pack(CaptureSnapshot()).AsSpan().SequenceEqual(packed))
+            _undo.RemoveAt(_undo.Count - 1);
     }
 
     public void Undo() => Step(_undo, _redo, "Undid");
@@ -861,6 +873,12 @@ public partial class MainViewModel
     // What the project looked like when it was last saved or loaded, to tell whether anything has changed since.
     private string _savedFingerprint = "";
 
+    // Whether the user has touched HandPeg (a key, a click, the wheel, a drop) since then, or an edit has taken a step of
+    // Undo (one the user set going earlier, finishing in the background). What changes before either is not theirs (a probe,
+    // a scan or the player settling after the load) and never counts as an edit (4.3E: a project opened and closed again,
+    // with Live Preview on, must never ask to be saved).
+    private bool _touchedSinceSaved;
+
     private string Fingerprint()
     {
         var state = CaptureState();
@@ -869,8 +887,93 @@ public partial class MainViewModel
     }
 
     /// <summary>Takes the project as it is now as the saved one: called after a load and after a save.</summary>
-    public void MarkSaved() => _savedFingerprint = HasSource ? Fingerprint() : "";
+    public void MarkSaved()
+    {
+        _savedFingerprint = HasSource ? Fingerprint() : "";
+        _touchedSinceSaved = false;
+    }
 
-    /// <summary>Whether there is a video open whose cuts or settings have changed since it was loaded or last saved as a project.</summary>
-    public bool HasUnsavedChanges => HasSource && _savedFingerprint.Length > 0 && Fingerprint() != _savedFingerprint;
+    /// <summary>
+    /// The user's first key, click, wheel turn or drop since the project was loaded or saved (the window hears them in every
+    /// one of HandPeg's windows): whatever changed by itself before it is taken as the saved state, so only what follows counts.
+    /// </summary>
+    public void NoteUserInput()
+    {
+        if (_touchedSinceSaved)
+            return;
+
+        _touchedSinceSaved = true;
+        if (!HasSource || _savedFingerprint.Length == 0 || Fingerprint() is not { } now || now == _savedFingerprint)
+            return;
+
+        AppLog.Write($"Changed by itself since the project was opened or saved (not counted as an edit): {ChangedParts(_savedFingerprint, now)}");
+        _savedFingerprint = now;
+    }
+
+    /// <summary>Whether there is a video open whose cuts or settings the user has changed since it was loaded or last saved as a project.</summary>
+    public bool HasUnsavedChanges => HasSource && _touchedSinceSaved && _savedFingerprint.Length > 0 && Fingerprint() != _savedFingerprint;
+
+    /// <summary>For the log, as HandPeg closes with unsaved changes: which parts of the project they are in.</summary>
+    public string DescribeUnsavedChanges() => ChangedParts(_savedFingerprint, Fingerprint());
+
+    /// <summary>
+    /// Where two fingerprints of the project differ, by the names of the parts (the first few): never their values, so the
+    /// log holds no file names or titles.
+    /// </summary>
+    private static string ChangedParts(string before, string after)
+    {
+        var parts = new List<string>();
+        void Walk(JsonElement a, JsonElement b, string path)
+        {
+            if (parts.Count >= 8)
+                return;
+
+            if (a.ValueKind != b.ValueKind)
+            {
+                parts.Add(path);
+                return;
+            }
+
+            switch (a.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    foreach (var name in a.EnumerateObject().Select(p => p.Name).Union(b.EnumerateObject().Select(p => p.Name)))
+                    {
+                        if (a.TryGetProperty(name, out var left) && b.TryGetProperty(name, out var right))
+                            Walk(left, right, $"{path}.{name}");
+                        else if (parts.Count < 8)
+                            parts.Add($"{path}.{name}");
+                    }
+
+                    break;
+
+                case JsonValueKind.Array when a.GetArrayLength() != b.GetArrayLength():
+                    parts.Add($"{path} (count)");
+                    break;
+
+                case JsonValueKind.Array:
+                    foreach (var (left, right, index) in a.EnumerateArray().Zip(b.EnumerateArray()).Select((p, i) => (p.First, p.Second, i)))
+                        Walk(left, right, $"{path}[{index}]");
+                    break;
+
+                default:
+                    if (a.GetRawText() != b.GetRawText())
+                        parts.Add(path);
+                    break;
+            }
+        }
+
+        try
+        {
+            using var left = JsonDocument.Parse(before);
+            using var right = JsonDocument.Parse(after);
+            Walk(left.RootElement, right.RootElement, "$");
+        }
+        catch (JsonException)
+        {
+            return "(unreadable)";
+        }
+
+        return parts.Count == 0 ? "(nothing)" : string.Join(", ", parts);
+    }
 }

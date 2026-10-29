@@ -165,6 +165,7 @@ public partial class MainWindow
             return;
 
         AppLog.Write($"Dropped {(link is null ? Path.GetFileName(source) : "a link")} on the overlay target {item.Name}.");
+        WorkScheduler.HoldBackground(DropHold);
         switch (item.Target)
         {
             case StyleFile style:
@@ -266,6 +267,12 @@ public partial class MainWindow
     // ("no" to files) before the window is asked: over those, a drop was refused. Seen first, here, a file is
     // accepted wherever on the window it is, and the boxes keep their own dragging of text.
 
+    // A file dragged in holds background work back (WorkScheduler.HoldBackground, 4.3E) until a moment after its last move
+    // (each move holds it again: a drag from another program has no end HandPeg is told of for sure), and a drop holds it
+    // a moment more: until its own work, which holds it for as long as it takes, has begun (clips put on the timeline), or
+    // while a video it opens is probed (its own I-frames, waveforms and proxy are background work, and are not held long).
+    private static readonly TimeSpan DragHold = TimeSpan.FromMilliseconds(500), DropHold = TimeSpan.FromMilliseconds(400);
+
     private void Window_PreviewDragOver(object sender, DragEventArgs e)
     {
         if (!CanOpen(e.Data))
@@ -273,6 +280,7 @@ public partial class MainWindow
 
         e.Effects = DragDropEffects.Copy;
         e.Handled = true;
+        WorkScheduler.HoldBackground(DragHold);
 
         // Over the time bars: where the file would land is marked.
         ShowDropMark(e);
@@ -301,6 +309,7 @@ public partial class MainWindow
 
         e.Handled = true;
         ClearDropMark();
+        WorkScheduler.HoldBackground(DropHold);
 
         // A link: opened as the video, or, dropped on the timeline with a video open, downloaded and put there.
         if (link is not null)
@@ -381,12 +390,16 @@ public partial class MainWindow
         Dispatcher.BeginInvoke(() => LoadDroppedFile(link));
     }
 
-    /// <summary>Adds the sound of dropped files to the timeline: audio files, or the audio of videos.</summary>
+    /// <summary>
+    /// Adds the sound of dropped files to the timeline: audio files, or the audio of videos. Background work is held back
+    /// until they are on it (4.3E), and whether the files are there is asked away from the interface.
+    /// </summary>
     private async Task AddDroppedAudioAsync(string[] files, double seconds)
     {
+        using var hold = WorkScheduler.HoldBackground();
         Activate();
         var added = 0;
-        foreach (var file in files.Where(File.Exists))
+        foreach (var file in await Task.Run(() => files.Where(File.Exists).ToArray()))
         {
             if (await _viewModel.AddAudioLayerAsync(file, seconds))
                 added++;
@@ -403,10 +416,13 @@ public partial class MainWindow
     /// Adds dropped files as clips: pictures as image layers, anything else as video layers. Each goes on a track of
     /// its own just above the row (or fills an empty track, or joins the row's track when Settings allow and there is
     /// room: MainViewModel.PlaceClip); on the main video's row it takes the main video's place. Several videos dropped
-    /// at once follow each other on one track, end to end, from the moment dropped on.
+    /// at once follow each other on one track, end to end, from the moment dropped on. Background work is held back until
+    /// they are on it and filled in (4.3E: each video's probe is urgent, never behind the media browser's posters and
+    /// strips), and whether the files are there is asked away from the interface.
     /// </summary>
     private async Task AddDroppedLayersAsync(string[] files, double seconds, Layer? row)
     {
+        using var hold = WorkScheduler.HoldBackground();
         Activate();
         if (!_viewModel.IsVideoReencoded)
         {
@@ -414,9 +430,10 @@ public partial class MainWindow
             return;
         }
 
-        var (added, at, videos) = (0, seconds, files.Count(f => File.Exists(f) && !ImageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant())));
+        var existing = await Task.Run(() => files.Where(File.Exists).ToArray());
+        var (added, at, videos) = (0, seconds, existing.Count(f => !ImageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant())));
         var follows = false;
-        foreach (var file in files.Where(File.Exists))
+        foreach (var file in existing)
         {
             if (ImageExtensions.Contains(Path.GetExtension(file).ToLowerInvariant()))
             {

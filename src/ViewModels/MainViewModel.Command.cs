@@ -327,8 +327,12 @@ public partial class MainViewModel
 
     // ----- Live Preview -----
 
-    /// <summary>Whether the player shows the picture with the export's filters applied. Bound to the box beside the playback controls, and remembered.</summary>
-    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private bool _livePreview = AppSettings.Current.LivePreview;
+    /// <summary>
+    /// Whether the player shows the picture with the export's filters applied. Always on as HandPeg starts and whenever a
+    /// video, a style or a project is opened (the user's call, 4.3E: a style dropped on with it off showed the plain source);
+    /// the box beside the playback controls turns it off for what is open.
+    /// </summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private bool _livePreview = true;
 
     /// <summary>Raised whenever a setting changed that may have changed what Live Preview should show.</summary>
     public event Action? LiveFilterInvalidated;
@@ -338,22 +342,6 @@ public partial class MainViewModel
     {
         _liveState = null;
         LiveFilterInvalidated?.Invoke();
-    }
-
-    partial void OnLivePreviewChanged(bool value)
-    {
-        if (AppSettings.Current.LivePreview == value)
-            return;
-
-        AppSettings.Current.LivePreview = value;
-        try
-        {
-            AppSettings.Current.SaveAsCurrent();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // The choice still holds for this session.
-        }
     }
 
 

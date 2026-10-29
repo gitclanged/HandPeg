@@ -400,8 +400,12 @@ public static partial class FfmpegRunner
     /// I-frame nearest its time. Background work (see WorkScheduler), decoded on the background card where there
     /// is one; on the processor when that does not work out.
     /// </summary>
+    /// <remarks>
+    /// Like the posters and strips below, asked for from the thread pool whoever asks (4.3E): work asked for on the
+    /// interface's thread is started there, and FFmpeg's start took it for tens of milliseconds.
+    /// </remarks>
     public static Task<bool> GenerateSpriteSheetAsync(string videoPath, string imagePath, double intervalSeconds, CancellationToken cancellationToken) =>
-        WorkScheduler.Run(new WorkSpec($"Hover previews of {Path.GetFileName(videoPath)}", WorkLane.Background) { Key = $"sprite|{videoPath}|{intervalSeconds}" }, async work =>
+        Task.Run(() => WorkScheduler.Run(new WorkSpec($"Hover previews of {Path.GetFileName(videoPath)}", WorkLane.Background) { Key = $"sprite|{videoPath}|{intervalSeconds}" }, async work =>
         {
             if (!File.Exists(DependencyUpdater.FfmpegPath))
                 return false;
@@ -434,7 +438,7 @@ public static partial class FfmpegRunner
             }
 
             return false;
-        }, cancellationToken);
+        }, cancellationToken));
 
     /// <summary>
     /// One frame of a video as a JPEG <paramref name="height"/> pixels tall: a media browser tile's poster, before its strip
@@ -443,7 +447,7 @@ public static partial class FfmpegRunner
     /// </summary>
     public static Task<bool> GeneratePosterFrameAsync(string videoPath, string imagePath, double atSeconds, int height, CancellationToken cancellationToken,
         WorkLane lane = WorkLane.Interactive) =>
-        WorkScheduler.Run(new WorkSpec($"Poster of {Path.GetFileName(videoPath)}", lane) { Key = $"poster|{videoPath}|{height}|{imagePath}" }, async work =>
+        Task.Run(() => WorkScheduler.Run(new WorkSpec($"Poster of {Path.GetFileName(videoPath)}", lane) { Key = $"poster|{videoPath}|{height}|{imagePath}" }, async work =>
         {
             if (!File.Exists(DependencyUpdater.FfmpegPath))
                 return false;
@@ -457,7 +461,7 @@ public static partial class FfmpegRunner
                 work.Token);
 
             return result.ExitCode == 0 && File.Exists(imagePath) && new FileInfo(imagePath).Length > 0;
-        }, cancellationToken);
+        }, cancellationToken));
 
     /// <summary>
     /// A strip of frames from a video, evenly spread over its length and set side by side in one picture:
@@ -468,7 +472,7 @@ public static partial class FfmpegRunner
     /// <param name="height">How tall each frame is made, in pixels: 54 for a block on the timeline.</param>
     public static Task<bool> GenerateFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, CancellationToken cancellationToken,
         int height = 54, WorkLane lane = WorkLane.Background) =>
-        WorkScheduler.Run(new WorkSpec($"Thumbnails of {Path.GetFileName(videoPath)}", lane) { Key = $"strip|{videoPath}|{count}|{height}|{imagePath}" }, async work =>
+        Task.Run(() => WorkScheduler.Run(new WorkSpec($"Thumbnails of {Path.GetFileName(videoPath)}", lane) { Key = $"strip|{videoPath}|{count}|{height}|{imagePath}" }, async work =>
         {
             if (!File.Exists(DependencyUpdater.FfmpegPath))
                 return false;
@@ -495,7 +499,7 @@ public static partial class FfmpegRunner
             }
 
             return false;
-        }, cancellationToken);
+        }, cancellationToken));
 
     /// <summary>Makes the strip once. Null when it was written; otherwise what FFmpeg said.</summary>
     private static async Task<string?> RunFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, bool hardware, int height, CancellationToken cancellationToken)

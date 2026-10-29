@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HandPegApp.Services;
@@ -25,6 +26,9 @@ public sealed class MaskLayersWindow : Window
 
     // Where pieces were clicked: a piece with an odd number of clicks in it is the other way round from how it started.
     private readonly List<Point> _toggles = [];
+
+    // Clicks taken back with Ctrl+Z, newest last, to be put back with Ctrl+Y (or Ctrl+Shift+Z); a new click lets them go.
+    private readonly List<Point> _untoggled = [];
     private List<Rect> _all = [];
     private List<bool> _included = [];
     private readonly double _width, _height;
@@ -86,6 +90,7 @@ public sealed class MaskLayersWindow : Window
         _surface.Clicked += at =>
         {
             _toggles.Add(at);
+            _untoggled.Clear();
             Regroup();
         };
         var frame = new Grid { Width = _width, Height = _height, Background = Brushes.Black };
@@ -98,7 +103,7 @@ public sealed class MaskLayersWindow : Window
         {
             Text = "Every patch the mask shows is found, and those closer together than the distance below are one HUD element: one layer each, all sharing this mask. "
                    + "Raise the distance until each element is one numbered box (a row of ability icons traced one by one, say), and lower it if two elements have run together. "
-                   + "Click a box to leave it out, or to take it back: pieces a layer already cuts out start left out.",
+                   + "Click a box to leave it out, or to take it back: pieces a layer already cuts out start left out. Ctrl+Z takes back the last click, Ctrl+Y puts it back.",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -139,6 +144,7 @@ public sealed class MaskLayersWindow : Window
         Content = root;
 
         Regroup();
+        PreviewKeyDown += Window_PreviewKeyDown;
         SizeChanged += (_, _) => _surface.InvalidateVisual();
         Loaded += async (_, _) => await LoadStillAsync();
         Closed += (_, _) =>
@@ -165,6 +171,29 @@ public sealed class MaskLayersWindow : Window
         _add.Content = Pieces.Count == 1 ? "Add 1 Layer" : $"Add {Pieces.Count} Layers";
         _add.IsEnabled = Pieces.Count > 0;
         _surface.Show(_all, _included);
+    }
+
+    /// <summary>
+    /// Undo (Ctrl+Z) takes back the last click on a piece, redo (Ctrl+Y or Ctrl+Shift+Z) puts it back. The distance and the two
+    /// switches are not steps: each shows what it is set to, and is set again as directly. The window is modal and adds
+    /// nothing until it is confirmed, so the main window's Undo has no part in it.
+    /// </summary>
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        var undo = e.Key == Key.Z && Keyboard.Modifiers == ModifierKeys.Control;
+        var redo = (e.Key == Key.Y && Keyboard.Modifiers == ModifierKeys.Control) || (e.Key == Key.Z && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift));
+        if (!undo && !redo)
+            return;
+
+        var (from, to) = undo ? (_toggles, _untoggled) : (_untoggled, _toggles);
+        if (from.Count > 0)
+        {
+            to.Add(from[^1]);
+            from.RemoveAt(from.Count - 1);
+            Regroup();
+        }
+
+        e.Handled = true;
     }
 
     private async Task LoadStillAsync()

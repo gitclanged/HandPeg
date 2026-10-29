@@ -32,6 +32,12 @@ public sealed class MaskDrawWindow : Window
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
     private readonly string _stillPath = Path.Combine(SessionPaths.Previews, $"mask_still_{Guid.NewGuid():N}.png");
     private readonly CancellationTokenSource _closing = new();
+    private readonly Button _undoButton, _redoButton;
+
+    private static readonly FontFamily Glyphs = new("Segoe MDL2 Assets");
+
+    // Segoe MDL2 Assets: Undo (E7A7) and Redo (E7A6).
+    private static readonly string UndoGlyph = char.ConvertFromUtf32(0xE7A7), RedoGlyph = char.ConvertFromUtf32(0xE7A6);
 
     /// <summary>The finished shapes as a mask's text (see <see cref="MaskStore"/>), once the window was confirmed.</summary>
     public string Shapes { get; private set; } = "";
@@ -73,11 +79,20 @@ public sealed class MaskDrawWindow : Window
         var help = new TextBlock
         {
             Text = "Click around a HUD element to put down its outline, point by point. Click the first point again (or double-click, or press Enter) to close the shape, "
-                   + "then start the next. Drag a point to move it. Right-click takes back the last point, or removes the point or shape under the pointer. Backspace takes back a point, Escape drops the shape being drawn.",
+                   + "then start the next. Drag a point to move it. Right-click takes back the last point, or removes the point or shape under the pointer. Backspace takes back a point, Escape drops the shape being drawn. "
+                   + "Ctrl+Z undoes, Ctrl+Y redoes.",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
         help.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+
+        // Undo and redo, over the shapes (ShapeSurface keeps the steps): enabled while there is something to undo or redo.
+        _undoButton = GlyphButton(UndoGlyph, "Undo (Ctrl+Z)", "Undo");
+        _undoButton.Click += (_, _) => _surface.Undo();
+        _redoButton = GlyphButton(RedoGlyph, "Redo (Ctrl+Y)", "Redo");
+        _redoButton.Margin = new Thickness(4, 0, 10, 0);
+        _redoButton.Click += (_, _) => _surface.Redo();
+        _surface.Changed += UpdateUndoButtons;
 
         var undoShape = new Button { Content = "Remove Last Shape", Padding = new Thickness(12, 4, 12, 4) };
         undoShape.Click += (_, _) => _surface.RemoveLastShape();
@@ -103,6 +118,8 @@ public sealed class MaskDrawWindow : Window
         right.Children.Add(cancel);
         DockPanel.SetDock(right, Dock.Right);
         var left = new StackPanel { Orientation = Orientation.Horizontal };
+        left.Children.Add(_undoButton);
+        left.Children.Add(_redoButton);
         left.Children.Add(undoShape);
         left.Children.Add(clear);
         DockPanel.SetDock(left, Dock.Left);
@@ -134,6 +151,16 @@ public sealed class MaskDrawWindow : Window
     {
         switch (e.Key)
         {
+            // Undo: Ctrl+Z. Redo: Ctrl+Y or Ctrl+Shift+Z.
+            case Key.Z when Keyboard.Modifiers == ModifierKeys.Control:
+                _surface.Undo();
+                e.Handled = true;
+                break;
+            case Key.Y when Keyboard.Modifiers == ModifierKeys.Control:
+            case Key.Z when Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift):
+                _surface.Redo();
+                e.Handled = true;
+                break;
             case Key.Enter when _surface.IsDrawing:
                 _surface.CloseShape();
                 e.Handled = true;
@@ -147,6 +174,16 @@ public sealed class MaskDrawWindow : Window
                 e.Handled = true;
                 break;
         }
+    }
+
+    private void UpdateUndoButtons() => (_undoButton.IsEnabled, _redoButton.IsEnabled) = (_surface.CanUndo, _surface.CanRedo);
+
+    private static Button GlyphButton(string glyph, string tip, string name)
+    {
+        var button = new Button { Content = glyph, FontFamily = Glyphs, FontSize = 13, Padding = new Thickness(10, 4, 10, 4), ToolTip = tip, IsEnabled = false };
+        ToolTipService.SetShowOnDisabled(button, true);
+        System.Windows.Automation.AutomationProperties.SetName(button, name);
+        return button;
     }
 
     private void ShowHelp() => _status.Text = _surface.IsDrawing
@@ -228,6 +265,48 @@ public sealed class MaskDrawWindow : Window
         public int ShapeCount => _shapes.Count;
         public IReadOnlyList<List<Point>> Finished => _shapes;
 
+        // ----- Undo (4.3E) -----
+        // Before each change, the shapes as they were (the finished ones and the one being drawn): a point put down, a shape
+        // closed or dropped, a point taken back, a point or shape removed, Clear All, one step each; a point dragged, one step
+        // for the drag. The window is modal and works on a copy, kept only when it is confirmed: these steps are its own.
+        private const int UndoDepth = 100;
+        private readonly List<Drawn> _undo = [], _redo = [];
+        private bool _dragKept;
+
+        private sealed record Drawn(List<List<Point>> Shapes, List<Point>? Drawing);
+
+        public bool CanUndo => _undo.Count > 0;
+        public bool CanRedo => _redo.Count > 0;
+
+        private Drawn Capture() => new(_shapes.Select(s => s.ToList()).ToList(), _drawing?.ToList());
+
+        private void Remember()
+        {
+            _undo.Add(Capture());
+            if (_undo.Count > UndoDepth)
+                _undo.RemoveAt(0);
+            _redo.Clear();
+        }
+
+        public void Undo() => Step(_undo, _redo);
+
+        public void Redo() => Step(_redo, _undo);
+
+        private void Step(List<Drawn> from, List<Drawn> to)
+        {
+            // Not while a point is held: the drag would go on moving a point of shapes that are gone.
+            if (from.Count == 0 || _dragging is not null)
+                return;
+
+            to.Add(Capture());
+            var state = from[^1];
+            from.RemoveAt(from.Count - 1);
+            _shapes.Clear();
+            _shapes.AddRange(state.Shapes);
+            _drawing = state.Drawing;
+            Redraw();
+        }
+
         // How many of the source's pixels one pixel on screen is.
         private double OnePixel
         {
@@ -240,8 +319,12 @@ public sealed class MaskDrawWindow : Window
             }
         }
 
-        public void CloseShape()
+        public void CloseShape() => CloseShape(remember: true);
+
+        private void CloseShape(bool remember)
         {
+            if (remember && _drawing is not null)
+                Remember();
             if (_drawing is { Count: >= 3 })
                 _shapes.Add(_drawing);
             _drawing = null;
@@ -250,6 +333,8 @@ public sealed class MaskDrawWindow : Window
 
         public void DropShape()
         {
+            if (_drawing is not null)
+                Remember();
             _drawing = null;
             Redraw();
         }
@@ -258,6 +343,7 @@ public sealed class MaskDrawWindow : Window
         {
             if (_drawing is { Count: > 0 })
             {
+                Remember();
                 _drawing.RemoveAt(_drawing.Count - 1);
                 if (_drawing.Count == 0)
                     _drawing = null;
@@ -268,6 +354,8 @@ public sealed class MaskDrawWindow : Window
 
         public void RemoveLastShape()
         {
+            if (IsDrawing || _shapes.Count > 0)
+                Remember();
             if (IsDrawing)
                 _drawing = null;
             else if (_shapes.Count > 0)
@@ -277,6 +365,8 @@ public sealed class MaskDrawWindow : Window
 
         public void Clear()
         {
+            if (_drawing is not null || _shapes.Count > 0)
+                Remember();
             (_drawing, _dragging) = (null, null);
             _shapes.Clear();
             Redraw();
@@ -326,15 +416,16 @@ public sealed class MaskDrawWindow : Window
             // A double-click closes the shape: its first click has already put a point down, which is kept.
             if (e.ClickCount == 2 && _drawing is { Count: >= 3 })
             {
+                Remember();
                 if (_drawing.Count >= 4 && (_drawing[^1] - at).Length <= 7 * OnePixel)
                     _drawing.RemoveAt(_drawing.Count - 1);
-                CloseShape();
+                CloseShape(remember: false);
                 return;
             }
 
             if (_drawing is null && PointAt(at) is { } point)
             {
-                _dragging = point;
+                (_dragging, _dragKept) = (point, false);
                 CaptureMouse();
                 return;
             }
@@ -345,6 +436,7 @@ public sealed class MaskDrawWindow : Window
                 return;
             }
 
+            Remember();
             (_drawing ??= []).Add(at);
             Redraw();
         }
@@ -353,8 +445,18 @@ public sealed class MaskDrawWindow : Window
         {
             var at = Clamp(e.GetPosition(this));
             _pointer = at;
-            if (_dragging is { } dragging && e.LeftButton == MouseButtonState.Pressed)
+            if (_dragging is { } dragging && e.LeftButton == MouseButtonState.Pressed && _shapes[dragging.Shape][dragging.Point] != at)
+            {
+                // The drag's one step, as the point first moves.
+                if (!_dragKept)
+                {
+                    _dragKept = true;
+                    Remember();
+                }
+
                 _shapes[dragging.Shape][dragging.Point] = at;
+            }
+
             InvalidateVisual();
         }
 
@@ -387,12 +489,14 @@ public sealed class MaskDrawWindow : Window
             // A point of a finished shape goes; a shape left with fewer than three goes with it. Elsewhere inside a shape, the shape goes.
             if (PointAt(at) is { } point)
             {
+                Remember();
                 _shapes[point.Shape].RemoveAt(point.Point);
                 if (_shapes[point.Shape].Count < 3)
                     _shapes.RemoveAt(point.Shape);
             }
             else if (ShapeAt(at) is var shape and >= 0)
             {
+                Remember();
                 _shapes.RemoveAt(shape);
             }
 

@@ -73,8 +73,12 @@ public sealed record VideoStreamInfo(
 }
 
 /// <param name="Index">Position among the audio streams, as used in "0:a:N".</param>
+/// <param name="HandlerName">
+/// The name an MP4 or MOV recorder gives the track instead of a title (4.3E: read by the voice track scanner alone, since
+/// most are a tool's generic "SoundHandler").
+/// </param>
 public sealed record AudioStreamInfo(
-    int Index, string Codec, int Channels, string ChannelLayout, int SampleRate, long BitRate, string Title, string Language);
+    int Index, string Codec, int Channels, string ChannelLayout, int SampleRate, long BitRate, string Title, string Language, string HandlerName = "");
 
 /// <param name="Index">Position among the subtitle streams, as used in "0:s:N".</param>
 public sealed record SubtitleStreamInfo(int Index, string Codec, string Title, string Language)
@@ -89,15 +93,31 @@ public static class MediaProbe
     /// Inspects a file with ffprobe. Returns null when ffprobe is unavailable or cannot read the file.
     /// </summary>
     /// <param name="lane">Who is waiting for it (see WorkScheduler): a file being loaded, or the media browser's tiles (Idle).</param>
-    public static async Task<MediaInfo?> ProbeAsync(string path, CancellationToken cancellationToken, WorkLane lane = WorkLane.Interactive)
+    /// <param name="urgent">
+    /// A user's action waits on it this moment (4.3E: a file just dropped): it starts at once, never queued behind other
+    /// work of its lane (the media browser's posters and strips), and is never held (see WorkSpec.Urgent).
+    /// </param>
+    /// <remarks>
+    /// A file already inspected this session, and not changed since, is answered from memory (4.3E): a file the media
+    /// browser has described is not inspected again when it is dropped. The tool is started on the thread pool, never on
+    /// the thread that asked (the interface's, for most), and what it wrote is read there too.
+    /// </remarks>
+    public static async Task<MediaInfo?> ProbeAsync(string path, CancellationToken cancellationToken, WorkLane lane = WorkLane.Interactive, bool urgent = false)
     {
+        // The file as it is now, looked at afresh (on the thread pool: a share or a sleeping drive may be slow to answer), before
+        // the tool reads it: what is kept of it is only good for exactly this.
+        var before = await Task.Run(() => Stamp(path), cancellationToken).ConfigureAwait(false);
+        if (before is { } stamp && Key(path) is { } known && Probed.TryGetValue(known, out var kept)
+            && stamp.Length == kept.Length && stamp.WrittenTicks == kept.WrittenTicks)
+            return kept.Info;
+
         if (!File.Exists(DependencyUpdater.FfprobePath))
             return null;
 
-        var result = await WorkScheduler.Run(new WorkSpec($"Inspecting {Path.GetFileName(path)}", lane) { Visible = false },
-            work => ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfprobePath)
+        var result = await WorkScheduler.Run(new WorkSpec($"Inspecting {Path.GetFileName(path)}", lane) { Visible = false, Urgent = urgent },
+            work => Task.Run(() => ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfprobePath)
                 .WithArguments(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", path])
-                .WithValidation(CommandResultValidation.None), work.Token), cancellationToken);
+                .WithValidation(CommandResultValidation.None), work.Token), work.Token), cancellationToken).ConfigureAwait(false);
         if (result.ExitCode != 0)
             return null;
 
@@ -113,9 +133,42 @@ public static class MediaProbe
                 KeepSeekFacts(path);
             }
 
+            KeepInfo(path, info, before);
             return info;
         }
         catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    // What each file was found to be this session, with the size and last write it had then (a file changed since is
+    // inspected again), so that a file is inspected once however many ask (the media browser, then a drop). The most kept:
+    // past it, they are all let go and kept again as they are asked for.
+    private const int ProbesKept = 256;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (MediaInfo Info, long Length, long WrittenTicks)> Probed = new(StringComparer.OrdinalIgnoreCase);
+
+    // Kept with the file as it was before the tool read it, and only when it is still so (a file being written as it was
+    // read is inspected again next time).
+    private static void KeepInfo(string path, MediaInfo info, (long Length, long WrittenTicks)? before)
+    {
+        if (before is not { } stamp || Key(path) is not { } key || Stamp(path) != stamp)
+            return;
+
+        if (Probed.Count >= ProbesKept)
+            Probed.Clear();
+        Probed[key] = (info, stamp.Length, stamp.WrittenTicks);
+    }
+
+    /// <summary>A file's size and last write, looked at now; null when it is not there or can not be looked at.</summary>
+    private static (long Length, long WrittenTicks)? Stamp(string path)
+    {
+        try
+        {
+            var file = new FileInfo(path);
+            return file.Exists ? (file.Length, file.LastWriteTimeUtc.Ticks) : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             return null;
         }
@@ -397,7 +450,7 @@ public static class MediaProbe
                             Text(stream, "channel_layout"),
                             (int)Number(stream, "sample_rate"),
                             (long)Number(stream, "bit_rate"),
-                            Tag(stream, "title"), Tag(stream, "language")));
+                            Tag(stream, "title"), Tag(stream, "language"), Tag(stream, "handler_name")));
                         break;
 
                     case "subtitle":

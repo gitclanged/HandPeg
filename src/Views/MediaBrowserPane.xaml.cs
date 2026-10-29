@@ -38,6 +38,9 @@ public partial class MediaBrowserPane : UserControl
     // The decoded strips of the tiles hovered last.
     private const int StripsKept = 6;
 
+    // How often the pane's work looks again whether background work is still held for a drag and drop (4.3E).
+    private const int HeldPollMilliseconds = 100;
+
     private readonly ObservableCollection<MediaBrowserItem> _items = [];
     private readonly DispatcherTimer _visibleCheck = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private readonly DispatcherTimer _sizeSettled = new() { Interval = TimeSpan.FromMilliseconds(300) };
@@ -392,8 +395,9 @@ public partial class MediaBrowserPane : UserControl
             {
                 for (var i = 0; i < videos.Count; i++)
                 {
-                    // The tiles on screen go first: the indexer waits while the pane has their pictures to make.
-                    while (_queue.Count > 0 || _working)
+                    // The tiles on screen go first: the indexer waits while the pane has their pictures to make, and while a
+                    // file is dragged and dropped (4.3E; its tool is stopped where it is meanwhile).
+                    while (_queue.Count > 0 || _working || WorkScheduler.IsHeld)
                         await Task.Delay(250, work.Token);
 
                     work.Report((double)i / videos.Count, $"{i + 1} of {videos.Count} videos");
@@ -734,14 +738,16 @@ public partial class MediaBrowserPane : UserControl
         _queue.RemoveAll(wanted.Contains);
         _queue.InsertRange(0, wanted);
 
-        // With the pointer in the pane: the others after them, nearest to those in view first.
+        // With the pointer in the pane: the others after them, nearest to those in view first. (Whether a tile is queued is
+        // asked of a set: asked of the list, a folder of thousands took tens of milliseconds as the pointer came in, 4.3E.)
         if (_prefetching && _inSight.Count > 0)
         {
             var shown = _inSight.Select(_items.IndexOf).ToList();
             var (top, bottom) = (shown.Min(), shown.Max());
+            var queued = _queue.ToHashSet();
             var rest = _items.Select((item, index) => (Item: item, Distance: index < top ? top - index : index - bottom))
-                .Where(p => !_inSight.Contains(p.Item) && p.Item.IsFile && !p.Item.PreviewRequested && !_queue.Contains(p.Item))
-                .OrderBy(p => p.Distance).Select(p => p.Item);
+                .Where(p => !_inSight.Contains(p.Item) && p.Item.IsFile && !p.Item.PreviewRequested && !queued.Contains(p.Item))
+                .OrderBy(p => p.Distance).Select(p => p.Item).ToList();
             _queue.AddRange(rest);
         }
 
@@ -771,6 +777,11 @@ public partial class MediaBrowserPane : UserControl
         {
             while (!token.IsCancellationRequested)
             {
+                // A file being dragged, or what its drop needs (4.3E, WorkScheduler.HoldBackground): nothing more is started
+                // until it is done, the Interactive lane's posters included.
+                while (WorkScheduler.IsHeld)
+                    await Task.Delay(HeldPollMilliseconds, token);
+
                 MediaBrowserItem item;
                 var waited = false;
                 if (_queue.Count > 0 && (unkept.Count == 0 || _inSight.Contains(_queue[0])))
@@ -878,7 +889,14 @@ public partial class MediaBrowserPane : UserControl
     /// </summary>
     private MediaBrowserItem? NextStripWanted()
     {
-        _stripsWanted.RemoveAll(i => i.StripPath is not null || !_items.Contains(i));
+        // Whether a video is still listed is asked of a set (4.3E): asked of the list, for every one waiting, it was
+        // thousands times thousands of steps on the interface's thread for a large folder.
+        if (_stripsWanted.Count > 0)
+        {
+            var listed = _items.ToHashSet();
+            _stripsWanted.RemoveAll(i => i.StripPath is not null || !listed.Contains(i));
+        }
+
         var next = _stripsWanted.FirstOrDefault(_inSight.Contains) ?? (_prefetching ? _stripsWanted.FirstOrDefault() : null);
         if (next is not null)
             _stripsWanted.Remove(next);
@@ -972,10 +990,12 @@ public partial class MediaBrowserPane : UserControl
     private void Picture_MouseMove(object sender, MouseEventArgs e)
     {
         // A tile showing a poster made on its own (4.2D): its strip is made now, in the Interactive lane, not left to wait
-        // for the second pass.
+        // for the second pass. Not while the button is down (4.3E): that is a drag beginning, and the file is about to be
+        // dropped (and probed), not scrubbed.
         if (sender is FrameworkElement { DataContext: MediaBrowserItem { IsVideo: true, StripPath: null, Poster: not null } waiting })
         {
-            _ = MakeStripNowAsync(waiting);
+            if (e.LeftButton != MouseButtonState.Pressed)
+                _ = MakeStripNowAsync(waiting);
             return;
         }
 
@@ -991,16 +1011,24 @@ public partial class MediaBrowserPane : UserControl
             _ = DecodeStripAsync(item);
     }
 
-    /// <summary>A hovered video's strip, made at once (the second pass would have made it later); then scrubbing works.</summary>
+    /// <summary>
+    /// A hovered video's strip, made at once (the second pass would have made it later); then scrubbing works. One at a
+    /// time (4.3E): the strip of a tile the pointer has left for another is stopped and goes back to the second pass, so
+    /// the pointer crossing a row of tiles on its way somewhere does not fill the Interactive lane with a strip per tile
+    /// (each a few seconds of FFmpeg) for what the user does next to wait behind.
+    /// </summary>
     private async Task MakeStripNowAsync(MediaBrowserItem item)
     {
         if (!_stripsOnDemand.Add(item))
             return;
 
+        StopStripOnDemand();
+        var stop = CancellationTokenSource.CreateLinkedTokenSource(_listing.Token);
+        _onDemand = (item, stop);
         _stripsWanted.Remove(item);
         try
         {
-            await PrepareStripAsync(item, _listing.Token, WorkLane.Interactive);
+            await PrepareStripAsync(item, stop.Token, WorkLane.Interactive);
         }
         catch (OperationCanceledException)
         {
@@ -1012,7 +1040,40 @@ public partial class MediaBrowserPane : UserControl
         finally
         {
             _stripsOnDemand.Remove(item);
+            if (_onDemand is { } current && ReferenceEquals(current.Stop, stop))
+                _onDemand = null;
+
+            // Stopped for another tile or a drag, in the same listing: its strip is made in the second pass after all. A
+            // source that was cancelled is left to the collector (its cancelling may still be running on the pool).
+            if (stop.IsCancellationRequested)
+            {
+                if (!_listing.IsCancellationRequested && item.StripPath is null && _items.Contains(item))
+                {
+                    WantStrip(item);
+                    ScheduleVisibleCheck();
+                }
+            }
+            else
+            {
+                stop.Dispose();
+            }
         }
+    }
+
+    // The strip being made at once for the tile last hovered, and what stops it.
+    private (MediaBrowserItem Item, CancellationTokenSource Stop)? _onDemand;
+
+    /// <summary>
+    /// Stops the strip being made at once for a hovered tile (another tile is hovered, or a drag begins). Its tools are
+    /// stopped on the thread pool: ending a tool and its children walks every process, too long for the interface's thread.
+    /// </summary>
+    private void StopStripOnDemand()
+    {
+        if (_onDemand is not { } running)
+            return;
+
+        _onDemand = null;
+        _ = running.Stop.CancelAsync();
     }
 
     private void Picture_MouseLeave(object sender, MouseEventArgs e)
@@ -1143,7 +1204,13 @@ public partial class MediaBrowserPane : UserControl
         // let go, never over what is open (4.1.1-B).
         var data = new DataObject(DataFormats.FileDrop, files);
         data.SetData(DragFormat, true);
-        DragDrop.DoDragDrop(Items, data, DragDropEffects.Copy);
+
+        // For as long as it is dragged (the drag is a loop of its own on this thread, which the pane's work would stall)
+        // background work is held back and its tools stopped where they are, the pane's own work waits between files, and
+        // a strip being made for the pointer is stopped (4.3E). The drop's own work holds it from there (MainWindow.Drops).
+        StopStripOnDemand();
+        using (WorkScheduler.HoldBackground())
+            DragDrop.DoDragDrop(Items, data, DragDropEffects.Copy);
     }
 
     private void Items_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -1300,15 +1367,16 @@ public partial class MediaBrowserPane : UserControl
         Add("Refresh", () => _ = _projectMode ? ListProjectAsync() : NavigateAsync(_folder));
     }
 
-    private static void ShowInExplorer(string path)
+    // Started on the thread pool (4.3E): a shell start takes the interface's thread for tens of milliseconds.
+    private static void ShowInExplorer(string path) => _ = Task.Run(() =>
     {
         try
         {
-            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true })?.Dispose();
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
             AppLog.Write($"Media browser: Explorer could not be opened: {ex.Message}");
         }
-    }
+    });
 }

@@ -323,6 +323,35 @@ public partial class MainViewModel
         if (!_isBackgroundWorker && AppSettings.Current.AutoOpenLayoutPane && CanEditLayout)
             IsArrangeActive = true;
     }
+
+    // ----- The voice among the tracks, found by its name (4.3E) -----
+
+    /// <summary>
+    /// On loading a new file (never a project or a queued job, whose tracks keep what was saved): marks the track whose
+    /// title names a microphone or a voice as the Voice track (<see cref="VoiceTrackScanner"/>), unless the settings say not
+    /// to or a track already is one (a preset said which). It is marked as a tick would mark it, so Auto-Captions follow it
+    /// (<see cref="ListenToVoice"/>) and the sounds set to Duck make room for it. Returns what the status line says of it;
+    /// null when nothing was marked.
+    /// </summary>
+    private string? MarkVoiceTrack()
+    {
+        if (!AppSettings.Current.AutoMarkVoiceTrack || AudioTracks.Any(t => t.IsVoice))
+            return null;
+
+        // The titles the file gives its tracks ("Track 2", given to an untitled one, names nothing); an untitled track of an
+        // MP4 or MOV recorder by the name it was handled under (a generic one names no voice either).
+        if (VoiceTrackScanner.Pick(AudioTracks.Select(t => (t.Index, t.Stream.Title.Length > 0 ? t.Stream.Title : t.Stream.HandlerName))) is not { } index
+            || AudioTracks.FirstOrDefault(t => t.Index == index) is not { } voice)
+        {
+            return null;
+        }
+
+        voice.IsVoice = true;
+        var said = $"\"{voice.Title}\" marked as the Voice track by its name: Auto-Captions listen to it, and sounds set to Duck make room for it (untick Voice on the Audio tab to change that)";
+        Log(said);
+        return said;
+    }
+
     // ----- Voiceover -----
     // Recorded (or brought in from a file) in the Voiceover Studio, kept for the session, and mixed into
     // the first audio track of the encode.

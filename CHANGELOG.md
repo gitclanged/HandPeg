@@ -23,6 +23,18 @@ Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 - **Full-window Settings** with a category rail, search, a live preview stage of what each setting does, and a folded Advanced section.
 - **Restore All Folded Silences** on a clip's menu when there are several.
 - Chapters at Cut Points: a chapter at every clip edge on any video track (edges within half a second count once).
+- **The Voice track finds itself.** When a video is opened, an audio track named for a voice (Mic, Microphone, Voice,
+  Commentary, Dialogue, Host and the like; a name that is only that word first) is marked as the Voice track. Game, music,
+  desktop and similar tracks never are, and chat tracks only as a last resort. Auto-Captions listen to the Voice track
+  whenever one is marked, by hand or by name, and so does Remove Dead Air on the main video. It can be switched off in
+  Settings > Auto-Captions, and unticking Voice on the Audio tab always wins.
+- **Remove Dead Air / Silence...** on the right-click menu of every video and audio track, and **Generate Auto-Captions...**
+  on the audio tracks' menus and in the Add Layer menu.
+- **Undo everywhere.** Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z) work in the Subtitle Editor (with Undo and Redo buttons; typing,
+  drags, splits, additions and deletions each a step, and the whole visit one step in the main window afterwards), in Draw
+  Custom Shape, HUD Layers from a Mask, the Filters / Transform / Mask windows, Audio Filters, Caption Style, Blur and Layer
+  Properties, and in the Voiceover Studio. In the main window a number or search box no longer swallows them once you have
+  moved on to something else.
 
 ### Changed
 - Render Preview starts at the in point while one is set, otherwise at the playhead (from the start when the playhead is at the end).
@@ -30,8 +42,22 @@ Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
   (its layers under or over it as the style says, the video's look), and layers that ran to the end follow the video's end.
 - `[` and `]` (and a right-drag on the timeline) split every unlocked track at both points; nothing is taken out by them.
 - The Play Only Cut Segments option is gone: playback always shows the timeline as it is.
+- **Live Preview is always on.** It starts on and comes on with every video, style or project you open; the button beside the
+  playback controls turns it off for what is open. (Its start-up checkbox in Settings is gone.)
+- Dragging a file in, or out of the Media pane, pauses the Media pane's background work until it has landed; the picture
+  strip made while you hover over tiles is made for one tile at a time.
+- The timecode ruler is always shown above the tracks, also on an empty timeline.
 
 ### Fixed
+- Dropping a video on a style showed the plain video in the player, not the style's tall frame, whenever Live Preview was off.
+- Hovering across a tile in the Media pane or the Project Manager slid the picture to the right (by up to a tenth of its
+  width), with a sliver of the previous frame at its left edge.
+- Dropping a file from the Media pane while it was making pictures of a folder took seconds to land: the dropped clip now
+  goes ahead of all of that.
+- The Project Manager and the launch window open at once, listing the projects a moment later.
+- Opening a project and closing it again without touching anything never asks to save it.
+- Clicking a box on the Canvas or the player only to select it, or opening a layer's window and changing nothing, no longer
+  leaves an undo step that does nothing.
 - A game style's HUD pieces and blurred background vanished over a piece of the main video given an effect of its own.
 - A style chosen before opening a video put the HUD pieces over the video and stopped them after 5 seconds.
 
