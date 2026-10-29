@@ -28,9 +28,17 @@ public static class TimelineDocumentTests
         yield return Case("timeline-json-round-trip",
             "# A TimelineDocument written as project files write JSON, read back and written again: the timeline of format 5.", JsonRoundTrip);
         yield return Case("timeline-folds",
-            "# Folds (4.3D, Split & Mark): stretches taken out of every track and kept at their seams, a fold rolled back, the file round trip, then each put back.", Folds);
+            "# Folds (4.3D, Split & Mark): stretches taken out of every track and kept at their seams, a fold rolled back, the file round trip, one put back and folded again as the same fold (4.4-BugHunt), then each put back.", Folds);
+        yield return Case("timeline-fold-seam-trims",
+            "# Fold-aware edge trims (4.4-BugHunt, Q11): a clip's edge at a fold's seam shows part of the fold (joined into the clip) or folds more of the clip, children in step, the fold's id kept; past the whole fold it is put back; refusals change nothing.", FoldSeamTrims);
+        yield return Case("timeline-trim-unlinks-children",
+            "# Children left wholly outside a parent's trim are unlinked and kept (4.4-BugHunt, Q3), on a track a ripple closes up they still go; a roll carries the children on its cut.", TrimUnlinksChildren);
+        yield return Case("timeline-fuzz",
+            "# A model fuzz (4.4-BugHunt): 10,000 seeded random edits, undos and redos on seven tracks with children, captions and folds: no throw but a refusal, a refusal changes nothing, no problem after an edit, Undo's copies untouched.", Fuzz);
         yield return Case("timeline-split-keys",
             "# A clip split between two keyframes (4.3D): each half keeps its own keys, a key on the cut with the value there, and its part of the curve, for every easing.", SplitKeys);
+        yield return Case("timeline-children",
+            "# Children (4.4): a talk's HUD cut-out on the track under it and a key on another track go with its splits, trims, moves, ripples, deletes and folds; refusals and rollbacks change nothing.", Children);
     }
 
     private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
@@ -563,6 +571,82 @@ public static class TimelineDocumentTests
                          && back.Folds[0].SeamIn(back) == second.SeamIn(doc), "written and read back, the folds are the same");
         Expect(problems, JsonSerializer.Serialize(doc.Clone(), options) == json, "a copy of the document keeps its folds");
 
+        // Put back, a stretch stays marked as the fold it was (4.4-BugHunt), and folded again it is that fold once more: the
+        // document is as it was before it was put back.
+        string Saved() => JsonSerializer.Serialize(doc, options);
+        static bool Same(double a, double b) => Math.Abs(a - b) < 1e-9;
+        string Stretch((double From, double To)? span) => span is { } s ? $"{N(s.From)}-{N(s.To)} s" : "none";
+        var bothFolded = Saved();
+        using (var tx = doc.BeginTransaction("Put the first back"))
+        {
+            tx.UnfoldSegment(first);
+            tx.Commit();
+        }
+        Name(doc, names);
+        Show(text, doc, names, problems, "Put the earlier fold back (4.4-BugHunt): the stretch stays marked, as the fold it was");
+        var marked = doc.RestoredFolds is [var mark] ? mark : throw new InvalidOperationException("the stretch put back is not marked");
+        var markedTrack = doc.Tracks.FirstOrDefault(t => t.Id == marked.TrackId)?.DisplayName ?? "?";
+        var sameId = marked.Id == first.Id ? "kept" : "lost";
+        Line(text, $"marked: {Stretch(marked.SpanIn(doc))} on {markedTrack}, {N(marked.Length)} s, every track {marked.AllTracks}, the fold's id {sameId}");
+        Expect(problems, doc.Folds is [var left] && left.Id == second.Id && marked.Id == first.Id && marked.TrackId == v1.Id && marked.AllTracks
+                         && marked.SpanIn(doc) is { } markedSpan && Same(markedSpan.From, 4) && Same(markedSpan.To, 6.4),
+            "put back, the fold goes and its stretch, 4-6.4 s on the talk's track, stays marked with the fold's id");
+
+        FoldedSegment again;
+        using (var tx = doc.BeginTransaction("Hide it again"))
+        {
+            again = tx.FoldRestored(marked);
+            tx.Commit();
+        }
+        var sameAgain = Saved() == bothFolded;
+        Line(text, $"\nFolded again: the same fold {again.Id == first.Id}, the document as it was before it was put back {sameAgain}");
+        Expect(problems, again.Id == first.Id && doc.RestoredFolds is null && sameAgain,
+            "folded again, the stretch is the same fold, and the document is as it was before it was put back");
+
+        // Put back again: written and read back, and copied, the mark is the same.
+        using (var tx = doc.BeginTransaction("Put the first back again"))
+        {
+            tx.UnfoldSegment(first);
+            tx.Commit();
+        }
+        var unfolded = Saved();
+        var undoCopy = doc.Clone();
+        var read = JsonSerializer.Deserialize<TimelineDocument>(unfolded, options)!;
+        var readMark = read.RestoredFolds is [var readRecord] && readRecord == doc.RestoredFolds![0] && readRecord.SpanIn(read) is { } readSpan && Same(readSpan.From, 4) && Same(readSpan.To, 6.4);
+        var (markWritten, writtenAgain) = (unfolded.Contains("\"restoredFolds\""), JsonSerializer.Serialize(read, options) == unfolded);
+        Line(text, $"Written as a project writes it: marks written {markWritten}; read back the same {readMark}, and written again the same {writtenAgain}");
+        Expect(problems, markWritten && readMark && writtenAgain && JsonSerializer.Serialize(undoCopy, options) == unfolded,
+            "the mark goes into the file and comes back the same, and a copy of the document keeps it");
+
+        // A split inside the stretch leaves it marked; its first part deleted, it is let go; the copy Undo took before both
+        // still has it, and folds it again.
+        var restoredTalk = doc.Tracks[0].Clips.First(c => Same(c.Start, 4));
+        using (var tx = doc.BeginTransaction("Split the stretch put back"))
+        {
+            tx.SplitClipAt(restoredTalk, 5);
+            tx.Commit();
+        }
+        var afterSplit = doc.RestoredFolds is [var stillMarked] ? stillMarked.SpanIn(doc) : null;
+        using (var tx = doc.BeginTransaction("Delete its first part"))
+        {
+            tx.DeleteClip(restoredTalk);
+            tx.Commit();
+        }
+        var letGo = doc.RestoredFolds is null;
+        var inCopy = undoCopy.RestoredFolds is [var copyRecord] ? copyRecord.SpanIn(undoCopy) : null;
+        var copyKept = JsonSerializer.Serialize(undoCopy, options) == unfolded;
+        Line(text, $"Split at 5 s, the stretch still lies {Stretch(afterSplit)}; its first part deleted, it is let go {letGo}; the copy Undo took before them still marks {Stretch(inCopy)}, unchanged {copyKept}");
+        Expect(problems, afterSplit is { } split && Same(split.From, 4) && Same(split.To, 6.4) && letGo && inCopy is { } copied && Same(copied.From, 4) && Same(copied.To, 6.4) && copyKept,
+            "a split inside the stretch keeps it marked, deleting where it starts lets it go, and Undo's copy from before keeps it");
+
+        doc = undoCopy;
+        using (var tx = doc.BeginTransaction("Hide it once more, after Undo"))
+        {
+            tx.FoldRestored(doc.RestoredFolds![0]);
+            tx.Commit();
+        }
+        Expect(problems, Saved() == bothFolded, "brought back by Undo, the stretch folds again into the document as it was before it was put back");
+
         // Put back, latest first: the timeline plays as it did before either was folded.
         using (var tx = doc.BeginTransaction("Put both back"))
         {
@@ -666,6 +750,263 @@ public static class TimelineDocumentTests
         }
     }
 
+    // ----- Children (4.4) -----
+
+    private static void Children(StringBuilder text, List<string> problems)
+    {
+        var options = (JsonSerializerOptions)typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var doc = new TimelineDocument { FrameRate = FrameRate.Fps25 };
+        var names = new Dictionary<Guid, string>();
+        void Step(string step)
+        {
+            Name(doc, names);
+            Show(text, doc, names, problems, step);
+            Links(text, doc, names);
+        }
+        string Saved() => JsonSerializer.Serialize(doc, options);
+        static bool Same(double a, double b) => Math.Abs(a - b) < 1e-9;
+
+        TimelineTrackModel v1, v2, v3, a1;
+        TimelineClip talk, hud, key, music;
+        using (var tx = doc.BeginTransaction("Set up"))
+        {
+            (v1, v2, v3, a1) = (tx.InsertTrack(0, TimelineTrackKind.Video), tx.InsertTrack(1, TimelineTrackKind.Video, "HUD"), tx.InsertTrack(2, TimelineTrackKind.Video), tx.InsertTrack(3, TimelineTrackKind.Audio));
+            talk = tx.PlaceClip(v1, new TimelineClip { ContentKind = LayerKind.MainVideo, SourcePath = "D:/media/talk.mp4", AudioStreamIndex = 0, End = 20, SourceDuration = 30, State = new LayerState { Name = "Talk" } });
+            hud = tx.PlaceClip(v2, new TimelineClip { ContentKind = LayerKind.Video, SourcePath = "D:/media/hud", End = 20, State = new LayerState { Name = "HUD" } });
+            key = tx.PlaceClip(v3, new TimelineClip { ContentKind = LayerKind.Image, SourcePath = "D:/media/key.png", Start = 6, End = 9, State = new LayerState { Name = "Key" } });
+            music = tx.PlaceClip(a1, new TimelineClip { ContentKind = LayerKind.Audio, SourcePath = "D:/media/music.wav", AudioStreamIndex = 0, End = 30, SourceDuration = 120, State = new LayerState { Name = "Music" } });
+            tx.SetTrackParent(v2, v1.Id);
+            tx.SetClipParent(hud, talk.Id);
+            tx.SetClipParent(key, talk.Id);
+            tx.Commit();
+        }
+        (names[talk.Id], names[hud.Id], names[key.Id], names[music.Id]) = ("T", "H", "K", "M");
+        Step("Set up at 25 fps: the talk, its HUD cut-out on the HUD track under it, a key over it from 6 s on Video 3 (both its children), music under all");
+        Expect(problems, v2.ParentTrackId == v1.Id && doc.ChildTracksOf(v1).SequenceEqual(new[] { v2 }) && doc.ChildrenOf(talk).Select(c => c.Clip).SequenceEqual(new[] { hud, key }),
+            "the HUD track lies under the talk's, and the HUD and the key are the talk's children");
+
+        TimelineClip talk2;
+        using (var tx = doc.BeginTransaction("Split"))
+        {
+            talk2 = tx.SplitClipAt(talk, 8);
+            tx.Commit();
+        }
+        var (hud2, key2) = (v2.Clips[1], v3.Clips[1]);
+        Step("Split the talk at 8 s: its HUD and its key are cut there too, their second pieces the second talk's");
+        Expect(problems, Same(hud.End, 8) && Same(hud2.Start, 8) && Same(hud2.End, 20) && Same(key.End, 8) && Same(key2.End, 9) && hud.ParentClipId == talk.Id
+                         && key.ParentClipId == talk.Id && hud2.ParentClipId == talk2.Id && key2.ParentClipId == talk2.Id,
+            "a split cuts the children across it, and their pieces after the cut go with its second half");
+
+        using (var tx = doc.BeginTransaction("Trim the end"))
+        {
+            tx.TrimClipEnd(talk2, 18);
+            tx.Commit();
+        }
+        Step("Trim the second talk's end to 18 s: its HUD's end, which was on it, follows; its key, inside it, stays");
+        Expect(problems, Same(talk2.End, 18) && hud2.End == talk2.End && Same(key2.End, 9), "a trim takes the children on its edge along");
+
+        using (var tx = doc.BeginTransaction("Trim the start"))
+        {
+            tx.TrimClipStart(talk2, 9.2);
+            tx.Commit();
+        }
+        Step("Trim the second talk's start to 9.2 s: its HUD's start follows; its key, left wholly before it, stays where it is, unlinked (Q3)");
+        Expect(problems, Same(talk2.Start, 9.2) && Same(talk2.MediaOffset, 9.2) && hud2.Start == talk2.Start && doc.TrackOf(key2) == v3 && key2.ParentClipId is null
+                         && Same(key2.Start, 8) && Same(key2.End, 9) && v3.Clips.Count == 2,
+            "a trim takes the children on its edge along, and leaves those it leaves wholly outside where they are, unlinked");
+
+        using (var tx = doc.BeginTransaction("Move"))
+        {
+            tx.MoveClip(talk2, v1, 11.2);
+            tx.Commit();
+        }
+        Step("Move the second talk to 11.2 s: its HUD moves with it, on its own track");
+        Expect(problems, Same(talk2.Start, 11.2) && Same(hud2.Start, talk2.Start) && Same(hud2.End, talk2.End), "a move moves the children by as much");
+
+        TimelineClip badge;
+        using (var tx = doc.BeginTransaction("Badge"))
+        {
+            badge = tx.PlaceClip(v2, new TimelineClip { ContentKind = LayerKind.Image, SourcePath = "D:/media/badge.png", Start = 21, End = 22, State = new LayerState { Name = "Badge" } });
+            tx.Commit();
+        }
+        names[badge.Id] = "B";
+        var saved = Saved();
+        bool refused;
+        using (var tx = doc.BeginTransaction("Move into the badge"))
+        {
+            refused = Refused(() => tx.MoveClip(talk2, v1, 13));
+            tx.Commit();
+        }
+        var outcome = refused ? "refused" : "moved";
+        Line(text, $"\nA badge on the HUD track from 21 s; the second talk moved to 13 s, its HUD would run into it: {outcome}");
+        Expect(problems, refused && Saved() == saved, "a move whose child has no room is refused whole, and changes nothing");
+
+        using (var tx = doc.BeginTransaction("Ripple trim"))
+        {
+            tx.TrimClipEnd(talk, 6, ripple: true, rippleAllUnlockedTracks: false);
+            tx.Commit();
+        }
+        Step("Ripple-trim the first talk's end to 6 s on its own track: the HUD track under it ripples too, the HUD's end rides with the talk's, and the key, left with nothing before 6 s on a track that does not ripple, stays, unlinked (Q3)");
+        Expect(problems, Same(talk.End, 6) && Same(hud.End, 6) && doc.TrackOf(key) == v3 && key.ParentClipId is null && Same(key.Start, 6) && Same(key.End, 8)
+                         && Same(talk2.Start, 9.2) && Same(hud2.Start, 9.2) && Same(badge.Start, 19) && Same(music.End, 30),
+            "a ripple trim carries the children on its edge, leaves one it leaves with nothing on a track that does not ripple where it is, unlinked, and ripples the tracks under its own and no other");
+
+        saved = Saved();
+        using (var tx = doc.BeginTransaction("Ripple delete, not kept"))
+        {
+            var back = tx.RippleDelete(talk2, rippleAllUnlockedTracks: false);
+            Line(text, $"\nRipple-deleting the second talk (not kept) takes its HUD too, and closes up its track and the HUD track by {N(back)} s: the badge would start at {N(badge.Start)} s");
+            Expect(problems, doc.TrackOf(hud2) is null && Same(back, 8.8) && Same(badge.Start, 10.2), "a ripple delete takes the children, and closes up the tracks under its own");
+        }
+        Expect(problems, Saved() == saved, "rolled back, the ripple delete leaves everything as it was");
+
+        using (var tx = doc.BeginTransaction("Delete alone, not kept"))
+        {
+            tx.DeleteClip(talk2, withChildren: false);
+            Expect(problems, doc.TrackOf(talk2) is null && doc.TrackOf(hud2) is not null && hud2.ParentClipId == talk2.Id, "deleted alone, a clip leaves its children where they are");
+        }
+        using (var tx = doc.BeginTransaction("Delete"))
+        {
+            tx.DeleteClip(talk2);
+            tx.Commit();
+        }
+        Step("Delete the second talk: its HUD goes with it");
+        Expect(problems, doc.TrackOf(talk2) is null && doc.TrackOf(hud2) is null && v2.Clips.Count == 2 && Saved() != saved, "a delete takes the children");
+
+        var before = Plays(doc);
+        FoldedSegment fold;
+        using (var tx = doc.BeginTransaction("Fold"))
+        {
+            fold = tx.FoldStretch(v1, 2, 3, rippleAllUnlockedTracks: false) ?? throw new InvalidOperationException("2-3 s was not folded");
+            tx.Commit();
+        }
+        Step("Fold 2-3 s out of the talk's track alone: the HUD track under it folds with it");
+        var keptTalk = fold.Clips.First(c => c.TrackId == v1.Id).Clip;
+        var keptHud = fold.Clips.First(c => c.TrackId == v2.Id).Clip;
+        var kept = string.Join(" ", fold.Clips.Select(c => $"[{doc.Tracks.First(t => t.Id == c.TrackId).DisplayName}: {c.Clip.State.Name} {N(c.Clip.Start)}-{N(c.Clip.End)}]"));
+        var follows = keptHud.ParentClipId == keptTalk.Id ? "yes" : "no";
+        Line(text, $"fold at {N(fold.SeamIn(doc) ?? -1)} s ({N(fold.Length)} s): {kept}; the HUD's piece goes with the talk's: {follows}");
+        Expect(problems, fold.Clips.Count == 2 && keptHud.ParentClipId == keptTalk.Id && Same(talk.End, 2) && Same(hud.End, 2) && v2.Clips[1].ParentClipId == v1.Clips[1].Id
+                         && Same(badge.Start, 18) && Same(music.End, 30), "a fold takes the children's pieces out with their parents', and closes up the tracks under its own");
+
+        // The talk's piece in the fold has its id taken by a clip placed meanwhile: put back, it gets a new one, and the HUD's
+        // piece names that.
+        TimelineClip twin;
+        using (var tx = doc.BeginTransaction("Twin"))
+        {
+            twin = tx.PlaceClip(v3, new TimelineClip { Id = keptTalk.Id, ContentKind = LayerKind.Image, SourcePath = "D:/media/twin.png", Start = 25, End = 26, State = new LayerState { Name = "Xtwin" } });
+            tx.Commit();
+        }
+        names[twin.Id] = "X";
+        using (var tx = doc.BeginTransaction("Unfold"))
+        {
+            tx.UnfoldSegment(fold);
+            tx.Commit();
+        }
+        Step("Put the fold back after a clip on Video 3 took the talk piece's id: the piece comes back with a new id, and the HUD's piece goes with it");
+        var restored = v1.Clips[1];
+        Expect(problems, doc.Folds is null && restored.Id != keptTalk.Id && Same(restored.Start, 2) && v2.Clips[1].Id == keptHud.Id && v2.Clips[1].ParentClipId == restored.Id,
+            "put back, a fold's children name their parents' new ids");
+        using (var tx = doc.BeginTransaction("Take the twin off"))
+        {
+            tx.DeleteClip(twin);
+            tx.Commit();
+        }
+        Expect(problems, Plays(doc) == before, "with the fold put back, every track plays what it played before it");
+
+        saved = Saved();
+        using (var tx = doc.BeginTransaction("Remove the talk's track, not kept"))
+        {
+            tx.RemoveTrack(v1);
+            Expect(problems, v2.ParentTrackId is null && doc.Tracks.Contains(v2) && v2.Clips.Count == 4, "a track taken off leaves the tracks under it, under none");
+        }
+        Expect(problems, v2.ParentTrackId == v1.Id && Saved() == saved, "rolled back, the HUD track lies under the talk's again");
+
+        var (third, thirdHud) = (v1.Clips[2], v2.Clips[2]);
+        using (var tx = doc.BeginTransaction("Ripple the head, not kept"))
+        {
+            tx.TrimClipStart(third, 4, ripple: true, rippleAllUnlockedTracks: false);
+            Line(text, $"\nRipple-trimming the head of {names[third.Id]} by 1 s (not kept): it plays from {N(third.MediaOffset)} s, {N(third.Start)}-{N(third.End)} s; its HUD lies {N(thirdHud.Start)}-{N(thirdHud.End)} s; the badge would start at {N(badge.Start)} s");
+            Expect(problems, Same(third.Start, 3) && Same(third.End, 5) && Same(third.MediaOffset, 4) && Same(thirdHud.Start, 3) && Same(thirdHud.End, 5) && Same(badge.Start, 18),
+                "a ripple trim of a head trims the child on it the same, its end coming back with the clip's, and ripples the tracks under its own");
+        }
+        Expect(problems, Saved() == saved, "rolled back, the ripple trim leaves everything as it was");
+
+        using (var tx = doc.BeginTransaction("Split with the HUD locked, not kept"))
+        {
+            tx.SetTrack(v2, locked: true);
+            tx.SplitClipAt(talk, 1);
+            Expect(problems, Same(talk.End, 1) && Same(hud.End, 2) && hud.ParentClipId == talk.Id, "a child on a locked track is not cut, and stays with the first half");
+        }
+        Expect(problems, Saved() == saved, "rolled back, the split leaves everything as it was");
+
+        using (var tx = doc.BeginTransaction("Links, not kept"))
+        {
+            bool[] guards =
+            [
+                Refused(() => tx.SetClipParent(talk, talk.Id)),
+                Refused(() => tx.SetClipParent(talk, hud.Id)),
+                Refused(() => tx.SetClipParent(hud, Guid.NewGuid())),
+                Refused(() => tx.SetTrackParent(v1, v2.Id)),
+                Refused(() => tx.SetTrackParent(v2, v2.Id)),
+            ];
+            tx.SetClipParent(hud, null);
+            tx.SetTrackParent(v2, null);
+            var said = string.Join(" ", guards.Select(g => g ? "refused" : "made"));
+            Line(text, $"\nLinks asked for: a clip its own parent, the talk under its own HUD, a parent not on the timeline, the talk's track under the HUD track, a track under itself: {said}");
+            Expect(problems, guards.All(g => g) && hud.ParentClipId is null && v2.ParentTrackId is null, "links that would loop are refused; unlinked, a clip and a track go with nothing");
+        }
+        Expect(problems, Saved() == saved && hud.ParentClipId == talk.Id && v2.ParentTrackId == v1.Id, "rolled back, the links are back");
+
+        // Loops made by hand (a project file written by hand) are what FindProblems finds.
+        var loops = doc.Clone();
+        loops.Tracks[0].Clips[0].ParentClipId = loops.Tracks[1].Clips[0].Id;
+        loops.Tracks[0].Clips[1].ParentClipId = loops.Tracks[0].Clips[1].Id;
+        loops.Tracks[2].ParentTrackId = loops.Tracks[2].Id;
+        var found = loops.FindProblems();
+        var (own, back2, under) = (found.Count(p => p.Contains("its own parent")), found.Count(p => p.Contains("lead back")), found.Count(p => p.Contains("under itself")));
+        Line(text, $"\nLinks made by hand: {own} clip its own parent, {back2} clips whose parents lead back to them, {under} track under itself");
+        Expect(problems, found.Count == 4 && own == 1 && back2 == 2 && under == 1 && doc.FindProblems().Count == 0, "FindProblems finds a clip its own parent, a loop of two and a track under itself, and nothing in the document they were copied from");
+
+        // Written as a project writes its timeline and read back, the links come back; without links, nothing of them is written.
+        var json = Saved();
+        var read = JsonSerializer.Deserialize<TimelineDocument>(json, options)!;
+        var plain = doc.Clone();
+        foreach (var track in plain.Tracks)
+        {
+            track.ParentTrackId = null;
+            foreach (var clip in track.Clips)
+                clip.ParentClipId = null;
+        }
+        var plainJson = JsonSerializer.Serialize(plain, options);
+        var (written, again, none) = (json.Contains("\"parentClipId\"") && json.Contains("\"parentTrackId\""), JsonSerializer.Serialize(read, options) == json,
+                                      !plainJson.Contains("\"parentClipId\"") && !plainJson.Contains("\"parentTrackId\""));
+        Line(text, $"\nWritten as a project writes it: links written {written}; read back and written again, the same {again}; a copy without links writes none of them {none}");
+        Expect(problems, written && again && none && read.FindClip(hud.Id)?.ParentClipId == talk.Id && read.Tracks[1].ParentTrackId == v1.Id, "the links go into the file and come back, and are left out while there are none");
+
+        // A rollback puts back every property of a track, as the guard of the edge cases does for a clip.
+        var trackBefore = JsonSerializer.Serialize(v3);
+        string trackChanged;
+        using (var tx = doc.BeginTransaction("Every track field"))
+        {
+            tx.SetTrack(v3, name: "Probe");
+            foreach (var property in typeof(TimelineTrackModel).GetProperties().Where(p => p.CanWrite && p.Name != nameof(TimelineTrackModel.Clips)))
+                property.SetValue(v3, Other(property.GetValue(v3), property.PropertyType));
+            trackChanged = JsonSerializer.Serialize(v3);
+        }
+        Expect(problems, trackChanged != trackBefore && JsonSerializer.Serialize(v3) == trackBefore, "a rollback puts back every property of a track (TimelineTrackModel.RestoreFields misses none)");
+    }
+
+    /// <summary>Which clip goes with which (child&lt;parent) and which track lies under which, as one line.</summary>
+    private static void Links(StringBuilder text, TimelineDocument doc, Dictionary<Guid, string> names)
+    {
+        var clips = doc.Tracks.SelectMany(t => t.Clips).Where(c => c.ParentClipId is not null)
+            .Select(c => names.GetValueOrDefault(c.Id, "?") + "<" + names.GetValueOrDefault(c.ParentClipId!.Value, "?"));
+        var tracks = doc.Tracks.Where(t => t.ParentTrackId is not null)
+            .Select(t => t.DisplayName + " under " + (doc.Tracks.FirstOrDefault(p => p.Id == t.ParentTrackId)?.DisplayName ?? "?"));
+        text.Append("  links: ").Append(string.Join(" ", clips)).Append("; ").Append(string.Join(", ", tracks)).Append('\n');
+    }
+
     private static Guid Fixed(int n) => new(string.Create(CultureInfo.InvariantCulture, $"00000000-0000-0000-0000-{n:D12}"));
 
     private static void Show(StringBuilder text, TimelineDocument doc, Dictionary<Guid, string> names, List<string> problems, string step)
@@ -701,6 +1042,576 @@ public static class TimelineDocumentTests
         if (clip.State.KeysOpacity is { Count: > 0 } keys)
             text.Append(" keys ").Append(Times(keys));
         return text.Append(']').ToString();
+    }
+
+    /// <summary>The options project files are written with (camelCase, enums by name, nothing written that is at its default).</summary>
+    private static JsonSerializerOptions ProjectOptions() =>
+        (JsonSerializerOptions)typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+
+    // ----- Fold-aware edge trims (4.4-BugHunt, Q11) -----
+
+    private static void FoldSeamTrims(StringBuilder text, List<string> problems)
+    {
+        var options = ProjectOptions();
+        var doc = new TimelineDocument { FrameRate = FrameRate.Fps25 };
+        var names = new Dictionary<Guid, string>();
+        string Saved() => JsonSerializer.Serialize(doc, options);
+        static bool Same(double a, double b) => Math.Abs(a - b) < 1e-9;
+        void Step(string step)
+        {
+            Name(doc, names);
+            Show(text, doc, names, problems, step);
+            Links(text, doc, names);
+        }
+        string Kept(FoldedSegment fold) => string.Join(" ", fold.Clips.Select(c =>
+            $"[{doc.Tracks.FirstOrDefault(t => t.Id == c.TrackId)?.DisplayName ?? "?"}: {N(c.Clip.Start)}-{N(c.Clip.End)}{(c.Clip.PlaysFile ? " @" + N(c.Clip.MediaOffset) : "")}]"));
+
+        TimelineTrackModel v1, v2, a1;
+        TimelineClip talk, hud, music;
+        using (var tx = doc.BeginTransaction("Set up"))
+        {
+            (v1, v2, a1) = (tx.InsertTrack(0, TimelineTrackKind.Video), tx.InsertTrack(1, TimelineTrackKind.Video, "HUD"), tx.InsertTrack(2, TimelineTrackKind.Audio));
+            talk = tx.PlaceClip(v1, new TimelineClip { ContentKind = LayerKind.MainVideo, SourcePath = "D:/media/talk.mp4", AudioStreamIndex = 0, End = 20, SourceDuration = 30, State = new LayerState { Name = "Talk" } });
+            hud = tx.PlaceClip(v2, new TimelineClip { ContentKind = LayerKind.Video, SourcePath = "D:/media/hud", End = 20, State = new LayerState { Name = "HUD" } });
+            music = tx.PlaceClip(a1, new TimelineClip { ContentKind = LayerKind.Audio, SourcePath = "D:/media/music.wav", AudioStreamIndex = 0, End = 30, SourceDuration = 120, State = new LayerState { Name = "Music" } });
+            tx.SetTrackParent(v2, v1.Id);
+            tx.SetClipParent(hud, talk.Id);
+            tx.Commit();
+        }
+        (names[talk.Id], names[hud.Id], names[music.Id]) = ("T", "H", "M");
+        var before = Plays(doc);
+
+        FoldedSegment fold;
+        using (var tx = doc.BeginTransaction("Fold"))
+        {
+            fold = tx.FoldStretch(v1, 6, 10, rippleAllUnlockedTracks: true) ?? throw new InvalidOperationException("6-10 s was not folded");
+            tx.Commit();
+        }
+        Step("Set up at 25 fps (a talk, its HUD cut-out on the track under it, music under both) and fold 6-10 s out of every track");
+        var (foldId, afterId, hudAfterId) = (fold.Id, fold.SeamClipId, v2.Clips[1].Id);
+        Line(text, $"fold at {N(fold.SeamIn(doc) ?? -1)} s ({N(fold.Length)} s): {Kept(fold)}");
+
+        FoldedSegment? Resize(string step, FoldSide side, double seconds)
+        {
+            FoldedSegment? resized;
+            using (var tx = doc.BeginTransaction(step))
+            {
+                resized = tx.ResizeFold(fold, side, seconds);
+                tx.Commit();
+            }
+            Step(step);
+            if (resized is not null)
+            {
+                var id = resized.Id == foldId ? "kept" : "new";
+                Line(text, $"fold at {N(resized.SeamIn(doc) ?? -1)} s ({N(resized.Length)} s), its id {id}: {Kept(resized)}");
+                fold = resized;
+            }
+            return resized;
+        }
+        TimelineClip Clip(Guid id) => doc.FindClip(id) ?? throw new InvalidOperationException($"the clip {id} is gone");
+
+        var shown = Resize("Drag the start of the talk after the seam 1 s left: the fold's last second shows, joined into it with its HUD's", FoldSide.Tail, 1);
+        var (talkAfter, hudAfter) = (Clip(afterId), Clip(hudAfterId));
+        Expect(problems, shown is { Length: 3 } && shown.Id == foldId && shown.SeamClipId == afterId && Same(talkAfter.Start, 6) && Same(talkAfter.End, 17)
+                         && Same(talkAfter.MediaOffset, 9) && Same(hudAfter.Start, 6) && Same(hudAfter.End, 17) && hudAfter.ParentClipId == afterId
+                         && v1.Clips.Count == 2 && v2.Clips.Count == 2 && a1.Clips.Count == 2 && Same(doc.TotalDuration, 27),
+            "a tail shown joins the clip after the seam (its file running on), the HUD's piece joins its HUD, still its child; the fold keeps its id");
+
+        shown = Resize("Drag the end of the talk before the seam 1 s right: the fold's first second shows, joined into it", FoldSide.Head, 1);
+        (talkAfter, hudAfter) = (Clip(afterId), Clip(hudAfterId));
+        Expect(problems, shown is { Length: 2 } && shown.Id == foldId && shown.SeamClipId == afterId && Same(talk.End, 7) && Same(hud.End, 7) && hud.ParentClipId == talk.Id
+                         && Same(talkAfter.Start, 7) && Same(talkAfter.End, 18) && v1.Clips.Count == 2 && Same(doc.TotalDuration, 28),
+            "a head shown joins the clip before the seam, and its HUD's piece its HUD");
+
+        var objectBefore = Clip(afterId);
+        var folded = Resize("Drag the start of the talk after the seam 0.6 s right: as much more of it folds, and it keeps its id, its HUD too", FoldSide.Tail, -0.6);
+        (talkAfter, hudAfter) = (Clip(afterId), Clip(hudAfterId));
+        Expect(problems, folded is { Length: 2.6 } && folded.Id == foldId && folded.SeamClipId == afterId && Same(talkAfter.Start, 7) && Same(talkAfter.End, 17.4)
+                         && Same(talkAfter.MediaOffset, 9.6) && Same(hudAfter.Start, 7) && Same(hudAfter.End, 17.4) && hudAfter.ParentClipId == afterId && Same(doc.TotalDuration, 27.4),
+            "folding more at the tail takes the head of the clip after the seam and its HUD's, which keep their ids");
+        var another = !ReferenceEquals(objectBefore, talkAfter);
+        Line(text, $"the clip after the seam is another object now, its id the same: {another}");
+
+        folded = Resize("Drag the end of the talk before the seam 1 s left: its last second folds too", FoldSide.Head, -1);
+        talkAfter = Clip(afterId);
+        Expect(problems, folded is { Length: 3.6 } && folded.Id == foldId && Same(talk.End, 6) && Same(hud.End, 6) && Same(talkAfter.Start, 6) && Same(talkAfter.MediaOffset, 9.6)
+                         && Same(doc.TotalDuration, 26.4),
+            "folding more at the head takes the tail of the clip before the seam, which keeps its id");
+        var foldedState = Saved();
+
+        var whole = Resize("Drag the start of the talk after the seam 10 s left, past the whole fold: it is put back, and stays marked", FoldSide.Tail, 10);
+        var mark = doc.RestoredFolds is [var only] ? only : null;
+        Expect(problems, whole is null && doc.Folds is null && mark is not null && mark.Id == foldId && mark.SpanIn(doc) is { } span && Same(span.From, 6) && Same(span.To, 9.6)
+                         && Plays(doc) == before && Same(doc.TotalDuration, 30),
+            "shown past its length, the fold is put back whole (every track plays what it did before the fold) and its stretch stays marked");
+
+        using (var tx = doc.BeginTransaction("Hide it again"))
+        {
+            fold = tx.FoldRestored(mark ?? throw new InvalidOperationException("the stretch put back is not marked"));
+            tx.Commit();
+        }
+        Step("Hide the stretch again: the same fold, as it was before it was put back");
+        Expect(problems, fold.Id == foldId && Saved() == foldedState, "the stretch put back folds again into the document as it was");
+
+        var saved = Saved();
+        using (var tx = doc.BeginTransaction("Locked HUD, not kept"))
+        {
+            tx.SetTrack(v2, locked: true);
+            var inside = Saved();
+            var refused = Refused(() => tx.ResizeFold(fold, FoldSide.Tail, 1));
+            var outcome = refused ? "refused" : "made";
+            Line(text, $"\nWith the HUD track locked, showing a second of the fold: {outcome}");
+            Expect(problems, refused && Saved() == inside, "with a track the fold covers locked, opening it at an edge is refused and changes nothing");
+        }
+        using (var tx = doc.BeginTransaction("As much as there is, not kept"))
+        {
+            var most = tx.ResizeFold(fold, FoldSide.Head, -100);
+            Line(text, $"Folding 100 s more of the talk before the seam: it keeps {N(talk.Duration)} s, the fold is {N(most?.Length ?? -1)} s");
+            Expect(problems, most is not null && Same(talk.Duration, 0.08) && Same(most.Length, 9.52) && doc.FindProblems().Count == 0,
+                "folding more than the clip has folds all but the shortest clip of it");
+        }
+        Expect(problems, Saved() == saved, "rolled back, both leave everything as it was");
+    }
+
+    // ----- Children left outside a trim are unlinked and kept (4.4-BugHunt, Q3) -----
+
+    private static void TrimUnlinksChildren(StringBuilder text, List<string> problems)
+    {
+        var doc = new TimelineDocument { FrameRate = FrameRate.Fps25 };
+        var names = new Dictionary<Guid, string>();
+        static bool Same(double a, double b) => Math.Abs(a - b) < 1e-9;
+        void Step(string step)
+        {
+            Name(doc, names);
+            Show(text, doc, names, problems, step);
+            Links(text, doc, names);
+        }
+
+        TimelineTrackModel v1, v2, v3, v4;
+        TimelineClip talk, hud, key, badge;
+        using (var tx = doc.BeginTransaction("Set up"))
+        {
+            (v1, v2, v3, v4) = (tx.InsertTrack(0, TimelineTrackKind.Video), tx.InsertTrack(1, TimelineTrackKind.Video, "HUD"), tx.InsertTrack(2, TimelineTrackKind.Video),
+                                tx.InsertTrack(3, TimelineTrackKind.Video, "Flash"));
+            talk = tx.PlaceClip(v1, new TimelineClip { ContentKind = LayerKind.MainVideo, SourcePath = "D:/media/talk.mp4", AudioStreamIndex = 0, End = 20, SourceDuration = 30, State = new LayerState { Name = "Talk" } });
+            hud = tx.PlaceClip(v2, new TimelineClip { ContentKind = LayerKind.Video, SourcePath = "D:/media/hud", End = 20, State = new LayerState { Name = "HUD" } });
+            badge = tx.PlaceClip(v3, new TimelineClip { ContentKind = LayerKind.Image, SourcePath = "D:/media/badge.png", Start = 2, End = 3, State = new LayerState { Name = "Badge" } });
+            key = tx.PlaceClip(v3, new TimelineClip { ContentKind = LayerKind.Image, SourcePath = "D:/media/key.png", Start = 12, End = 14, State = new LayerState { Name = "Key" } });
+            tx.SetTrackParent(v2, v1.Id);
+            tx.SetTrackParent(v4, v1.Id);
+            foreach (var child in new[] { hud, badge, key })
+                tx.SetClipParent(child, talk.Id);
+            tx.Commit();
+        }
+        (names[talk.Id], names[hud.Id], names[badge.Id], names[key.Id]) = ("T", "H", "B", "K");
+        Step("Set up at 25 fps: a talk, its HUD on the track under it, a badge at 2-3 s and a key at 12-14 s on Video 3, all three its children");
+
+        using (var tx = doc.BeginTransaction("Trim the end"))
+        {
+            tx.TrimClipEnd(talk, 10);
+            tx.Commit();
+        }
+        Step("Trim the talk's end to 10 s: its HUD follows; the key, left wholly after it, stays where it is, unlinked");
+        Expect(problems, Same(talk.End, 10) && Same(hud.End, 10) && hud.ParentClipId == talk.Id && doc.TrackOf(key) == v3 && key.ParentClipId is null
+                         && Same(key.Start, 12) && Same(key.End, 14) && badge.ParentClipId == talk.Id,
+            "a child left wholly after a trimmed end is kept where it was, a clip of its own");
+
+        using (var tx = doc.BeginTransaction("Trim the start"))
+        {
+            tx.TrimClipStart(talk, 4);
+            tx.Commit();
+        }
+        Step("Trim the talk's start to 4 s: its HUD follows; the badge, left wholly before it, stays where it is, unlinked");
+        Expect(problems, Same(talk.Start, 4) && Same(talk.MediaOffset, 4) && Same(hud.Start, 4) && doc.TrackOf(badge) == v3 && badge.ParentClipId is null
+                         && Same(badge.Start, 2) && Same(badge.End, 3) && v3.Clips.Count == 2,
+            "a child left wholly before a trimmed start is kept where it was, a clip of its own");
+
+        TimelineClip key2, flash;
+        using (var tx = doc.BeginTransaction("Two more children"))
+        {
+            key2 = tx.PlaceClip(v3, new TimelineClip { ContentKind = LayerKind.Image, SourcePath = "D:/media/key.png", Start = 8, End = 10, State = new LayerState { Name = "Key" } });
+            flash = tx.PlaceClip(v4, new TimelineClip { ContentKind = LayerKind.Image, SourcePath = "D:/media/flash.png", Start = 8.4, End = 10, State = new LayerState { Name = "Flash" } });
+            tx.SetClipParent(key2, talk.Id);
+            tx.SetClipParent(flash, talk.Id);
+            tx.Commit();
+        }
+        Name(doc, names);
+        using (var tx = doc.BeginTransaction("Ripple trim"))
+        {
+            tx.TrimClipEnd(talk, 7, ripple: true, rippleAllUnlockedTracks: false);
+            tx.Commit();
+        }
+        Step("A second key (8-10 s, Video 3) and a flash (8.4-10 s, on the Flash track under the talk's) as its children; ripple-trim the talk's end to 7 s on its own track: the key, left with nothing on a track that does not ripple, stays, unlinked; the flash, on a track that closes up, goes");
+        Expect(problems, Same(talk.End, 7) && Same(hud.End, 7) && doc.TrackOf(key2) == v3 && key2.ParentClipId is null && Same(key2.Start, 8) && Same(key2.End, 10)
+                         && doc.TrackOf(flash) is null && doc.TrackOf(key) == v3,
+            "a ripple trim keeps a child it leaves with nothing on a track it does not ripple, unlinked, and takes one on a track it closes up");
+
+        TimelineClip talk2, roller;
+        using (var tx = doc.BeginTransaction("Split, and a key on the cut"))
+        {
+            talk2 = tx.SplitClipAt(talk, 5.6);
+            roller = tx.PlaceClip(v3, new TimelineClip { ContentKind = LayerKind.Image, SourcePath = "D:/media/roll.png", Start = 5, End = 5.6, State = new LayerState { Name = "Roll key" } });
+            tx.SetClipParent(roller, talk.Id);
+            tx.Commit();
+        }
+        var hud2 = v2.Clips[1];
+        Step("Split the talk at 5.6 s (its HUD with it), and a key of the first half from 5 s to the cut");
+
+        double rolled;
+        using (var tx = doc.BeginTransaction("Roll later"))
+        {
+            rolled = tx.RollCut(talk, talk2, 6.4);
+            tx.Commit();
+        }
+        Step("Roll the cut to 6.4 s: the HUD's cut rolls with it, and the key on the cut follows the first half's end");
+        Expect(problems, Same(rolled, 0.8) && Same(talk.End, 6.4) && Same(talk2.Start, 6.4) && Same(talk2.MediaOffset, 6.4) && Same(hud.End, 6.4) && Same(hud2.Start, 6.4)
+                         && hud2.ParentClipId == talk2.Id && Same(roller.End, 6.4) && roller.ParentClipId == talk.Id,
+            "a roll later carries the children on its cut: the HUD's halves meet on the new cut");
+
+        using (var tx = doc.BeginTransaction("Roll earlier"))
+        {
+            rolled = tx.RollCut(talk, talk2, 4.6);
+            tx.Commit();
+        }
+        Step("Roll the cut back to 4.6 s: the HUD's cut rolls back with it; the key, left wholly after the first half, stays, unlinked");
+        Expect(problems, Same(rolled, -1.8) && Same(talk.End, 4.6) && Same(talk2.Start, 4.6) && Same(talk2.MediaOffset, 4.6) && Same(hud.End, 4.6) && Same(hud2.Start, 4.6)
+                         && hud2.ParentClipId == talk2.Id && roller.ParentClipId is null && Same(roller.Start, 5) && Same(roller.End, 6.4),
+            "a roll earlier carries the children on its cut, and leaves one it leaves wholly outside where it is, unlinked");
+    }
+
+    // ----- A model fuzz (4.4-BugHunt) -----
+
+    private const int FuzzSeeds = 4, FuzzSteps = 2500;
+
+    /// <summary>
+    /// Ten thousand random edits, undos and redos (a fixed sequence of them, from four seeds) on a document of seven tracks
+    /// with children, a captions' lane under the main track, keyframes and folds, each edit in a transaction of its own: one
+    /// refused must leave the document as it was (to the byte of its JSON), one made must leave no problem (FindProblems),
+    /// no fold id twice, and the copy Undo took before it as it was; every undo and redo must give back the document it
+    /// kept. The golden text is how many of each verb were made and refused, and the counts of what went wrong (all 0).
+    /// </summary>
+    private static void Fuzz(StringBuilder text, List<string> problems)
+    {
+        var options = ProjectOptions();
+        string[] verbs = ["split", "move", "move to a track", "trim start", "trim end", "ripple trim", "roll", "slip", "ripple delete", "delete",
+                          "delete alone", "fold", "unfold", "fold again", "resize fold", "set parent", "place", "lock", "undo", "redo"];
+        var (made, refused) = (new int[verbs.Length], new int[verbs.Length]);
+        var (thrown, broken, changedByRefusal, changedCopies, operations) = (0, 0, 0, 0, 0);
+        void Report(string what)
+        {
+            if (problems.Count < 40)
+                problems.Add(what);
+        }
+
+        for (var seed = 1; seed <= FuzzSeeds; seed++)
+        {
+            var state = 0x9E3779B97F4A7C15UL * (ulong)seed;
+            double U() => Next(ref state);
+            var doc = FuzzDocument();
+            var (undo, redo) = (new List<(TimelineDocument Doc, string Json)>(), new List<(TimelineDocument Doc, string Json)>());
+            for (var step = 0; step < FuzzSteps; step++, operations++)
+            {
+                var json = JsonSerializer.Serialize(doc, options);
+                var clips = doc.Tracks.SelectMany(t => t.Clips.Select(c => (Track: t, Clip: c))).ToList();
+                var pairs = new List<(TimelineClip Earlier, TimelineClip Later)>();
+                foreach (var track in doc.Tracks)
+                {
+                    for (var i = 1; i < track.Clips.Count; i++)
+                    {
+                        if (Math.Abs(track.Clips[i - 1].End - track.Clips[i].Start) <= 1e-6)
+                            pairs.Add((track.Clips[i - 1], track.Clips[i]));
+                    }
+                }
+
+                var verb = Choose(FuzzWeights(verbs, clips.Count, pairs.Count, doc, undo.Count, redo.Count), U());
+                var where = string.Create(CultureInfo.InvariantCulture, $"fuzz seed {seed}, step {step} ({verbs[verb]})");
+                if (verbs[verb] is "undo" or "redo")
+                {
+                    // As the view model's Undo does it: the copy kept is put in, and a copy of what was there kept the other way.
+                    var (from, to) = verbs[verb] == "undo" ? (undo, redo) : (redo, undo);
+                    var (kept, keptJson) = from[^1];
+                    from.RemoveAt(from.Count - 1);
+                    if (JsonSerializer.Serialize(kept, options) != keptJson)
+                    {
+                        changedCopies++;
+                        Report($"{where}: the copy kept to go back to was changed by the edits after it");
+                    }
+
+                    to.Add((doc.Clone(), json));
+                    doc = kept;
+                    made[verb]++;
+                    if (doc.FindProblems() is { Count: > 0 } wrong)
+                    {
+                        broken++;
+                        Report($"{where}: {wrong[0]}");
+                    }
+                    continue;
+                }
+
+                var edit = FuzzEdit(verbs[verb], doc, clips, pairs, U, what => Report($"{where}: {what}"));
+                var before = doc.Clone();
+                bool touched;
+                try
+                {
+                    using var tx = doc.BeginTransaction(verbs[verb]);
+                    edit(tx);
+                    tx.Commit();
+                    touched = tx.TouchedClipIds.Count > 0 || tx.TouchedTrackIds.Count > 0;
+                    made[verb]++;
+                }
+                catch (TimelineEditException)
+                {
+                    refused[verb]++;
+                    if (JsonSerializer.Serialize(doc, options) != json)
+                    {
+                        changedByRefusal++;
+                        Report($"{where}: refused, but the document changed");
+                    }
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    thrown++;
+                    Report($"{where}: threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+                    continue;
+                }
+
+                if (doc.FindProblems() is { Count: > 0 } found)
+                {
+                    broken++;
+                    Report($"{where}: {found[0]}");
+                }
+                var foldIds = (doc.Folds ?? []).Select(f => f.Id).Concat((doc.RestoredFolds ?? []).Select(r => r.Id)).ToList();
+                if (foldIds.Count != foldIds.Distinct().Count())
+                {
+                    broken++;
+                    Report($"{where}: a fold's id is there twice (among the folds and the stretches put back)");
+                }
+                if (!touched)
+                    continue;
+
+                // The copy Undo took before the edit is packed after it (as the view model does): the edit must not have changed it.
+                if (JsonSerializer.Serialize(before, options) != json)
+                {
+                    changedCopies++;
+                    Report($"{where}: the copy Undo took before the edit was changed by it");
+                }
+                undo.Add((before, json));
+                if (undo.Count > 20)
+                    undo.RemoveAt(0);
+                redo.Clear();
+            }
+        }
+
+        text.Append(CultureInfo.InvariantCulture, $"\n{FuzzSeeds} seeds of {FuzzSteps} steps: {operations} operations\n");
+        for (var v = 0; v < verbs.Length; v++)
+            Line(text, $"  {verbs[v]}: {made[v]} made, {refused[v]} refused");
+        Line(text, $"  threw something other than a refusal: {thrown}; problems after an edit, an undo or a redo: {broken}; refusals that changed the document: {changedByRefusal}; copies kept for Undo or Redo that changed: {changedCopies}");
+        Expect(problems, thrown == 0 && broken == 0 && changedByRefusal == 0 && changedCopies == 0,
+            "the fuzz: nothing thrown but refusals, no problem after any edit, no refusal that changed anything, no copy for Undo changed");
+    }
+
+    /// <summary>The fuzz's document: a talk with keyframes, its HUD on the track under it, keys over it, B-roll, music, a voice in two, the captions' lane.</summary>
+    private static TimelineDocument FuzzDocument()
+    {
+        var doc = new TimelineDocument { FrameRate = FrameRate.Fps25 };
+        using var tx = doc.BeginTransaction("Set up");
+        var (v1, v2, v3, v4) = (tx.InsertTrack(0, TimelineTrackKind.Video), tx.InsertTrack(1, TimelineTrackKind.Video, "HUD"), tx.InsertTrack(2, TimelineTrackKind.Video), tx.InsertTrack(3, TimelineTrackKind.Video));
+        var (a1, a2, s1) = (tx.InsertTrack(4, TimelineTrackKind.Audio), tx.InsertTrack(5, TimelineTrackKind.Audio), tx.InsertTrack(6, TimelineTrackKind.Subtitle));
+        var talk = tx.PlaceClip(v1, new TimelineClip
+        {
+            ContentKind = LayerKind.MainVideo, SourcePath = "D:/media/talk.mp4", AudioStreamIndex = 0, End = 40, SourceDuration = 90,
+            State = new LayerState { Name = "Talk", KeysOpacity = [new(2, 100), new(20, 40), new(35, 80, EasingType.Linear)] },
+        });
+        var hud = tx.PlaceClip(v2, new TimelineClip { ContentKind = LayerKind.Video, SourcePath = "D:/media/hud", End = 40, State = new LayerState { Name = "HUD" } });
+        TimelineClip[] keys =
+        [
+            tx.PlaceClip(v3, new TimelineClip { ContentKind = LayerKind.Image, SourcePath = "D:/media/key.png", Start = 5, End = 8, State = new LayerState { Name = "Key", KeysX = [new(0, 0.2), new(2, 0.6)] } }),
+            tx.PlaceClip(v3, new TimelineClip { ContentKind = LayerKind.Image, SourcePath = "D:/media/key.png", Start = 15, End = 18, State = new LayerState { Name = "Key" } }),
+        ];
+        tx.PlaceClip(v3, new TimelineClip { ContentKind = LayerKind.Text, Start = 25, End = 30, State = new LayerState { Name = "Title" } });
+        tx.PlaceClip(v4, new TimelineClip { SourcePath = "D:/media/b-roll.mp4", AudioStreamIndex = 0, Start = 10, End = 20, MediaOffset = 5, SourceDuration = 60, State = new LayerState { Name = "B-roll" } });
+        tx.PlaceClip(v4, new TimelineClip { SourcePath = "D:/media/b-roll.mp4", AudioStreamIndex = 0, Start = 22, End = 26, Speed = 1.5, SourceDuration = 60, FadeInSeconds = 0.5, State = new LayerState { Name = "Fast B-roll" } });
+        tx.PlaceClip(a1, new TimelineClip { ContentKind = LayerKind.Audio, SourcePath = "D:/media/music.wav", AudioStreamIndex = 0, End = 60, SourceDuration = 200, State = new LayerState { Name = "Music" } });
+        tx.PlaceClip(a2, new TimelineClip { ContentKind = LayerKind.Audio, SourcePath = "D:/media/voice.wav", AudioStreamIndex = 0, Start = 3, End = 12, SourceDuration = 30, State = new LayerState { Name = "Voice" } });
+        tx.PlaceClip(a2, new TimelineClip { ContentKind = LayerKind.Audio, SourcePath = "D:/media/voice.wav", AudioStreamIndex = 0, Start = 12, End = 22, MediaOffset = 9, SourceDuration = 30, TransitionIn = 0.4, State = new LayerState { Name = "Voice" } });
+        tx.PlaceClip(s1, new TimelineClip { ContentKind = LayerKind.Captions, End = 40, State = new LayerState { Name = "Captions", Kind = LayerKind.Captions } });
+        tx.SetTrackParent(v2, v1.Id);
+        tx.SetTrackParent(s1, v1.Id);
+        tx.SetClipParent(hud, talk.Id);
+        foreach (var key in keys)
+            tx.SetClipParent(key, talk.Id);
+        tx.Commit();
+        return doc;
+    }
+
+    /// <summary>How likely each verb of the fuzz is now: none that has nothing to work on, splits and placings while the clips are few, deletes when they are many.</summary>
+    private static double[] FuzzWeights(string[] verbs, int clips, int pairs, TimelineDocument doc, int undos, int redos) =>
+        [.. verbs.Select(verb => (double)(verb switch
+        {
+            "split" => clips is > 0 and < 50 ? 10 : 0,
+            "move" => clips > 0 ? 8 : 0,
+            "move to a track" => clips > 0 ? 4 : 0,
+            "trim start" or "trim end" => clips > 0 ? 6 : 0,
+            "ripple trim" => clips > 0 ? 5 : 0,
+            "roll" => pairs > 0 ? 5 : 0,
+            "slip" => clips > 0 ? 3 : 0,
+            "ripple delete" or "delete" => clips > 0 ? clips > 35 ? 6 : 2 : 0,
+            "delete alone" => clips > 0 ? 2 : 0,
+            "fold" => 6,
+            "unfold" => doc.Folds is { Count: > 0 } ? 6 : 0,
+            "fold again" => doc.RestoredFolds is { Count: > 0 } ? 6 : 0,
+            "resize fold" => doc.Folds is { Count: > 0 } ? 10 : 0,
+            "set parent" => clips > 1 ? 3 : 0,
+            "place" => clips < 50 ? clips < 20 ? 12 : 4 : 0,
+            "lock" => 1,
+            "undo" => undos > 0 ? 5 : 0,
+            _ => redos > 0 ? 3 : 0,
+        }))];
+
+    /// <summary>The verb a number from 0 to 1 lands on, each taking its weight's share.</summary>
+    private static int Choose(double[] weights, double u)
+    {
+        var at = u * weights.Sum();
+        for (var i = 0; i < weights.Length; i++)
+        {
+            if (at < weights[i])
+                return i;
+            at -= weights[i];
+        }
+        return Array.FindLastIndex(weights, w => w > 0);
+    }
+
+    /// <summary>
+    /// One random edit of the fuzz, its clip, times and switches drawn now (from <paramref name="u"/>, so that the run is the
+    /// same every time), made when it is given the transaction. <paramref name="fault"/> hears of a result that is wrong
+    /// though not refused.
+    /// </summary>
+    private static Action<ITimelineTransaction> FuzzEdit(string verb, TimelineDocument doc, List<(TimelineTrackModel Track, TimelineClip Clip)> clips,
+                                                         List<(TimelineClip Earlier, TimelineClip Later)> pairs, Func<double> u, Action<string> fault)
+    {
+        int Pick(int count) => Math.Min((int)(u() * count), count - 1);
+        (TimelineTrackModel Track, TimelineClip Clip) Any() => clips[Pick(clips.Count)];
+        var (a, b, c) = (u(), u(), u());
+        switch (verb)
+        {
+            case "split":
+            {
+                var (_, clip) = Any();
+                return tx => tx.SplitClipAt(clip, clip.Start + a * clip.Duration);
+            }
+            case "move":
+            {
+                var (track, clip) = Any();
+                return tx => tx.MoveClip(clip, track, clip.Start + (b - 0.5) * 8, ripple: c < 0.2);
+            }
+            case "move to a track":
+            {
+                var (_, clip) = Any();
+                var targets = doc.Tracks.Where(t => t.Accepts(clip)).ToList();
+                var target = targets[Pick(targets.Count)];
+                var insert = c < 0.1 && doc.Tracks.Count < 12 ? Pick(doc.Tracks.Count + 1) : -1;
+                return tx => tx.MoveClip(clip, target, clip.Start + (b - 0.5) * 4, ripple: a < 0.15, insertTrackAtIndex: insert);
+            }
+            case "trim start":
+            {
+                var (_, clip) = Any();
+                return tx => tx.TrimClipStart(clip, clip.Start + (a - 0.5) * 4);
+            }
+            case "trim end":
+            {
+                var (_, clip) = Any();
+                return tx => tx.TrimClipEnd(clip, clip.End + (a - 0.5) * 4);
+            }
+            case "ripple trim":
+            {
+                var (_, clip) = Any();
+                if (b < 0.5)
+                    return tx => tx.TrimClipStart(clip, clip.Start + (a - 0.5) * 4, ripple: true, rippleAllUnlockedTracks: c < 0.5);
+                return tx => tx.TrimClipEnd(clip, clip.End + (a - 0.5) * 4, ripple: true, rippleAllUnlockedTracks: c < 0.5);
+            }
+            case "roll":
+            {
+                var (earlier, later) = pairs[Pick(pairs.Count)];
+                return tx => tx.RollCut(earlier, later, later.Start + (a - 0.5) * 3);
+            }
+            case "slip":
+            {
+                var (_, clip) = Any();
+                return tx => tx.SlipClip(clip, (a - 0.5) * 4);
+            }
+            case "ripple delete":
+            {
+                var (_, clip) = Any();
+                return tx => tx.RippleDelete(clip, rippleAllUnlockedTracks: a < 0.5);
+            }
+            case "delete":
+            case "delete alone":
+            {
+                var (_, clip) = Any();
+                var withChildren = verb == "delete";
+                return tx => tx.DeleteClip(clip, withChildren);
+            }
+            case "fold":
+            {
+                var track = doc.Tracks[Pick(doc.Tracks.Count)];
+                var from = a * Math.Max(doc.TotalDuration, 1);
+                return tx => tx.FoldStretch(track, from, from + 0.1 + b * 3, rippleAllUnlockedTracks: c < 0.5);
+            }
+            case "unfold":
+            {
+                var fold = doc.Folds![Pick(doc.Folds.Count)];
+                return tx => tx.UnfoldSegment(fold);
+            }
+            case "fold again":
+            {
+                var restored = doc.RestoredFolds![Pick(doc.RestoredFolds.Count)];
+                return tx =>
+                {
+                    if (tx.FoldRestored(restored).Id != restored.Id)
+                        fault($"the stretch {restored.Id} was folded again as another fold");
+                };
+            }
+            case "resize fold":
+            {
+                var fold = doc.Folds![Pick(doc.Folds.Count)];
+                var side = a < 0.5 ? FoldSide.Head : FoldSide.Tail;
+                var seconds = (b - 0.45) * 2 * (fold.Length + 0.5);
+                return tx =>
+                {
+                    if (tx.ResizeFold(fold, side, seconds) is { } resized && resized.Id != fold.Id)
+                        fault($"the fold {fold.Id} came back from a resize as {resized.Id}");
+                };
+            }
+            case "set parent":
+            {
+                var (_, clip) = Any();
+                Guid? parent = a < 0.3 ? null : Any().Clip.Id;
+                return tx => tx.SetClipParent(clip, parent);
+            }
+            case "place":
+            {
+                var track = doc.Tracks[Pick(doc.Tracks.Count)];
+                var start = a * (doc.TotalDuration + 4);
+                var placed = track.Kind switch
+                {
+                    TimelineTrackKind.Audio => new TimelineClip { ContentKind = LayerKind.Audio, SourcePath = "D:/media/sfx.wav", AudioStreamIndex = 0, MediaOffset = b * 5, SourceDuration = 20 },
+                    TimelineTrackKind.Subtitle => new TimelineClip { ContentKind = LayerKind.Captions },
+                    TimelineTrackKind.Adjustment => new TimelineClip { ContentKind = LayerKind.Adjustment },
+                    _ when b < 0.5 => new TimelineClip { ContentKind = LayerKind.Image, SourcePath = "D:/media/still.png" },
+                    _ => new TimelineClip { ContentKind = LayerKind.VideoFile, SourcePath = "D:/media/clip.mp4", AudioStreamIndex = 0, MediaOffset = b * 20, SourceDuration = 60 },
+                };
+                (placed.Start, placed.End, placed.State) = (start, start + 0.3 + c * 4, new LayerState { Name = "Placed" });
+                return tx => tx.PlaceClip(track, placed, allowCrossfadeOverlap: c < 0.3);
+            }
+            default:
+            {
+                // Locks (or unlocks) a track; with two locked, one of them is unlocked again.
+                var locked = doc.Tracks.Where(t => t.IsLocked).ToList();
+                var track = locked.Count >= 2 ? locked[Pick(locked.Count)] : doc.Tracks[Pick(doc.Tracks.Count)];
+                return tx => tx.SetTrack(track, locked: !track.IsLocked);
+            }
+        }
     }
 
     // ----- Edge cases -----
@@ -996,6 +1907,7 @@ public static class TimelineDocumentTests
         TransitionStyle => TransitionStyle.Zoom,
         ProxyChoice => ProxyChoice.Original,
         LayerState => new LayerState { Name = "other" },
+        null when type == typeof(Guid?) => Fixed(4243),
         null when type == typeof(string) => "other",
         _ => value,
     };

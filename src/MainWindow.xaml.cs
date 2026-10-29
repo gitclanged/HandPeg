@@ -217,6 +217,7 @@ public partial class MainWindow : Window
         RoutedEventHandler touched = (_, _) => _viewModel.NoteUserInput();
         foreach (var input in new[] { PreviewMouseDownEvent, PreviewKeyDownEvent, PreviewMouseWheelEvent, DragDrop.PreviewDropEvent })
             EventManager.RegisterClassHandler(typeof(Window), input, touched, handledEventsToo: true);
+        InitializeDevFlight();
 
         // The media browser: what it opens, and what it puts on the timeline at the playhead.
         MediaBrowser.HasVideo = () => _viewModel.HasSource;
@@ -226,6 +227,9 @@ public partial class MainWindow : Window
         _viewModel.Layers.CollectionChanged += (_, _) => MediaBrowser.ProjectChanged();
         EffectsView.Attach(_viewModel);
         EffectsView.EditMaskRequested += layer => OpenLayerTool(layer, LayerTool.Mask);
+
+        // The timeline (4.4): its surface, ruler, toolbar and inspector hooked up to the view model and this window.
+        InitializeUnifiedTimeline();
         _viewModel.MediaLoaded += _ => MediaBrowser.ProjectChanged();
         MediaBrowser.AddRequested += (files, sound) =>
         {
@@ -235,6 +239,13 @@ public partial class MainWindow : Window
         _viewModel.PreviewRendered += ShowPreview;
         _viewModel.AskOverwrite = AskOverwrite;
         _viewModel.Confirm = (title, message, confirm) => new ConfirmDialog(title, message, confirm) { Owner = this }.ShowDialog() == true;
+
+        // A question that can be answered once for all (4.4): its "Remember my choice" box is kept with the answer.
+        _viewModel.ConfirmOrRemember = (title, message, confirm, decline) =>
+        {
+            var dialog = new ConfirmDialog(title, message, confirm) { Owner = this, RememberText = "Remember my choice (don't ask again)", CancelText = decline };
+            return (dialog.ShowDialog() == true, dialog.Remember);
+        };
 
         // A tool that was never downloaded is offered at the moment something needs it.
         _viewModel.DependenciesNeeded = request => Task.FromResult(new DependencyPromptWindow(request) { Owner = this }.ShowDialog() == true);
@@ -248,6 +259,10 @@ public partial class MainWindow : Window
         _viewModel.Layers.CollectionChanged += (_, _) => RedrawLayout();
 
         PreviewKeyDown += MainWindow_PreviewKeyDown;
+
+        // The mouse buttons, the press that takes the keyboard from a text box and the keys held (X-Ray, Caps Lock), heard in
+        // every window of the editor; their release (PreviewKeyUp) included (MainWindow.Keybinds.cs).
+        InitializeKeybinds();
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
         Loaded += (_, _) => _ = CheckForHandPegUpdateAsync();
@@ -256,7 +271,7 @@ public partial class MainWindow : Window
         _viewModel.LiveFilterInvalidated += ScheduleLiveFilter;
         _viewModel.LiveFilterInvalidated += () => _liveSoundRefused = false;
 
-        // The time bars on the Layers tab follow the layers, and anything about a layer that changes (the main videos clips are layers: 4.3C).
+        // The timeline's rows follow the layers, and anything about a layer that changes (the main videos clips are layers: 4.3C).
         _viewModel.LiveFilterInvalidated += ScheduleClipRedraw;
         _viewModel.Layers.CollectionChanged += (_, _) => ScheduleClipRedraw();
         _viewModel.TimelineChanged += ScheduleClipRedraw;
@@ -582,15 +597,12 @@ public partial class MainWindow : Window
     // timeline's has been taken, undone or redone since, Ctrl+Z and Ctrl+Y there take back and put back that typing.
     private (TextBoxBase Box, object? Mark)? _typedIn;
 
-    /// <summary>Null for any other key; false for undo (Ctrl+Z), true for redo (Ctrl+Y, or Ctrl+Shift+Z).</summary>
-    private static bool? UndoKey(KeyEventArgs e)
-    {
-        if (e.Key == Key.Z && Keyboard.Modifiers == ModifierKeys.Control)
-            return false;
-        if ((e.Key == Key.Y && Keyboard.Modifiers == ModifierKeys.Control) || (e.Key == Key.Z && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)))
-            return true;
-        return null;
-    }
+    /// <summary>
+    /// Null for any other key; false for undo (Ctrl+Z), true for redo (Ctrl+Y, or Ctrl+Shift+Z). These stay fixed whatever
+    /// the keybinds (KeybindManager never gives them to anything else).
+    /// </summary>
+    private static bool? UndoKey(KeyEventArgs e) =>
+        KeybindManager.IsUndo(e) ? false : KeybindManager.IsRedo(e) ? true : (bool?)null;
 
     /// <summary>
     /// Whether Ctrl+Z (or Ctrl+Y) in the focused text box is the box's own: while it has typing to take back (or put back),
@@ -617,22 +629,35 @@ public partial class MainWindow : Window
             or (>= Key.D0 and <= Key.Z) or (>= Key.NumPad0 and <= Key.Divide) or (>= Key.Oem1 and <= Key.OemBackslash);
     }
 
+    /// <summary>
+    /// Every global key (4.4): the dial's and the tour's Esc (and Caps Lock's echo) first, then saving, undo and the text
+    /// box's keys, the nudge of a Canvas box, and every other shortcut through KeybindManager, the held navigation keys among
+    /// them (MainWindow.Keybinds.cs holds what each action does). The side window hands its keys here too.
+    /// </summary>
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (TakeOverlayKey(e))
+            return;
+
+        var chord = KeybindManager.ChordOf(e);
+        var bound = KeybindManager.Resolve(chord);
+
+        // Shift with a held navigation key is that key going faster, unless Shift and the key are bound themselves.
+        if (bound is null && chord.Mods == ModifierKeys.Shift && KeybindManager.Resolve(chord.WithoutShift) is { } faster
+            && KeybindManager.Action(faster) is { } held && held.Has(KeyActionFlags.Continuous))
+            bound = faster;
+
         // Saving, before anything else sees the keys: a text box, which has uses of its own for some key
-        // combinations, never gets these two. The window's key bindings (see the XAML) are the same commands,
-        // for the keys that reach it by the ordinary road.
+        // combinations, never gets these (Ctrl+S and Ctrl+Alt+S unless they were rebound).
         //
         // Save As is Ctrl+Alt+S, not Ctrl+Shift+S: that one is taken, on computers with AMD's graphics
         // software, by its "save instant replay" hotkey, which is registered with Windows for every program,
-        // so the keys are never given to HandPeg at all. (With Alt held, WPF reports the key as a system key.)
-        var pressed = e.Key == Key.System ? e.SystemKey : e.Key;
-        if (pressed == Key.S && Keyboard.Modifiers is ModifierKeys.Control or (ModifierKeys.Control | ModifierKeys.Alt))
+        // so the keys are never given to HandPeg at all; KeybindManager refuses to bind it. (With Alt held, WPF
+        // reports the key as a system key: KeybindManager.ChordOf reads the key itself.)
+        if (bound is not null && KeybindManager.Action(bound) is { } early && early.Has(KeyActionFlags.WorksInText))
         {
-            if (Keyboard.Modifiers != ModifierKeys.Control)
-                _viewModel.SaveProjectAsCommand.Execute(null);
-            else
-                _viewModel.SaveProjectNowCommand.Execute(null);
+            if (!e.IsRepeat)
+                RunAction(bound);
             e.Handled = true;
             return;
         }
@@ -642,25 +667,10 @@ public partial class MainWindow : Window
         // Undo (Ctrl+Z) and redo (Ctrl+Y or Ctrl+Shift+Z), wherever the keyboard is but in an open drop-down (4.3E): the
         // focused text box's own while what was done last is typing in it (TypingIsNewest), the timeline's otherwise, so a
         // number box or a search box left holding the keyboard no longer swallows them. Not while a drag is held: what is
-        // dragged would go on being moved from where Undo put it.
+        // dragged would go on being moved from where Undo put it (RunUndo).
         if (UndoKey(e) is { } redo && focused is not ComboBoxItem)
         {
-            if (focused is TextBoxBase box && TypingIsNewest(box, redo))
-            {
-                if (redo)
-                    box.Redo();
-                else
-                    box.Undo();
-                _typedIn = (box, _viewModel.UndoMark);
-            }
-            else if (Mouse.LeftButton != MouseButtonState.Pressed)
-            {
-                if (redo)
-                    Redo_Click(this, new RoutedEventArgs());
-                else
-                    Undo_Click(this, new RoutedEventArgs());
-            }
-
+            RunUndo(redo);
             e.Handled = true;
             return;
         }
@@ -669,16 +679,10 @@ public partial class MainWindow : Window
         if (focused is TextBoxBase typedInto && TypesText(e))
             _typedIn = (typedInto, _viewModel.UndoMark);
 
-        // Typing stays typing, and a drop-down keeps its own keys.
-        if (focused is TextBoxBase or ComboBox or ComboBoxItem)
+        // Typing stays typing, and a drop-down keeps its own keys. (A press anywhere else takes the keyboard from a text box,
+        // MainWindow.Keybinds.cs ReleaseTypingFocus, so the keys after it are shortcuts again.)
+        if (focused is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem)
             return;
-
-        if (e.Key == Key.M && _viewModel.HasSource && Keyboard.Modifiers is ModifierKeys.Shift or (ModifierKeys.Control | ModifierKeys.Shift))
-        {
-            _viewModel.GoToMarker(forward: Keyboard.Modifiers == ModifierKeys.Shift);
-            e.Handled = true;
-            return;
-        }
 
         // A layout box chosen with the pointer: the arrow keys nudge it, a pixel of the output (ten with Shift). One undo
         // step for a run of nudges.
@@ -694,109 +698,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Shift+Delete: a ripple delete, the clips after it closing the gap.
-        if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.Shift && focused is not (DataGridCell or KeyLanesView))
-        {
-            if (_selectedClip is Layer { HasTiming: true } selected)
-            {
-                if (_viewModel.RippleDelete(selected))
-                    (_selectedClip, _mainClipSelected) = (null, false);
-                ScheduleClipRedraw();
-            }
-            else
-            {
-                DeleteSelectedClip();
-            }
-
+        // Every other shortcut (KeybindManager's map: the preset and the user's own keys), unless the control with the
+        // keyboard keeps that key or the action cannot run now (MainWindow.Keybinds.cs).
+        if (bound is not null && TryRunBound(bound, chord, e, sender, focused))
             e.Handled = true;
-            return;
-        }
-
-        if (Keyboard.Modifiers != ModifierKeys.None)
-            return;
-
-        // Delete removes what is selected on a time bar. In the rules grid it is the grid's own key; in the Keyframes
-        // pane's rows, a keyframe.
-        if (e.Key == Key.Delete && focused is not (DataGridCell or KeyLanesView))
-        {
-            DeleteSelectedClip();
-            e.Handled = true;
-            return;
-        }
-
-        // A slider other than the timeline keeps its arrow keys (volume, zoom, opacity...).
-        var arrowsBelongToSlider = focused is Slider slider && !ReferenceEquals(slider, TimelineSlider);
-
-        switch (e.Key)
-        {
-            case Key.Space:
-                PlayPause_Click(this, new RoutedEventArgs());
-                break;
-
-            case Key.Left when !arrowsBelongToSlider:
-                StepFrames(-1);
-                break;
-
-            case Key.Right when !arrowsBelongToSlider:
-                StepFrames(1);
-                break;
-
-            case Key.I when _viewModel.AddStartPointCommand.CanExecute(null):
-                _viewModel.AddStartPointCommand.Execute(null);
-                break;
-
-            case Key.S when _viewModel.HasSource:
-                SplitSelectedClip();
-                break;
-
-            // The transport keys of every editor: J back, K stop, L forward; J or L again goes faster.
-            case Key.J:
-                Shuttle(-1);
-                break;
-
-            case Key.K:
-                Shuttle(0);
-                break;
-
-            case Key.L:
-                Shuttle(1);
-                break;
-
-            case Key.O when _viewModel.AddStopPointCommand.CanExecute(null):
-                _viewModel.AddStopPointCommand.Execute(null);
-                break;
-
-            case Key.M when _viewModel.HasSource:
-                _viewModel.AddMarker();
-                break;
-
-            case Key.Home or Key.End when _viewModel.HasSource && focused is not (ItemsControl or ListBoxItem or Slider):
-                _viewModel.PositionMs = e.Key == Key.Home ? 0 : _viewModel.DurationMs;
-                break;
-
-            // (Down on Add Layer opens its kinds instead: AddLayerButton_PreviewKeyDown.)
-            case Key.Up or Key.Down when _viewModel.HasSource && focused is not (ItemsControl or ListBoxItem or Slider or ScrollViewer or KeyLanesView or FrameworkElement { Name: "AddLayerButton" }):
-                GoToEditPoint(forward: e.Key == Key.Down);
-                break;
-
-            // The time bars: = and - zoom about the playhead, \ shows the whole timeline again.
-            case Key.OemPlus or Key.Add when _viewModel.HasSource:
-                ZoomAboutPlayhead(1.6);
-                break;
-
-            case Key.OemMinus or Key.Subtract when _viewModel.HasSource:
-                ZoomAboutPlayhead(1 / 1.6);
-                break;
-
-            case Key.Oem5 or Key.OemBackslash when _viewModel.HasSource:
-                FitTimeline();
-                break;
-
-            default:
-                return;
-        }
-
-        e.Handled = true;
     }
 
     // ----- Source / destination -----
@@ -965,32 +870,6 @@ public partial class MainWindow : Window
         ViewsPlaybackOptions.Visibility = fits ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    // ----- A track's controls: in its row while there is room, in a flyout from its row when there is not -----
-
-    // What a row needs beside its controls: the name block, the controls (416 on the Layers tab since 4.1.1-D, its two
-    // lines of fixed width), and a time bar wide enough to be of use. 1182 in all, as before the block grew from 368: a
-    // 1280 px window keeps its controls in the rows.
-    private const double NarrowestTrackList = 232 + 416 + 534;
-
-    private void TrackList_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        if (sender is FrameworkElement { ActualWidth: > 0 } list)
-            _viewModel.CompactTrackControls = list.ActualWidth < NarrowestTrackList;
-    }
-
-    // The button that opened a flyout would, clicked again to close it, open it straight back up; so it is deaf while the flyout is open.
-    private void TrackControlsPopup_Opened(object? sender, EventArgs e)
-    {
-        if (sender is Popup { PlacementTarget: UIElement button })
-            button.IsHitTestVisible = false;
-    }
-
-    private void TrackControlsPopup_Closed(object? sender, EventArgs e)
-    {
-        if (sender is Popup { PlacementTarget: UIElement button })
-            Dispatcher.BeginInvoke(() => button.IsHitTestVisible = true, System.Windows.Threading.DispatcherPriority.Input);
-    }
-
     private void TimelineOptionsBar_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e) => UpdateTransportMinWidth();
 
     /// <summary>
@@ -1002,11 +881,11 @@ public partial class MainWindow : Window
             ? Math.Ceiling((ViewsButton.ActualWidth > 0 ? ViewsButton.ActualWidth : 90) + 22)
             : 0;
 
-    // ----- The header's flyouts (Add Media's box, the Settings button's queue and squisher) and Add Layer's kinds -----
+    // ----- The header's flyouts (Add Media's box, the Settings button's queue and squisher, the Layout Selector) -----
     // Each opens while the pointer rests on its button and stays while it is on the button or on it (see HoverFlyout).
+    // (Add Layer's kinds are the timeline's own flyout since 4.4: Views/UnifiedTimelinePane.)
 
     private readonly HoverFlyout _addMediaHover, _settingsHover, _layoutHover;
-    private HoverFlyout? _addLayerHover;
 
     // ----- The window's size at startup -----
 
@@ -1122,9 +1001,9 @@ public partial class MainWindow : Window
         var sounds = files.Where(f => MediaBrowserItem.KindOf(f) == MediaBrowserKind.Audio).ToArray();
         var pictures = files.Except(sounds).ToArray();
         if (pictures.Length > 0)
-            _ = AddDroppedLayersAsync(pictures, at, null);
+            DropLater("adding clips", () => AddDroppedLayersAsync(pictures, at, null));
         if (sounds.Length > 0)
-            _ = AddDroppedAudioAsync(sounds, at);
+            DropLater("adding sound", () => AddDroppedAudioAsync(sounds, at));
     }
 
     private void AddMediaFlyout_KeyDown(object sender, KeyEventArgs e)
@@ -1293,15 +1172,18 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// The Settings window, at one of its tabs when named (a pane's "More ... Settings...", 4.2B-2): a full-window screen
-    /// over the editor, in its place on the screen and maximized when it is (4.3-0B).
+    /// over the editor, in its place on the screen and maximized when it is (4.3-0B), its stage mirroring the editor's
+    /// panes live (StageMirror, 4.4).
     /// </summary>
-    private void OpenSettings(string? tab = null)
+    /// <param name="prepare">Anything else to do to the window before it is shown (open it at a key, 4.4.0).</param>
+    private void OpenSettings(string? tab = null, Action<SettingsWindow>? prepare = null)
     {
         CrashReporter.Note("settings", "opened");
-        var window = new SettingsWindow(_viewModel) { Owner = this };
+        var window = new SettingsWindow(_viewModel) { Owner = this, MirrorSource = StageMirror };
         window.CoverWindow(this);
         if (tab is not null)
             window.ShowTab(tab);
+        prepare?.Invoke(window);
         var saved = window.ShowDialog() == true;
         CrashReporter.Note("settings", saved ? "saved" : "closed");
         if (saved)
@@ -1780,7 +1662,7 @@ public partial class MainWindow : Window
 
     // ----- The panes: where each is, and how large -----
     // The player area is two grids. The outer one has the player in one column and the side panes in another,
-    // over the master timeline; the inner one has the video in one column and the layout pane in another.
+    // over the overview bar; the inner one has the video in one column and the layout pane in another.
     // Moving a pane is giving it the other row or column of its grid (and that row or column its size);
     // nothing is taken out of the window or put back. The arrangement belongs to the mode in use.
 
@@ -1816,8 +1698,8 @@ public partial class MainWindow : Window
         ViewsButton.IsChecked = false;
     }
 
-    // The border between the player and the master timeline. What it drags is the timeline's height setting,
-    // the one the slider beside the volume sets: the timeline is as tall as that says, not as tall as a grid
+    // The border between the player and the overview bar. What it drags is the bar's height setting,
+    // the one the slider beside the volume sets: the bar is as tall as that says, not as tall as a grid
     // row happens to be, so the row is put back to "as tall as its content" each time the splitter has sized it.
 
     // Dragging a pane by its title: let go on the other side of what it is beside, and it moves there.
@@ -1828,21 +1710,13 @@ public partial class MainWindow : Window
 
     // ----- Tabs that are built when they are first wanted -----
 
-    // The named parts of the Audio and Layers tabs that this file uses: the tabs are made from templates, so
-    // these are found in them when they are made. The two that are asked about from outside their tab (is a
-    // file being dropped on it, what is selected in it) may not be there yet; the rest are only reached from
-    // their own tab's events.
+    // The named parts of the Audio tab that this file uses: the tab is made from a template, so these are found in
+    // it when it is made. The one asked about from outside the tab (is a file being dropped on it) may not be there
+    // yet; the rest are only reached from the tab's own events.
     private DockPanel? AudioPanel;
     private Grid AudioOptionsHost = null!;
     private StackPanel AudioOptionsInline = null!;
     private System.Windows.Controls.Primitives.ToggleButton AudioOptionsButton = null!;
-    private ListBox? LayersList;
-    private WrapPanel LayerAddBar = null!;
-    private StackPanel KeyBarInline = null!;
-    private System.Windows.Controls.Primitives.ToggleButton KeyBarButton = null!;
-    private Grid AddLayerHost = null!;
-    private System.Windows.Controls.Primitives.Popup AddLayerPopup = null!;
-    private ButtonChrome AddLayerFlyoutPanel = null!;
 
     private void AudioOptionsHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -1913,40 +1787,6 @@ public partial class MainWindow : Window
 
     private void EmptyBin_Click(object sender, RoutedEventArgs e) => _viewModel.EmptyBin();
 
-    // Wide enough for the keyframe buttons to sit in the bar beside everything else in it.
-    private const double KeyBarInlineWidth = 1500;
-
-    /// <summary>Shows the keyframe controls in the Layers tab's bar while it is wide enough for them, and behind one button while it is not.</summary>
-    private void LayerAddBar_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        var inline = LayerAddBar.ActualWidth >= KeyBarInlineWidth;
-        if (inline == (KeyBarInline.Visibility == Visibility.Visible))
-            return;
-
-        (KeyBarInline.Visibility, KeyBarButton.Visibility) = inline ? (Visibility.Visible, Visibility.Collapsed) : (Visibility.Collapsed, Visibility.Visible);
-        if (inline)
-            KeyBarButton.IsChecked = false;
-    }
-
-    /// <summary>Remove Dead Air on what is given: a video layer or a sound clip, an audio track, or (null) the main video.</summary>
-    private void RunDeadAir(object? target)
-    {
-        // A clip of the main video is the main video: heard through its file's tracks, and cut on every unlocked track.
-        if (target is Layer { IsMainVideo: true })
-            target = null;
-
-        // With nothing chosen, the main video listens to its Voice track when one is marked (4.3E).
-        var name = (target ?? _viewModel.AudioTracks.FirstOrDefault(t => t.IsVoice)) switch
-        {
-            Layer layer => layer.Name,
-            AudioTrack track => $"the video, listening to {track.Title}",
-            _ => "the video",
-        };
-        var dialog = new DeadAirDialog(name) { Owner = this };
-        if (dialog.ShowDialog() == true)
-            _viewModel.RunDeadAir(dialog.Mode, target);
-    }
-
     private async void AddVideo_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
@@ -1967,14 +1807,6 @@ public partial class MainWindow : Window
         };
         if (dialog.ShowDialog(this) == true)
             await _viewModel.AddAudioLayerAsync(dialog.FileName, _viewModel.PositionMs / 1000);
-    }
-
-    // A layer's row picked on the Layers tab: it is the one the Keyframes pane and the Text Settings work on,
-    // as its block picked on the timeline is.
-    private void LayersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (LayersList?.SelectedItem is Layer { IsPicture: true, IsCaptions: false } layer)
-            _viewModel.KeyLayer = layer;
     }
 
     /// <summary>Opens the Windows colour picker for one of the selected text layer's colours: its letters' or its outline's.</summary>
@@ -2005,40 +1837,23 @@ public partial class MainWindow : Window
         }
 
         var color = $"#{picker.Color.R:X2}{picker.Color.G:X2}{picker.Color.B:X2}";
+        if (string.Equals(outline ? layer.OutlineColor : layer.FontColor, color, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        // The Windows colour picker's clicks are not seen by the window (NoteUserInput), so its step is taken here (4.4).
+        _viewModel.Checkpoint($"change the {(outline ? "outline" : "text")} color of {layer.Name}");
         if (outline)
             layer.OutlineColor = color;
         else
             layer.FontColor = color;
     }
 
-    // ----- Add Layer: a click adds an empty track; resting on the button opens the kinds (the Settings button's pattern) -----
-    // The flyout's timing is HoverFlyout's (_addLayerHover), made with the Layers tab (RealizeTabContent).
-
-    // From the keyboard: Down (or Alt+Down) on the button opens the kinds, the first one focused; Escape closes them again.
-    private void AddLayerButton_PreviewKeyDown(object sender, KeyEventArgs e)
-    {
-        if ((e.Key == Key.System ? e.SystemKey : e.Key) != Key.Down)
-            return;
-
-        e.Handled = true;
-        _addLayerHover?.Open();
-        Dispatcher.BeginInvoke(() => AddLayerFlyoutPanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)), System.Windows.Threading.DispatcherPriority.Loaded);
-    }
-
-    private void AddLayerFlyout_PreviewKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key != Key.Escape)
-            return;
-
-        e.Handled = true;
-        _addLayerHover?.Close();
-        if (AddLayerHost.FindName("AddLayerButton") is IInputElement button)
-            Keyboard.Focus(button);
-    }
+    // ----- Add Layer's kinds: what each entry of the timeline's Add Layer flyout adds, by its Tag -----
+    // The flyout itself (its button, its timing, its keys) is the timeline pane's own since 4.4 (Views/UnifiedTimelinePane);
+    // it closes itself and hands the entry chosen on here (MainWindow.UnifiedTimeline.cs).
 
     private void AddLayerMenu_Click(object sender, RoutedEventArgs e)
     {
-        _addLayerHover?.Close();
         switch ((sender as FrameworkElement)?.Tag as string)
         {
             case "Empty": _viewModel.AddEmptyTrackCommand.Execute(null); break;
@@ -2048,7 +1863,12 @@ public partial class MainWindow : Window
             case "Adjustment": _viewModel.AddAdjustmentLayerCommand.Execute(null); break;
             case "Region": _viewModel.AddLayerCommand.Execute(null); break;
             case "MaskLayers": AddLayersFromMask(); break;
+            case "Audio": AddAudio_Click(sender, e); break;
+            case "Voiceover": OpenVoiceoverStudio_Click(sender, e); break;
             case "Captions": GenerateCaptionsFrom(null); break;
+            case "ImportSubtitles": ImportSubtitles(); break;
+            case "EditCaptions": EditCaptions(); break;
+            case "CaptionStyle": OpenCaptionStyle(); break;
         }
     }
 
@@ -2087,44 +1907,6 @@ public partial class MainWindow : Window
             _viewModel.AddMaskLayers(maskPath, window.Pieces, window.Vertical, window.ReplaceExisting);
     }
 
-    // ----- Subtitles: importing a track, and the editor -----
-
-    private void ImportSubtitles_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFileDialog { Title = "Select subtitles to import", Filter = SubtitleFiles.ImportFilter };
-        if (dialog.ShowDialog(this) == true)
-            _viewModel.ImportSubtitles(dialog.FileName);
-    }
-
-    private async void EditSubtitles_Click(object sender, RoutedEventArgs e) => await OpenSubtitleEditorAsync();
-
-    /// <summary>
-    /// Opens the Subtitle Editor on the subtitle track. With no track yet and auto-captions on, the track is
-    /// first made from them, so that what was transcribed is what is edited. While the editor is open the
-    /// main player draws no subtitles: the editor's own player does.
-    /// </summary>
-    private async Task OpenSubtitleEditorAsync()
-    {
-        if (_viewModel.IsSubtitleEditorOpen)
-            return;
-
-        if (!_viewModel.HasSubtitleCues && _viewModel.AutoCaptions && _viewModel.HasSource)
-            await _viewModel.ConvertCaptionsToCuesAsync();
-
-        if (PlayerIsPlaying)
-            PlayerSetPause(true);
-        _viewModel.IsSubtitleEditorOpen = true;
-        try
-        {
-            new Views.SubtitleEditorWindow(_viewModel) { Owner = this }.ShowDialog();
-        }
-        finally
-        {
-            _viewModel.IsSubtitleEditorOpen = false;
-            ScheduleClipRedraw();
-        }
-    }
-
     private void AddImage_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog { Title = "Select an image to place on the frame", Filter = "Images|*.png;*.jpg;*.jpeg" };
@@ -2136,7 +1918,7 @@ public partial class MainWindow : Window
 
     private void ShowPreview(string path) => new PreviewPlayerWindow(path) { Owner = this }.Show();
 
-    /// <summary>The filters of one audio track, from its row on the Audio tab.</summary>
+    /// <summary>The filters of one audio track, from its row on the timeline or its menu. One step of Undo (4.4: a track's filters are in the step).</summary>
     private void TrackFilters_Click(object sender, RoutedEventArgs e)
     {
         switch ((sender as FrameworkElement)?.DataContext)
@@ -2144,7 +1926,12 @@ public partial class MainWindow : Window
             case Models.AudioTrack track:
                 var forTrack = new TrackAudioFiltersDialog(track) { Owner = this };
                 if (forTrack.ShowDialog() == true)
+                {
+                    _viewModel.Checkpoint($"change the audio filters of {track.Title}");
                     track.Filters = forTrack.Filters;
+                    _viewModel.Log($"Changed the audio filters of {track.Title}");
+                }
+
                 break;
 
             // A sound from a file, or the sound of a video layer: the same filters, kept with the clip.
@@ -2187,8 +1974,6 @@ public partial class MainWindow : Window
     }
 
     private VoiceoverStudioDialog? _voiceoverStudio;
-    /// <summary>The caption box as a layer: its opacity.</summary>
-    private void CaptionLayerStyle_Click(object sender, RoutedEventArgs e) => ShowLayerProperties(_viewModel.CaptionLayer);
 
     /// <summary>A layer's Properties dialog: what is changed in it is one step of Undo.</summary>
     private void ShowLayerProperties(Layer layer)
@@ -2212,31 +1997,6 @@ public partial class MainWindow : Window
             PlayerSetPause(true);
 
         new FramePreviewDialog(_viewModel) { Owner = this }.ShowDialog();
-    }
-
-    // ----- Auto-captions -----
-
-    private void BrowseCaptionAudio_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFileDialog
-        {
-            Title = "Select the audio to transcribe",
-            Filter = "Audio and video files|*.wav;*.mp3;*.m4a;*.aac;*.flac;*.ogg;*.opus;*.wma;*.mp4;*.mkv;*.mov;*.webm|All files|*.*",
-        };
-        if (dialog.ShowDialog(this) == true)
-            (_viewModel.CaptionAudioPath, _viewModel.CaptionUseExternalAudio) = (dialog.FileName, true);
-    }
-
-    private void ClearCaptionAudio_Click(object sender, RoutedEventArgs e) => _viewModel.CaptionAudioPath = "";
-
-    private void CaptionStyle_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new CaptionStyleDialog(_viewModel.CaptionStyle) { Owner = this };
-        if (dialog.ShowDialog() == true)
-        {
-            _viewModel.Checkpoint("change the caption style");
-            _viewModel.SetCaptionStyle(dialog.EditedStyle);
-        }
     }
 
     // ----- Layout files -----
@@ -2513,8 +2273,17 @@ public partial class MainWindow : Window
 
     // ----- Frame & Layer Engine dialogs -----
 
-    private void BlurSettings_Click(object sender, RoutedEventArgs e) =>
+    /// <summary>
+    /// The blurred background's settings. What is changed in the dialog is one step of Undo (4.4: the blur is in the step; the
+    /// dialog's own Ctrl+Z works within the visit), and none when nothing was.
+    /// </summary>
+    private void BlurSettings_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.Checkpoint("change the background blur");
+        var visit = _viewModel.UndoMark;
         new BlurSettingsDialog { Owner = this, DataContext = _viewModel }.ShowDialog();
+        _viewModel.DropStepIfUnchanged(visit);
+    }
 
     private void LayerProperties_Click(object sender, RoutedEventArgs e)
     {
@@ -2533,30 +2302,63 @@ public partial class MainWindow : Window
 
     private BitmapSource? _spriteSheet;
 
-    /// <summary>Loads the thumbnail sheet into memory, so the file itself is not kept open.</summary>
-    private void LoadSpriteSheet()
+    // Which load of the thumbnail sheet is the latest: a sheet decoded after a newer one was asked for is not wanted.
+    private int _spriteSheetLoads;
+
+    /// <summary>
+    /// Loads the thumbnail sheet into memory (so the file itself is not kept open), decoded away from the interface's
+    /// thread, and redraws the overview bar's strip with it. With no sheet (a file closed, or one without a sheet yet)
+    /// the strip is cleared at once (4.4: it kept the last file's pictures until the next change of length).
+    /// </summary>
+    private async void LoadSpriteSheet()
     {
+        var load = ++_spriteSheetLoads;
         _spriteSheet = null;
         PreviewPopup.IsOpen = false;
-        if (_viewModel.SpriteSheetPath is not { } path || !File.Exists(path))
+        var sheet = _viewModel.SpriteSheetPath is { } path ? await DecodeSpriteSheetAsync(path) : null;
+        if (load != _spriteSheetLoads)
             return;
 
+        _spriteSheet = sheet;
+        RebuildFilmstrip();
+    }
+
+    /// <summary>
+    /// The thumbnail sheet, read from a stream (never by its address: WPF's image cache would hand back the sheet that
+    /// was at that path before it was made again) and frozen, on a worker; null when it cannot be read, which just means
+    /// no previews.
+    /// </summary>
+    private static async Task<BitmapSource?> DecodeSpriteSheetAsync(string path)
+    {
         try
         {
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.UriSource = new Uri(path);
-            image.EndInit();
-            image.Freeze();
-            _spriteSheet = image;
-        }
-        catch (Exception ex) when (ex is IOException or NotSupportedException or InvalidOperationException)
-        {
-            // A sheet that cannot be read just means no previews.
-        }
+            return await WorkScheduler.Run(new WorkSpec("Timeline thumbnails", WorkLane.Interactive) { Visible = false, Cancellable = false },
+                _ => Task.Run<BitmapSource?>(() =>
+                {
+                    if (!File.Exists(path))
+                        return null;
 
-        RebuildFilmstrip();
+                    try
+                    {
+                        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                        var image = new BitmapImage();
+                        image.BeginInit();
+                        image.CacheOption = BitmapCacheOption.OnLoad;
+                        image.StreamSource = stream;
+                        image.EndInit();
+                        image.Freeze();
+                        return image;
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException or FormatException)
+                    {
+                        return null;
+                    }
+                }));
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     // ----- Timeline thumbnails -----

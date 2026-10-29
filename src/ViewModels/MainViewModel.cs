@@ -40,7 +40,7 @@ public partial class MainViewModel : ObservableObject
         nameof(IsDependencyUpdateAvailable), nameof(DependencyStatusText),
         nameof(IsInteractiveCropActive), nameof(TargetSizeHint), nameof(PlaybackSpeed), nameof(CanSetPixelAspect), nameof(HasEncoderPresets),
         nameof(FrameWidth), nameof(FrameHeight), nameof(ShowIFrames),
-        nameof(CaptionAudioPath), nameof(ShowAutoCaptions), nameof(ShowStandardSubtitles), nameof(CaptionHint), nameof(CaptionStyleSummary),
+        nameof(CaptionAudioPath), nameof(CaptionHint), nameof(CaptionStyleSummary),
         nameof(DefaultPresetChoice),
         nameof(TimelineWaveform), nameof(SelectedMicrophone), nameof(IsRecording), nameof(IsRecordingPaused), nameof(VoiceoverStatus),
         nameof(HasVoiceover), nameof(VoiceoverWaveform), nameof(VoiceoverDuration), nameof(VoiceoverTrimText),
@@ -56,7 +56,7 @@ public partial class MainViewModel : ObservableObject
         nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
         nameof(CopyBypassWarning), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips),
         nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer), nameof(SelectedTextLayer), nameof(IsTextLayerSelected),
-        nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(IsSubtitleEditorOpen), nameof(ShowLegacySubtitles), nameof(ShowSubtitleImportRow), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
+        nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(IsSubtitleEditorOpen), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
         nameof(SelectedStylePreset), nameof(SelectedProject), nameof(StyleName), nameof(SnapClips), nameof(LayerControlsShown), nameof(LoopPlayback), nameof(ShowSafeMargins), nameof(EditLayersOnPlayer), nameof(IsPlayerMuted),
         nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
         nameof(ShowKeyframesPane), nameof(ShowEffectsPane), nameof(ShowMediaBrowser), nameof(IsMediaBrowserVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
@@ -202,11 +202,18 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Raised with a local file path when a source is ready to be played.</summary>
     public event Action<string>? MediaLoaded;
 
-    /// <summary>Asks the user to confirm something (title, message, what the confirming button says). Returning false calls it off.</summary>
     /// <summary>A question with two ways of going ahead: 1 for the first, 2 for the second, 0 for neither.</summary>
     public Func<string, string, string, string, int>? Choose { get; set; }
 
+    /// <summary>Asks the user to confirm something (title, message, what the confirming button says). Returning false calls it off.</summary>
     public Func<string, string, string, bool>? Confirm { get; set; }
+
+    /// <summary>
+    /// Asks the user to confirm something that can be answered once for all (title, message, what the confirming button
+    /// says, what the declining one says), with a "Remember my choice" box: whether it was confirmed, and whether that
+    /// answer is to be given from now on without asking (4.4).
+    /// </summary>
+    public Func<string, string, string, string, (bool Confirmed, bool Remember)>? ConfirmOrRemember { get; set; }
 
     /// <summary>Asked before an encode replaces an existing file. Returning false aborts the encode.</summary>
     public Func<string, OverwriteDecision>? AskOverwrite { get; set; }
@@ -585,7 +592,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _keepAspectRatio = true;
 
     // The crop, as percentages (0 to 100) of the source's height and width. Being relative, a crop set on
-    // one recording cuts the same part out of a recording of any other resolution.
+    // one recording cuts the same part out of a recording of any other resolution. The crop of the main video's clip the
+    // Center controls stand for (4.4: each clip has its own; see TakeCropBoxes and ShowCenterTarget).
     [ObservableProperty] private double _cropTop;
     [ObservableProperty] private double _cropBottom;
     [ObservableProperty] private double _cropLeft;
@@ -630,10 +638,10 @@ public partial class MainViewModel : ObservableObject
 
     // Anything that changes the shape of the frame re-derives one dimension from the other.
     partial void OnKeepAspectRatioChanged(bool value) => RelinkDimensions();
-    partial void OnCropTopChanged(double value) => RelinkDimensions();
-    partial void OnCropBottomChanged(double value) => RelinkDimensions();
-    partial void OnCropLeftChanged(double value) => RelinkDimensions();
-    partial void OnCropRightChanged(double value) => RelinkDimensions();
+    partial void OnCropTopChanged(double value) => TakeCropBoxes();
+    partial void OnCropBottomChanged(double value) => TakeCropBoxes();
+    partial void OnCropLeftChanged(double value) => TakeCropBoxes();
+    partial void OnCropRightChanged(double value) => TakeCropBoxes();
     partial void OnSourceWidthChanged(int value) => RelinkDimensions();
     partial void OnSourceHeightChanged(int value) => RelinkDimensions();
 
@@ -1321,8 +1329,7 @@ public partial class MainViewModel : ObservableObject
         // Settings: every video starts as a vertical one.
         if (opened && AppSettings.Current.DefaultVerticalVideo && !UseVerticalResolution)
             UseVerticalResolution = true;
-        _undo.Clear();
-        _redo.Clear();
+        ForgetHistory();
         MarkSaved();
         return message;
     });
@@ -1418,6 +1425,7 @@ public partial class MainViewModel : ObservableObject
         var mediaSummary = CrashSummaries.Media(localPath, mediaInfo, Layers.Count);
         CrashReporter.SetContext("media", mediaSummary);
         CrashReporter.Note("media", "opened: " + mediaSummary);
+        DevFlightRecorder.Record("media", $"opened {localPath}: {mediaSummary}");
 
         // Every new source gets its own default name, so one encode never lands on top of the previous one.
         DestinationPath = Path.Combine(
@@ -1862,11 +1870,19 @@ public partial class MainViewModel : ObservableObject
             DestinationPath = Path.ChangeExtension(DestinationPath, value);
     }
 
+    // The Center controls and the Crop boxes, which only show the clip they stand for while ShowCenterTarget sets them: that
+    // clip is as it was, so the command, the proxies and Live Preview are too (the playhead crossing into another clip of the
+    // main video during playback rebuilds nothing).
+    private static readonly HashSet<string> CenterTargetProperties =
+    [
+        nameof(CenterZoom), nameof(CenterOffsetX), nameof(CenterOffsetY), nameof(CropLeft), nameof(CropTop), nameof(CropRight), nameof(CropBottom),
+    ];
+
     protected override void OnPropertyChanged(PropertyChangedEventArgs e)
     {
         base.OnPropertyChanged(e);
 
-        if (e.PropertyName is { } name && !NonCommandProperties.Contains(name))
+        if (e.PropertyName is { } name && !NonCommandProperties.Contains(name) && !(_showingTarget && CenterTargetProperties.Contains(name)))
             GenerateCommand();
     }
 

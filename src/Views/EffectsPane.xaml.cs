@@ -37,7 +37,7 @@ public partial class EffectsPane : UserControl
     private readonly List<ParamModel> _params = [];
     private readonly HashSet<Guid> _collapsed = [];
 
-    // Copy Stack's cards, for Paste Effects and Paste Selected Effects...: shared by every target.
+    // Copy Effects's cards, for Paste Effects and Paste Some Effects...: shared by every target.
     private static List<EffectState>? _clipboard;
 
     // The stack menu's "Apply Paste to All Clips on Track" (4.1.1-B), kept while HandPeg runs.
@@ -780,10 +780,10 @@ public partial class EffectsPane : UserControl
 
         var has = _stack is { Count: > 0 };
         var canPaste = _clipboard is { Count: > 0 } && _stack is not null;
-        Item("Copy Stack", "Copies every effect of this stack, with its values, to paste onto another clip or the Sequence Output.", has, CopyStack);
+        Item("Copy Effects", "Copies every effect of this stack, with its values, to paste onto another clip or the Sequence Output.", has, CopyStack);
         Item("Paste Effects", "Replaces this clip's stack with the effects copied. Hold Shift while clicking (or tick Apply Paste to All Clips on Track) to give every clip on this track the copied stack.",
             canPaste, () => PasteEffects(_pasteToTrack || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)));
-        Item("Paste Selected Effects...", "Lists the copied effects, each with a box, to choose which are added to this clip (or every clip on its track).", canPaste, PasteSelected);
+        Item("Paste Some Effects...", "Lists the copied effects, each with a box, to choose which are added to this clip (or every clip on its track).", canPaste, PasteSelected);
         var toTrack = new MenuItem
         {
             Header = "Apply Paste to All Clips on Track", IsCheckable = true, IsChecked = _pasteToTrack, StaysOpenOnClick = true, IsEnabled = CanPasteToTrack,
@@ -793,7 +793,7 @@ public partial class EffectsPane : UserControl
         menu.Items.Add(toTrack);
         menu.Items.Add(new Separator());
         Item("Save Effect Preset...", $"Saves this stack as a .hpfx file in {AppPaths.EffectPresets}; it is then listed under Presets in Add Effect.", has, SavePreset);
-        Item("Reset", "Removes every effect of this stack (Ctrl+Z brings them back).", has, ResetStack);
+        Item("Remove All Effects", "Removes every effect of this stack (Ctrl+Z brings them back).", has, ResetStack);
         menu.IsOpen = true;
     }
 
@@ -825,7 +825,7 @@ public partial class EffectsPane : UserControl
         ReplaceWith(_clipboard, append: false);
     }
 
-    /// <summary>Paste Selected Effects... (4.1.1-B): the copied effects ticked in a list are added to the clip, or to every clip on its track.</summary>
+    /// <summary>Paste Some Effects... (4.1.1-B; named so in 4.4): the copied effects ticked in a list are added to the clip, or to every clip on its track.</summary>
     private void PasteSelected()
     {
         if (_clipboard is null || _vm is null || _stack is null)

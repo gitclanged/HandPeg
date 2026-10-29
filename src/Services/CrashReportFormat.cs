@@ -75,6 +75,34 @@ public sealed class CrashReport
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, string>? Context { get; set; }
+
+    /// <summary>
+    /// Only on a developer's PC with the hidden flight recorder on (<see cref="DevFlightRecorder"/>, 4.4.0): the unredacted
+    /// project and media paths, the timeline as JSON, the whole exception and the recorder's newest lines. Never in a
+    /// report from anyone else's PC.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CrashDevVerbose? DevVerbose { get; set; }
+}
+
+/// <summary>The developer part of a report (<see cref="CrashReport.DevVerbose"/>), unredacted.</summary>
+public sealed class CrashDevVerbose
+{
+    public string ProjectPath { get; set; } = "";
+
+    public List<string> MediaPaths { get; set; } = [];
+
+    /// <summary>When the timeline below was taken (after the last edit, undo step or load).</summary>
+    public DateTime? SnapshotTakenAt { get; set; }
+
+    /// <summary>The TimelineDocument as a project file holds it (JSON text).</summary>
+    public string? Timeline { get; set; }
+
+    /// <summary>The exception in full (type, message, stack, inner exceptions), as .NET writes it.</summary>
+    public string? Exception { get; set; }
+
+    /// <summary>The flight recorder's newest lines, oldest first.</summary>
+    public List<string> FlightRecorder { get; set; } = [];
 }
 
 public enum CrashKind

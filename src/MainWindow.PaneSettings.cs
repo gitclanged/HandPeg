@@ -9,7 +9,7 @@ namespace HandPegApp;
 // Right-clicking a pane's tab (or its hover tab) opens with "<Pane> Settings": the settings that pane's work turns on,
 // changed in place (each the same AppSettings value the Settings window shows, saved at once), then "More <Pane>
 // Settings..." opening the Settings window at the tab that has the rest. Panes without settings of their own (the
-// header, the preset bar, the settings tabs other than Layers and Audio) get no section.
+// header, the preset bar, the settings tabs) get no section.
 public partial class MainWindow
 {
     /// <summary>The section for a pane, put at the top of its tab's menu (DockManager.ExtendTabMenu).</summary>
@@ -18,7 +18,8 @@ public partial class MainWindow
         var (title, settingsTab) = pane switch
         {
             "Media" => ("Media", "Preview"),
-            "Timeline" or "Tab:Layers" or "Tab:Audio" => ("Timeline", "Timeline"),
+            TimelinePaneId => ("Timeline", "Timeline"),
+            "Timeline" => ("Overview Bar", "Timeline"),
             "Player" or "Layout" => (pane == "Layout" ? "Canvas" : "Player", "Timeline"),
             "Effects" or "Keyframes" => (pane, "Timeline"),
             _ => ("", ""),
@@ -76,10 +77,21 @@ public partial class MainWindow
                 }, "Draws each clip's gain line and fade handles over its waveform.");
                 Toggle("Ripple All Tracks", settings.RippleAllTracks, on => Save(s => s.RippleAllTracks = on), "A ripple (Ctrl-drag, Delete with ripple) moves what follows on every track, not only the clip's own.");
                 Toggle("Dropped Clips Join Track", settings.DroppedClipsJoinTrack, on => Save(s => s.DroppedClipsJoinTrack = on), "A picture dropped on a track with room goes onto that track instead of a new one.");
-                Choice("Timeline Height",
+                Toggle("Show Linked Audio", _viewModel.ShowLinkedAudio, on => _viewModel.ShowLinkedAudio = on, "Draws a video clip's own sound under its pictures, in the lower part of its block.");
+                Choice("Track Height",
+                    [("Compact", (double)CompactTrackHeight), ("Medium", MediumTrackHeight), ("Tall", TallTrackHeight)],
+                    NearestTrackHeight(_viewModel.LayerTrackHeight), height => _viewModel.LayerTrackHeight = height,
+                    "How tall each track's row is (the slider in the timeline's toolbar sets any height between).");
+                break;
+
+            case "Overview Bar":
+                Toggle("Snap to I-Frames", _viewModel.SnapToIFrames, on => _viewModel.SnapToIFrames = on, "Cuts and the playhead snap to the video's I-frames, so stream copy cuts cleanly.");
+                Toggle("Sync Overview Bar Stretch", _viewModel.SyncMasterTimeline, on => _viewModel.SyncMasterTimeline = on,
+                    "On: the overview bar is zoomed and moved along with the timeline. Off: it always shows the whole sequence.");
+                Choice("Overview Bar Height",
                     [("Compact", (double)MainViewModel.CompactMasterTimeline), ("Medium", MainViewModel.MediumMasterTimeline), ("Tall", MainViewModel.TallMasterTimeline)],
                     _viewModel.MasterTimelineHeight, height => _viewModel.MasterTimelineHeight = height,
-                    "How tall the master timeline is (Ctrl-drag the border beside it for any height between).");
+                    "How tall the overview bar is (Ctrl-drag the border beside it for any height between).");
                 break;
 
             case "Player" or "Canvas":
@@ -116,4 +128,11 @@ public partial class MainWindow
 
     /// <summary>The tile size preset nearest a slider value, for the menu's check mark.</summary>
     private static double NearestTileSize(double size) => new[] { 0.0, 30, 55, 85 }.MinBy(s => Math.Abs(s - size));
+
+    // The timeline's track height presets (MainViewModel.LayerTrackHeight, 1 to 50; 25 is HandPeg's own).
+    private const int CompactTrackHeight = 8, MediumTrackHeight = 25, TallTrackHeight = 42;
+
+    /// <summary>The track height preset nearest the height set, for the menu's check mark.</summary>
+    private static double NearestTrackHeight(double height) =>
+        new double[] { CompactTrackHeight, MediumTrackHeight, TallTrackHeight }.MinBy(h => Math.Abs(h - height));
 }

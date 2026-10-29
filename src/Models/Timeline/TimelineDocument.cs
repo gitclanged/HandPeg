@@ -65,6 +65,14 @@ public sealed class TimelineTrackModel
     public TrackAudioFilters? AudioFilters { get; set; }
 
     /// <summary>
+    /// The track it lies under (4.4: a mini-stack), or null for none: a style's or a preset's cut-out and mask tracks, the
+    /// captions' lane. It ripples and folds with that track (<see cref="TimelineDocument.ChildTracksOf"/>). A parent track
+    /// that is gone leaves it a track of its own; null is left out of the file.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? ParentTrackId { get; set; }
+
+    /// <summary>
     /// What its clips share, as a track did in 4.2.0: every value of a layer that <see cref="Layer.IsClipProperty"/> does not
     /// name (where they sit on the frame and their size, crop, look, filters, key, mask, edges, shadow). Each clip's
     /// <see cref="TimelineClip.State"/> holds what is its own. Its timing fields are not used. Null: none, and each clip's
@@ -167,6 +175,7 @@ public sealed class TimelineTrackModel
         (Id, TrackNumber, Name, Kind) = (from.Id, from.TrackNumber, from.Name, from.Kind);
         (IsHidden, IsMuted, IsSoloed, IsLocked) = (from.IsHidden, from.IsMuted, from.IsSoloed, from.IsLocked);
         (GainDb, DuckAgainstVoice, DuckAmountDb, AudioFilters, TrackLook) = (from.GainDb, from.DuckAgainstVoice, from.DuckAmountDb, from.AudioFilters, from.TrackLook);
+        ParentTrackId = from.ParentTrackId;
     }
 }
 
@@ -266,6 +275,15 @@ public sealed class TimelineClip
     public ProxyChoice ProxyChoice { get; set; }
 
     /// <summary>
+    /// The clip it goes with (4.4: a child of that one, as a style's cut-out of the main video or a mask is), or null for
+    /// none. While it lies with its parent in time (overlaps it), the parent's splits, trims, moves, deletes and folds
+    /// carry it along (<see cref="TimelineDocument.ChildrenOf"/>). A parent that is gone leaves it a clip of its own; null
+    /// is left out of the file.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? ParentClipId { get; set; }
+
+    /// <summary>
     /// Its look, as a layer is saved, so everything a <see cref="Layer"/> and an <see cref="EffectInstance"/> do works on it
     /// unchanged: its name, keyframes (seconds from the clip's start; they may lie before it or past it, so a motion
     /// carries across a cut), effect stack and the rest of what <see cref="Layer.IsClipProperty"/> names, and, when its
@@ -286,7 +304,7 @@ public sealed class TimelineClip
         && AudioSlipSeconds == other.AudioSlipSeconds && AudioLeadInSeconds == other.AudioLeadInSeconds && AudioTailOutSeconds == other.AudioTailOutSeconds
         && FadeInSeconds == other.FadeInSeconds && FadeOutSeconds == other.FadeOutSeconds && FadeInStyle == other.FadeInStyle
         && FadeOutStyle == other.FadeOutStyle && TransitionIn == other.TransitionIn && GainDb == other.GainDb && IsHidden == other.IsHidden
-        && IsMuted == other.IsMuted && ProxyChoice == other.ProxyChoice && ReferenceEquals(State, other.State);
+        && IsMuted == other.IsMuted && ProxyChoice == other.ProxyChoice && ParentClipId == other.ParentClipId && ReferenceEquals(State, other.State);
 
     /// <summary>Takes every value of another clip (its id too): a rollback, in place, so whoever holds this clip keeps it.</summary>
     internal void Restore(TimelineClip from)
@@ -314,6 +332,7 @@ public sealed class TimelineClip
         IsHidden = from.IsHidden;
         IsMuted = from.IsMuted;
         ProxyChoice = from.ProxyChoice;
+        ParentClipId = from.ParentClipId;
         State = from.State;
     }
 }
@@ -345,6 +364,72 @@ public sealed record FoldedSegment(Guid Id, Guid SeamClipId, bool AtEnd, bool Al
 
 /// <summary>A clip kept in a fold (<see cref="FoldedSegment"/>): a copy nobody changes, its times counted from the seam.</summary>
 public sealed record FoldedClip(Guid TrackId, TimelineTrackKind TrackKind, TimelineClip Clip);
+
+/// <summary>
+/// A side of a fold (<see cref="FoldedSegment"/>) that a clip's edge at its seam opens or folds more into (4.4-BugHunt, Q11:
+/// <see cref="ITimelineTransaction.ResizeFold"/>).
+/// </summary>
+public enum FoldSide
+{
+    /// <summary>Its first seconds, which lay against the clip before the seam: that clip's end opens or folds them.</summary>
+    Head,
+
+    /// <summary>Its last seconds, which lay against the clip after the seam: that clip's start opens or folds them.</summary>
+    Tail,
+}
+
+/// <summary>An edge of a clip that a stretch put back is anchored to (<see cref="RestoredFold"/>): its start, or with <paramref name="AtEnd"/> its end.</summary>
+public sealed record FoldEdge(Guid ClipId, bool AtEnd)
+{
+    /// <summary>Where the edge is now, or null when its clip is gone.</summary>
+    public double? In(TimelineDocument document) => document.FindClip(ClipId) is { } clip ? AtEnd ? clip.End : clip.Start : null;
+}
+
+/// <summary>
+/// A folded stretch put back (4.4-BugHunt): kept so that the same stretch can be folded again (the Hide pill, "Hide / Fold
+/// Dead Air Segment", <see cref="ITimelineTransaction.FoldRestored"/>). It lies on its track from <paramref name="From"/>
+/// (the start of what came back) to <paramref name="To"/> (the start of the clip the fold's seam was), the one
+/// <paramref name="Length"/> from the other when only one of them is known. Its edges are clips' edges found by their ids,
+/// so it follows every edit that carries them (a move, a ripple, a split, whose first half keeps its id); it is let go when
+/// its stretch is no longer there (<see cref="SpanIn"/> null: the clip it starts with is gone, or on another track), and
+/// when it is folded again. Its id is the fold's it was, and the fold's it becomes. A value nobody changes.
+/// </summary>
+/// <param name="TrackId">The track the fold's seam was on, where the stretch lies.</param>
+/// <param name="AllTracks">It was folded out of every unlocked track, and is folded out of every one again.</param>
+/// <param name="Length">How long the stretch was when it was put back, in seconds of the timeline.</param>
+public sealed record RestoredFold(Guid Id, Guid TrackId, FoldEdge? From, FoldEdge? To, bool AllTracks, double Length)
+{
+    /// <summary>
+    /// Where the stretch lies now (seconds), or null when it is no longer there: the clip it starts with gone or on another
+    /// track, or what is left shorter than the shortest clip. Its end is the start of the clip after it while that is on its
+    /// track, or else its length from its start. A look through the clips; <see cref="TimelineDocument.RestoredSpans"/> finds
+    /// them all in one.
+    /// </summary>
+    public (double From, double To)? SpanIn(TimelineDocument document) => Span(document.Locate);
+
+    internal (double From, double To)? Span(Func<Guid, (TimelineClip Clip, Guid TrackId)?> find)
+    {
+        double? from = null, to = null;
+        if (From is { } first)
+        {
+            if (find(first.ClipId) is not { } found || found.TrackId != TrackId)
+                return null;
+            from = first.AtEnd ? found.Clip.End : found.Clip.Start;
+        }
+
+        if (To is { } last && find(last.ClipId) is { } after && after.TrackId == TrackId)
+            to = last.AtEnd ? after.Clip.End : after.Clip.Start;
+
+        var (start, end) = (from, to) switch
+        {
+            ({ } a, { } b) => (a, b),
+            ({ } a, null) => (a, a + Length),
+            (null, { } b) => (b - Length, b),
+            _ => (double.NaN, double.NaN),
+        };
+        return end - start >= TimelineDocument.MinimumClipSeconds - 1e-6 && start >= -1e-6 ? (start, end) : null;
+    }
+}
 
 /// <summary>The whole sequence: its frame, its rate, its tracks (bottom first) and what lies over all of them.</summary>
 public sealed class TimelineDocument
@@ -380,6 +465,14 @@ public sealed class TimelineDocument
     /// <summary>The stretches folded out of the timeline, each at its seam (4.3D); null while there are none, and so left out of the file.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<FoldedSegment>? Folds { get; set; }
+
+    /// <summary>
+    /// The folded stretches put back that can be folded again (4.4-BugHunt, <see cref="RestoredFold"/>), as they were put
+    /// back; null while there are none, and so left out of the file. The outermost commit of a change lets go of those no
+    /// longer there.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<RestoredFold>? RestoredFolds { get; set; }
 
     /// <summary>The video tracks, bottom first: track 1 is the first.</summary>
     [JsonIgnore]
@@ -456,6 +549,7 @@ public sealed class TimelineDocument
             SequenceEffectsBypassed = SequenceEffectsBypassed,
             Markers = [.. Markers],
             Folds = Folds is null ? null : [.. Folds],
+            RestoredFolds = RestoredFolds is null ? null : [.. RestoredFolds],
         };
         foreach (var track in Tracks)
         {
@@ -485,6 +579,77 @@ public sealed class TimelineDocument
             }
         }
         return null;
+    }
+
+    /// <summary>A clip by its id with its track's id, or null when no track holds it (the first, as <see cref="FindClip"/> finds it).</summary>
+    internal (TimelineClip Clip, Guid TrackId)? Locate(Guid id)
+    {
+        foreach (var track in Tracks)
+        {
+            foreach (var clip in track.Clips)
+            {
+                if (clip.Id == id)
+                    return (clip, track.Id);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Each stretch put back that can be folded again (<see cref="RestoredFolds"/>), where it lies now: its record, the track
+    /// it lies on, and from and to (seconds), in the order they were put back; those no longer there are left out. One look
+    /// through the clips for them all (the timeline's pills, a commit letting go of the stale ones).
+    /// </summary>
+    public IReadOnlyList<(RestoredFold Restored, Guid TrackId, double From, double To)> RestoredSpans()
+    {
+        if (RestoredFolds is not { Count: > 0 } restored)
+            return [];
+
+        var where = new Dictionary<Guid, (TimelineClip Clip, Guid TrackId)>();
+        foreach (var track in Tracks)
+        {
+            foreach (var clip in track.Clips)
+                where.TryAdd(clip.Id, (clip, track.Id));
+        }
+
+        (TimelineClip Clip, Guid TrackId)? Find(Guid id) => where.TryGetValue(id, out var found) ? found : null;
+        var spans = new List<(RestoredFold Restored, Guid TrackId, double From, double To)>(restored.Count);
+        foreach (var stretch in restored)
+        {
+            if (stretch.Span(Find) is { } span)
+                spans.Add((stretch, stretch.TrackId, span.From, span.To));
+        }
+        return spans;
+    }
+
+    // ----- Children (4.4): a clip or a track that goes with another -----
+
+    /// <summary>
+    /// Every clip that names <paramref name="parent"/> as its parent (<see cref="TimelineClip.ParentClipId"/>), with its
+    /// track, wherever it lies: one moved wholly away from its parent on its own is among them, though the parent's edits
+    /// carry only those that lie with it. A look through every clip, for a menu or an edit, not for each frame drawn; read
+    /// it before the document is changed again.
+    /// </summary>
+    public IEnumerable<(TimelineTrackModel Track, TimelineClip Clip)> ChildrenOf(TimelineClip parent)
+    {
+        foreach (var track in Tracks)
+        {
+            foreach (var clip in track.Clips)
+            {
+                if (clip.ParentClipId == parent.Id && !ReferenceEquals(clip, parent))
+                    yield return (track, clip);
+            }
+        }
+    }
+
+    /// <summary>The tracks that lie under <paramref name="track"/> (<see cref="TimelineTrackModel.ParentTrackId"/>), in the stacking order.</summary>
+    public IEnumerable<TimelineTrackModel> ChildTracksOf(TimelineTrackModel track)
+    {
+        foreach (var child in Tracks)
+        {
+            if (child.ParentTrackId == track.Id && !ReferenceEquals(child, track))
+                yield return child;
+        }
     }
 
     // ----- Changes -----
@@ -519,8 +684,10 @@ public sealed class TimelineDocument
     /// What is wrong with the document, in words (empty when nothing is): clips out of order or overlapping, crossfades
     /// where clips do not meet, clips on a track of the wrong kind, tracks numbered out of order, numbers that are not
     /// numbers, lengths, speeds, fades and file offsets out of range, and sound (a J or L cut) that starts before the
-    /// timeline or reads outside its file. With <paramref name="requireFrames"/>, also edges off the frames while the
-    /// document quantizes (an edit asked to be free may leave one). For tests, and for checking a project file written by hand.
+    /// timeline or reads outside its file; and (4.4) a clip that is its own parent or a track under itself, and parents
+    /// that lead back to where they began (a parent that is gone is no problem: its child is one of its own). With
+    /// <paramref name="requireFrames"/>, also edges off the frames while the document quantizes (an edit asked to be free
+    /// may leave one). For tests, and for checking a project file written by hand.
     /// </summary>
     public IReadOnlyList<string> FindProblems(bool requireFrames = false)
     {
@@ -534,11 +701,19 @@ public sealed class TimelineDocument
         var ids = new HashSet<Guid>();
         var tracks = new HashSet<Guid>();
         var numbers = new Dictionary<TimelineTrackKind, int>();
+        var clipParents = new Dictionary<Guid, Guid>();
+        var trackParents = new Dictionary<Guid, Guid>();
+        var trackNames = new Dictionary<Guid, string>();
         foreach (var track in Tracks)
         {
             var name = track.DisplayName;
             if (!tracks.Add(track.Id))
                 Add($"{name}: its id {track.Id} is used twice.");
+            trackNames[track.Id] = name;
+            if (track.ParentTrackId == track.Id)
+                Add($"{name}: it lies under itself.");
+            else if (track.ParentTrackId is { } parentTrack)
+                trackParents[track.Id] = parentTrack;
             numbers[track.Kind] = numbers.GetValueOrDefault(track.Kind) + 1;
             if (track.TrackNumber != numbers[track.Kind])
                 Add($"{name}: numbered {track.TrackNumber}, but it is {track.Kind} track {numbers[track.Kind]} from the bottom.");
@@ -551,6 +726,10 @@ public sealed class TimelineDocument
                     Add($"{at}: its id {clip.Id} is used twice.");
                 if (!track.Accepts(clip))
                     Add($"{at}: a {clip.ContentKind} clip on a {track.Kind} track.");
+                if (clip.ParentClipId == clip.Id)
+                    Add($"{at}: it is its own parent.");
+                else if (clip.ParentClipId is { } parentClip)
+                    clipParents[clip.Id] = parentClip;
 
                 double[] values = [clip.Start, clip.End, clip.MediaOffset, clip.Speed, clip.SourceDuration, clip.AudioSlipSeconds, clip.AudioLeadInSeconds,
                                    clip.AudioTailOutSeconds, clip.FadeInSeconds, clip.FadeOutSeconds, clip.TransitionIn, clip.GainDb];
@@ -602,6 +781,24 @@ public sealed class TimelineDocument
                     Add($"{at}: a crossfade of {clip.TransitionIn} s, but it does not meet the clip before it.");
             }
         }
+
+        foreach (var id in LoopsIn(clipParents))
+            Add($"The clip {id}: its parents lead back to it.");
+        foreach (var id in LoopsIn(trackParents))
+            Add($"{trackNames[id]}: the tracks it lies under lead back to it.");
         return problems;
+    }
+
+    /// <summary>The ids whose chain of parents (each id's parent, then that one's...) comes back to them; a parent not in the map ends a chain.</summary>
+    private static IEnumerable<Guid> LoopsIn(Dictionary<Guid, Guid> parents)
+    {
+        foreach (var (id, parent) in parents)
+        {
+            var (at, steps) = (parent, 0);
+            while (at != id && steps++ < parents.Count && parents.TryGetValue(at, out var next))
+                at = next;
+            if (at == id)
+                yield return id;
+        }
     }
 }

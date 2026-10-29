@@ -82,11 +82,11 @@ public partial class SubtitleEditorWindow : Window
             menu.Items.Add(item);
         }
 
-        Item("Add Segment at Playhead", Add_Click, () => !_images);
+        Item("Add Caption at Playhead", Add_Click, () => !_images);
         Item("Split at Playhead", Split_Click, () => !_images && Timeline.Selected is not null);
         Item("Add Word", AddWord_Click, () => !_images && Timeline.Selected is not null);
         Item("Delete Word", Delete_Click, () => !_images && Timeline is { Selected: not null, ActiveWord: >= 0 });
-        Item("Delete Segment", DeleteSegment_Click, () => !_images && Timeline.Selected is not null);
+        Item("Delete Caption", DeleteSegment_Click, () => !_images && Timeline.Selected is not null);
         Timeline.ContextMenu = menu;
 
         _mainSync.Tick += (_, _) =>
@@ -656,13 +656,16 @@ public partial class SubtitleEditorWindow : Window
 
     private enum Typing { None, CueText, Offset }
 
-    /// <summary>The track as a step of the editor's Undo keeps it: every cue, the offset, and which cue was selected (-1 for none).</summary>
+    /// <summary>
+    /// The track as a step of the editor's Undo keeps it: every cue (with the piece of an anchored caption it shows, 4.4, so
+    /// an undone edit is written back through the same clip), the offset, and which cue was selected (-1 for none).
+    /// </summary>
     private sealed record CueSnapshot(List<SubtitleCueState> Cues, double OffsetMs, int Selected);
 
     private CueSnapshot Capture()
     {
         var cues = _viewModel.SubtitleCues;
-        return new CueSnapshot([.. cues.Select(c => new SubtitleCueState(c.Start, c.End, c.Text, c.WordBreaks))], _viewModel.SubtitleOffsetMs,
+        return new CueSnapshot([.. cues.Select(c => new SubtitleCueState(c.Start, c.End, c.Text, c.WordBreaks) { Piece = c.Piece })], _viewModel.SubtitleOffsetMs,
             Timeline.Selected is { } selected ? cues.IndexOf(selected) : -1);
     }
 

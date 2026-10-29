@@ -1,0 +1,24 @@
+# A model fuzz (4.4-BugHunt): 10,000 seeded random edits, undos and redos on seven tracks with children, captions and folds: no throw but a refusal, a refusal changes nothing, no problem after an edit, Undo's copies untouched.
+
+4 seeds of 2500 steps: 10000 operations
+  split: 475 made, 479 refused
+  move: 638 made, 240 refused
+  move to a track: 273 made, 106 refused
+  trim start: 545 made, 84 refused
+  trim end: 579 made, 62 refused
+  ripple trim: 454 made, 57 refused
+  roll: 497 made, 49 refused
+  slip: 281 made, 36 refused
+  ripple delete: 406 made, 81 refused
+  delete: 428 made, 55 refused
+  delete alone: 186 made, 22 refused
+  fold: 500 made, 110 refused
+  unfold: 172 made, 465 refused
+  fold again: 200 made, 162 refused
+  resize fold: 211 made, 798 refused
+  set parent: 254 made, 41 refused
+  place: 275 made, 130 refused
+  lock: 95 made, 0 refused
+  undo: 532 made, 0 refused
+  redo: 22 made, 0 refused
+  threw something other than a refusal: 0; problems after an edit, an undo or a redo: 0; refusals that changed the document: 0; copies kept for Undo or Redo that changed: 0

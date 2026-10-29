@@ -51,6 +51,8 @@ public static class Program
         results.AddRange(RunnerTests.All(graphs));
         results.AddRange(TimelineDocumentTests.All());
         results.AddRange(TimelineGraphCases.All());
+        results.AddRange(CaptionTests.All());
+        results.AddRange(WaveformTests.All());
         if (filter is not null)
             results = results.Where(r => r.Golden.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 

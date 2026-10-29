@@ -93,6 +93,7 @@ public static partial class CrashReporter
                 Environment = DescribeEnvironment(),
                 Breadcrumbs = SnapshotBreadcrumbs(),
                 Context = SnapshotContext(),
+                DevVerbose = DevFlightRecorder.ForReport(exception),
             };
 
             CrashReports.Write(report, AppPaths.Crashes);

@@ -104,6 +104,7 @@ public static partial class CrashReporter
         Categories[slot] = category;
         Details[slot] = detail;
         Volatile.Write(ref Sequences[slot], sequence);
+        DevFlightRecorder.Record(category, detail);
 
         unsafe
         {
@@ -225,6 +226,7 @@ public static partial class CrashReporter
         {
             // Not the Idle work lane: that waits while the player plays, and the player is what most needs watching.
             _ = Task.Run(StartWatching);
+            _ = Task.Run(DevFlightRecorder.Start);
             TriggerTestCrashIfRequested(dispatcher);
         }, DispatcherPriority.ApplicationIdle);
     }

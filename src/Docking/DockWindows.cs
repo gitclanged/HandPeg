@@ -1,7 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 
@@ -107,11 +106,11 @@ public sealed partial class SideWindow : Window
         SetResourceReference(ForegroundProperty, "TextBrush");
         _hint.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
 
-        // Resources, names and shortcuts are the main window's: the panes were made there and look for them there.
+        // Resources and names are the main window's: the panes were made there and look for them there. Its keys are the
+        // main window's too, handed over by the main window itself (HookSideWindow: its PreviewKeyDown, which is where the
+        // keybind manager answers every shortcut, saving included), so none is bound here.
         Resources.MergedDictionaries.Add(main.Resources);
         NameScope.SetNameScope(this, NameScope.GetNameScope(main));
-        foreach (var binding in main.InputBindings.OfType<KeyBinding>())
-            InputBindings.Add(new KeyBinding { Command = binding.Command, Gesture = binding.Gesture, CommandParameter = binding.CommandParameter });
 
         var root = new Grid { Margin = new Thickness(10) };
         root.Children.Add(_hint);

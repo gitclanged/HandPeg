@@ -5,7 +5,8 @@ namespace HandPegApp.ViewModels;
 
 // Downloads used by projects (see YtDlpDownloader): the download cache keeps only its most recent files, so a
 // project that uses one of them could open one day with its media gone. Downloads a project uses are kept when the
-// cache is trimmed, and saving such a project offers to copy them somewhere permanent (both Settings, on).
+// cache is trimmed, and saving such a project offers to copy them somewhere permanent, or copies them without asking
+// once that has been chosen (Settings > Preview & Cache > Downloads, "Downloaded videos in saved projects", 4.4).
 public partial class MainViewModel
 {
     /// <summary>Every media file the open project uses: the main video, the layers' files, the voiceover, the captions' own sound.</summary>
@@ -36,12 +37,15 @@ public partial class MainViewModel
     /// <summary>
     /// After a project is saved: when it uses files from the download cache, offers to copy them into the download
     /// folder (Settings; the Videos folder's "HandPeg Downloads" when none is set) and to have the project use the
-    /// copies, which nothing ever deletes. The copying is interactive work (see WorkScheduler); the project file is
-    /// then written again with the copies in it.
+    /// copies, which nothing ever deletes; or copies them without asking, once "Remember my choice" (or Settings) has
+    /// said to. The copying is interactive work (see WorkScheduler); the project file is then written again with the
+    /// copies in it.
     /// </summary>
     private async Task OfferToKeepDownloadsAsync()
     {
-        if (_isBackgroundWorker || !AppSettings.Current.AskToCopyDownloadsOnSave || Confirm is null)
+        var settings = AppSettings.Current;
+        var asks = settings.AskToCopyDownloadsOnSave;
+        if (_isBackgroundWorker || !asks && !settings.AlwaysCopyDownloadsOnSave || asks && Confirm is null && ConfirmOrRemember is null)
             return;
 
         string root;
@@ -61,13 +65,8 @@ public partial class MainViewModel
         var folder = AppSettings.Current.DownloadFolder.Trim().Trim('"') is { Length: > 0 } chosen
             ? chosen
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "HandPeg Downloads");
-        var them = cached.Count == 1 ? "it" : "them";
-        if (!Confirm("Keep the Downloaded Videos",
-                $"This project uses {(cached.Count == 1 ? "a video" : $"{cached.Count} videos")} from the download cache, where the oldest downloads are deleted to make room for new ones. "
-                + $"Copy {them} into {folder}, and have the project use the copies? (Settings, Downloads, can stop this question.)", "Copy"))
-        {
+        if (asks && !AskToKeepDownloads(cached.Count, folder))
             return;
-        }
 
         var copies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
@@ -101,8 +100,10 @@ public partial class MainViewModel
 
         try
         {
-            var state = CaptureState(Path.GetFileNameWithoutExtension(CurrentProjectPath));
+            // With the undo history, its steps' files moved the same way (4.4-BugHunt): a step undone after the project is
+            // opened again puts back the copies, not the downloads the cache may have let go of since.
             string Moved(string path) => copies.TryGetValue(path.Trim().Trim('"'), out var copy) ? copy : path;
+            var state = CaptureStateForSave(Path.GetFileNameWithoutExtension(CurrentProjectPath), Moved);
             state.LocalMediaPath = Moved(state.LocalMediaPath);
             state.CaptionAudioPath = Moved(state.CaptionAudioPath);
 
@@ -121,5 +122,31 @@ public partial class MainViewModel
         {
             StatusText = $"The videos were copied, but the project could not be saved with them: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Asks whether to copy the downloads a saved project uses, naming where the question can be changed; with "Remember
+    /// my choice" ticked, the answer is kept (asked no more: always copied, or always left) and saved with the settings.
+    /// </summary>
+    private bool AskToKeepDownloads(int count, string folder)
+    {
+        const string title = "Keep the Downloaded Videos";
+        var message = $"This project uses {(count == 1 ? "a video" : $"{count} videos")} from the download cache, where the oldest downloads are deleted to make room for new ones. "
+                      + $"Copy {(count == 1 ? "it" : "them")} into {folder}, and have the project use {(count == 1 ? "the copy" : "the copies")}?"
+                      + "\n\nYou can change this in Settings > Preview & Cache > Downloads (\"Downloaded videos in saved projects\").";
+
+        if (ConfirmOrRemember is not { } askOnce)
+            return Confirm?.Invoke(title, message, "Copy") == true;
+
+        var (confirmed, remember) = askOnce(title, message, "Copy", "Don't Copy");
+        if (remember)
+        {
+            SaveView(s => (s.AskToCopyDownloadsOnSave, s.AlwaysCopyDownloadsOnSave) = (false, confirmed));
+            Log(confirmed
+                ? "Downloaded videos in saved projects are copied from now on (Settings > Preview & Cache > Downloads)"
+                : "Downloaded videos in saved projects are left in the download cache from now on (Settings > Preview & Cache > Downloads)");
+        }
+
+        return confirmed;
     }
 }

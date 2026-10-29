@@ -161,7 +161,7 @@ public partial class MainViewModel
     private (DeletedClip Clip, System.Windows.Media.ImageSource? Preview) Binned(TimelineClip clip, TimelineTrackModel track, Layer? view)
     {
         FlushLooks();
-        return (new DeletedClip(CopyOfClip(clip), track.Id, track.Kind, Document.Tracks.IndexOf(track)), view?.Filmstrip ?? view?.Waveform);
+        return (new DeletedClip(CopyOfClip(clip), track.Id, track.Kind, Document.Tracks.IndexOf(track)) { TrackParentId = track.ParentTrackId }, view?.Filmstrip ?? view?.Waveform);
     }
 
     /// <summary>A copy of a clip that nothing done to it reaches, the same id (it is put back as itself), its look shared (never changed in place).</summary>
@@ -197,51 +197,79 @@ public partial class MainViewModel
     /// <summary>A picture already made of a layer's file this session: frames of its video, or failing that nothing.</summary>
     private System.Windows.Media.ImageSource? GetLayerPicture(string path) => _layerFilmstrips.GetValueOrDefault(path);
 
-    /// <summary>Deletes a clip: it leaves the timeline, its time left empty, and waits in the recycle bin. One step of Undo.</summary>
+    /// <summary>
+    /// Deletes a clip: it leaves the timeline, its time left empty, and waits in the recycle bin with what went with it
+    /// (4.4: the children the delete took off too). One step of Undo.
+    /// </summary>
     private bool MoveToBin(Layer view, string? label = null)
     {
         if (ClipOf(view) is not { } clip || Document.TrackOf(clip) is not { } track)
             return false;
 
         var deleted = Binned(clip, track, view);
+        var kin = BinnedKin(clip);
         if (!Edit(label ?? $"delete {view.Name}", edit => edit.DeleteClip(clip)))
             return false;
 
-        AddToBin(deleted.Clip, view.Name, deleted.Preview);
+        // Of its children (and theirs) as they were, those the delete took off the timeline: the ones that lay with it.
+        var gone = kin.Where(k => Document.TrackOf(k.Clip) is null).Select(k => k.Kept).ToList();
+        AddToBin(gone.Count == 0 ? deleted.Clip : deleted.Clip with { Children = gone }, view.Name, deleted.Preview);
         return true;
     }
 
+    /// <summary>A clip's children, theirs and so on (each once), each with what the bin would keep of it: a copy as it is now, and its track.</summary>
+    private List<(TimelineClip Clip, DeletedClip Kept)> BinnedKin(TimelineClip clip)
+    {
+        var kin = new List<(TimelineClip Clip, DeletedClip Kept)>();
+        var seen = new HashSet<TimelineClip> { clip };
+        for (var next = -1; next < kin.Count; next++)
+        {
+            var parent = next < 0 ? clip : kin[next].Clip;
+            foreach (var (track, child) in Document.ChildrenOf(parent).ToList())
+            {
+                if (seen.Add(child))
+                    kin.Add((child, new DeletedClip(CopyOfClip(child), track.Id, track.Kind, Document.Tracks.IndexOf(track)) { TrackParentId = track.ParentTrackId }));
+            }
+        }
+        return kin;
+    }
+
     /// <summary>
-    /// Puts a deleted clip back on the timeline where it was: on its track when that is still there and free for it,
-    /// otherwise on a new track of its kind at the place its own had in the stack.
+    /// Puts a deleted clip back on the timeline where it was, and what went with it (4.4), each on its own track when that is
+    /// still there and free for it, otherwise on a new track of its kind at the place its own had in the stack. Their links
+    /// hold: a clip whose id has been taken since comes back with a new one, and those that went with it name that.
     /// </summary>
     public void RestoreFromBin(BinItem item)
     {
         if (!RecycleBin.Contains(item))
             return;
 
-        // A copy is put back, so the bin's own stays as it was (an undo step can bring it back to the bin).
-        var clip = CopyOfClip(item.Clip.Clip);
-        if (Document.FindClip(clip.Id) is not null)
-            clip.Id = Guid.NewGuid();
+        // Copies are put back, so the bin's own stay as they were (an undo step can bring them back to the bin).
+        var clips = new List<(TimelineClip Clip, DeletedClip From)> { (CopyOfClip(item.Clip.Clip), item.Clip) };
+        foreach (var child in item.Clip.Children ?? [])
+            clips.Add((CopyOfClip(child.Clip), child));
+
+        var renamed = new Dictionary<Guid, Guid>();
+        foreach (var (clip, _) in clips)
+        {
+            if (Document.FindClip(clip.Id) is null)
+                continue;
+            var id = Guid.NewGuid();
+            renamed[clip.Id] = id;
+            clip.Id = id;
+        }
+        foreach (var (clip, _) in clips)
+        {
+            if (clip.ParentClipId is { } parent && renamed.TryGetValue(parent, out var now))
+                clip.ParentClipId = now;
+        }
+
+        // A track that is gone is made again once, for everything of it that comes back.
+        var madeFor = new Dictionary<Guid, TimelineTrackModel>();
         if (!Edit($"restore {item.Name}", edit =>
             {
-                if (Document.Tracks.FirstOrDefault(t => t.Id == item.Clip.TrackId) is { IsLocked: false } track && track.Accepts(clip))
-                {
-                    try
-                    {
-                        edit.PlaceClip(track, clip, allowCrossfadeOverlap: false);
-                        return;
-                    }
-                    catch (TimelineEditException)
-                    {
-                        // No room there now: a track of its own.
-                    }
-                }
-
-                var kind = TimelineTrackModel.KindFor(clip.ContentKind);
-                var index = Math.Clamp(item.Clip.TrackIndex, 0, Document.Tracks.Count);
-                edit.PlaceClip(edit.InsertTrack(index, kind == TimelineTrackKind.Subtitle ? TimelineTrackKind.Video : kind), clip, allowCrossfadeOverlap: false);
+                foreach (var (clip, from) in clips)
+                    PutBack(edit, clip, from, madeFor);
             }))
         {
             return;
@@ -251,6 +279,42 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(HasDeleted));
         OnPropertyChanged(nameof(RecycleBinText));
         Log($"Restored clip: {item.Name}, {item.TimeText}");
+    }
+
+    /// <summary>
+    /// Puts a clip from the bin back on its track when that is still there, unlocked and free for it, otherwise on a new
+    /// track of its kind at the place its own had in the stack: one for each track that is gone (<paramref name="madeFor"/>,
+    /// by the old track's id), lying under the track its own lay under (made again as well, when that is gone too).
+    /// </summary>
+    private void PutBack(ITimelineTransaction edit, TimelineClip clip, DeletedClip from, Dictionary<Guid, TimelineTrackModel> madeFor)
+    {
+        var own = Document.Tracks.FirstOrDefault(t => t.Id == from.TrackId);
+        var gone = own is null;
+        var track = own ?? madeFor.GetValueOrDefault(from.TrackId);
+        if (track is { IsLocked: false } && track.Accepts(clip))
+        {
+            try
+            {
+                edit.PlaceClip(track, clip, allowCrossfadeOverlap: false);
+                return;
+            }
+            catch (TimelineEditException)
+            {
+                // No room there now: a track of its own.
+            }
+        }
+
+        var kind = TimelineTrackModel.KindFor(clip.ContentKind);
+        var index = Math.Clamp(from.TrackIndex, 0, Document.Tracks.Count);
+        var made = edit.InsertTrack(index, kind == TimelineTrackKind.Subtitle ? TimelineTrackKind.Video : kind);
+        edit.PlaceClip(made, clip, allowCrossfadeOverlap: false);
+        if (!gone || madeFor.ContainsKey(from.TrackId))
+            return;
+
+        madeFor[from.TrackId] = made;
+        var parent = from.TrackParentId is { } was ? madeFor.TryGetValue(was, out var again) ? again.Id : was : (Guid?)null;
+        if (parent is { } id && id != made.Id && Document.Tracks.Any(t => t.Id == id))
+            edit.SetTrackParent(made, id);
     }
 
     /// <summary>Empties the recycle bin: what was in it is gone for good (Ctrl+Z aside).</summary>
@@ -367,7 +431,8 @@ public partial class MainViewModel
         get => _selectedKey.Has ? _selectedKey.Easing : null;
         set
         {
-            if (value is not { } easing || !_selectedKey.Has || easing == _selectedKey.Easing)
+            // A drop-down's echo while a step is being put back, or its bindings settle, is no change of the user's (4.4-BugHunt).
+            if (value is not { } easing || !_selectedKey.Has || easing == _selectedKey.Easing || IsRestoringTimeline)
                 return;
 
             var layer = ActiveKeyLayer;
@@ -521,7 +586,8 @@ public partial class MainViewModel
         {
             case AudioTrack track when voice: on = track.IsVoice = !track.IsVoice; break;
             case AudioTrack track: on = track.AutoDuck = !track.AutoDuck; break;
-            case Layer layer when voice: on = layer.IsVoice = !layer.IsVoice; break;
+            // A clip marked as the voice is what Auto-Captions listen to from now on (4.4), as a Voice track is.
+            case Layer layer when voice: on = layer.IsVoice = !layer.IsVoice; ListenToVoice(layer); break;
             default: on = ((Layer)sound).AutoDuck = !((Layer)sound).AutoDuck; break;
         }
 
@@ -647,16 +713,18 @@ public partial class MainViewModel
     /// new one at the playhead holding the clip as it now is, or (snapping) the nearest one. Otherwise a clip
     /// with keyframes takes its whole motion along by as much as it was moved.
     /// </summary>
-    private void RecordKey(Layer layer, string? propertyName)
+    /// <param name="at">The moment of the clip to record it at, in seconds from its start, when not the playhead's.</param>
+    private void RecordKey(Layer layer, string? propertyName, double? at = null)
     {
-        if (_applyingKeys || _recordingKey || _commandDeferrals > 0 || Layer.GetKeyProperty(propertyName) is not { } property || !HasSource)
+        // (Nor while a step is being put back, or its bindings settle: its keys come back with it. 4.4-BugHunt.)
+        if (_applyingKeys || _recordingKey || _commandDeferrals > 0 || IsRestoringTimeline || Layer.GetKeyProperty(propertyName) is not { } property || !HasSource)
             return;
 
         var writes = KeyframesEnabled && (layer.IsAnimated || !KeyframesSnap);
         if (!writes && !layer.HasKeys(property))
             return;
 
-        var time = Math.Max(PositionMs / 1000 - layer.StartTime, 0);
+        var time = at ?? Math.Max(PositionMs / 1000 - layer.StartTime, 0);
         _recordingKey = true;
         try
         {

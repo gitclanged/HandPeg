@@ -1,0 +1,77 @@
+# Children (4.4): a talk's HUD cut-out on the track under it and a key on another track go with its splits, trims, moves, ripples, deletes and folds; refusals and rollbacks change nothing.
+
+== Set up at 25 fps: the talk, its HUD cut-out on the HUD track under it, a key over it from 6 s on Video 3 (both its children), music under all
+  Video 1: [T 0-20 @0]
+  HUD: [H 0-20]
+  Video 3: [K 6-9]
+  Audio 1: [M 0-30 @0]
+  links: H<T K<T; HUD under Video 1
+
+== Split the talk at 8 s: its HUD and its key are cut there too, their second pieces the second talk's
+  Video 1: [T 0-8 @0] [T2 8-20 @8]
+  HUD: [H 0-8] [H2 8-20]
+  Video 3: [K 6-8] [K2 8-9]
+  Audio 1: [M 0-30 @0]
+  links: H<T H2<T2 K<T K2<T2; HUD under Video 1
+
+== Trim the second talk's end to 18 s: its HUD's end, which was on it, follows; its key, inside it, stays
+  Video 1: [T 0-8 @0] [T2 8-18 @8]
+  HUD: [H 0-8] [H2 8-18]
+  Video 3: [K 6-8] [K2 8-9]
+  Audio 1: [M 0-30 @0]
+  links: H<T H2<T2 K<T K2<T2; HUD under Video 1
+
+== Trim the second talk's start to 9.2 s: its HUD's start follows; its key, left wholly before it, stays where it is, unlinked (Q3)
+  Video 1: [T 0-8 @0] [T2 9.2-18 @9.2]
+  HUD: [H 0-8] [H2 9.2-18]
+  Video 3: [K 6-8] [K2 8-9]
+  Audio 1: [M 0-30 @0]
+  links: H<T H2<T2 K<T; HUD under Video 1
+
+== Move the second talk to 11.2 s: its HUD moves with it, on its own track
+  Video 1: [T 0-8 @0] [T2 11.2-20 @9.2]
+  HUD: [H 0-8] [H2 11.2-20]
+  Video 3: [K 6-8] [K2 8-9]
+  Audio 1: [M 0-30 @0]
+  links: H<T H2<T2 K<T; HUD under Video 1
+
+A badge on the HUD track from 21 s; the second talk moved to 13 s, its HUD would run into it: refused
+
+== Ripple-trim the first talk's end to 6 s on its own track: the HUD track under it ripples too, the HUD's end rides with the talk's, and the key, left with nothing before 6 s on a track that does not ripple, stays, unlinked (Q3)
+  Video 1: [T 0-6 @0] [T2 9.2-18 @9.2]
+  HUD: [H 0-6] [H2 9.2-18] [B 19-20]
+  Video 3: [K 6-8] [K2 8-9]
+  Audio 1: [M 0-30 @0]
+  links: H<T H2<T2; HUD under Video 1
+
+Ripple-deleting the second talk (not kept) takes its HUD too, and closes up its track and the HUD track by 8.8 s: the badge would start at 10.2 s
+
+== Delete the second talk: its HUD goes with it
+  Video 1: [T 0-6 @0]
+  HUD: [H 0-6] [B 19-20]
+  Video 3: [K 6-8] [K2 8-9]
+  Audio 1: [M 0-30 @0]
+  links: H<T; HUD under Video 1
+
+== Fold 2-3 s out of the talk's track alone: the HUD track under it folds with it
+  Video 1: [T 0-2 @0] [T3 2-5 @3]
+  HUD: [H 0-2] [H3 2-5] [B 18-19]
+  Video 3: [K 6-8] [K2 8-9]
+  Audio 1: [M 0-30 @0]
+  links: H<T H3<T3; HUD under Video 1
+fold at 2 s (1 s): [Video 1: Talk 0-1] [HUD: HUD 0-1]; the HUD's piece goes with the talk's: yes
+
+== Put the fold back after a clip on Video 3 took the talk piece's id: the piece comes back with a new id, and the HUD's piece goes with it
+  Video 1: [T 0-2 @0] [T4 2-3 @2] [T3 3-6 @3]
+  HUD: [H 0-2] [H4 2-3] [H3 3-6] [B 19-20]
+  Video 3: [K 6-8] [K2 8-9] [X 25-26]
+  Audio 1: [M 0-30 @0]
+  links: H<T H4<T4 H3<T3; HUD under Video 1
+
+Ripple-trimming the head of T3 by 1 s (not kept): it plays from 4 s, 3-5 s; its HUD lies 3-5 s; the badge would start at 18 s
+
+Links asked for: a clip its own parent, the talk under its own HUD, a parent not on the timeline, the talk's track under the HUD track, a track under itself: refused refused refused refused refused
+
+Links made by hand: 1 clip its own parent, 2 clips whose parents lead back to them, 1 track under itself
+
+Written as a project writes it: links written True; read back and written again, the same True; a copy without links writes none of them True

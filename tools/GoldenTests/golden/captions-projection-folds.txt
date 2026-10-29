@@ -1,0 +1,33 @@
+# Anchored captions (4.4): projected through clip windows, a fold taken out and put back, speed, a J cut, a duplicate, and edits written back.
+anchors (the source's time):
+  1-2 "Hi all." breaks []
+  4.2-5.5 "This is folded" breaks []
+  7-8 "The end." breaks []
+one clip at 2 s:
+  3-4 "Hi all." breaks [0.4]
+  6.2-7.5 "This is folded" breaks [0.307692, 0.692308]
+  9-10 "The end." breaks [0.4]
+with 5.0-6.0 of the source folded out:
+  3-4 "Hi all." breaks [0.4]
+  6.2-6.8 "This is" breaks [0.666667]
+  8-9 "The end." breaks [0.4]
+at double speed with a 0.5 s J cut, from 10 s:
+  10.5-11 "Hi all." breaks [0.4]
+  12.1-12.75 "This is folded" breaks [0.307692, 0.692308]
+  13.5-14 "The end." breaks [0.4]
+the first 3 s of the source played twice:
+  1-2 "Hi all." breaks [0.4]
+  21-22 "Hi all." breaks [0.4]
+words through the folded clip:
+  Hi 3-3.3
+  all. 3.4-4
+  This 6.2-6.5
+  is 6.6-6.8
+  The 8-8.3
+  end. 8.4-9
+after an edit ("The very end.") and a cue typed where no clip plays:
+  1-2 "Hi all." breaks []
+  4.2-5.5 "This is folded" breaks []
+  7-8 "The very end." breaks []
+kept on the timeline's clock:
+  30-31 "Off the clips" breaks []

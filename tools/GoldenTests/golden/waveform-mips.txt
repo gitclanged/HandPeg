@@ -1,0 +1,8 @@
+# WaveformData's mip pyramid (4.4): RangeOf, Range and Envelope against a brute-force min/max over seeded random peaks.
+pairs 36001 at 80 a second (450.01 s); levels 36001, 4501, 563, 71
+folds: each pair of levels 1 to 3 is the lowest and the highest of the pairs it folds
+LevelFor: 0 below 8 pairs a column, 1 from 8, 2 from 64, 3 from 512
+RangeOf: 2000 stretches (every tenth up to the last pair) and the empty, before-the-start and past-the-end ones, each the brute-force min/max
+Range: 2000 pairs of fractions (some before 0 and past 1), each what the pair-by-pair Range of 4.3 gave
+Envelope: 800 stretches and column counts (some before the start and past the end): each column within the pairs about it, missing none of the folds wholly inside it
+Slice: the second quarter cut out keeps its rate (80 a second), 9001 pairs, and the same lowest and highest

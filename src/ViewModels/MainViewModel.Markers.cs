@@ -267,7 +267,7 @@ public partial class MainViewModel
 
         if (lines.Count == 0 && !HasSource)
         {
-            StatusText = "Nothing to copy yet: load a video and put markers (M) where the chapters begin.";
+            StatusText = $"Nothing to copy yet: load a video and put {KeybindManager.WithGesture("markers", "marker.add")} where the chapters begin.";
             return;
         }
 

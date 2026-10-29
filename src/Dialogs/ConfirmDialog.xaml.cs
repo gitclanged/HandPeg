@@ -35,6 +35,26 @@ public partial class ConfirmDialog : Window
         init => (ConfirmButton.IsDefault, CancelButton.IsDefault) = (!value, value);
     }
 
+    /// <summary>
+    /// The words of a "Remember my choice" box under the message, for a question that can be answered once for all
+    /// (4.4); null, the default, shows none. Whatever button closes the dialog, <see cref="Remember"/> says whether it was ticked.
+    /// </summary>
+    public string? RememberText
+    {
+        get => RememberBox.Content as string;
+        init => (RememberBox.Content, RememberBox.Visibility) = (value, value is null ? Visibility.Collapsed : Visibility.Visible);
+    }
+
+    /// <summary>Whether "Remember my choice" was ticked (see <see cref="RememberText"/>).</summary>
+    public bool Remember => RememberBox.IsChecked == true;
+
+    /// <summary>What the button that calls it off says: "Cancel" unless given ("Don't Copy").</summary>
+    public string CancelText
+    {
+        get => CancelButton.Content as string ?? "";
+        init => CancelButton.Content = value;
+    }
+
     private void Confirm_Click(object sender, RoutedEventArgs e) => DialogResult = true;
 
     private void Other_Click(object sender, RoutedEventArgs e)

@@ -96,6 +96,14 @@ public sealed class DockManager
     /// <summary>Raised when a saved arrangement had a pane put in the place of an old one (see <see cref="Replaced"/>): old name, new name.</summary>
     public event Action<string, string>? PaneReplaced;
 
+    /// <summary>
+    /// Brings an arrangement made by an older HandPeg up to this one (DockLayoutState.Version), before anything else is done
+    /// to it: every arrangement taken up passes through it (the one saved, a built-in layout, one of the user's own, the
+    /// first run's choice). It leaves an arrangement that is up to date as it is, and is never a reason to save: the
+    /// arrangement is saved as it is the next time the user changes it (4.4: Load writes no settings before the first frame).
+    /// </summary>
+    public Func<DockLayoutState, DockLayoutState>? Upgrade { get; init; }
+
     /// <summary>The side window, while it is open; for the main window to hand it keys and drops.</summary>
     public Window? SideWindow => _side;
 
@@ -261,6 +269,10 @@ public sealed class DockManager
     /// </summary>
     private DockLayoutState Validate(DockLayoutState state)
     {
+        // An older arrangement first takes the shape this HandPeg gives it (panes retired, their successors in their place).
+        if (Upgrade is { } upgrade)
+            state = upgrade(state);
+
         // A pane that replaced another goes where the old one was (the Media pane where the Source pane was, from before
         // Pass 1.5), unless the arrangement has it already.
         foreach (var (old, replacement) in Replaced)
@@ -800,7 +812,7 @@ public sealed class DockManager
 
     /// <summary>
     /// The border between two parts of a split: dragged, it shares the room between them anew. Next to a part as tall as
-    /// its content (the master timeline, the playback controls) it shares the room between the nearest parts above and
+    /// its content (the overview bar, the playback controls) it shares the room between the nearest parts above and
     /// below that are not (4.1.1: the player's row and the tabs; the timeline keeps the height its setting gives it);
     /// with no such part on one side it is only a gap, or, beside a pane that can be made taller, it makes it so.
     /// </summary>
@@ -811,15 +823,15 @@ public sealed class DockManager
         var (above, under) = (parts.Take(k).LastOrDefault(p => !p.Fits).Element, parts.Skip(k).FirstOrDefault(p => !p.Fits).Element);
         if ((before.Fits || after.Fits) && split.Vertical && above is not null && under is not null)
         {
-            // Ctrl held (4.2B-2): the pane beside it that fits its content is made taller or shorter instead (the master
-            // timeline, through its height setting), dragged away from it or towards it.
+            // Ctrl held (4.2B-2): the pane beside it that fits its content is made taller or shorter instead (the overview
+            // bar, through its height setting), dragged away from it or towards it.
             var (fitting, below) = before.Fits ? (split.Children[before.Index], false) : (split.Children[after.Index], true);
             var resize = fitting.AllPanes().Select(p => _panes[p].ResizeBy).FirstOrDefault(r => r is not null);
             var thumb = new Thumb
             {
                 Height = 10, Cursor = Cursors.SizeNS, Template = SplitterLook(),
                 ToolTip = resize is null ? "Drag to share the room between the parts above and below"
-                    : "Drag to share the room between the parts above and below; Ctrl+drag to make the timeline taller or shorter",
+                    : "Drag to share the room between the parts above and below; Ctrl+drag to make the overview bar taller or shorter",
             };
             thumb.DragDelta += (_, e) =>
             {
@@ -1661,7 +1673,7 @@ public sealed class DockManager
     /// <summary>
     /// A small picture of an arrangement's main window, for the Layout Selector's cards: each part a rounded box named
     /// after its panes (as this mode shows them: hidden panes left out, and a part with none takes no room), the rows
-    /// sized to their content (the master timeline, the playback controls) a thin band, the header a small mark at the
+    /// sized to their content (the overview bar, the playback controls) a thin band, the header a small mark at the
     /// end of the row it joins. Drawn once and frozen, so showing it costs nothing.
     /// </summary>
     public DrawingImage Miniature(DockLayoutState layout, Size size, Brush part, Brush band, Brush text, Brush accent)

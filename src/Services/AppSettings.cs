@@ -52,7 +52,6 @@ public sealed class ModeProfile
     public int PreviewDurationSeconds { get; set; }
     public int PreviewResolutionPercent { get; set; }
     public bool AutoOpenLayoutPane { get; set; }
-    public bool ShowAutoCaptions { get; set; }
     public bool ShowIFrames { get; set; }
     public bool SnapTimelineToIFrames { get; set; }
     public bool AutoToggleTimelineSnap { get; set; }
@@ -85,7 +84,7 @@ public sealed class SavedDockLayout
 /// <summary>
 /// User overrides stored in appsettings.json in the settings folder (see <see cref="AppPaths"/>). A blank value means "use the default".
 /// </summary>
-public sealed class AppSettings
+public sealed partial class AppSettings
 {
     public const string DefaultYtDlpReleaseUrl = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
     public const string DefaultFfmpegReleaseUrl = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest";
@@ -403,6 +402,37 @@ public sealed class AppSettings
 
     /// <summary>Saving a project that uses files from the download cache offers to copy them into the download folder.</summary>
     public bool AskToCopyDownloadsOnSave { get; set; } = true;
+
+    /// <summary>
+    /// Saving such a project copies them without asking (the question's "Remember my choice", or Settings, 4.4). Read only
+    /// while <see cref="AskToCopyDownloadsOnSave"/> is off; both off leaves the downloads in the download cache.
+    /// </summary>
+    public bool AlwaysCopyDownloadsOnSave { get; set; }
+
+    public const string DownloadsAsk = "ask", DownloadsCopy = "copy", DownloadsKeep = "keep";
+
+    /// <summary>
+    /// The two flags above as the one choice Settings shows ("Downloaded videos in saved projects"): one of
+    /// <see cref="SavedProjectDownloadChoices"/>. Not saved itself: the flags are.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string SavedProjectDownloads
+    {
+        get => AskToCopyDownloadsOnSave ? DownloadsAsk : AlwaysCopyDownloadsOnSave ? DownloadsCopy : DownloadsKeep;
+        set
+        {
+            if (value is DownloadsAsk or DownloadsCopy or DownloadsKeep)
+                (AskToCopyDownloadsOnSave, AlwaysCopyDownloadsOnSave) = (value == DownloadsAsk, value == DownloadsCopy);
+        }
+    }
+
+    /// <summary>What <see cref="SavedProjectDownloads"/> can be, with the words Settings shows for each.</summary>
+    public static IReadOnlyList<KeyValuePair<string, string>> SavedProjectDownloadChoices { get; } =
+    [
+        new(DownloadsAsk, "Ask each time"),
+        new(DownloadsCopy, "Always copy into the download folder"),
+        new(DownloadsKeep, "Leave them in the download cache"),
+    ];
 
     // Media browser
     /// <summary>How many frames are taken from each video in the media browser, for the picture that follows the pointer over its tile.</summary>
@@ -869,7 +899,6 @@ public sealed class AppSettings
         AutoToggleTimelineSnap = true;
         GenerateHoverPreviews = true;
         SaveTargetSizeInPresets = true;
-        ShowAutoCaptions = true;
         StartWithChapterMarkers = true;
         StartWithChaptersAtCuts = true;
         AutoOpenLayoutPane = true;
@@ -888,9 +917,6 @@ public sealed class AppSettings
 
     /// <summary>Sends a Windows notification when an encode or the queue finishes.</summary>
     public bool NotifyOnEncodeComplete { get; set; } = true;
-
-    /// <summary>The Subtitles tab's "Show Advanced" switch: true shows the auto-caption controls instead of the track list.</summary>
-    public bool ShowAutoCaptions { get; set; }
 
     /// <summary>When an encode fails on a hardware encoder, try again once with the matching software encoder.</summary>
     public bool AutoFallbackToSoftware { get; set; } = true;
@@ -999,6 +1025,7 @@ public sealed class AppSettings
         copy.SavedLayouts = [.. SavedLayouts];
         copy.HiddenTabs = HiddenTabs is null ? null : [.. HiddenTabs];
         copy.DefaultCaptionStyle = DefaultCaptionStyle?.Clone();
+        CloneInput(copy);
         return copy;
     }
 
@@ -1112,6 +1139,9 @@ public sealed class AppSettings
                 }
 
                 (settings.UiMode, settings.ModeProfiles) = (null, null);
+
+                // The keys, the dial and the tour (4.4, AppSettings.Input.cs): a shortcut that can never work is dropped.
+                settings.CleanUpInput();
                 return settings;
             }
         }
@@ -1120,7 +1150,8 @@ public sealed class AppSettings
             // An unreadable settings file must not stop the app from starting; defaults apply.
         }
 
-        // No settings yet: already as 4.1.1 starts, so there is nothing to bring over.
+        // No settings yet: already as 4.1.1 starts, so there is nothing to bring over. The first-run window comes first.
+        NoteFirstRun();
         return new AppSettings { ShowTimelineThumbnails = false, Migrated411Defaults = true };
     }
 

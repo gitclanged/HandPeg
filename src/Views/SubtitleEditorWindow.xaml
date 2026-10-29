@@ -50,7 +50,7 @@
                 <TextBlock x:Name="TimeText" Text="0:00.000" FontFamily="Consolas" VerticalAlignment="Center" Margin="10,0,14,0" MinWidth="86" />
                 <Button Content="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,6" Click="Previous_Click" ToolTip="Go to the subtitle before." AutomationProperties.Name="Previous Subtitle" />
                 <Button Content="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,6" Margin="4,0,0,0" Click="Next_Click" ToolTip="Go to the next subtitle." AutomationProperties.Name="Next Subtitle" />
-                <Button x:Name="AddButton" Content="Add Segment" Padding="12,6" Margin="14,0,0,0" Click="Add_Click" ToolTip="A new, blank subtitle of two seconds at the playhead." />
+                <Button x:Name="AddButton" Content="Add Caption" Padding="12,6" Margin="14,0,0,0" Click="Add_Click" ToolTip="A new, blank caption of two seconds at the playhead. Over a clip whose captions follow it, it follows that clip too." />
                 <Button x:Name="SplitButton" Content="Split" Padding="12,6" Margin="4,0,0,0" Click="Split_Click" ToolTip="Cuts the selected subtitle in two at the playhead: the words said before it stay, the rest become a subtitle of their own." />
                 <Button x:Name="AddWordButton" Content="Add Word" Padding="12,6" Margin="4,0,0,0" Click="AddWord_Click" ToolTip="Adds a word to the end of the selected subtitle, ready to be typed over." />
                 <Button x:Name="DeleteButton" Content="Delete" Padding="12,6" Margin="4,0,0,0" Click="Delete_Click" ToolTip="Deletes the word that is picked out in the selected subtitle; with no word picked out, the whole subtitle (Delete)." />

@@ -246,6 +246,10 @@ public partial class MainViewModel
         if (e.PropertyName == nameof(AudioTrack.IsVoice) && sender is AudioTrack { IsVoice: true } voice)
             ListenToVoice(voice);
 
+        // Slipped (its edits set again): captions heard in the main file follow its sound where it now plays (4.4).
+        if (e.PropertyName == nameof(AudioTrack.Pieces) && CaptionsFollowMainFile)
+            ReprojectCaptions();
+
         // (The command is what the time bars listen to as well: a slipped or split track redraws through it.)
         // A picture arriving is not a change of settings, and nor is which track the player plays.
         if (e.PropertyName is not (nameof(AudioTrack.Waveform) or nameof(AudioTrack.IsSolo) or nameof(AudioTrack.TrackWaveform)

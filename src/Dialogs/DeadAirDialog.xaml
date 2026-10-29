@@ -6,10 +6,29 @@
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <StackPanel Margin="16">
-        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
-                   Text="Finds the silent stretches of the first audio track and takes them out of the timeline, what follows closing up behind them. A microphone is never perfectly quiet, so set the threshold just above its background noise: raise it (towards -20 dB) if silences are being missed, lower it (towards -60 dB) if quiet speech is being cut." />
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,10"
+                   Text="Finds the dead air in the sound (the clip's own, or the main video's Voice track, else its first) and takes it out of the timeline, what follows closing up behind it." />
 
-        <Grid>
+        <TextBlock Text="Find Dead Air By:" Margin="0,0,0,4" />
+        <RadioButton x:Name="AudioSourceRadio" GroupName="DeadAirSource" Content="Audio Silence (dB Threshold)" Margin="0,2" Checked="Source_Checked"
+                     ToolTip="Listens to the sound itself: anything quieter than the threshold for long enough is dead air. Fast, and needs no transcription." />
+        <RadioButton x:Name="CaptionsSourceRadio" GroupName="DeadAirSource" Content="Caption Word Gaps" Margin="0,2,0,8" Checked="Source_Checked"
+                     ToolTip="Uses the words the captions heard: every gap between two words longer than the minimum is dead air, however loud the room. The captions made from this sound are used when there are any; otherwise it is transcribed first (no captions are added)." />
+
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBlock Text="Presets:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{DynamicResource MutedTextBrush}" />
+            <Button Content="Natural" MinWidth="76" Margin="0,0,6,0" Tag="Natural" Click="Preset_Click"
+                    ToolTip="Takes out the long pauses and keeps the rhythm of speech: -35 dB for 1 s; or gaps of 0.5 s, keeping 0.08 s before and 0.12 s after each word." />
+            <Button Content="Tight" MinWidth="76" Margin="0,0,6,0" Tag="Tight" Click="Preset_Click"
+                    ToolTip="A fast, jump-cut pace: -35 dB for 0.5 s; or gaps of 0.3 s, keeping 0.05 s before and 0.08 s after each word." />
+            <Button Content="Podcast" MinWidth="76" Tag="Podcast" Click="Preset_Click"
+                    ToolTip="Only the dead stretches, leaving room to breathe: -40 dB for 1.5 s; or gaps of 0.8 s, keeping 0.12 s before and 0.2 s after each word." />
+        </StackPanel>
+
+        <TextBlock x:Name="AudioHint" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
+                   Text="A microphone is never perfectly quiet, so set the threshold just above its background noise: raise it (towards -20 dB) if silences are being missed, lower it (towards -60 dB) if quiet speech is being cut." />
+
+        <Grid x:Name="AudioGrid">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
@@ -41,14 +60,57 @@
             <TextBlock Grid.Row="1" Grid.Column="3" Text="s" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
         </Grid>
 
+        <Grid x:Name="CaptionsGrid" Visibility="Collapsed">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+            </Grid.RowDefinitions>
+            <TextBlock Text="Minimum Gap:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Column="1" x:Name="MinGapSlider" Minimum="0.1" Maximum="3"
+                    VerticalAlignment="Center" AutomationProperties.Name="Minimum Gap" local:NumericInput.Default="0.5"
+                    ToolTip="A gap between two words shorter than this is left in: the pauses of natural speech." />
+            <TextBox Grid.Column="2" Style="{StaticResource ValueBox}" Width="48"
+                     Text="{Binding Value, ElementName=MinGapSlider, StringFormat={}{0:0.00}}" AutomationProperties.Name="Minimum Gap Value"
+                     local:NumericInput.Default="0.5" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2"
+                     local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="3" />
+            <TextBlock Grid.Column="3" Text="s" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+
+            <TextBlock Grid.Row="1" Text="Pad Before Word:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" x:Name="PadBeforeSlider" Minimum="0" Maximum="0.5"
+                    VerticalAlignment="Center" AutomationProperties.Name="Pad Before Word" local:NumericInput.Default="0.08"
+                    ToolTip="How much of each gap is kept before the next word starts, so its first sound is never clipped." />
+            <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}" Width="48"
+                     Text="{Binding Value, ElementName=PadBeforeSlider, StringFormat={}{0:0.00}}" AutomationProperties.Name="Pad Before Word Value"
+                     local:NumericInput.Default="0.08" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
+                     local:NumericInput.Minimum="0" local:NumericInput.Maximum="0.5" />
+            <TextBlock Grid.Row="1" Grid.Column="3" Text="s" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+
+            <TextBlock Grid.Row="2" Text="Pad After Word:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="2" Grid.Column="1" x:Name="PadAfterSlider" Minimum="0" Maximum="0.5"
+                    VerticalAlignment="Center" AutomationProperties.Name="Pad After Word" local:NumericInput.Default="0.12"
+                    ToolTip="How much of each gap is kept after a word ends, so its last sound and its breath out are never clipped." />
+            <TextBox Grid.Row="2" Grid.Column="2" Style="{StaticResource ValueBox}" Width="48"
+                     Text="{Binding Value, ElementName=PadAfterSlider, StringFormat={}{0:0.00}}" AutomationProperties.Name="Pad After Word Value"
+                     local:NumericInput.Default="0.12" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2"
+                     local:NumericInput.Minimum="0" local:NumericInput.Maximum="0.5" />
+            <TextBlock Grid.Row="2" Grid.Column="3" Text="s" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+        </Grid>
+
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,10,0,0"
-                   Text="Deleted, the silences are gone. Split &amp; Mark folds them out the same way and keeps each one at its cut: right-click the clip after a cut and choose Restore Folded Silence to put one back. Both values are remembered." />
+                   Text="Deleted, the dead air is gone. Split &amp; Mark folds it out the same way and keeps each stretch at its cut: right-click the clip after a cut and choose Restore Folded Silence to put one back. Every value here is remembered." />
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button x:Name="MarkButton" Content="Split &amp; Mark" MinWidth="120" Margin="0,0,6,0" Click="Mark_Click"
-                    ToolTip="Cuts at the silences and folds the silent stretches out of the timeline (what is on the timeline is what renders): what follows closes up, and each silence is kept at its cut, to be put back with a right-click on the clip after it." />
+                    ToolTip="Cuts at the dead air and folds it out of the timeline (what is on the timeline is what renders): what follows closes up, and each stretch is kept at its cut, to be put back with a right-click on the clip after it." />
             <Button x:Name="ConfirmButton" Content="Delete Dead Air" MinWidth="130" IsDefault="True" Click="Confirm_Click"
-                    ToolTip="Cuts at the silences and removes the silent stretches." />
+                    ToolTip="Cuts at the dead air and removes it." />
             <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
         </StackPanel>
     </StackPanel>

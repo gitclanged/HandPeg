@@ -77,6 +77,12 @@ public sealed partial class VideoSurface : HwndHost
     /// <summary>What is shown on top of the video. Set once, in XAML, as this layer's content.</summary>
     public UIElement? Overlay { get; set; }
 
+    /// <summary>
+    /// The window that carries <see cref="Overlay"/> above the video (null until it is made): input that lands on it is
+    /// the player's, which the keybinds tell apart by it (W, A, S and D steering what is under the pointer, the Lightning Dial, 4.4).
+    /// </summary>
+    public Window? OverlayWindow => _overlayWindow;
+
     /// <summary>The native window the player draws into; zero until it has been created.</summary>
     public IntPtr SurfaceHandle { get; private set; }
 

@@ -49,7 +49,7 @@
                           ToolTip="Bypass All: sets every effect of the stack aside at once, to compare with and without. Nothing is lost; click again to bring them back." />
             <Button x:Name="MoreButton" Content="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="7,4" Click="MoreButton_Click"
                     AutomationProperties.Name="Effect Stack Menu"
-                    ToolTip="Copy Stack, Paste Effects, Paste Selected Effects..., Save Effect Preset, Reset." />
+                    ToolTip="Copy Effects, Paste Effects, Paste Some Effects..., Save Effect Preset, Remove All Effects." />
         </docking:PaneTitleRow>
         <TextBlock x:Name="EmptyHint" DockPanel.Dock="Top" TextWrapping="Wrap" Margin="2,2,2,8" Foreground="{DynamicResource MutedTextBrush}" />
         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">

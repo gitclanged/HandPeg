@@ -331,8 +331,9 @@ public partial class MainWindow
         t.Tab.Header as string ?? t.Id, () => TabWanted(t.Id), on => SetTabShown(t.Id, on),
         t.Id switch
         {
-            ExportId => "The Export tab: the video settings and the chapters, and the audio settings (those whose own tab is hidden), with Save As, Add to Queue and Start Encode.",
-            "Tab:Video" or "Tab:Audio" => $"The {t.Tab.Header} tab of its own. Hidden, what it holds is in the Export tab.",
+            ExportId => "The Export tab: the video settings and the chapters, and the audio settings (those whose own tab is hidden), the source's subtitles, with Save As, Add to Queue and Start Encode.",
+            "Tab:Video" => "The Video tab of its own: how the picture is encoded, and the chapters. Hidden, what it holds is in the Export tab.",
+            "Tab:Audio" => "The Audio tab of its own: how the sound is encoded and mixed, ducking, the master mix and the voiceover (the sounds themselves are on the timeline). Hidden, what it holds is in the Export tab.",
             "Tab:Command Preview" => "The FFmpeg command, to read or edit (the same as the setting in Settings).",
             _ => $"The {t.Tab.Header} tab.",
         }));
@@ -342,9 +343,9 @@ public partial class MainWindow
         void Refresh() => _dock.ScheduleRebuild();
         return
         [
-            new("Master Timeline", () => AppSettings.Current.ShowMasterTimeline,
+            new("Overview Bar", () => AppSettings.Current.ShowMasterTimeline,
                 on => { _viewModel.SavePaneLayout(s => s.ShowMasterTimeline = on); Refresh(); },
-                "The master timeline under the player: the whole sequence, its cut segments and markers."),
+                "The overview bar under the player: the whole sequence at a glance, its cut segments, markers and thumbnails (the timeline itself is a pane of its own)."),
             new("Playback Controls", () => _viewModel.ShowAdvancedPlayback,
                 on => _viewModel.SetViewSetting(s => s.ShowAdvancedPlayback = on, nameof(MainViewModel.ShowAdvancedPlayback), nameof(MainViewModel.ShowSimplePlayback)),
                 "The playback controls under the player: play, the edit points, the speed and volume."),

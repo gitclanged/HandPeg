@@ -9,7 +9,7 @@ namespace HandPegApp.Services;
 /// <summary>
 /// Pictures made from media files, kept on disk between sessions so that a file opened again does not have them
 /// made again: a folder of files, each named after what it was made from (the file's path, size and time it was
-/// last changed, so an edited file is a different one) and what it is ("sprite", "strip16", "wave0"...). When the
+/// last changed, so an edited file is a different one) and what it is ("sprite", "strip16", "peaks80-0"...). When the
 /// folder grows past its limit, the files used longest ago go first.
 ///
 /// Three of them: the timeline's (sheets of hover previews, the strips of frames on the blocks, waveform peaks,

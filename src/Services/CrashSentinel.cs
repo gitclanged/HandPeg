@@ -325,6 +325,9 @@ public static partial class CrashSentinel
 
         // The computer, as HandPeg packed it (the cards with it: env.adapters stands for the old env.gpus).
         CrashHardware.Unpack(context, report.Environment);
+
+        // On a developer's PC, what the flight recorder last wrote (4.4.0).
+        report.DevVerbose = DevFlightRecorder.FromDisk();
         return report;
     }
 

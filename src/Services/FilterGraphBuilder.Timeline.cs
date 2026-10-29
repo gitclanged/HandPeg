@@ -76,8 +76,32 @@ public static partial class FilterGraphBuilder
         /// </summary>
         public required IReadOnlyList<MainClip> CenterClips { get; init; }
 
-        /// <summary>The chain's other clips (keys or effects of their own), each a layer cut whole from the chain's stream, in the main video's box.</summary>
+        /// <summary>The chain's other clips (keys or effects, a place or a crop of their own), each a layer cut whole from the chain's stream, in its own box.</summary>
         public required IReadOnlySet<Layer> Riders { get; init; }
+
+        /// <summary>
+        /// The chain's clips the blurred background is made under (4.4): those whose blur fill is on or left to the
+        /// sequence's switch. The very list of <see cref="MainClips"/> while every clip leaves it on or to the switch.
+        /// </summary>
+        public required IReadOnlyList<MainClip> BlurClips { get; init; }
+
+        /// <summary>
+        /// The chain's clips whose blur fill is on whatever the sequence's switch says: the blurred background with the
+        /// switch off. The very list of <see cref="MainClips"/> while every clip's is.
+        /// </summary>
+        public required IReadOnlyList<MainClip> ForcedBlurClips { get; init; }
+
+        /// <summary>
+        /// The layers made of the main video's clips that are cut from their stream by a crop of their own (4.4: a rider
+        /// cropped otherwise than the chain's first clip, a clip of the main video laid as a file), as fractions of the
+        /// picture: left, top, right, bottom. The chain's one piece and its other riders are cut by the sequence's crop
+        /// (<see cref="SequenceExportState.CropFractions"/>); every other clip by its own, which its layer keeps
+        /// (4.4-BugHunt: every clip's crop reframes its picture, <see cref="Layer.CropFractions"/>).
+        /// </summary>
+        public required IReadOnlyDictionary<Layer, (double Left, double Top, double Right, double Bottom)> StreamCrops { get; init; }
+
+        /// <summary>The blurred copies laid under the videos from files that fill the frame with one (4.4: a clip's blur fill), each just under its clip.</summary>
+        public required IReadOnlySet<Layer> BlurTwins { get; init; }
 
         /// <summary>
         /// Where the primary file's sound is heard: the chain's clips with their J and L cuts, their slip and their gain, the
@@ -182,6 +206,28 @@ public static partial class FilterGraphBuilder
 
         var riding = new HashSet<TimelineClip>(chain, ReferenceEqualityComparer.Instance);
 
+        // The main video's place and crop are its clips' own (4.4): the sequence's (CenterRect, CropFractions) are its first
+        // clip's, and a clip of it placed or cropped otherwise is laid in a box and cut by a crop of its own. With no chain
+        // (no clip can ride it), the first clip of the main video's, as the view model sizes the sequence by then
+        // (MainViewModel.AnchorMainView).
+        LayerState? chainLook = null;
+        if (anchor is not null)
+        {
+            chainLook = LookOf(anchor, primaryTrack!);
+        }
+        else
+        {
+            foreach (var track in document.Tracks)
+            {
+                if (track.Clips.FirstOrDefault(c => c.ContentKind == LayerKind.MainVideo) is { } first)
+                {
+                    chainLook = LookOf(first, track);
+                    break;
+                }
+            }
+        }
+        var streamCrops = new Dictionary<Layer, (double Left, double Top, double Right, double Bottom)>(ReferenceEqualityComparer.Instance);
+
         // Every other clip as a layer, numbered by its track (a crossfade across tracks pairs clips of two tracks).
         var layers = new Dictionary<TimelineClip, Layer>(ReferenceEqualityComparer.Instance);
         for (var t = 0; t < document.Tracks.Count; t++)
@@ -197,11 +243,11 @@ public static partial class FilterGraphBuilder
                 if (riding.Contains(clip))
                 {
                     if (!center.Contains(clip))
-                        layers[clip] = MakeRider(clip, track, t + 1, LookOf(clip, track), state, document);
+                        layers[clip] = MakeRider(clip, track, t + 1, LookOf(clip, track), chainLook, state, document, streamCrops);
                 }
                 else if (clip.ContentKind is not (LayerKind.Captions or LayerKind.Background))
                 {
-                    layers[clip] = MakeLayer(clip, track, t + 1, LookOf(clip, track), state, document);
+                    layers[clip] = MakeLayer(clip, track, t + 1, LookOf(clip, track), chainLook, state, document, streamCrops);
                 }
             }
         }
@@ -265,9 +311,10 @@ public static partial class FilterGraphBuilder
             }
         }
 
-        // The chain's clips on the sequence, their crossfades laid out, and where their sound is heard.
-        var (mainClips, mainCrossfades, mainSound, mainHeard, centerClips) = engine
-            ? LayOutChain(chain, center, primaryTrack, dips, media)
+        // The chain's clips on the sequence, their crossfades laid out, where their sound is heard, and which want the
+        // blurred background under them.
+        var (mainClips, mainCrossfades, mainSound, mainHeard, centerClips, blurClips, forcedBlurClips) = engine
+            ? LayOutChain(chain, center, primaryTrack, dips, media, clip => LookOf(clip, primaryTrack!).BlurFill)
             : WholeFile(media);
 
         var sequenceSeconds = engine ? length : mainClips.Count == 0 ? 0 : mainClips.Max(c => c.End);
@@ -289,6 +336,24 @@ public static partial class FilterGraphBuilder
         }
 
         PairLayerCrossfades(stack);
+
+        // A video from a file whose blur fill is on (4.4): a blurred copy of it, covering the frame, just under it, while it
+        // can be seen. (The chain's clips have the blurred background, BlurClips; a piece cut from the video has no picture
+        // of its own.)
+        var twins = new HashSet<Layer>(ReferenceEqualityComparer.Instance);
+        foreach (var track in document.Tracks)
+        {
+            foreach (var clip in track.Clips)
+            {
+                if (layers.TryGetValue(clip, out var layer) && layer.IsVideoFile && !layer.IsHidden && (layer.Opacity > 0 || layer.AnimatesOpacity)
+                    && LookOf(clip, track).BlurFill == true && stack.IndexOf(layer) is >= 0 and var at)
+                {
+                    var twin = BlurTwinOf(layer, state, document);
+                    stack.Insert(at, twin);
+                    twins.Add(twin);
+                }
+            }
+        }
 
         // The sounds heard, in the order of the tracks: each layer's own, moved by its J or L cut when it has one.
         var sounds = new List<Layer>();
@@ -312,6 +377,10 @@ public static partial class FilterGraphBuilder
             MainCrossfades = mainCrossfades,
             CenterClips = centerClips,
             Riders = riders,
+            BlurClips = blurClips,
+            ForcedBlurClips = forcedBlurClips,
+            StreamCrops = streamCrops,
+            BlurTwins = twins,
             MainSound = mainSound,
             MainHeard = mainHeard,
             MainShift = engine && anchor is not null ? anchor.Start - anchor.MediaOffset : 0,
@@ -489,7 +558,8 @@ public static partial class FilterGraphBuilder
                      nameof(LayerState.IsHidden), nameof(LayerState.ProxyChoice), nameof(LayerState.AudioOffset), nameof(LayerState.TrackId),
                      nameof(LayerState.AudioGainDb), nameof(LayerState.IsSoundMuted), nameof(LayerState.FadeInSeconds), nameof(LayerState.FadeOutSeconds),
                      nameof(LayerState.FadeInStyle), nameof(LayerState.FadeOutStyle), nameof(LayerState.TransitionIn), nameof(LayerState.KeysX),
-                     nameof(LayerState.KeysY), nameof(LayerState.KeysScale), nameof(LayerState.KeysRotation), nameof(LayerState.KeysOpacity)])
+                     nameof(LayerState.KeysY), nameof(LayerState.KeysScale), nameof(LayerState.KeysRotation), nameof(LayerState.KeysOpacity),
+                     nameof(LayerState.BlurFill)])
         {
             json.Remove(name);
         }
@@ -510,8 +580,9 @@ public static partial class FilterGraphBuilder
 
     /// <summary>
     /// A clip's look over its track's: what the track's clips share from <paramref name="trackLook"/>, what is the clip's
-    /// own (its name and file, where it sits and how large, its keyframes, its anchor and its effect stack) from
-    /// <paramref name="state"/>. Just the clip's State when the track has no look. Neither is changed.
+    /// own (its name and file, where it sits and how large, its shape, turn and crop, its blur fill, its keyframes, its
+    /// anchor and its effect stack) from <paramref name="state"/>. Just the clip's State when the track has no look. Neither
+    /// is changed.
     /// </summary>
     private static LayerState Merged(LayerState? trackLook, LayerState state)
     {
@@ -522,6 +593,8 @@ public static partial class FilterGraphBuilder
         (look.Name, look.Kind, look.ImagePath, look.ImageWidth, look.ImageHeight) = (state.Name, state.Kind, state.ImagePath, state.ImageWidth, state.ImageHeight);
         (look.MediaDuration, look.HasAudio, look.AudioCodec, look.AudioChannels) = (state.MediaDuration, state.HasAudio, state.AudioCodec, state.AudioChannels);
         (look.PositionX, look.PositionY, look.SizeWidth, look.SizeHeight) = (state.PositionX, state.PositionY, state.SizeWidth, state.SizeHeight);
+        (look.LockAspectRatio, look.Rotation, look.BlurFill) = (state.LockAspectRatio, state.Rotation, state.BlurFill);
+        (look.CropLeft, look.CropTop, look.CropRight, look.CropBottom) = (state.CropLeft, state.CropTop, state.CropRight, state.CropBottom);
         (look.KeysX, look.KeysY, look.KeysScale, look.KeysRotation, look.KeysOpacity) = (state.KeysX, state.KeysY, state.KeysScale, state.KeysRotation, state.KeysOpacity);
         (look.AnchorX, look.AnchorY, look.Effects, look.EffectsBypassed) = (state.AnchorX, state.AnchorY, state.Effects, state.EffectsBypassed);
         return look;
@@ -532,11 +605,14 @@ public static partial class FilterGraphBuilder
     /// <summary>
     /// A clip as the layer the graph is written from: its look, with its own timing, fades, file, visibility (its track
     /// hides its picture, not its sound), sound (its track's gain added to its own, the track's filters and ducking) and
-    /// a number for its track. A clip of the main video that does not ride the chain sits in the main video's box (its look
-    /// is the main video's, whose place the sequence keeps), uncropped. Keyframes that change nothing are folded (see
-    /// <see cref="FoldConstantKeys"/>).
+    /// a number for its track. A clip of the main video that does not ride the chain sits in the main video's box while it
+    /// is placed and cropped as the chain's first clip is (uncropped while that is), in a box of its own otherwise (4.4); its
+    /// crop cuts its picture (<paramref name="streamCrops"/>), never a mask of it. So does every other clip's (4.4-BugHunt),
+    /// which its layer keeps. Keyframes that change nothing are folded (see <see cref="FoldConstantKeys"/>).
     /// </summary>
-    private static Layer MakeLayer(TimelineClip clip, TimelineTrackModel track, int trackNumber, LayerState look, SequenceExportState state, TimelineDocument document)
+    /// <param name="anchorLook">The look of the chain's first clip (with no chain, the main video's first clip), whose place and crop are the sequence's; null with no clip of the main video.</param>
+    private static Layer MakeLayer(TimelineClip clip, TimelineTrackModel track, int trackNumber, LayerState look, LayerState? anchorLook, SequenceExportState state,
+        TimelineDocument document, Dictionary<Layer, (double Left, double Top, double Right, double Bottom)> streamCrops)
     {
         var kind = clip.ContentKind == LayerKind.MainVideo ? LayerKind.VideoFile : clip.ContentKind;
         var made = look.ShallowCopy();
@@ -557,27 +633,52 @@ public static partial class FilterGraphBuilder
             made.AudioFilters = filters;
         (made.ProxyChoice, made.TrackId, made.IsEmptyTrack, made.IsDeleted) = (clip.ProxyChoice, trackNumber, false, false);
 
+        // Every clip's crop reframes its picture (4.4-BugHunt, the user's Q2), held by the one rule (Layer.HeldCrop). A clip of
+        // the main video is cut from its stream by it (streamCrops, its box at the shape it leaves), so its layer is not cut
+        // again; any other clip's layer keeps it, and the pass cuts its picture by it where it is read (Pass.AppendLayer), its
+        // box taking the shape it leaves (Layer.GetOutputRect).
+        var main = clip.ContentKind == LayerKind.MainVideo;
+        var crop = main ? Layer.HeldCrop(look) : default;
+        if (main)
+            (made.CropLeft, made.CropTop, made.CropRight, made.CropBottom) = (0, 0, 0, 0);
+
         var (x, y, width, height) = state.CenterRect;
-        if (clip.ContentKind == LayerKind.MainVideo && width > 0 && document.Width > 0 && document.Height > 0)
+        var (ownPlace, ownCrop) = main ? OwnOf(look, anchorLook) : (false, false);
+        if (main && width > 0 && document.Width > 0 && document.Height > 0)
         {
-            // The box at the source's own shape (the main video's crop reframes its stream, which a layer's crop does not).
-            var tall = state.SourceWidth > 0 && state.SourceHeight > 0 ? width * (double)state.SourceHeight / state.SourceWidth : height;
-            (made.PositionX, made.PositionY) = (x / (double)document.Width, (y + (height - tall) / 2) / document.Height);
-            (made.SizeWidth, made.SizeHeight, made.LockAspectRatio) = (width / (double)document.Width, tall / document.Height, false);
+            if (!ownPlace && !ownCrop && !IsCropped(crop))
+            {
+                // The box at the source's own shape.
+                var tall = state.SourceWidth > 0 && state.SourceHeight > 0 ? width * (double)state.SourceHeight / state.SourceWidth : height;
+                (made.PositionX, made.PositionY) = (x / (double)document.Width, (y + (height - tall) / 2) / document.Height);
+                (made.SizeWidth, made.SizeHeight, made.LockAspectRatio) = (width / (double)document.Width, tall / document.Height, false);
+            }
+            else
+            {
+                // Its own box, or the main video's at the shape the same crop gives it; its picture cut by its crop.
+                (x, y, width, height) = ownPlace || ownCrop ? MainRectOf(look, state, document) : (x, y, width, height);
+                (made.PositionX, made.PositionY) = (x / (double)document.Width, y / (double)document.Height);
+                (made.SizeWidth, made.SizeHeight, made.LockAspectRatio) = (width / (double)document.Width, height / (double)document.Height, false);
+            }
         }
 
         var layer = Layer.FromState(made, state.SourceWidth, state.SourceHeight, document.Width, document.Height);
         FoldConstantKeys(layer);
+        if (main && IsCropped(crop))
+            streamCrops[layer] = crop;
         return layer;
     }
 
     /// <summary>
     /// A clip of the primary chain outside its one piece (keys or effects of its own) as the layer the graph is written
     /// from: its look, timing, fades and visibility, cut whole from the chain's stream (with the main video's crop,
-    /// <see cref="Lowered.Riders"/>) and laid in the main video's box. Kind Video, so it is there while the stream is; no
-    /// sound, which the stream carries.
+    /// <see cref="Lowered.Riders"/>) and laid in the main video's box; or, placed or cropped otherwise than the chain's first
+    /// clip (4.4), laid in its own box and cut by its own crop (<paramref name="streamCrops"/>), never a mask of it. Kind
+    /// Video, so it is there while the stream is; no sound, which the stream carries.
     /// </summary>
-    private static Layer MakeRider(TimelineClip clip, TimelineTrackModel track, int trackNumber, LayerState look, SequenceExportState state, TimelineDocument document)
+    /// <param name="anchorLook">The look of the chain's first clip, whose place and crop are the sequence's.</param>
+    private static Layer MakeRider(TimelineClip clip, TimelineTrackModel track, int trackNumber, LayerState look, LayerState? anchorLook, SequenceExportState state,
+        TimelineDocument document, Dictionary<Layer, (double Left, double Top, double Right, double Bottom)> streamCrops)
     {
         var made = look.ShallowCopy();
         made.Kind = LayerKind.Video;
@@ -586,8 +687,10 @@ public static partial class FilterGraphBuilder
         (made.TransitionIn, made.IsHidden, made.ProxyChoice, made.TrackId) = (clip.TransitionIn, track.IsHidden, clip.ProxyChoice, trackNumber);
         (made.HasAudio, made.IsSoundMuted, made.AudioOffset, made.IsEmptyTrack, made.IsDeleted) = (false, true, 0, false, false);
         (made.SourceX, made.SourceY, made.SourceWidth, made.SourceHeight) = (0, 0, 1, 1);
+        (made.CropLeft, made.CropTop, made.CropRight, made.CropBottom) = (0, 0, 0, 0);
 
-        var (x, y, width, height) = state.CenterRect;
+        var (ownPlace, ownCrop) = OwnOf(look, anchorLook);
+        var (x, y, width, height) = ownPlace || ownCrop ? MainRectOf(look, state, document) : state.CenterRect;
         if (width > 0 && document.Width > 0 && document.Height > 0)
         {
             (made.PositionX, made.PositionY) = (x / (double)document.Width, y / (double)document.Height);
@@ -596,7 +699,85 @@ public static partial class FilterGraphBuilder
 
         var layer = Layer.FromState(made, state.SourceWidth, state.SourceHeight, document.Width, document.Height);
         FoldConstantKeys(layer);
+        if (ownCrop)
+            streamCrops[layer] = Layer.HeldCrop(look);
         return layer;
+    }
+
+    private static bool IsCropped((double Left, double Top, double Right, double Bottom) crop) => crop.Left + crop.Top + crop.Right + crop.Bottom > 1e-9;
+
+    /// <summary>Whether a main video clip is placed (its corner, its width) and cropped otherwise than the clip the sequence's place and crop are (the chain's first, else the main video's first).</summary>
+    private static (bool Place, bool Crop) OwnOf(LayerState look, LayerState? anchorLook)
+    {
+        if (anchorLook is null || ReferenceEquals(look, anchorLook))
+            return (false, false);
+
+        static bool Differ(double a, double b) => Math.Abs(a - b) > 1e-9;
+        var place = Differ(look.PositionX, anchorLook.PositionX) || Differ(look.PositionY, anchorLook.PositionY) || Differ(look.SizeWidth, anchorLook.SizeWidth);
+        var (crop, anchorCrop) = (Layer.HeldCrop(look), Layer.HeldCrop(anchorLook));
+        var cropped = Differ(crop.Left, anchorCrop.Left) || Differ(crop.Top, anchorCrop.Top) || Differ(crop.Right, anchorCrop.Right) || Differ(crop.Bottom, anchorCrop.Bottom);
+        return (place, cropped);
+    }
+
+    /// <summary>
+    /// Where a main video clip with a place of its own sits on the frame, in the frame's pixels: its corner and its width
+    /// as its look has them, its height at the shape its crop leaves of the source, as the view model places it about its
+    /// middle (MainViewModel.GetCenterRect: the same evens and roundings, so a clip placed as the first one is in its box).
+    /// </summary>
+    private static (int X, int Y, int Width, int Height) MainRectOf(LayerState look, SequenceExportState state, TimelineDocument document)
+    {
+        var (frameWidth, frameHeight) = (document.Width, document.Height);
+        var (sourceWidth, sourceHeight) = state.SourceWidth > 0 && state.SourceHeight > 0 ? (state.SourceWidth, state.SourceHeight) : (1920, 1080);
+        var (left, top, right, bottom) = Layer.HeldCrop(look);
+        var croppedWidth = Math.Max((int)(sourceWidth * (1 - left - right) / 2) * 2, 2);
+        var croppedHeight = Math.Max((int)(sourceHeight * (1 - top - bottom) / 2) * 2, 2);
+        var width = Even(frameWidth * (double.IsFinite(look.SizeWidth) ? look.SizeWidth : 1));
+        var height = Even((double)width * croppedHeight / croppedWidth);
+        return ((int)Math.Round(look.PositionX * frameWidth), (int)Math.Round(look.PositionY * frameHeight), width, height);
+    }
+
+    /// <summary>
+    /// The blurred copy a video from a file fills the frame with (4.4): the same file, timing, fades, opacity (its keys
+    /// too) and visibility, no sound, place keys, mask or effects of its own, in a box that is the frame. Its picture is
+    /// scaled to cover the frame about its middle, cut to it and blurred as the sequence's background is (BlurRadius,
+    /// BlurPasses, BackgroundDim), where it is written (<see cref="Lowered.BlurTwins"/>).
+    /// </summary>
+    private static Layer BlurTwinOf(Layer layer, SequenceExportState state, TimelineDocument document)
+    {
+        var twin = new LayerState
+        {
+            Name = $"{layer.Name} (blur fill)",
+            Kind = LayerKind.VideoFile,
+            ImagePath = layer.ImagePath,
+            ImageWidth = layer.ImageWidth,
+            ImageHeight = layer.ImageHeight,
+            MediaDuration = layer.MediaDuration,
+            StartTime = layer.StartTime,
+            Duration = layer.Duration,
+            MediaOffset = layer.MediaOffset,
+            Speed = layer.Speed,
+            FadeInSeconds = layer.FadeInSeconds,
+            FadeOutSeconds = layer.FadeOutSeconds,
+            FadeInStyle = layer.FadeInStyle,
+            FadeOutStyle = layer.FadeOutStyle,
+            IsHidden = layer.IsHidden,
+            ProxyChoice = layer.ProxyChoice,
+            TrackId = layer.TrackId,
+            HasAudio = false,
+            IsSoundMuted = true,
+            Opacity = layer.Opacity,
+            KeysOpacity = layer.GetKeys(KeyProperty.Opacity) is { Count: > 0 } keys ? [.. keys] : null,
+            PositionX = 0,
+            PositionY = 0,
+            SizeWidth = 1,
+            SizeHeight = 1,
+            LockAspectRatio = false,
+            Effects = [],
+        };
+
+        var made = Layer.FromState(twin, state.SourceWidth, state.SourceHeight, document.Width, document.Height);
+        (made.PictureFadeInOff, made.PictureFadeOutOff) = (layer.PictureFadeInOff, layer.PictureFadeOutOff);
+        return made;
     }
 
     /// <summary>
@@ -628,6 +809,10 @@ public static partial class FilterGraphBuilder
     {
         var made = look?.ShallowCopy() ?? new LayerState { Name = "Main Video", IsHidden = true };
         made.Kind = LayerKind.MainVideo;
+
+        // Its crop reframes the stream (the sequence's CropFractions, its first clip's), as every clip's crop reframes its
+        // picture (4.4-BugHunt): the stream is cut once, so the layer has none of its own.
+        (made.CropLeft, made.CropTop, made.CropRight, made.CropBottom) = (0, 0, 0, 0);
         if (anchor is not null)
         {
             (made.StartTime, made.Duration, made.MediaOffset, made.Speed) = (anchor.Start, anchor.Duration, anchor.MediaOffset, 1);
@@ -647,16 +832,19 @@ public static partial class FilterGraphBuilder
     /// <summary>
     /// The chain's clips as the graph lays them: each cut to what its file has (a clip past the file's end ends with it),
     /// a clip that runs into the next ending where it starts, and each pair that meets with a crossfade laid over each
-    /// other across the cut (<see cref="LayOutCrossfades"/>). Then where its sound is heard (<see cref="SoundOfChain"/>).
+    /// other across the cut (<see cref="LayOutCrossfades"/>). Then where its sound is heard (<see cref="SoundOfChain"/>), and
+    /// which of them the blurred background is made under (4.4, by each clip's <paramref name="blurFill"/>): those that leave
+    /// it on or to the sequence's switch (<see cref="Lowered.BlurClips"/>), and those that have it on whatever the switch says.
     /// </summary>
     private static (IReadOnlyList<MainClip> Clips, IReadOnlyList<MainCrossfade> Crossfades, IReadOnlyList<MainClip> Sound, IReadOnlyList<MainClip> Heard,
-        IReadOnlyList<MainClip> Center) LayOutChain(
-        List<TimelineClip> chain, HashSet<TimelineClip> center, TimelineTrackModel? track, Dictionary<TimelineClip, (double In, double Out)> dips, double media)
+        IReadOnlyList<MainClip> Center, IReadOnlyList<MainClip> Blur, IReadOnlyList<MainClip> ForcedBlur) LayOutChain(
+        List<TimelineClip> chain, HashSet<TimelineClip> center, TimelineTrackModel? track, Dictionary<TimelineClip, (double In, double Out)> dips, double media,
+        Func<TimelineClip, bool?> blurFill)
     {
         if (chain.Count == 0 || track is null)
         {
             List<MainClip> none = [];
-            return (none, [], none, none, none);
+            return (none, [], none, none, none, none, none);
         }
 
         // (A crossfade is only made between two of them that meet within the one piece: one with any other clip between, or
@@ -692,15 +880,18 @@ public static partial class FilterGraphBuilder
         var from = placed.ConvertAll(p => p.From);
         var (sound, heard) = SoundOfChain(clips, from, track);
         var drawn = from.TrueForAll(center.Contains) ? clips : clips.Where((_, i) => center.Contains(from[i])).ToList();
-        return (clips, crossfades, sound, heard, drawn);
+        var fills = from.ConvertAll(c => blurFill(c));
+        var blur = fills.TrueForAll(f => f != false) ? clips : clips.Where((_, i) => fills[i] != false).ToList();
+        var forced = fills.TrueForAll(f => f == true) ? clips : clips.Where((_, i) => fills[i] == true).ToList();
+        return (clips, crossfades, sound, heard, drawn, blur, forced);
     }
 
     /// <summary>Without the Layer Engine the file is the whole timeline, from its first frame to its last, its sound with it.</summary>
     private static (IReadOnlyList<MainClip> Clips, IReadOnlyList<MainCrossfade> Crossfades, IReadOnlyList<MainClip> Sound, IReadOnlyList<MainClip> Heard,
-        IReadOnlyList<MainClip> Center) WholeFile(double media)
+        IReadOnlyList<MainClip> Center, IReadOnlyList<MainClip> Blur, IReadOnlyList<MainClip> ForcedBlur) WholeFile(double media)
     {
         List<MainClip> clips = [new MainClip(0, 0, media, 0)];
-        return (clips, [], clips, clips, clips);
+        return (clips, [], clips, clips, clips, clips, []);
     }
 
     /// <summary>

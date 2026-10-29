@@ -29,6 +29,11 @@ public sealed record ProjectEntry(string FilePath, string Name, string SourceNam
 // of formats 1 to 4 (HandPeg 1.x's .txt, and the .hproj of HandPeg 2.0 to 4.2.0, laid out as a cut list, the main video
 // and tracks of layers) are refused with the reason, and not converted. A newer format is opened only when the user
 // asks, and is never written over.
+//
+// Since 4.4 a save also carries the undo and redo history (undoFormat, undoHistory, redoHistory, just before the timeline),
+// so that Ctrl+Z goes on where the save left it. It is optional and left out when empty, so format 5 stays format 5: a
+// version without it reads the file as before. Read leniently: a history of another shape, or one that is not a history
+// at all, is let go, never the project.
 
 /// <summary>A project as it is written to disk.</summary>
 public sealed class ProjectFile
@@ -73,10 +78,99 @@ public sealed class ProjectFile
     public List<ProjectSeekIndex>? SeekIndexes { get; set; }
 
     /// <summary>
+    /// The shape of the undo history's steps this version writes and reads (the view model's TimelineSnapshot as JSON, packed:
+    /// UndoSteps). Bump it when that changes shape incompatibly: a history of another shape is let go on opening.
+    /// </summary>
+    public const int CurrentUndoFormat = 1;
+
+    /// <summary>The most steps of each history a file carries (Undo keeps twenty).</summary>
+    public const int MaximumUndoSteps = 20;
+
+    /// <summary>The shape the undo history's steps are in (<see cref="CurrentUndoFormat"/> as written); left out (0) with no history.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault), JsonConverter(typeof(LenientIntConverter))]
+    public int UndoFormat { get; set; }
+
+    /// <summary>
+    /// The undo history at the save (4.4): oldest first, at most twenty steps, each its name and the timeline it puts back as
+    /// Undo keeps it (packed, Base64). Optional and left out when empty; read leniently (<see cref="UndoStepsConverter"/>).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull), JsonConverter(typeof(UndoStepsConverter))]
+    public List<ProjectUndoStep>? UndoHistory { get; set; }
+
+    /// <summary>The redo history at the save, as <see cref="UndoHistory"/> is kept: the step Redo puts back first is the last.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull), JsonConverter(typeof(UndoStepsConverter))]
+    public List<ProjectUndoStep>? RedoHistory { get; set; }
+
+    /// <summary>
     /// The timeline: every track and clip (the main video's among them), the markers and the Sequence Output's effects.
     /// Last in the file, and required: a project without one is refused.
     /// </summary>
     public TimelineDocument? Timeline { get; set; }
+}
+
+/// <summary>One step of a project's undo history as the file carries it: its name ("delete Logo"), and the timeline it puts back, packed as Undo keeps it, in Base64.</summary>
+public sealed class ProjectUndoStep
+{
+    public string What { get; set; } = "";
+    public string State { get; set; } = "";
+}
+
+/// <summary>
+/// Reads an undo history leniently (4.4): a history is never the reason a project cannot be opened. What is not a list
+/// reads as none, and an entry that is not a step (an object whose "what" and "state" are text) is passed over. Written as
+/// a list of steps.
+/// </summary>
+internal sealed class UndoStepsConverter : JsonConverter<List<ProjectUndoStep>>
+{
+    public override List<ProjectUndoStep>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var document = JsonDocument.ParseValue(ref reader);
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var steps = new List<ProjectUndoStep>();
+        foreach (var entry in document.RootElement.EnumerateArray())
+        {
+            if (entry.ValueKind == JsonValueKind.Object
+                && entry.TryGetProperty("what", out var what) && what.ValueKind == JsonValueKind.String
+                && entry.TryGetProperty("state", out var state) && state.ValueKind == JsonValueKind.String)
+            {
+                steps.Add(new ProjectUndoStep { What = what.GetString() ?? "", State = state.GetString() ?? "" });
+            }
+        }
+
+        return steps;
+    }
+
+    public override void Write(Utf8JsonWriter writer, List<ProjectUndoStep> value, JsonSerializerOptions options)
+    {
+        writer.WriteStartArray();
+        foreach (var step in value)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("what", step.What);
+            writer.WriteString("state", step.State);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+    }
+}
+
+/// <summary>Reads a whole number leniently: anything else (text, a list, an object) reads as 0, and never fails the file.</summary>
+internal sealed class LenientIntConverter : JsonConverter<int>
+{
+    public override int Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt32(out var number))
+            return number;
+
+        // An object or a list is stepped over whole; any other value is one token, read already.
+        reader.Skip();
+        return 0;
+    }
+
+    public override void Write(Utf8JsonWriter writer, int value, JsonSerializerOptions options) => writer.WriteNumberValue(value);
 }
 
 /// <summary>One video file's seek facts in a project (see <see cref="SeekFacts"/>): the file as it was (size, last write) and where its I-frames are.</summary>
@@ -385,7 +479,7 @@ public static class ProjectStore
     /// <summary>The state as a format 5 file. The state is left as it was: its timeline is written from a copy of its own.</summary>
     public static string Serialize(ProjectState state) => JsonSerializer.Serialize(ToFile(state), JsonOptions);
 
-    /// <param name="unpackMasks">Write the masks the project carries into the masks folder and point its looks at them, and take up the seek indexes of its video files: when it is being opened, not when it is only being listed.</param>
+    /// <param name="unpackMasks">Write the masks the project carries into the masks folder and point its looks at them, take up the seek indexes of its video files, and read its undo history (4.4): when it is being opened, not when it is only being listed.</param>
     /// <param name="allowNewer">Read a file of a newer format too, as far as this version knows it, instead of refusing it: for when the user asked to open it anyway.</param>
     public static ProjectState Load(string filePath, bool unpackMasks = true, bool allowNewer = false) => Deserialize(File.ReadAllText(filePath), unpackMasks, allowNewer);
 
@@ -533,7 +627,68 @@ public static class ProjectStore
             IFrames = MediaProbe.PackTimes(f.IFrames),
         }).ToList();
         file.SeekIndexes = seeks.Count > 0 ? seeks : null;
+
+        // The undo history, when the state carries one (a save's, 4.4): with the shape of its steps. None is written otherwise.
+        if (state.UndoHistory is { Count: > 0 } || state.RedoHistory is { Count: > 0 })
+        {
+            file.UndoFormat = ProjectFile.CurrentUndoFormat;
+            (file.UndoHistory, file.RedoHistory) = (StepsOf(state.UndoHistory), StepsOf(state.RedoHistory));
+        }
+
         return file;
+    }
+
+    /// <summary>A history as the file carries it: its newest twenty steps, oldest first, each in Base64; null when empty.</summary>
+    private static List<ProjectUndoStep>? StepsOf(List<UndoStepState>? steps) =>
+        steps is { Count: > 0 }
+            ? [.. steps.Where(s => s is { State.Length: > 0 }).TakeLast(ProjectFile.MaximumUndoSteps).Select(s => new ProjectUndoStep { What = s.What, State = Convert.ToBase64String(s.State) })]
+            : null;
+
+    /// <summary>
+    /// The undo and redo history a project carries (4.4), as the view model keeps them: only one whose steps are of the shape
+    /// this version writes (another is let go, and logged), each step's Base64 read back (one that cannot be is passed over),
+    /// the newest twenty of each. Never the reason a project cannot be opened: a step that turns out unreadable is let go
+    /// when it is stepped to (MainViewModel.Step).
+    /// </summary>
+    private static (List<UndoStepState>? Undo, List<UndoStepState>? Redo) HistoryOf(ProjectFile file)
+    {
+        if (file.UndoHistory is not { Count: > 0 } && file.RedoHistory is not { Count: > 0 })
+            return (null, null);
+
+        if (file.UndoFormat != ProjectFile.CurrentUndoFormat)
+        {
+            AppLog.Write($"The project's undo history is of format {file.UndoFormat}, which this version does not read ({ProjectFile.CurrentUndoFormat}): let go");
+            return (null, null);
+        }
+
+        var unreadable = 0;
+        List<UndoStepState>? Read(List<ProjectUndoStep>? steps)
+        {
+            var read = new List<UndoStepState>();
+            foreach (var step in steps ?? [])
+            {
+                try
+                {
+                    if (Convert.FromBase64String(step.State) is { Length: > 0 } packed)
+                    {
+                        read.Add(new UndoStepState(step.What, packed));
+                        continue;
+                    }
+                }
+                catch (FormatException)
+                {
+                }
+
+                unreadable++;
+            }
+
+            return read.Count > 0 ? [.. read.TakeLast(ProjectFile.MaximumUndoSteps)] : null;
+        }
+
+        var history = (Read(file.UndoHistory), Read(file.RedoHistory));
+        if (unreadable > 0)
+            AppLog.Write($"{unreadable} step(s) of the project's undo history could not be read, and were let go");
+        return history;
     }
 
     /// <summary>The video files a project plays: the main video, and the file of every clip that plays one (the main video's clips, video files), once each.</summary>
@@ -622,9 +777,14 @@ public static class ProjectStore
             CaptionAudioTrackIndex = sequence.CaptionAudioTrack,
         };
 
-        // Opened (not only listed): its video files are made ready to be seeked in now, before the first graph is built.
+        // Opened (not only listed): its video files are made ready to be seeked in now, before the first graph is built, and
+        // the undo history it carries is read (4.4).
         if (unpackMasks)
+        {
             TakeUpSeekIndexes(file, state);
+            (state.UndoHistory, state.RedoHistory) = HistoryOf(file);
+        }
+
         return state;
     }
 

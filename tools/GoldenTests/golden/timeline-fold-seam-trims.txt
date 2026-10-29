@@ -1,0 +1,52 @@
+# Fold-aware edge trims (4.4-BugHunt, Q11): a clip's edge at a fold's seam shows part of the fold (joined into the clip) or folds more of the clip, children in step, the fold's id kept; past the whole fold it is put back; refusals change nothing.
+
+== Set up at 25 fps (a talk, its HUD cut-out on the track under it, music under both) and fold 6-10 s out of every track
+  Video 1: [T 0-6 @0] [T2 6-16 @10]
+  HUD: [H 0-6] [H2 6-16]
+  Audio 1: [M 0-6 @0] [M2 6-26 @10]
+  links: H<T H2<T2; HUD under Video 1
+fold at 6 s (4 s): [Video 1: 0-4 @6] [HUD: 0-4] [Audio 1: 0-4 @6]
+
+== Drag the start of the talk after the seam 1 s left: the fold's last second shows, joined into it with its HUD's
+  Video 1: [T 0-6 @0] [T2 6-17 @9]
+  HUD: [H 0-6] [H2 6-17]
+  Audio 1: [M 0-6 @0] [M2 6-27 @9]
+  links: H<T H2<T2; HUD under Video 1
+fold at 6 s (3 s), its id kept: [Video 1: 0-3 @6] [HUD: 0-3] [Audio 1: 0-3 @6]
+
+== Drag the end of the talk before the seam 1 s right: the fold's first second shows, joined into it
+  Video 1: [T 0-7 @0] [T2 7-18 @9]
+  HUD: [H 0-7] [H2 7-18]
+  Audio 1: [M 0-7 @0] [M2 7-28 @9]
+  links: H<T H2<T2; HUD under Video 1
+fold at 7 s (2 s), its id kept: [Video 1: 0-2 @7] [HUD: 0-2] [Audio 1: 0-2 @7]
+
+== Drag the start of the talk after the seam 0.6 s right: as much more of it folds, and it keeps its id, its HUD too
+  Video 1: [T 0-7 @0] [T2 7-17.4 @9.6]
+  HUD: [H 0-7] [H2 7-17.4]
+  Audio 1: [M 0-7 @0] [M2 7-27.4 @9.6]
+  links: H<T H2<T2; HUD under Video 1
+fold at 7 s (2.6 s), its id kept: [Video 1: 0-2 @7] [Video 1: 2-2.6 @9] [HUD: 0-2] [HUD: 2-2.6] [Audio 1: 0-2 @7] [Audio 1: 2-2.6 @9]
+the clip after the seam is another object now, its id the same: True
+
+== Drag the end of the talk before the seam 1 s left: its last second folds too
+  Video 1: [T 0-6 @0] [T2 6-16.4 @9.6]
+  HUD: [H 0-6] [H2 6-16.4]
+  Audio 1: [M 0-6 @0] [M2 6-26.4 @9.6]
+  links: H<T H2<T2; HUD under Video 1
+fold at 6 s (3.6 s), its id kept: [Video 1: 0-1 @6] [Video 1: 1-3 @7] [Video 1: 3-3.6 @9] [HUD: 0-1] [HUD: 1-3] [HUD: 3-3.6] [Audio 1: 0-1 @6] [Audio 1: 1-3 @7] [Audio 1: 3-3.6 @9]
+
+== Drag the start of the talk after the seam 10 s left, past the whole fold: it is put back, and stays marked
+  Video 1: [T 0-6 @0] [T3 6-7 @6] [T4 7-9 @7] [T5 9-9.6 @9] [T2 9.6-20 @9.6]
+  HUD: [H 0-6] [H3 6-7] [H4 7-9] [H5 9-9.6] [H2 9.6-20]
+  Audio 1: [M 0-6 @0] [M3 6-7 @6] [M4 7-9 @7] [M5 9-9.6 @9] [M2 9.6-30 @9.6]
+  links: H<T H3<T3 H4<T4 H5<T5 H2<T2; HUD under Video 1
+
+== Hide the stretch again: the same fold, as it was before it was put back
+  Video 1: [T 0-6 @0] [T2 6-16.4 @9.6]
+  HUD: [H 0-6] [H2 6-16.4]
+  Audio 1: [M 0-6 @0] [M2 6-26.4 @9.6]
+  links: H<T H2<T2; HUD under Video 1
+
+With the HUD track locked, showing a second of the fold: refused
+Folding 100 s more of the talk before the seam: it keeps 0.08 s, the fold is 9.52 s

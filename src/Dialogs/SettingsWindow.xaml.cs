@@ -441,7 +441,9 @@ public partial class SettingsWindow : Window
         Closed += (_, _) => viewModel.PropertyChanged -= ViewModel_PropertyChanged;
         UpdateWhisperStatus();
 
-        // The category rail and the live preview stage (4.3-0B), once every box above holds its value.
+        // The title bar, the editor's mirrored (4.4); the category rail and the live preview stage (4.3-0B), once every box
+        // above holds its value.
+        InitializeTitleBar();
         InitializeScreen();
     }
 
@@ -451,6 +453,10 @@ public partial class SettingsWindow : Window
         {
             Dependencies.AppIsBusy = _viewModel.IsBusy;
             UpdateWhisperStatus();
+        }
+        else if (e.PropertyName == nameof(MainViewModel.StatusText))
+        {
+            UpdateTitleStatus();
         }
     }
 
@@ -1035,6 +1041,9 @@ public partial class SettingsWindow : Window
         _settings.SmartRules = AppSettings.Current.SmartRules;
         _settings.DefaultPreset = AppSettings.Current.DefaultPreset;
 
+        // The keys and the Lightning Dial, as the Keybinds page has them (SettingsWindow.Keybinds.cs).
+        SaveKeybinds();
+
         try
         {
             _settings.SaveAsCurrent();
@@ -1045,6 +1054,8 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        // The keys and the dial go into effect once they are saved (a failed save, then Cancel, keeps the old ones).
+        KeybindManager.Reload(_settings);
         DialogResult = true;
     }
 }

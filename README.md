@@ -12,14 +12,18 @@ There is no middleware: every edit compiles straight to an FFmpeg filter graph, 
 and encoded by FFmpeg on export. The window paints its first, final frame in under half a second, and HandPeg idles
 well under 200 MB of memory.
 
-![The HandPeg v4.3.0 editor with a project open: player, Canvas, Media pane and the multi-track timeline](docs/screenshots/workspace-v4.3.png)
+![The HandPeg v4.4.0 editor: the newest recording dropped on the Overwatch vertical style, with the one Timeline, its child mini-stacks and the Overview Bar](docs/screenshots/workspace-v4.4.png)
 
-![The full-window Settings screen of v4.3.0, with its category rail and live preview stage](docs/screenshots/settings-v4.3.png)
+![Hold Tab: X-Ray and the keyboard-and-mouse map over the player, naming what each key does](docs/screenshots/xray-keymap-v4.4.png)
 
-**New in v4.3.0:** full-window Settings with a live preview stage, a Voice track found by itself for Auto-Captions and
-Remove Dead Air, dead air folded away and restorable, splits that keep each half's keyframe curve exactly, media drops
-that land at once even while the Media pane is indexing, undo in the Subtitle Editor and every editing dialog, and native
-Windows on ARM. Under the hood, every edit now lives in one timeline document (project format 5).
+![Settings > Keybinds & Lightning Dial: the dial's categories and the drawn keyboard-and-mouse map](docs/screenshots/settings-keybinds-v4.4.png)
+
+<img src="docs/screenshots/dial-v4.4.png" alt="The Lightning Dial on Mouse 5: seven categories and Settings in one ring" width="280">
+
+**New in v4.4.0:** one Timeline for every track, with a game style's HUD pieces and the captions as collapsible children
+that follow their parent; captions anchored to the voice's words; each clip's own place, size, crop and blur fill; the
+Lightning Dial on Mouse 5 and a rebindable left-hand key cluster (hold W/A/S/D to zoom and pan what is under the pointer);
+hold Tab for X-Ray and a clickable key map; dead air that folds both ways; and undo history saved with the project.
 
 ## What it does
 - **One multi-track timeline:** video, image, text and audio layers with a live preview of the finished picture and

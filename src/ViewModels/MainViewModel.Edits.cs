@@ -15,12 +15,20 @@ public partial class MainViewModel
 {
     /// <summary>
     /// The left edge of a clip dragged: where it starts, and (a video or a sound) where in its file it starts, with what it
-    /// shows staying where it was on the timeline. Rippled, its start stays and the clips after it follow its end.
+    /// shows staying where it was on the timeline. Rippled, its start stays and the clips after it follow its end. At a seam
+    /// of folded dead air (Q11, 4.4-BugHunt), a plain drag opens the fold or folds more of the clip into it instead
+    /// (<see cref="TrimIntoSeam"/>); a ripple trim there stays a ripple trim.
     /// </summary>
     public void TrimClipStart(Layer clip, double start, bool ripple)
     {
         if (ClipOf(clip) is not { } model)
             return;
+
+        if (!ripple && FoldAtEdge(clip, startEdge: true) is not null)
+        {
+            TrimIntoSeam(clip, startEdge: true, start);
+            return;
+        }
 
         var moved = 0.0;
         if (Edit($"trim the start of {clip.Name}", edit => moved = edit.TrimClipStart(model, start, ripple, AppSettings.Current.RippleAllTracks)) && Math.Abs(moved) < 1e-6)
@@ -125,7 +133,8 @@ public partial class MainViewModel
     /// <summary>
     /// A clip let go after a move along its track, or after its right edge was dragged (a new length). Let go a little over
     /// a clip it meets there (from a frame up to two seconds, and up to half of either), the two are put end to end with a
-    /// crossfade of that much at their cut instead.
+    /// crossfade of that much at their cut instead. A right edge at a seam of folded dead air (Q11, 4.4-BugHunt) opens the
+    /// fold or folds more of the clip into it (<see cref="TrimIntoSeam"/>).
     /// </summary>
     public void CommitClipMove(Layer clip, double start, double length)
     {
@@ -136,6 +145,12 @@ public partial class MainViewModel
         var resizes = Math.Abs(length - model.Duration) > 0.0005;
         if (!moves && !resizes)
             return;
+
+        if (resizes && !moves && FoldAtEdge(clip, startEdge: false) is not null)
+        {
+            TrimIntoSeam(clip, startEdge: false, model.Start + Math.Max(length, TimelineDocument.MinimumClipSeconds));
+            return;
+        }
 
         var crossfades = track.Clips.Sum(c => c.TransitionIn);
         if (!Edit($"{(moves ? "move" : "trim the end of")} {clip.Name}", edit =>

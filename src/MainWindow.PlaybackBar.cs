@@ -65,7 +65,7 @@ public partial class MainWindow
                 _viewModel.PositionMs = start;
                 break;
             case "GoToIn":
-                _viewModel.StatusText = "There is no in point: set one with [ (I), or select a clip.";
+                _viewModel.StatusText = $"There is no in point: set one with {Services.KeybindManager.WithGesture("[", "edit.in")}, or select a clip.";
                 break;
             case "GoToOut" when SelectedStretch() is { } stretch:
                 _viewModel.PositionMs = stretch.To;

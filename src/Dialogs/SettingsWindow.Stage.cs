@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Shapes = System.Windows.Shapes;
@@ -48,6 +49,91 @@ public partial class SettingsWindow
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
 
+    // ----- The title bar (4.4): the editor's, with its status and progress mirrored -----
+
+    /// <summary>
+    /// The screen's own title bar, which lies on the editor's: hidden until it has a frame to show, kept inside the screen
+    /// while maximized, and showing the editor's status and the progress of the work under way as the editor's bar does.
+    /// </summary>
+    private void InitializeTitleBar()
+    {
+        SourceInitialized += (_, _) =>
+        {
+            ThemeManager.SetCloaked(this, true);
+            HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(MainWindow.KeepClearOfHiddenTaskbar);
+            ApplyFrame();
+        };
+        ContentRendered += (_, _) => ThemeManager.SetCloaked(this, false);
+
+        // CoverWindow maximizes the screen before it has a window handle: its frame is known only from here on.
+        Loaded += (_, _) => ApplyFrame();
+        StateChanged += (_, _) => ApplyFrame();
+        DpiChanged += (_, _) => ApplyFrame();
+        TitleBar.SizeChanged += (_, _) =>
+        {
+            FitTitleStatus();
+            UpdateTitleProgress();
+        };
+
+        // The work summary lives as long as HandPeg: its handler goes with the screen, or the screen would never be let go.
+        WorkScheduler.Summary.PropertyChanged += WorkSummary_PropertyChanged;
+        Closed += (_, _) => WorkScheduler.Summary.PropertyChanged -= WorkSummary_PropertyChanged;
+        UpdateTitleStatus();
+    }
+
+    // Maximized, a window that draws its own frame reaches past the screen's edges by its frame: its content is kept inside.
+    private void ApplyFrame()
+    {
+        var maximized = WindowState == WindowState.Maximized;
+        ScreenRoot.Margin = maximized ? MainWindow.MaximizedFrameInset(this) : new Thickness(0);
+        MaximizeButton.Content = maximized ? "" : "";
+        MaximizeButton.ToolTip = maximized ? "Restore Down" : "Maximize";
+        AutomationProperties.SetName(MaximizeButton, maximized ? "Restore" : "Maximize");
+    }
+
+    private void MaximizeWindow_Click(object sender, RoutedEventArgs e)
+    {
+        if (WindowState == WindowState.Maximized)
+            SystemCommands.RestoreWindow(this);
+        else
+            SystemCommands.MaximizeWindow(this);
+    }
+
+    private void WorkSummary_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(WorkSummary.Percent) or nameof(WorkSummary.IsIndeterminate))
+            UpdateTitleProgress();
+        else if (e.PropertyName is nameof(WorkSummary.IsVisible) or nameof(WorkSummary.Title) or nameof(WorkSummary.PercentText)
+                 or nameof(WorkSummary.MoreText) or nameof(WorkSummary.ToolTip))
+            UpdateTitleStatus();
+    }
+
+    /// <summary>The middle of the bar, as on the editor's: the work under way (MainWindow.TitleWorkText), or else the editor's last status.</summary>
+    private void UpdateTitleStatus()
+    {
+        var work = WorkScheduler.Summary;
+        var status = _viewModel.StatusText ?? "";
+        TitleStatusText.Text = work.IsVisible ? MainWindow.TitleWorkText(work) : status;
+        TitleStatus.ToolTip = work.IsVisible ? work.ToolTip.Length > 0 ? work.ToolTip : null : status.Length > 0 ? status : null;
+        TitleProgress.Visibility = work.IsVisible ? Visibility.Visible : Visibility.Collapsed;
+        UpdateTitleProgress();
+    }
+
+    /// <summary>The dim fill: as far across as the work has got, or (work that cannot say) the whole bar, fainter.</summary>
+    private void UpdateTitleProgress()
+    {
+        if (TitleProgress.Visibility != Visibility.Visible)
+            return;
+
+        var work = WorkScheduler.Summary;
+        TitleProgressFill.Width = work.IsIndeterminate ? TitleBar.ActualWidth : TitleBar.ActualWidth * Math.Clamp(work.Percent, 0, 100) / 100;
+        TitleProgressFill.Opacity = work.IsIndeterminate ? 0.07 : 0.14;
+    }
+
+    // The status stays in the middle of the bar, between what is at its two ends, never under them.
+    private void FitTitleStatus() =>
+        TitleStatus.MaxWidth = Math.Max(0, TitleBar.ActualWidth - 2 * Math.Max(TitleLeft.ActualWidth, TitleRight.ActualWidth));
+
     // ----- The category rail -----
 
     // Each category's icon: lines on a 16 x 16 square, stroked in the rail's text colour.
@@ -59,6 +145,8 @@ public partial class SettingsWindow
         ["Export & Hardware"] = "M4.5,4.5 H11.5 V11.5 H4.5 Z M6.5,6.5 H9.5 V9.5 H6.5 Z M6,2 V4.5 M8,2 V4.5 M10,2 V4.5 M6,11.5 V14 M8,11.5 V14 M10,11.5 V14 M2,6 H4.5 M2,8 H4.5 M2,10 H4.5 M11.5,6 H14 M11.5,8 H14 M11.5,10 H14",
         ["Auto-Captions"] = "M1.5,3.5 H14.5 V12.5 H1.5 Z M7,6.3 C5,5.4 3.8,6.4 3.8,8 C3.8,9.6 5,10.6 7,9.7 M12.2,6.3 C10.2,5.4 9,6.4 9,8 C9,9.6 10.2,10.6 12.2,9.7",
         ["Automation & Drop Targets"] = "M9,1.5 L3.5,9 H8 L7,14.5 L12.5,7 H8 Z",
+        // A keyboard: its outline, two rows of keys and the space bar.
+        ["Keybinds & Lightning Dial"] = "M1.5,4 H14.5 V12 H1.5 Z M4,6.5 H5 M7,6.5 H8 M10,6.5 H11 M5.5,8.5 H6.5 M8.5,8.5 H9.5 M5,10.3 H11",
         ["Tools & Backup"] = "M2.5,9.5 V13.5 H13.5 V9.5 M8,2 V10 M5,7 L8,10 L11,7",
     };
 
@@ -136,8 +224,54 @@ public partial class SettingsWindow
         ["Export & Hardware"] = "The encoding a new export starts with, the graphics card that decodes for the player, and how much of the computer background work may take.",
         ["Auto-Captions"] = "The speech model that writes captions, how it listens, Remove Dead Air, and the style new captions start with.",
         ["Automation & Drop Targets"] = "Smart rules for files that are dropped or loaded, the targets of the drop overlay, and the Social Sharing Squisher's presets.",
-        ["Tools & Backup"] = "The programs HandPeg downloads and where they come from, SponsorBlock, getting settings and projects in and out, and the keys of the main window.",
+        ["Keybinds & Lightning Dial"] = "What the Lightning Dial's slices hold, every key of the main window (from a preset or set by hand), and the Quick-Start Tour.",
+        ["Tools & Backup"] = "The programs HandPeg downloads and where they come from, SponsorBlock, and getting settings and projects in and out.",
     };
+
+    // The part of the editor (MainWindow.StageMirror's regions) shown live on the stage for a category's section, or for the
+    // category itself while no option is looked at (a null section). A section not named here shows only its picture.
+    private static readonly Dictionary<(string Category, string? Section), string> StageMirrors = new()
+    {
+        [("General", null)] = "Window",
+        [("General", "Appearance")] = "Window",
+        [("General", "Launch")] = "Window",
+        [("General", "A new window starts with")] = "Window",
+        [("General", "Projects and saving")] = "Header",
+        [("Timeline & Player", null)] = "Timeline",
+        [("Timeline & Player", "Timeline")] = "Timeline",
+        [("Timeline & Player", "I-frames")] = "Timeline",
+        [("Timeline & Player", "Hover previews")] = "Timeline",
+        [("Timeline & Player", "Player")] = "Player",
+        [("Timeline & Player", "Tabs and bars")] = "Window",
+        [("Preview & Cache", null)] = "Player",
+        [("Preview & Cache", "Render Preview")] = "Player",
+        [("Preview & Cache", "Proxies")] = "Player",
+        [("Preview & Cache", "Media browser")] = "Media",
+        [("Export & Hardware", null)] = "Export",
+        [("Export & Hardware", "Export tab")] = "Export",
+        [("Export & Hardware", "Default encoding settings")] = "Export",
+        [("Auto-Captions", "Remove Dead Air")] = "Timeline",
+    };
+
+    // Options about another part of the editor than the rest of their section's (by the name the stage gives them).
+    private static readonly Dictionary<string, string> OptionMirrors = new()
+    {
+        ["Canvas: show the selected clip's motion path"] = "Canvas",
+        ["Canvas: snap to the middle and the safe margins"] = "Canvas",
+        ["New Clips on the Frame"] = "Canvas",
+        ["Draft Mode: skip red-cost effects while scrubbing"] = "Effects",
+    };
+
+    /// <summary>
+    /// Where the stage finds the editor's parts, live (MainWindow.StageMirror, given by MainWindow.OpenSettings): a part's
+    /// element when it is on show, else null. Without it the stage shows its drawn pictures only.
+    /// </summary>
+    internal Func<string, (FrameworkElement Source, Rect View, ImageSource? Video, Rect VideoRect)?>? MirrorSource { get; init; }
+
+    // The still standing in for the player's video follows the playhead while the player is on the stage.
+    private readonly DispatcherTimer _mirrorTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private string? _stageSection, _stageOptionName;
+    private StageKind _stageKind;
 
     private static readonly AppSettings Defaults = new();
 
@@ -174,6 +308,8 @@ public partial class SettingsWindow
     /// <summary>Makes the rail, and has every option show itself on the stage when it is pointed at or given the focus.</summary>
     private void InitializeScreen()
     {
+        // The keys' page fills its hosts first (SettingsWindow.Keybinds.cs), so they are options like any other below.
+        InitializeKeybindsPage();
         BuildCategoryRail();
         foreach (var tab in SettingsTabs.Items.OfType<TabItem>())
         {
@@ -199,8 +335,37 @@ public partial class SettingsWindow
         ThemeBox.AddHandler(MouseMoveEvent, new MouseEventHandler(ThemeBox_MouseMove), true);
         ThemeBox.DropDownClosed += (_, _) =>
         {
+            ApplyChosenTheme();
             StagePreview.ThemeOverride = null;
             RefreshStageSoon();
+        };
+
+        // The theme chosen is put into effect in every window (the editor behind, and its picture on the stage, show it
+        // too): picked from the open list, as the list closes; stepped through with the arrow keys on the closed box, once
+        // the keys rest (the stage shows every step meanwhile, through the bound setting), so the whole app is not
+        // re-themed at each step. Closed, the screen leaves the saved theme in effect: the one chosen when Save wrote it,
+        // the one there was when not (4.4: a theme chosen here used to wait for a restart).
+        _themeTimer.Tick += (_, _) => ApplyChosenTheme();
+        ThemeBox.SelectionChanged += (_, _) =>
+        {
+            _themeTimer.Stop();
+            if (IsLoaded && !ThemeBox.IsDropDownOpen)
+                _themeTimer.Start();
+        };
+        Closed += (_, _) =>
+        {
+            _themeTimer.Stop();
+            if (ThemeManager.Current != ThemeManager.Normalize(AppSettings.Current.Theme))
+                ThemeManager.Apply();
+        };
+
+        // The editor on the stage is asked for again when it is hidden, shown or resized, and let go of when the screen closes.
+        StagePreview.MirrorChanged += () => Dispatcher.InvokeAsync(RefreshMirror, DispatcherPriority.Background);
+        _mirrorTimer.Tick += (_, _) => RefreshMirror();
+        Closed += (_, _) =>
+        {
+            _mirrorTimer.Stop();
+            StagePreview.ShowMirror(null, Rect.Empty, null, Rect.Empty);
         };
 
         _captionTimer.Tick += (_, _) => StageCaptions.SpokenWord = (StageCaptions.SpokenWord + 1) % 4;
@@ -240,17 +405,48 @@ public partial class SettingsWindow
 
         var category = tab.Header as string ?? "";
         var section = option is null ? null : SectionOf(option);
-        _stageTab = tab;
+        var name = option is null ? null : NameOf(option);
+        (_stageTab, _stageSection, _stageOptionName) = (tab, section, name);
         StageCategory.Text = section is null ? category : $"{category}  ›  {section}";
-        StageTitle.Text = option is null ? category : NameOf(option) ?? section ?? category;
+        StageTitle.Text = option is null ? category : name ?? section ?? category;
         StageDescription.Text = option is null ? CategoryIntros.GetValueOrDefault(category, "")
             : TipOf(option) ?? (option is TextBlock { Text.Length: > 0 } words ? words.Text : IntroOf(option) ?? "");
 
         var fallback = option is null ? null : DefaultOf(option);
         StageDefaultBadge.Visibility = fallback is null ? Visibility.Collapsed : Visibility.Visible;
         StageDefaultText.Text = $"Default: {fallback}";
+        StageTitle.ToolTip = StageTitle.Text;
+        FitStageDescription();
         LayOutStage();
         RefreshStage();
+    }
+
+    /// <summary>
+    /// The header keeps the description to the three lines it has room for (its end cut with an ellipsis); a longer one is
+    /// given in full under the card, and as the description's tool tip, so that the card itself never moves.
+    /// </summary>
+    private void FitStageDescription()
+    {
+        var text = StageDescription.Text;
+        var (width, height) = (StageDescription.ActualWidth, StageDescription.ActualHeight);
+        var fits = true;
+        if (text.Length > 0 && width > 0 && height > 0)
+        {
+            var face = new Typeface(StageDescription.FontFamily, StageDescription.FontStyle, StageDescription.FontWeight, StageDescription.FontStretch);
+            var formatted = new FormattedText(text, CultureInfo.CurrentUICulture, FlowDirection, face, StageDescription.FontSize, Brushes.Black,
+                VisualTreeHelper.GetDpi(this).PixelsPerDip) { MaxTextWidth = width, LineHeight = StageDescription.LineHeight };
+            fits = formatted.Height <= height + 0.5;
+        }
+
+        StageDescriptionMore.Text = fits ? "" : text;
+        StageDescriptionMore.Visibility = fits ? Visibility.Collapsed : Visibility.Visible;
+        StageDescription.ToolTip = fits ? null : text;
+    }
+
+    private void StageDescription_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.WidthChanged)
+            FitStageDescription();
     }
 
     private void RefreshStageSoon()
@@ -276,10 +472,11 @@ public partial class SettingsWindow
             "Preview & Cache" => StageKind.Cache,
             "Export & Hardware" => StageKind.Hardware,
             "Auto-Captions" => StageKind.Captions,
+            "Keybinds & Lightning Dial" => StageKind.Keybinds,
             _ => StageKind.None,
         };
 
-        StageCard.Visibility = kind == StageKind.None ? Visibility.Collapsed : Visibility.Visible;
+        _stageKind = kind;
         StageCardTitle.Text = kind switch
         {
             StageKind.Appearance => $"Live preview: {ThemeManager.DisplayName(StagePreview.ThemeOverride ?? _settings.Theme)}",
@@ -287,12 +484,16 @@ public partial class SettingsWindow
             StageKind.Cache => "What is kept on disk",
             StageKind.Hardware => "Who uses the processors and graphics cards",
             StageKind.Captions => "Live preview: the default caption style",
+            StageKind.Keybinds => "The keys of the main window",
             _ => "",
         };
+        StageCardTitle.Visibility = StageCardTitle.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        StageKeybindsHost.Visibility = kind == StageKind.Keybinds ? Visibility.Visible : Visibility.Collapsed;
 
         StagePreview.DroppedClipsJoin = DroppedClipsBox.SelectedIndex == 1;
         StagePreview.CacheBytes = _cacheBytes;
         StagePreview.Show(kind, _settings);
+        RefreshMirror();
 
         // The sample caption is spoken a word at a time while it is on show.
         var captions = kind == StageKind.Captions;
@@ -306,6 +507,43 @@ public partial class SettingsWindow
         {
             _captionTimer.Stop();
         }
+    }
+
+    /// <summary>
+    /// The part of the editor the option looked at is about, live on the stage (4.4), when the editor has it on show: an
+    /// option's own part, else its section's, else (no option) its category's. A pane that is closed, hidden or behind
+    /// another tab is never made or shown for it (MainWindow.StageMirror). The card shows while it has anything to show.
+    /// </summary>
+    private void RefreshMirror()
+    {
+        var category = _stageTab?.Header as string ?? "";
+        string? region = null;
+        if (_stageOptionName is { } option && OptionMirrors.TryGetValue(option, out var own))
+            region = own;
+        else if (_stageTab is not null && StageMirrors.TryGetValue((category, _stageSection), out var shown))
+            region = shown;
+
+        var mirror = region is not null && MirrorSource is { } find ? find(region) : null;
+        StagePreview.ShowMirror(mirror?.Source, mirror?.View ?? Rect.Empty, mirror?.Video, mirror?.VideoRect ?? Rect.Empty);
+
+        // The player's still follows the playhead, twice a second, while the player is on the stage.
+        if (mirror is { } player && !player.VideoRect.IsEmpty)
+            _mirrorTimer.Start();
+        else
+            _mirrorTimer.Stop();
+
+        StageCard.Visibility = StagePreview.Visibility == Visibility.Visible || _stageKind == StageKind.Keybinds ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // The theme stepped to with the arrow keys is put into effect once the keys have rested this long.
+    private readonly DispatcherTimer _themeTimer = new() { Interval = TimeSpan.FromMilliseconds(350) };
+
+    // The theme chosen in the box is put into effect in every window, unless it already is.
+    private void ApplyChosenTheme()
+    {
+        _themeTimer.Stop();
+        if (IsLoaded && ThemeBox.SelectedItem is string theme && ThemeManager.Normalize(theme) != ThemeManager.Current)
+            ThemeManager.Apply(theme);
     }
 
     private void ThemeBox_MouseMove(object sender, MouseEventArgs e)
@@ -329,6 +567,18 @@ public partial class SettingsWindow
     {
         _stageWide = StageWideToggle.IsChecked == true;
         LayOutStage();
+    }
+
+    // The Keybinds page's Show Quick-Start Tour: saves, as Back does, and starts the tour in the editor once this screen has
+    // gone (it walks the editor, which the screen covers). Nothing is started when the settings could not be saved.
+    private void ShowQuickStartTour_Click(object sender, RoutedEventArgs e)
+    {
+        if (Owner is not MainWindow editor)
+            return;
+
+        Save_Click(BackButton, e);
+        if (DialogResult == true)
+            editor.Dispatcher.InvokeAsync(editor.StartQuickStartTour, DispatcherPriority.Background);
     }
 
     /// <summary>
@@ -485,6 +735,7 @@ public partial class SettingsWindow
                     Choice choice => (choice.Name, choice.Display),
                     GpuAdapter adapter => (adapter.Index, adapter.Display),
                     KeyValuePair<string, string> pair => (pair.Key, pair.Value),
+                    ComboBoxItem { Tag: { } tag } entry => (tag, entry.Content as string ?? tag.ToString() ?? ""),
                     _ => (item, item.ToString() ?? ""),
                 };
 

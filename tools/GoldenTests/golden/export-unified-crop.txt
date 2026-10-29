@@ -1,0 +1,113 @@
+# Every clip cropped: a main video clip cropped otherwise than the first (a rider, cut from the stream by its own crop, in its own box), a piece cut from the main video with a mask of the whole frame, a picture, another file's video with a mask of its own picture, and words.
+# reads the cuts list: no; the chapters list: no
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -i
+  D:/media/main.mp4
+  -filter_complex <graph 1>
+  -map
+  0:v:0
+  -map
+  [amixed0]
+  -vf <graph 2>
+  -c:v
+  libx264
+  -preset
+  medium
+  -crf
+  23
+  -pix_fmt
+  yuv420p
+  -metadata:s:a:0
+  title=Track 1
+  -c:a:0
+  aac
+  -b:a:0
+  160k
+  -map_chapters
+  -1
+  D:/out/unified-crop.mp4
+
+graph 1 (-filter_complex): 6 chains, 475 characters
+  1| [0:a:0]asplit=2[aedit0_c0][aedit0_c1]
+  2| [aedit0_c0]atrim=start=0:end=10
+   |   ,asetpts=PTS-STARTPTS[aedit0_p0]
+  3| [aedit0_c1]atrim=start=30:end=40
+   |   ,asetpts=PTS-STARTPTS
+   |   ,adelay=10000:all=1[aedit0_p1]
+  4| [aedit0_p0][aedit0_p1]amix=inputs=2:normalize=0:dropout_transition=0
+   |   ,asetpts=N/SR/TB[aedit0]
+  5| amovie='D\:/media/clip1.mp4'
+   |   ,atrim=start=2:end=14
+   |   ,asetpts=PTS-2/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,adelay=4000:all=1[alayer0]
+  6| [aedit0][alayer0]amix=inputs=2:duration=first:normalize=0[amixed0]
+
+graph 2 (-vf): 24 chains, 2279 characters
+  1| select='gte(t,0)*lt(t,10)+gte(t,30)*lt(t,40)'
+   |   ,setpts='PTS+(0-20*gte(T,30))/TB'
+   |   ,split=4[bg_in][center_in][ui1_in][ui2_in]
+  2| color=c=black:s=1920x1080:r=30:d=20
+   |   ,format=yuv420p[base]
+  3| [bg_in]scale=1920:1080:force_original_aspect_ratio=increase
+   |   ,crop=1920:1080
+   |   ,boxblur=20:2
+   |   ,eq=brightness=-0.15[bg]
+  4| [base][bg]overlay=0:0:eof_action=pass[stage0]
+  5| [center_in]scale=1920:1080
+   |   ,format=yuva420p[center_layer]
+  6| [stage0][center_layer]overlay=0:0:eof_action=pass:enable='gte(t,0)*lt(t,10)'[stage1]
+  7| [ui1_in]crop=trunc(iw*0.7/2)*2:trunc(ih*0.8/2)*2:trunc(iw*0.1):trunc(ih*0.05)
+   |   ,scale=1152:738
+   |   ,format=yuva420p[ui1_layer]
+  8| [stage1][ui1_layer]overlay=384:108:eof_action=pass:enable='between(t,10,20)'[stage2]
+  9| [ui2_in]crop=trunc(iw*0.306/2)*2:trunc(ih*0.195/2)*2:iw*0.684:ih*0.01
+   |   ,scale=538:192
+   |   ,format=yuva420p
+   |   ,split[ui2_pic][ui2_a_in]
+ 10| [ui2_a_in]alphaextract[ui2_a0]
+ 11| movie='D\:/media/piece-mask.png'
+   |   ,format=gray
+   |   ,crop=iw*0.306:ih*0.195:iw*0.684:ih*0.01
+   |   ,scale=538:192
+   |   ,dilation
+   |   ,dilation
+   |   ,dilation
+   |   ,dilation
+   |   ,trim=end_frame=1[ui2_cmask]
+ 12| [ui2_a0][ui2_cmask]blend=all_mode=multiply[ui2_a1]
+ 13| [ui2_pic][ui2_a1]alphamerge[ui2_layer]
+ 14| [stage2][ui2_layer]overlay=1344:43:eof_action=pass:enable='between(t,0,20)'[stage3]
+ 15| movie='D\:/media/still.png'
+   |   ,crop=trunc(iw*0.5/2)*2:trunc(ih*0.9/2)*2:trunc(iw*0.25):trunc(ih*0)
+   |   ,scale=576:584
+   |   ,format=yuva420p[ui3_layer]
+ 16| [stage3][ui3_layer]overlay=58:54:enable='between(t,2,12)'[stage4]
+ 17| movie='D\:/media/clip1.mp4':sp=1
+   |   ,trim=start=2:end=14
+   |   ,setpts=PTS+2/TB
+   |   ,crop=trunc(iw*0.8/2)*2:trunc(ih*0.6/2)*2:trunc(iw*0.2):trunc(ih*0.1)
+   |   ,scale=672:284
+   |   ,format=yuva420p
+   |   ,split[ui4_pic][ui4_a_in]
+ 18| [ui4_a_in]alphaextract[ui4_a0]
+ 19| movie='D\:/media/inset-mask.png'
+   |   ,format=gray
+   |   ,crop='max(1,iw*0.8)':'max(1,ih*0.6)':iw*0.2:ih*0.1
+   |   ,scale=672:284
+   |   ,trim=end_frame=1[ui4_cmask]
+ 20| [ui4_a0][ui4_cmask]blend=all_mode=multiply[ui4_a1]
+ 21| [ui4_pic][ui4_a1]alphamerge[ui4_layer]
+ 22| [stage4][ui4_layer]overlay=1152:594:eof_action=pass:enable='between(t,4,16)'[stage5]
+ 23| color=c=0x000000@0:s=1097x228:r=1
+   |   ,format=yuva444p
+   |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Cropped words':expansion=none:fontsize=149.026:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=4:x=(w-text_w)/2:y=165.664-ascent
+   |   ,trim=end_frame=1
+   |   ,crop=768:182:0:46
+   |   ,format=yuva420p[ui5_layer]
+ 24| [stage5][ui5_layer]overlay=192:864:enable='between(t,6,14)'
+   |   ,setsar=1

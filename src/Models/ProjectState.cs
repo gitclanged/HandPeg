@@ -64,7 +64,22 @@ public sealed class ProjectState
 
     /// <summary>The command text when it had been edited by hand; null when it was the generated one.</summary>
     public string? ManualCommand { get; set; }
+
+    /// <summary>
+    /// The undo history (4.4-BugHunt): its steps oldest first, at most twenty, each as Undo keeps it (packed). Only a save
+    /// sets it (MainViewModel.CaptureStateForSave) and only opening a project reads one back; null for a queued job, the
+    /// unsaved-changes fingerprint and a project listed, and never written but into the project file (so never compared).
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public List<UndoStepState>? UndoHistory { get; set; }
+
+    /// <summary>The redo history, as <see cref="UndoHistory"/> is kept: the step Redo puts back first is the last.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public List<UndoStepState>? RedoHistory { get; set; }
 }
+
+/// <summary>One step of the undo (or redo) history as a project carries it: what it was ("delete Logo"), and the timeline it puts back, packed as Undo keeps it.</summary>
+public sealed record UndoStepState(string What, byte[] State);
 
 public sealed record AudioTrackState(
     int Index, string Action, string Codec, string Bitrate, string? Title = null, double GainDb = 0, TrackAudioFilters? Filters = null,

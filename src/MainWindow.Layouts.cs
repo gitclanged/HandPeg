@@ -29,10 +29,30 @@ public partial class MainWindow
     }
 
     /// <summary>
+    /// The bottom of the built-in layouts but Standard Editing (4.4): the timeline, with a group of settings tabs at its
+    /// right. It is the shape a 4.3 layout is brought up to (UpgradeLayout: the timeline beside the tabs, 70 to 30,
+    /// TimelineShare), so the Layout Selector's "In use" mark still finds a layout taken up before 4.4; a 4.3 Standard
+    /// Editing goes on to the timeline as the tabs' first (PutTimelineFirst).
+    /// </summary>
+    private static DockNode TimelineBeside(DockNode tabs) => DockNode.Split(false, (DockNode.Group(TimelinePaneId), 70), (tabs, 30));
+
+    /// <summary>
+    /// The main tab group with the timeline as its first tab, and shown (Standard Editing, 4.4-BugHunt: the user's Q8): the
+    /// whole width of the bottom for the timeline, the settings tabs a click away beside its tab.
+    /// </summary>
+    private static DockNode TimelineFirst(DockNode tabs)
+    {
+        tabs.Panes.Remove(TimelinePaneId);
+        tabs.Panes.Insert(0, TimelinePaneId);
+        tabs.Active = TimelinePaneId;
+        return tabs;
+    }
+
+    /// <summary>
     /// Standard Editing (where HandPeg starts, and what Reset Layout puts back): the player at the top left with the
     /// playback controls under it; the Canvas over the effects and keyframes in a column beside it; the header
-    /// joined over the media browser, and the cut segments, at the right; the master timeline and the settings tabs
-    /// under all of it.
+    /// joined over the media browser at the right; the overview bar under all of it (shown: AppSettings.ShowMasterTimeline
+    /// is on by default), and under that the timeline, the first tab of the group of settings tabs (4.4-BugHunt).
     /// </summary>
     private DockLayoutState StandardLayout()
     {
@@ -42,14 +62,28 @@ public partial class MainWindow
         var top = DockNode.Split(false, (player, 56), (middle, 22), (side, 22));
         return new DockLayoutState
         {
-            Main = DockNode.Split(true, (top, 46), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TabsGroup(), 38)),
+            Main = DockNode.Split(true, (top, 46), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineFirst(TabsGroup()), 38)),
         };
     }
 
     /// <summary>
+    /// Standard Editing as 4.4 first made it (the timeline in a group of its own, the settings tabs beside it): what an
+    /// arrangement of version 2 taken up as Standard Editing is recognised by (PutTimelineFirst).
+    /// </summary>
+    private DockLayoutState StandardLayoutBeside()
+    {
+        var state = StandardLayout();
+        var tabs = state.Main.Children[^1];
+        tabs.Panes.Remove(TimelinePaneId);
+        tabs.Active = tabs.Panes.FirstOrDefault();
+        state.Main.Children[^1] = TimelineBeside(tabs);
+        return state;
+    }
+
+    /// <summary>
     /// Color and Effects: a large player with the Canvas beside it; two tall inspector columns at the right, the
-    /// effects and keyframes, and the header joined over the media browser with the Summary;
-    /// a short timeline and the other settings tabs under them.
+    /// effects and keyframes, and the header joined over the media browser with the Summary; under them the overview
+    /// bar, and the timeline with the other settings tabs at its right.
     /// </summary>
     private DockLayoutState InspectorLayout()
     {
@@ -59,21 +93,21 @@ public partial class MainWindow
         var top = DockNode.Split(false, (player, 60), (inspector, 20), (media, 20));
         return new DockLayoutState
         {
-            Main = DockNode.Split(true, (top, 66), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TabsGroup(null, "Tab:Summary"), 22)),
+            Main = DockNode.Split(true, (top, 66), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineBeside(TabsGroup(null, "Tab:Summary")), 34)),
         };
     }
 
     /// <summary>
     /// Assembly and Media: the player at the top left; a wide media column at the right, the header joined over it at
-    /// the top right (as in the other layouts), the Canvas a tab beside the media; the timeline across the whole
-    /// window, and under it the settings tabs open on Layers, with the effects and keyframes beside them.
+    /// the top right (as in the other layouts), the Canvas a tab beside the media; the overview bar across the whole
+    /// window, and under it the timeline, the settings tabs (open on Export) and the effects and keyframes side by side.
     /// </summary>
     private DockLayoutState AssemblyLayout()
     {
         var player = DockNode.Split(true, (DockNode.Group("Player"), 1), (DockNode.Group("Playback"), 1));
         var media = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media", "Layout"), 1));
         var top = DockNode.Split(false, (player, 66), (media, 34));
-        var bottom = DockNode.Split(false, (TabsGroup("Tab:Layers"), 70), (DockNode.Group("Effects", "Keyframes"), 30));
+        var bottom = DockNode.Split(false, (DockNode.Group(TimelinePaneId), 49), (TabsGroup(ExportId), 21), (DockNode.Group("Effects", "Keyframes"), 30));
         return new DockLayoutState
         {
             Main = DockNode.Split(true, (top, 54), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (bottom, 40)),
@@ -83,8 +117,8 @@ public partial class MainWindow
     /// <summary>
     /// Vertical and Shorts Studio, for 9:16 shorts and highlights: a tall player and the Canvas side by side at the top
     /// left (each a tall frame), with the playback controls under them; the header joined over the media, effects and
-    /// keyframes at the top right; the timeline across the whole window, and under it the
-    /// Layers, Subtitles, Audio and Export tabs first (the others after them).
+    /// keyframes at the top right; the overview bar across the whole window, and under it the timeline with the
+    /// settings tabs at its right, Export and Audio first (the others after them).
     /// </summary>
     private DockLayoutState ShortsLayout()
     {
@@ -92,20 +126,20 @@ public partial class MainWindow
         var player = DockNode.Split(true, (stage, 1), (DockNode.Group("Playback"), 1));
         var side = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media", "Effects", "Keyframes"), 1));
         var top = DockNode.Split(false, (player, 64), (side, 36));
-        string[] first = ["Tab:Layers", "Tab:Subtitles", "Tab:Audio", "Tab:Export"];
+        string[] first = [ExportId, "Tab:Audio"];
         var tabs = DockNode.Group([.. first, .. _tabPanes.Select(t => t.Id).Where(id => !first.Contains(id))]);
         return new DockLayoutState
         {
-            Main = DockNode.Split(true, (top, 60), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (tabs, 40)),
+            Main = DockNode.Split(true, (top, 60), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineBeside(tabs), 40)),
         };
     }
 
     private IEnumerable<LayoutChoice> BuiltInLayouts() =>
     [
-        new("Standard Editing", "The player at the top left, the Canvas and effects beside it, the media at the right, the timeline and tabs below. Where HandPeg starts.", StandardLayout(), null),
-        new("Color & Effects", "A large player, tall effects and keyframes and media and Summary columns at the right, a short timeline below.", InspectorLayout(), null),
-        new("Assembly & Media", "The player at the left, a wide media column with the Canvas at the right, the whole-width timeline and the Layers tab below.", AssemblyLayout(), null),
-        new("Vertical & Shorts Studio", "For 9:16 shorts: a tall player and Canvas side by side, media, effects and keyframes at the right, the whole-width timeline and the Layers, Subtitles, Audio and Export tabs below.", ShortsLayout(), null),
+        new("Standard Editing", "The player at the top left, the Canvas and effects beside it, the media at the right; the overview bar, and the timeline below, the first of the settings tabs. Where HandPeg starts.", StandardLayout(), null),
+        new("Color & Effects", "A large player, tall effects and keyframes and media and Summary columns at the right; the timeline below, with the other tabs beside it.", InspectorLayout(), null),
+        new("Assembly & Media", "The player at the left, a wide media column with the Canvas at the right; the timeline, the settings tabs and the effects and keyframes side by side below.", AssemblyLayout(), null),
+        new("Vertical & Shorts Studio", "For 9:16 shorts: a tall player and Canvas side by side, media, effects and keyframes at the right; the timeline below, with the Export and Audio tabs beside it.", ShortsLayout(), null),
     ];
 
     /// <summary>

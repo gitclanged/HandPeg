@@ -1,0 +1,19 @@
+# Word ends (4.4): silence skipping's gap rule, a segment's last word held to its length, captions split at 0.35 s gaps, and the caption file's ends.
+words heard (in the audio's time):
+  Hello 1-1.6
+  there. 1.7-2.35
+  Welcome 6.05-6.6
+  back 6.65-7
+  friends 7.05-7.86
+words without silence skipping:
+  Hello 0-0.6
+  there. 0.7-1.35
+  Welcome 2.15-2.7
+  back 2.75-3.1
+  friends 3.15-3.96
+captions from words with a 0.5 s gap: one two | three four five
+  Dialogue: 0,0:00:00.00,0:00:00.70,Caption,,0,0,0,,{\kf40}one {\kf30}two
+  Dialogue: 0,0:00:01.20,0:00:02.20,Caption,,0,0,0,,{\kf40}three {\kf40}four {\kf20}five
+joined 0.5 -> 10.5, 2.5 -> 20.5, 9 -> 23
+a word heard across the joint:
+  across 11.8-12

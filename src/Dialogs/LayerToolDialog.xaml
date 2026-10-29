@@ -258,7 +258,7 @@
             <CheckBox Content="Invert mask" IsChecked="{Binding MaskInvert}" Margin="0,4,0,0" AutomationProperties.Name="Invert Mask"
                       ToolTip="The layer shows where the mask is black instead of where it is white." />
 
-            <TextBlock Text="Crop (cuts away the edges of the layer; the rest stays where it is):" Margin="0,14,0,2" TextWrapping="Wrap" />
+            <TextBlock Text="Crop (cuts the picture's edges; the box keeps its width and takes the cut picture's shape):" Margin="0,14,0,2" TextWrapping="Wrap" />
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />

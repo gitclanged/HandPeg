@@ -16,19 +16,34 @@ public enum StageKind
     Cache,
     Hardware,
     Captions,
+
+    /// <summary>The keys of the main window (4.4): the page draws its own keyboard on the stage (StageKeybindsHost), so no picture here.</summary>
+    Keybinds,
 }
 
 /// <summary>
 /// The picture on the Settings window's live preview stage (Pass 4.3-0B): what the options of a category do, drawn from
 /// the copy of the settings being edited, so that it follows every change before Save. A miniature of the chosen theme, a
-/// stretch of timeline, the caches' gauges, the processors and graphics cards at work, a speech model's trade-off. All of
-/// it is drawn here (OnRender): no pictures and no child elements.
+/// stretch of timeline, the caches' gauges, the processors and graphics cards at work, a speech model's trade-off. Above
+/// it (4.4), the part of the editor the option is about, live, as it is now (ShowMirror). All of it is drawn here
+/// (OnRender): no child elements.
 /// </summary>
 public sealed class SettingsStagePreview : FrameworkElement
 {
     private AppSettings _settings = new();
 
+    public SettingsStagePreview()
+    {
+        // The editor's picture is kept between its changes, and drawn again only once the stage's scale has halved or doubled.
+        RenderOptions.SetCachingHint(_mirror, CachingHint.Cache);
+        RenderOptions.SetCacheInvalidationThresholdMinimum(_mirror, 0.5);
+        RenderOptions.SetCacheInvalidationThresholdMaximum(_mirror, 2);
+    }
+
     public StageKind Kind { get; private set; }
+
+    // Whether the kind on show has a picture of its own (the keys' page draws its keyboard itself).
+    private bool HasPicture => Kind is not (StageKind.None or StageKind.Keybinds);
 
     /// <summary>Where a dropped clip goes, as the Timeline tab's box says (the settings take it only on Save).</summary>
     public bool DroppedClipsJoin { get; set; }
@@ -43,17 +58,23 @@ public sealed class SettingsStagePreview : FrameworkElement
     public void Show(StageKind kind, AppSettings settings)
     {
         (Kind, _settings) = (kind, settings);
-        Visibility = kind == StageKind.None ? Visibility.Collapsed : Visibility.Visible;
+        ApplyVisibility();
         InvalidateMeasure();
         InvalidateVisual();
     }
 
+    private void ApplyVisibility() => Visibility = HasPicture || _mirrorSource is not null ? Visibility.Visible : Visibility.Collapsed;
+
     private const double CoreGap = 4;
+
+    // The labels' row ("Now in the editor", "After Save"), the gap between the editor and the picture, and the editor's
+    // least and greatest height on the stage.
+    private const double LabelRow = 18, PictureGap = 14, MirrorLeast = 90, MirrorMost = 300;
 
     protected override Size MeasureOverride(Size availableSize)
     {
         var width = double.IsFinite(availableSize.Width) ? availableSize.Width : 420;
-        return new Size(width, Kind switch
+        var picture = Kind switch
         {
             StageKind.Appearance => 236,
             StageKind.Timeline => 262,
@@ -61,23 +82,187 @@ public sealed class SettingsStagePreview : FrameworkElement
             StageKind.Hardware => 40 + CoreRows() * (CoreCell(width) + CoreGap) + 150,
             StageKind.Captions => 96,
             _ => 0,
-        });
+        };
+
+        var mirror = MirrorLayout(width).Drawn;
+        if (mirror.IsEmpty)
+            return new Size(width, picture);
+
+        return new Size(width, mirror.Bottom + (picture > 0 ? PictureGap + LabelRow + picture : 0));
     }
 
     protected override void OnRender(DrawingContext drawing)
     {
         var size = RenderSize;
-        if (size.Width < 60 || size.Height < 40)
+        if (size.Width < 60)
             return;
+
+        // The editor as it is now, then (labelled, when both are on show) the picture of what Save makes of it.
+        var top = 0.0;
+        var (viewbox, drawn, scale) = MirrorLayout(size.Width);
+        if (!drawn.IsEmpty)
+        {
+            DrawMirror(drawing, viewbox, drawn, scale);
+            top = drawn.Bottom + PictureGap;
+            if (HasPicture)
+            {
+                Text(drawing, "After Save", 0, top, 11, MutedBrush, bold: true, width: size.Width);
+                top += LabelRow;
+            }
+        }
+
+        var rest = new Size(size.Width, size.Height - top);
+        if (!HasPicture || rest.Height < 40)
+            return;
+
+        if (top > 0)
+        {
+            var below = new TranslateTransform(0, top);
+            below.Freeze();
+            drawing.PushTransform(below);
+        }
 
         switch (Kind)
         {
-            case StageKind.Appearance: DrawAppearance(drawing, size); break;
-            case StageKind.Timeline: DrawTimeline(drawing, size); break;
-            case StageKind.Cache: DrawCaches(drawing, size); break;
-            case StageKind.Hardware: DrawHardware(drawing, size); break;
-            case StageKind.Captions: DrawSpeechModel(drawing, size); break;
+            case StageKind.Appearance: DrawAppearance(drawing, rest); break;
+            case StageKind.Timeline: DrawTimeline(drawing, rest); break;
+            case StageKind.Cache: DrawCaches(drawing, rest); break;
+            case StageKind.Hardware: DrawHardware(drawing, rest); break;
+            case StageKind.Captions: DrawSpeechModel(drawing, rest); break;
         }
+
+        if (top > 0)
+            drawing.Pop();
+    }
+
+    // ----- The editor, live (4.4): the part of the main window an option is about, as it is now -----
+
+    // The editor's picture. A VisualBrush cannot be frozen (a Visual is not a Freezable): it is the one brush here that is
+    // not, by necessity, and there is one for the life of the stage. It shows the part asked for in the part's own
+    // coordinates (Absolute: children reaching past the part, or turned, never shift it), and never lays out what it shows.
+    private readonly VisualBrush _mirror = new()
+    {
+        Stretch = Stretch.Fill, ViewboxUnits = BrushMappingMode.Absolute, AutoLayoutContent = false, TileMode = TileMode.None,
+    };
+
+    private FrameworkElement? _mirrorSource;
+    private Rect _mirrorView = Rect.Empty, _mirrorVideoRect = Rect.Empty;
+    private ImageSource? _mirrorVideo;
+
+    /// <summary>Raised when the part of the editor on show is hidden, shown or resized: the stage asks for it again.</summary>
+    public event Action? MirrorChanged;
+
+    /// <summary>
+    /// Shows a part of the editor above the picture, live: the element, the part of it (in its own coordinates), and for
+    /// the player a still standing in for its video with where the video lies in it (mpv draws the video in a window of
+    /// its own, which no brush sees). Null shows none, and lets go of the element shown before.
+    /// </summary>
+    public void ShowMirror(FrameworkElement? source, Rect view, ImageSource? video, Rect videoRect)
+    {
+        if (source is null || view.IsEmpty || view.Width <= 0 || view.Height <= 0)
+        {
+            source = null;
+            video = null;
+            view = videoRect = Rect.Empty;
+        }
+
+        var sameSource = ReferenceEquals(source, _mirrorSource);
+        if (sameSource && view == _mirrorView && videoRect == _mirrorVideoRect && ReferenceEquals(video, _mirrorVideo))
+            return;
+
+        if (!sameSource)
+        {
+            if (_mirrorSource is { } old)
+            {
+                old.IsVisibleChanged -= MirrorSource_IsVisibleChanged;
+                old.SizeChanged -= MirrorSource_SizeChanged;
+            }
+
+            if (source is not null)
+            {
+                source.IsVisibleChanged += MirrorSource_IsVisibleChanged;
+                source.SizeChanged += MirrorSource_SizeChanged;
+            }
+
+            _mirrorSource = source;
+            _mirror.Visual = source;
+        }
+
+        (_mirrorView, _mirrorVideo, _mirrorVideoRect) = (view, video, videoRect);
+        ApplyVisibility();
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    private void MirrorSource_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e) => MirrorChanged?.Invoke();
+
+    private void MirrorSource_SizeChanged(object sender, SizeChangedEventArgs e) => MirrorChanged?.Invoke();
+
+    /// <summary>
+    /// Where the editor's part goes on a stage this wide: as wide as the stage; a short part (a header, a bar) no less than
+    /// 90 px tall, or its own height when it is shorter (never enlarged for it), its left end only; a tall one no taller
+    /// than 300 px, narrower and centred. The part shown (in its own coordinates), where it is drawn, and its scale.
+    /// </summary>
+    private (Rect Viewbox, Rect Drawn, double Scale) MirrorLayout(double width)
+    {
+        var view = _mirrorView;
+        if (_mirrorSource is null || view.IsEmpty || view.Width <= 0 || view.Height <= 0 || width <= 0)
+            return (Rect.Empty, Rect.Empty, 0);
+
+        var scale = width / view.Width;
+        var least = Math.Min(MirrorLeast, view.Height);
+        if (view.Height * scale < least)
+            scale = least / view.Height;
+        if (view.Height * scale > MirrorMost)
+            scale = MirrorMost / view.Height;
+
+        var shown = Math.Min(view.Width, width / scale);
+        var drawnWidth = shown * scale;
+        return (new Rect(view.X, view.Y, shown, view.Height), new Rect((width - drawnWidth) / 2, LabelRow, drawnWidth, view.Height * scale), scale);
+    }
+
+    private void DrawMirror(DrawingContext drawing, Rect viewbox, Rect drawn, double scale)
+    {
+        Text(drawing, "Now in the editor", drawn.Left, 0, 11, MutedBrush, bold: true, width: drawn.Width);
+        if (_mirror.Viewbox != viewbox)
+            _mirror.Viewbox = viewbox;
+        drawing.DrawRoundedRectangle(_mirror, Line(BorderBrush, 1), drawn, 4, 4);
+
+        // The player's video: a still from the thumbnail sheet, or the stand-in landscape, fitted where the video lies.
+        var video = _mirrorVideoRect;
+        if (video.IsEmpty)
+            return;
+
+        var area = new Rect(drawn.X + (video.X - viewbox.X) * scale, drawn.Y + (video.Y - viewbox.Y) * scale, video.Width * scale, video.Height * scale);
+        area.Intersect(drawn);
+        if (area.IsEmpty || area.Width < 24 || area.Height < 16)
+            return;
+
+        var clip = new RectangleGeometry(area);
+        clip.Freeze();
+        drawing.PushClip(clip);
+
+        var aspect = _mirrorVideo is { Width: > 0, Height: > 0 } still ? still.Width / still.Height : 16.0 / 9;
+        var (fitWidth, fitHeight) = area.Width / area.Height > aspect ? (area.Height * aspect, area.Height) : (area.Width, area.Width / aspect);
+        var picture = new Rect(area.X + (area.Width - fitWidth) / 2, area.Y + (area.Height - fitHeight) / 2, fitWidth, fitHeight);
+        if (_mirrorVideo is { } frame)
+        {
+            drawing.DrawImage(frame, picture);
+        }
+        else
+        {
+            drawing.DrawRectangle(StageBlack, null, picture);
+            DrawLandscape(drawing, picture);
+        }
+
+        if (area.Height >= 48)
+        {
+            drawing.DrawRectangle(FadeShade, null, new Rect(area.X, area.Bottom - 18, area.Width, 18));
+            Text(drawing, _mirrorVideo is null ? "The video plays in the player itself" : "A still at the playhead: the video plays in the player itself",
+                area.X + 6, area.Bottom - 16, 10.5, Brushes.White, width: area.Width - 12);
+        }
+
+        drawing.Pop();
     }
 
     // ----- Appearance: the chosen theme as a little workspace -----

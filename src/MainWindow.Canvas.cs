@@ -106,7 +106,8 @@ public partial class MainWindow
         switch (CurrentOverlayMode)
         {
             case OverlayMode.Crop:
-                var crop = _viewModel.GetCropRect();
+                // The crop of the main video's clip the Crop boxes stand for (4.4: each clip has its own).
+                var crop = _viewModel.GetTargetCropRect();
                 ShowSourceRectangle(crop.Left, crop.Top, crop.Width, crop.Height);
                 break;
 
@@ -165,12 +166,22 @@ public partial class MainWindow
             return;
         }
 
-        // Marking a layer's area again is a step of Undo, taken when the rectangle is first drawn: a click draws none.
+        // Marking a layer's area again is a step of Undo, taken when the rectangle is first drawn: a click draws none. So is
+        // a crop drawn (its first change takes the drag's one step, 4.4).
         _drawTargetStep = mode == OverlayMode.DrawTarget && _viewModel.DrawTargetLayer is { } target ? $"redraw the area of {target.Name}" : null;
+        if (mode == OverlayMode.Crop)
+            _viewModel.BeginCropDrag();
 
         _dragStart = ClampTo(area, point);
+
+        // A drag that loses the mouse (another window brought up, a popup) is over as well, or the crop's next changes would
+        // take no undo step of their own (subscribed once: taken off before it is put on).
+        CropCanvas.LostMouseCapture -= CropCanvas_LostMouseCapture;
+        CropCanvas.LostMouseCapture += CropCanvas_LostMouseCapture;
         CropCanvas.CaptureMouse();
     }
+
+    private void CropCanvas_LostMouseCapture(object sender, MouseEventArgs e) => _viewModel.EndCropDrag();
 
     private void CropCanvas_MouseMove(object sender, MouseEventArgs e)
     {
@@ -216,6 +227,7 @@ public partial class MainWindow
         var wasDragging = _dragStart is not null;
         _dragStart = null;
         CropCanvas.ReleaseMouseCapture();
+        _viewModel.EndCropDrag();
 
         // Marking a layer is a one-shot job: once the rectangle is drawn, the canvas goes away again.
         if (wasDragging && _viewModel.DrawTargetLayer is { } element)
@@ -285,11 +297,12 @@ public partial class MainWindow
         LayoutCanvas.Children.Add(stage);
 
         // The sharp video first, so that it lies under the layers as it does in the output (none while its picture is hidden).
-        // Its track's box, as every track has one (4.3D): its clips share the place the Center controls give them, and the
-        // box moves, sizes, turns and anchors them as any track's box does its clips.
-        if (_viewModel.FrameEngine && !_viewModel.MainLayer.IsHidden)
+        // Its track's box, as every track has one (4.3D): the clip the Center controls stand for (the selected one, else the
+        // one at the playhead; 4.4: each clip has a place of its own), which the box moves, sizes, turns and anchors.
+        _arrangeMain = _viewModel.FrameEngine ? _viewModel.CenterTarget : null;
+        if (_viewModel.FrameEngine && !_viewModel.CenterTarget.IsHidden)
         {
-            var main = _viewModel.MainLayer;
+            var main = _viewModel.CenterTarget;
             _placeCenter = AddArrangeLayer(
                 "Center Video", (Style)FindResource("CenterThumb"), dataContext: null, frame, scale,
                 () => TrackLayerRect(main),
@@ -301,8 +314,8 @@ public partial class MainWindow
 
             // Turned in its dialog, the box turns with it.
             PropertyChangedEventHandler mainHandler = (_, _) => _placeCenter?.Invoke();
-            _viewModel.MainLayer.PropertyChanged += mainHandler;
-            _arrangeSubscriptions.Add((_viewModel.MainLayer, mainHandler));
+            main.PropertyChanged += mainHandler;
+            _arrangeSubscriptions.Add((main, mainHandler));
         }
 
         // Last, so that it lies on top of everything, as the captions do in the output.
@@ -333,10 +346,13 @@ public partial class MainWindow
             _arrangeSubscriptions.Add((captions, captionHandler));
         }
 
-        // One box per track: its clips share a place, a size and a look. A hidden track has none. The main video's is the
-        // Center Video box above (its place is the Center controls'), never a box of its own.
-        foreach (var element in _viewModel.FrameEngine ? _viewModel.Layers.Where(l => l is { IsAudio: false, IsEmptyTrack: false, IsMainVideo: false }).GroupBy(l => l.TrackId)
-                     .Where(t => t.Any(c => !c.IsHidden)).Select(t => t.First()).ToList() : [])
+        // One box per track: its clip on screen at the playhead, else its first shown one (4.4: a clip's place is its own, as
+        // the player's boxes are its clips at the playhead). A hidden track has none. The main video's is the Center Video
+        // box above, never a box of its own. Built again when the playhead brings another clip (SameArrangeClips).
+        _arrangeClips.Clear();
+        if (_viewModel.FrameEngine)
+            CollectArrangeClips(_arrangeClips);
+        foreach (var element in _arrangeClips.ToArray())
         {
             var place = AddArrangeLayer(
                 element.Name, (Style)FindResource("LayerThumb"), element, frame, scale,
@@ -402,12 +418,69 @@ public partial class MainWindow
         return snapped;
     }
 
+    // The clips the Canvas's boxes were made for (each track's, then the main video's), and a list to compare them with.
+    private readonly List<Layer> _arrangeClips = [], _arrangeScratch = [];
+    private Layer? _arrangeMain;
+
+    /// <summary>
+    /// Each track's clip its box on the Canvas stands for, the main video's aside: the one on screen at the playhead, else its
+    /// first shown one; a hidden track has none. The views come track by track (MainViewModel.SyncViews), so one pass, and
+    /// nothing made: it is asked at every move of the playhead.
+    /// </summary>
+    private void CollectArrangeClips(List<Layer> into)
+    {
+        into.Clear();
+        var (at, total) = (_viewModel.PositionMs / 1000, _viewModel.SequenceSeconds);
+        var track = int.MinValue;
+        Layer? pick = null;
+        var onScreen = false;
+        foreach (var layer in _viewModel.Layers)
+        {
+            if (layer is not { IsAudio: false, IsEmptyTrack: false, IsMainVideo: false, IsHidden: false })
+                continue;
+
+            if (layer.TrackId != track)
+            {
+                if (pick is not null)
+                    into.Add(pick);
+                (track, pick, onScreen) = (layer.TrackId, layer, false);
+            }
+
+            if (!onScreen && layer.GetSpan(total) is var (start, end) && at >= start - 0.0005 && at < end)
+                (pick, onScreen) = (layer, true);
+        }
+
+        if (pick is not null)
+            into.Add(pick);
+    }
+
+    /// <summary>Whether the Canvas's boxes still stand for the clips they would be made for now (the playhead moved, another clip selected).</summary>
+    private bool SameArrangeClips()
+    {
+        if (!ReferenceEquals(_arrangeMain, _viewModel.FrameEngine ? _viewModel.CenterTarget : null))
+            return false;
+
+        if (_viewModel.FrameEngine)
+            CollectArrangeClips(_arrangeScratch);
+        else
+            _arrangeScratch.Clear();
+        if (_arrangeScratch.Count != _arrangeClips.Count)
+            return false;
+        for (var i = 0; i < _arrangeScratch.Count; i++)
+        {
+            if (!ReferenceEquals(_arrangeScratch[i], _arrangeClips[i]))
+                return false;
+        }
+
+        return true;
+    }
+
     // ----- A track's layer moved, resized, centred and turned: the same in the layout pane and over the player -----
 
-    // The main video's track is placed by the Center controls (4.3D): its box is theirs, and moving or sizing it moves them,
-    // which every clip of the main video follows, as a track's clips follow its box.
+    // The main video's track is placed by the Center controls (4.3D), which stand for one of its clips (4.4): that clip's box
+    // is theirs, and moving or sizing it moves them; any other clip of it is drawn at its own place.
     private (int X, int Y, int Width, int Height) TrackLayerRect(Layer element) => element.IsMainVideo
-        ? _viewModel.GetCenterRect()
+        ? _viewModel.GetMainClipRect(element)
         : element.GetOutputRect(_viewModel.FrameWidth, _viewModel.FrameHeight, _viewModel.SourceWidth, _viewModel.SourceHeight);
 
     /// <summary>Moves a track's layer by a distance in output pixels, snapping to the guides of the frame it is dragged on.</summary>
@@ -416,7 +489,7 @@ public partial class MainWindow
         if (element.IsMainVideo)
         {
             var (frameW, frameH) = (_viewModel.FrameWidth, _viewModel.FrameHeight);
-            var (left, top, width, height) = _viewModel.GetCenterRect();
+            var (left, top, width, height) = _viewModel.GetTargetCenterRect();
             var (toX, toY) = ((left + deltaX) / frameW, (top + deltaY) / frameH);
             if (AppSettings.Current.SnapLayoutGuides && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
                 (toX, toY) = SnapToGuides(toX, toY, (double)width / frameW, (double)height / frameH, frame, guides);

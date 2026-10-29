@@ -184,8 +184,8 @@ public partial class MediaBrowserPane : UserControl
             return;
 
         StatusText.Text = entries.Count == 0
-            ? "The project uses no media files yet: open a video, or drop files onto the Layers or Audio tab."
-            : $"{entries.Count} file{(entries.Count == 1 ? "" : "s")} in this project. Drag them onto the Layers or Audio tab again.";
+            ? "The project uses no media files yet: open a video, or drop files onto the timeline."
+            : $"{entries.Count} file{(entries.Count == 1 ? "" : "s")} in this project. Drag them onto the timeline again.";
         if (_items.Count > 0)
             Items.ScrollIntoView(_items[0]);
         ScheduleVisibleCheck();
@@ -211,7 +211,7 @@ public partial class MediaBrowserPane : UserControl
         set => SizeSlider.Value = Math.Clamp(value, SizeSlider.Minimum, SizeSlider.Maximum);
     }
 
-    /// <summary>Files were asked to be put on the timeline at the playhead: as clips, or (true) as sound on the Audio tab.</summary>
+    /// <summary>Files were asked to be put on the timeline at the playhead: as clips, or (true) as sound clips of their own.</summary>
     public event Action<IReadOnlyList<string>, bool>? AddRequested;
 
     /// <summary>Whether a video is loaded, which decides what a double-click on a file does.</summary>
@@ -329,7 +329,7 @@ public partial class MediaBrowserPane : UserControl
         var files = entries.Count(e => e.IsFile);
         var folders = entries.Count - files;
         StatusText.Text = folder is null ? $"{folders} drive{(folders == 1 ? "" : "s")}."
-            : $"{files} file{(files == 1 ? "" : "s")}, {folders} folder{(folders == 1 ? "" : "s")}{(entries.Count >= MostEntries ? $" (the first {MostEntries})" : "")}. Drag files onto the Layers or Audio tab.";
+            : $"{files} file{(files == 1 ? "" : "s")}, {folders} folder{(folders == 1 ? "" : "s")}{(entries.Count >= MostEntries ? $" (the first {MostEntries})" : "")}. Drag files onto the timeline.";
         if (_items.Count > 0)
             Items.ScrollIntoView(_items[0]);
         ScheduleVisibleCheck();
@@ -1199,7 +1199,7 @@ public partial class MediaBrowserPane : UserControl
         _keepSelection = false;
         var files = Items.SelectedItems.Contains(pressed) ? Selected().Where(i => i.IsFile).Select(i => i.Path).ToArray() : [pressed.Path];
 
-        // As files from Explorer: whatever takes those (the time bars, the Audio tab, the player) takes these. Marked as
+        // As files from Explorer: whatever takes those (the timeline, the Audio tab, the player) takes these. Marked as
         // the media browser's, so that with something open they go onto the timeline wherever they are
         // let go, never over what is open (4.1.1-B).
         var data = new DataObject(DataFormats.FileDrop, files);
@@ -1355,7 +1355,7 @@ public partial class MediaBrowserPane : UserControl
             Add(files.Count > 1 ? "Add to Timeline at Playhead (End to End)" : "Add to Timeline at Playhead",
                 () => AddRequested?.Invoke([.. files.Where(f => f.Kind != MediaBrowserKind.Audio).Select(f => f.Path)], false),
                 loaded && files.Any(f => f.Kind != MediaBrowserKind.Audio));
-            Add("Add Sound to the Audio Tab at Playhead", () => AddRequested?.Invoke([.. playable.Select(f => f.Path)], true), loaded && playable.Count > 0);
+            Add("Add as Audio at Playhead", () => AddRequested?.Invoke([.. playable.Select(f => f.Path)], true), loaded && playable.Count > 0);
             menu.Items.Add(new Separator());
             Add("Show in Explorer", () => ShowInExplorer(files[0].Path));
         }

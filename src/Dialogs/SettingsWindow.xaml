@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:HandPegApp"
         xmlns:services="clr-namespace:HandPegApp.Services"
-        Title="HandPeg Settings" Width="1280" Height="800" MinWidth="720" MinHeight="460" ResizeMode="CanResizeWithGrip"
+        Title="HandPeg Settings" Width="1280" Height="800" MinWidth="720" MinHeight="460" ResizeMode="CanResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False" KeyDown="Window_KeyDown">
     <Window.Resources>
@@ -97,7 +97,16 @@
     </Window.Resources>
 
     <!--
-        The full-window settings screen (4.3-0B), over the editor: a bar with Back to Editor (which saves) and Cancel; the
+        The screen draws its own title bar (4.4), as the main window does (the same WindowChrome): placed over the editor
+        (CoverWindow), its 32 px bar lies exactly on the editor's, carrying the same progress fill and status.
+    -->
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="32" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"
+                      ResizeBorderThickness="{x:Static SystemParameters.WindowResizeBorderThickness}" />
+    </WindowChrome.WindowChrome>
+
+    <!--
+        The full-window settings screen (4.3-0B), over the editor: a title bar with Back to Editor (which saves) and Cancel; the
         category rail with the search box; the options of the chosen category; and the live preview stage, which shows
         what the option under the pointer or with the focus does.
 
@@ -105,33 +114,71 @@
         the shape the search box walks (an option is a child of the tab's panel, or of a folded section's; see
         SearchBox_TextChanged), and the stage names its options by it. A tab is put in a scroller by the code-behind.
     -->
-    <Grid>
+    <Grid x:Name="ScreenRoot">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="200" />
+            <!-- The rail is wide enough for its longest category name ("Automation & Drop Targets") beside its icon. -->
+            <ColumnDefinition Width="228" />
             <ColumnDefinition x:Name="ListColumn" Width="55*" MinWidth="380" />
             <ColumnDefinition x:Name="StageColumn" Width="45*" />
         </Grid.ColumnDefinitions>
 
-        <!-- Back to the editor (saving), what went wrong, and Cancel -->
-        <Border Grid.ColumnSpan="3" Background="{DynamicResource TitleBarBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="0,0,0,1">
-            <DockPanel Margin="12,8">
-                <Button x:Name="BackButton" DockPanel.Dock="Left" Padding="12,5" IsDefault="True" Click="Save_Click" AutomationProperties.Name="Back to Editor (Save and Close)"
+        <!--
+            The title bar (WindowChrome, 32 px, 4.4): Back to the editor (saving) and the screen's name at the left, what went
+            wrong beside them, Cancel and the caption buttons at the right (Close is Cancel too: only Back and Escape save).
+            The editor's status and the progress of the work under way are mirrored across it as on the editor's own bar
+            (UpdateTitleStatus); the status gives way to an error. Dragging anywhere else moves the window.
+        -->
+        <Grid x:Name="TitleBar" Grid.ColumnSpan="3" Height="32" Background="{DynamicResource TitleBarBrush}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Canvas x:Name="TitleProgress" Grid.ColumnSpan="3" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
+                <Rectangle x:Name="TitleProgressFill" Height="32" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.14" />
+            </Canvas>
+            <StackPanel x:Name="TitleLeft" Orientation="Horizontal">
+                <Button x:Name="BackButton" Padding="10,1" Margin="8,0,0,0" FontSize="11.5" VerticalAlignment="Center" IsDefault="True" Click="Save_Click"
+                        WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="Back to Editor (Save and Close)"
                         ToolTip="Saves every change and goes back to the editor. Escape does the same.">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="&#xE72B;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" />
-                        <TextBlock Text="Back to Editor (Save &amp; Close)" Margin="8,0,0,0" VerticalAlignment="Center" />
+                        <TextBlock Text="&#xE72B;" FontFamily="Segoe MDL2 Assets" FontSize="11" VerticalAlignment="Center" />
+                        <TextBlock Text="Back to Editor (Save &amp; Close)" Margin="7,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
-                <Button DockPanel.Dock="Right" Content="Cancel" MinWidth="88" Click="Cancel_Click" AutomationProperties.Name="Cancel"
+                <TextBlock Text="Settings" FontSize="12" FontWeight="SemiBold" Margin="14,0" VerticalAlignment="Center" IsHitTestVisible="False" />
+            </StackPanel>
+            <TextBlock x:Name="ErrorText" Grid.Column="1" Foreground="{DynamicResource WarningTextBrush}" FontSize="12" VerticalAlignment="Center" Margin="0,0,12,0"
+                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" WindowChrome.IsHitTestVisibleInChrome="True"
+                       ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+            <!-- The editor's status, shown only while there is no error to show (ErrorText) -->
+            <Border x:Name="TitleStatus" Grid.ColumnSpan="3" HorizontalAlignment="Center" Background="Transparent" Padding="12,0"
+                    WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="Status" AutomationProperties.AutomationId="TitleStatus">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Text.Length, ElementName=ErrorText}" Value="0">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <TextBlock x:Name="TitleStatusText" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+            </Border>
+            <StackPanel x:Name="TitleRight" Grid.Column="2" Orientation="Horizontal">
+                <Button Content="Cancel" Padding="10,1" Margin="0,0,8,0" MinWidth="72" FontSize="11.5" VerticalAlignment="Center" Click="Cancel_Click"
+                        WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="Cancel"
                         ToolTip="Goes back to the editor without saving: every change made here is dropped." />
-                <TextBlock Text="Settings" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Margin="18,0" />
-                <TextBlock x:Name="ErrorText" Foreground="{DynamicResource WarningTextBrush}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0" />
-            </DockPanel>
-        </Border>
+                <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" Content="&#xE922;" Click="MaximizeWindow_Click" AutomationProperties.Name="Maximize" ToolTip="Maximize" />
+                <Button x:Name="CloseButton" Style="{StaticResource CaptionCloseButton}" Content="&#xE8BB;" Click="Cancel_Click" AutomationProperties.Name="Close"
+                        ToolTip="Close Without Saving" />
+            </StackPanel>
+        </Grid>
 
         <!-- The category rail: the search box, then a category for each tab (made by the code-behind, from the tabs) -->
         <Border Grid.Row="1" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="0,0,1,0">
@@ -155,20 +202,35 @@
         <Border x:Name="StagePanel" Grid.Row="1" Grid.Column="2" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1,0,0,0">
             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
                 <StackPanel Margin="22,18">
-                    <DockPanel>
-                        <ToggleButton x:Name="StageWideToggle" DockPanel.Dock="Right" Padding="7,4" Click="StageWide_Click" AutomationProperties.Name="Widen Preview Stage"
-                                      ToolTip="Gives the preview stage more of the window (65%), or its usual share (45%) again.">
-                            <TextBlock Text="&#xE740;" FontFamily="Segoe MDL2 Assets" FontSize="11" />
-                        </ToggleButton>
-                        <TextBlock x:Name="StageCategory" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                    </DockPanel>
-                    <TextBlock x:Name="StageTitle" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,8,0,0" />
-                    <Border x:Name="StageDefaultBadge" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="9,2" CornerRadius="9"
-                            Background="{DynamicResource WellBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
-                        <TextBlock x:Name="StageDefaultText" FontSize="11" />
-                    </Border>
-                    <TextBlock x:Name="StageDescription" TextWrapping="Wrap" Margin="0,12,0,0" LineHeight="19" />
-                    <Border x:Name="StageCard" Margin="0,18,0,0" Padding="14" CornerRadius="6"
+                    <!--
+                        The header is always 112 px tall (4.4), so the card under it never moves from one option to the next: the
+                        title keeps to one line (the default beside it), the description to three, and a longer one is given in
+                        full under the card (StageDescriptionMore, FitStageDescription).
+                    -->
+                    <Grid x:Name="StageHeader" Height="112" ClipToBounds="True">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="24" />
+                            <RowDefinition Height="30" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <DockPanel VerticalAlignment="Center">
+                            <ToggleButton x:Name="StageWideToggle" DockPanel.Dock="Right" Padding="5,2" Click="StageWide_Click" AutomationProperties.Name="Widen Preview Stage"
+                                          ToolTip="Gives the preview stage more of the window (65%), or its usual share (45%) again.">
+                                <TextBlock Text="&#xE740;" FontFamily="Segoe MDL2 Assets" FontSize="11" />
+                            </ToggleButton>
+                            <TextBlock x:Name="StageCategory" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                        </DockPanel>
+                        <DockPanel Grid.Row="1" VerticalAlignment="Center">
+                            <Border x:Name="StageDefaultBadge" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="10,0,0,0" Padding="9,2" CornerRadius="9"
+                                    Background="{DynamicResource WellBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
+                                <TextBlock x:Name="StageDefaultText" FontSize="11" />
+                            </Border>
+                            <TextBlock x:Name="StageTitle" FontSize="18" FontWeight="SemiBold" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock x:Name="StageDescription" Grid.Row="2" TextWrapping="Wrap" TextTrimming="WordEllipsis"
+                                   LineStackingStrategy="BlockLineHeight" LineHeight="19" SizeChanged="StageDescription_SizeChanged" />
+                    </Grid>
+                    <Border x:Name="StageCard" Margin="0,12,0,0" Padding="14" CornerRadius="6"
                             Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
                         <StackPanel>
                             <TextBlock x:Name="StageCardTitle" FontWeight="SemiBold" Margin="0,0,0,12" />
@@ -176,8 +238,13 @@
                                 <local:CaptionPreview x:Name="StageCaptions" />
                             </Border>
                             <local:SettingsStagePreview x:Name="StagePreview" />
+                            <!-- The keys of the main window, drawn for the Keybinds & Lightning Dial page (filled by InitializeKeybindsPage) -->
+                            <ContentControl x:Name="StageKeybindsHost" Visibility="Collapsed" Focusable="False" />
                         </StackPanel>
                     </Border>
+                    <!-- What the option looked at does, in full, when it says more than the header has room for -->
+                    <TextBlock x:Name="StageDescriptionMore" Visibility="Collapsed" TextWrapping="Wrap" LineHeight="19" Margin="0,14,0,0"
+                               Foreground="{DynamicResource MutedTextBrush}" />
                 </StackPanel>
             </ScrollViewer>
         </Border>
@@ -224,7 +291,7 @@
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Theme:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="ThemeBox" MinWidth="170" Margin="0" SelectedItem="{Binding Theme}" AutomationProperties.Name="Theme"
-                                  ToolTip="Windows System follows Windows' light or dark mode and accent; OLED Black is true black with Windows' accent; Leonardo is warm slate with amber; Reno is a light studio grey with blue; Reno Dark is charcoal with cyan. Applied when you press Save. Resting on the Layout button shows them all, live." />
+                                  ToolTip="Windows System follows Windows' light or dark mode and accent; OLED Black is true black with Windows' accent; Leonardo is warm slate with amber; Reno is a light studio grey with blue; Reno Dark is charcoal with cyan. The theme chosen is shown at once, everywhere; Save keeps it and Cancel puts the saved one back. Resting on the Layout button shows them all, live." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
                                 ToolTip="How thick scrollbars are, everywhere in HandPeg: from 4 pixels, a hairline, to 16, as Windows draws them. They change as the slider is moved.">
@@ -258,7 +325,6 @@
                         <CheckBox Content="Create chapter markers" IsChecked="{Binding StartWithChapterMarkers}" Margin="0,2,24,2" />
                         <CheckBox Content="Chapters at cut points" IsChecked="{Binding StartWithChaptersAtCuts}" Margin="0,2,24,2"
                                   ToolTip="A chapter at the start of each clip of the main video, once it has been split." />
-                        <CheckBox Content="Auto-captions controls on the Subtitles tab" IsChecked="{Binding ShowAutoCaptions}" Margin="0,2,24,2" />
                         <CheckBox Content="Open the Canvas by itself" IsChecked="{Binding AutoOpenLayoutPane}" Margin="0,2,24,2"
                                   ToolTip="Opens the Canvas beside the player as soon as there is a layout to edit." />
                     </WrapPanel>
@@ -303,14 +369,14 @@
                     <TextBlock Style="{StaticResource Hint}"
                                Text="Whether waveforms are drawn, and whether a strip of pictures from the video is drawn along the timeline behind them. (How tall the timeline is, is the slider beside the volume in the main window.) The pictures are made in the background after each load, from the same sheet as the hover previews below." />
                     <CheckBox Content="Show waveforms" IsChecked="{Binding ShowTimelineWaveform}"
-                              ToolTip="After each load, draws the mix of the active audio tracks behind the timeline, and each track's own waveform in the Audio tab. Applies to the next video you load." />
+                              ToolTip="After each load, draws the mix of the active audio tracks behind the timeline, and each audio track's own waveform on its row of the timeline. Applies to the next video you load." />
                     <CheckBox Content="Show Timeline Thumbnails" IsChecked="{Binding ShowTimelineThumbnails}"
                               ToolTip="Draws a strip of pictures from the video along the timeline, behind the waveform. On by default. Applies to the next video you load." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Video Layer Thumbnail Count:" Style="{StaticResource FieldLabel}" />
                         <Slider Width="150" Minimum="1" Maximum="25" VerticalAlignment="Center"
                                 Value="{Binding LayerThumbnailCount}" AutomationProperties.Name="Video Layer Thumbnail Count" local:NumericInput.Default="8"
-                                ToolTip="How many frames are taken from a video layer's file for the strip of pictures its block on the Layers tab is drawn with. Applies to the video layers added from now on." />
+                                ToolTip="How many frames are taken from a video layer's file for the strip of pictures its block on the timeline is drawn with. Applies to the video layers added from now on." />
                         <TextBox Style="{StaticResource ValueBox}" Text="{Binding LayerThumbnailCount, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Video Layer Thumbnail Count Value"
                                  local:NumericInput.Default="8" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="25" />
                     </StackPanel>
@@ -323,15 +389,21 @@
                         </ComboBox>
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
-                                ToolTip="Where a video or a picture dropped on the Layers tab goes. Always Create New Track: a track of its own, just above the row it was dropped on. Join Track Under Pointer If Free: onto that row's track when nothing is there at that moment. Either way a clip is never laid over another: one that would overlap gets a new track above. An empty track (Add Layer) is always filled.">
+                                ToolTip="Where a video or a picture dropped on the timeline goes. Always Create New Track: a track of its own, just above the row it was dropped on. Join Track Under Pointer If Free: onto that row's track when nothing is there at that moment. Either way a clip is never laid over another: one that would overlap gets a new track above. An empty track (Add Layer) is always filled.">
                         <TextBlock Text="Dropped Clips:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="DroppedClipsBox" MinWidth="250" Margin="0" AutomationProperties.Name="Dropped Clips">
                             <ComboBoxItem Content="Always create new track" />
                             <ComboBoxItem Content="Join track under pointer if free" />
                         </ComboBox>
                     </StackPanel>
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="How a picture or a video added to the timeline is sized on the frame, its middle on the frame's middle. Fit: the whole picture shows, touching the frame's edges on one side. Fill: it covers the whole frame, what reaches past the edges cut off. A clip's menu has Fit to Frame and Fill Frame for one already there. Templates, styles and HUD pieces keep the places they were made with.">
+                        <TextBlock Text="New Clips on the Frame:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="250" Margin="0" ItemsSource="{x:Static services:AppSettings.NewClipSizings}" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                  SelectedValue="{Binding NewClipSizing}" AutomationProperties.Name="New Clip Sizing" />
+                    </StackPanel>
                     <CheckBox Content="Ripple affects all tracks" IsChecked="{Binding RippleAllTracks}" AutomationProperties.Name="Ripple Affects All Tracks"
-                              ToolTip="A ripple edit (Ctrl-drag of a clip's edge, Shift+Delete) moves the later clips of every track by as much, so they stay in step. Off: only the clips of its own track move. The main video and the video's own audio tracks never move with a ripple." />
+                              local:KeyTip.Text="A ripple edit (Ctrl-drag of a clip's edge, or Ripple Delete, {key:edit.rippleDelete|on a clip's menu}) moves the later clips of every track by as much, so they stay in step. Off: only the clips of its own track move. The main video and the video's own audio tracks never move with a ripple." />
                     <CheckBox Content="Solo is exclusive" IsChecked="{Binding SoloIsExclusive}" AutomationProperties.Name="Solo Is Exclusive"
                               ToolTip="On: a track's Solo button plays it alone, the others' solo going off. Off: several tracks can be soloed together and are mixed in the player; Alt-click plays one alone." />
                     <CheckBox Content="Show gain lines on clips with sound" IsChecked="{Binding ShowClipGainLines}" AutomationProperties.Name="Show Gain Lines"
@@ -575,8 +647,12 @@
                     </StackPanel>
                     <CheckBox Content="Keep downloads used by projects" IsChecked="{Binding KeepDownloadsUsedByProjects}" AutomationProperties.Name="Keep Downloads Used by Projects"
                               ToolTip="A download in the cache that a saved project (or the open one) uses is never deleted to make room, however many there are." />
-                    <CheckBox Content="Offer to copy downloads into the download folder when saving a project" IsChecked="{Binding AskToCopyDownloadsOnSave}" AutomationProperties.Name="Offer to Copy Downloads When Saving"
-                              ToolTip="Saving a project that uses videos from the download cache asks whether to copy them into the download folder (or Videos\HandPeg Downloads) and have the project use the copies." />
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="What saving a project that uses videos from the download cache does with them. Ask Each Time: asks whether to copy them into the download folder (or Videos\HandPeg Downloads) and have the project use the copies; its Remember My Choice sets this. Always Copy: copies them without asking. Leave Them: keeps them where they are (Keep Downloads Used by Projects still spares them when the cache is trimmed).">
+                        <TextBlock Text="Downloaded videos in saved projects:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="250" Margin="0" ItemsSource="{x:Static services:AppSettings.SavedProjectDownloadChoices}" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                  SelectedValue="{Binding SavedProjectDownloads}" AutomationProperties.Name="Downloaded Videos in Saved Projects" />
+                    </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
                                 ToolTip="A link a site walls off (an age check, a sign-in, members only, 403 Forbidden) is tried again with a browser's cookies, so it downloads as it plays in that browser while you are signed in. Automatic tries each browser found on this PC (Waterfox, Firefox, Edge, Chrome, Brave), then the cookies file if one is named below. The first try is always without cookies. Chrome and Edge may need to be closed for their cookies to be read.">
                         <TextBlock Text="Signed-In Downloads (Cookies):" Style="{StaticResource FieldLabel}" />
@@ -775,19 +851,19 @@
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Model Size:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="WhisperModelBox" MinWidth="200" Margin="0" SelectionChanged="WhisperModelBox_SelectionChanged"
-                                  AutomationProperties.Name="Speech Model" ToolTip="The model auto-captions use once you press Save: tiny is the fastest and roughest, large-v3 the best and slowest, turbo nearly as good as large and several times faster. The same choice as on the Subtitles tab." />
+                                  AutomationProperties.Name="Speech Model" ToolTip="The model auto-captions use once you press Save: tiny is the fastest and roughest, large-v3 the best and slowest, turbo nearly as good as large and several times faster. The same choice as in the Generate Auto-Captions window." />
                         <TextBlock x:Name="WhisperStatusText" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Default Language:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="DefaultLanguageBox" MinWidth="90" Margin="0" SelectedItem="{Binding WhisperDefaultLanguage}" AutomationProperties.Name="Default Whisper Language"
-                                  ToolTip="The spoken language a new window starts with (--language). auto lets whisper detect it; the English-only .en models need en. The Subtitles tab overrides it for the video that is open, and a preset or a project brings its own. Applies the next time HandPeg starts." />
+                                  ToolTip="The spoken language a new window starts with (--language). auto lets whisper detect it; the English-only .en models need en. The Generate Auto-Captions window overrides it for the video that is open, and a preset or a project brings its own. Applies the next time HandPeg starts." />
                         <TextBlock Text="auto detects the language; a preset or a project sets its own" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
 
                     <TextBlock Text="Voice track" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="A recording with separate audio tracks (game, microphone, chat) usually names them. Auto-Captions listen to the track marked Voice on the Audio tab, and the sounds marked Duck make room for it. Any track can still be picked on the Subtitles tab, or ticked and unticked by hand." />
+                               Text="A recording with separate audio tracks (game, microphone, chat) usually names them. Auto-Captions listen to the track marked Voice on the timeline (its row's Voice switch), and the sounds marked Duck make room for it. Any track can still be picked in the Generate Auto-Captions window, or marked and unmarked by hand." />
                     <CheckBox Content="Find the voice track by its name when a video is loaded" IsChecked="{Binding AutoMarkVoiceTrack}" AutomationProperties.Name="Find Voice Track by Name"
                               ToolTip="When a new video is loaded, the audio track named only for a microphone or a voice (Mic, Track 2: Microphone, Voice, Commentary) is marked as its Voice track; failing that, one whose name has such a word among others (Shure SM7B Mic), unless they name game sound, music or the desktop. Chat tracks come last. Nothing is marked when no name fits, or when a preset already marks a voice; a project or a queued job keeps its tracks as saved." />
 
@@ -839,7 +915,15 @@
 
                     <TextBlock Text="Remove Dead Air" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Remove Dead Air cuts the quiet stretches out of a video or a clip, found by loudness (FFmpeg's silencedetect), which is a different thing from the speech detection above. These are the values its dialog opens with; changing them there changes them here." />
+                               Text="Remove Dead Air cuts the quiet stretches out of a video or a clip: found by loudness (FFmpeg's silencedetect, which is a different thing from the speech detection above), or as the gaps between the words the captions heard. These are the values its dialog opens with; changing them there changes them here." />
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="What Remove Dead Air finds the dead air by. The Sound's Loudness: the stretches quieter than the silence threshold below. The Gaps Between Captioned Words: the pauses between the words the captions heard (the sound is transcribed first when it has no captions yet), which keeps quiet words and cuts loud pauses.">
+                        <TextBlock Text="Find Dead Air By:" Style="{StaticResource FieldLabel}" Margin="0,0,12,0" />
+                        <ComboBox MinWidth="250" Margin="0" SelectedValuePath="Tag" SelectedValue="{Binding DeadAirSource}" AutomationProperties.Name="Dead Air Source">
+                            <ComboBoxItem Content="The sound's loudness" Tag="audio" />
+                            <ComboBoxItem Content="The gaps between captioned words" Tag="captions" />
+                        </ComboBox>
+                    </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Silence Threshold (dB):" Style="{StaticResource FieldLabel}" Margin="0" />
                         <TextBox Style="{StaticResource ValueBox}" Text="{Binding DeadAirThresholdDb, StringFormat={}{0:0.#}}" AutomationProperties.Name="Dead Air Silence Threshold"
@@ -850,10 +934,24 @@
                                  local:NumericInput.Default="1" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="0.2" local:NumericInput.Maximum="30" local:NumericInput.Decimals="1"
                                  ToolTip="A silence has to last this long to be cut, 0.2 to 30 seconds. Default 1. Shorter cuts the pauses between sentences as well." />
                     </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Caption Gap (s):" Style="{StaticResource FieldLabel}" Margin="0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding DeadAirCaptionMinGapSeconds, StringFormat={}{0:0.##}}" AutomationProperties.Name="Dead Air Caption Minimum Gap"
+                                 local:NumericInput.Default="0.5" local:NumericInput.DragStep="0.01" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="3" local:NumericInput.Decimals="2"
+                                 ToolTip="Found by the captions: a gap between two words has to last this long to be cut, 0.1 to 3 seconds. Default 0.5. Shorter cuts the breaths between phrases as well." />
+                        <TextBlock Text="Keep Before (s):" Style="{StaticResource FieldLabel}" Margin="24,0,0,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding DeadAirCaptionPadBeforeSeconds, StringFormat={}{0:0.###}}" AutomationProperties.Name="Dead Air Caption Padding Before"
+                                 local:NumericInput.Default="0.08" local:NumericInput.DragStep="0.002" local:NumericInput.Minimum="0" local:NumericInput.Maximum="0.5" local:NumericInput.Decimals="3"
+                                 ToolTip="Found by the captions: how much of a gap is kept before the next word, 0 to 0.5 seconds, so its first sound is not clipped. Default 0.08." />
+                        <TextBlock Text="Keep After (s):" Style="{StaticResource FieldLabel}" Margin="24,0,0,0" />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding DeadAirCaptionPadAfterSeconds, StringFormat={}{0:0.###}}" AutomationProperties.Name="Dead Air Caption Padding After"
+                                 local:NumericInput.Default="0.12" local:NumericInput.DragStep="0.002" local:NumericInput.Minimum="0" local:NumericInput.Maximum="0.5" local:NumericInput.Decimals="3"
+                                 ToolTip="Found by the captions: how much of a gap is kept after the last word, 0 to 0.5 seconds, so its tail is not clipped. Default 0.12." />
+                    </StackPanel>
 
                     <TextBlock Text="Default caption style" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="The font, colors, outline, words per line and animation captions start with when HandPeg is launched. A preset or a project still brings its own, and the Subtitles tab changes it for the video that is open. Applies the next time HandPeg starts." />
+                               Text="The font, colors, outline, words per line and animation captions start with when HandPeg is launched. A preset or a project still brings its own, and the caption lane's Caption Style... changes it for the video that is open. Applies the next time HandPeg starts." />
                     <StackPanel Style="{StaticResource Row}">
                         <Button Content="Default Caption Style..." Click="DefaultCaptionStyle_Click" AutomationProperties.Name="Default Caption Style" />
                         <Button Content="Use Built-in" Margin="6,0,0,0" Click="ResetDefaultCaptionStyle_Click" ToolTip="Back to the style HandPeg comes with: Arial 72, white with a yellow highlight, TikTok Pop, up to 3 words." />
@@ -1032,6 +1130,43 @@
                 </StackPanel>
             </TabItem>
 
+            <!--
+                ===== Keybinds & Lightning Dial (4.4): the dial's slices, and every key of the main window =====
+                The dial, the list and the keyboard on the stage are made by SettingsWindow.Keybinds.cs (InitializeKeybindsPage)
+                in the hosts named here, and kept by Save (SaveKeybinds); the dial's hint names its key as bound (DialHint). The
+                stage is widened for the keyboard. 4.4-BugHunt: the Lightning Dial comes first (the user's order).
+            -->
+            <TabItem Header="Keybinds &amp; Lightning Dial" Tag="WideStage">
+                <StackPanel>
+                    <TextBlock Text="Lightning Dial" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
+                    <TextBlock x:Name="DialHint" Style="{StaticResource Hint}"
+                               Text="The mouse's forward side button (Mouse 5) opens the Lightning Dial under the pointer: one ring of the seven categories and Settings. A category opens its seven actions in their place, with Back opposite. Choose what each category holds here." />
+                    <ContentControl x:Name="DialHost" Focusable="False" />
+
+                    <TextBlock Text="Keybinds" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="The keys of the main window: a preset of them, and any of them changed by hand (click a key's box, then press the keys to give it). They apply while no text box or drop-down has the focus: typing stays typing, and a click anywhere outside the box hands the keys back to the shortcuts. The navigation keys act while held, on the timeline, the Canvas or the player under the pointer. Ctrl+Z, Ctrl+Y and Ctrl+Shift+Z are always Undo and Redo, and Ctrl+Shift+S is never used." />
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="The set of keys the main window starts from. Keys changed by hand below are kept on top of it.">
+                        <TextBlock Text="Keybind Preset:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="KeybindPresetBox" MinWidth="220" Margin="0" ItemsSource="{x:Static services:KeybindManager.PresetNames}" SelectedItem="{Binding KeybindPreset}"
+                                  AutomationProperties.Name="Keybind Preset" />
+                    </StackPanel>
+                    <CheckBox Content="Pan keys pan the timeline over a Canvas or player that is not zoomed in" IsChecked="{Binding PanTimelineWhenNotZoomed}" Margin="0,2,0,6"
+                              AutomationProperties.Name="Pan Timeline When Not Zoomed"
+                              ToolTip="Off (the default): the pan keys (A and D) act only on what is under the pointer, so over a Canvas or a player that is not zoomed in they do nothing. On: there they pan the timeline instead." />
+                    <ContentControl x:Name="KeybindsListHost" Focusable="False" />
+
+                    <TextBlock Text="Quick-Start Tour" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="A short walk around the main window and its keys. It runs once by itself (after the first-run window, or the first time this version starts), and from here whenever you want it again." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <Button Content="Show Quick-Start Tour" Click="ShowQuickStartTour_Click" AutomationProperties.Name="Show Quick-Start Tour"
+                                ToolTip="Saves these settings, goes back to the editor and starts the tour there." />
+                    </StackPanel>
+                </StackPanel>
+            </TabItem>
+
             <!-- ===== Tools & Backup: the programs HandPeg downloads, where they come from, and getting settings in and out ===== -->
             <TabItem Header="Tools &amp; Backup">
                 <StackPanel>
@@ -1120,25 +1255,7 @@
                         <Button Content="Import Projects" Margin="6,0,0,0" Click="ImportProjects_Click" />
                     </StackPanel>
                     <TextBlock x:Name="ExportStatusText" Style="{StaticResource Hint}" Margin="0,8,0,0" />
-                    <TextBlock Style="{StaticResource Hint}" Text="Layout files (Export Layout, Import Layout) are on the Summary tab of the main window." />
-
-                    <TextBlock Text="Keyboard shortcuts" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Style="{StaticResource Hint}"
-                               Text="The keys of the main window. They apply while no text box or drop-down has the focus: typing stays typing." />
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Space" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Play / Pause" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Left / Right" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Step back / forward one frame" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="I" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Add Start Point" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="O" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Add Stop Point" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="S" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Split the selected block at the playhead" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Delete" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Delete the selected layer or cut segment; silence the selected part of an audio track" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Ctrl+Z" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Undo the last change to the cuts, layers or audio" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Ctrl+Y" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Redo" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Ctrl+S" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Save the project" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Ctrl+Alt+S" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Save the project as a new file" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Right-drag on the timeline" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Mark a new cut segment" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Right-click a layer" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Its menu: properties, split, trim, hide, duplicate, delete" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Double-click a slider or number" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Put it back to its default" /></TextBlock>
-                    <TextBlock Margin="0,3" TextWrapping="Wrap"><Run Text="Enter in the source box" FontFamily="Consolas" FontWeight="SemiBold" /><Run Text=":  Load the path or URL" /></TextBlock>
+                    <TextBlock Style="{StaticResource Hint}" Text="Layout files (Export Layout, Import Layout) are on the Summary tab of the main window. The keys of the main window are on the Keybinds &amp; Lightning Dial page." />
                 </StackPanel>
             </TabItem>
         </TabControl>

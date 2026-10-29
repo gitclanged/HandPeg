@@ -78,6 +78,9 @@ public partial class MainWindow
         if (!PlayerIsPlaying)
             (_soundSettled, _pausedOnUsersMoment) = (false, exact);
 
+        // A jump of the user's own ends the wait for the player to come back from a graph it could not run (see OnPlayerError).
+        _recoveringToMs = null;
+
         // The layers' sound is laid out in the graph from one moment on: after a jump it is laid out again, from
         // where the jump lands.
         if (LiveGraphHasSound)
@@ -174,7 +177,7 @@ public partial class MainWindow
                             TakePlayerPosition();
                     });
             };
-            player.GraphRefused += reason => OnUi(() => OnPlayerError($"lavfi-complex: {reason}"));
+            player.GraphRefused += reason => OnUi(() => OnPlayerError($"lavfi-complex: {reason}", graphFailed: true));
 
             // The timeline's length is the sequence's, which the view model works out; the player's word is
             // only needed for a file that could not be inspected.
@@ -184,7 +187,9 @@ public partial class MainWindow
                 var wasPlaying = _viewModel.IsPlaying;
                 _viewModel.IsPlaying = player.IsPlaying;
                 FollowPlayerByFrame(player.IsPlaying);
-                if (wasPlaying && player.IsEnded)
+
+                // Not the end a graph mpv could not run made it take the file for (see OnPlayerError): Loop does not start over.
+                if (wasPlaying && player.IsEnded && _recoveringToMs is null)
                     OnPlaybackEnded();
 
                 // The layers' sound is in the graph while it plays: it comes in as playback starts (unless the paused
@@ -337,10 +342,12 @@ public partial class MainWindow
             return;
         }
 
-        // The graph belongs to the file that was playing; the new one gets its own once it is open.
+        // The graph belongs to the file that was playing; the new one gets its own once it is open. A graph mpv could not run
+        // for the one before may run for this one (it is the picture the graph starts from).
         _liveFilterTimer.Stop();
         ForgetLiveGraph();
-        _failedLiveStamp = null;
+        (_failedLiveStamp, _recoveringToMs) = (null, null);
+        _refusedGraphs.Clear();
         player.DropFilterGraph();
         player.SetFiltering(false);
         player.Open(path, startMs, paused);
@@ -379,7 +386,12 @@ public partial class MainWindow
         _pendingMedia = (_viewModel.PlayerSource, resumeAt, !wasPlaying);
         await EnsurePlayerAsync();
         if (_mpv is not null)
+        {
+            // The new player starts fitted: it is given the zoom the boxes and the crop over it still show.
+            if (_playerZoom != 0)
+                ApplyPlayerView();
             _viewModel.StatusText = $"Player reloaded at {_viewModel.PositionText}.";
+        }
         _reloadingPlayer = false;
     }
 
@@ -400,15 +412,24 @@ public partial class MainWindow
         _liveFilterTimer.Start();
     }
 
-    private void ClearLiveFilter(MpvPlayer player)
+    /// <summary>Takes the graph off: the source is shown.</summary>
+    /// <param name="seek">
+    /// Where the player is to be: the file is opened again there when a graph goes (MpvPlayer), and it is sent there when
+    /// none was running. Null for where mpv says it is, which after a graph it could not run is the end of the file.
+    /// </param>
+    private void ClearLiveFilter(MpvPlayer player, (long Ms, bool Exact)? seek = null)
     {
         _liveFilterTimer.Stop();
         _failedLiveStamp = null;
         if (_liveGraph.Length == 0)
+        {
+            if (seek is { } jump)
+                player.Seek(jump.Ms, jump.Exact);
             return;
+        }
 
         ForgetLiveGraph();
-        player.SetFilterGraph("");
+        player.SetFilterGraph("", seek);
         player.SetFiltering(false);
     }
 
@@ -435,6 +456,21 @@ public partial class MainWindow
     private readonly System.Windows.Threading.DispatcherTimer _liveSoundSettle = new() { Interval = TimeSpan.FromMilliseconds(SoundSettleMs) };
     private bool _liveSoundSettleHooked;
 
+    // Paused this near the end, the player is not readied with the sound (4.4-BugHunt). The graph with sound, run from an exact
+    // seek within the last two seconds right after the one without, had FFmpeg's framesync spin for ever (in the blend of a
+    // HUD piece with its looped mask): mpv's core thread at full use and the player frozen until Reload Player. Play still
+    // brings the sound in, as it starts.
+    private const long SettleEndMarginMs = 2000;
+
+    /// <summary>Whether a moment is within <see cref="SettleEndMarginMs"/> of the end: of the sequence, or of the file the player has open, whichever comes first.</summary>
+    private bool NearPlayerEnd(double positionMs)
+    {
+        var end = _viewModel.DurationMs;
+        if (_mpv is { DurationMs: > 0 } player && (end <= 0 || player.DurationMs < end))
+            end = player.DurationMs;
+        return end > 0 && positionMs >= end - SettleEndMarginMs;
+    }
+
     // Whether the paused player has settled, so the graph may carry the sound as it would while playing; and whether
     // the graph being given is that one, made ahead of need (a seek or an edit asked meanwhile does not wait for it).
     private bool _soundSettled, _readyingToPlay;
@@ -444,7 +480,8 @@ public partial class MainWindow
     {
         _liveSoundSettle.Stop();
         if (_soundSettled || _mpv is not { IsLoading: false, IsPlaying: false } || !_viewModel.HasSource || !_viewModel.LivePreview
-            || _isScrubbing || _shuttle != 0 || _viewModel.SoloTrack is not null || _liveSoundRefused || LiveGraphHasSound)
+            || _isScrubbing || _shuttle != 0 || _viewModel.SoloTrack is not null || _liveSoundRefused || LiveGraphHasSound
+            || NearPlayerEnd(_viewModel.PositionMs))
             return;
 
         if (!_liveSoundSettleHooked)
@@ -452,7 +489,7 @@ public partial class MainWindow
             _liveSoundSettle.Tick += (_, _) =>
             {
                 _liveSoundSettle.Stop();
-                if (_mpv is not { IsPlaying: false } || _isScrubbing || _shuttle != 0)
+                if (_mpv is not { IsPlaying: false } || _isScrubbing || _shuttle != 0 || NearPlayerEnd(_viewModel.PositionMs))
                     return;
 
                 _soundSettled = true;
@@ -603,6 +640,29 @@ public partial class MainWindow
             stamp = stamp with { AudioFrom = from };
         }
 
+        // A graph mpv could not run is never given to it again (4.4-BugHunt): it would fail the same way, and every failure
+        // sends the player to the end of the file. A setting changed for nothing it is built from (the captions made again,
+        // a waveform finished) gave the same graph back after each failure. Without the layers' sound it may still run;
+        // otherwise the source is shown where the user is, as after the failure itself, until the settings change.
+        if (IsRefusedGraph(graph.Text))
+        {
+            if (hasSound && !_liveSoundRefused)
+            {
+                _liveSoundRefused = true;
+                ApplyLiveFilterNow(seekTo);
+                return;
+            }
+
+            var back = seekTo;
+            if (back is null && _liveGraph.Length > 0)
+                back = (at, true);
+            ClearLiveFilter(player, back);
+            _failedLiveStamp = stamp;
+            CrashReporter.SetContext("graph", "refused by the player before: the source is shown");
+            _viewModel.StatusText = "Live Preview could not run the filters as they are set, and shows the source instead.";
+            return;
+        }
+
         // Filters work on frames in main memory, so decoding hands them over there while a graph is running.
         if (graph.Text.Length > 0)
             player.SetFiltering(true);
@@ -638,33 +698,108 @@ public partial class MainWindow
     private bool _liveSoundRefused;
 
     /// <summary>
-    /// mpv logged an error. When it is about the filters, the graph is taken off again, so the source keeps
-    /// playing, and is not tried a second time until the settings have changed.
+    /// mpv logged an error. When it is about the filters, the graph is taken off again (one with the layers' sound is
+    /// tried without it first), so the source keeps playing from where the user had it, and is not tried a second time
+    /// until the settings have changed.
     /// </summary>
-    private void OnPlayerError(string text)
+    /// <param name="graphFailed">mpv turned the graph down itself (GraphRefused), whatever the words.</param>
+    private void OnPlayerError(string text, bool graphFailed = false)
     {
         AppLog.Write($"Player: {text}");
         CrashReporter.Note("player", text);
+
+        // mpv's last line about a graph FFmpeg could not set up (the reasons are in the lines before it).
+        graphFailed |= text.Contains("failed to configure the filter graph", StringComparison.OrdinalIgnoreCase);
+        if (graphFailed && _mpv is { } failing)
+            NoteRefusedGraph(failing.LastGraph);
+
         if (_mpv is not { } player || _liveGraph.Length == 0
-            || !(text.Contains("lavfi", StringComparison.OrdinalIgnoreCase) || text.Contains("filter", StringComparison.OrdinalIgnoreCase)))
+            || !(graphFailed || text.Contains("lavfi", StringComparison.OrdinalIgnoreCase) || text.Contains("filter", StringComparison.OrdinalIgnoreCase)))
         {
             return;
         }
+
+        // mpv takes a graph it could not run for the end of the file, and says the player is there (4.4-BugHunt: 117.8 s
+        // became 120.0 s): what follows starts again where the user had the playhead, never at that end, and the playhead
+        // stays there meanwhile. Reopened at the end, the player froze in the next graph (see ArmSoundSettle).
+        var back = UsersMomentBeforeFailure(player);
+        HoldPlayheadAt(back);
 
         // A graph that mixes the layers' sound in is tried again without it first: the picture may be fine.
         if (LiveGraphHasSound)
         {
             _liveSoundRefused = true;
             _viewModel.StatusText = $"Live Preview could not mix the layers' sound in, and plays the main video's sound alone ({text}).";
-            ApplyLiveFilter();
+            ApplyLiveFilter((back, true));
             return;
         }
 
         var refused = _liveStamp;
-        ClearLiveFilter(player);
+        ClearLiveFilter(player, (back, true));
         _failedLiveStamp = refused;
         CrashReporter.SetContext("graph", "refused by the player: the source is shown");
         _viewModel.StatusText = $"Live Preview could not run the filters as they are set, and shows the source instead ({text}).";
+    }
+
+    // ----- Graphs mpv could not run (4.4-BugHunt) -----
+
+    // The graphs mpv could not run, the newest last: none of them is given to it again (see ApplyLiveFilterNow). A few are
+    // kept, and a few written to the log in a session, so that a long one does not fill it.
+    private readonly List<string> _refusedGraphs = [];
+    private const int RefusedGraphsKept = 8, RefusedGraphsLogged = 4;
+    private int _refusedGraphsWritten;
+
+    // Where the player is to come back to after a graph it could not run, from when it was asked to (Environment.TickCount64);
+    // null when it is not on its way back. Reports further from it than RecoveryReachMs are not the playhead's meanwhile,
+    // and after RecoveryPatienceMs they are taken again, whether it got there or not.
+    private long? _recoveringToMs;
+    private long _recoveringSince;
+    private const long RecoveryReachMs = 1000, RecoveryPatienceMs = 3000;
+
+    /// <summary>
+    /// Keeps a graph mpv could not run, so that it is not given to it again, and the first time writes it to HandPeg.log in
+    /// full: the log stays on this computer (a crash report has only the graph's size and the names of its filters), and
+    /// the next report of such a failure then shows what failed.
+    /// </summary>
+    private void NoteRefusedGraph(string? graph)
+    {
+        if (string.IsNullOrEmpty(graph) || _refusedGraphs.Contains(graph))
+            return;
+
+        _refusedGraphs.Add(graph);
+        if (_refusedGraphs.Count > RefusedGraphsKept)
+            _refusedGraphs.RemoveAt(0);
+
+        if (_refusedGraphsWritten++ < RefusedGraphsLogged)
+            AppLog.Write($"Player: the graph mpv could not run ({graph.Length} characters): {graph}");
+        else if (_refusedGraphsWritten == RefusedGraphsLogged + 1)
+            AppLog.Write($"Player: mpv could not run another graph; after {RefusedGraphsLogged} in a session, they are no longer written out.");
+    }
+
+    private bool IsRefusedGraph(string graph) => graph.Length > 0 && _refusedGraphs.Contains(graph);
+
+    /// <summary>
+    /// Where the user had the playhead when mpv failed a graph: where it is, unless mpv's report of the end has already
+    /// been taken; then the moment the graph was made for, which the user had asked for (a seek, an edit, Play).
+    /// </summary>
+    private long UsersMomentBeforeFailure(MpvPlayer player)
+    {
+        var position = (long)_viewModel.PositionMs;
+        var end = player.DurationMs > 0 ? player.DurationMs : (long)_viewModel.DurationMs;
+        var moment = Math.Max(end > 0 && position >= end - 250 && _liveBuiltAtMs < position ? _liveBuiltAtMs : position, 0);
+        return _viewModel.DurationMs > 0 ? Math.Min(moment, (long)_viewModel.DurationMs) : moment;
+    }
+
+    /// <summary>Puts the playhead on a moment and keeps it there while the player is on its way back to it (see OnPlayerTimeChanged).</summary>
+    private void HoldPlayheadAt(long positionMs)
+    {
+        (_recoveringToMs, _recoveringSince, _pausedOnUsersMoment, _soundSettled) = (positionMs, Environment.TickCount64, true, false);
+        if (Math.Abs(_viewModel.PositionMs - positionMs) < 1)
+            return;
+
+        _updatingFromPlayer = true;
+        _viewModel.PositionMs = positionMs;
+        _updatingFromPlayer = false;
     }
 
     // ----- Following the player -----
@@ -878,6 +1013,15 @@ public partial class MainWindow
         // Don't fight the user for the thumb while they are dragging it, or the shuttle while it is winding back.
         if (_isScrubbing || _shuttle < 0)
             return;
+
+        // On its way back from a graph it could not run (see OnPlayerError), the player's word on where it is (the end of
+        // the file, which mpv takes such a failure for) is not the playhead's, until it is back or has been given long enough.
+        if (_recoveringToMs is { } back)
+        {
+            if (Math.Abs(timeMs - back) > RecoveryReachMs && Environment.TickCount64 - _recoveringSince < RecoveryPatienceMs)
+                return;
+            _recoveringToMs = null;
+        }
 
         // Paused on a moment the user sent it to (a seek, a frame or key step, a click on the timeline), the playhead
         // stays exactly there: the frame mpv shows for it is stamped a few milliseconds off (58.434 for 58.420), and a

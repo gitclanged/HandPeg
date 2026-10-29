@@ -14,16 +14,22 @@ namespace HandPegApp.Services;
 /// <param name="Color">A colour as FFmpeg would be given it: a name such as gray, or 0xRRGGBB.</param>
 public sealed record WaveformRequest(IReadOnlyList<int> Tracks, int Width, int Height, string Color)
 {
-    /// <summary>What its peaks are kept under in the cache.</summary>
-    public string CacheKind => "wave" + string.Join("-", Tracks);
+    /// <summary>
+    /// What its peaks are kept under in the cache: the rate with the tracks ("peaks80-0", "peaks80-0-1"). A .peaks file holds
+    /// only how many pairs it has, so peaks kept at another rate (before 4.4-BugHunt "wave0", "wave0-1"..., twenty a second)
+    /// are never found under it, and never read as a sound of a quarter of its length; the cache lets them go as it trims.
+    /// </summary>
+    public string CacheKind => string.Create(System.Globalization.CultureInfo.InvariantCulture, $"peaks{Waveforms.PeaksPerSecond:0}-{string.Join("-", Tracks)}");
 }
 
 /// <summary>Pictures of sound: the waveform images shown on the timeline and in the mixer.</summary>
 public static partial class Waveforms
 {
-    // The sound is read at this rate, which is plenty for its outline, and for every so many samples only the
-    // lowest and the highest are kept: twenty pairs to the second. An hour of sound is 72,000 pairs, 576 KB.
-    private const int SampleRate = 4000, SamplesPerPeak = 200;
+    // The sound is read at this rate, which is plenty for its outline (it holds what lies below 4 kHz), and for every so
+    // many samples only the lowest and the highest are kept: eighty pairs to the second (4.4-BugHunt, twenty before), so
+    // that a timeline zoomed in on a word still shows its syllables. An hour of sound is 288,000 pairs, 2.3 MB (and about
+    // a seventh more for the folds, WaveformData).
+    private const int SampleRate = 8000, SamplesPerPeak = 100;
 
     /// <summary>How many pairs of peaks there are to a second of sound.</summary>
     public const double PeaksPerSecond = (double)SampleRate / SamplesPerPeak;
@@ -304,21 +310,25 @@ public static partial class Waveforms
         return cut;
     }
 
-    /// <summary>The peaks as a picture: one shape, a column for every so many pairs.</summary>
+    /// <summary>The peaks as a picture: one shape, a column for every so many pairs (one sweep of the peaks, WaveformData.Envelope).</summary>
     private static ImageSource Draw(WaveformData data, double width, double height)
     {
-        var columns = Math.Min(data.Count, MostColumns);
+        var columns = Math.Max(Math.Min(data.Count, MostColumns), 1);
         var (step, middle) = (width / columns, height / 2);
         var pool = System.Buffers.ArrayPool<double>.Shared;
+        var floats = System.Buffers.ArrayPool<float>.Shared;
         var (tops, bottoms) = (pool.Rent(columns), pool.Rent(columns));
+        var (lows, highs) = (floats.Rent(columns), floats.Rent(columns));
+        data.Envelope(0, data.Seconds, lows.AsSpan(0, columns), highs.AsSpan(0, columns));
         for (var c = 0; c < columns; c++)
         {
-            var (low, high) = data.Range((double)c / columns, (double)(c + 1) / columns);
-
             // Silence is still a line: the sound is there, and quiet.
-            tops[c] = middle - Math.Max(high * middle, height / 200);
-            bottoms[c] = middle - Math.Min(low * middle, -height / 200);
+            tops[c] = middle - Math.Max(highs[c] * middle, height / 200);
+            bottoms[c] = middle - Math.Min(lows[c] * middle, -height / 200);
         }
+
+        floats.Return(lows);
+        floats.Return(highs);
 
         var outline = new StreamGeometry();
         using (var path = outline.Open())
@@ -623,42 +633,201 @@ public static class Notifier
 }
 
 /// <summary>
-/// A sound reduced to peaks: for each twentieth of a second, the lowest and the highest sample (-1 to 1).
+/// A sound reduced to peaks: for each eightieth of a second, the lowest and the highest sample (-1 to 1).
 /// Whatever draws it asks for the range over a stretch of it, as wide a stretch as one of its pixels covers:
 /// zoomed out, many pairs fall into one pixel and are merged into one; zoomed in, each pair is its own.
+/// Since 4.4 the peaks are also kept folded (a mip pyramid: every 8 pairs as one, every 64, every 512), made once
+/// when the peaks are, so that a stretch of any length is answered by reading a few dozen numbers, not every pair in it.
+/// The folds are never written to disk: the .peaks file holds the pairs alone, as before.
 /// </summary>
-public sealed class WaveformData(float[] lows, float[] highs, Brush fill)
+public sealed class WaveformData
 {
-    public int Count => highs.Length;
+    /// <summary>How many pairs of one level are folded into one pair of the next; the levels are 1:1, 1:8, 1:64 and 1:512.</summary>
+    public const int MipFactor = 8, MipLevels = 4;
+
+    // The pairs of each level, [level][i]: level 0 is the arrays given, each level above folds 8 of the one below
+    // (its last pair folding what is left over, so nothing is padded).
+    private readonly float[][] _lows, _highs;
+
+    public WaveformData(float[] lows, float[] highs, Brush fill, double pairsPerSecond = Waveforms.PeaksPerSecond)
+    {
+        Fill = fill;
+        PairsPerSecond = pairsPerSecond > 0 ? pairsPerSecond : Waveforms.PeaksPerSecond;
+        (_lows, _highs) = (new float[MipLevels][], new float[MipLevels][]);
+        (_lows[0], _highs[0]) = (lows, highs);
+        for (var level = 1; level < MipLevels; level++)
+        {
+            var (belowLows, belowHighs) = (_lows[level - 1], _highs[level - 1]);
+            var count = Math.Min(belowLows.Length, belowHighs.Length);
+            var folded = (count + MipFactor - 1) / MipFactor;
+            var (levelLows, levelHighs) = (new float[folded], new float[folded]);
+            for (var j = 0; j < folded; j++)
+            {
+                var (start, end) = (j * MipFactor, Math.Min(j * MipFactor + MipFactor, count));
+                var (low, high) = (belowLows[start], belowHighs[start]);
+                for (var i = start + 1; i < end; i++)
+                {
+                    if (belowLows[i] < low)
+                        low = belowLows[i];
+                    if (belowHighs[i] > high)
+                        high = belowHighs[i];
+                }
+
+                (levelLows[j], levelHighs[j]) = (low, high);
+            }
+
+            (_lows[level], _highs[level]) = (levelLows, levelHighs);
+        }
+    }
+
+    public int Count => _highs[0].Length;
 
     /// <summary>The colour it is drawn in.</summary>
-    public Brush Fill { get; } = fill;
+    public Brush Fill { get; }
+
+    /// <summary>How many pairs there are to a second of the sound (80 since 4.4-BugHunt, 20 before).</summary>
+    public double PairsPerSecond { get; }
+
+    /// <summary>How long the sound is, in its own seconds: what the pairs cover (not the container's duration, which may differ).</summary>
+    public double Seconds => Count / PairsPerSecond;
+
+    /// <summary>How many pairs a level has.</summary>
+    public int CountAt(int level) => _highs[level].Length;
+
+    public ReadOnlySpan<float> LowsAt(int level) => _lows[level];
+
+    public ReadOnlySpan<float> HighsAt(int level) => _highs[level];
+
+    /// <summary>The level whose pairs are no wider than a column: 0 below 8 pairs a column, then 1, 2 and 3.</summary>
+    public static int LevelFor(double pairsPerColumn) =>
+        pairsPerColumn >= 512 ? 3 : pairsPerColumn >= 64 ? 2 : pairsPerColumn >= 8 ? 1 : 0;
 
     /// <summary>The peaks between two fractions of its length (0 to 1), at least one of them.</summary>
     public WaveformData Slice(double from, double to)
     {
+        var (lows, highs) = (_lows[0], _highs[0]);
         var first = Math.Clamp((int)(from * highs.Length), 0, highs.Length - 1);
         var last = Math.Clamp((int)Math.Ceiling(to * highs.Length), first + 1, highs.Length);
-        return new WaveformData(lows[first..last], highs[first..last], Fill);
+        return new WaveformData(lows[first..last], highs[first..last], Fill, PairsPerSecond);
     }
 
     /// <summary>The lowest and the highest sample between two points of the sound, each a fraction of its length (0 to 1).</summary>
     public (float Low, float High) Range(double from, double to)
     {
-        if (highs.Length == 0 || to <= 0 || from >= 1)
+        var count = Count;
+        if (count == 0 || to <= 0 || from >= 1)
             return (0, 0);
 
-        var first = Math.Clamp((int)(from * highs.Length), 0, highs.Length - 1);
-        var last = Math.Clamp((int)Math.Ceiling(to * highs.Length) - 1, first, highs.Length - 1);
-        var (low, high) = (lows[first], highs[first]);
-        for (var i = first + 1; i <= last; i++)
+        var first = Math.Clamp((int)(from * count), 0, count - 1);
+        var last = Math.Clamp((int)Math.Ceiling(to * count) - 1, first, count - 1);
+        return RangeOf(first, last + 1);
+    }
+
+    /// <summary>
+    /// The lowest and the highest sample of the pairs from <paramref name="first"/> up to (not including)
+    /// <paramref name="end"/>, exactly: the ragged ends are read pair by pair, and what lies between them a level up, as
+    /// whole folds, climbing until little is left. (0, 0) for no pairs.
+    /// </summary>
+    public (float Low, float High) RangeOf(int first, int end)
+    {
+        first = Math.Max(first, 0);
+        end = Math.Min(end, Count);
+        if (end <= first)
+            return (0, 0);
+
+        var (low, high) = (float.PositiveInfinity, float.NegativeInfinity);
+        for (var level = 0; ; level++)
         {
-            if (lows[i] < low)
-                low = lows[i];
-            if (highs[i] > high)
-                high = highs[i];
+            var (lows, highs) = (_lows[level], _highs[level]);
+            if (level == MipLevels - 1 || end - first <= 2 * MipFactor)
+            {
+                for (var i = first; i < end; i++)
+                    Merge(lows[i], highs[i]);
+                break;
+            }
+
+            // The start up to a whole fold, pair by pair.
+            while (first % MipFactor != 0 && first < end)
+            {
+                Merge(lows[first], highs[first]);
+                first++;
+            }
+
+            // The end down to a whole fold, unless it is the level's end: its last fold covers exactly what is left.
+            var whole = end == lows.Length;
+            if (!whole)
+            {
+                while (end % MipFactor != 0 && end > first)
+                {
+                    end--;
+                    Merge(lows[end], highs[end]);
+                }
+            }
+
+            if (end <= first)
+                break;
+
+            first /= MipFactor;
+            end = whole ? (end + MipFactor - 1) / MipFactor : end / MipFactor;
         }
 
         return (low, high);
+
+        void Merge(float pairLow, float pairHigh)
+        {
+            if (pairLow < low)
+                low = pairLow;
+            if (pairHigh > high)
+                high = pairHigh;
+        }
+    }
+
+    /// <summary>
+    /// One low and one high for each column of a stretch of the sound, from <paramref name="fromSeconds"/> to
+    /// <paramref name="toSeconds"/> (its own seconds), as many columns as the spans are long. One sweep over the level
+    /// whose folds are no wider than a column: each fold goes into the column its middle falls in, and a column no fold
+    /// falls in (zoomed in, or past the end of the sound) takes the fold under its own middle, or silence. So a column
+    /// may show a sound up to a fold away from it, never less than what lies wholly inside it.
+    /// </summary>
+    public void Envelope(double fromSeconds, double toSeconds, Span<float> lows, Span<float> highs)
+    {
+        var columns = Math.Min(lows.Length, highs.Length);
+        if (columns == 0)
+            return;
+
+        if (Count == 0 || !(toSeconds > fromSeconds))
+        {
+            lows[..columns].Clear();
+            highs[..columns].Clear();
+            return;
+        }
+
+        var (pairsFrom, pairsTo) = (fromSeconds * PairsPerSecond, toSeconds * PairsPerSecond);
+        var perColumn = (pairsTo - pairsFrom) / columns;
+        var level = LevelFor(perColumn);
+        var fold = 1 << (3 * level);
+        var (levelLows, levelHighs) = (_lows[level], _highs[level]);
+        lows[..columns].Fill(float.PositiveInfinity);
+        highs[..columns].Fill(float.NegativeInfinity);
+
+        var firstFold = (int)Math.Clamp(Math.Floor(pairsFrom / fold), 0, levelLows.Length);
+        var endFold = (int)Math.Clamp(Math.Ceiling(pairsTo / fold), firstFold, levelLows.Length);
+        for (var i = firstFold; i < endFold; i++)
+        {
+            var c = (int)Math.Clamp(((i + 0.5) * fold - pairsFrom) / perColumn, 0, columns - 1);
+            if (levelLows[i] < lows[c])
+                lows[c] = levelLows[i];
+            if (levelHighs[i] > highs[c])
+                highs[c] = levelHighs[i];
+        }
+
+        for (var c = 0; c < columns; c++)
+        {
+            if (!float.IsPositiveInfinity(lows[c]))
+                continue;
+
+            var under = (int)Math.Floor((pairsFrom + (c + 0.5) * perColumn) / fold);
+            (lows[c], highs[c]) = under >= 0 && under < levelLows.Length ? (levelLows[under], levelHighs[under]) : (0f, 0f);
+        }
     }
 }

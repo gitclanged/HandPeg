@@ -55,10 +55,15 @@ public readonly record struct WhisperOptions(
 /// <param name="Width">The caption box on the output frame, in pixels: the canvas the file is written for.</param>
 /// <param name="TextScale">What the style's sizes, given for a 1080-pixel frame, are multiplied by.</param>
 /// <param name="AssPath">Where the caption file is written: the file the job's command draws.</param>
+/// <param name="Spans">
+/// Where the words heard are put on the sequence (4.4): every clip window that plays the audio, as it was when the job was
+/// made. The words are heard in the audio's own time and shown through these (CaptionProjection.ProjectWords).
+/// </param>
 public sealed record CaptionJob(
     string AudioPath, int TrackIndex, IReadOnlyList<(double Start, double End)> Ranges,
     string ModelPath, string Language, string Prompt, bool Translate, bool UseVad, WhisperOptions Options,
-    CaptionStyle Style, int Width, int Height, double TextScale, double TimeOffset, string AssPath);
+    CaptionStyle Style, int Width, int Height, double TextScale, double TimeOffset, string AssPath,
+    IReadOnlyList<CaptionSpan>? Spans = null);
 
 /// <summary>
 /// The auto-captions pipeline, step by step: cut the audio that will be heard into a small speech-quality
@@ -79,11 +84,12 @@ public static partial class CaptionGenerator
     /// <summary>One stretch of speech: where it is in the audio, and where it is on the clock whisper counts by when it skips silence.</summary>
     private readonly record struct SpeechStretch(double OriginalStart, double OriginalEnd, double Start, double End);
 
-    // A silence this long between two words starts a new caption, however few words the last one has.
-    private const double PauseSeconds = 0.7;
-
-    // How long a caption stays after its last word, when nothing follows at once.
-    private const double HoldSeconds = 0.2;
+    /// <summary>
+    /// A silence longer than this between two words is a gap the captions show (4.4): it starts a new caption, however few
+    /// words the last one has, and the caption before it is gone when its last word ends. A shorter one is bridged: the
+    /// caption stays up until the next one replaces it, so speech never flickers.
+    /// </summary>
+    public const double SilentGapSeconds = 0.35;
 
     // Sizes in the style are given for a frame this many pixels on its shorter side.
     private const double ReferenceSide = 1080;
@@ -234,7 +240,7 @@ public static partial class CaptionGenerator
             // The word times are on the shortened clock; without knowing where the speech was they cannot
             // be put back, and captions at the wrong moments are worse than captions in a silence.
             if (speech.Count > 0)
-                return ParseWhisperJson(File.ReadAllText(jsonPath), time => ToOriginalTime(speech, time));
+                return ParseWhisperJson(File.ReadAllText(jsonPath), (from, to) => ToOriginalWord(speech, from, to));
 
             AppLog.Write("whisper.exe did not say where the speech was, so the audio was transcribed again without silence detection.");
         }
@@ -249,21 +255,98 @@ public static partial class CaptionGenerator
     private static double Seconds(Group group) => double.Parse(group.Value, CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// A time on the clock whisper counts by when it skips silence, as a time in the audio it was given. A time
-    /// that falls between two stretches of speech (in the short gap whisper leaves there) is the start of the later one.
+    /// A word's start and end on the clock whisper counts by when it skips silence, as times in the audio it was given
+    /// (4.4). A start that falls between two stretches of speech (in the short gap whisper leaves there) is the start of
+    /// the later one; an end there is the end of the earlier one, so the last word before a pause never runs on through
+    /// the silence the pause was. And a word ends at the latest where the stretch it starts in ends.
     /// </summary>
-    private static double ToOriginalTime(List<SpeechStretch> speech, double time)
+    private static (double Start, double End) ToOriginalWord(List<SpeechStretch> speech, double from, double to)
     {
-        foreach (var stretch in speech)
+        var (start, stretch) = ToOriginalTime(speech, from, isEnd: false);
+        var (end, _) = ToOriginalTime(speech, to, isEnd: true);
+        return (start, Math.Min(Math.Max(end, start), speech[stretch].OriginalEnd));
+    }
+
+    /// <summary>
+    /// The word mapping silence skipping needs, for the stretches of speech whisper reported (original start and end, then
+    /// start and end on its shortened clock): what TranscribeAsync hands ParseWhisperJson. Public for the golden tests.
+    /// </summary>
+    public static Func<double, double, (double Start, double End)> SpeechWordMap(
+        IReadOnlyList<(double OriginalStart, double OriginalEnd, double Start, double End)> stretches)
+    {
+        var speech = stretches.Select(s => new SpeechStretch(s.OriginalStart, s.OriginalEnd, s.Start, s.End)).ToList();
+        return (from, to) => ToOriginalWord(speech, from, to);
+    }
+
+    /// <summary>A time on whisper's shortened clock as a time in the audio, and the stretch of speech it falls in (or by).</summary>
+    /// <param name="isEnd">The time ends a word: between two stretches, it is the earlier one's end, not the later one's start.</param>
+    private static (double Time, int Stretch) ToOriginalTime(List<SpeechStretch> speech, double time, bool isEnd)
+    {
+        for (var i = 0; i < speech.Count; i++)
         {
+            var stretch = speech[i];
             if (time < stretch.Start)
-                return stretch.OriginalStart;
+                return isEnd && i > 0 ? (speech[i - 1].OriginalEnd, i - 1) : (stretch.OriginalStart, i);
             if (time <= stretch.End)
-                return stretch.OriginalStart + (time - stretch.Start);
+                return (stretch.OriginalStart + (time - stretch.Start), i);
         }
 
-        return speech[^1].OriginalEnd;
+        return (speech[^1].OriginalEnd, speech.Count - 1);
     }
+
+    /// <summary>
+    /// A time on the clock of stretches of a source joined end to end (what BuildExtractCommand writes) as a time in the
+    /// source (4.4). Past the last stretch, the end of it.
+    /// </summary>
+    public static double JoinedToSource(IReadOnlyList<(double Start, double End)> ranges, double time) =>
+        ranges.Count == 0 ? time : ranges[JoinedRange(ranges, time, out var into)].Start + into;
+
+    /// <summary>Words heard on the joined clock of <paramref name="ranges"/>, in the source's own time: each ends at the latest where its stretch ends.</summary>
+    public static List<CaptionWord> JoinedToSource(IReadOnlyList<(double Start, double End)> ranges, IReadOnlyList<CaptionWord> words)
+    {
+        var placed = new List<CaptionWord>(words.Count);
+        foreach (var word in words)
+        {
+            if (ranges.Count == 0)
+            {
+                placed.Add(word);
+                continue;
+            }
+
+            var range = ranges[JoinedRange(ranges, word.Start, out var into)];
+            var start = range.Start + into;
+            var end = Math.Min(start + Math.Max(word.End - word.Start, 0), range.End);
+            placed.Add(word with { Start = start, End = Math.Max(end, start) });
+        }
+
+        return placed;
+    }
+
+    /// <summary>Which stretch a moment of the joined clock is in, and how far into it.</summary>
+    private static int JoinedRange(IReadOnlyList<(double Start, double End)> ranges, double time, out double into)
+    {
+        var before = 0.0;
+        for (var i = 0; i < ranges.Count; i++)
+        {
+            var length = Math.Max(ranges[i].End - ranges[i].Start, 0);
+            if (time < before + length || i == ranges.Count - 1)
+            {
+                into = Math.Clamp(time - before, 0, length);
+                return i;
+            }
+
+            before += length;
+        }
+
+        into = 0;
+        return 0;
+    }
+
+    /// <summary>
+    /// The longest a segment's last word is taken to last (4.4): whisper gives it the segment's end, which can run on into
+    /// the silence after it. A short word is said in a quarter of a second, a long one in a little more; never more than 1.5 s.
+    /// </summary>
+    public static double LongestLastWord(string word) => Math.Clamp(0.25 + 0.08 * word.Count(char.IsLetterOrDigit), 0.35, 1.5);
 
     // What the whisper.exe in use says it understands (its --help), by the program asked: older builds know fewer options.
     private static (string Program, string Help)? _help;
@@ -303,8 +386,11 @@ public static partial class CaptionGenerator
     /// Puts whisper's tokens back together into words. A token is a piece of a word; one that starts with a
     /// space starts a new word, and punctuation, having no space, stays on the word before it.
     /// </summary>
-    /// <param name="mapTime">Turns whisper's token times into times in the audio, when the two differ; null when they are the same.</param>
-    public static List<CaptionWord> ParseWhisperJson(string json, Func<double, double>? mapTime = null)
+    /// <param name="mapWord">
+    /// Turns a word's start and end on whisper's clock into times in the audio, when the two differ (silence skipped);
+    /// null when they are the same. Given both at once, so an end can be held to the speech its start is in.
+    /// </param>
+    public static List<CaptionWord> ParseWhisperJson(string json, Func<double, double, (double Start, double End)>? mapWord = null)
     {
         var words = new List<CaptionWord>();
         using var document = JsonDocument.Parse(json);
@@ -314,7 +400,8 @@ public static partial class CaptionGenerator
         var text = new StringBuilder();
         double start = 0, end = 0;
 
-        void Finish()
+        // endsSegment: the word is the last of whisper's segment, whose end whisper stretches to the segment's (4.4).
+        void Finish(bool endsSegment = false)
         {
             var word = text.ToString().Trim();
             text.Clear();
@@ -323,9 +410,13 @@ public static partial class CaptionGenerator
             if (word.Length == 0 || word[0] is '[' or '(' || !word.Any(char.IsLetterOrDigit))
                 return;
 
+            var (said, done) = mapWord is null ? (start, end) : mapWord(start, end);
+            if (endsSegment)
+                done = Math.Min(done, said + LongestLastWord(word));
+
             // Never before the word that precedes it, and never too brief to be seen.
-            var from = Math.Max(start, words.Count > 0 ? words[^1].Start : 0);
-            words.Add(new CaptionWord(word, from, Math.Max(end, from + 0.05)));
+            var from = Math.Max(said, words.Count > 0 ? words[^1].Start : 0);
+            words.Add(new CaptionWord(word, from, Math.Max(done, from + 0.05)));
         }
 
         foreach (var segment in segments.EnumerateArray())
@@ -343,8 +434,6 @@ public static partial class CaptionGenerator
 
                 var from = offsets.GetProperty("from").GetDouble() / 1000;
                 var to = offsets.GetProperty("to").GetDouble() / 1000;
-                if (mapTime is not null)
-                    (from, to) = (mapTime(from), mapTime(to));
 
                 if (piece.StartsWith(' ') || text.Length == 0)
                 {
@@ -357,7 +446,7 @@ public static partial class CaptionGenerator
             }
 
             // A word never runs on from one segment into the next.
-            Finish();
+            Finish(endsSegment: true);
         }
 
         return words;
@@ -394,8 +483,8 @@ public static partial class CaptionGenerator
         ass.AppendLine("[Script Info]");
         ass.AppendLine("; Generated by HandPeg from a whisper.cpp transcription");
         ass.AppendLine("ScriptType: v4.00+");
-        ass.AppendLine($"PlayResX: {frame?.FrameWidth ?? width}");
-        ass.AppendLine($"PlayResY: {frame?.FrameHeight ?? height}");
+        ass.AppendLine(string.Create(CultureInfo.InvariantCulture, $"PlayResX: {frame?.FrameWidth ?? width}"));
+        ass.AppendLine(string.Create(CultureInfo.InvariantCulture, $"PlayResY: {frame?.FrameHeight ?? height}"));
         ass.AppendLine("WrapStyle: 2");
         ass.AppendLine("ScaledBorderAndShadow: yes");
         ass.AppendLine();
@@ -424,8 +513,9 @@ public static partial class CaptionGenerator
         var back = frame is null ? "&H80000000" : $"&H{Alpha(frame.Opacity * frame.ShadowOpacity)}000000";
 
         var font = string.IsNullOrWhiteSpace(style.FontName) ? "Arial" : style.FontName.Replace(",", " ").Trim();
-        ass.AppendLine($"Style: Caption,{font},{fontSize},&H{alpha}{first},&H{alpha}{second},&H{alpha}{AssColor(style.OutlineColor, "000000")},{back},"
-                       + $"-1,0,0,0,100,100,0,0,1,{outline.ToString(CultureInfo.InvariantCulture)},{shadow.ToString(CultureInfo.InvariantCulture)},2,{marginLeft},{marginRight},{marginBottom},1");
+        ass.AppendLine(string.Create(CultureInfo.InvariantCulture,
+            $"Style: Caption,{font},{fontSize},&H{alpha}{first},&H{alpha}{second},&H{alpha}{AssColor(style.OutlineColor, "000000")},{back},"
+            + $"-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,{marginLeft},{marginRight},{marginBottom},1"));
         ass.AppendLine();
         ass.AppendLine("[Events]");
         ass.AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
@@ -437,10 +527,15 @@ public static partial class CaptionGenerator
             var caption = captions[c];
             var captionStart = caption[0].Start;
 
-            // Held a moment after the last word, but cleared before the next caption begins.
-            var captionEnd = caption[^1].End + HoldSeconds;
+            // Gone when its last word ends (4.4: no word is left up through a silence), unless the next caption follows
+            // within a breath: then it stays until that one replaces it, so speech never flickers.
+            var captionEnd = caption[^1].End;
             if (c + 1 < captions.Count)
-                captionEnd = Math.Min(captionEnd, captions[c + 1][0].Start);
+            {
+                var next = captions[c + 1][0].Start;
+                captionEnd = next - captionEnd <= SilentGapSeconds ? next : captionEnd;
+            }
+
             captionEnd = Math.Max(captionEnd, captionStart + 0.1);
 
             if (isKaraoke)
@@ -451,7 +546,7 @@ public static partial class CaptionGenerator
                 {
                     var until = w + 1 < caption.Count ? caption[w + 1].Start : captionEnd;
                     var centiseconds = Math.Max((int)Math.Round((until - caption[w].Start) * 100), 1);
-                    text.Append($"{{\\kf{centiseconds}}}{Escape(caption[w].Text)}{(w + 1 < caption.Count ? " " : "")}");
+                    text.Append(CultureInfo.InvariantCulture, $"{{\\kf{centiseconds}}}{Escape(caption[w].Text)}{(w + 1 < caption.Count ? " " : "")}");
                 }
 
                 ass.AppendLine(Event(captionStart, captionEnd, shadowTag + text, timeOffset));
@@ -478,7 +573,10 @@ public static partial class CaptionGenerator
     /// <summary>The words as the captions they are shown as, in a style: as many to a line as the style allows.</summary>
     public static List<List<CaptionWord>> Lines(IReadOnlyList<CaptionWord> words, CaptionStyle style) => Chunk(words, Math.Clamp(style.MaxWordsPerLine, 2, 5));
 
-    /// <summary>Groups the words into captions: so many at most, a new one after a pause or the end of a sentence.</summary>
+    /// <summary>
+    /// Groups the words into captions: so many at most, a new one after a silent gap (<see cref="SilentGapSeconds"/>, 4.4:
+    /// so a caption never holds a silence) or the end of a sentence.
+    /// </summary>
     private static List<List<CaptionWord>> Chunk(IReadOnlyList<CaptionWord> words, int maxWords)
     {
         var captions = new List<List<CaptionWord>>();
@@ -487,7 +585,7 @@ public static partial class CaptionGenerator
             var current = captions.Count > 0 ? captions[^1] : null;
             var startsNew = current is null
                             || current.Count >= maxWords
-                            || word.Start - current[^1].End > PauseSeconds
+                            || word.Start - current[^1].End > SilentGapSeconds
                             || current[^1].Text[^1] is '.' or '!' or '?';
             if (startsNew)
                 captions.Add(current = []);
@@ -500,11 +598,12 @@ public static partial class CaptionGenerator
     private static string Event(double start, double end, string text, double offset) =>
         $"Dialogue: 0,{Time(start + offset)},{Time(end + offset)},Caption,,0,0,0,,{text}";
 
-    /// <summary>ASS times are H:MM:SS.cc.</summary>
+    /// <summary>ASS times are H:MM:SS.cc, written the same whatever the culture.</summary>
     private static string Time(double seconds)
     {
         var centiseconds = (long)Math.Round(Math.Max(seconds, 0) * 100);
-        return $"{centiseconds / 360000}:{centiseconds / 6000 % 60:00}:{centiseconds / 100 % 60:00}.{centiseconds % 100:00}";
+        return string.Create(CultureInfo.InvariantCulture,
+            $"{centiseconds / 360000}:{centiseconds / 6000 % 60:00}:{centiseconds / 100 % 60:00}.{centiseconds % 100:00}");
     }
 
     /// <summary>#RRGGBB as ASS writes colours: BBGGRR. Anything unreadable becomes the fallback.</summary>

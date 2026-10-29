@@ -1,0 +1,50 @@
+# Children left wholly outside a parent's trim are unlinked and kept (4.4-BugHunt, Q3), on a track a ripple closes up they still go; a roll carries the children on its cut.
+
+== Set up at 25 fps: a talk, its HUD on the track under it, a badge at 2-3 s and a key at 12-14 s on Video 3, all three its children
+  Video 1: [T 0-20 @0]
+  HUD: [H 0-20]
+  Video 3: [B 2-3] [K 12-14]
+  Flash:
+  links: H<T B<T K<T; HUD under Video 1, Flash under Video 1
+
+== Trim the talk's end to 10 s: its HUD follows; the key, left wholly after it, stays where it is, unlinked
+  Video 1: [T 0-10 @0]
+  HUD: [H 0-10]
+  Video 3: [B 2-3] [K 12-14]
+  Flash:
+  links: H<T B<T; HUD under Video 1, Flash under Video 1
+
+== Trim the talk's start to 4 s: its HUD follows; the badge, left wholly before it, stays where it is, unlinked
+  Video 1: [T 4-10 @4]
+  HUD: [H 4-10]
+  Video 3: [B 2-3] [K 12-14]
+  Flash:
+  links: H<T; HUD under Video 1, Flash under Video 1
+
+== A second key (8-10 s, Video 3) and a flash (8.4-10 s, on the Flash track under the talk's) as its children; ripple-trim the talk's end to 7 s on its own track: the key, left with nothing on a track that does not ripple, stays, unlinked; the flash, on a track that closes up, goes
+  Video 1: [T 4-7 @4]
+  HUD: [H 4-7]
+  Video 3: [B 2-3] [K2 8-10] [K 12-14]
+  Flash:
+  links: H<T; HUD under Video 1, Flash under Video 1
+
+== Split the talk at 5.6 s (its HUD with it), and a key of the first half from 5 s to the cut
+  Video 1: [T 4-5.6 @4] [T2 5.6-7 @5.6]
+  HUD: [H 4-5.6] [H2 5.6-7]
+  Video 3: [B 2-3] [R2 5-5.6] [K2 8-10] [K 12-14]
+  Flash:
+  links: H<T H2<T2 R2<T; HUD under Video 1, Flash under Video 1
+
+== Roll the cut to 6.4 s: the HUD's cut rolls with it, and the key on the cut follows the first half's end
+  Video 1: [T 4-6.4 @4] [T2 6.4-7 @6.4]
+  HUD: [H 4-6.4] [H2 6.4-7]
+  Video 3: [B 2-3] [R2 5-6.4] [K2 8-10] [K 12-14]
+  Flash:
+  links: H<T H2<T2 R2<T; HUD under Video 1, Flash under Video 1
+
+== Roll the cut back to 4.6 s: the HUD's cut rolls back with it; the key, left wholly after the first half, stays, unlinked
+  Video 1: [T 4-4.6 @4] [T2 4.6-7 @4.6]
+  HUD: [H 4-4.6] [H2 4.6-7]
+  Video 3: [B 2-3] [R2 5-6.4] [K2 8-10] [K 12-14]
+  Flash:
+  links: H<T H2<T2; HUD under Video 1, Flash under Video 1

@@ -37,8 +37,20 @@ public partial class MainViewModel
     // Views whose look is newer than their clip's.
     private readonly HashSet<Layer> _staleLooks = new(ReferenceEqualityComparer.Instance);
 
-    // Set while the views are being written from the document: what they are told then is the document's, not a request.
-    private bool _syncingViews;
+    // How deep the views are being written from the document (SyncViews, a clip's values shown again, a look put on the main
+    // video): what they are told then is the document's, not a request. A depth (4.4-BugHunt), so that a sync inside another
+    // (an edit a handler commits while the views are written) cannot end the outer one early.
+    private int _syncDepth;
+
+    /// <summary>
+    /// Whether the views are being written from the document. Set true as a sync starts and false as it ends (in a finally),
+    /// which goes one deeper and one back out: true while any sync is under way.
+    /// </summary>
+    private bool _syncingViews
+    {
+        get => _syncDepth > 0;
+        set => _syncDepth = Math.Max(_syncDepth + (value ? 1 : -1), 0);
+    }
 
     // The edit under way (Edit), and what the timeline was before it, for its undo step.
     private ITimelineTransaction? _openEdit;
@@ -60,11 +72,14 @@ public partial class MainViewModel
     };
 
     /// <summary>
-    /// Makes a document the timeline (a new project, an undo step, a project opened): its views are made afresh, its
-    /// markers and the Sequence Output's effects are taken into the panes that edit them. No undo step of its own.
+    /// Makes a document the timeline (a new project, an undo step, a project opened): its views are made afresh (the
+    /// selection following its clip into its new view), its markers and the Sequence Output's effects are taken into the
+    /// panes that edit them. No undo step of its own. A restore (4.4-BugHunt): nothing it sets going takes a step or makes an
+    /// edit, and the captions are projected once, as the outermost restore ends (<see cref="EndRestore"/>).
     /// </summary>
     private void InstallDocument(TimelineDocument document)
     {
+        using var restoring = BeginRestore();
         Document.Committed -= OnDocumentCommitted;
         Document = document;
         Document.Committed += OnDocumentCommitted;
@@ -72,6 +87,7 @@ public partial class MainViewModel
         using (DeferCommand())
         {
             SyncViews(afresh: true);
+            FollowSelection();
             SetMarkers(document.Markers);
             SetSequenceEffects(document.SequenceEffects, document.SequenceEffectsBypassed);
             AudioLinked = AllAudioLinked();
@@ -80,6 +96,9 @@ public partial class MainViewModel
             TimelineChanged?.Invoke();
             GenerateCommand();
         }
+
+        // The captions follow the clips that play their source (4.4): projected once the anchors put back are in place too.
+        _reprojectPending = true;
     }
 
     // ----- Finding a clip's view, a view's clip, a row's track -----
@@ -130,7 +149,9 @@ public partial class MainViewModel
     /// transaction, a track it leaves with no clips goes (a row lasts as long as it has clips, as in 4.2.0; an empty track
     /// made as one stays), and on commit Undo keeps a step of it (named <paramref name="label"/>) and the rows follow
     /// (<see cref="OnDocumentCommitted"/>). A change the timeline refuses (<see cref="TimelineEditException"/>) changes
-    /// nothing and says why in the status bar; returns false then. One made inside another folds into it.
+    /// nothing and says why in the status bar; returns false then. One made inside another folds into it. Since 4.4-BugHunt
+    /// no exception escapes it: a fault in the change (never the user's doing) is rolled back with it, written down and said,
+    /// and returns false; and none is made while a document is being put in place (an undo step, a project opened).
     /// </summary>
     /// <param name="undoable">False for what is not the user's doing (a file's length learned after it was dropped): no undo step.</param>
     /// <param name="removeEmptied">False to keep a track the change leaves with no clips (an empty track given back).</param>
@@ -142,11 +163,20 @@ public partial class MainViewModel
             return true;
         }
 
-        FlushLooks();
-        var before = undoable && !_isBackgroundWorker ? CaptureSnapshot() : null;
-        var filled = removeEmptied ? Document.Tracks.Where(t => t.Clips.Count > 0).ToList() : [];
+        // What asks for an edit while a document is being put in place is the restore itself, or something it set going: an
+        // edit would land in the middle of it (and on a document about to be another).
+        if (_restoring > 0)
+        {
+            AppLog.Write($"Edit \"{label}\" refused while a step was being put back");
+            return false;
+        }
+
+        _editCommitted = false;
         try
         {
+            FlushLooks();
+            var before = undoable && !_isBackgroundWorker ? CaptureSnapshot() : null;
+            var filled = removeEmptied ? Document.Tracks.Where(t => t.Clips.Count > 0).ToList() : [];
             using var edit = Document.BeginTransaction(label);
             (_openEdit, _beforeEdit) = (edit, before);
             change(edit);
@@ -157,12 +187,23 @@ public partial class MainViewModel
             }
 
             edit.Commit();
+            DevFlightRecorder.Record("edit", label);
             return true;
         }
         catch (TimelineEditException refused)
         {
+            DevFlightRecorder.Record("refused", $"{label}: {refused.Message}");
             StatusText = refused.Message;
             return false;
+        }
+        catch (Exception ex)
+        {
+            // A fault: the transaction has rolled the document back (unless it was committed, and what followed failed).
+            NoteFault("edit", $"The edit \"{label}\"", NoteOf(label), ex);
+            StatusText = _editCommitted
+                ? $"\"{label}\" was made, but the timeline could not be fully redrawn after it (the reason is in the log)."
+                : $"\"{label}\" could not be made, and nothing was changed (the reason is in the log).";
+            return _editCommitted;
         }
         finally
         {
@@ -170,25 +211,96 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>A change committed: an undo step of what was before it, the views brought into line, the graphs built again.</summary>
+    // Whether the edit under way has been committed (OnDocumentCommitted ran): a fault after that is not one that changed nothing.
+    private bool _editCommitted;
+
+    /// <summary>
+    /// A change committed: an undo step of what was before it, the views brought into line, the graphs built again. Raised
+    /// inside the transaction's Commit, so nothing escapes it (4.4-BugHunt): a fault in bringing the views into line is
+    /// written down and the views are made afresh from the document; the edit keeps its undo step all the same.
+    /// </summary>
     private void OnDocumentCommitted(TimelineCommit commit)
     {
-        // The edit is over: what is done from here on (an edit a handler makes) is an edit of its own.
+        // The edit is over: what is done from here on (an edit a handler makes) is an edit of its own. Undo waits until its
+        // step is taken (_committing), or the step would land on the history after the one Undo moved.
         var before = _beforeEdit;
         (_openEdit, _beforeEdit) = (null, null);
-
-        using (DeferCommand())
+        _editCommitted = true;
+        _committing++;
+        try
         {
-            _liveState = null;
-            SyncViews();
-            AudioLinked = AllAudioLinked();
-            RefreshLayerRows();
-            TimelineChanged?.Invoke();
-            GenerateCommand();
+            try
+            {
+                using (DeferCommand())
+                {
+                    _liveState = null;
+                    SyncViews();
+                    AudioLinked = AllAudioLinked();
+                    RefreshLayerRows();
+                    TimelineChanged?.Invoke();
+                    GenerateCommand();
+                }
+            }
+            catch (Exception ex)
+            {
+                NoteFault("edit", $"Bringing the views into line after \"{commit.Label}\"", $"views after {NoteOf(commit.Label)}", ex);
+                RecoverViews();
+            }
+
+            try
+            {
+                if (before is not null)
+                    Checkpoint(commit.Label, before);
+            }
+            catch (Exception ex)
+            {
+                NoteFault("edit", $"Keeping the undo step of \"{commit.Label}\"", $"undo step of {NoteOf(commit.Label)}", ex);
+            }
+        }
+        finally
+        {
+            _committing--;
         }
 
-        if (before is not null)
-            Checkpoint(commit.Label, before);
+        // The captions follow the clips that play their source (4.4).
+        try
+        {
+            ReprojectCaptions();
+        }
+        catch (Exception ex)
+        {
+            NoteFault("edit", $"Showing the captions after \"{commit.Label}\"", $"captions after {NoteOf(commit.Label)}", ex);
+        }
+    }
+
+    // How many commits are bringing the views into line and taking their steps (OnDocumentCommitted): Undo waits for them.
+    private int _committing;
+
+    /// <summary>
+    /// The views made afresh from the document after they could not be brought into line: as a document put in place is
+    /// (the selection following its clip, the window told once by <see cref="TimelineRestored"/>). A fault in that too is
+    /// written down: the document is what renders and is saved, whatever its views show.
+    /// </summary>
+    private void RecoverViews()
+    {
+        try
+        {
+            using (BeginRestore())
+            using (DeferCommand())
+            {
+                _liveState = null;
+                SyncViews(afresh: true);
+                FollowSelection();
+                AudioLinked = AllAudioLinked();
+                RefreshLayerRows();
+                TimelineChanged?.Invoke();
+                GenerateCommand();
+            }
+        }
+        catch (Exception ex)
+        {
+            NoteFault("edit", "Making the views afresh", "views made afresh", ex);
+        }
     }
 
     // ----- The views -----
@@ -203,12 +315,14 @@ public partial class MainViewModel
     {
         if (afresh)
         {
-            foreach (var view in _views.Values.Concat(_emptyTrackViews.Values))
+            foreach (var view in _views.Values.Concat(_emptyTrackViews.Values).ToArray())
                 Unhook(view);
             _views.Clear();
             _emptyTrackViews.Clear();
             _taken.Clear();
             _staleLooks.Clear();
+            _placedFor.Clear();
+            _centerShown = null;
             DrawTargetLayer = null;
         }
 
@@ -241,7 +355,6 @@ public partial class MainViewModel
                 }
             }
 
-            PlaceMainViews();
         }
         finally
         {
@@ -254,6 +367,7 @@ public partial class MainViewModel
             _views.Remove(id);
             _taken.Remove(id);
             _staleLooks.Remove(view);
+            _placedFor.Remove(view);
         }
 
         foreach (var (id, view) in _emptyTrackViews.Where(v => !empties.Contains(v.Key)).ToList())
@@ -280,6 +394,10 @@ public partial class MainViewModel
         if (DrawTargetLayer is { } target && !Layers.Contains(target))
             DrawTargetLayer = null;
         RefreshAnyKeys();
+
+        // The Center controls and the Crop boxes show the main video's clip they stand for as the document has it now (an
+        // undo step puts back its place and crop, 4.4).
+        ShowCenterTarget();
     }
 
     /// <summary>A clip's view: the one it has, its look taken again when the clip has another; or a new one made from its look.</summary>
@@ -289,10 +407,13 @@ public partial class MainViewModel
         {
             if (!ReferenceEquals(_taken.GetValueOrDefault(clip.Id), clip.State))
             {
-                // Its keys moved by an edit (a trim of its start, a split, a speed), or an older look put back.
+                // Its keys moved by an edit (a trim of its start, a split, a speed), or an older look put back, or a place
+                // given to it (4.4: its place, crop and blur fill are its own, so an edit or an undo step can change them).
                 view.ApplyLook(clip.State);
+                view.ApplyPlace(clip.State);
                 view.ApplyTiming(clip.State);
                 _taken[clip.Id] = clip.State;
+                _placedFor.Remove(view);
             }
         }
         else
@@ -304,6 +425,12 @@ public partial class MainViewModel
             _taken[clip.Id] = clip.State;
             if (view.IsMainVideo)
                 view.Filmstrip = _layerFilmstrips.GetValueOrDefault(LocalMediaPath);
+
+            // A clip of the main video made from another (a split's second half): placed by the zoom and offsets that one
+            // was placed by, while its corner, width and crop are that one's, so a frame of another shape keeps the two one
+            // look (worked back from its even-pixel width, it could land two pixels off).
+            if (view.IsMainVideo && _placedFor.FirstOrDefault(p => p.Key.IsMainVideo && p.Value.Wrote == (view.SizeWidth, view.PositionX, view.PositionY) && CropOf(p.Key) == CropOf(view)) is { Key: not null } same)
+                _placedFor[view] = same.Value;
 
             // A video whose file was still being looked at when this clip was kept (an undo step, a save taken during a
             // drop): looked at again, its length and sound filled in, its place kept (4.2.0's SetLayers did the same).
@@ -368,11 +495,16 @@ public partial class MainViewModel
         return view;
     }
 
-    /// <summary>A view taken into use: its changes are listened to, and from now on it grows about its middle.</summary>
+    /// <summary>
+    /// A view taken into use: its changes are listened to (and, 4.4, a change of its look by the user takes an undo step just
+    /// before it is made, OnViewChanging), and from now on it grows about its middle.
+    /// </summary>
     private void Hook(Layer view)
     {
         view.PropertyChanged -= OnLayerChanged;
         view.PropertyChanged += OnLayerChanged;
+        view.PropertyChanging -= OnViewChanging;
+        view.PropertyChanging += OnViewChanging;
         view.SpeedEditor = SetClipSpeed;
         view.AnchorCenter = true;
     }
@@ -380,6 +512,7 @@ public partial class MainViewModel
     private void Unhook(Layer view)
     {
         view.PropertyChanged -= OnLayerChanged;
+        view.PropertyChanging -= OnViewChanging;
         view.SpeedEditor = null;
         if (ReferenceEquals(DrawTargetLayer, view))
             DrawTargetLayer = null;
@@ -531,8 +664,33 @@ public partial class MainViewModel
         }
 
         if (_openEdit is null && ClipOf(view) is { } clip)
-            TakeClipField(view, clip, name);
+        {
+            // While a step is being put back, and its bindings settle on the new views, a clip's value set on its view is
+            // their echo (a box re-rounding what it shows), never the user's request (4.4-BugHunt): the view shows its clip's.
+            if (IsRestoringTimeline)
+                ShowClipAgain(view, clip);
+            else
+                TakeClipField(view, clip, name);
+        }
+
         return true;
+    }
+
+    /// <summary>A view shows its clip's own values again, as the document has them: nothing is edited.</summary>
+    private void ShowClipAgain(Layer view, TimelineClip clip)
+    {
+        if (Document.TrackOf(clip) is not { } track)
+            return;
+
+        _syncingViews = true;
+        try
+        {
+            TakeClip(view, clip, track);
+        }
+        finally
+        {
+            _syncingViews = false;
+        }
     }
 
     /// <summary>
@@ -551,6 +709,13 @@ public partial class MainViewModel
     /// <summary>One of a clip's own values set on its view: the clip is edited to it (within what the timeline allows), and the view shows what came of it.</summary>
     private void TakeClipField(Layer view, TimelineClip clip, string name)
     {
+        // Never while a step is being put back or settles (4.4-BugHunt): no edit, no step, the redo history kept.
+        if (IsRestoringTimeline)
+        {
+            ShowClipAgain(view, clip);
+            return;
+        }
+
         var undoable = TakesUndoStep(view, name);
         Edit($"change {view.Name}", edit =>
         {
@@ -591,18 +756,8 @@ public partial class MainViewModel
         }, undoable);
 
         // What the timeline made of it (held to its limits, or refused): the view shows the clip as it is.
-        if (Document.FindClip(clip.Id) is not null && Document.TrackOf(clip) is { } track)
-        {
-            _syncingViews = true;
-            try
-            {
-                TakeClip(view, clip, track);
-            }
-            finally
-            {
-                _syncingViews = false;
-            }
-        }
+        if (Document.FindClip(clip.Id) is not null)
+            ShowClipAgain(view, clip);
     }
 
     // ----- The document as the graph builder is given it -----
@@ -713,15 +868,42 @@ public partial class MainViewModel
             var toTheEnd = Document.Tracks.Where(t => !t.IsLocked).SelectMany(t => t.Clips)
                 .Where(c => c.ContentKind is LayerKind.Video or LayerKind.Image or LayerKind.Text or LayerKind.Adjustment && Math.Abs(c.End - oldEnd) < 0.0005)
                 .ToList();
+            // The old clips go, but not what hangs from them (a style's HUD pieces cut from the video): those stay, and are
+            // given to the new clip below.
+            var oldIds = old.Select(o => o.Clip.Id).ToHashSet();
             foreach (var (_, clip) in old)
-                edit.DeleteClip(clip);
+                edit.DeleteClip(clip, withChildren: false);
             if (track is not null && (!Document.Tracks.Contains(track) || track.IsLocked))
                 track = null;
 
             var view = look is null ? new Layer { Kind = LayerKind.MainVideo, Name = MainVideoName() } : Layer.FromState(look, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
             view.MediaDuration = length;
+
+            // Where the Center controls say (the clip it replaces, or a style's or preset's), at this file's shape (4.4: a
+            // clip's place is its own, so it is written into it before it is made); the first clip of the main video cropped
+            // as the Crop boxes say (a preset's, chosen before any video).
+            if (old.Count == 0)
+                (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom) = BoxCrop();
+            if (FrameWidth > 0 && FrameHeight > 0)
+            {
+                _placingMain = true;
+                try
+                {
+                    WriteMainPlace(view, CenterZoom, CenterOffsetX, CenterOffsetY);
+                }
+                finally
+                {
+                    _placingMain = false;
+                }
+            }
+
             var main = NewClipFor(view, 0, length);
             Adopt(view, main);
+
+            // Its frames on the timeline (an adopted view is not made by ViewFor, which fetches them for a new one).
+            view.Filmstrip = _layerFilmstrips.GetValueOrDefault(LocalMediaPath);
+            if (!_isBackgroundWorker)
+                _ = LoadMainFilmstripAsync();
             try
             {
                 edit.PlaceClip(track ?? edit.InsertTrack(0, TimelineTrackKind.Video), main, allowCrossfadeOverlap: false);
@@ -742,6 +924,14 @@ public partial class MainViewModel
                     // Something after it on its track: it keeps its end.
                 }
             }
+
+            // What hung from the old clips hangs from the new one now, where it lies over it; anything else lets go. A clip on a
+            // locked track is left as it is (an edit of it would refuse the whole load): a parent that is gone is harmless.
+            if (oldIds.Count > 0)
+            {
+                foreach (var orphan in Document.Tracks.Where(t => !t.IsLocked).SelectMany(t => t.Clips).Where(c => c.ParentClipId is { } parent && oldIds.Contains(parent)).ToList())
+                    edit.SetClipParent(orphan, orphan.Start >= main.Start - 0.0005 && orphan.End <= main.End + 0.0005 ? main.Id : null);
+            }
         }, undoable: false);
     }
 
@@ -761,7 +951,8 @@ public partial class MainViewModel
             clip.AudioStreamIndex = info is { Audio.Count: 0 } ? -1 : 0;
         }
 
-        foreach (var view in Layers.Where(l => l.IsMainVideo))
+        // (Over a copy: what a view's change sets going may change the rows.)
+        foreach (var view in Layers.Where(l => l.IsMainVideo).ToArray())
         {
             view.Name = MainVideoName();
             if (length > 0)
@@ -787,7 +978,10 @@ public partial class MainViewModel
             _syncingViews = true;
             try
             {
+                // Its crop is the clip's own (4.4), as its place is: a look takes neither (a preset's crop is put on its own, ApplyPresetCrop).
+                var crop = (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom);
                 view.ApplyLook(look);
+                (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom) = crop;
                 TakeClip(view, clip, track);
             }
             finally
@@ -798,43 +992,206 @@ public partial class MainViewModel
             _staleLooks.Add(view);
         }
 
-        PlaceMainViews();
+        // A style's or a preset's: every clip of the main video takes the Center controls it set.
+        PlaceMainViews(all: true);
+        ShowCenterTarget();
     }
 
     /// <summary>What the main video's clips are called: its file's name, or "Main Video".</summary>
     private string MainVideoName() => _mediaInfo is not null && LocalMediaPath.Length > 0 ? System.IO.Path.GetFileName(LocalMediaPath) : "Main Video";
 
     // ----- The main video's place: the Center controls -----
-    // The main video is placed about its middle (zoom and offsets), which keeps it centred when the frame changes shape;
-    // the graph places the primary chain there (CenterRect). Each of its clips' views shows that place as every other
-    // layer does, a corner and a width (PlaceMainViews), and a change of one of them (a keyframe applied, a box typed into)
-    // is the main video moved (TakeMainPlace). 4.2.0 kept one row of the main video in step this way; it is every clip now.
+    // The main video is placed about its middle (zoom and offsets), which keeps it centred when the frame changes shape.
+    // Its place and its crop are each clip's own (4.4): every clip's view holds them as every other layer does, a corner
+    // and a width (and its crop, which reframes its stream), written into its clip as its look (FlushLooks), so an undo step
+    // or a project keeps them. The Center controls and the Crop boxes are a view of one clip, CenterTarget (the selected
+    // one, else the one at the playhead): they are taken from it (ShowCenterTarget) and written into it (PlaceMainViews); a
+    // style, a preset or Reset writes them into every clip. The graph places the chain by its first clip's (CenterRect,
+    // GetCenterRect) and lays a clip placed or cropped otherwise in a box of its own.
 
     private bool _placingMain;
 
-    /// <summary>Writes the main video's place into its clips' views, from the zoom and offsets.</summary>
-    /// <param name="moved">Moved by hand (dragged on the Canvas): what a keyframe may have to record, on the clip at the playhead.</param>
-    private void PlaceMainViews(bool moved = false)
+    // Set while a style, a preset, Reset or a project being opened sets the Center controls: every clip of the main video takes them.
+    private bool _centerForAll;
+
+    // The view the Center controls and the Crop boxes were last taken from (the CenterTarget of then).
+    private Layer? _centerShown;
+
+    // How each view of the main video was last placed: for what frame and source, at what zoom and offsets, and the corner
+    // and width that gave. A frame of another shape places it again about its middle at that zoom and those offsets (worked
+    // back from its corner and width only when they were changed since: a frame being typed, a few pixels wide on the way,
+    // loses nothing). A view not here is taken as placed for the frame as it is when it is first met.
+    private readonly record struct MainPlacement((int FrameWidth, int FrameHeight, int SourceWidth, int SourceHeight) For,
+        double Zoom, double OffsetX, double OffsetY, (double SizeWidth, double PositionX, double PositionY) Wrote);
+
+    private readonly Dictionary<Layer, MainPlacement> _placedFor = new(ReferenceEqualityComparer.Instance);
+
+    // Whether the view model listens to itself for the Center controls' clip changing (ShowCenterTarget).
+    private bool _watchingCenterTarget;
+
+    // Set while a box, a gizmo or a slider is dragged (MainWindow, HoldCenterTarget): the clip the Center controls stand for
+    // stays the one they were taken from.
+    private bool _centerHeld;
+
+    /// <summary>
+    /// The main video's clip the Center controls and the Crop boxes show and set (4.4): the selected one, else the one at
+    /// the playhead (or its first); the hidden stand-in while it has none. While a drag is under way, the one they were
+    /// taken from, so the playhead crossing into another clip during playback does not switch it partway through.
+    /// </summary>
+    public Layer CenterTarget =>
+        _centerHeld && _centerShown is { ClipId: var heldId } held && heldId != Guid.Empty && _views.TryGetValue(heldId, out var heldView) && ReferenceEquals(heldView, held)
+            ? held
+            : KeyLayer is { IsMainVideo: true, ClipId: var id } selected && id != Guid.Empty && _views.TryGetValue(id, out var view) && ReferenceEquals(view, selected)
+                ? selected
+                : MainLayer;
+
+    /// <summary>
+    /// Holds the clip the Center controls stand for while a drag is under way (a Canvas box, a gizmo, a slider), or lets it
+    /// go: they then show the clip they stand for now.
+    /// </summary>
+    public void HoldCenterTarget(bool hold)
+    {
+        _centerHeld = hold;
+        if (!hold && !ReferenceEquals(CenterTarget, _centerShown))
+            ShowCenterTarget();
+    }
+
+    /// <summary>
+    /// The view of the main video's clip the sequence's place and crop are (the graph's CenterRect and crop): the first shown
+    /// clip of the lowest picture track that plays the main file as the player does, the graph builder's primary chain's
+    /// first clip (FilterGraphBuilder.CanRide); while no clip can ride the chain (each at another speed, another sound
+    /// stream), the main video's first clip, as the builder takes it then, never the one at the playhead; null while it has none.
+    /// </summary>
+    private Layer? AnchorMainView()
+    {
+        if (HasSource)
+        {
+            var primary = LocalMediaPath.Trim().Trim('"');
+            foreach (var track in Document.Tracks)
+            {
+                if (track.Kind is not (TimelineTrackKind.Video or TimelineTrackKind.Switch))
+                    continue;
+
+                foreach (var clip in track.Clips)
+                {
+                    if (!clip.IsHidden && clip.ContentKind == LayerKind.MainVideo && clip.VideoStreamIndex == 0 && clip.AudioStreamIndex <= 0
+                        && Math.Abs(clip.Speed - 1) < 0.0005 && clip.SourcePath is { } path && string.Equals(path.Trim().Trim('"'), primary, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return _views.GetValueOrDefault(clip.Id);
+                    }
+                }
+            }
+        }
+
+        return FirstMainView();
+    }
+
+    /// <summary>
+    /// The zoom and offsets a view of the main video is placed by (the Center controls' values for it), worked back from its
+    /// corner and width at the shape its crop leaves of the source: on the frame and source given, or as they are now.
+    /// </summary>
+    private (double Zoom, double OffsetX, double OffsetY) MainPlaceOf(Layer view, (int FrameWidth, int FrameHeight, int SourceWidth, int SourceHeight)? on = null)
+    {
+        var (frameWidth, frameHeight, sourceWidth, sourceHeight) = on ?? (FrameWidth, FrameHeight, SourceWidth, SourceHeight);
+        var (croppedWidth, croppedHeight) = CroppedSize(CropOf(view), sourceWidth, sourceHeight);
+        var zoom = Math.Clamp(view.SizeWidth, SmallestCenterZoom, LargestCenterZoom);
+        return (zoom, Math.Clamp((view.PositionX - (1 - zoom) / 2) * 100, -100, 100),
+            Math.Clamp((view.PositionY - (1 - zoom * Math.Max(frameWidth, 1) * croppedHeight / croppedWidth / Math.Max(frameHeight, 1)) / 2) * 100, -100, 100));
+    }
+
+    /// <summary>
+    /// The zoom and offsets a view of the main video is at: those it was last placed by, while nothing has moved it since
+    /// (exact, whatever frame it was placed for); else worked back from its corner and width, for the frame it was placed for.
+    /// </summary>
+    private (double Zoom, double OffsetX, double OffsetY) KeptPlaceOf(Layer view)
+    {
+        if (!_placedFor.TryGetValue(view, out var was))
+            return MainPlaceOf(view);
+
+        return was.Wrote == (view.SizeWidth, view.PositionX, view.PositionY) ? (was.Zoom, was.OffsetX, was.OffsetY) : MainPlaceOf(view, was.For);
+    }
+
+    /// <summary>
+    /// Writes a place (a zoom and offsets) into a view of the main video as a corner and a width, at the shape its own crop
+    /// leaves of the source; its look is then newer than its clip's. Callers hold <see cref="_placingMain"/>.
+    /// </summary>
+    private void WriteMainPlace(Layer view, double zoom, double offsetX, double offsetY)
+    {
+        var (frameWidth, frameHeight) = ((double)FrameWidth, (double)FrameHeight);
+        var (x, y, width, _) = CenterRectOf(zoom, offsetX, offsetY, CroppedSizeOf(CropOf(view)));
+        var place = (width / frameWidth, x / frameWidth, y / frameHeight);
+        _placedFor[view] = new MainPlacement((FrameWidth, FrameHeight, SourceWidth, SourceHeight), zoom, offsetX, offsetY, place);
+        if ((view.SizeWidth, view.PositionX, view.PositionY) == place)
+            return;
+
+        (view.SizeWidth, view.PositionX, view.PositionY) = place;
+        if (view.ClipId != Guid.Empty)
+            _staleLooks.Add(view);
+    }
+
+    /// <summary>
+    /// Keeps the main video's views in place as the frame changes shape (each about its middle), and writes the Center
+    /// controls into the clip they stand for, or into every clip of the main video (<paramref name="all"/>: a style, a
+    /// preset, Reset). Without either, only the first.
+    /// </summary>
+    /// <param name="moved">The Center controls were set (dragged on the Canvas, typed): what a keyframe may have to record, on that clip at the playhead (or, selected with the playhead outside it, at its nearest moment).</param>
+    private void PlaceMainViews(bool moved = false, bool all = false)
     {
         if (_placingMain || _applyingKeys || FrameWidth <= 0 || FrameHeight <= 0)
             return;
 
-        var (frameWidth, frameHeight) = ((double)FrameWidth, (double)FrameHeight);
-        var (x, y, width, _) = GetCenterRect();
+        // A step being put back (4.4-BugHunt) brings every clip's place with it: the Center controls set meanwhile (outside
+        // ShowCenterTarget) write into no clip. Keeping the views in place as the frame changes shape goes on.
+        if ((moved || all) && _restoring > 0)
+            return;
+
+        var target = CenterTarget;
+        var now = (FrameWidth, FrameHeight, SourceWidth, SourceHeight);
         var active = moved ? MainViewAt(PositionMs / 1000) : null;
+        if (active is not null && !all && !ReferenceEquals(active, target))
+            active = null;
+
+        // The selected clip, with the playhead outside it: its keys are recorded at its moment nearest the playhead (its
+        // first or its last), or they would put it back where they say and the controls would seem to do nothing.
+        double? keyTime = null;
+        if (moved && !all && active is null && target is { IsMainVideo: true } && target.ClipId != Guid.Empty && ReferenceEquals(target, KeyLayer))
+            (active, keyTime) = (target, Math.Clamp(PositionMs / 1000 - target.StartTime, 0, Math.Max(target.Duration, 0)));
         var before = active is null ? default : (active.SizeWidth, active.PositionX, active.PositionY);
         _placingMain = true;
         try
         {
-            // Written into their clips as well (FlushLooks), so that every clip of the main video keeps one place: the graph
-            // places them by the Center controls, but tells their looks apart by everything a look holds.
-            foreach (var view in _views.Values.Where(v => v.IsMainVideo))
+            // A frame (or source) of another shape: each clip keeps its zoom and offsets (those about to take the controls'
+            // values aside). A view met for the first time was placed for the frame as it is. (Over a copy: a view's change
+            // tells the window, whose handlers may commit an edit, which makes the views again.)
+            foreach (var view in _views.Values.ToArray())
             {
-                var place = (width / frameWidth, x / frameWidth, y / frameHeight);
-                if ((view.SizeWidth, view.PositionX, view.PositionY) == place)
+                if (!view.IsMainVideo || all || (moved && ReferenceEquals(view, target)))
                     continue;
-                (view.SizeWidth, view.PositionX, view.PositionY) = place;
-                _staleLooks.Add(view);
+
+                if (!_placedFor.TryGetValue(view, out var was))
+                {
+                    var (zoom, offsetX, offsetY) = MainPlaceOf(view);
+                    _placedFor[view] = new MainPlacement(now, zoom, offsetX, offsetY, (view.SizeWidth, view.PositionX, view.PositionY));
+                }
+                else if (was.For != now)
+                {
+                    var (zoom, offsetX, offsetY) = KeptPlaceOf(view);
+                    WriteMainPlace(view, zoom, offsetX, offsetY);
+                }
+            }
+
+            // Written into their clips as well (FlushLooks): the graph tells their looks apart by everything a look holds.
+            if (all)
+            {
+                foreach (var view in _views.Values.ToArray())
+                {
+                    if (view.IsMainVideo)
+                        WriteMainPlace(view, CenterZoom, CenterOffsetX, CenterOffsetY);
+                }
+            }
+            else if (moved && target.ClipId != Guid.Empty && target.IsMainVideo)
+            {
+                WriteMainPlace(target, CenterZoom, CenterOffsetX, CenterOffsetY);
             }
         }
         finally
@@ -842,66 +1199,159 @@ public partial class MainViewModel
             _placingMain = false;
         }
 
+        // The controls stand for another clip than the one they were taken from (the playhead crossed into another while
+        // a layer was selected): they show it now.
+        if (!moved && !all && !ReferenceEquals(target, _centerShown))
+            ShowCenterTarget();
+
         // Not while a preset or a project is being put in place: that is not the user moving it.
         if (active is null || _commandDeferrals > 0)
             return;
 
         if (active.SizeWidth != before.SizeWidth)
-            RecordKey(active, nameof(Layer.SizeWidth));
+            RecordKey(active, nameof(Layer.SizeWidth), keyTime);
         if (active.PositionX != before.PositionX)
-            RecordKey(active, nameof(Layer.PositionX));
+            RecordKey(active, nameof(Layer.PositionX), keyTime);
         if (active.PositionY != before.PositionY)
-            RecordKey(active, nameof(Layer.PositionY));
+            RecordKey(active, nameof(Layer.PositionY), keyTime);
     }
 
-    partial void OnCenterZoomChanged(double value) => PlaceMainViews(moved: true);
-    partial void OnCenterOffsetXChanged(double value) => PlaceMainViews(moved: true);
-    partial void OnCenterOffsetYChanged(double value) => PlaceMainViews(moved: true);
+    // Set by a style or a preset (deferred while it is put in place), by Reset (PlaceEveryMainClip): every clip of the main
+    // video takes them; set by hand, the clip the controls stand for. (An undo step defers the command too, but is no preset.)
+    partial void OnCenterZoomChanged(double value) => PlaceMainViews(moved: true, all: _centerForAll || PresetBeingApplied);
+    partial void OnCenterOffsetXChanged(double value) => PlaceMainViews(moved: true, all: _centerForAll || PresetBeingApplied);
+    partial void OnCenterOffsetYChanged(double value) => PlaceMainViews(moved: true, all: _centerForAll || PresetBeingApplied);
 
-    /// <summary>The view of the main video's clip on screen at a moment (the lowest, when two are), or null when none is.</summary>
-    private Layer? MainViewAt(double seconds) =>
-        MainVideoClips().Where(m => m.Clip.Start <= seconds + 0.0005 && m.Clip.End > seconds).Select(m => ViewOf(m.Clip)).FirstOrDefault(v => v is not null);
+    /// <summary>Sets the Center controls and puts every clip of the main video there (a style's layout, Reset): not only the clip they stand for.</summary>
+    private void PlaceEveryMainClip(double zoom, double offsetX, double offsetY)
+    {
+        _centerForAll = true;
+        try
+        {
+            (CenterZoom, CenterOffsetX, CenterOffsetY) = (zoom, offsetX, offsetY);
+        }
+        finally
+        {
+            _centerForAll = false;
+        }
+
+        // (Values the controls had already are no change of theirs: the clips are placed all the same.)
+        PlaceMainViews(all: true);
+    }
 
     /// <summary>
-    /// A view of the main video set to another place or size (by a keyframe applied, or a box): the main video is moved
-    /// there, which is the zoom and offsets. While keyframes are being applied, only the clip on screen at the playhead
-    /// speaks for it; a box typed into (its row's, which is the track's first clip) moves it whichever clip it is.
+    /// Shows the clip the Center controls and the Crop boxes stand for (<see cref="CenterTarget"/>) in them: its zoom and
+    /// offsets worked back from its place, its crop. Nothing is written into any clip. After the timeline changed (an edit,
+    /// an undo step, a project opened) and whenever they come to stand for another clip (another selected, the playhead in
+    /// another).
+    /// </summary>
+    private void ShowCenterTarget()
+    {
+        if (!_watchingCenterTarget)
+        {
+            // The view model's own changes tell when the clip they stand for may be another: the selection's, the playhead's.
+            _watchingCenterTarget = true;
+            PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName is nameof(ActiveKeyLayer) or nameof(PositionMs) && !_placingMain && !_showingTarget && !ReferenceEquals(CenterTarget, _centerShown))
+                    ShowCenterTarget();
+            };
+        }
+
+        var target = CenterTarget;
+        _centerShown = target;
+        if (target.ClipId == Guid.Empty || !target.IsMainVideo || FrameWidth <= 0 || FrameHeight <= 0)
+            return;
+
+        var (zoom, offsetX, offsetY) = KeptPlaceOf(target);
+        var crop = CropOf(target);
+        var cropped = CroppedSizeOf(crop);
+        using var once = DeferCommand();
+        (_placingMain, _showingTarget) = (true, true);
+        try
+        {
+            // Values that put it where it is already stay as they were typed (worked back, a place is to the pixel).
+            if (CenterRectOf(CenterZoom, CenterOffsetX, CenterOffsetY, cropped) != CenterRectOf(zoom, offsetX, offsetY, cropped))
+                (CenterZoom, CenterOffsetX, CenterOffsetY) = (zoom, offsetX, offsetY);
+            if (BoxCrop() != crop)
+                (CropLeft, CropTop, CropRight, CropBottom) = (Math.Round(crop.Left * 100, 2), Math.Round(crop.Top * 100, 2), Math.Round(crop.Right * 100, 2), Math.Round(crop.Bottom * 100, 2));
+        }
+        finally
+        {
+            (_placingMain, _showingTarget) = (false, false);
+        }
+    }
+
+    /// <summary>The view of the main video's clip on screen at a moment (the lowest, when two are), or null when none is.</summary>
+    private Layer? MainViewAt(double seconds)
+    {
+        // Looked for at every move of the playhead: no allocation.
+        foreach (var track in Document.Tracks)
+        {
+            foreach (var clip in track.Clips)
+            {
+                if (clip.ContentKind == LayerKind.MainVideo && clip.Start <= seconds + 0.0005 && clip.End > seconds && _views.TryGetValue(clip.Id, out var view))
+                    return view;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The view of the main video's first clip (the lowest track's), or null while it has none.</summary>
+    private Layer? FirstMainView()
+    {
+        foreach (var track in Document.Tracks)
+        {
+            foreach (var clip in track.Clips)
+            {
+                if (clip.ContentKind == LayerKind.MainVideo && _views.TryGetValue(clip.Id, out var view))
+                    return view;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A view of the main video set to another place or size (by a keyframe applied, or a box): when it is the clip the
+    /// Center controls stand for, they follow it (any other clip's place is its own, 4.4). While keyframes are being
+    /// applied, only the clip on screen at the playhead speaks for it.
     /// </summary>
     private void TakeMainPlace(Layer view, KeyProperty property)
     {
-        if (_placingMain || (_applyingKeys && !ReferenceEquals(view, MainViewAt(PositionMs / 1000))))
+        if (_placingMain || !ReferenceEquals(view, CenterTarget) || (_applyingKeys && !ReferenceEquals(view, MainViewAt(PositionMs / 1000))))
             return;
 
         _placingMain = true;
         try
         {
-            var (frameWidth, frameHeight) = ((double)FrameWidth, (double)FrameHeight);
-            var (sourceWidth, sourceHeight) = GetCroppedSourceSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
-            var zoom = Math.Clamp(view.SizeWidth, SmallestCenterZoom, LargestCenterZoom);
+            var (zoom, offsetX, offsetY) = MainPlaceOf(view);
             if (property == KeyProperty.Scale)
                 CenterZoom = zoom;
             else if (property == KeyProperty.X)
-                CenterOffsetX = Math.Clamp((view.PositionX - (1 - zoom) / 2) * 100, -100, 100);
+                CenterOffsetX = offsetX;
             else
-                CenterOffsetY = Math.Clamp((view.PositionY - (1 - zoom * frameWidth * sourceHeight / sourceWidth / frameHeight) / 2) * 100, -100, 100);
+                CenterOffsetY = offsetY;
+
+            // Resized, it grows about its middle: its corner has moved, and so have the keyframes that hold it.
+            if (property == KeyProperty.Scale && !_applyingKeys)
+                WriteMainPlace(view, CenterZoom, CenterOffsetX, CenterOffsetY);
         }
         finally
         {
             _placingMain = false;
         }
 
-        // Resized, it grows about its middle: its corner has moved, and so have the keyframes that hold it.
         if (property == KeyProperty.Scale && !_applyingKeys)
         {
-            PlaceMainViews();
             RecordKey(view, nameof(Layer.PositionX));
             RecordKey(view, nameof(Layer.PositionY));
         }
     }
 
     /// <summary>The main video as a layer: the view of its clip at the playhead (or its first), its look, filters and turn; a hidden stand-in while it has none.</summary>
-    public Layer MainLayer =>
-        MainViewAt(PositionMs / 1000) ?? MainVideoClips().Select(m => ViewOf(m.Clip)).FirstOrDefault(v => v is not null) ?? _mainStandIn;
+    public Layer MainLayer => MainViewAt(PositionMs / 1000) ?? FirstMainView() ?? _mainStandIn;
 
     // What stands for the main video while it has no clip on the timeline.
     private readonly Layer _mainStandIn = new() { Kind = LayerKind.MainVideo, Name = "Main Video", IsHidden = true };

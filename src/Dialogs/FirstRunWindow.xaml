@@ -89,28 +89,28 @@
                          AutomationProperties.Name="Standard Editing Workspace" Checked="Workspace_Checked">
                 <StackPanel>
                     <TextBlock Text="Standard Editing" Style="{StaticResource LayoutTitle}" />
-                    <TextBlock Style="{StaticResource CardText}" Text="The player at the top left, the Canvas and effects beside it, media at the right, the timeline and tabs below." />
+                    <TextBlock Style="{StaticResource CardText}" Text="The player at the top left, the Canvas and effects beside it, media at the right; the timeline below, the first of the settings tabs." />
                 </StackPanel>
             </RadioButton>
             <RadioButton x:Name="ColorLayoutCard" Style="{StaticResource LayoutCard}" Tag="Color &amp; Effects"
                          AutomationProperties.Name="Color and Effects Workspace" Checked="Workspace_Checked">
                 <StackPanel>
                     <TextBlock Text="Color &amp; Effects" Style="{StaticResource LayoutTitle}" />
-                    <TextBlock Style="{StaticResource CardText}" Text="A large player with tall effect, keyframe and media columns beside it, and a short timeline." />
+                    <TextBlock Style="{StaticResource CardText}" Text="A large player with tall effect, keyframe and media columns beside it, and the timeline below." />
                 </StackPanel>
             </RadioButton>
             <RadioButton x:Name="AssemblyLayoutCard" Style="{StaticResource LayoutCard}" Tag="Assembly &amp; Media"
                          AutomationProperties.Name="Assembly and Media Workspace" Checked="Workspace_Checked">
                 <StackPanel>
                     <TextBlock Text="Assembly &amp; Media" Style="{StaticResource LayoutTitle}" />
-                    <TextBlock Style="{StaticResource CardText}" Text="A wide media column beside the player, for gathering clips; a full-width timeline over the Layers tab." />
+                    <TextBlock Style="{StaticResource CardText}" Text="A wide media column beside the player, for gathering clips; the timeline, the settings tabs and the effects side by side below." />
                 </StackPanel>
             </RadioButton>
             <RadioButton x:Name="ShortsLayoutCard" Style="{StaticResource LayoutCard}" Tag="Vertical &amp; Shorts Studio"
                          AutomationProperties.Name="Vertical and Shorts Studio Workspace" Checked="Workspace_Checked">
                 <StackPanel>
                     <TextBlock Text="Vertical &amp; Shorts Studio" Style="{StaticResource LayoutTitle}" />
-                    <TextBlock Style="{StaticResource CardText}" Text="For 9:16 shorts: a tall player and Canvas side by side, and a full-width timeline." />
+                    <TextBlock Style="{StaticResource CardText}" Text="For 9:16 shorts: a tall player and Canvas side by side, and the timeline below with the Export and Audio tabs." />
                 </StackPanel>
             </RadioButton>
         </UniformGrid>

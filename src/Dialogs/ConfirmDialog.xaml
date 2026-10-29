@@ -6,6 +6,8 @@
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <StackPanel Margin="16">
         <TextBlock x:Name="MessageText" TextWrapping="Wrap" AutomationProperties.AutomationId="Confirm Message" />
+        <!-- "Remember my choice": shown only for a question that can be answered once for all (RememberText, 4.4) -->
+        <CheckBox x:Name="RememberBox" Visibility="Collapsed" Margin="0,14,0,0" AutomationProperties.AutomationId="Confirm Remember" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
             <Button x:Name="ConfirmButton" MinWidth="110" IsDefault="True" Click="Confirm_Click" />
             <Button x:Name="OtherButton" MinWidth="110" Margin="6,0,0,0" Click="Other_Click" Visibility="Collapsed" />

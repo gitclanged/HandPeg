@@ -27,7 +27,9 @@ public partial class MainViewModel
         OutputWidth = OutputWidth,
         OutputHeight = OutputHeight,
         KeepAspectRatio = KeepAspectRatio,
-        CropPercent = [CropLeft, CropTop, CropRight, CropBottom],
+        // The sequence's crop and place, its main video's first clip's (4.4: each clip has its own, which a project keeps in
+        // its timeline; a preset, and HandPeg 4.3, take these).
+        CropPercent = SequenceCropPercent(),
         PixelAspectRatio = PixelAspectRatio,
         CustomPixelAspectRatio = CustomPixelAspectRatio,
         Deinterlace = Deinterlace,
@@ -62,7 +64,7 @@ public partial class MainViewModel
         DuckAudio = DuckAudio,
         DuckAmountDb = DuckAmountDb,
         FrameEngine = FrameEngine,
-        CenterZoom = CenterZoom,
+        CenterZoom = SequencePlace().Zoom,
         // The layout, for a preset (a project's are its timeline, and ProjectStore leaves these out): every clip but the
         // main video's as a template, the main video's look, and how many pictures lie under it.
         Layers = TemplateLayers(),
@@ -72,8 +74,8 @@ public partial class MainViewModel
         LayoutSourceAspectRatio = GetLayoutSourceAspect(),
         AutoCaptions = AutoCaptions,
         CaptionStyle = CaptionStyle.Clone(),
-        CenterOffsetX = CenterOffsetX,
-        CenterOffsetY = CenterOffsetY,
+        CenterOffsetX = SequencePlace().OffsetX,
+        CenterOffsetY = SequencePlace().OffsetY,
         UseVerticalResolution = UseVerticalResolution,
         BlurRadius = BlurRadius,
         BlurPasses = BlurPasses,
@@ -179,10 +181,39 @@ public partial class MainViewModel
             }
         }
 
+        // A project from before each clip of the main video had a crop of its own (4.3) kept one for the whole sequence in its
+        // settings: its clips take it, when none of them has one (4.4). A look is never changed in place: each gets a copy.
+        var (left, top, right, bottom) = PresetCropPercent(state.Settings);
+        if (left + top + right + bottom > 0)
+        {
+            var mainClips = timeline.Tracks.SelectMany(t => t.Clips).Where(c => c.ContentKind == LayerKind.MainVideo).ToList();
+            if (mainClips.TrueForAll(c => c.State.CropLeft + c.State.CropTop + c.State.CropRight + c.State.CropBottom <= 0))
+            {
+                var crop = HeldCrop(left / 100, top / 100, right / 100, bottom / 100);
+                foreach (var clip in mainClips)
+                {
+                    var look = clip.State.ShallowCopy();
+                    (look.CropLeft, look.CropTop, look.CropRight, look.CropBottom) = crop;
+                    clip.State = look;
+                }
+            }
+        }
+
         if (timeline.FindProblems() is { Count: > 0 } problems)
             AppLog.Write($"The project's timeline has {problems.Count} problem(s): {string.Join(" ", problems.Take(5))}");
         return timeline;
     }
+
+    /// <summary>The sequence's crop as percentages (left, top, right, bottom): its main video's first clip's (GetCropFractions).</summary>
+    private double[] SequenceCropPercent()
+    {
+        var (left, top, right, bottom) = GetCropFractions();
+        return [Math.Round(left * 100, 2), Math.Round(top * 100, 2), Math.Round(right * 100, 2), Math.Round(bottom * 100, 2)];
+    }
+
+    /// <summary>The sequence's place of its main video (zoom and offsets): its first clip's (GetCenterRect's), the Center controls' while that is the clip they stand for.</summary>
+    private (double Zoom, double OffsetX, double OffsetY) SequencePlace() =>
+        AnchorMainView() is { } anchor && !ReferenceEquals(anchor, CenterTarget) ? KeptPlaceOf(anchor) : (CenterZoom, CenterOffsetX, CenterOffsetY);
 
     /// <summary>Whether a source is loaded, so there is something worth saving or queueing.</summary>
     public bool HasSource => !string.IsNullOrWhiteSpace(LocalMediaPath);
@@ -212,21 +243,27 @@ public partial class MainViewModel
         SelectedPreset = null;
         ApplyPreset(state.Settings, withLayout: false);
         _backgroundRow.IsHidden = state.Settings.BackgroundHidden;
-        InstallDocument(TimelineToOpen(state));
-        TakeMainFile(_mediaInfo);
-        SetBin(state.Deleted);
-        TargetFileSize = state.TargetFileSize;
-        CaptionAudioPath = state.CaptionAudioPath ?? "";
-        CaptionUseExternalAudio = state.CaptionUseExternalAudio ?? CaptionAudioPath.Length > 0;
-        CaptionAudioTrack = AudioTracks.FirstOrDefault(t => t.Index == state.CaptionAudioTrackIndex) ?? AudioTracks.FirstOrDefault();
 
-        // Queue jobs and projects saved before presets carried the tracks keep them here.
-        ApplyAudioTrackStates(state.AudioTracks);
-
-        foreach (var saved in state.SubtitleTracks)
+        // The timeline and what goes with it are put in place as one restore (4.4-BugHunt): nothing it sets going takes an
+        // undo step or makes an edit, and the captions are projected once, at its end, through the project's own timeline.
+        using (BeginRestore())
         {
-            if (SubtitleTracks.FirstOrDefault(t => t.Index == saved.Index) is { } track && track.Actions.Contains(saved.Action))
-                track.Action = saved.Action;
+            InstallDocument(TimelineToOpen(state));
+            TakeMainFile(_mediaInfo);
+            SetBin(state.Deleted);
+            TargetFileSize = state.TargetFileSize;
+            CaptionAudioPath = state.CaptionAudioPath ?? "";
+            CaptionUseExternalAudio = state.CaptionUseExternalAudio ?? CaptionAudioPath.Length > 0;
+            CaptionAudioTrack = AudioTracks.FirstOrDefault(t => t.Index == state.CaptionAudioTrackIndex) ?? AudioTracks.FirstOrDefault();
+
+            // Queue jobs and projects saved before presets carried the tracks keep them here.
+            ApplyAudioTrackStates(state.AudioTracks);
+
+            foreach (var saved in state.SubtitleTracks)
+            {
+                if (SubtitleTracks.FirstOrDefault(t => t.Index == saved.Index) is { } track && track.Actions.Contains(saved.Action))
+                    track.Action = saved.Action;
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(state.DestinationPath))
@@ -238,8 +275,8 @@ public partial class MainViewModel
         if (state.ManualCommand is { } manualCommand)
             CommandPreview = manualCommand;
 
-        _undo.Clear();
-        _redo.Clear();
+        // The undo history the project carries (4.4-BugHunt; none for a queued job): Ctrl+Z goes on where its save left it.
+        TakeUpHistory(state);
         MarkSaved();
         return GetLayoutAspectWarning() is { } warning ? $"{doneMessage}. {warning}" : doneMessage;
     });
@@ -398,8 +435,7 @@ public partial class MainViewModel
             ApplyEncodingDefaults();
         }
 
-        _undo.Clear();
-        _redo.Clear();
+        ForgetHistory();
         MarkSaved();
         SessionCleared?.Invoke();
         Log("New project: nothing is open. Drop a video on the player, or use Add Media, to start.");
@@ -462,14 +498,16 @@ public partial class MainViewModel
 
     /// <summary>
     /// Saves the project to a file of the user's choosing (Save As), which is from then on where Save puts it.
-    /// Like every save, it leaves the undo history alone: what was done before the save can still be undone after it.
+    /// Like every save, it leaves the undo history alone: what was done before the save can still be undone after it, and
+    /// (4.4-BugHunt) after the project is opened again, the history going into the file with it.
     /// </summary>
     public string SaveProjectTo(string path)
     {
         try
         {
-            ProjectStore.SaveTo(CaptureState(Path.GetFileNameWithoutExtension(path)), path);
+            ProjectStore.SaveTo(CaptureStateForSave(Path.GetFileNameWithoutExtension(path)), path);
             CurrentProjectPath = path;
+            DevFlightRecorder.Record("project", "path " + path);
             MarkSaved();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
             _ = OfferToKeepDownloadsAsync();
@@ -502,7 +540,10 @@ public partial class MainViewModel
 
         var name = CurrentProjectPath.Length > 0 ? Path.GetFileNameWithoutExtension(CurrentProjectPath) : Path.GetFileNameWithoutExtension(SourcePath.Trim().Trim('"'));
         var path = ProjectStore.AutosavePath(CurrentProjectPath, name);
-        var state = CaptureState(Path.GetFileNameWithoutExtension(path));
+
+        // With the undo history (4.4-BugHunt): its steps are never changed once packed, so the file is written from them away
+        // from the interface's thread as they are.
+        var state = CaptureStateForSave(Path.GetFileNameWithoutExtension(path));
         _autosaving = true;
         try
         {
@@ -524,11 +565,12 @@ public partial class MainViewModel
     {
         try
         {
-            var state = CaptureState(name.Trim());
+            var state = CaptureStateForSave(name.Trim());
             var path = ProjectStore.Save(state);
             CrashReporter.KeepOut(CrashSummaries.FilesIn(state).Append(path));
             CrashReporter.Note("project", "saved: " + CrashSummaries.Project(state, ProjectFile.CurrentVersion));
             CurrentProjectPath = path;
+            DevFlightRecorder.Record("project", "path " + path);
             MarkSaved();
             RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
             _ = OfferToKeepDownloadsAsync();
@@ -567,6 +609,7 @@ public partial class MainViewModel
             }
             CrashReporter.KeepOut(CrashSummaries.FilesIn(state));
             CrashReporter.Note("project", "opened: " + CrashSummaries.Project(state));
+            DevFlightRecorder.Record("project", "opened " + filePath);
 
             // An autosave is opened as work that has no file yet: Save then asks where, and the autosave is not overwritten by
             // hand. So is a project of a newer format (never written over).

@@ -3,6 +3,46 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v4.4.0
+
+### User-Facing Highlights
+- **One Timeline for everything.** The new Timeline pane draws every track on one surface: video, image and text layers,
+  the main video, its audio streams, sound clips, captions and the blurred background, each with its own switches (hide,
+  mute, solo, voice, lock), an always-shown ruler and a clip inspector strip (speed, size, place, rotation, gain, filters,
+  blur). It opens first in the main tab group; the old Master Timeline lives on as the optional Overview Bar.
+- **Mini-stacks: children follow their parent.** A game style's HUD pieces, masks and the anchored captions are children of
+  the main video, drawn as slim collapsible stacks under it (one for pictures, one for sound). Split, trim, move, delete,
+  ripple or fold the parent and its children come with it, and they follow it on screen while you drag.
+- **Captions that stay put.** Captions are anchored to the voice's own words, so they follow every cut, trim, fold and undo
+  without being regenerated. Remove Dead Air can now cut on **Caption Word Gaps** as well as on audio silence.
+- **Every clip has its own look and place.** Place, size, rotation, anchor, crop and blur fill belong to each clip; "Apply
+  Placement to All Clips on Track" shares them. A crop now reframes the picture on every track (and its mask with it),
+  new clips arrive centred and fitted to the frame, and any video clip can fill the frame with a blurred copy of itself.
+- **The Lightning Dial and a left-hand key cluster.** Mouse 5 opens the Lightning Dial under the pointer: one ring of seven
+  categories plus Settings, each opening seven actions in place. Hold W/A/S/D to zoom and pan whatever is under the pointer
+  (timeline, Canvas or player), Q/E step frames, F splits, R ripple-deletes, Space plays, Caps Lock toggles snapping, and
+  Mouse 4 is Undo. Every key is rebindable on a drawn keyboard-and-mouse map in Settings > Keybinds & Lightning Dial.
+- **Hold Tab for X-Ray and the key map.** Holding Tab outlines every pane with live stats and shows the keyboard-and-mouse
+  map over the player: point at any key to see its action, keys and what it does; click a key (or "Click to Edit
+  Keybinds...") to jump straight to it in Settings.
+- **Fold dead air both ways.** A restored silence stays marked: its Hide pill folds it again, and dragging a clip's edge
+  into or out of a seam shows or folds more of it. Folding and unfolding slide smoothly.
+- **Undo survives closing the project.** The last 20 undo and redo steps are saved with the project, so Ctrl+Z works right
+  after opening it; colour, blur, filters, ducking, renames and Canvas moves are all undoable now.
+- **Smaller touches:** the "WASD (Default)" key preset (the old FPS Gamer preset is merged into it), an option for the pan
+  keys to pan the timeline over a Canvas or player that is not zoomed in, files dropped on the captions lane go onto a new
+  track, waveforms at 80 peaks a second, and a 4-step Quick-Start Tour.
+
+### Under the Hood & Fixes
+- Fixed the four native crashes when splitting or dragging while captions were shown (a libmpv subtitle-track swap race:
+  the new track is now added before the old one is removed by id) and the invalid live graph a gap could produce.
+- Fixed a freeze near the end of a file with HUD masks (still masks are one frame; endless inputs end with the file).
+- Undo and project restores never feed themselves; every timeline edit, menu, key and drop is guarded and rolled back on
+  a fault; a 10,000-step model fuzz runs in the golden tests (45 cases).
+- Settings: the theme applies on Save and reverts on Cancel; the keybind page and dial configurator; a live mirror of the
+  editor's panes on the stage.
+- Saved layouts upgrade once to put the Timeline first (layout version 3).
+
 ## HandPeg v4.3.0
 
 ### User-Facing Highlights

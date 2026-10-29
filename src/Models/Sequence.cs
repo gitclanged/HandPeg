@@ -36,7 +36,22 @@ public readonly record struct MainCrossfade(double From, double To, double Sourc
 /// was on (its id, its kind, and where it was in the stacking order), so that it can go back there, or onto a new
 /// track of its kind at that place when its own has gone or has no room for it.
 /// </summary>
-public sealed record DeletedClip(TimelineClip Clip, Guid TrackId, TimelineTrackKind TrackKind, int TrackIndex);
+public sealed record DeletedClip(TimelineClip Clip, Guid TrackId, TimelineTrackKind TrackKind, int TrackIndex)
+{
+    /// <summary>
+    /// What went with it (4.4): its children that the delete took off the timeline too (and theirs), each kept the same way,
+    /// to go back with it; null for none, and so left out of the project file.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<DeletedClip>? Children { get; init; }
+
+    /// <summary>
+    /// The track its track lay under (4.4, TimelineTrackModel.ParentTrackId), so that a new track made for it lies under the
+    /// same one again; null for none, and so left out of the project file.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? TrackParentId { get; init; }
+}
 
 /// <summary>A deleted clip as the recycle bin's drawer lists it.</summary>
 public sealed class BinItem(DeletedClip clip, string name, string timeText, System.Windows.Media.ImageSource? preview)

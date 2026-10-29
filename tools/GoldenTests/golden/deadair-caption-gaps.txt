@@ -1,0 +1,4 @@
+# Remove Dead Air by the captions (4.4): the gaps between words, the minimum gap, and the pads before and after each word.
+minimum 0.5 s, pads 0.08/0.12: 0-1.92, 3.12-3.92, 5.12-8
+minimum 0.3 s, pads 0.05/0.08: 0-1.95, 3.08-3.95, 5.08-8
+minimum 1.5 s, pads 0.12/0.2: 0-1.88, 5.2-8

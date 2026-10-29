@@ -222,6 +222,24 @@ public abstract class TimelineBar : FrameworkElement
 /// </summary>
 public readonly record struct WaveSpan(HandPegApp.Services.WaveformData Data, double Offset, double Span);
 
+/// <summary>
+/// The stretch of a sound a block of the unified timeline shows (4.4), by time rather than by fraction: the sound's own
+/// seconds from <paramref name="MediaFrom"/> to <paramref name="MediaTo"/>, laid from the left edge of the block's sound
+/// (its left edge, less a J-cut's lead-in, see TimelineBlock.AudioSplit) at <paramref name="Speed"/>, drawn
+/// <paramref name="GainScale"/> times as tall (the clip's or the track's gain as a scale, 1 for 0 dB). A second
+/// <c>s</c> of the sound is at <c>soundLeft + (s - MediaFrom) / Speed * pixelsPerSecond</c>, so trims, cuts and folds
+/// can never put a sound where it is not.
+/// </summary>
+public readonly record struct WaveWindow(HandPegApp.Services.WaveformData Data, double MediaFrom, double MediaTo, double Speed = 1, double GainScale = 1);
+
+/// <summary>
+/// The pictures of a block's video on the unified timeline (4.4): frames taken evenly along the whole file (frame k at
+/// <c>k * SecondsPerFrame</c> of it), the block showing its file from <paramref name="MediaFrom"/> on at
+/// <paramref name="Speed"/>. The control lays them on the file's own time grid, so they stay still while the block's start
+/// is trimmed and slide while it is slipped.
+/// </summary>
+public readonly record struct FilmWindow(IReadOnlyList<ImageSource> Frames, double SecondsPerFrame, double MediaFrom, double Speed);
+
 /// <summary>What a drag does to a block (and, for a roll, the block it meets).</summary>
 public enum BlockEdit
 {
@@ -247,6 +265,20 @@ public readonly record struct BlockEditDone(BlockEdit Kind, double Left, double 
 
 /// <summary>A gain line dragged on a block: its new gain (dB), or a fade handle's new length (seconds) at its start or end.</summary>
 public readonly record struct GainEditDone(double GainDb, double FadeIn, double FadeOut);
+
+/// <summary>Which edges of its parent a child block shares (4.4 BugHunt): a trim of such an edge takes the child's along.</summary>
+[Flags]
+public enum BlockEdges { None = 0, Start = 1, End = 2 }
+
+/// <summary>
+/// Where a block stands in a family of clips on the unified timeline (4.4 BugHunt), for a drag to draw what goes with
+/// what: <paramref name="Key"/> is what the block is known by (its clip's id, or a key made from it: the same across a
+/// rebuild of the rows, never shared by two blocks); <paramref name="Parent"/> the Key of the block it belongs to (its
+/// parent clip's id), null for none; <paramref name="Rides"/> whether a move of the parent carries it (it overlaps the
+/// parent, on a track that is not locked: what the model moves with it); <paramref name="OnParentEdges"/> which of the
+/// parent's edges it shares (a trim of that edge trims it too). Worked out in seconds by the host, never from pixels.
+/// </summary>
+public readonly record struct BlockFamily(object Key, object? Parent, bool Rides, BlockEdges OnParentEdges);
 
 /// <summary>One block of a <see cref="TimelineTrack"/>: a clip, a cut segment, a part of an audio track, a subtitle.</summary>
 public sealed class TimelineBlock
@@ -330,7 +362,55 @@ public sealed class TimelineBlock
     /// <summary>What letting go of the block on another bar does, given that bar's data and the block's left edge in pixels.</summary>
     public Action<object, double>? MoveTo { get; init; }
 
+    /// <summary>The block's sound by time, for the unified timeline (4.4): drawn in place of <see cref="Peaks"/> when given.</summary>
+    public WaveWindow? SoundWindow { get; init; }
+
+    /// <summary>The block's pictures on its file's time grid, for the unified timeline (4.4): drawn in place of <see cref="Frames"/> when given.</summary>
+    public FilmWindow? Film { get; init; }
+
+    /// <summary>A few words or a sign shown in a small tag at the block's top right (its speed, "FX"); null for none.</summary>
+    public string? Badge { get; init; }
+
+    /// <summary>
+    /// A J/L cut of a clip with linked sound, in seconds: how much sooner than its picture its sound starts (a J cut;
+    /// negative, later) and how much longer it lasts (an L cut; negative, shorter). The sound is drawn in the lower part
+    /// of the block, reaching out past its edges that far. Null for none (or a clip whose sound is not its picture's).
+    /// </summary>
+    public (double LeadIn, double TailOut)? AudioSplit { get; init; }
+
+    /// <summary>
+    /// What letting go of a J/L trim does (Alt on the lower half of an edge of the block): the new lead-in and tail-out,
+    /// in seconds. Null for a block whose sound cannot be split from its picture.
+    /// </summary>
+    public Action<double, double>? AudioSplitEdit { get; init; }
+
+    /// <summary>Where the block stands among its clip's family (4.4 BugHunt): what a drag of it carries along, and what it is known by. Null for a block that is in none.</summary>
+    public BlockFamily? Family { get; init; }
+
+    /// <summary>
+    /// Whether an edge of the block lies at a seam of folded dead air (4.4 BugHunt, fold-aware trims): given the edge
+    /// (true: its start), how far it may be dragged outward (seconds of the fold shown again) and inward (seconds of the
+    /// clip folded in with it); null when that edge is at no fold. Asked as the edge is pressed.
+    /// </summary>
+    public Func<bool, (double Reveal, double Fold)?>? SeamRange { get; init; }
+
+    /// <summary>What letting go of an edge dragged at a seam does: which edge (true: its start), and how far outward it went (seconds; negative: inward).</summary>
+    public Action<bool, double>? SeamTrim { get; init; }
+
+    /// <summary>Drawn small, as a lane of a collapsed mini-stack: the unified timeline's business (set as it lays out), not the host's.</summary>
+    public bool IsMini { get; internal set; }
+
     internal FormattedText? Label;
+
+    // The unified timeline's drawing of the block, made once and used again while it keeps its place (4.4): its badge's
+    // words, its keys' diamonds and its fades' shapes (with where they were made for), and the J/L sound band's clip.
+    internal FormattedText? BadgeText;
+    internal Rect KeyShapeRect;
+    internal Geometry? KeyShape;
+    internal (Rect Rect, double In, double Out, Models.TransitionStyle InStyle, Models.TransitionStyle OutStyle) FadeKey;
+    internal Geometry? FadeShade, FadeLine;
+    internal Rect SoundClipRect;
+    internal Geometry? SoundClip;
 
     // What its drawing is made of, made once and used again while the block keeps its place and size (a pan or a
     // playhead move draws it again unchanged): its rounded outline, and its keyframes' diamonds as one shape.
@@ -932,7 +1012,7 @@ public sealed class TimelineTrack : TimelineBar
     /// Draws a block's sound from its peaks, as one shape. Only the part of the block that is on the bar is
     /// drawn, and with no more columns than it has pixels: zoomed out, all the peaks that fall into a pixel
     /// are merged into the one column, so an hour of sound across a narrow block is a few hundred points and
-    /// not seventy thousand; zoomed in, where a peak is wider than a pixel, there is a column for each peak.
+    /// not hundreds of thousands; zoomed in, where a peak is wider than a pixel, there is a column for each peak.
     /// </summary>
     private void DrawPeaks(DrawingContext drawing, WaveSpan wave, Rect rect)
     {

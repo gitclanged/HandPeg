@@ -387,10 +387,15 @@ public partial class MainViewModel
         };
     }
 
+    /// <summary>
+    /// Puts a style preset's parts in place: one undo step for all of it, its colour grade and blur included (4.4: they are
+    /// in the step), and no step of their own for the looks it sets on the way.
+    /// </summary>
     public void ApplyStyle(StylePreset preset, bool layout, bool color, bool blur, bool subtitles)
     {
-        if (layout || subtitles)
+        if (layout || subtitles || color || blur)
             Checkpoint("apply a style preset");
+        using var held = HoldLookSteps();
 
         _activeStyle = preset;
         var applied = new List<string>();

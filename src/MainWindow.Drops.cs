@@ -321,28 +321,29 @@ public partial class MainWindow
         var files = e.Data.GetData(DataFormats.FileDrop) as string[] ?? [dropped!];
         var file = files[0];
 
-        // Dropped on the layers, with a video open: the files become clips, at the moment they were dropped on, on
-        // the row they were dropped on (see FindDropPlace).
-        if (_viewModel.HasSource && LayersList is { IsVisible: true })
+        // Dropped on the timeline, with a video open: the files become clips at the moment they were dropped on, by the
+        // row they were dropped on (see FindDropPlace); on a sound's row, their sound becomes sound clips. Several at once
+        // follow one another on one track, or, let go on a row's header or with Alt held, each go on a track of their
+        // own at the same moment (IsStackDrop).
+        if (FindDropPlace(e) is { } place)
         {
-            var at = e.GetPosition(LayersList);
-            if (at.X >= 0 && at.Y >= 0 && at.X <= LayersList.ActualWidth && at.Y <= LayersList.ActualHeight)
-            {
-                var (row, _, seconds) = FindDropPlace(e, LayersList);
-                Dispatcher.BeginInvoke(() => _ = AddDroppedLayersAsync(files, seconds, row));
-                return;
-            }
+            var stack = IsStackDrop(e, place.OnHeader, files.Length);
+            if (place.Row is { Kind: TimelineRowKind.Audio })
+                DropLater("a drop of sound", () => AddDroppedAudioAsync(files, place.Seconds));
+            else
+                DropLater("a drop of clips", () => AddDroppedLayersAsync(files, place.Seconds, DropTrackOf(place.Row), stack));
+            return;
         }
 
-        // Dropped on the Audio tab, with a video open: the files' sound goes onto the timeline, at the moment it was
-        // dropped on.
+        // Dropped on the Audio tab (the sound's settings), with a video open: the files' sound goes onto the timeline, at
+        // the playhead, as sound clips of their own.
         if (_viewModel.HasSource && AudioPanel is { IsVisible: true })
         {
             var at = e.GetPosition(AudioPanel);
             if (at.X >= 0 && at.Y >= 0 && at.X <= AudioPanel.ActualWidth && at.Y <= AudioPanel.ActualHeight)
             {
-                var seconds = FindDropPlace(e, AudioPanel).Seconds;
-                Dispatcher.BeginInvoke(() => _ = AddDroppedAudioAsync(files, seconds));
+                var seconds = _viewModel.PositionMs / 1000;
+                DropLater("a drop of sound", () => AddDroppedAudioAsync(files, seconds));
                 return;
             }
         }
@@ -363,32 +364,47 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A link dropped on the window: on the Layers or Audio tab, with a video open, it is downloaded (yt-dlp)
-    /// and put there as a dropped file would be; anywhere else it is opened as the video, as if typed into the source box.
+    /// A link dropped on the window: on the timeline (or the Audio tab), with a video open, it is downloaded (yt-dlp) and
+    /// put there as a dropped file would be; anywhere else it is opened as the video, as if typed into the source box.
     /// </summary>
     private void DropLink(DragEventArgs e, string link)
     {
-        foreach (var (scope, audio) in new (FrameworkElement? Scope, bool Audio)[] { (LayersList, false), (AudioPanel, true) })
+        var place = FindDropPlace(e);
+        var onAudioTab = place is null && _viewModel.HasSource && AudioPanel is { IsVisible: true } panel
+            && e.GetPosition(panel) is var at && at.X >= 0 && at.Y >= 0 && at.X <= panel.ActualWidth && at.Y <= panel.ActualHeight;
+        if (place is null && !onAudioTab)
         {
-            if (!_viewModel.HasSource || scope is not { IsVisible: true })
-                continue;
-
-            var at = e.GetPosition(scope);
-            if (at.X < 0 || at.Y < 0 || at.X > scope.ActualWidth || at.Y > scope.ActualHeight)
-                continue;
-
-            var (row, _, seconds) = FindDropPlace(e, scope);
-            Dispatcher.BeginInvoke(async () =>
-            {
-                if (await _viewModel.DownloadLinkAsync(link) is not { } file)
-                    return;
-                await (audio ? AddDroppedAudioAsync([file], seconds) : AddDroppedLayersAsync([file], seconds, row));
-            });
+            Dispatcher.BeginInvoke(() => LoadDroppedFile(link));
             return;
         }
 
-        Dispatcher.BeginInvoke(() => LoadDroppedFile(link));
+        var audio = onAudioTab || place is { Row.Kind: TimelineRowKind.Audio };
+        var track = place is { } on ? DropTrackOf(on.Row) : null;
+        var seconds = place?.Seconds ?? _viewModel.PositionMs / 1000;
+        DropLater("a dropped link", async () =>
+        {
+            if (await _viewModel.DownloadLinkAsync(link) is not { } file)
+                return;
+            await (audio ? AddDroppedAudioAsync([file], seconds) : AddDroppedLayersAsync([file], seconds, track));
+        });
     }
+
+    /// <summary>
+    /// Runs what a drop adds once the drop itself is over (Explorer waits, frozen, until the drop handler returns), and
+    /// keeps a fault in it from going unseen (4.4 BugHunt): it becomes a status line and a note in the log, as a timeline
+    /// edit's does (TimelineFault).
+    /// </summary>
+    private void DropLater(string what, Func<Task> add) => Dispatcher.BeginInvoke(async () =>
+    {
+        try
+        {
+            await add();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            TimelineFault(what, ex);
+        }
+    });
 
     /// <summary>
     /// Adds the sound of dropped files to the timeline: audio files, or the audio of videos. Background work is held back
@@ -416,11 +432,12 @@ public partial class MainWindow
     /// Adds dropped files as clips: pictures as image layers, anything else as video layers. Each goes on a track of
     /// its own just above the row (or fills an empty track, or joins the row's track when Settings allow and there is
     /// room: MainViewModel.PlaceClip); on the main video's row it takes the main video's place. Several videos dropped
-    /// at once follow each other on one track, end to end, from the moment dropped on. Background work is held back until
-    /// they are on it and filled in (4.3E: each video's probe is urgent, never behind the media browser's posters and
-    /// strips), and whether the files are there is asked away from the interface.
+    /// at once follow each other on one track, end to end, from the moment dropped on (a Sequence Drop); stacked
+    /// (<paramref name="stack"/>, 4.4: a Stack Drop), each goes on a track of its own just above the one before, all at that
+    /// moment. Background work is held back until they are on it and filled in (4.3E: each video's probe is urgent, never
+    /// behind the media browser's posters and strips), and whether the files are there is asked away from the interface.
     /// </summary>
-    private async Task AddDroppedLayersAsync(string[] files, double seconds, Layer? row)
+    private async Task AddDroppedLayersAsync(string[] files, double seconds, Layer? row, bool stack = false)
     {
         using var hold = WorkScheduler.HoldBackground();
         Activate();
@@ -447,13 +464,21 @@ public partial class MainWindow
 
             added++;
 
-            // The next video goes on the same track, where this one ends.
-            if (clip.Duration > 0.001)
+            // Stacked, the next video goes beside this one's track, at the same moment: there is no room on its track, so
+            // it gets a track of its own just above. Otherwise it goes on the same track, where this one ends.
+            if (stack)
+                row = clip;
+            else if (clip.Duration > 0.001)
                 (row, at, follows) = (clip, clip.StartTime + clip.Duration, true);
         }
 
         if (added > 1)
-            _viewModel.StatusText = $"Added {added} clips from {TimeDisplay.Format(seconds)}.";
+        {
+            _viewModel.StatusText = stack
+                ? $"Stacked {added} clips at {TimeDisplay.Format(seconds)}, each on a track of its own."
+                : $"Added {added} clips from {TimeDisplay.Format(seconds)}.";
+        }
+
         ScheduleClipRedraw();
     }
 

@@ -40,7 +40,7 @@ graph 1 (-filter_complex): 2 chains, 216 characters
    |   ,adelay=5000:all=1[alayer0]
   2| [0:a:0][alayer0]amix=inputs=2:duration=first:normalize=0[amixed0]
 
-graph 2 (-vf): 6 chains, 499 characters
+graph 2 (-vf): 6 chains, 512 characters
   1| null[center_in]
   2| color=c=black:s=1920x1080:r=30:d=60
    |   ,format=yuv420p[stage0]
@@ -54,5 +54,5 @@ graph 2 (-vf): 6 chains, 499 characters
    |   ,format=yuva420p
    |   ,fade=t=in:st=5:d=0.5:alpha=1:enable='between(t,5,5.5)'
    |   ,fade=t=out:st=59:d=1:alpha=1:enable='between(t,59,60)'[ui1_layer]
-  6| [stage1][ui1_layer]overlay=1536:54:shortest=1:enable='between(t,5,1e9)'
+  6| [stage1][ui1_layer]overlay=1536:54:shortest=1:repeatlast=0:enable='between(t,5,1e9)'
    |   ,setsar=1

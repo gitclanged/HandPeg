@@ -16,6 +16,7 @@ public static class AppLog
 
     public static void Write(string message)
     {
+        DevFlightRecorder.Record("log", message);
         try
         {
             lock (Gate)

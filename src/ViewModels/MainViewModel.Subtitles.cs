@@ -44,7 +44,7 @@ public partial class MainViewModel
         get
         {
             if (!HasSubtitleCues)
-                return "No subtitle track: import a file, or make one from the auto-captions with Edit Subtitles.";
+                return "No subtitle track: import a file, or make one with Generate Auto-Captions.";
 
             var from = SubtitleSourcePath.Length > 0 ? Path.GetFileName(SubtitleSourcePath) : "made in HandPeg";
             var count = $"{SubtitleCues.Count} cue{(SubtitleCues.Count == 1 ? "" : "s")}";
@@ -84,7 +84,22 @@ public partial class MainViewModel
 
         var images = SubtitleFiles.IsImageFile(path);
         Checkpoint("import subtitles");
-        SetSubtitleTrack(cues, path, images, 0);
+
+        // Words timed to the main video while it is still the whole sequence (its file's time is the timeline's) are
+        // anchored to its picture (4.4): cuts, folds and moves made afterwards carry them along. Once it is edited, a file's
+        // times can no longer be told apart from the edited timeline's, and they stay on the timeline's clock. A file's cues
+        // have no word times, so each is given its words spread over it by their length: a cut or fold through one then
+        // divides its words, and the part no window shows is kept through an edit of the part still seen.
+        if (!images && HasSource && FrameEngine && IsMainWholeSequence && MainVideoClips().Any())
+        {
+            var anchors = cues.Where(c => c.End > c.Start).OrderBy(c => c.Start)
+                .Select(c => CaptionProjection.WithWordTimes(new SubtitleCueState(c.Start, c.End, c.Text))).ToList();
+            SetSubtitleTrack([], path, false, 0, new CaptionSource(CaptionSourceKind.MainFile, LocalMediaPath, -1), anchors);
+        }
+        else
+        {
+            SetSubtitleTrack(cues, path, images, 0);
+        }
         Log($"Imported {cues.Count} subtitle cue{(cues.Count == 1 ? "" : "s")} from {Path.GetFileName(path)}{(images ? " (image-based: timing only)" : "")}");
 
         // Words are drawn as captions, so captions are switched on for them; and shown, where there is a player to show them.
@@ -105,7 +120,7 @@ public partial class MainViewModel
     [RelayCommand]
     private void ClearSubtitles()
     {
-        if (!HasSubtitleCues)
+        if (!HasSubtitleCues && _captionAnchorSource is null)
             return;
 
         Checkpoint("remove the subtitle track");
@@ -114,16 +129,150 @@ public partial class MainViewModel
         StatusText = "Subtitle track removed.";
     }
 
-    private void SetSubtitleTrack(IEnumerable<SubtitleCue> cues, string path, bool images, double offsetMs)
+    /// <summary>Puts a subtitle track in place of the one there was.</summary>
+    /// <param name="cues">The cues on the timeline's own clock (with anchored captions, those not anchored).</param>
+    /// <param name="anchoredTo">What the anchored captions were made from and follow (4.4); null for none.</param>
+    /// <param name="anchors">The anchored captions, in their source's time, ordered by their start.</param>
+    private void SetSubtitleTrack(IEnumerable<SubtitleCue> cues, string path, bool images, double offsetMs,
+        CaptionSource? anchoredTo = null, List<SubtitleCueState>? anchors = null)
     {
+        if (!images && anchoredTo is { IsAnchored: true } && anchors is { Count: > 0 })
+            (_captionAnchorSource, _captionAnchors) = (anchoredTo, anchors);
+        else
+            (_captionAnchorSource, _captionAnchors) = (null, []);
         SubtitleCues.Clear();
         foreach (var cue in cues)
             SubtitleCues.Add(cue);
+        if (_captionAnchorSource is not null)
+            ShowCaptionAnchors([.. SubtitleCues.Where(c => c.Piece is null).Select(StateOf)]);
 
         _subtitleOriginal = images ? SubtitleCues.Select(c => c.Clone()).ToList() : [];
         (SubtitleSourcePath, SubtitlesAreImages, SubtitleOffsetMs) = (path, images, offsetMs);
         NotifySubtitlesChanged();
     }
+
+    // ----- Anchored captions (4.4) -----
+    // Captions made from a source the timeline plays as clips (the main file, a sound clip) are kept in that source's own
+    // time, with each word's own times, and the cues are a view of them: projected through every clip that plays the
+    // source after every commit, undo and load (ReprojectCaptions). Edits made in the Subtitle Editor are written back into
+    // the source's time (WriteBackCaptions). Cues of a track with no anchors are on the timeline's clock, as before 4.4.
+
+    // The anchored captions, in their source's time and ordered by their start; and what they were made from (null for none).
+    private List<SubtitleCueState> _captionAnchors = [];
+    private CaptionSource? _captionAnchorSource;
+
+    /// <summary>
+    /// Shows the anchored captions on the timeline again, through the clips that play their source as they now are: after
+    /// every commit, undo and load (4.4). Nothing happens without anchored captions, and nothing is told while what is shown
+    /// stays the same.
+    /// </summary>
+    public void ReprojectCaptions()
+    {
+        // While a document is being put in place (an undo step, a project), once, as it ends, from the anchors it put back
+        // (4.4-BugHunt): never through half of it, nor from the anchors of before it.
+        if (_restoring > 0)
+        {
+            _reprojectPending = true;
+            return;
+        }
+
+        if (_captionAnchorSource is null || SubtitlesAreImages || IsSubtitleEditorOpen)
+            return;
+
+        // Told only when something moved: the preview's caption file is then written again (SyncEditorCaptions).
+        if (ShowCaptionAnchors([.. SubtitleCues.Where(c => c.Piece is null).Select(StateOf)]))
+            NotifySubtitlesChanged();
+    }
+
+    /// <summary>
+    /// Takes what was changed on the cues of anchored captions (in the Subtitle Editor, in place) back into their source's
+    /// time, and shows them again from there. A cue still as it was projected changes nothing.
+    /// </summary>
+    private void WriteBackCaptions()
+    {
+        if (_captionAnchorSource is not { } source || SubtitlesAreImages)
+            return;
+
+        var (anchors, loose) = CaptionProjection.WriteBack(_captionAnchors, CaptionSpans(source), [.. SubtitleCues.Select(StateOf)]);
+        _captionAnchors = anchors;
+        ShowCaptionAnchors(loose);
+    }
+
+    /// <summary>
+    /// Puts the anchored captions, as the timeline shows them now, beside the cues given (on the timeline's own clock) as the
+    /// track's cues, in order. The cue objects there are kept: each goes on showing the caption it showed (the same words at
+    /// nearly the same moment) where there still is one, so a list or an editor that holds one goes on holding it, and the
+    /// others take what is left. Returns whether anything shown changed.
+    /// </summary>
+    private bool ShowCaptionAnchors(List<SubtitleCueState> loose)
+    {
+        var shown = _captionAnchorSource is { } source ? CaptionProjection.Project(_captionAnchors, CaptionSpans(source)) : [];
+        if (loose.Count > 0)
+        {
+            shown.AddRange(loose);
+            shown.Sort((a, b) => a.Start.CompareTo(b.Start));
+        }
+
+        // Which cue object shows which caption: the one that showed it, else one left over, else a new one.
+        var byText = new Dictionary<string, List<SubtitleCue>>(StringComparer.Ordinal);
+        foreach (var cue in SubtitleCues)
+        {
+            if (!byText.TryGetValue(cue.Text, out var same))
+                byText[cue.Text] = same = [];
+            same.Add(cue);
+        }
+
+        var order = new SubtitleCue?[shown.Count];
+        var taken = new HashSet<SubtitleCue>();
+        for (var i = 0; i < shown.Count; i++)
+        {
+            if (byText.TryGetValue(shown[i].Text, out var same)
+                && same.FirstOrDefault(c => !taken.Contains(c) && Math.Abs(c.Start - shown[i].Start) < 0.001) is { } match)
+            {
+                order[i] = match;
+                taken.Add(match);
+            }
+        }
+
+        var spare = new Queue<SubtitleCue>(SubtitleCues.Where(c => !taken.Contains(c)));
+        var changed = shown.Count != SubtitleCues.Count;
+        for (var i = 0; i < shown.Count; i++)
+        {
+            var (cue, state) = (order[i] ?? (spare.Count > 0 ? spare.Dequeue() : new SubtitleCue()), shown[i]);
+            if (cue.Start != state.Start || cue.End != state.End || cue.Text != state.Text
+                || !(cue.WordBreaks ?? []).AsSpan().SequenceEqual(state.Breaks ?? []))
+            {
+                changed = true;
+                cue.Text = state.Text;
+                cue.WordBreaks = state.Breaks;
+                (cue.Start, cue.End) = (state.Start, state.End);
+            }
+
+            (cue.Index, cue.Piece) = (i + 1, state.Piece);
+
+            // In order, moved only where it is not already (it mostly is: then nothing is searched).
+            var at = i < SubtitleCues.Count && ReferenceEquals(SubtitleCues[i], cue) ? i : SubtitleCues.IndexOf(cue);
+            if (at < 0)
+            {
+                SubtitleCues.Insert(i, cue);
+            }
+            else if (at != i)
+            {
+                SubtitleCues.Move(at, i);
+                changed = true;
+            }
+        }
+
+        while (SubtitleCues.Count > shown.Count)
+            SubtitleCues.RemoveAt(SubtitleCues.Count - 1);
+        return changed;
+    }
+
+    private static SubtitleCueState StateOf(SubtitleCue cue) => new(cue.Start, cue.End, cue.Text, cue.WordBreaks) { Piece = cue.Piece };
+
+    /// <summary>The words of the anchored captions, in their source's time, when they were made from the source given; null otherwise.</summary>
+    private List<CaptionWord>? AnchoredCaptionWords(CaptionSource source) =>
+        source.SameAs(_captionAnchorSource) ? CaptionProjection.Words(_captionAnchors) : null;
 
     /// <summary>
     /// Generate Captions: transcribes the speech now and puts the captions on the timeline as the
@@ -144,7 +293,7 @@ public partial class MainViewModel
             return;
 
         // There are subtitles on the timeline already, and whatever was done to them by hand would go with them: asked first.
-        if (HasSubtitleCues)
+        if (HasSubtitleCues || _captionAnchorSource is not null)
         {
             var answer = System.Windows.MessageBox.Show(
                 System.Windows.Application.Current?.MainWindow!,
@@ -216,6 +365,12 @@ public partial class MainViewModel
     /// </summary>
     private void CheckpointSubtitleEdits()
     {
+        // Never while a step is being put back (4.4-BugHunt): the cues are being written from it, not edited.
+        if (_restoring > 0)
+            return;
+
+        // Anchored captions take what was changed on their cues back into their source's time first (4.4).
+        WriteBackCaptions();
         var now = JsonSerializer.Serialize(CaptureSubtitles());
         if (now == _committedSubtitles)
             return;
@@ -260,6 +415,15 @@ public partial class MainViewModel
 
     private void NotifySubtitlesChanged()
     {
+        // Told once as a document put in place is done (4.4-BugHunt): one caption file written, one swap of the player's
+        // subtitles, not one for each part of the step that touched them.
+        if (_restoring > 0)
+        {
+            _subtitlesChangedPending = true;
+            return;
+        }
+
+        _subtitlesChangedPending = false;
         _committedSubtitles = JsonSerializer.Serialize(CaptureSubtitles());
         OnPropertyChanged(nameof(HasSubtitleCues));
         OnPropertyChanged(nameof(HasTextCues));
@@ -276,6 +440,10 @@ public partial class MainViewModel
     /// </summary>
     public void CommitSubtitleEdits()
     {
+        // (No edit of the cues is made while a step is being put back: 4.4-BugHunt.)
+        if (_restoring > 0)
+            return;
+
         CheckpointSubtitleEdits();
 
         // A picture track's cues stay in the file's order: that is how they are matched to its pictures.
@@ -427,9 +595,6 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Where the import row of the Subtitles tab is shown: under the legacy settings.</summary>
-    public bool ShowSubtitleImportRow => !ShowAutoCaptions;
-
     /// <summary>The size of the frame the subtitles are placed on, for a player that shows them on a blank picture of that shape.</summary>
     public (int Width, int Height) SubtitleFrameSize
     {
@@ -502,15 +667,33 @@ public partial class MainViewModel
 
     private Task TranscribeToCuesAsync() => RunOperationAsync("Transcribing captions", WorkLane.Interactive, async cancellationToken =>
     {
-        var (words, problem) = await GetCaptionWordsAsync([], cancellationToken);
+        if (ResolveCaptionSource() is not { } source)
+            return "There is nothing to make captions from: load a video, or choose what to listen to.";
+
+        var (words, problem) = await GetCaptionWordsAsync(source, cancellationToken);
         if (words is null)
             return problem;
 
-        var offset = CaptionUseVoiceover ? VoiceoverStartSeconds : 0;
-        var cues = CaptionGenerator.Lines(words, CaptionStyle).Select(line =>
+        // Made from what the timeline plays as clips: kept in its own time and shown through those clips (4.4), so cuts,
+        // folds and dead air made before or after line up by construction.
+        if (source.IsAnchored)
+        {
+            var anchors = CaptionProjection.Anchor(CaptionGenerator.Lines(words, CaptionStyle));
+            if (anchors.Count == 0)
+                return "No speech was found to make captions of.";
+
+            Checkpoint("generate captions");
+            SetSubtitleTrack([], "", false, 0, source, anchors);
+            return SubtitleCues.Count == 0
+                ? $"Made {anchors.Count} captions from {DescribeCaptionSource(source)}, but none of it plays on the timeline now."
+                : $"Made {anchors.Count} captions from {DescribeCaptionSource(source)}: they follow its clips, can be edited, and are drawn from now on.";
+        }
+
+        // The voiceover and an external recording are on the timeline's clock, where they are heard.
+        var cues = CaptionGenerator.Lines(CaptionProjection.ProjectWords(words, CaptionSpans(source)), CaptionStyle).Select(line =>
         {
             var (start, end) = (line[0].Start, Math.Max(line[^1].End, line[0].Start + 0.1));
-            var cue = new SubtitleCue { Start = start + offset, End = end + offset, Text = string.Join(" ", line.Select(w => w.Text.Trim())) };
+            var cue = new SubtitleCue { Start = start, End = end, Text = string.Join(" ", line.Select(w => w.Text.Trim())) };
 
             // The words keep the moments they were heard at: each boundary is where the next word was heard to begin.
             if (line.Count > 1)
@@ -518,11 +701,11 @@ public partial class MainViewModel
             return cue;
         }).ToList();
         if (cues.Count == 0)
-            return "No speech was found to make subtitles of.";
+            return "No speech was found to make captions of.";
 
         Checkpoint("generate captions");
         SetSubtitleTrack(SubtitleFiles.Numbered(cues), "", false, 0);
-        return $"Made {cues.Count} subtitle cues from the auto-captions: they can now be edited, and the captions are drawn from them.";
+        return $"Made {cues.Count} captions from {DescribeCaptionSource(source)}: they can now be edited, and the captions are drawn from them.";
     });
 
     /// <summary>Adds a cue by hand. The first one makes the track; its words are drawn as captions, so captions are switched on for them.</summary>
@@ -607,11 +790,12 @@ public partial class MainViewModel
             if (i == SubtitleCues.Count)
                 SubtitleCues.Add(new SubtitleCue { Index = i + 1 });
 
-            // The words before their boundaries: words of another count let go of the boundaries they had.
+            // The words before their boundaries: words of another count let go of the boundaries they had. A cue showing an
+            // anchored caption takes back the piece it showed (4.4), so it is written back through the same clip.
             var (cue, state) = (SubtitleCues[i], cues[i]);
             cue.Text = state.Text ?? "";
             cue.WordBreaks = (double[]?)state.Breaks?.Clone();
-            (cue.Start, cue.End) = (state.Start, state.End);
+            (cue.Start, cue.End, cue.Piece) = (state.Start, state.End, state.Piece);
         }
 
         while (SubtitleCues.Count > cues.Count)
@@ -619,27 +803,31 @@ public partial class MainViewModel
         SubtitleOffsetMs = offsetMs;
     }
 
-    /// <summary>The traditional view of the Subtitles tab (the source's own subtitle tracks), for the button that opens it.</summary>
-    public bool ShowLegacySubtitles
-    {
-        get => !ShowAutoCaptions;
-        set => ShowAutoCaptions = !value;
-    }
-
-    private SubtitleTrackData? CaptureSubtitles() => !HasSubtitleCues ? null : new SubtitleTrackData
+    /// <summary>
+    /// The subtitle track as it is written to a project and kept by undo: every cue on the timeline (those that show anchored
+    /// captions marked as such, 4.4) and, for anchored captions, their source and the captions in its time.
+    /// </summary>
+    private SubtitleTrackData? CaptureSubtitles() => !HasSubtitleCues && _captionAnchorSource is null ? null : new SubtitleTrackData
     {
         SourcePath = SubtitleSourcePath,
         IsImage = SubtitlesAreImages,
         OffsetMs = SubtitleOffsetMs,
-        Cues = SubtitleCues.Select(c => new SubtitleCueState(c.Start, c.End, c.Text, c.WordBreaks)).ToList(),
+        Cues = SubtitleCues.Select(c => new SubtitleCueState(c.Start, c.End, c.Text, c.WordBreaks) { Projected = c.Piece is not null }).ToList(),
+        Source = _captionAnchorSource,
+        Anchors = _captionAnchorSource is null ? null : [.. _captionAnchors],
     };
 
     private void ApplySubtitles(SubtitleTrackData? data)
     {
-        var cues = (data?.Cues ?? []).Where(c => double.IsFinite(c.Start) && double.IsFinite(c.End) && c.End > c.Start)
+        // Anchored captions are made again from their anchors and the timeline: the cues that showed them are left out.
+        var anchoredTo = data is { IsImage: false, Source: { IsAnchored: true } source, Anchors.Count: > 0 } ? source : null;
+        var anchors = anchoredTo is null ? null
+            : data!.Anchors!.Where(a => double.IsFinite(a.Start) && double.IsFinite(a.End) && a.End >= a.Start).OrderBy(a => a.Start).ToList();
+        var cues = (data?.Cues ?? []).Where(c => double.IsFinite(c.Start) && double.IsFinite(c.End) && c.End > c.Start && !(c.Projected && anchoredTo is not null))
             .Select((c, i) => new SubtitleCue { Index = i + 1, Start = c.Start, End = c.End, Text = c.Text ?? "", WordBreaks = c.Breaks }).ToList();
         var images = data?.IsImage == true && cues.Count > 0;
-        SetSubtitleTrack(cues, cues.Count > 0 ? data!.SourcePath ?? "" : "", images, cues.Count > 0 ? data!.OffsetMs : 0);
+        var kept = cues.Count > 0 || anchoredTo is not null;
+        SetSubtitleTrack(cues, kept ? data!.SourcePath ?? "" : "", images, kept ? data!.OffsetMs : 0, anchoredTo, anchors);
 
         // A picture track is measured against its file as it is on disk: read again, when it is still there and still the same.
         if (images)

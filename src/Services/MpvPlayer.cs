@@ -36,6 +36,7 @@ public sealed class MpvPlayer
         private readonly delegate* unmanaged[Cdecl]<IntPtr, byte*, int> _requestLog = (delegate* unmanaged[Cdecl]<IntPtr, byte*, int>)NativeLibrary.GetExport(handle, "mpv_request_log_messages");
         private readonly delegate* unmanaged[Cdecl]<IntPtr, double, Event*> _waitEvent = (delegate* unmanaged[Cdecl]<IntPtr, double, Event*>)NativeLibrary.GetExport(handle, "mpv_wait_event");
         private readonly delegate* unmanaged[Cdecl]<int, byte*> _errorString = (delegate* unmanaged[Cdecl]<int, byte*>)NativeLibrary.GetExport(handle, "mpv_error_string");
+        private readonly delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, int, int> _getPropertyAsync = (delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, int, int>)NativeLibrary.GetExport(handle, "mpv_get_property_async");
 
         // Longer text than this is written into a borrowed buffer instead of onto the stack.
         private const int OnStack = 512;
@@ -80,6 +81,21 @@ public sealed class MpvPlayer
             {
                 Release(borrowedName);
                 Release(borrowedValue);
+            }
+        }
+
+        /// <summary>Queues a read of a property, as text; the answer comes back as an event with <paramref name="reply"/> in it.</summary>
+        public int GetPropertyAsync(IntPtr mpv, ulong reply, string name)
+        {
+            byte[]? borrowed = null;
+            try
+            {
+                fixed (byte* text = Encode(name, stackalloc byte[128], ref borrowed))
+                    return _getPropertyAsync(mpv, reply, text, FormatString);
+            }
+            finally
+            {
+                Release(borrowed);
             }
         }
 
@@ -185,9 +201,9 @@ public sealed class MpvPlayer
     }
 
     // mpv's own numbers, from its client.h.
-    private const int EventNone = 0, EventShutdown = 1, EventLogMessage = 2, EventSetPropertyReply = 4, EventCommandReply = 5,
+    private const int EventNone = 0, EventShutdown = 1, EventLogMessage = 2, EventGetPropertyReply = 3, EventSetPropertyReply = 4, EventCommandReply = 5,
         EventEndFile = 7, EventFileLoaded = 8, EventPlaybackRestart = 21, EventPropertyChange = 22;
-    private const int FormatFlag = 3, FormatDouble = 5;
+    private const int FormatString = 1, FormatFlag = 3, FormatDouble = 5;
 
     // What each watched property is asked for under: its changes come back with the number, so that no name
     // has to be read (and made into a string) for every frame that is shown.
@@ -195,6 +211,10 @@ public sealed class MpvPlayer
 
     // What the answers to requests are told apart by: the seek being waited for, and the filter graph.
     private const ulong ReplyNone = 0, ReplySeek = 100, ReplyGraph = 101;
+
+    // The answers about the subtitle track (see "Subtitles"): ReplySubtitle, the number of the swap from bit 8 on, and the
+    // step in the low byte. Far above the other answers' numbers.
+    private const ulong ReplySubtitle = 1UL << 48, SubtitleId = 1, SubtitleAdd = 2, SubtitleOff = 3, SubtitleRemove = 4;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Event
@@ -262,6 +282,15 @@ public sealed class MpvPlayer
 
     /// <summary>Where playback is, in milliseconds, as last reported.</summary>
     public long PositionMs { get; private set; }
+
+    /// <summary>How long the open file is, in milliseconds, as mpv last reported it; 0 until it has (for a file other than the one before).</summary>
+    public long DurationMs { get; private set; }
+
+    /// <summary>
+    /// The filter graph mpv was handed last, or null before the first: what a graph it says it could not run is taken to be
+    /// (4.4-BugHunt: written to the log, and not given to it again).
+    /// </summary>
+    public string? LastGraph { get; private set; }
 
     /// <summary>The last line mpv logged as an error, or null.</summary>
     public string? LastError { get; private set; }
@@ -374,7 +403,13 @@ public sealed class MpvPlayer
             SetProperty("lavfi-complex", "");
         }
 
+        // The tracks added to the file before go with it: the subtitle file is given again once this one shows its first frame.
+        lock (_subtitleLock)
+            ForgetSubtitleTrackLocked();
+
         (_graphTakesSound, _seekAgain) = (false, null);
+        if (path != _path)
+            DurationMs = 0;
         _path = path;
         IsLoading = true;
         IsEnded = false;
@@ -486,13 +521,18 @@ public sealed class MpvPlayer
             {
                 // A graph takes the video track for itself, and mpv does not hand it back when the graph goes: it
                 // carries on without a picture and takes that for the end of the file. Opening the file again,
-                // where it was (or was going), is what brings the plain picture back.
-                _hasGraph = false;
+                // where it was (or was going), is what brings the plain picture back. OpenLocked takes the graph off
+                // first, which it does only while _hasGraph is still set: lavfi-complex is a player option, and a file
+                // opened with it set runs the old graph again (4.4-BugHunt: a graph mpv could not run failed once more
+                // on the file opened to be rid of it, and sent it to the end again).
                 if (_path is { } path)
                 {
                     OpenLocked(path, seek?.Ms ?? PositionMs, IsPaused || IsEnded);
                     return;
                 }
+
+                (_hasGraph, _graphTakesSound) = (false, false);
+                SetProperty("lavfi-complex", "");
             }
 
             graph = null;
@@ -532,6 +572,7 @@ public sealed class MpvPlayer
 
             _hasGraph = true;
             _graphsSincePlay++;
+            LastGraph = graph;
             SetProperty("lavfi-complex", graph, ReplyGraph);
 
             // A graph with sound takes the audio tracks; the track has to be given again after it.
@@ -644,6 +685,28 @@ public sealed class MpvPlayer
     public void SetSpeed(double speed) => SetProperty("speed", Number(speed));
 
     /// <summary>
+    /// Zooms and pans the picture on the screen only (the right button and W, A, S, D over the player, 4.4): nothing is
+    /// decoded or filtered again. <paramref name="log2Zoom"/> is mpv's video-zoom (0 fitted, 1 twice as large);
+    /// <paramref name="panX"/> and <paramref name="panY"/> move the picture by fractions of its zoomed size. mpv keeps them
+    /// from file to file, so the window sets them back to 0 when a file is loaded.
+    /// </summary>
+    public void SetViewZoom(double log2Zoom, double panX, double panY)
+    {
+        if (log2Zoom != _viewZoom.Zoom)
+            SetProperty("video-zoom", Fine(log2Zoom));
+        if (panX != _viewZoom.PanX)
+            SetProperty("video-pan-x", Fine(panX));
+        if (panY != _viewZoom.PanY)
+            SetProperty("video-pan-y", Fine(panY));
+        _viewZoom = (log2Zoom, panX, panY);
+
+        // Six places: a step of the pan is then far below a pixel even at the closest zoom.
+        static string Fine(double value) => value.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private (double Zoom, double PanX, double PanY) _viewZoom;
+
+    /// <summary>
     /// Gives mpv an audio filter chain in its own syntax (its af property); an empty string for none. Used to
     /// silence the stretches of a sequence where the main video is not there.
     /// </summary>
@@ -662,9 +725,27 @@ public sealed class MpvPlayer
     // A subtitle file of HandPeg's own (the captions' preview) is drawn by mpv itself, as a track added to the
     // file that is playing: libass renders it and the graphics card lays it over the picture, on whatever the
     // filter graph made of that picture or on the plain source. Nothing of it goes through the filter graph.
+    //
+    // The track shown is never removed while it is mpv's current one (4.4-BugHunt). Every new filter graph marks the tracks
+    // it does not read as not selected, the subtitle track with them, while mpv keeps that track as its current one
+    // (loadfile.c, cleanup_deassociated_complex_filters). "sub-remove" lets go of a track only when it is selected, so it
+    // freed the track mpv still held, and the next "sub-add ... select", which mpv runs on a worker thread, switched away
+    // from the freed track: an access violation reading 0x118 in libmpv (demuxer_select_track) or writing 0x38 in ntdll
+    // (the lock of a freed demuxer), 0.1 to 4 s after "Making captions". So a swap asks for the id of the track shown
+    // ("sid", which mpv answers before it starts the add), adds the new file selected, which has mpv switch to it and let go
+    // of the old track properly, and only then removes the old track, by its id. One swap at a time, and none before the
+    // open file has shown its first frame: a file asked for meanwhile waits, the newest replacing the older.
 
     private readonly object _subtitleLock = new();
     private string _subtitleFile = "";
+
+    // The file whose track was given last (or given up on); the number of the swap under way, which its answers carry, so
+    // that an answer about an earlier swap or about the file before is known for one; the answers it still waits for; the
+    // file it adds; the id of the track shown when it began; and whether the open file has shown its first frame.
+    private string _subtitleShown = "", _subtitleAdding = "";
+    private int _subtitleSwap, _subtitleAnswers;
+    private string? _subtitleOldId;
+    private bool _subtitleAddFailed, _subtitleReady;
 
     /// <summary>
     /// Has mpv draw an ASS file over the picture; an empty string takes it off again. The file is read whole
@@ -678,19 +759,82 @@ public sealed class MpvPlayer
             if (path == _subtitleFile)
                 return;
 
-            var hadOne = _subtitleFile.Length > 0;
             _subtitleFile = path;
+            SwapSubtitlesLocked();
+        }
+    }
 
-            // A file still being opened is given its track when it is ready (see ReadEvents).
-            if (IsLoading || _path is null)
+    /// <summary>
+    /// Starts the swap to the file asked for, unless one is under way (its last answer starts the next) or the open file
+    /// has not shown its first frame yet (that does).
+    /// </summary>
+    private void SwapSubtitlesLocked()
+    {
+        if (_closing || !_subtitleReady || _subtitleAnswers > 0 || _subtitleFile == _subtitleShown)
+            return;
+
+        _subtitleSwap++;
+        (_subtitleAdding, _subtitleOldId, _subtitleAddFailed, _subtitleAnswers) = (_subtitleFile, null, false, 2);
+        _api.GetPropertyAsync(_mpv, SubtitleReply(SubtitleId), "sid");
+        if (_subtitleAdding.Length > 0)
+            Command(SubtitleReply(SubtitleAdd), "sub-add", _subtitleAdding, "select");
+        else
+            SetProperty("sid", "no", SubtitleReply(SubtitleOff));
+    }
+
+    private ulong SubtitleReply(ulong step) => ReplySubtitle | (ulong)(uint)_subtitleSwap << 8 | step;
+
+    /// <summary>An answer about a swap. Once all of its answers are in, the old track goes; after that, the next file asked for.</summary>
+    private void SubtitleAnswered(ulong reply, int error, string? value)
+    {
+        lock (_subtitleLock)
+        {
+            // About an earlier swap, or about the file before.
+            if ((uint)(reply >> 8) != (uint)_subtitleSwap || _subtitleAnswers == 0)
                 return;
 
-            // The only subtitle track ever selected is this one (sid starts as "no"), so the current one is it.
-            if (hadOne)
-                Command(ReplyNone, "sub-remove");
-            if (path.Length > 0)
-                Command(ReplyNone, "sub-add", path, "select");
+            var step = reply & 0xFF;
+            if (step == SubtitleId)
+                _subtitleOldId = error >= 0 && long.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _) ? value : null;
+            else if (step is SubtitleAdd or SubtitleOff && error < 0)
+                _subtitleAddFailed = true;
+
+            if (--_subtitleAnswers > 0)
+                return;
+
+            if (step != SubtitleRemove)
+            {
+                // Given, or given up on: a file mpv could not add is not tried again, and the track shown stays.
+                _subtitleShown = _subtitleAdding;
+
+                // The new track is the current one now (or none is): the old one can go.
+                if (!_subtitleAddFailed && _subtitleOldId is { } old)
+                {
+                    _subtitleAnswers = 1;
+                    Command(SubtitleReply(SubtitleRemove), "sub-remove", old);
+                    return;
+                }
+            }
+
+            SwapSubtitlesLocked();
         }
+    }
+
+    /// <summary>A file was opened, or has ended: the tracks added to it went with it, and answers still on their way are about it.</summary>
+    private void ForgetSubtitleTrackLocked()
+    {
+        _subtitleSwap++;
+        (_subtitleShown, _subtitleAnswers, _subtitleOldId, _subtitleReady) = ("", 0, null, false);
+    }
+
+    // A property's value as text, from the answer to GetPropertyAsync (an mpv_event_property whose data points to the char*).
+    private static unsafe string? PropertyText(IntPtr data)
+    {
+        if (data == IntPtr.Zero)
+            return null;
+
+        var property = (PropertyEvent*)data;
+        return property->Format != FormatString || property->Data == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(*(IntPtr*)property->Data);
     }
 
     /// <summary>
@@ -782,7 +926,10 @@ public sealed class MpvPlayer
                             TimeChanged?.Invoke(PositionMs);
                         }
                         else if (e->UserData == WatchDuration)
-                            DurationChanged?.Invoke((long)Math.Round(seconds * 1000));
+                        {
+                            DurationMs = (long)Math.Round(seconds * 1000);
+                            DurationChanged?.Invoke(DurationMs);
+                        }
                     }
                     else if (property->Format == FormatFlag)
                     {
@@ -794,6 +941,11 @@ public sealed class MpvPlayer
                         StateChanged?.Invoke();
                     }
 
+                    break;
+
+                // An answer about the subtitle track (see "Subtitles").
+                case EventCommandReply or EventSetPropertyReply or EventGetPropertyReply when e->UserData >= ReplySubtitle:
+                    SubtitleAnswered(e->UserData, e->Error, e->Id == EventGetPropertyReply && e->Error >= 0 ? PropertyText(e->Data) : null);
                     break;
 
                 // A seek that mpv would not make (no file open, say) is not waited for.
@@ -823,9 +975,9 @@ public sealed class MpvPlayer
                     {
                         IsLoading = false;
 
-                        // The new file has none of the tracks that were added to the one before.
-                        if (_subtitleFile.Length > 0 && File.Exists(_subtitleFile))
-                            Command(ReplyNone, "sub-add", _subtitleFile, "select");
+                        // The new file has none of the tracks that were added to the one before: the file asked for is given now.
+                        _subtitleReady = true;
+                        SwapSubtitlesLocked();
                     }
 
                     FileLoaded?.Invoke();
@@ -833,6 +985,8 @@ public sealed class MpvPlayer
 
                 case EventEndFile:
                     IsLoading = false;
+                    lock (_subtitleLock)
+                        ForgetSubtitleTrackLocked();
                     SeekDone();
                     StateChanged?.Invoke();
                     break;

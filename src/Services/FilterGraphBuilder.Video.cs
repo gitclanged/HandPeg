@@ -52,10 +52,7 @@ public static partial class FilterGraphBuilder
             // of a source of any resolution. Width and height are kept even, as most encoders need.
             string? crop = null;
             if (HasCrop)
-            {
-                var (left, top, right, bottom) = GetCropFractions();
-                crop = $"crop=trunc(iw*{Fraction(1 - left - right)}/2)*2:trunc(ih*{Fraction(1 - top - bottom)}/2)*2:trunc(iw*{Fraction(left)}):trunc(ih*{Fraction(top)})";
-            }
+                crop = CropFilter(GetCropFractions(), (SourceWidth, SourceHeight));
 
             // A main video in several clips has no one time of its own left once it is composed. Its burned-in
             // subtitles are drawn on its own frames first, in the file's time (which a preview's input has been
@@ -119,6 +116,87 @@ public static partial class FilterGraphBuilder
             }
 
             return filters;
+        }
+
+        /// <summary>
+        /// A crop of a picture, given as fractions of its frame (left, top, right, bottom): even sides, as most encoders need.
+        /// The main video's, and every clip's own (4.4-BugHunt: every clip's crop reframes its picture). Its sides are never
+        /// cut to nothing (<see cref="EvenCut"/>); <paramref name="known"/> is the picture's own size, where it is known.
+        /// </summary>
+        private string CropFilter((double Left, double Top, double Right, double Bottom) crop, (int Width, int Height) known) =>
+            $"crop={EvenCut("iw", 1 - crop.Left - crop.Right, known.Width)}:{EvenCut("ih", 1 - crop.Top - crop.Bottom, known.Height)}:trunc(iw*{Fraction(crop.Left)}):trunc(ih*{Fraction(crop.Top)})";
+
+        /// <summary>
+        /// One side of a cut taken out of a picture's frames by a fraction of them, even (trunc(iw*F/2)*2), as a crop and
+        /// the pieces cut from the main video (a game style's HUD) are written. Held to 2 pixels at least wherever it could
+        /// come out at nothing, which FFmpeg refuses ("Invalid too big or non positive size"), taking the whole graph down
+        /// with it: in every live graph, whose [vid1] is not always the main video's frames (wherever no clip of it is under
+        /// the playhead, a gap left by a clip dragged away, before or after it, the player runs its stand-in clock, 64 by 36
+        /// and scaled down with the rest, 16 by 8 at a quarter: a piece a fifth of the source high was cut 0 high there, and
+        /// mpv could not configure the graph), and whose layers may be read from small proxies; in an export only where the
+        /// picture's own size (<paramref name="known"/>) leaves less than 2, or is not known, so a valid export is written as it
+        /// always was. The fraction is at most 1: never more than the picture.
+        /// </summary>
+        /// <param name="side">iw or ih.</param>
+        private string EvenCut(string side, double fraction, int known)
+        {
+            var written = Fraction(fraction);
+            var cut = $"trunc({side}*{written}/2)*2";
+            var guard = _buildingLiveGraph || known <= 0 || Math.Truncate(known * double.Parse(written, CultureInfo.InvariantCulture) / 2) * 2 < 2;
+            return guard ? $"'max(2,{cut})'" : cut;
+        }
+
+        /// <summary>
+        /// The crop a layer made of the main video's picture is cut by (4.4): its own (<see cref="Lowered.StreamCrops"/>; none
+        /// when that crop is nothing), or else <paramref name="sequenceCrop"/>, the sequence's.
+        /// </summary>
+        private string? StreamCropOf(Layer layer, string? sequenceCrop) =>
+            T.StreamCrops.TryGetValue(layer, out var own)
+                ? own.Left + own.Top + own.Right + own.Bottom > 1e-9 ? CropFilter(own, (SourceWidth, SourceHeight)) : null
+                : sequenceCrop;
+
+        /// <summary>
+        /// The crop a layer's picture is cut by, as fractions of it: a clip of the main video's own (<see cref="Lowered.StreamCrops"/>)
+        /// or, riding the chain's stream, the sequence's; any other clip its own. A mask of the layer's picture is cut the same
+        /// way, so it stays where it was on the picture (4.4.0, the user's B4: the main video's mask too).
+        /// </summary>
+        private (double Left, double Top, double Right, double Bottom) PictureCropOf(Layer layer) =>
+            T.StreamCrops.TryGetValue(layer, out var own) ? own
+            : layer.IsMainVideo || T.Riders.Contains(layer) ? GetCropFractions()
+            : layer.CropFractions;
+
+        /// <summary>
+        /// The crop a picture read from a file (a video, an image) is cut by before it is scaled to its box (4.4-BugHunt, the
+        /// user's Q2: every clip's crop reframes its picture, on every track): a clip of the main video laid as a file, its
+        /// own (<see cref="StreamCropOf"/>); any other clip, its own crop, as fractions of its file's picture. None uncropped.
+        /// </summary>
+        private string? FileCropOf(Layer layer) =>
+            T.StreamCrops.ContainsKey(layer) ? StreamCropOf(layer, null)
+            : layer.IsCropped ? CropFilter(layer.CropFractions, (layer.ImageWidth, layer.ImageHeight)) : null;
+
+        /// <summary>
+        /// A frame-filling copy of a video (<see cref="Lowered.BlurTwins"/>) scaled to cover its box (the frame) about its
+        /// middle, cut to it and blurred as the blurred background is: in Live Preview blurred small and scaled back up, in an
+        /// encode on the graphics card where it can be (the background's radius held to what the colour planes allow, its
+        /// passes and dimming).
+        /// </summary>
+        private string TwinBlur(int width, int height)
+        {
+            var dim = Number(Math.Clamp(BackgroundDim, -0.5, 0));
+            var passes = Math.Clamp(BlurPasses, 1, 5);
+            if (_buildingLiveGraph)
+            {
+                var (smallWidth, smallHeight) = (Math.Max(width / 8 * 2, 16), Math.Max(height / 8 * 2, 16));
+                var smallRadius = Math.Clamp((int)Math.Round(Math.Clamp(BlurRadius, 5, 50) * _liveScale / 4), 1, Math.Max(Math.Min(smallWidth, smallHeight) / 4 - 1, 1));
+                return $",scale={smallWidth}:{smallHeight}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop={smallWidth}:{smallHeight},"
+                       + $"boxblur={smallRadius}:{passes},eq=brightness={dim},scale={width}:{height}:flags=bilinear";
+            }
+
+            var radius = Math.Min(Math.Clamp(BlurRadius, 5, 50), Math.Max(Math.Min(width, height) / 4 - 1, 1));
+            var blur = S.OpenClBlur
+                ? $"format=yuv420p,hwupload,boxblur_opencl={radius}:{passes},hwdownload,format=yuv420p"
+                : $"boxblur={radius}:{passes}";
+            return $",scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},{blur},eq=brightness={dim}";
         }
 
         // A preview encode opens the main video's file already wound forward to where it begins; the file's frames
@@ -218,7 +296,12 @@ public static partial class FilterGraphBuilder
 
             var covers = center.X <= 0 && center.Y <= 0 && center.X + center.Width >= width && center.Y + center.Height >= height;
             var hidesBackground = whole && stack.Count > 0 && stack[0].IsMainVideo && covers && throughout && IsOpaque(main) && !motions[0].Any;
-            var blurred = mainSeen && !hidesBackground && !S.BackgroundHidden;
+
+            // The blurred background is made under the chain's clips that want it (4.4: each clip's blur fill, the sequence's
+            // switch for those that leave it to it): all of them, as it always was, while every clip does.
+            var blurClips = S.BackgroundHidden ? T.ForcedBlurClips : T.BlurClips;
+            var blurAll = ReferenceEquals(blurClips, T.MainClips);
+            var blurred = mainSeen && !hidesBackground && (blurAll || (blurClips.Count > 0 && (!known || SeenOf(blurClips, seenFrom, seenTo).Count > 0)));
 
             // One copy of the main video's frames for each thing that shows them. Layers from files bring their own picture.
             var branches = new List<string>();
@@ -301,7 +384,7 @@ public static partial class FilterGraphBuilder
                 if (stack.FindIndex(l => l.IsMainVideo) is >= 0 and var mainAt && fades[mainAt].Count > 0)
                     AppendPictureFades(graph, "bgf", s, fades[mainAt].ConvertAll(f => f with { Style = TransitionStyle.Dissolve }), width, height);
 
-                graph.Append($"[bg{s}];[base{s}][bg{s}]overlay=0:0{mainEnding}{Enabled(mainGate)}");
+                graph.Append($"[bg{s}];[base{s}][bg{s}]overlay=0:0{mainEnding}{Enabled(blurAll ? mainGate : FilterGraphBuilder.BuildMainGate(blurClips, from, to))}");
             }
 
             // The layers, each on the picture built so far. The running picture is labelled between steps;
@@ -331,10 +414,11 @@ public static partial class FilterGraphBuilder
                     builtHeight = Even((double)layerHeight * builtWidth / layerWidth);
                 }
 
-                // The main video. The crop frames this layer only, and a clip of it that rides alone; the background and the
-                // cut-outs use the whole picture.
+                // The main video. The crop frames this layer only, and a clip of it that rides alone (by its own crop when it
+                // has one, 4.4); the background uses the whole picture, and each cut-out its own part of it (its source
+                // rectangle, less its own crop: AppendLayer).
                 var mainSource = layer.IsMainVideo || T.Riders.Contains(layer)
-                    ? $"[{name}_in{s}]{(centerCrop is null ? "" : centerCrop + ",")}scale={builtWidth}:{builtHeight}{LiveScaleFlags}"
+                    ? $"[{name}_in{s}]{(StreamCropOf(layer, centerCrop) is { } cut ? cut + "," : "")}scale={builtWidth}:{builtHeight}{LiveScaleFlags}"
                     : null;
                 var tick = live && layer.IsStill && motion.Reshapes ? $"[ui{n}_tick{s}]" : null;
                 graph.Append($"[stage{n}{s}];");
@@ -664,9 +748,12 @@ public static partial class FilterGraphBuilder
             return (across, across);
         }
 
-        /// <summary>Whether a layer hides everything under the rectangle it covers: solid, square-cornered, unturned, with nothing keyed or masked out.</summary>
+        /// <summary>
+        /// Whether a layer hides everything under the rectangle it covers: solid, square-cornered, unturned, with nothing keyed
+        /// or masked out. (A crop cuts the picture, which still fills its box: 4.4-BugHunt.)
+        /// </summary>
         private bool IsOpaque(Layer layer) =>
-            layer.Opacity >= 100 && !layer.HasKeys(KeyProperty.Opacity) && !layer.ChromaKey && !(layer.CustomMask && Exists(layer.MaskPath.Trim().Trim('"'))) && !layer.IsCropped
+            layer.Opacity >= 100 && !layer.HasKeys(KeyProperty.Opacity) && !layer.ChromaKey && !(layer.CustomMask && Exists(layer.MaskPath.Trim().Trim('"')))
             && layer.CornerRadius == 0 && !layer.Feather && Math.Abs(layer.Rotation % 360) < 0.05;
 
         /// <summary>The size of the picture once it has been turned: the box its corners then reach, in even pixels.</summary>
@@ -736,8 +823,9 @@ public static partial class FilterGraphBuilder
         /// <summary>
         /// The Key and Matte zone (3), in stack order. The key writes the transparency itself; everything else works on
         /// it: consecutive matte steps share one split, alphaextract ... alphamerge, the mask and the edges multiplying
-        /// it (one group, where the first of their cards is; with neither, the crop's at the end) and the choke and
-        /// smoothing filtering it. A layer that only has the old key, mask and edges compiles exactly as before stacks.
+        /// it (one group, where the first of their cards is) and the choke and smoothing filtering it. A layer that only has
+        /// the old key, mask and edges compiles exactly as before stacks. (The crop is no mask: it cut the picture before
+        /// it got here, 4.4-BugHunt.)
         /// </summary>
         private void AppendKeyAndMatte(StringBuilder chain, Layer layer, string name, string s, int width, int height, double clipStart)
         {
@@ -776,25 +864,25 @@ public static partial class FilterGraphBuilder
             }
 
             // The mask and the edges: grey pictures the size of the layer, white where it is to show, each made once
-            // and held, not worked out again for every frame. With a mask, Soft Edges softens the mask's outline,
-            // and the rectangle only has its corners rounded.
+            // and held, not worked out again for every frame (see StillMask). With a mask, Soft Edges softens the mask's
+            // outline, and the rectangle only has its corners rounded.
             void PlaceMasks()
             {
                 maskPlaced = true;
                 var p = Prefix();
                 var maskFile = layer.CustomMask && layer.HasMask && layer.FxOn(EffectRegistry.Mask) ? layer.MaskPath.Trim().Trim('"') : "";
                 var hasMask = maskFile.Length > 0 && Exists(maskFile);
-                if (hasMask || layer.IsCropped)
+                if (hasMask)
                 {
-                    sources.Append(';').Append(BuildMaskSource(layer, hasMask ? maskFile : null, hasMask && S.AlphaMasks.Contains(maskFile), width, height, _liveScale))
-                        .Append($",trim=end_frame=1,loop=loop=-1:size=1[{p}_cmask{s}]");
-                    run.Add($"[{p}_cmask{s}]blend=all_mode=multiply:shortest=1");
+                    sources.Append(';').Append(BuildMaskSource(layer, maskFile, S.AlphaMasks.Contains(maskFile), width, height, _liveScale, (SourceWidth, SourceHeight), PictureCropOf(layer)))
+                        .Append(StillMask).Append($"[{p}_cmask{s}]");
+                    run.Add(MultiplyByStill($"{p}_cmask{s}"));
                 }
 
                 if (BuildLayerMask(layer, width, height, _liveScale, softEdge: !hasMask) is { } shape)
                 {
-                    sources.Append($";color=c=black:s={width}x{height}:r=1,format=gray,geq=lum='255*{shape}',trim=end_frame=1,loop=loop=-1:size=1[{p}_smask{s}]");
-                    run.Add($"[{p}_smask{s}]blend=all_mode=multiply:shortest=1");
+                    sources.Append($";color=c=black:s={width}x{height}:r=1,format=gray,geq=lum='255*{shape}'").Append(StillMask).Append($"[{p}_smask{s}]");
+                    run.Add(MultiplyByStill($"{p}_smask{s}"));
                 }
             }
 
@@ -854,12 +942,26 @@ public static partial class FilterGraphBuilder
                 }
             }
 
-            // A cropped layer with no mask or edges card still has its crop cut away.
-            if (!maskPlaced && layer.IsCropped)
-                PlaceMasks();
             Flush();
             Format();
         }
+
+        /// <summary>
+        /// How a still grey picture that a transparency is multiplied by (a mask, the edges' shape) ends: one frame, made once.
+        /// blend holds it for every frame of the picture it works on (its framesync repeats a last frame, by default) and
+        /// ends when that picture does (<see cref="MultiplyByStill"/>).
+        ///
+        /// It was an endless repeat of that frame (trim, loop=loop=-1) blended with shortest=1, until 4.4-BugHunt: when the
+        /// picture ended without having had a frame (mpv's paused sound settle at the end of the file sends the same exact
+        /// seek again with the new graph, and a seek past the last frame gives none), blend's framesync took the picture's
+        /// end for no time at all, kept taking the endless repeat's frames to catch up with it, and could never output one:
+        /// mpv's core thread spun at a whole core in libavfilter (framesync.c), and the player froze for good. One frame
+        /// cannot spin: once both have ended, blend ends.
+        /// </summary>
+        private const string StillMask = ",trim=end_frame=1";
+
+        /// <summary>The step that multiplies the transparency by a still grey picture ended by <see cref="StillMask"/>, labelled <paramref name="mask"/>.</summary>
+        private static string MultiplyByStill(string mask) => $"[{mask}]blend=all_mode=multiply";
 
         /// <summary>
         /// Writes one layer into the graph as a finished picture with its transparency, labelled [name_layer]: cut from the main video
@@ -881,23 +983,42 @@ public static partial class FilterGraphBuilder
             }
             else if (layer.IsVideoFile)
             {
+                // Cut by its crop (every clip's crop reframes its picture: 4.4-BugHunt; a clip of the main video laid as a file
+                // by its own, 4.4) before it is scaled to its box; a frame-filling copy covers the frame and is blurred.
                 AppendVideoFile(chain, layer, startSeconds);
-                chain.Append($",scale={width}:{height}{LiveScaleFlags}");
+                if (FileCropOf(layer) is { } cut)
+                    chain.Append(',').Append(cut);
+                chain.Append(T.BlurTwins.Contains(layer) ? TwinBlur(width, height) : $",scale={width}:{height}{LiveScaleFlags}");
             }
             else if (layer.IsImage)
             {
-                // A single frame, which the overlay repeats for as long as the video runs.
-                chain.Append($"movie='{EscapeFilterPath(layer.ImagePath)}',scale={width}:{height}");
+                // A single frame, which the overlay repeats for as long as the video runs; cut by its crop, then scaled.
+                chain.Append($"movie='{EscapeFilterPath(layer.ImagePath)}'");
+                if (FileCropOf(layer) is { } cut)
+                    chain.Append(',').Append(cut);
+                chain.Append($",scale={width}:{height}");
             }
             else if (layer.IsText)
             {
-                AppendTextSource(chain, layer, width, height);
+                // Cropped, its words are drawn at the size the whole of them has at this box's scale, and the crop is cut
+                // from that to the pixel: the box is what is left, and the letters stay sharp (no picture scaled up).
+                var (left, top, right, bottom) = layer.CropFractions;
+                var (wholeWidth, wholeHeight) = (Math.Max((int)Math.Round(width / (1 - left - right)), width), Math.Max((int)Math.Round(height / (1 - top - bottom)), height));
+                AppendTextSource(chain, layer, wholeWidth, wholeHeight);
+                if ((wholeWidth, wholeHeight) != (width, height))
+                {
+                    var (cutX, cutY) = (Math.Min((int)Math.Round(wholeWidth * left), wholeWidth - width), Math.Min((int)Math.Round(wholeHeight * top), wholeHeight - height));
+                    chain.Append(string.Create(CultureInfo.InvariantCulture, $",crop={width}:{height}:{cutX}:{cutY}"));
+                }
             }
             else
             {
-                // Cut out of the source by fractions of the frame, so the same layer works at any source size.
-                chain.Append($"[{name}_in{s}]crop=trunc(iw*{Fraction(layer.SourceWidth)}/2)*2:trunc(ih*{Fraction(layer.SourceHeight)}/2)*2:"
-                             + $"iw*{Fraction(layer.SourceX)}:ih*{Fraction(layer.SourceY)},scale={width}:{height}{LiveScaleFlags}");
+                // Cut out of the source by fractions of the frame, so the same layer works at any source size: its source
+                // rectangle, less its crop (4.4-BugHunt).
+                // (Never cut to nothing: see EvenCut. Where its corner and size run past the picture, crop moves the corner in.)
+                var (sourceX, sourceY, sourceWidth, sourceHeight) = layer.CroppedSource;
+                chain.Append($"[{name}_in{s}]crop={EvenCut("iw", sourceWidth, SourceWidth)}:{EvenCut("ih", sourceHeight, SourceHeight)}:"
+                             + $"iw*{Fraction(sourceX)}:ih*{Fraction(sourceY)},scale={width}:{height}{LiveScaleFlags}");
             }
 
             // Zone 2, the Look effects, in stack order, on the clip's clock: keys count from its start (the primary chain's
@@ -971,7 +1092,7 @@ public static partial class FilterGraphBuilder
         private static string Ratio(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
 
         // How the video layer last written by AppendVideoFile ends, for its overlay.
-        private string _videoEnding = ":shortest=1";
+        private string _videoEnding = RepeatingEnding;
 
         /// <summary>
         /// A video layer's picture, read by a source filter inside the graph (so no second -i is needed), on the
@@ -1088,8 +1209,18 @@ public static partial class FilterGraphBuilder
                 chain.Append(retimed ? $",{BuildRetime(speed)}+{Number(-from / speed)}/TB" : $",setpts=PTS+{Number(-from)}/TB");
             else if (retimed)
                 chain.Append(',').Append(BuildRetime(speed));
-            _videoEnding = ":shortest=1";
+            _videoEnding = RepeatingEnding;
         }
+
+        /// <summary>
+        /// How a layer that repeats without end is laid on: it goes when the picture under it does (shortest=1), and takes no
+        /// part in deciding when (repeatlast=0: the overlay's framesync waits on the picture under it alone). Without the
+        /// second, a picture under it that ended without having had a frame (Live Preview at the end of the file, after the
+        /// paused sound settle's seek past the last frame) left the overlay reading the endless layer for ever to catch up with
+        /// it: mpv's core thread spinning in libavfilter, the player frozen, as the endless masks did (see StillMask; 4.4-BugHunt).
+        /// The pictures are the same frame for frame.
+        /// </summary>
+        private const string RepeatingEnding = ":shortest=1:repeatlast=0";
 
         /// <summary>
         /// A text layer's picture: its words drawn by drawtext on a see-through canvas the size the layer is built
@@ -1205,52 +1336,50 @@ public static partial class FilterGraphBuilder
         }
 
         /// <summary>
-        /// A layer's mask as a grey picture the size of the layer, white where it shows. From its file: for a
-        /// mask of the whole frame, the part under the layer's cut-out, cut as the picture is; then grown or
-        /// shrunk, and turned inside out. Then the cropped edges are cut away, and the outline softened. With no
-        /// file, the crop alone. It is one picture, worked out once: none of this is done again for each frame.
+        /// A layer's mask as a grey picture the size of the layer, white where it shows, from its file: for a mask of the
+        /// whole frame, the part under the layer's cut-out, cut as the picture is (its source rectangle less its crop); for a
+        /// mask of the layer's own picture, the part its crop leaves (the main video's clips too, by the crop of their stream), so that it stays where it was on the picture (4.4-BugHunt:
+        /// the crop reframes the picture, it is no mask). Then grown or shrunk, turned inside out, nudged, and its outline
+        /// softened. It is one picture, worked out once: none of this is done again for each frame.
         /// </summary>
         /// <param name="fromAlpha">The picture is read by its transparency: painted shows, see-through is cut away.</param>
-        private static string BuildMaskSource(Layer layer, string? file, bool fromAlpha, int width, int height, double pixelScale)
+        /// <param name="sourceSize">The main video's size, which a mask of the whole frame is drawn at (see <see cref="MaskCut"/>).</param>
+        /// <param name="pictureCrop">The crop the layer's picture is cut by (<see cref="PictureCropOf"/>).</param>
+        private static string BuildMaskSource(Layer layer, string file, bool fromAlpha, int width, int height, double pixelScale, (int Width, int Height) sourceSize,
+            (double Left, double Top, double Right, double Bottom) pictureCrop)
         {
             var source = new StringBuilder();
-            if (file is null)
+            source.Append($"movie='{EscapeFilterPath(file)}',{MaskReader(fromAlpha)}");
+            if (layer.UsesFrameMask)
             {
-                source.Append($"color=c=white:s={width}x{height}:r=1,format=gray");
+                var (sourceX, sourceY, sourceWidth, sourceHeight) = layer.CroppedSource;
+                source.Append($",crop={MaskCut("iw", sourceWidth, sourceSize.Width)}:{MaskCut("ih", sourceHeight, sourceSize.Height)}:iw*{Fraction(sourceX)}:ih*{Fraction(sourceY)}");
             }
-            else
+            else if (pictureCrop is var (left, top, right, bottom) && left + top + right + bottom > 0)
             {
-                source.Append($"movie='{EscapeFilterPath(file)}',{MaskReader(fromAlpha)}");
-                if (layer.UsesFrameMask)
-                    source.Append($",crop=iw*{Fraction(layer.SourceWidth)}:ih*{Fraction(layer.SourceHeight)}:iw*{Fraction(layer.SourceX)}:ih*{Fraction(layer.SourceY)}");
-                source.Append($",scale={width}:{height}");
-                if (layer.MaskInvert)
-                    source.Append(",geq=lum='255-lum(X,Y)'");
-
-                // Grown or shrunk by so many pixels: one pass of dilation (or erosion) moves the edge out (or in) by one.
-                var grow = layer.MaskGrow == 0 ? 0 : Math.Max((int)Math.Round(Math.Abs(Math.Clamp(layer.MaskGrow, -Layer.MaskGrowLimit, Layer.MaskGrowLimit)) * pixelScale), 1);
-                for (var pass = 0; pass < grow; pass++)
-                    source.Append(layer.MaskGrow > 0 ? ",dilation" : ",erosion");
-
-                // Nudged (Mask Offset): the picture moved by so many pixels inside the layer (at most half of it either
-                // way), and what it uncovers at the far edge black, so hidden. A geq, not pad: pad's black on a grey
-                // picture can be video black (16), which would let the layer show faintly there.
-                var (dx, dy) = ((int)Math.Round(Layer.MaskOffset(layer.MaskOffsetX) / 100.0 * width), (int)Math.Round(Layer.MaskOffset(layer.MaskOffsetY) / 100.0 * height));
-                if (dx != 0 || dy != 0)
-                    source.Append($",geq=lum='lum(X{Signed(-dx)},Y{Signed(-dy)})*between(X,{Number(dx)},{Number(width - 1 + dx)})*between(Y,{Number(dy)},{Number(height - 1 + dy)})'");
+                // (Its file's size is not known here: each side is held to a pixel at least.)
+                source.Append($",crop={MaskCut("iw", 1 - left - right, 0)}:{MaskCut("ih", 1 - top - bottom, 0)}:iw*{Fraction(left)}:ih*{Fraction(top)}");
             }
 
-            // Cropped: each edge is black for as far in as it is cut.
-            if (layer.IsCropped)
-            {
-                var (left, right) = ((int)Math.Round(layer.CropLeft * width), (int)Math.Round(layer.CropRight * width));
-                var (top, bottom) = ((int)Math.Round(layer.CropTop * height), (int)Math.Round(layer.CropBottom * height));
-                source.Append($",geq=lum='lum(X,Y)*gte(X,{left})*lt(X,{width - right})*gte(Y,{top})*lt(Y,{height - bottom})'");
-            }
+            source.Append($",scale={width}:{height}");
+            if (layer.MaskInvert)
+                source.Append(",geq=lum='255-lum(X,Y)'");
 
-            // Soft edges: the mask's own outline, and the crop's, fade out over the Soft Edge width. A box blur run
-            // twice, as wide as a Gaussian of half the Soft Edge would be: gblur takes libmpv down when its result is
-            // blended into a layer's transparency (the export's FFmpeg does not mind, but the player must run the same graph).
+            // Grown or shrunk by so many pixels: one pass of dilation (or erosion) moves the edge out (or in) by one.
+            var grow = layer.MaskGrow == 0 ? 0 : Math.Max((int)Math.Round(Math.Abs(Math.Clamp(layer.MaskGrow, -Layer.MaskGrowLimit, Layer.MaskGrowLimit)) * pixelScale), 1);
+            for (var pass = 0; pass < grow; pass++)
+                source.Append(layer.MaskGrow > 0 ? ",dilation" : ",erosion");
+
+            // Nudged (Mask Offset): the picture moved by so many pixels inside the layer (at most half of it either
+            // way), and what it uncovers at the far edge black, so hidden. A geq, not pad: pad's black on a grey
+            // picture can be video black (16), which would let the layer show faintly there.
+            var (dx, dy) = ((int)Math.Round(Layer.MaskOffset(layer.MaskOffsetX) / 100.0 * width), (int)Math.Round(Layer.MaskOffset(layer.MaskOffsetY) / 100.0 * height));
+            if (dx != 0 || dy != 0)
+                source.Append($",geq=lum='lum(X{Signed(-dx)},Y{Signed(-dy)})*between(X,{Number(dx)},{Number(width - 1 + dx)})*between(Y,{Number(dy)},{Number(height - 1 + dy)})'");
+
+            // Soft edges: the mask's own outline fades out over the Soft Edge width. A box blur run twice, as wide as a
+            // Gaussian of half the Soft Edge would be: gblur takes libmpv down when its result is blended into a layer's
+            // transparency (the export's FFmpeg does not mind, but the player must run the same graph).
             if (layer.Feather && layer.FxOn(EffectRegistry.Edges) && BoxRadius(Math.Clamp(layer.FeatherRadius, 1, 100) * pixelScale / 2, width, height) is > 0 and var radius)
                 source.Append($",boxblur=luma_radius={radius}:luma_power=2");
             return source.ToString();
@@ -1269,6 +1398,18 @@ public static partial class FilterGraphBuilder
 
         /// <summary>How a mask picture is turned into grey: its transparency, or its brightness.</summary>
         private static string MaskReader(bool fromAlpha) => fromAlpha ? "format=rgba,alphaextract" : "format=gray";
+
+        /// <summary>
+        /// One side of the part of a mask of the whole frame under a piece: iw*F, as it always was; held to a pixel at least
+        /// (crop refuses nothing, and takes the graph down with it) where the source's size, which such a mask is drawn at,
+        /// leaves under 8 pixels of it, so that one drawn a few times smaller than the source is never cut to nothing either.
+        /// The fraction is at most 1: never more than the picture.
+        /// </summary>
+        private static string MaskCut(string side, double fraction, int known)
+        {
+            var written = Fraction(fraction);
+            return known <= 0 || known * double.Parse(written, CultureInfo.InvariantCulture) < 8 ? $"'max(1,{side}*{written})'" : $"{side}*{written}";
+        }
 
         private static string Fraction(double value) => Math.Clamp(value, 0, 1).ToString("0.#####", CultureInfo.InvariantCulture);
 
@@ -1618,13 +1759,13 @@ public static partial class FilterGraphBuilder
             else if (opacity < 1)
                 layer += $",colorchannelmixer=aa={Number(opacity)}";
 
-            // A mask of its own, as any layer can have: the words show where the mask is white.
+            // A mask of its own, as any layer can have: the words show where the mask is white (one frame, held: see StillMask).
             var maskPath = CaptionLayer.MaskPath.Trim().Trim('"');
             if (CaptionLayer.CustomMask && Exists(maskPath))
             {
                 layer += $",format=yuva420p,split[cap_pic][cap_a_in];[cap_a_in]alphaextract[cap_a0];"
-                         + $"movie='{EscapeFilterPath(maskPath)}',{MaskReader(S.AlphaMasks.Contains(maskPath))},scale={width}:{height},trim=end_frame=1,loop=loop=-1:size=1[cap_mask];"
-                         + "[cap_a0][cap_mask]blend=all_mode=multiply:shortest=1[cap_a1];[cap_pic][cap_a1]alphamerge";
+                         + $"movie='{EscapeFilterPath(maskPath)}',{MaskReader(S.AlphaMasks.Contains(maskPath))},scale={width}:{height}{StillMask}[cap_mask];"
+                         + $"[cap_a0]{MultiplyByStill("cap_mask")}[cap_a1];[cap_pic][cap_a1]alphamerge";
             }
 
             if (!CaptionLayer.Shadow)

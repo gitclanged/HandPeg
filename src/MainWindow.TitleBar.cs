@@ -67,13 +67,21 @@ public partial class MainWindow
 
     private void ShowStatusBar_Click(object sender, RoutedEventArgs e) => SetStatusBarShown(true);
 
+    /// <summary>
+    /// The work under way as a title bar says it ("Encoding clip.mp4  42%  +2 more"): the main window's, and the Settings
+    /// screen's, which mirrors it (4.4), so the two always read the same.
+    /// </summary>
+    internal static string TitleWorkText(WorkSummary work)
+    {
+        var more = work.MoreText.Length > 0 ? "+" + work.MoreText : "";
+        return string.Join("  ", new[] { work.Title, work.PercentText, more }.Where(p => p.Length > 0));
+    }
+
     /// <summary>The middle of the title bar: the work under way ("Encoding clip.mp4 42%, 2 more"), or else the last status.</summary>
     private void UpdateTitleStatus()
     {
         var work = WorkScheduler.Summary;
-        TitleStatusText.Text = work.IsVisible
-            ? string.Join("  ", new[] { work.Title, work.PercentText, work.MoreText.Length > 0 ? "+" + work.MoreText : "" }.Where(p => p.Length > 0))
-            : _viewModel.StatusText;
+        TitleStatusText.Text = work.IsVisible ? TitleWorkText(work) : _viewModel.StatusText;
         TitleStatus.ToolTip = work.IsVisible ? "Work in progress: rest the pointer here to see it all, pause it or cancel it." : _viewModel.StatusText;
         TitleProgress.Visibility = work.IsVisible ? Visibility.Visible : Visibility.Collapsed;
         UpdateTitleProgress();
@@ -111,36 +119,37 @@ public partial class MainWindow
     private void ApplyWindowState()
     {
         var maximized = WindowState == WindowState.Maximized;
-        if (maximized)
-        {
-            // The frame's size at this window's DPI: the sizing border and the padding Windows adds to it.
-            var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(this);
-            var at = (uint)Math.Round(96 * dpi.DpiScaleX);
-            var across = GetSystemMetricsForDpi(SmCxSizeFrame, at) + GetSystemMetricsForDpi(SmCxPaddedBorder, at);
-            var down = GetSystemMetricsForDpi(SmCySizeFrame, at) + GetSystemMetricsForDpi(SmCxPaddedBorder, at);
-            var margin = new Thickness(across / dpi.DpiScaleX, down / dpi.DpiScaleY, across / dpi.DpiScaleX, down / dpi.DpiScaleY);
-
-            // Beside a taskbar that hides itself the window stops a pixel short of the screen's edge (OnWindowPosChanging),
-            // so nothing of it reaches past that edge to be kept in.
-            var handle = new WindowInteropHelper(this).Handle;
-            switch (handle == IntPtr.Zero ? null : AutoHideEdge(MonitorFromWindow(handle, MonitorDefaultToNearest)))
-            {
-                case AbeLeft: margin.Left = 0; break;
-                case AbeTop: margin.Top = 0; break;
-                case AbeRight: margin.Right = 0; break;
-                case AbeBottom: margin.Bottom = 0; break;
-            }
-
-            ChromeRoot.Margin = margin;
-        }
-        else
-        {
-            ChromeRoot.Margin = new Thickness(0);
-        }
-
+        ChromeRoot.Margin = maximized ? MaximizedFrameInset(this) : new Thickness(0);
         MaximizeButton.Content = maximized ? "" : "";
         MaximizeButton.ToolTip = maximized ? "Restore Down" : "Maximize";
         System.Windows.Automation.AutomationProperties.SetName(MaximizeButton, maximized ? "Restore" : "Maximize");
+    }
+
+    /// <summary>
+    /// How far a maximized window that draws its own frame reaches past its screen's edges, in its DIPs: what its content
+    /// is kept inside. The main window's, and the Settings screen's, which draws the same title bar (4.4).
+    /// </summary>
+    internal static Thickness MaximizedFrameInset(Window window)
+    {
+        // The frame's size at the window's DPI: the sizing border and the padding Windows adds to it.
+        var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(window);
+        var at = (uint)Math.Round(96 * dpi.DpiScaleX);
+        var across = GetSystemMetricsForDpi(SmCxSizeFrame, at) + GetSystemMetricsForDpi(SmCxPaddedBorder, at);
+        var down = GetSystemMetricsForDpi(SmCySizeFrame, at) + GetSystemMetricsForDpi(SmCxPaddedBorder, at);
+        var margin = new Thickness(across / dpi.DpiScaleX, down / dpi.DpiScaleY, across / dpi.DpiScaleX, down / dpi.DpiScaleY);
+
+        // Beside a taskbar that hides itself the window stops a pixel short of the screen's edge (OnWindowPosChanging),
+        // so nothing of it reaches past that edge to be kept in.
+        var handle = new WindowInteropHelper(window).Handle;
+        switch (handle == IntPtr.Zero ? null : AutoHideEdge(MonitorFromWindow(handle, MonitorDefaultToNearest)))
+        {
+            case AbeLeft: margin.Left = 0; break;
+            case AbeTop: margin.Top = 0; break;
+            case AbeRight: margin.Right = 0; break;
+            case AbeBottom: margin.Bottom = 0; break;
+        }
+
+        return margin;
     }
 
     private const int SmCxSizeFrame = 32, SmCySizeFrame = 33, SmCxPaddedBorder = 92;
@@ -267,6 +276,17 @@ public partial class MainWindow
 
         (pos.X, pos.Y, pos.Width, pos.Height) = (rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
         Marshal.StructureToPtr(pos, place, false);
+    }
+
+    /// <summary>
+    /// The same pixel kept clear of a taskbar that hides itself, as a window hook for another window that draws its own
+    /// frame (the Settings screen, 4.4), whose inset (MaximizedFrameInset) counts on it.
+    /// </summary>
+    internal static IntPtr KeepClearOfHiddenTaskbar(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (message == WmWindowPosChanging)
+            OnWindowPosChanging(hwnd, lParam);
+        return IntPtr.Zero;
     }
 
     // ----- Snap Layouts: the Maximize button as Windows' own -----

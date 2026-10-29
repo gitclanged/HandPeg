@@ -2,7 +2,7 @@
 # request: surface 960x540, video from 30, sound from 30, layers Live, decode threads 2
 # rebuild at: never
 
-live graph: 9 chains, 1031 characters
+live graph: 9 chains, 1044 characters
   1| [vid1]scale=trunc(iw*0.5/2)*2:trunc(ih*0.5/2)*2:flags=fast_bilinear
    |   ,split=2[canvas_in][center_in]
   2| [canvas_in]crop=2:2:0:0
@@ -18,7 +18,7 @@ live graph: 9 chains, 1031 characters
    |   ,scale=144:80:flags=fast_bilinear
    |   ,format=yuva420p
    |   ,fade=t=out:st=59:d=1:alpha=1:enable='between(t,59,60)'[ui1_layer]
-  6| [stage1][ui1_layer]overlay=768:27:shortest=1:enable='between(t,5,1e9)'
+  6| [stage1][ui1_layer]overlay=768:27:shortest=1:repeatlast=0:enable='between(t,5,1e9)'
    |   ,setsar=1[vo]
   7| [aid1]aresample=48000:async=1:first_pts=1440000
    |   ,asetpts=(N+1440000)/SR/TB

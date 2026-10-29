@@ -1,0 +1,6 @@
+# The undo history a save carries (4.4-BugHunt): written before the timeline, read back step for step, read leniently.
+
+file: format, version, writtenBy, name, savedAt, source, output, sequence, settings, undoFormat, undoHistory, redoHistory, timeline
+undoFormat: 1
+undo: split Main; split Main again
+redo: split Main once more

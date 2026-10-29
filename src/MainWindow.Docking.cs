@@ -7,8 +7,8 @@ using HandPegApp.Services;
 namespace HandPegApp;
 
 // ----- The panes: arranged freely, in this window and the side window -----
-// Every pane (the player, the playback controls, the master timeline, the layout, the header, the side panes, the
-// preset bar and each settings tab) is made in PaneLibrary and put where the arrangement says by the dock
+// Every pane (the player, the playback controls, the timeline, the overview bar, the layout, the header, the side panes,
+// the preset bar and each settings tab) is made in PaneLibrary and put where the arrangement says by the dock
 // manager (Docking/DockManager.cs). The arrangement is kept in AppSettings.DockLayout.
 public partial class MainWindow
 {
@@ -17,15 +17,26 @@ public partial class MainWindow
     // The settings tabs, as panes: their names, by the tab they came from.
     private readonly List<(string Id, TabItem Tab)> _tabPanes = [];
 
-    // The master timeline made taller by the border beside it: what a drag has moved but not yet made a step.
+    // The overview bar made taller by the border beside it: what a drag has moved but not yet made a step.
     private double _timelineResizeRest;
+
+    /// <summary>
+    /// The timeline (4.4: one drawn surface for every track, Views/UnifiedTimelinePane.xaml). Its pane's name is not
+    /// "Timeline": that one is the overview bar's (the master timeline's until 4.4), kept so arrangements keep it where it was.
+    /// </summary>
+    private const string TimelinePaneId = "UnifiedTimeline";
 
     /// <summary>Takes the panes out of the library, tells the dock manager what each is, and lays the window out as it was left.</summary>
     private void InitializeDocking()
     {
         // The Source pane (gone since Pass 1.5: Add Media in the header took its job) is where saved arrangements may still
-        // have it: the Media pane goes there, and is shown.
-        _dock = new DockManager(this, MainDockHost, DefaultDockLayout) { Replaced = new Dictionary<string, string> { ["Source"] = "Media" } };
+        // have it: the Media pane goes there, and is shown. An arrangement from before 4.4 has the timeline put where its
+        // Layers tab was, and one from before 4.4-BugHunt the timeline first among the settings tabs (UpgradeLayout).
+        _dock = new DockManager(this, MainDockHost, DefaultDockLayout)
+        {
+            Replaced = new Dictionary<string, string> { ["Source"] = "Media" },
+            Upgrade = UpgradeLayout,
+        };
         _dock.PaneReplaced += (_, replacement) =>
         {
             if (replacement == "Media")
@@ -50,7 +61,11 @@ public partial class MainWindow
         // The player floats over its place (DockPane.Floats): the panes are laid out again around it, and its video never blinks.
         Add("Player", "Player", PlayerPane, PaneHandle.Hover, minWidth: () => 320, minHeight: 180, hoverHost: PlayerOverlay, floats: true);
         Add("Playback", "Playback Controls", TransportRow, PaneHandle.Hover, fits: true, shown: () => _viewModel.ShowAdvancedPlayback, minWidth: () => 300);
-        Add("Timeline", "Master Timeline", TimelinePane, PaneHandle.Hover, fits: true, shown: () => AppSettings.Current.ShowMasterTimeline, minWidth: () => 300, resize: ResizeMasterTimeline);
+        // The overview bar: the whole sequence at a glance, its segments and markers (the master timeline until 4.4; its id
+        // stays "Timeline", so saved arrangements and layouts keep it where they had it).
+        Add("Timeline", "Overview Bar", TimelinePane, PaneHandle.Hover, fits: true, shown: () => AppSettings.Current.ShowMasterTimeline, minWidth: () => 300, resize: ResizeMasterTimeline);
+        // The timeline: every track on one drawn surface (4.4). Always shown; its tab is in its own title row.
+        Add(TimelinePaneId, "Timeline", UnifiedTimelinePanel, minWidth: () => 300, minHeight: 140);
         // The Canvas: the output frame the layers are arranged on. Its id stays "Layout" (its name until 4.2), so saved
         // arrangements and layouts keep it where they had it.
         Add("Layout", "Canvas", LayoutPane, shown: () => _viewModel.IsArrangeActive, close: () => _viewModel.IsArrangeActive = false, minWidth: () => 200);
@@ -174,7 +189,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The border beside the master timeline, dragged: the timeline's height setting, four pixels a step.</summary>
+    /// <summary>The border beside the overview bar, Ctrl-dragged: the bar's height setting, four pixels a step.</summary>
     private void ResizeMasterTimeline(double pixels)
     {
         _timelineResizeRest += pixels / 4;
@@ -194,8 +209,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Makes what is in a settings tab: from its template (every tab but Summary is left as one until wanted), or the
-    /// content it was made with. The named parts this window uses are found in it as it is made.
+    /// Makes what is in a settings tab: from its template (every tab but Summary and Export is left as one until wanted),
+    /// or the content it was made with. The named parts this window uses are found in it as it is made (the Audio tab's
+    /// options row, which folds into a button when it is narrow).
     /// </summary>
     private FrameworkElement RealizeTabContent(TabItem tab)
     {
@@ -219,28 +235,19 @@ public partial class MainWindow
             AudioOptionsButton = (System.Windows.Controls.Primitives.ToggleButton)content.FindName(nameof(AudioOptionsButton));
             AudioPanel = (DockPanel)content.FindName(nameof(AudioPanel));
         }
-        else if (content.FindName(nameof(LayerAddBar)) is WrapPanel bar)
-        {
-            LayerAddBar = bar;
-            KeyBarInline = (StackPanel)content.FindName(nameof(KeyBarInline));
-            KeyBarButton = (System.Windows.Controls.Primitives.ToggleButton)content.FindName(nameof(KeyBarButton));
-            AddLayerHost = (Grid)content.FindName(nameof(AddLayerHost));
-            AddLayerPopup = (System.Windows.Controls.Primitives.Popup)content.FindName(nameof(AddLayerPopup));
-            AddLayerFlyoutPanel = (ButtonChrome)content.FindName(nameof(AddLayerFlyoutPanel));
-            LayersList = (ListBox)content.FindName(nameof(LayersList));
-            _addLayerHover = new HoverFlyout(AddLayerHost, AddLayerPopup, AddLayerFlyoutPanel) { HoldsWhileFocused = true };
-        }
 
         return content;
     }
 
     /// <summary>
-    /// Makes the tabs nobody has opened yet, one at a time and only while nothing else is wanted of this thread, so
-    /// that the first click on any of them finds it ready.
+    /// Makes the panes nobody has seen yet, one at a time and only while nothing else is wanted of this thread, so that
+    /// the first click on any of them finds it ready: the timeline (when an arrangement keeps it behind another tab), then
+    /// the settings tabs.
     /// </summary>
     private void RealizeTabsWhenIdle()
     {
-        if (_tabPanes.FirstOrDefault(t => !_dock.IsRealized(t.Id)) is not { Id: { } next })
+        string? next = !_dock.IsRealized(TimelinePaneId) ? TimelinePaneId : _tabPanes.FirstOrDefault(t => !_dock.IsRealized(t.Id)).Id;
+        if (next is null)
         {
             GiveBackStartupMemory();
             return;
@@ -248,6 +255,126 @@ public partial class MainWindow
 
         _dock.Realize(next);
         Dispatcher.BeginInvoke(RealizeTabsWhenIdle, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+    }
+
+    // ----- Arrangements from before 4.4 -----
+
+    // The settings tabs 4.4 retired, in the order their place is taken for the timeline: the Layers tab's track list and
+    // the Subtitles tab's captions are on the timeline now. (The Audio tab stays, holding the sound's settings; its lanes
+    // moved to the timeline.)
+    private static readonly string[] RetiredPanes = ["Tab:Layers", "Tab:Subtitles"];
+
+    // How much of the room of the group it is put beside the timeline takes: the tabs keep the rest, at its right.
+    private const double TimelineShare = 0.7;
+
+    private static bool IsRetiredPane(string id) => Array.IndexOf(RetiredPanes, id) >= 0;
+
+    /// <summary>
+    /// An arrangement saved by an older HandPeg, brought up to this one (DockManager.Upgrade), step by step from the version
+    /// it was made as. Every arrangement taken up passes through here before the one dock build of Load (the saved one, a
+    /// built-in layout, one of the user's own, the first run's choice), so each step is quick, changes nothing that is up to
+    /// date, and may run again at every start until the arrangement is next saved: nothing is saved here (it is saved as
+    /// it is the next time the user changes it), and nothing here builds or lays out a pane. A 4.3 arrangement saved no
+    /// version (it reads as the newest): its retired tabs tell it.
+    /// </summary>
+    private DockLayoutState UpgradeLayout(DockLayoutState state)
+    {
+        var from = new[] { state.Main, state.Side, state.SideClosed }.OfType<DockNode>().Any(root => root.AllPanes().Any(IsRetiredPane))
+            ? 1 : state.Version;
+        state.Version = DockLayoutState.CurrentVersion;
+        if (from < 2)
+            WithoutRetiredTabs(state);
+        if (from < 3)
+            PutTimelineFirst(state);
+        return state;
+    }
+
+    /// <summary>
+    /// 1 to 2 (4.4): the Layers and Subtitles tabs are taken out, and the timeline is put beside the group the Layers tab was
+    /// in (else the Subtitles tab), at its left, with most of its room; a group of nothing but retired tabs becomes the
+    /// timeline's own. So a 4.3 built-in layout becomes the 4.4 one of the same name (the Layout Selector's "In use" mark
+    /// still finds it), and a layout the user made keeps everything else where it was. In the window the Layers tab was in:
+    /// the main window, or the side window while it is open; the side window's closed arrangement (put back when it is
+    /// opened again) gets it only when neither of those has it or gets it, so it is never in two trees. An arrangement that
+    /// already has the timeline only loses the retired tabs.
+    /// </summary>
+    private static void WithoutRetiredTabs(DockLayoutState state)
+    {
+        // The window the timeline goes into: the one the Layers tab (else the Subtitles tab) was in, unless one of the
+        // windows shown already has it.
+        var side = state.SideOpen ? state.Side : null;
+        DockNode? WindowWith(string id) => state.Main.GroupOf(id) is not null ? state.Main : side?.GroupOf(id) is not null ? side : null;
+        var shown = state.Main.GroupOf(TimelinePaneId) is not null || side?.GroupOf(TimelinePaneId) is not null;
+        var home = shown ? null : RetiredPanes.Select(WindowWith).FirstOrDefault(window => window is not null);
+
+        state.Main = WithoutRetiredPanes(state.Main, ReferenceEquals(home, state.Main)) ?? DockNode.Group();
+        state.Side = WithoutRetiredPanes(state.Side, home is not null && ReferenceEquals(home, state.Side));
+
+        // The closed side window's arrangement gets the timeline only when no window shown has it or gets it: opening the
+        // side window takes its panes out of the main window, so a timeline in both would move away from where Layers was.
+        state.SideClosed = WithoutRetiredPanes(state.SideClosed, placeTimeline: !shown && home is null);
+    }
+
+    /// <summary>
+    /// 2 to 3 (4.4-BugHunt, the user's Q8): Standard Editing as 4.4 first made it (the timeline's own group beside the
+    /// settings tabs) becomes Standard Editing as it is now, the timeline the tabs' first and shown, in the place and the
+    /// share of the room the two had; in any other arrangement, a group holding the timeline and settings tabs gets the
+    /// timeline as its first tab (the tab shown stays the one shown). Nothing else moves.
+    /// </summary>
+    private void PutTimelineFirst(DockLayoutState state)
+    {
+        if (DockManager.SameShape(state, StandardLayoutBeside()) && state.Main.GroupOf(TimelinePaneId) is { } alone
+            && state.Main.ParentOf(alone) is { IsGroup: false, Vertical: false, Children.Count: 2 } beside
+            && ReferenceEquals(beside.Children[0], alone) && beside.Children[1] is { IsGroup: true } tabs
+            && state.Main.ParentOf(beside) is { } parent)
+        {
+            // The pair's place in its split (and so its share of the room, Sizes by index) goes to the tabs' group.
+            parent.Children[parent.Children.IndexOf(beside)] = TimelineFirst(tabs);
+            return;
+        }
+
+        foreach (var root in new[] { state.Main, state.Side, state.SideClosed }.OfType<DockNode>())
+        {
+            if (root.GroupOf(TimelinePaneId) is { Panes.Count: > 1 } group && group.Panes[0] != TimelinePaneId
+                && group.Panes.Any(p => p.StartsWith("Tab:", StringComparison.Ordinal)))
+            {
+                group.Panes.Remove(TimelinePaneId);
+                group.Panes.Insert(0, TimelinePaneId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// One window's tree without the retired tabs (a group showing one of them shows its first pane left instead); when it
+    /// is to have the timeline (and has none), the timeline beside the group the first retired tab was in, or in its place
+    /// when that group held nothing else. Returns the tree's top part, null when nothing is left.
+    /// </summary>
+    private static DockNode? WithoutRetiredPanes(DockNode? root, bool placeTimeline)
+    {
+        if (root is null)
+            return null;
+
+        var anchor = placeTimeline && root.GroupOf(TimelinePaneId) is null
+            ? RetiredPanes.Select(root.GroupOf).FirstOrDefault(group => group is not null)
+            : null;
+        foreach (var group in root.AllGroups())
+        {
+            group.Panes.RemoveAll(IsRetiredPane);
+            if (group.Active is { } active && IsRetiredPane(active))
+                group.Active = group.Panes.FirstOrDefault();
+        }
+
+        if (anchor is null)
+            return DockTree.Tidy(root);
+
+        if (anchor.Panes.Count == 0)
+        {
+            anchor.Panes.Add(TimelinePaneId);
+            anchor.Active = TimelinePaneId;
+            return DockTree.Tidy(root);
+        }
+
+        return DockTree.Tidy(DockTree.InsertBeside(root, anchor, DockZone.Left, DockNode.Group(TimelinePaneId), TimelineShare));
     }
 
     /// <summary>
@@ -322,6 +449,7 @@ public partial class MainWindow
             return;
 
         side.PreviewKeyDown += MainWindow_PreviewKeyDown;
+        HookTimelineMenuKey(side);
         side.AllowDrop = true;
         side.PreviewDragOver += Window_PreviewDragOver;
         side.PreviewDrop += Window_PreviewDrop;

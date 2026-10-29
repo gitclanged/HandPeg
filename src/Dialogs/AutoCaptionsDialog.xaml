@@ -1,0 +1,54 @@
+<Window x:Class="HandPegApp.AutoCaptionsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Generate Auto-Captions" Width="520" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <StackPanel Margin="16">
+        <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
+                   Text="Transcribes the speech with whisper.cpp and puts the captions on the timeline, where they can be edited. Captions made from the main video or a sound clip follow its clips: cut, trim, fold or remove dead air before or after, and they stay in step." />
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
+                <RowDefinition Height="30" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Text="Listen To:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <ComboBox Grid.Column="1" x:Name="SourceBox" VerticalAlignment="Center" DisplayMemberPath="Label" SelectionChanged="Source_SelectionChanged"
+                      AutomationProperties.Name="Listen To"
+                      ToolTip="What is transcribed: the clip marked as the voice when there is one, else the main video's Voice track, else its first. A track of the main video, a sound clip, a separate recording in sync with the timeline, or the recorded voiceover." />
+
+            <TextBlock Grid.Row="1" Text="Speech Model:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <ComboBox Grid.Row="1" Grid.Column="1" x:Name="ModelBox" VerticalAlignment="Center" AutomationProperties.Name="Speech Model"
+                      ToolTip="Larger models hear more accurately and take longer. A model not downloaded yet is fetched when Generate is pressed. The default is set in Settings (Auto-Captions)." />
+
+            <TextBlock Grid.Row="2" Text="Language:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <ComboBox Grid.Row="2" Grid.Column="1" x:Name="LanguageBox" VerticalAlignment="Center" AutomationProperties.Name="Language"
+                      ToolTip="The language spoken; auto lets whisper decide (not with the English-only .en models)." />
+
+            <CheckBox Grid.Row="3" Grid.Column="1" x:Name="TranslateBox" Content="Translate to English" VerticalAlignment="Center"
+                      ToolTip="Writes English captions whatever language is spoken." />
+
+            <TextBlock Grid.Row="4" Text="Expect Words:" VerticalAlignment="Top" Margin="0,8,12,0" />
+            <TextBox Grid.Row="4" Grid.Column="1" x:Name="PromptBox" Margin="0,4,0,0" MinHeight="48" TextWrapping="Wrap" AcceptsReturn="False"
+                     VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Expect Words"
+                     ToolTip="Names, terms and spellings to expect (whisper's initial prompt); blank for none." />
+        </Grid>
+
+        <TextBlock x:Name="NoteText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,10,0,0" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="GenerateButton" Content="Generate" MinWidth="110" IsDefault="True" Click="Generate_Click"
+                    ToolTip="Transcribes now and puts the captions on the timeline, replacing the subtitle track there was." />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

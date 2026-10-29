@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
+using HandPegApp.ViewModels;
 
 namespace HandPegGoldenTests;
 
@@ -38,6 +39,7 @@ public static class ProjectTests
         yield return NewerFormat(fixtures, scratch);
         yield return NotProjects(scratch);
         yield return SeekIndexes(scratch);
+        yield return UndoHistory();
     }
 
     private static GraphResult Format5RoundTrip(string fixtures)
@@ -375,6 +377,134 @@ public static class ProjectTests
         Expect(problems, MediaProbe.KnownSeekIndex(read) is { ContainerStart: 0.5 } index && index.IFrames.SequenceEqual(times), "the I-frames carried by the project are known once it is opened");
 
         return new GraphResult("hproj-seek-indexes", "# Seek indexes: always written for the files known, taken up again on opening.\n", problems, 0);
+    }
+
+    /// <summary>
+    /// The undo history a save carries (4.4-BugHunt): two steps to undo and one to redo, written just before the timeline with
+    /// the shape of their steps, read back as the project is opened byte for byte under the same names, each still the
+    /// timeline it was packed from; never in a listing, nor in what a ProjectState is as JSON (the unsaved-changes
+    /// fingerprint). Read leniently: a history of another shape, a step that is not Base64, or one that is no list at all is
+    /// let go, never the project. A project without one is written as it always was.
+    /// </summary>
+    private static GraphResult UndoHistory()
+    {
+        var problems = new List<string>();
+        const string main = "D:/media/main.mp4";
+
+        // A timeline of the main video in so many clips of two seconds each, as each step put it back.
+        static TimelineDocument Cut(int clips) => new()
+        {
+            Tracks =
+            [
+                new TimelineTrackModel
+                {
+                    Id = Fixed(1), TrackNumber = 1,
+                    Clips =
+                    [
+                        .. Enumerable.Range(0, clips).Select(i => new TimelineClip
+                        {
+                            Id = Fixed(10 + i), ContentKind = LayerKind.MainVideo, SourcePath = main, AudioStreamIndex = 0, Start = i * 2, End = i * 2 + 2,
+                            MediaOffset = i * 2, SourceDuration = 8, State = new LayerState { Name = "Main", Kind = LayerKind.MainVideo },
+                        }),
+                    ],
+                },
+            ],
+        };
+
+        // The steps as Undo keeps them (packed TimelineSnapshots), the newest last.
+        var undo = new List<UndoStepState>
+        {
+            new("split Main", UndoSteps.Pack(new TimelineSnapshot(Cut(1), []))),
+            new("split Main again", UndoSteps.Pack(new TimelineSnapshot(Cut(2), []))),
+        };
+        var redo = new List<UndoStepState> { new("split Main once more", UndoSteps.Pack(new TimelineSnapshot(Cut(4), []))) };
+        var state = new ProjectState { Name = "History", SourcePath = main, LocalMediaPath = main, Timeline = Cut(3), UndoHistory = undo, RedoHistory = redo };
+
+        // Written: with the shape of its steps, before the timeline (which stays last).
+        var text = ProjectStore.Serialize(state);
+        var json = JsonNode.Parse(text)!.AsObject();
+        var names = json.Select(p => p.Key).ToList();
+        Expect(problems, names[^1] == "timeline" && names.IndexOf("undoFormat") is >= 0 and var format && format < names.IndexOf("undoHistory")
+                         && names.IndexOf("undoHistory") < names.IndexOf("redoHistory") && names.IndexOf("redoHistory") < names.IndexOf("timeline"),
+            $"the history is written just before the timeline, which stays last ({string.Join(", ", names)})");
+        Expect(problems, json["undoFormat"]?.GetValue<int>() == ProjectFile.CurrentUndoFormat, $"the shape of its steps is written with it ({json["undoFormat"]})");
+
+        // Opened: the same steps, byte for byte, under the same names, in the same order; each still the timeline it was.
+        var opened = ProjectStore.Deserialize(text, unpackMasks: true);
+        void Same(List<UndoStepState>? read, List<UndoStepState> written, string which) =>
+            Expect(problems, read is not null && read.Count == written.Count
+                             && read.Zip(written).All(p => p.First.What == p.Second.What && p.First.State.AsSpan().SequenceEqual(p.Second.State)),
+                $"the {which} history reads back as it was written, step for step ({read?.Count ?? 0} of {written.Count})");
+        Same(opened.UndoHistory, undo, "undo");
+        Same(opened.RedoHistory, redo, "redo");
+        foreach (var (step, clips) in (opened.UndoHistory ?? []).Concat(opened.RedoHistory ?? []).Zip(new[] { 1, 2, 4 }))
+        {
+            var snapshot = UndoSteps.Unpack(step.State);
+            Expect(problems, snapshot is { Document.Tracks: [{ Clips: var kept }] } && kept.Count == clips && kept[^1].Id == Fixed(10 + clips - 1)
+                             && kept.TrueForAll(c => c.SourcePath == main),
+                $"the step \"{step.What}\" still puts back its timeline ({clips} clip(s))");
+        }
+
+        Expect(problems, opened.Timeline.Tracks is [{ Clips.Count: 3 }], "the project's own timeline is as it was saved");
+        Expect(problems, ProjectStore.Serialize(opened) == text, "read and written again, the file is the same");
+        Expect(problems, ProjectStore.Deserialize(text).UndoHistory is null, "a project only listed (not opened) reads no history");
+        var asJson = JsonSerializer.Serialize(opened);
+        Expect(problems, !asJson.Contains("UndoHistory", StringComparison.Ordinal) && !asJson.Contains("RedoHistory", StringComparison.Ordinal),
+            "the history is no part of a ProjectState as JSON (the unsaved-changes fingerprint, a queued job)");
+
+        // Read leniently: each of these opens the project, letting go of what of the history is not one.
+        ProjectState Opened(Action<JsonObject> change, string what)
+        {
+            var changed = JsonNode.Parse(text)!.AsObject();
+            change(changed);
+            try
+            {
+                var read = ProjectStore.Deserialize(changed.ToJsonString(), unpackMasks: true);
+                Expect(problems, read.Timeline.Tracks is [{ Clips.Count: 3 }], $"{what}: the project opens all the same");
+                return read;
+            }
+            catch (Exception refused)
+            {
+                problems.Add($"{what}: the project was refused ({refused.GetType().Name}: {refused.Message})");
+                return new ProjectState();
+            }
+        }
+
+        var otherShape = Opened(file => file["undoFormat"] = ProjectFile.CurrentUndoFormat + 1, "a history of another shape");
+        Expect(problems, otherShape is { UndoHistory: null, RedoHistory: null }, "a history of another shape is let go");
+        var notANumber = Opened(file => file["undoFormat"] = "one", "a shape that is not a number");
+        Expect(problems, notANumber is { UndoHistory: null, RedoHistory: null }, "a history whose shape is not a number is let go");
+        var badStep = Opened(file => file["undoHistory"]![0]!["state"] = "not Base64 at all!", "a step that is not Base64");
+        Expect(problems, badStep.UndoHistory is [{ What: "split Main again" }] && badStep.RedoHistory is { Count: 1 }, "a step that is not Base64 is let go, the others kept");
+        var notAList = Opened(file => file["undoHistory"] = 42, "an undo history that is a number");
+        Expect(problems, notAList.UndoHistory is null && notAList.RedoHistory is { Count: 1 }, "an undo history that is not a list reads as none");
+        var anObject = Opened(file => file["redoHistory"] = new JsonObject { ["what"] = "x" }, "a redo history that is an object");
+        Expect(problems, anObject.RedoHistory is null && anObject.UndoHistory is { Count: 2 }, "a redo history that is an object reads as none");
+        var strayEntries = Opened(file => file["undoHistory"]!.AsArray().Insert(0, new JsonObject { ["what"] = 1, ["state"] = "AAAA" }), "an entry that is not a step");
+        Expect(problems, strayEntries.UndoHistory is { Count: 2 }, "an entry whose name is not text is passed over");
+
+        // A damaged step is an error when it is read (Undo lets it go then), not a timeline.
+        try
+        {
+            UndoSteps.Unpack(System.Text.Encoding.UTF8.GetBytes("not a step at all"));
+            problems.Add("a damaged step read as a timeline");
+        }
+        catch (Exception ex) when (ex is InvalidDataException or JsonException or InvalidOperationException)
+        {
+        }
+
+        // No history: none of it in the file, which is as it always was.
+        var without = ProjectStore.Serialize(new ProjectState { Name = "History", SourcePath = main, LocalMediaPath = main, Timeline = Cut(3) });
+        Expect(problems, !without.Contains("undoFormat", StringComparison.Ordinal) && !without.Contains("undoHistory", StringComparison.Ordinal)
+                         && !without.Contains("redoHistory", StringComparison.Ordinal),
+            "a project without a history is written without one");
+
+        var golden = new System.Text.StringBuilder("# The undo history a save carries (4.4-BugHunt): written before the timeline, read back step for step, read leniently.\n\n");
+        golden.Append("file: ").AppendJoin(", ", names).Append('\n');
+        golden.Append("undoFormat: ").Append(json["undoFormat"]?.ToJsonString()).Append('\n');
+        golden.Append("undo: ").AppendJoin("; ", (opened.UndoHistory ?? []).Select(s => s.What)).Append('\n');
+        golden.Append("redo: ").AppendJoin("; ", (opened.RedoHistory ?? []).Select(s => s.What)).Append('\n');
+        return new GraphResult("hproj-undo-history", golden.ToString(), problems, 0);
     }
 
     // ----- Comparing -----

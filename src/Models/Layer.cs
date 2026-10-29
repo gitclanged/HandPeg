@@ -220,9 +220,15 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>
     /// What belongs to one clip alone, and is not copied to the others on its track when it changes. The file a
-    /// clip plays is its own too: clips of different files can follow each other on one track.
+    /// clip plays is its own too: clips of different files can follow each other on one track. So is where it is on the
+    /// frame (4.4): its corner, size and shape, its turn and anchor, its crop and its blur fill ("Apply Placement to All
+    /// Clips on Track" gives one clip's to the others).
     /// </summary>
-    public static bool IsClipProperty(string? name) => name is nameof(StartTime) or nameof(Duration) or nameof(MediaOffset) or nameof(IsHidden)
+    public static bool IsClipProperty(string? name) => name is nameof(PositionX) or nameof(PositionY) or nameof(SizeWidth) or nameof(SizeHeight)
+        or nameof(LockAspectRatio) or nameof(Rotation) or nameof(AnchorX) or nameof(AnchorY) or nameof(CropLeft) or nameof(CropRight)
+        or nameof(CropTop) or nameof(CropBottom) or nameof(CropLeftPercent) or nameof(CropRightPercent) or nameof(CropTopPercent)
+        or nameof(CropBottomPercent) or nameof(BlurFill)
+        or nameof(StartTime) or nameof(Duration) or nameof(MediaOffset) or nameof(IsHidden)
         or nameof(ImagePath) or nameof(ImageWidth) or nameof(ImageHeight) or nameof(HasAudio) or nameof(AudioCodec) or nameof(AudioChannels)
         or nameof(IsLoading) or nameof(Title) or nameof(Action) or nameof(IsMuted) or nameof(GainDb) or nameof(ProxyChoice)
         or nameof(AudioOffset) or nameof(Name) or nameof(TrackId) or nameof(PositionXPercent) or nameof(PositionYPercent) or nameof(SizePercent)
@@ -1034,8 +1040,10 @@ public sealed partial class Layer : ObservableObject
     /// </summary>
     [ObservableProperty] private string _maskShapes = "";
 
-    // Crop: how much of each edge of the layer is cut away, as fractions of its width or height. What is cut
-    // away is see-through, and the rest stays exactly where it was.
+    // Crop: how much of each edge of the clip's picture is cut away, as fractions of its width or height. Every clip's crop
+    // reframes its picture, on every track (4.4-BugHunt, the user's Q2): what is left of the picture is what fills its box,
+    // which keeps its width and takes the shape the crop leaves (a locked box; a box of a free height keeps its height and
+    // the cut picture is fitted to it). It is never a mask of the box. The graph cuts every clip so (CropFractions).
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CropLeftPercent))]
     private double _cropLeft;
@@ -1052,14 +1060,90 @@ public sealed partial class Layer : ObservableObject
     [NotifyPropertyChangedFor(nameof(CropBottomPercent))]
     private double _cropBottom;
 
-    // The crop as percentages, for the sliders and the number boxes beside them.
-    public double CropLeftPercent { get => Math.Round(CropLeft * 100, 1); set => CropLeft = Crop(value / 100); }
-    public double CropRightPercent { get => Math.Round(CropRight * 100, 1); set => CropRight = Crop(value / 100); }
-    public double CropTopPercent { get => Math.Round(CropTop * 100, 1); set => CropTop = Crop(value / 100); }
-    public double CropBottomPercent { get => Math.Round(CropBottom * 100, 1); set => CropBottom = Crop(value / 100); }
+    // The crop as percentages, for the sliders and the number boxes beside them. Set by hand, the box takes its new shape
+    // about its anchor point, as it does when it is sized (see KeepingAnchor).
+    public double CropLeftPercent { get => Math.Round(CropLeft * 100, 1); set => KeepingAnchor(() => CropLeft = Crop(value / 100)); }
+    public double CropRightPercent { get => Math.Round(CropRight * 100, 1); set => KeepingAnchor(() => CropRight = Crop(value / 100)); }
+    public double CropTopPercent { get => Math.Round(CropTop * 100, 1); set => KeepingAnchor(() => CropTop = Crop(value / 100)); }
+    public double CropBottomPercent { get => Math.Round(CropBottom * 100, 1); set => KeepingAnchor(() => CropBottom = Crop(value / 100)); }
 
     /// <summary>Some of an edge is cut away.</summary>
     public bool IsCropped => CropLeft + CropRight + CropTop + CropBottom > 0.0005;
+
+    /// <summary>The most of a picture's width or of its height a crop may take, both edges together: something of it always remains.</summary>
+    public const double LargestCropTotal = 0.95;
+
+    /// <summary>
+    /// A crop as fractions (0 to 1) of a picture's width and height, held to what leaves a picture: each edge, then each
+    /// pair at most <see cref="LargestCropTotal"/> (the right and the bottom edge giving way); an edge that is not a number
+    /// is none. The one rule every clip's crop is cut by (4.4-BugHunt): the graph's, its box's shape, the Crop boxes'.
+    /// </summary>
+    public static (double Left, double Top, double Right, double Bottom) HeldCrop(double left, double top, double right, double bottom)
+    {
+        static double Edge(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 1) : 0;
+        (left, top) = (Math.Min(Edge(left), LargestCropTotal), Math.Min(Edge(top), LargestCropTotal));
+        return (left, top, Math.Min(Edge(right), LargestCropTotal - left), Math.Min(Edge(bottom), LargestCropTotal - top));
+    }
+
+    /// <summary>A saved look's crop, held (<see cref="HeldCrop(double, double, double, double)"/>).</summary>
+    public static (double Left, double Top, double Right, double Bottom) HeldCrop(LayerState look) => HeldCrop(look.CropLeft, look.CropTop, look.CropRight, look.CropBottom);
+
+    /// <summary>
+    /// The crop the clip's picture is cut by, held (<see cref="HeldCrop(double, double, double, double)"/>); none while it is
+    /// not <see cref="IsCropped"/>, and none for what has no picture of its own to cut (the main video, whose crop is
+    /// its stream's and its box the Center controls', an adjustment layer, the caption box).
+    /// </summary>
+    public (double Left, double Top, double Right, double Bottom) CropFractions =>
+        IsCropped && !IsMainVideo && !IsAdjustment && !IsCaptions ? HeldCrop(CropLeft, CropTop, CropRight, CropBottom) : default;
+
+    /// <summary>
+    /// The part of the source a piece cut from the video shows (<see cref="IsVideo"/>), as fractions of the source frame: its
+    /// source rectangle with its crop taken off. What the graph cuts from the frame, and its mask of the whole frame with it.
+    /// </summary>
+    public (double X, double Y, double Width, double Height) CroppedSource
+    {
+        get
+        {
+            var (left, top, right, bottom) = CropFractions;
+            return (SourceX + left * SourceWidth, SourceY + top * SourceHeight, SourceWidth * (1 - left - right), SourceHeight * (1 - top - bottom));
+        }
+    }
+
+    /// <summary>The height the crop leaves of the picture for each unit of the width it leaves, as a share of the whole picture's: 1 uncropped.</summary>
+    private double CroppedShape
+    {
+        get
+        {
+            var (left, top, right, bottom) = CropFractions;
+            return (1 - top - bottom) / (1 - left - right);
+        }
+    }
+
+    /// <summary>
+    /// A crop changed by hand: a box whose height follows its shape (locked) grows or shrinks about its anchor point, as it does
+    /// when it is sized (<see cref="AnchorCenter"/>); its width stays. Only once the layer is in use and has been laid out;
+    /// a crop put back with the rest of a place (ApplyPlace, an undo step, Apply Placement) is taken as given.
+    /// </summary>
+    private void KeepingAnchor(Action change)
+    {
+        var before = CroppedShape;
+        change();
+        var after = CroppedShape;
+        if (!AnchorCenter || _heightPerWidth <= 0 || !(LockAspectRatio || SizeHeight <= 0) || Math.Abs(after - before) < 1e-12)
+            return;
+
+        var grown = _heightPerWidth * (after / before - 1);
+        PositionY -= SizeWidth * grown * AnchorY;
+        _heightPerWidth += grown;
+    }
+
+    /// <summary>
+    /// Whether the frame around the clip is filled with a blurred copy of it (4.4): null leaves it to the clip's kind (the
+    /// main video's clips follow the sequence's Background Blur switch, no other clip has one); true or false says so for
+    /// this clip alone. A clip of the main video's chain shows the blurred background under it; a video from a file is
+    /// given a blurred copy of itself under it, covering the frame.
+    /// </summary>
+    [ObservableProperty] private bool? _blurFill;
 
     /// <summary>The mask is taken from the frame: a piece cut from the video, with a mask of the whole frame.</summary>
     public bool UsesFrameMask => MaskFrame && IsVideo;
@@ -1206,14 +1290,18 @@ public sealed partial class Layer : ObservableObject
         return ((int)Math.Round(PositionX * frameWidth), (int)Math.Round(PositionY * frameHeight), width, height);
     }
 
-    /// <summary>The height that keeps the layer's own shape at a given width: the source rectangle's, or the picture's.</summary>
+    /// <summary>
+    /// The height that keeps the layer's own shape at a given width: the source rectangle's, or the picture's, as its crop
+    /// leaves it (4.4-BugHunt: the crop reframes the picture, and the box takes the shape of what is left).
+    /// </summary>
     private int GetProportionalHeight(int width, int sourceWidth, int sourceHeight)
     {
+        var cropped = CroppedShape;
         if (IsFile || IsText)
-            return ImageWidth > 0 && ImageHeight > 0 ? Math.Max(Even((double)width * ImageHeight / ImageWidth), 2) : width;
+            return ImageWidth > 0 && ImageHeight > 0 ? Math.Max(Even((double)width * ImageHeight / ImageWidth * cropped), 2) : Math.Max(Even(width * cropped), 2);
 
         var (_, _, cutWidth, cutHeight) = GetSourceRect(sourceWidth > 0 ? sourceWidth : 1920, sourceHeight > 0 ? sourceHeight : 1080);
-        return Math.Max(Even((double)width * cutHeight / cutWidth), 2);
+        return Math.Max(Even((double)width * cutHeight / cutWidth * cropped), 2);
     }
 
     /// <summary>Called when the lock is released: the free height starts from the shape the layer has now.</summary>
@@ -1276,6 +1364,7 @@ public sealed partial class Layer : ObservableObject
         CropRight = CropRight,
         CropTop = CropTop,
         CropBottom = CropBottom,
+        BlurFill = BlurFill,
         StartTime = StartTime,
         Duration = Duration,
         MediaOffset = MediaOffset,
@@ -1349,6 +1438,25 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
+    /// Takes what places a saved layer on the frame and is its clip's own (4.4, <see cref="IsClipProperty"/>): its corner,
+    /// size and shape, its turn and anchor, its crop and its blur fill. Its corner goes where the state says, however the
+    /// layer grows when it is sized.
+    /// </summary>
+    public void ApplyPlace(LayerState state)
+    {
+        FromCorner(() =>
+        {
+            LockAspectRatio = state.LockAspectRatio;
+            (SizeWidth, SizeHeight) = (state.SizeWidth, state.SizeHeight);
+            (PositionX, PositionY) = (state.PositionX, state.PositionY);
+        });
+        Rotation = Math.Clamp(state.Rotation, -360, 360);
+        (AnchorX, AnchorY) = (Anchor(state.AnchorX), Anchor(state.AnchorY));
+        (CropLeft, CropRight, CropTop, CropBottom) = (Crop(state.CropLeft), Crop(state.CropRight), Crop(state.CropTop), Crop(state.CropBottom));
+        BlurFill = state.BlurFill;
+    }
+
+    /// <summary>
     /// Rebuilds a layer from saved state. Presets saved before positions became fractions hold pixel
     /// values; those are converted using the sizes given (or 1920 x 1080 and 1080 x 1920 when unknown).
     /// </summary>
@@ -1396,6 +1504,7 @@ public sealed partial class Layer : ObservableObject
             CropRight = Crop(state.CropRight),
             CropTop = Crop(state.CropTop),
             CropBottom = Crop(state.CropBottom),
+            BlurFill = state.BlurFill,
             StartTime = Math.Max(state.StartTime, 0),
             Duration = Math.Max(state.Duration, 0),
             MediaOffset = Math.Max(state.MediaOffset, 0),
@@ -1559,6 +1668,10 @@ public sealed class LayerState
     public double CropRight { get; set; }
     public double CropTop { get; set; }
     public double CropBottom { get; set; }
+
+    /// <summary>The clip's blur fill (see <see cref="Layer.BlurFill"/>): null, its kind's, is left out of the file.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? BlurFill { get; set; }
 
     public double StartTime { get; set; }
     public double Duration { get; set; }

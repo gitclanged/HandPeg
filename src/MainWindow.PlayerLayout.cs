@@ -49,11 +49,18 @@ public partial class MainWindow
                 case nameof(MainViewModel.KeyLayer):
                     _playerOutlineHidden = false;
                     UpdatePlayerSelection();
+
+                    // Another clip of the main video selected is another for the Canvas's Center Video box (4.4).
+                    if (_viewModel.IsArrangeActive && !SameArrangeClips())
+                        RedrawLayout();
                     break;
                 case nameof(MainViewModel.PositionMs):
-                    // Another clip may be on screen now: rebuilt only when the set of clips shown is not the same.
-                    if (PlayerLayoutCanvas.Visibility == Visibility.Visible && !SamePlayerClips())
-                        RedrawPlayerLayout();
+                    // Another clip may be on screen now: rebuilt only when the set of clips shown is not the same. The
+                    // Canvas's boxes are each track's clip at the playhead too (4.4). Not under a drag: after it.
+                    if (_dragHeld)
+                        _redrawAfterDrag = true;
+                    else
+                        RedrawForClipsShown();
                     break;
                 case nameof(MainViewModel.EditLayersOnPlayer) or nameof(MainViewModel.LivePreview)
                     or nameof(MainViewModel.IsPlaying) or nameof(MainViewModel.FrameEngine) or nameof(MainViewModel.HasSource)
@@ -64,6 +71,39 @@ public partial class MainWindow
             }
         };
         _viewModel.Layers.CollectionChanged += (_, _) => RedrawPlayerLayout();
+
+        // A drag of a box, a gizmo or a slider (the Center controls' among them, in any window): while it lasts, the boxes
+        // are not rebuilt under the pointer as the playhead brings other clips, and the Center controls keep standing for
+        // the clip they were taken from (4.4); both catch up when it ends. The seek bar's and the scroll bars' drags hold nothing.
+        EventManager.RegisterClassHandler(typeof(Thumb), Thumb.DragStartedEvent, new DragStartedEventHandler((sender, _) => HoldForDrag(sender, true)), handledEventsToo: true);
+        EventManager.RegisterClassHandler(typeof(Thumb), Thumb.DragCompletedEvent, new DragCompletedEventHandler((sender, _) => HoldForDrag(sender, false)), handledEventsToo: true);
+    }
+
+    // A drag holding the boxes and the Center controls' clip (HoldForDrag), and whether the playhead brought other clips during it.
+    private bool _dragHeld, _redrawAfterDrag;
+
+    private void HoldForDrag(object sender, bool started)
+    {
+        if (sender is not Thumb thumb || ReferenceEquals(thumb.TemplatedParent, TimelineSlider) || thumb.TemplatedParent is ScrollBar || started == _dragHeld)
+            return;
+
+        _dragHeld = started;
+        _viewModel.HoldCenterTarget(started);
+        if (!started && _redrawAfterDrag)
+        {
+            // After the drag's own handlers have finished with its box.
+            _redrawAfterDrag = false;
+            Dispatcher.BeginInvoke(RedrawForClipsShown, System.Windows.Threading.DispatcherPriority.Loaded);
+        }
+    }
+
+    /// <summary>The player's and the Canvas's boxes rebuilt when the clips on screen are not those they show.</summary>
+    private void RedrawForClipsShown()
+    {
+        if (PlayerLayoutCanvas.Visibility == Visibility.Visible && !SamePlayerClips())
+            RedrawPlayerLayout();
+        if (_viewModel.IsArrangeActive && !SameArrangeClips())
+            RedrawLayout();
     }
 
     private void PlayerLayoutCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => RedrawPlayerLayout();

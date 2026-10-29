@@ -85,7 +85,6 @@ public partial class MainViewModel
                 var own = Path.Combine(QueueFolder, $"captions_{Guid.NewGuid():N}.ass");
                 command = command.Replace(FilterGraphBuilder.CaptionFilter(CaptionsFilePath), FilterGraphBuilder.CaptionFilter(own), StringComparison.OrdinalIgnoreCase);
 
-                var ranges = GetCaptionRanges();
                 if (HasTextCues)
                 {
                     var lines = GetCueCaptions();
@@ -93,7 +92,9 @@ public partial class MainViewModel
                 }
                 else
                 {
-                    (captions, var problem) = CreateCaptionJob(ranges, own, CaptionTimeOffset);
+                    // Heard when the job runs, in the source's own time; shown through the clips as they are now (4.4).
+                    var source = ResolveCaptionSource();
+                    (captions, var problem) = source is null ? (null, "There is nothing to make captions from.") : CreateCaptionJob(source, own, 0);
                     if (captions is null)
                     {
                         StatusText = problem ?? "The captions cannot be made.";
@@ -270,7 +271,9 @@ public partial class MainViewModel
                         if (job.Status == QueueJob.Transcribing)
                             job.Progress = percent;
                     });
-                    CaptionGenerator.WriteAss(words, captions.Style, captions.Width, captions.Height, captions.TextScale, captions.AssPath, captions.TimeOffset);
+                    // Heard in the source's own time: shown through the clips that played it when the job was made (4.4).
+                    CaptionGenerator.WriteAss(CaptionProjection.ProjectWords(words, captions.Spans), captions.Style, captions.Width, captions.Height,
+                        captions.TextScale, captions.AssPath, captions.TimeOffset);
                     job.CaptionsReady = true;
                 }
                 catch (OperationCanceledException)

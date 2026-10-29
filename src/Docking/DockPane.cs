@@ -40,7 +40,7 @@ public sealed class DockPane
 
     public PaneHandle Handle { get; init; } = PaneHandle.TitleSlot;
 
-    /// <summary>As tall as what is in it, in a column of panes (the master timeline, the playback controls...), rather than a share of the room.</summary>
+    /// <summary>As tall as what is in it, in a column of panes (the overview bar, the playback controls...), rather than a share of the room.</summary>
     public bool FitsContent { get; init; }
 
     /// <summary>Whether the pane is to be shown now (its own setting, and the mode); hidden, it keeps its place.</summary>

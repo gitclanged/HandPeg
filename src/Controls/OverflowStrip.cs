@@ -143,12 +143,16 @@ public sealed class OverflowStrip : Panel
                 continue;
             }
 
+            // A tooltip naming keys (KeyTip) is filled in with the keys as bound now, and the menu shows the action's key too.
+            var tip = KeyTip.Render(child) ?? (child as FrameworkElement)?.ToolTip;
             var name = AutomationProperties.GetName(child) is { Length: > 0 } named ? named
-                : (child as FrameworkElement)?.ToolTip as string ?? (child as ContentControl)?.Content as string ?? "";
+                : tip as string ?? (child as ContentControl)?.Content as string ?? "";
             if (name.Length == 0)
                 continue;
 
-            var item = new MenuItem { Header = name, IsEnabled = child.IsEnabled, ToolTip = (child as FrameworkElement)?.ToolTip };
+            var item = new MenuItem { Header = name, IsEnabled = child.IsEnabled, ToolTip = tip };
+            if (KeyTip.GetAction(child) is { } action)
+                item.InputGestureText = Services.KeybindManager.GestureText(action);
             if (child is ToggleButton toggle)
             {
                 (item.IsCheckable, item.IsChecked) = (true, toggle.IsChecked == true);

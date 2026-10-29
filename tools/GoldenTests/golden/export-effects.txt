@@ -30,7 +30,7 @@ command:
   -1
   D:/out/effects.mp4
 
-graph 1 (-vf): 25 chains, 1753 characters
+graph 1 (-vf): 25 chains, 1722 characters
   1| null[center_in]
   2| color=c=black:s=1920x1080:r=30:d=120
    |   ,format=yuv420p[stage0]
@@ -55,9 +55,8 @@ graph 1 (-vf): 25 chains, 1753 characters
  10| color=c=black:s=768x576:r=1
    |   ,format=gray
    |   ,geq=lum='255*clip((58.5-hypot(max(58-X,0)+max(X-(W-1-58),0),max(58-Y,0)+max(Y-(H-1-58),0)))/8,0,1)'
-   |   ,trim=end_frame=1
-   |   ,loop=loop=-1:size=1[ui1_smask]
- 11| [ui1_a0][ui1_smask]blend=all_mode=multiply:shortest=1[ui1_a1]
+   |   ,trim=end_frame=1[ui1_smask]
+ 11| [ui1_a0][ui1_smask]blend=all_mode=multiply[ui1_a1]
  12| [ui1_pic][ui1_a1]alphamerge[ui1_layer]
  13| [ui1_layer]split[ui1_top][ui1_shadow_in]
  14| [ui1_shadow_in]format=yuva420p
