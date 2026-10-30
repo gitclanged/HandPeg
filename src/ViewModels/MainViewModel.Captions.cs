@@ -214,24 +214,21 @@ public partial class MainViewModel
 
     // ----- Preview Subtitles -----
     // The captions as they will be drawn, over the picture in the player: the words whisper heard, in the
-    // style that is set, in the caption box where it sits. The file is made for the preview and timed to the
-    // sequence as it plays (cuts and all), which the encode's own file, timed to the finished output, is not.
+    // style that is set, in the caption box where it sits, timed to the sequence as it plays (cuts and all).
     //
-    // The player draws it itself, as a subtitle track of its own (see MpvPlayer.SetSubtitleFile), and not
-    // Live Preview's filter graph: there every frame had the captions drawn on it by the processor, which a
-    // long video could not keep up with. So the file is written for the whole frame, not for the caption box,
-    // and carries of the caption layer's look what a subtitle style can: its opacity and its drop shadow. The
-    // rounded or soft edges and the mask are the export's alone.
+    // The GPU preview draws them from the words themselves (GpuCaptions: TextRasterizer draws each cue as the export's
+    // libass draws its file), so nothing is written for it: making them transcribes the words the first time (they are
+    // kept after), and CaptionsChanged tells the preview to take them again.
 
     /// <summary>Whether the player draws the styled captions. Switching it on makes them first, which takes a transcription the first time.</summary>
     [ObservableProperty] private bool _previewSubtitles;
 
-    /// <summary>The caption file the player is to draw over the picture, or an empty string for none.</summary>
-    public string LiveCaptionsPath =>
-        IsSubtitleEditorOpen ? "" : PreviewSubtitles && _liveCaptionsPath.Length > 0 ? _liveCaptionsPath : LiveImageSubtitlePath;
-
-    private string _liveCaptionsPath = "";
-    private int _liveCaptionsRun;
+    /// <summary>
+    /// Raised on the UI thread when what the player draws of the captions or the subtitle track changed (the captions made
+    /// again, Preview Subtitles switched off, the picture track's pictures read or paired again): the GPU preview takes
+    /// <see cref="GpuCaptions"/> and <see cref="PreviewPictureSubtitles"/> again.
+    /// </summary>
+    public event Action? CaptionsChanged;
 
     partial void OnPreviewSubtitlesChanged(bool value)
     {
@@ -241,15 +238,13 @@ public partial class MainViewModel
             return;
         }
 
-        DeleteLiveCaptions(_liveCaptionsPath);
-        _liveCaptionsPath = "";
         if (!_isBackgroundWorker)
-            InvalidateLiveFilter();
+            CaptionsChanged?.Invoke();
     }
 
     private CancellationTokenSource? _liveCaptionsWait;
 
-    /// <summary>Writes the preview's caption file again once the caption box has stopped being moved, resized or restyled.</summary>
+    /// <summary>Makes the previewed captions again once the caption box has stopped being moved, resized or restyled.</summary>
     private async void RefreshLiveCaptionsSoon()
     {
         _liveCaptionsWait?.Cancel();
@@ -261,11 +256,11 @@ public partial class MainViewModel
         }
         catch (OperationCanceledException)
         {
-            // Changed again: the later change writes the file.
+            // Changed again: the later change makes them.
         }
     }
 
-    /// <summary>Writes the preview's caption file again (the words are kept, so only the first time transcribes) and has the player draw it.</summary>
+    /// <summary>Makes the previewed captions again (the words are kept, so only the first time transcribes) and has the player draw them.</summary>
     /// <param name="asked">Whether the button was pressed. A refresh that follows a change of style or size is simply skipped while something else is running.</param>
     private async Task RefreshLiveCaptionsAsync(bool asked = true)
     {
@@ -282,67 +277,49 @@ public partial class MainViewModel
             return;
         }
 
+        var shown = LivePreview
+            ? "Subtitles preview on: the player draws the captions over the picture as they are styled."
+            : "Subtitles preview on: the player draws the captions over the source. Switch Live Preview on to see them on the finished frame.";
+
+        // A subtitle track with words is what the captions say: the player draws its cues as they stand, nothing is heard.
+        if (HasTextCues)
+        {
+            CaptionsChanged?.Invoke();
+            if (asked)
+                StatusText = shown;
+            return;
+        }
+
         await RunOperationAsync("Making captions", WorkLane.Interactive, async cancellationToken =>
         {
-            // A new name each time: the player only loads the file again when its name has changed.
-            var path = Path.Combine(_workFolder, $"captions_live_{++_liveCaptionsRun}.ass");
-
-            // On the sequence's clock, which is what the player plays: the words are shown through the clips that play them.
-            if (await PrepareCaptionsAsync([], path, 0, cancellationToken, forPlayer: true) is { } problem)
+            if (await HearPreviewCaptionsAsync(cancellationToken) is { } problem)
             {
                 PreviewSubtitles = false;
                 return problem;
             }
 
-            // The same captions as the file the player was given (4.4-BugHunt): an edit that moved none of them, the words heard
-            // again. That file stays, and the player is not handed a new one: each new file swaps its subtitle track (see
-            // MpvPlayer's "Subtitles"), and the live graph would be made again for nothing.
-            var before = _liveCaptionsPath;
-            if (before.Length > 0 && await Task.Run(() => SameFileContents(before, path)))
-            {
-                DeleteLiveCaptions(path);
-            }
-            else
-            {
-                // The player read the earlier file whole when it was given it, so that one can go.
-                _liveCaptionsPath = path;
-                DeleteLiveCaptions(before);
-                InvalidateLiveFilter();
-            }
-
-            return LivePreview
-                ? "Subtitles preview on: the player draws the captions over the picture as they are styled."
-                : "Subtitles preview on: the player draws the captions over the source. Switch Live Preview on to see them on the finished frame.";
+            CaptionsChanged?.Invoke();
+            return shown;
         });
     }
 
-    private static void DeleteLiveCaptions(string path)
+    /// <summary>
+    /// The captions the player draws when there is no subtitle track with words: what they listen to, transcribed with
+    /// whisper.cpp (or as it was kept from the last time), shown through every clip that plays it, on the sequence's clock
+    /// (what the caption row shows too). Returns null, or what went wrong.
+    /// </summary>
+    private async Task<string?> HearPreviewCaptionsAsync(CancellationToken cancellationToken)
     {
-        try
-        {
-            if (path.Length > 0)
-                File.Delete(path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // Still open somewhere; it is in the session folder and goes when the application closes.
-        }
-    }
+        if (ResolveCaptionSource() is not { } source)
+            return "There is nothing to make captions from: load a video, or choose what to listen to (Generate Auto-Captions...).";
 
-    /// <summary>Whether two files hold the same bytes; false when either cannot be read.</summary>
-    private static bool SameFileContents(string first, string second)
-    {
-        try
-        {
-            if (new FileInfo(first) is not { Exists: true } one || new FileInfo(second) is not { Exists: true } other || one.Length != other.Length)
-                return false;
+        var (words, problem) = await GetCaptionWordsAsync(source, cancellationToken);
+        if (words is null)
+            return problem;
 
-            return File.ReadAllBytes(first).AsSpan().SequenceEqual(File.ReadAllBytes(second));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
+        _generatedCaptions = CaptionGenerator.Lines(CaptionProjection.ProjectWords(words, CaptionSpans(source)), CaptionStyle);
+        TimelineChanged?.Invoke();
+        return null;
     }
 
     /// <summary>The subtitle file the encode draws. Rewritten by every encode that uses captions.</summary>
@@ -584,25 +561,22 @@ public partial class MainViewModel
 
     /// <summary>
     /// The pipeline: extract the audio that will be heard as a 16 kHz mono wave file, transcribe it with whisper.cpp, show
-    /// its words on the timeline through the clips that play them, and write them as an ASS file in the chosen style. A
-    /// subtitle track with words is written as it stands instead. Returns null, or what went wrong.
+    /// its words on the timeline through the clips that play them, and write them as an ASS file in the chosen style, for
+    /// the caption box, which is how the export's graph draws it. A subtitle track with words is written as it stands
+    /// instead. Returns null, or what went wrong.
     /// </summary>
     /// <param name="ranges">
     /// The stretches of the sequence the output plays, joined end to end (a Render Preview's); none for the whole sequence.
     /// </param>
     /// <param name="timeOffset">Added to every time of the output: for an output that keeps another clock.</param>
-    /// <param name="forPlayer">
-    /// Writes the file for the whole output frame, with the words where the caption box is, for the player to
-    /// draw by itself. Otherwise it is written for the box, which is how the export's graph draws it.
-    /// </param>
     private async Task<string?> PrepareCaptionsAsync(
-        List<(double Start, double End)> ranges, string assPath, double timeOffset, CancellationToken cancellationToken, bool forPlayer = false)
+        List<(double Start, double End)> ranges, string assPath, double timeOffset, CancellationToken cancellationToken)
     {
         // A subtitle track with words is what the captions say: nothing is listened to.
         if (HasTextCues)
         {
             var cues = CaptionProjection.ToOutputClock(GetCueCaptions(), ranges, timeOffset);
-            WriteCaptionFile(cues.SelectMany(l => l).ToList(), cues, assPath, 0, forPlayer);
+            WriteCaptionFile(cues.SelectMany(l => l).ToList(), cues, assPath, 0);
             StatusText = $"Captions: {cues.Count} subtitle cue{(cues.Count == 1 ? "" : "s")} written.";
             return null;
         }
@@ -616,16 +590,8 @@ public partial class MainViewModel
 
         // Heard in the source's time; shown through every clip that plays it, on the sequence's clock.
         var lines = CaptionGenerator.Lines(CaptionProjection.ProjectWords(words, CaptionSpans(source)), CaptionStyle);
-
-        // What the preview shows is what the caption row shows: the captions, on the timeline's clock.
-        if (forPlayer)
-        {
-            _generatedCaptions = lines;
-            TimelineChanged?.Invoke();
-        }
-
         var output = CaptionProjection.ToOutputClock(lines, ranges, timeOffset);
-        WriteCaptionFile(output.SelectMany(l => l).ToList(), output, assPath, 0, forPlayer);
+        WriteCaptionFile(output.SelectMany(l => l).ToList(), output, assPath, 0);
         StatusText = $"Captions: {output.Sum(l => l.Count)} word{(output.Sum(l => l.Count) == 1 ? "" : "s")} written.";
         return null;
     }
@@ -765,21 +731,38 @@ public partial class MainViewModel
         return words;
     }
 
-    /// <summary>Writes the captions as an ASS file: for the caption box, which is how the export draws them, or for the whole frame, for a player.</summary>
+    /// <summary>
+    /// The captions as the GPU preview engine draws them (5.0): line by line on the sequence clock, with the style and the
+    /// text scale the export's .ass uses (<see cref="WriteCaptionFile"/>); no lines while they are not previewed (Preview
+    /// Subtitles off, the subtitle editor open).
+    /// </summary>
+    public (IReadOnlyList<IReadOnlyList<CaptionWord>>? Lines, CaptionStyle Style, double TextScale) GpuCaptions()
+    {
+        if (IsSubtitleEditorOpen || !PreviewSubtitles)
+            return (null, CaptionStyle, 1);
+        var lines = HasTextCues ? GetCueCaptions() : _generatedCaptions;
+        return (lines.Count > 0 ? lines : null, CaptionStyle, CaptionTextScale());
+    }
+
+    /// <summary>What the caption style's sizes (given for a 1080-pixel frame) are multiplied by in the caption box, as <see cref="WriteCaptionFile"/> works it out.</summary>
+    private double CaptionTextScale()
+    {
+        var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
+        var (_, _, _, height) = GetCaptionRect(frameWidth, frameHeight);
+        return Math.Min(frameWidth, frameHeight) / 1080.0 * (height / (DefaultCaptionHeight * frameHeight));
+    }
+
+    /// <summary>Writes the captions as an ASS file for the caption box, which is how the export draws them.</summary>
     /// <param name="lines">The captions line by line, when they are given that way (a subtitle track's cues); otherwise the words are grouped by the style.</param>
-    private void WriteCaptionFile(IReadOnlyList<CaptionWord> words, IReadOnlyList<List<CaptionWord>>? lines, string assPath, double timeOffset, bool forPlayer)
+    private void WriteCaptionFile(IReadOnlyList<CaptionWord> words, IReadOnlyList<List<CaptionWord>>? lines, string assPath, double timeOffset)
     {
         // The file is written for the caption box, not the frame: that is the canvas it is drawn on.
         // Text size follows the frame (so a style looks the same at 720p and 4K) and the height of the
         // box (so making the box taller makes the words bigger).
         var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
-        var (x, y, width, height) = GetCaptionRect(frameWidth, frameHeight);
+        var (_, _, width, height) = GetCaptionRect(frameWidth, frameHeight);
         var textScale = Math.Min(frameWidth, frameHeight) / 1080.0 * (height / (DefaultCaptionHeight * frameHeight));
-        var frame = forPlayer
-            ? new CaptionFramePlacement(x, y, frameWidth, frameHeight, CaptionLayer.Opacity / 100.0,
-                CaptionLayer.Shadow ? CaptionLayer.ShadowShift : (0, 0), CaptionLayer.ShadowOpacity)
-            : null;
-        CaptionGenerator.WriteAss(words, CaptionStyle, width, height, textScale, assPath, timeOffset, frame, lines);
+        CaptionGenerator.WriteAss(words, CaptionStyle, width, height, textScale, assPath, timeOffset, lines);
     }
 
     // ----- whisper.cpp model -----

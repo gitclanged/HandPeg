@@ -71,7 +71,12 @@ public sealed class KeybindMapControl : FrameworkElement
         return [.. caps];
     }
 
-    private const double KeyboardUnits = 18.5, MouseUnits = 4.6, LayerRowHeight = 30, StatusHeight = 34, MaxUnit = 52;
+    private const double KeyboardUnits = 18.5, MouseUnits = 4.6, LayerRowHeight = 30, StatusHeight = 46, MaxUnit = 52;
+
+    // A narrow screen (a laptop at 150 %, Pass 5.0): under CompactKey a one-wide key shows only its name, centred, and what
+    // the key under the pointer does is said in the banner under the map. A key's own label (its action) is drawn only on a
+    // key at least LabelWidth by LabelHeight, on one line. Every key's text is clipped to the key.
+    private const double CompactKey = 42, LabelWidth = 44, LabelHeight = 34;
 
     private enum MousePart { None, Left, Right, Middle, Back, Forward }
 
@@ -89,9 +94,11 @@ public sealed class KeybindMapControl : FrameworkElement
     /// <summary>A glance's key or mouse button clicked (its chord), or its "Edit Keybinds" pill (null).</summary>
     public event Action<InputChord?>? EditRequested;
 
-    // What the keys show, made when the layer, the keys or the theme change (not when the pointer moves).
+    // What the keys show, made when the layer, the keys or the theme change (not when the pointer moves), with each key's clip.
     private FormattedText?[] _names = [], _actions = [];
     private bool[] _bound = [], _conflict = [];
+    private RectangleGeometry[] _clips = [];
+    private bool _compact;
     private bool _stale = true;
     private object? _themeKey;
     private double _textDpi, _textUnit;
@@ -203,25 +210,39 @@ public sealed class KeybindMapControl : FrameworkElement
         (_themeKey, _textDpi, _textUnit, _stale) = (text, dpi, unit, false);
         (_names, _actions) = (new FormattedText?[Caps.Length], new FormattedText?[Caps.Length]);
         (_bound, _conflict) = (new bool[Caps.Length], new bool[Caps.Length]);
+        _clips = new RectangleGeometry[Caps.Length];
+        _compact = IsCompact(unit);
         for (var i = 0; i < Caps.Length; i++)
         {
             var cap = Caps[i];
-            var width = cap.Width * unit - 8;
-            _names[i] = Text(KeybindManager.KeyName(cap.Key), Math.Clamp(unit * 0.24, 8, 11), muted, dpi, width);
+            var rect = CapRect(cap, unit);
+            var clip = new RectangleGeometry(Rect.Inflate(rect, -1, -1));
+            clip.Freeze();
+            _clips[i] = clip;
+
+            // One line each, cut short with an ellipsis: a name or a label never wraps out of its key.
+            var name = _compact
+                ? Text(KeybindManager.KeyName(cap.Key), Math.Clamp(unit * 0.3, 8, 11), muted, dpi, rect.Width - 4)
+                : Text(KeybindManager.KeyName(cap.Key), Math.Clamp(unit * 0.24, 8, 11), muted, dpi, cap.Width * unit - 8);
+            name.MaxLineCount = 1;
+            _names[i] = name;
             if (IsModifier(cap.Key))
                 continue;
 
             var on = _draft.ActionsOn(ChordOf(cap.Key));
             _bound[i] = on.Count > 0;
             _conflict[i] = on.Count > 1;
-            if (on.Count > 0)
+            if (on.Count > 0 && !_compact && rect.Width >= LabelWidth && rect.Height >= LabelHeight)
             {
-                var label = Text(on.Count > 1 ? $"{on[0].Label} + {on[1].Label}" : on[0].Label, Math.Clamp(unit * 0.2, 7.5, 10), text, dpi, width);
-                label.MaxLineCount = 2;
+                var label = Text(on.Count > 1 ? $"{on[0].Label} + {on[1].Label}" : on[0].Label, Math.Clamp(unit * 0.2, 7.5, 10), text, dpi, rect.Width - 6);
+                label.MaxLineCount = 1;
                 _actions[i] = label;
             }
         }
     }
+
+    // A one-wide key narrower than CompactKey: names only, centred, and the banner says what a key does.
+    private static bool IsCompact(double unit) => unit - 3 < CompactKey;
 
     private static FormattedText Text(string text, double size, Brush brush, double dpi, double maxWidth = 0)
     {
@@ -325,18 +346,64 @@ public sealed class KeybindMapControl : FrameworkElement
             var held = IsModifier(cap.Key) && (layer.Mods & ModifierOf(cap.Key)) != 0;
             var fill = held ? accent : _conflict[i] ? ConflictFill : _bound[i] ? bound : IsModifier(cap.Key) ? well : face;
             drawing.DrawRoundedRectangle(fill, i == _hoverCap || i == _pickedCap ? _hoverPen : edge, rect, 4, 4);
+
+            // Whatever a key holds stays inside it.
+            drawing.PushClip(_clips[i]);
             if (_names[i] is { } name)
-                drawing.DrawText(name, new Point(rect.X + 4, rect.Y + 2));
+            {
+                drawing.DrawText(name, _compact
+                    ? new Point(rect.X + (rect.Width - name.Width) / 2, rect.Y + (rect.Height - name.Height) / 2)
+                    : new Point(rect.X + 4, rect.Y + 2));
+            }
             if (_actions[i] is { } action)
                 drawing.DrawText(action, new Point(rect.X + 4, rect.Bottom - action.Height - 3));
+            drawing.Pop();
         }
 
         DrawMouse(drawing, unit, dpi, face, well, bound, edge, text, muted);
+        DrawBanner(drawing, unit, dpi, face, edge, text, muted);
+    }
 
-        // What the pointer is on, or what was done last.
-        var status = Text(_status, 11.5, muted, dpi, width - 8);
-        status.MaxLineCount = 2;
-        drawing.DrawText(status, new Point(4, KeyboardTop + 6.5 * unit + 6));
+    // The banner under the map: the key or mouse button under the pointer (else the one picked) with each of its actions as
+    // "Category: Action", prominent; under it what the pointer is on, or what was done last.
+    private void DrawBanner(DrawingContext drawing, double unit, double dpi, Brush face, Pen edge, Brush text, Brush muted)
+    {
+        var width = ActualWidth;
+        var banner = new Rect(0, KeyboardTop + 6.5 * unit + 4, width, StatusHeight - 6);
+        var headline = Headline();
+        drawing.DrawRoundedRectangle(face, headline is null ? edge : _hoverPen, banner, 6, 6);
+
+        var y = banner.Y + 4;
+        if (headline is not null)
+        {
+            var head = Text(headline, 12.5, text, dpi, width - 16);
+            head.MaxLineCount = 1;
+            head.SetFontWeight(FontWeights.SemiBold);
+            drawing.DrawText(head, new Point(8, y));
+            y += head.Height;
+        }
+
+        var status = Text(_status, 11, muted, dpi, width - 16);
+        status.MaxLineCount = headline is null ? 2 : 1;
+        drawing.DrawText(status, new Point(8, y));
+    }
+
+    // What the banner names: the key or the mouse button under the pointer, else the key picked; null for neither.
+    private string? Headline()
+    {
+        var cap = _hoverCap >= 0 ? _hoverCap : _hoverMouse == MousePart.None && _hoverLayer < 0 ? _pickedCap : -1;
+        if (cap >= 0 && IsModifier(Caps[cap].Key))
+            return $"{KeybindManager.KeyName(Caps[cap].Key)}   Modifier: click it to see what the keys do with it held";
+
+        InputChord? chord = cap >= 0 ? ChordOf(Caps[cap].Key)
+            : _hoverMouse != MousePart.None ? new InputChord(Layers[_layer].Mods, Key.None, ButtonOf(_hoverMouse))
+            : null;
+        if (chord is not { } over)
+            return null;
+
+        var on = _draft.ActionsOn(over);
+        var name = KeybindManager.Format(over);
+        return on.Count == 0 ? $"{name}   Nothing" : $"{name}   {string.Join("   +   ", on.Select(a => $"{a.Category}: {a.Label}"))}";
     }
 
     private void DrawMouse(DrawingContext drawing, double unit, double dpi, Brush face, Brush well, Brush bound, Pen edge, Brush text, Brush muted)
@@ -359,6 +426,7 @@ public sealed class KeybindMapControl : FrameworkElement
             var actions = MouseActions(part);
             var line = Text($"{KeybindManager.ButtonName(ButtonOf(part)!.Value)}: {(actions.Count > 0 ? actions[0].Label : "-")}", Math.Clamp(unit * 0.22, 8, 10.5),
                 actions.Count > 0 ? text : muted, dpi, MouseUnits * unit);
+            line.MaxLineCount = 1;
             if (y + line.Height > KeyboardTop + 6.5 * unit)
                 break;
             drawing.DrawText(line, new Point(body.X - 0.4 * unit, y));

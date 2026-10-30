@@ -8,22 +8,26 @@
 HandPeg is a featherweight, hardware-accelerated video editor for Windows, built for getting from a raw gameplay
 recording, stream VOD or screen capture to a finished highlight, short or upload as fast as possible.
 
-There is no middleware: every edit compiles straight to an FFmpeg filter graph, played live through libmpv on the GPU
-and encoded by FFmpeg on export. The window paints its first, final frame in under half a second, and HandPeg idles
-well under 200 MB of memory.
+Since v5.0 HandPeg has its own GPU engine: a native Direct3D 11 compositor with every effect written in HLSL, the video
+decoded straight into graphics memory, running in a process of its own so a driver hiccup restarts it in a blink instead
+of taking the editor down. It plays, scrubs and exports the edit frame-exact, with a WASAPI mixer as the master clock;
+FFmpeg encodes, and stays the export's fallback. The window paints its first, final frame in under half a second, and
+HandPeg idles well under 200 MB of memory.
 
-![The HandPeg v4.4.0 editor: the newest recording dropped on the Overwatch vertical style, with the one Timeline, its child mini-stacks and the Overview Bar](docs/screenshots/workspace-v4.4.png)
+![The HandPeg v5.0.0 editor: a 30 fps recording in the Overwatch vertical style, rapid cuts on one Timeline, the Overview Bar drawn from the finished sequence](docs/screenshots/workspace-v5.0.png)
 
-![Hold Tab: X-Ray and the keyboard-and-mouse map over the player, naming what each key does](docs/screenshots/xray-keymap-v4.4.png)
+![The 3D Exploded View: the layer stack fanned out in depth, each layer at its full source resolution, the selected one outlined](docs/screenshots/exploded-3d-v5.0.png)
 
-![Settings > Keybinds & Lightning Dial: the dial's categories and the drawn keyboard-and-mouse map](docs/screenshots/settings-keybinds-v4.4.png)
+![Settings > Export & Hardware: every graphics card measured and given the jobs it is best at](docs/screenshots/hardware-benchmark-v5.0.png)
 
-<img src="docs/screenshots/dial-v4.4.png" alt="The Lightning Dial on Mouse 5: seven categories and Settings in one ring" width="280">
+![The full-window Settings screen with its live preview stage](docs/screenshots/settings-v5.0.png)
 
-**New in v4.4.0:** one Timeline for every track, with a game style's HUD pieces and the captions as collapsible children
-that follow their parent; captions anchored to the voice's words; each clip's own place, size, crop and blur fill; the
-Lightning Dial on Mouse 5 and a rebindable left-hand key cluster (hold W/A/S/D to zoom and pan what is under the pointer);
-hold Tab for X-Ray and a clickable key map; dead air that folds both ways; and undo history saved with the project.
+**New in v5.0.0:** the native GPU engine for preview and export; Instant Seek (exact frames on every click and scrub, no
+proxies); playback that stays smooth across rapid back-to-back cuts; zero-lag hover pre-loading on every timeline; the 3D
+Exploded View of the layer stack, in step with the Timeline; the magnifier loupe for edges; the Overview Bar drawn from
+the finished sequence; the blurred background as a layer of its own with a smooth radius, zoom and any effect; effects
+that show at once with an Advanced section for their deeper settings; project bundles (.hpb) that carry a project with
+its media; and no more Windows beeps while you edit.
 
 ## What it does
 - **One multi-track timeline:** video, image, text and audio layers with a live preview of the finished picture and
@@ -32,11 +36,14 @@ hold Tab for X-Ray and a clickable key map; dead air that folds both ways; and u
   keeps both halves' motion exactly, and cuts are just split points: what is on the timeline is what renders.
 - **Game styles in one drop:** drop a gameplay video on a game's style and get a tall frame, the HUD pieces cut out with
   the game's mask, and a blurred background, all made from your video, even after you split or restyle its pieces.
-- **Live preview that keeps up:** seeks land inside each file at the nearest I-frame (remembered per file and in saved
-  projects), so long timelines and long recordings play and scrub at once, with the sound in step with the picture to
-  the millisecond, and a paused playhead stays exactly on the frame or keyframe you put it on.
-- **Smart proxies:** heavy files (above 1080p, AV1, VP9, ProRes, 10-bit HEVC) get a small editing copy made in the
-  background, for the player only; exports always read the originals.
+- **A GPU engine that keeps up:** the preview is composited on your graphics card from frames decoded in its memory, with
+  Instant Seek (a frame cache under Windows' own memory budget, pre-decoding round the playhead, under the pointer, ahead
+  of a scrub and at every cut coming up), so long recordings with rapid cuts play and scrub at once, with the sound in
+  step with the picture to the millisecond. Exports run on the same engine, frame-exact, and FFmpeg encodes them.
+- **The 3D Exploded View:** fan the layer stack out in depth to see and pick what sits where; orbit, move, resize and
+  restack layers in 3D, and the Timeline follows.
+- **Project bundles:** save a project with all its media as one .hpb file (stored, not recompressed) and open it on
+  another PC.
 - **Effect stacks in zones:** each clip's effects are cards, applied in order: key, mask (with a Mask Offset to nudge a
   HUD mask), color, blur, blend modes, adjustment layers and a Sequence Output stack, each animatable. Copy a stack and
   paste it whole, onto a whole track, or just the cards you pick.
@@ -63,8 +70,8 @@ hold Tab for X-Ray and a clickable key map; dead air that folds both ways; and u
 ## Getting started
 Download the installer (`HandPeg-win-Setup.exe`) or the portable zip from the
 [Releases page](https://github.com/gitclanged/HandPeg/releases). The first-run wizard lets you pick a theme and a
-starting workspace, downloads the engines HandPeg uses (FFmpeg, libmpv, yt-dlp and, if you want captions, whisper.cpp),
-pinned to builds tested with this version, and finds your GPU's hardware encoders. HandPeg updates itself from the same
+starting workspace, downloads the tools HandPeg uses (FFmpeg, yt-dlp and, if you want captions, whisper.cpp), pinned to
+builds tested with this version, and measures your graphics cards and their hardware encoders. HandPeg updates itself from the same
 page. It needs Windows 10 or 11 (x64) and the .NET 8 Desktop Runtime. On Windows on ARM, use the ARM64 portable zip: it
 runs natively and downloads the ARM64 builds of its engines.
 
@@ -82,7 +89,8 @@ The repository:
 | `src/Dialogs/` | Windows and dialogs: first run, settings, Project Manager, layer and caption tools |
 | `src/Docking/` | The dock manager, panes, tabs and title rows |
 | `src/Views/`, `src/ViewModels/` | The Media, Effects and subtitle panes; the main view model and its partials |
-| `src/Services/` | The filter graph compiler, the libmpv player, FFmpeg runner, probes, caches, background work, themes |
+| `src/Compositor/` | The GPU engine's worker process: Direct3D 11 and Media Foundation by hand, the HLSL shaders, the frame cache |
+| `src/Services/` | The GPU preview engine and scene plans, the WASAPI mixer, the filter graph compiler, FFmpeg runner, probes, caches, background work, themes |
 | `src/Models/` | Layers, effects and their registry, easing curves, transitions, presets, sequences |
 | `tools/` | Golden tests, the A/V sync harness, the startup benchmark, the code index |
 

@@ -42,6 +42,22 @@ public static partial class GpuAdapters
     /// <summary>Every card that can decode, in DXGI's order. Empty when DXGI could not be asked.</summary>
     public static IReadOnlyList<GpuAdapter> All => _found ??= Enumerate();
 
+    private static int? _warpIndex;
+
+    /// <summary>
+    /// The DXGI index of the processor's software renderer (WARP, the "Microsoft Basic Render Driver" Windows lists after
+    /// the cards; not one of <see cref="All"/>), for the GPU preview's last resort when the card fails (MainWindow.OnGpuFailed).
+    /// Null when DXGI lists none.
+    /// </summary>
+    public static int? WarpIndex
+    {
+        get
+        {
+            _ = All;
+            return _warpIndex;
+        }
+    }
+
     /// <summary>
     /// The FFmpeg options that switch hardware decoding on, with a space after them: whichever decoder FFmpeg
     /// finds, or Direct3D 11 on the card chosen in the settings.
@@ -151,7 +167,10 @@ public static partial class GpuAdapters
 
                     var (vendor, device) = ((uint)Marshal.ReadInt32(description, DescriptionBytes), (uint)Marshal.ReadInt32(description, DescriptionBytes + 4));
                     if (vendor == MicrosoftVendor && device == BasicRenderDevice)
+                    {
+                        _warpIndex = (int)index;
                         continue;
+                    }
 
                     var name = (Marshal.PtrToStringUni(description, DescriptionBytes / 2) ?? "").TrimEnd('\0');
                     var end = name.IndexOf('\0');

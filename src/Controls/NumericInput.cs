@@ -44,6 +44,9 @@ public static class NumericInput
     private static readonly DependencyProperty IsHookedProperty = DependencyProperty.RegisterAttached(
         "IsHooked", typeof(bool), typeof(NumericInput), new PropertyMetadata(false));
 
+    private static readonly DependencyProperty HeldProperty = DependencyProperty.RegisterAttached(
+        "Held", typeof(Action<bool>), typeof(NumericInput));
+
     public static string? GetDefault(DependencyObject element) => (string?)element.GetValue(DefaultProperty);
     public static void SetDefault(DependencyObject element, string? value) => element.SetValue(DefaultProperty, value);
     public static double GetDragStep(DependencyObject element) => (double)element.GetValue(DragStepProperty);
@@ -230,6 +233,8 @@ public static class NumericInput
         if (!state.IsDragging && Math.Abs(distance) < DragThreshold)
             return;
 
+        if (!state.IsDragging)
+            TellHeld(box, true);
         state.IsDragging = true;
 
         // The few pixels it took to recognise the drag are not counted, so the value starts moving from
@@ -265,13 +270,57 @@ public static class NumericInput
         }
     }
 
-    private static void TextBox_LostMouseCapture(object sender, MouseEventArgs e) => ((TextBox)sender).ClearValue(DragStateProperty);
+    private static void TextBox_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        var box = (TextBox)sender;
+        LetGo(box);
+        box.ClearValue(DragStateProperty);
+    }
 
     private static void EndDrag(TextBox box)
     {
+        LetGo(box);
         box.ClearValue(DragStateProperty);
         if (box.IsMouseCaptured)
             box.ReleaseMouseCapture();
+    }
+
+    // A drag under way, ended: told as let go (once: the state is cleared right after).
+    private static void LetGo(TextBox box)
+    {
+        if (box.GetValue(DragStateProperty) is DragState { IsDragging: true })
+            TellHeld(box, false);
+    }
+
+    // ----- Held by the pointer (5.0-Verify) -----
+
+    /// <summary>
+    /// A number box began to be dragged (true) or was let go (false), in any window: for what is shown only while a value is
+    /// held (the player's edge loupe, the user's bug 6). Typing a value, or a click that starts typing, is no hold.
+    /// </summary>
+    public static event Action<TextBox, bool>? DragHeld;
+
+    /// <summary>
+    /// Says when a slider or a number box starts being adjusted with the pointer (a slider pressed anywhere on it, a number
+    /// box dragged past the few pixels that make a drag) and when it is let go, or loses the pointer. A key nudge is no hold.
+    /// </summary>
+    public static void WatchHold(Control control, Action<bool> held)
+    {
+        if (control is TextBox)
+        {
+            control.SetValue(HeldProperty, held);
+            return;
+        }
+
+        control.PreviewMouseLeftButtonDown += (_, _) => held(true);
+        control.PreviewMouseLeftButtonUp += (_, _) => held(false);
+        control.LostMouseCapture += (_, _) => held(false);
+    }
+
+    private static void TellHeld(TextBox box, bool held)
+    {
+        (box.GetValue(HeldProperty) as Action<bool>)?.Invoke(held);
+        DragHeld?.Invoke(box, held);
     }
 
     /// <summary>Writes a value into the box and on to whatever it is bound to, whenever that binding normally updates.</summary>

@@ -1,0 +1,5 @@
+# The GPU export (GpuExport) against the FFmpeg export of the same timeline: frames by PSNR, the sound sample for sample.
+timeline: 320 x 180 at 30 fps, 4 s: the main video in two clips (a 1 s crossfade at 2 s), a picture in picture (place and opacity keys), a title
+  at the timeline's 30 fps: 120 frames, each at least 22 dB, on average at least 25 dB; the sound to 1 LSB
+  at 24 fps (frames the fps filter drops): 96 frames, each at least 22 dB, on average at least 25 dB; the sound to 1 LSB
+  at 60 fps (frames it repeats): 240 frames, each at least 22 dB, on average at least 25 dB; the sound to 1 LSB

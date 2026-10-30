@@ -141,7 +141,11 @@ public partial class MainViewModel
             Blue = ColorBlue,
             Sharpen = SharpenStrength,
         },
-        Blur = new BlurSection { Radius = BlurRadius, Passes = BlurPasses, Dim = BackgroundDim },
+        Blur = new BlurSection
+        {
+            Radius = BlurRadius, Passes = BlurPasses, Dim = BackgroundDim, Zoom = BackgroundZoom,
+            Effects = CaptureBackgroundEffects(), EffectsBypassed = _backgroundRow.EffectsBypassed,
+        },
         Subtitles = new SubtitleSection
         {
             AutoCaptions = AutoCaptions,
@@ -348,6 +352,7 @@ public partial class MainViewModel
                 nameof(BlurRadius) => style.Blur?.Radius,
                 nameof(BlurPasses) => style.Blur?.Passes,
                 nameof(BackgroundDim) => style.Blur?.Dim,
+                nameof(BackgroundZoom) => style.Blur?.Zoom,
                 nameof(ColorContrast) => style.Color?.Contrast,
                 nameof(ColorBrightness) => style.Color?.Brightness,
                 nameof(ColorSaturation) => style.Color?.Saturation,
@@ -438,9 +443,11 @@ public partial class MainViewModel
 
         if (blur && preset.Blur is { } background)
         {
-            BlurRadius = Math.Clamp(background.Radius, 5, 50);
-            BlurPasses = Math.Clamp(background.Passes, 1, 5);
+            BlurRadius = Math.Clamp(background.Radius, 0, Models.Effects.EffectRegistry.BackgroundMostRadius);
+            BlurPasses = Math.Clamp(background.Passes, 1, MostBlurPasses);
             BackgroundDim = Math.Clamp(background.Dim, -0.5, 0);
+            BackgroundZoom = Math.Clamp(background.Zoom, 1, MostBackgroundZoom);
+            SetBackgroundEffects(background.Effects, background.EffectsBypassed);
             applied.Add("blur settings");
         }
 

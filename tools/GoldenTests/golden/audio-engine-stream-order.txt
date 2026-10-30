@@ -1,0 +1,3 @@
+# The main file's sound tracks by FFmpeg's numbers (0:a:N, what the export maps), three in an MP4 (FFmpeg decodes it: Media Foundation's order of MP4 tracks is its own) and in a Matroska file (OBS's recordings).
+mp4: a:0 music, a:1 a 1 kHz tone, a:2 noise; each alone is FFmpeg's 0:a:N (correlation over 0.99, within a sample) and unlike the other two (under 0.5)
+mkv: a:0 music, a:1 a 1 kHz tone, a:2 noise; each alone is FFmpeg's 0:a:N (correlation over 0.99, within a sample) and unlike the other two (under 0.5)

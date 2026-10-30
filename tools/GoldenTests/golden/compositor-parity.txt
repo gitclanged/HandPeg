@@ -1,0 +1,65 @@
+# The GPU compositor against its CPU reference (5.0-Core): every slot, composite stage, decode, recovery, timing.
+effects (one full-frame pattern layer, 256 x 144, each slot alone):
+  flip horizontally (2): within 3/255 of the reference
+  flip vertically (2): within 3/255 of the reference
+  denoise (4): within 3/255 of the reference
+  color grade (5): within 3/255 of the reference
+  color balance, preserving lightness (6): within 3/255 of the reference
+  color temperature (7): within 3/255 of the reference
+  vignette (8): within 3/255 of the reference
+  vignette, frame-shaped and feathered (8): within 3/255 of the reference
+  hue and saturation (18): within 3/255 of the reference
+  chroma key with despill (10, 11): within 3/255 of the reference
+  chroma key, choked and smoothed (10, 12, 13): within 3/255 of the reference
+  matte choke, eroding (12): within 3/255 of the reference
+  matte choke, dilating (12): within 3/255 of the reference
+  matte smooth (13): within 3/255 of the reference
+  rounded and feathered edges (15): within 3/255 of the reference
+  blur (20): within 3/255 of the reference
+  blur, 3 passes, wider across, dimmed (20): within 3/255 of the reference
+  sharpen (21): within 3/255 of the reference
+  LUT 3D (3): within 3/255 of the reference
+  mask, offset (14): within 3/255 of the reference
+  mask, grown and inverted (14): within 3/255 of the reference
+  tone curve (19): within 3/255 of the reference
+composite stage:
+  opacity 50 % (1): within 3/255 of the reference
+  dissolve at 40 % (64): within 3/255 of the reference
+  wipe to the right, half way (65): within 3/255 of the reference
+  slide in, half way (66): within 3/255 of the reference
+  zoom at half size (67): about the box's middle
+  blend multiply (17): within 3/255 of the reference
+  blend screen (17): within 3/255 of the reference
+  blend add (17): within 3/255 of the reference
+  blend overlay (17): within 3/255 of the reference
+  blend soft light (17): within 3/255 of the reference
+  blend hard light (17): within 3/255 of the reference
+  blend difference (17): within 3/255 of the reference
+  blurred background, 7.3 px, dimmed, with its own vignette (20, 8): within 3/255 of the reference
+  drop shadow (16): white square, red shadow 7 px right and down, clear elsewhere
+  rotation 45 degrees: a diamond about the anchor
+  blurred background: the frame filled behind a narrow layer
+3D exploded layer stack (320 x 180 canvas on a 400 x 300 output, three solid layers):
+  turned 28 degrees, 14 up, 1.6 times the fitted distance, 64 px apart: every pixel off the edges shows the plane picked there
+  flat and letterboxed: each layer where the camera at rest puts it
+  3D at rest (no turn, no spread, zoom 1): the flat picture
+  flat again after 3D frames: the same frame, to the bit
+3D exploded view at full resolution, its outlines and its places (320 x 180 canvas on a 400 x 300 output):
+  a 512 px still of 8 px stripes in a 64 px box, the camera close: every pixel off the stripes' edges black or white as its stripe
+  the selected layer's outline round its box: the same with a box blur of 4 px and of 12 px as with none
+  a layer above two others gone: they and the selected one's outline stay where they were, to the pixel
+magnifier loupe (320 x 180 canvas on a 640 x 360 output, a red layer turned 30 degrees, 400 %):
+  a framed square of the expected size in a corner, the layer's edge in it over the checkerboard; none without a loupe
+decode (an H.264 clip made by HandPeg's FFmpeg: 30 grey levels, a key frame every 10, B-frames):
+  frame-exact seeks, forward and back
+  instant seek: a cold seek off a key frame ends on the exact frame
+  instant seek: frame steps back come from the cache, with no decode
+  instant seek: a hinted moment is decoded before it is asked for
+  BT.709 colour within 4/255
+timing (1920 x 1080, every slot on a full-frame layer, GPU timestamps, the best of four frames):
+  every pass of every slot under 0.5 ms
+recovery (the standby takes over, the last scene is shown again):
+  after a lost device (TDR): recovered, frame shown again
+    after a lost device (TDR), the picture: within 3/255 of the reference
+  after a crash: recovered, frame shown again
+    after a crash, the picture: within 3/255 of the reference

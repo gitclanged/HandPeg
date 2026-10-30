@@ -138,17 +138,8 @@ public partial class MainWindow : Window
         // A path or a link being typed is about to be loaded too.
         SourcePaneBox.GotKeyboardFocus += (_, _) => WarmUpPlayer();
 
-        // Proxies wait while something heavy goes on: a drag that holds the mouse (scrubbing, a clip, an edge, a box, a
-        // slider) or a shuttle. Ordinary moves, clicks and keys do not count, or a project being looked around in would
-        // never get its proxies.
-        PreviewMouseMove += (_, e) =>
-        {
-            if (e.LeftButton == MouseButtonState.Pressed && Mouse.Captured is not null || _isScrubbing || _shuttle != 0)
-                _viewModel.NoteActivity();
-        };
         AddHandler(PreviewDragLeaveEvent, new DragEventHandler((_, e) => LeaveDropOverlay(e)), handledEventsToo: true);
         AddHandler(PreviewDropEvent, new DragEventHandler((_, _) => Dispatcher.BeginInvoke(HideDropOverlay)), handledEventsToo: true);
-        _scrubPace.Tick += ScrubPace_Tick;
 
         _dropLeave.Tick += (_, _) => HideDropOverlay();
         TransportRow.Fitting = FitTransport;
@@ -208,8 +199,11 @@ public partial class MainWindow : Window
         _viewModel.MarkersChanged += OnMarkersChanged;
         InitializePlaybackBar();
         InitializePlayerLayout();
+        HookLoupe();
         _viewModel.SessionCleared += OnSessionCleared;
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
+        // (The last file's Overview Bar pictures go before the new one is opened, which asks for its own.)
+        _viewModel.MediaLoaded += _ => ClearProgramStrip();
         _viewModel.MediaLoaded += PlayMedia;
 
         // Unsaved changes count from the user's first touch after a load or a save (4.3E): a key, a click, the wheel or a
@@ -267,9 +261,10 @@ public partial class MainWindow : Window
         Closed += MainWindow_Closed;
         Loaded += (_, _) => _ = CheckForHandPegUpdateAsync();
 
-        _viewModel.LiveFilterInvalidated += () => _liveStateVersion++;
+        // What a Windows notification would have said while HandPeg was in front goes on the status line instead (5.0-Release).
+        Notifier.Said += (title, message) => Dispatcher.BeginInvoke(() => _viewModel.StatusText = $"{title}: {message}");
+
         _viewModel.LiveFilterInvalidated += ScheduleLiveFilter;
-        _viewModel.LiveFilterInvalidated += () => _liveSoundRefused = false;
 
         // The timeline's rows follow the layers, and anything about a layer that changes (the main videos clips are layers: 4.3C).
         _viewModel.LiveFilterInvalidated += ScheduleClipRedraw;
@@ -315,13 +310,11 @@ public partial class MainWindow : Window
         NumericInput.ResetValue = _viewModel.GetResetValue;
         NumericInput.RegisterDoubleClickReset();
         VideoView.SizeChanged += (_, _) => ScheduleLiveFilter();
-        _liveFilterTimer.Tick += (_, _) => ApplyLiveFilter();
-        _shuttleTimer.Tick += (_, _) => ShuttleBack();
 
         // The player starts once there is a surface for it to draw on, away from the UI thread.
         // And not before the window has been drawn (_shellDrawn): the workspace is on screen first, and the
         // video canvas hooks in after it.
-        VideoView.SurfaceReady += () => _ = EnsurePlayerAsync();
+        VideoView.SurfaceReady += EnsureGpuEngine;
 
         // Once the window has been drawn, so the launch window opens over the program rather than over nothing.
         // (ContentRendered is raised once, when the window has actually been drawn; waiting for the dispatcher
@@ -339,7 +332,12 @@ public partial class MainWindow : Window
             AppLog.Write(FormattableString.Invariant($"Startup: window drawn {sinceStart:0} ms after the process started (window built in {built} ms)."));
 
             _shellDrawn = true;
-            Dispatcher.BeginInvoke(() => _ = EnsurePlayerAsync(), System.Windows.Threading.DispatcherPriority.Loaded);
+            Dispatcher.BeginInvoke(EnsureGpuEngine, System.Windows.Threading.DispatcherPriority.Loaded);
+
+            // What the timeline hides at the first frame (5.0, the user's Q5): its inspector, Text Settings and the tools'
+            // flyouts, made just after the first frame (they start hidden, so nothing moves when they come). The row of tools
+            // itself is made with the pane.
+            Dispatcher.BeginInvoke(UnifiedTimeline.RealizeTools, System.Windows.Threading.DispatcherPriority.ContextIdle);
 
             StyleLibrary.EnsureBuiltIns();
 
@@ -352,11 +350,13 @@ public partial class MainWindow : Window
             // A minute in, when nothing else is starting: the caches let go of what was made from files deleted since.
             _ = PurgeCachesLaterAsync();
 
-            // Downloads beyond the cache size, and temp folders of sessions that did not close cleanly: disk work, so not
-            // before the first frame (it was in the constructor, on this thread).
+            // Downloads beyond the cache size, temp folders of sessions that did not close cleanly, and the libmpv player an
+            // earlier version installed (5.0-Verify): disk work, so not before the first frame (it was in the constructor, on
+            // this thread).
             _ = WorkScheduler.Run(new WorkSpec("Tidying old sessions and downloads", WorkLane.Idle) { Visible = false, Cancellable = false }, _ => Task.Run(() =>
             {
                 SessionPaths.DeleteAbandonedSessions();
+                DependencyUpdater.DeleteRetiredPlayer();
                 YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize,
                     AppSettings.Current.KeepDownloadsUsedByProjects ? YtDlpDownloader.FoldersUsedByProjects([ProjectStore.Folder], []) : null);
             }), _windowClosing.Token);
@@ -582,7 +582,9 @@ public partial class MainWindow : Window
         ProcessPipes.KillAll();
         _viewModel.Shutdown();
         FollowPlayerByFrame(false);
-        _mpv?.Close();
+        _gpuRetry.Stop();
+        CloseGpuEngine();
+        _programStrip?.Dispose();
 
         // The most recent downloads stay, so the same URL loads without downloading again.
         YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize, _viewModel.PinnedDownloads());
@@ -743,6 +745,8 @@ public partial class MainWindow : Window
 
         if (dialog.NewProjectRequested)
             StartNewProject();
+        else if (dialog.BundleRequested)
+            SaveProjectAs(bundle: true);
         else if (dialog.ProjectToLoad is { } project)
             await _viewModel.LoadProjectAsync(project);
     }
@@ -770,8 +774,14 @@ public partial class MainWindow : Window
     // The session emptied (+ New Project): the player lets its file go, and the drop hint is back where the video was.
     private void OnSessionCleared()
     {
-        _mpv?.DropFilterGraph();
-        _mpv?.Stop();
+        if (_gpu is { } gpu)
+        {
+            gpu.Pause();
+            gpu.Seek(0);
+            _viewModel.IsPlaying = false;
+            FollowPlayerByFrame(false);
+        }
+
         UpdateVideoVisibility();
         RedrawLayout();
         RedrawPlayerLayout();
@@ -981,7 +991,7 @@ public partial class MainWindow : Window
             Title = _viewModel.HasSource ? "Add media to the timeline" : "Open a video",
             Multiselect = _viewModel.HasSource,
             Filter = $"Media files|{Patterns(all)}|Videos|{Patterns(MediaBrowserItem.VideoExtensions)}|Sounds|{Patterns(MediaBrowserItem.AudioExtensions)}"
-                + $"|Pictures|{Patterns(MediaBrowserItem.ImageExtensions)}|HandPeg projects|*{ProjectStore.Extension}|All files|*.*",
+                + $"|Pictures|{Patterns(MediaBrowserItem.ImageExtensions)}|HandPeg projects and bundles|*{ProjectStore.Extension};*{ProjectBundle.Extension}|All files|*.*",
         };
         if (dialog.ShowDialog(this) != true || dialog.FileNames is not { Length: > 0 } files)
             return;
@@ -1117,8 +1127,12 @@ public partial class MainWindow : Window
             SaveProjectAs();
     }
 
-    /// <summary>Save As: asks where, with the Windows file dialog. Neither kind of save touches the undo history.</summary>
-    private void SaveProjectAs()
+    /// <summary>
+    /// Save As: asks where, with the Windows file dialog. Neither kind of save touches the undo history. Its second file type
+    /// is the project bundle (5.0-Release: the project with every file it reads, in one .hpb), which <paramref name="bundle"/>
+    /// picks first.
+    /// </summary>
+    private void SaveProjectAs(bool bundle = false)
     {
         if (!_viewModel.HasSource)
         {
@@ -1131,13 +1145,19 @@ public partial class MainWindow : Window
         var dialog = new SaveFileDialog
         {
             Title = "Save Project As",
-            Filter = $"HandPeg project (*{ProjectStore.Extension})|*{ProjectStore.Extension}",
-            DefaultExt = ProjectStore.Extension,
+            Filter = $"HandPeg project (*{ProjectStore.Extension})|*{ProjectStore.Extension}"
+                     + $"|HandPeg project bundle, with its media (*{ProjectBundle.Extension})|*{ProjectBundle.Extension}",
+            FilterIndex = bundle ? 2 : 1,
+            DefaultExt = bundle ? ProjectBundle.Extension : ProjectStore.Extension,
             AddExtension = true,
             InitialDirectory = current.Length > 0 ? Path.GetDirectoryName(current) : AppPaths.Projects,
-            FileName = current.Length > 0 ? Path.GetFileName(current) : Path.GetFileNameWithoutExtension(_viewModel.SourcePath.Trim().Trim('"')),
+            FileName = current.Length > 0 ? Path.GetFileNameWithoutExtension(current) : Path.GetFileNameWithoutExtension(_viewModel.SourcePath.Trim().Trim('"')),
         };
-        if (dialog.ShowDialog(this) == true)
+        if (dialog.ShowDialog(this) != true)
+            return;
+        if (dialog.FilterIndex == 2 || dialog.FileName.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase))
+            _ = _viewModel.SaveBundleAsync(Path.ChangeExtension(dialog.FileName, ProjectBundle.Extension));
+        else
             _viewModel.SaveProjectTo(dialog.FileName);
     }
 
@@ -1189,7 +1209,7 @@ public partial class MainWindow : Window
         if (saved)
         {
             _viewModel.OnSettingsSaved();
-            _mpv?.SetHardwareAcceleration(AppSettings.Current.PlayerHardwareAcceleration);
+            _gpu?.ApplyAudioSettings(AppSettings.Current);
             if (_dock.IsRealized(ExportId))
                 FillExportSection();
         }
@@ -1203,8 +1223,8 @@ public partial class MainWindow : Window
         else if (AppUpdater.FoundVersion is { } found)
             ShowUpdateNotice(found, downloaded: false);
 
-        // The player may just have been installed from the dependency list.
-        _ = EnsurePlayerAsync();
+        // FFmpeg may just have been installed from the dependency list: the player starts if it had been waiting for something to show.
+        EnsureGpuEngine();
     }
 
 
@@ -1216,8 +1236,8 @@ public partial class MainWindow : Window
         _addMediaHover.Close();
         if (path.Length == 0)
             BrowseSource_Click(sender, e);
-        else if (path.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) && File.Exists(path))
-            _ = _viewModel.LoadProjectAsync(path);   // A project file in the Source box opens the project.
+        else if (ProjectStore.IsProjectFile(path))
+            _ = _viewModel.LoadProjectAsync(path);   // A project file (or bundle) in the Source box opens the project.
         else
             _viewModel.LoadSourceCommand.Execute(null);
     }
@@ -1270,12 +1290,25 @@ public partial class MainWindow : Window
 
         if (e.PropertyName is nameof(MainViewModel.ShowTimelineThumbnails) or nameof(MainViewModel.DurationMs))
             RebuildFilmstrip();
+        if (e.PropertyName == nameof(MainViewModel.ShowTimelineThumbnails))
+            ProgramStripSettingChanged();
+        if (e.PropertyName == nameof(MainViewModel.HasSource) && !_viewModel.HasSource)
+        {
+            ClearProgramStrip();
+            UnloadGpu();
+        }
 
         if (e.PropertyName == nameof(MainViewModel.Volume))
-            _mpv?.SetVolume(_viewModel.Volume);
+        {
+            if (_gpu is { } gpuVolume)
+                gpuVolume.Volume = (float)(_viewModel.Volume / 100.0);
+        }
 
         if (e.PropertyName == nameof(MainViewModel.PlaybackSpeed))
-            _mpv?.SetSpeed(_viewModel.PlaybackRate);
+        {
+            if (_gpu is { } gpuSpeed && _shuttle == 0)
+                gpuSpeed.Rate = _viewModel.PlaybackRate;
+        }
 
         if (e.PropertyName == nameof(MainViewModel.LivePreview))
         {
@@ -2300,7 +2333,9 @@ public partial class MainWindow : Window
 
     // ----- Timeline hover previews -----
 
-    private BitmapSource? _spriteSheet;
+    // The main file's key frames (FFmpeg's hover sheet): what the Overview Bar shows where the GPU cannot draw the
+    // sequence's own pictures (OverviewSheet, MainWindow.ProgramStrip.cs).
+    private ThumbnailSheet? _sourceSheet;
 
     // Which load of the thumbnail sheet is the latest: a sheet decoded after a newer one was asked for is not wanted.
     private int _spriteSheetLoads;
@@ -2313,13 +2348,16 @@ public partial class MainWindow : Window
     private async void LoadSpriteSheet()
     {
         var load = ++_spriteSheetLoads;
-        _spriteSheet = null;
+        _sourceSheet = null;
         PreviewPopup.IsOpen = false;
         var sheet = _viewModel.SpriteSheetPath is { } path ? await DecodeSpriteSheetAsync(path) : null;
         if (load != _spriteSheetLoads)
             return;
 
-        _spriteSheet = sheet;
+        const int grid = FfmpegRunner.SpriteGridSize;
+        _sourceSheet = sheet is { PixelWidth: >= grid, PixelHeight: >= grid } && _viewModel.SpriteIntervalSeconds > 0
+            ? new ThumbnailSheet(sheet, grid, grid * grid, sheet.PixelWidth / grid, sheet.PixelHeight / grid, _viewModel.SpriteIntervalSeconds, [])
+            : null;
         RebuildFilmstrip();
     }
 
@@ -2366,41 +2404,36 @@ public partial class MainWindow : Window
     private void FilmstripList_SizeChanged(object sender, SizeChangedEventArgs e) => RebuildFilmstrip();
 
     /// <summary>
-    /// Fills the strip behind the timeline's waveform with pictures cut from the thumbnail sheet: as many as fit at their
-    /// own shape, each showing the moment at the middle of the stretch of timeline it lies over.
+    /// Fills the strip behind the timeline's waveform with pictures cut from the thumbnail sheet (the sequence's own, drawn
+    /// by the GPU engine, else the main file's key frames): as many as fit at their own shape, each showing the moment at
+    /// the middle of the stretch of timeline it lies over.
     /// </summary>
     private void RebuildFilmstrip()
     {
-        var (interval, duration) = (_viewModel.SpriteIntervalSeconds, _viewModel.DurationMs / 1000);
-        if (!_viewModel.ShowTimelineThumbnails || _spriteSheet is not { } sheet || interval <= 0 || duration <= 0)
+        var duration = _viewModel.DurationMs / 1000;
+        if (!_viewModel.ShowTimelineThumbnails || OverviewSheet is not { } sheet || duration <= 0)
         {
             FilmstripList.ItemsSource = null;
             FilmstripList.Visibility = Visibility.Collapsed;
             return;
         }
 
-        const int grid = FfmpegRunner.SpriteGridSize;
-        var (cellWidth, cellHeight) = (sheet.PixelWidth / grid, sheet.PixelHeight / grid);
-        if (cellWidth <= 0 || cellHeight <= 0)
-            return;
-
         FilmstripList.Visibility = Visibility.Visible;
         var stripWidth = FilmstripList.ActualWidth > 0 ? FilmstripList.ActualWidth : TimelineSlider.ActualWidth;
-        var last = Math.Max(Math.Min(grid * grid, (int)Math.Ceiling(duration / interval)) - 1, 0);
         var stripHeight = FilmstripList.ActualHeight > 0 ? FilmstripList.ActualHeight : Math.Max(_viewModel.TimelineAreaHeight - 6, 8);
-        var count = Math.Clamp((int)Math.Round(stripWidth / (stripHeight * cellWidth / cellHeight)), 1, 80);
+        var count = Math.Clamp((int)Math.Round(stripWidth / (stripHeight * sheet.CellWidth / sheet.CellHeight)), 1, 80);
+        var last = LastPicture(sheet, duration);
 
         var pictures = new List<ImageSource>(count);
         for (var i = 0; i < count; i++)
-        {
-            var index = Math.Clamp((int)((i + 0.5) / count * duration / interval), 0, last);
-            var picture = new CroppedBitmap(sheet, new Int32Rect(index % grid * cellWidth, index / grid * cellHeight, cellWidth, cellHeight));
-            picture.Freeze();
-            pictures.Add(picture);
-        }
+            pictures.Add(sheet.Cell(Math.Min(sheet.IndexAt((i + 0.5) / count * duration), last)));
 
         FilmstripList.ItemsSource = pictures;
     }
+
+    // The last picture of a sheet that lies within the sequence (the main file's sheet is a whole grid, longer or shorter than it).
+    private static int LastPicture(ThumbnailSheet sheet, double duration) =>
+        Math.Max(Math.Min(sheet.Count, (int)Math.Ceiling(duration / sheet.IntervalSeconds)) - 1, 0);
 
     private void TimelineSlider_MouseMove(object sender, MouseEventArgs e)
     {
@@ -2413,8 +2446,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var interval = _viewModel.SpriteIntervalSeconds;
-        if (_spriteSheet is null || !_viewModel.ShowHoverPreviews || interval <= 0 || _viewModel.DurationMs <= 0 || TimelineSlider.ActualWidth <= 0)
+        if (OverviewSheet is not { } sheet || !_viewModel.ShowHoverPreviews || _viewModel.DurationMs <= 0 || TimelineSlider.ActualWidth <= 0)
         {
             PreviewPopup.IsOpen = false;
             return;
@@ -2424,20 +2456,11 @@ public partial class MainWindow : Window
         const double inset = 5.5;
         var x = e.GetPosition(TimelineSlider).X;
         var fraction = Math.Clamp((x - inset) / (TimelineSlider.ActualWidth - 2 * inset), 0, 1);
-        var seconds = fraction * _viewModel.DurationMs / 1000;
+        var duration = _viewModel.DurationMs / 1000;
+        var seconds = fraction * duration;
+        var (thumbnailWidth, thumbnailHeight) = (sheet.CellWidth, sheet.CellHeight);
 
-        // The sheet is a grid read left to right, top to bottom, one thumbnail per interval.
-        const int grid = FfmpegRunner.SpriteGridSize;
-        var last = Math.Min(grid * grid, (int)Math.Ceiling(_viewModel.DurationMs / 1000 / interval)) - 1;
-        var index = Math.Clamp((int)(seconds / interval), 0, Math.Max(last, 0));
-
-        var thumbnailWidth = _spriteSheet.PixelWidth / grid;
-        var thumbnailHeight = _spriteSheet.PixelHeight / grid;
-        if (thumbnailWidth <= 0 || thumbnailHeight <= 0)
-            return;
-
-        PreviewImage.Source = new CroppedBitmap(
-            _spriteSheet, new Int32Rect(index % grid * thumbnailWidth, index / grid * thumbnailHeight, thumbnailWidth, thumbnailHeight));
+        PreviewImage.Source = sheet.Cell(Math.Min(sheet.IndexAt(seconds), LastPicture(sheet, duration)));
         // Shown larger or smaller than generated, as set in Settings.
         var zoom = AppSettings.Current.HoverPreviewZoom;
         PreviewImage.Width = thumbnailWidth * zoom;

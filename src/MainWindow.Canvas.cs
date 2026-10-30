@@ -321,25 +321,14 @@ public partial class MainWindow
         // Last, so that it lies on top of everything, as the captions do in the output.
         if (_viewModel.AutoCaptions)
         {
+            // Moved, sized and centred as over the player (TrackLayerRect and the rest know the caption box, 5.0-Verify).
             var captions = _viewModel.CaptionLayer;
             var placeCaptions = AddArrangeLayer(
                 "Subtitles", (Style)FindResource("CaptionThumb"), captions, frame, scale,
-                () => captions.GetOutputRect(frameWidth, frameHeight, 0, 0),
-                (deltaX, deltaY) =>
-                {
-                    captions.PositionX = Math.Clamp(captions.PositionX + deltaX / frameWidth, 0, 1);
-                    captions.PositionY = Math.Clamp(captions.PositionY + deltaY / frameHeight, 0, 1);
-                },
-                (deltaX, deltaY) =>
-                {
-                    captions.SizeWidth = Math.Clamp(captions.SizeWidth + deltaX / frameWidth, 0.05, 1);
-                    captions.SizeHeight = Math.Clamp(captions.SizeHeight + deltaY / frameHeight, 0.03, 1);
-                },
-                reset: () =>
-                {
-                    captions.PositionX = Math.Clamp((1 - captions.SizeWidth) / 2, 0, 1);
-                    captions.PositionY = Math.Clamp((1 - captions.SizeHeight) / 2, 0, 1);
-                });
+                () => TrackLayerRect(captions),
+                (deltaX, deltaY) => MoveTrackLayer(captions, deltaX, deltaY, _layoutFrame, _layoutGuides),
+                (deltaX, deltaY) => ResizeTrackLayer(captions, deltaX, deltaY),
+                reset: () => CenterTrackLayer(captions));
 
             PropertyChangedEventHandler captionHandler = (_, _) => placeCaptions();
             captions.PropertyChanged += captionHandler;
@@ -478,10 +467,11 @@ public partial class MainWindow
     // ----- A track's layer moved, resized, centred and turned: the same in the layout pane and over the player -----
 
     // The main video's track is placed by the Center controls (4.3D), which stand for one of its clips (4.4): that clip's box
-    // is theirs, and moving or sizing it moves them; any other clip of it is drawn at its own place.
+    // is theirs, and moving or sizing it moves them; any other clip of it is drawn at its own place. The caption box
+    // (5.0-Verify: moved over the player as on the Canvas) is its corner and its size on the frame, kept on it.
     private (int X, int Y, int Width, int Height) TrackLayerRect(Layer element) => element.IsMainVideo
         ? _viewModel.GetMainClipRect(element)
-        : element.GetOutputRect(_viewModel.FrameWidth, _viewModel.FrameHeight, _viewModel.SourceWidth, _viewModel.SourceHeight);
+        : element.GetOutputRect(_viewModel.FrameWidth, _viewModel.FrameHeight, element.IsCaptions ? 0 : _viewModel.SourceWidth, element.IsCaptions ? 0 : _viewModel.SourceHeight);
 
     /// <summary>Moves a track's layer by a distance in output pixels, snapping to the guides of the frame it is dragged on.</summary>
     private void MoveTrackLayer(Layer element, double deltaX, double deltaY, Rect frame, LayoutGuidesView? guides)
@@ -504,8 +494,9 @@ public partial class MainWindow
         var (x, y) = (element.PositionX + deltaX / frameWidth, element.PositionY + deltaY / frameHeight);
         if (AppSettings.Current.SnapLayoutGuides && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
             (x, y) = SnapToGuides(x, y, element.SizeWidth, (double)TrackLayerRect(element).Height / frameHeight, frame, guides);
-        element.PositionX = Math.Clamp(x, -2, 2);
-        element.PositionY = Math.Clamp(y, -2, 2);
+        var (least, most) = element.IsCaptions ? (0.0, 1.0) : (-2.0, 2.0);
+        element.PositionX = Math.Clamp(x, least, most);
+        element.PositionY = Math.Clamp(y, least, most);
     }
 
     /// <summary>Grows a track's layer by a distance in output pixels, dragged by its corner.</summary>
@@ -518,6 +509,14 @@ public partial class MainWindow
         }
 
         var (frameWidth, frameHeight) = (_viewModel.FrameWidth, _viewModel.FrameHeight);
+
+        // The caption box: its width and height each by the pointer's move, from its corner, within the frame.
+        if (element.IsCaptions)
+        {
+            element.SizeWidth = Math.Clamp(element.SizeWidth + deltaX / frameWidth, 0.05, 1);
+            element.SizeHeight = Math.Clamp(element.SizeHeight + deltaY / frameHeight, 0.03, 1);
+            return;
+        }
 
         // Ctrl: dragged by its corner, the opposite corner is what stays put.
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))

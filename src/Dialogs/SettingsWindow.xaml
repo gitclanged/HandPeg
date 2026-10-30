@@ -260,20 +260,20 @@
                     <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,6">
                         <Hyperlink x:Name="RepositoryLink" RequestNavigate="Link_RequestNavigate" Foreground="{DynamicResource AccentBrush}" />
                         <Run Text="   " /><Hyperlink Click="PrivacyPolicy_Click" Foreground="{DynamicResource AccentBrush}" AutomationProperties.Name="Privacy Policy" ToolTip="What a crash report holds, and what HandPeg never collects.">Privacy Policy</Hyperlink>
-                        <Run Text="   Built on FFmpeg, libmpv, yt-dlp and whisper.cpp, which HandPeg downloads and does not ship." />
+                        <Run Text="   Built on FFmpeg, yt-dlp and whisper.cpp, which HandPeg downloads and does not ship." />
                     </TextBlock>
                     <StackPanel Style="{StaticResource Row}">
                         <Button x:Name="CheckUpdateButton" Content="Check for Updates" Click="CheckForUpdates_Click" AutomationProperties.Name="Check for HandPeg Updates"
                                 ToolTip="Looks now for a newer release of HandPeg itself. A copy put in by the installer offers it on the Update button at the bottom of the main window (or downloads it at once, when Auto-download is on). A self-contained copy, or one run from a build folder, is told whether there is a newer release and where to get it." />
                         <Button x:Name="UpdateDependenciesButton" Content="Update Dependencies" Margin="6,0,0,0" Click="UpdateDependencies_Click" AutomationProperties.Name="Update Dependencies"
-                                ToolTip="Installs whatever HandPeg needs that is missing, puts back the builds of FFmpeg, libmpv and whisper.cpp this version was tested with wherever another one is installed (the newest releases instead, when untested updates are allowed), and updates yt-dlp to its newest release. A tool with a path of your own is left alone. The same as Install / Update All Dependencies on the Tools &amp; Backup tab." />
+                                ToolTip="Installs whatever HandPeg needs that is missing, puts back the builds of FFmpeg and whisper.cpp this version was tested with wherever another one is installed (the newest releases instead, when untested updates are allowed), and updates yt-dlp to its newest release. A tool with a path of your own is left alone. The same as Install / Update All Dependencies on the Tools &amp; Backup tab." />
                         <TextBlock x:Name="UpdateStatusText" VerticalAlignment="Center" Margin="14,0,0,0" TextWrapping="Wrap" MaxWidth="640" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
                     <CheckBox Content="Auto-update dependencies in the background" IsChecked="{Binding AutoUpdateDependencies}" Margin="0,4,0,2" AutomationProperties.Name="Auto-Update Dependencies"
-                              ToolTip="A little after HandPeg starts, in the background (the progress shows at the bottom left; it waits while playing or exporting): FFmpeg, libmpv and whisper.cpp are put back to the builds this version was tested with where another one is installed (or brought to their newest releases, when untested updates are allowed below), and yt-dlp to its newest release. Only the tools HandPeg installed: one with a path of your own is left alone, and one never installed is not fetched. A tool in use is tried again at the next start." />
-                    <CheckBox x:Name="AllowUnpinnedBox" Content="Allow untested dependency updates (the newest FFmpeg, libmpv and whisper.cpp)" IsChecked="{Binding AllowUnpinnedDependencyUpdates}"
+                              ToolTip="A little after HandPeg starts, in the background (the progress shows at the bottom left; it waits while playing or exporting): FFmpeg and whisper.cpp are put back to the builds this version was tested with where another one is installed (or brought to their newest releases, when untested updates are allowed below), and yt-dlp to its newest release. Only the tools HandPeg installed: one with a path of your own is left alone, and one never installed is not fetched. A tool in use is tried again at the next start." />
+                    <CheckBox x:Name="AllowUnpinnedBox" Content="Allow untested dependency updates (the newest FFmpeg and whisper.cpp)" IsChecked="{Binding AllowUnpinnedDependencyUpdates}"
                               Click="AllowUnpinned_Click" Margin="0,2" AutomationProperties.Name="Allow Unpinned Dependency Updates"
-                              ToolTip="Off (recommended): FFmpeg, libmpv and whisper.cpp are installed and updated only to the builds this version of HandPeg was tested with, each checked against its SHA-256. On: to their newest upstream releases, which may change filter syntax or bring playback or export instability; you are asked first. Restore Pinned Recommended Versions on the Tools &amp; Backup tab turns it off again and puts the tested builds back. yt-dlp follows its newest release either way." />
+                              ToolTip="Off (recommended): FFmpeg and whisper.cpp are installed and updated only to the builds this version of HandPeg was tested with, each checked against its SHA-256. On: to their newest upstream releases, which may change filter syntax or bring export or caption instability; you are asked first. Restore Pinned Recommended Versions on the Tools &amp; Backup tab turns it off again and puts the tested builds back. yt-dlp follows its newest release either way." />
                     <CheckBox Content="Check for HandPeg updates on startup" IsChecked="{Binding CheckAppUpdatesOnStartup}" Margin="0,2" AutomationProperties.Name="Check for App Updates on Startup"
                               ToolTip="Looks for a newer HandPeg when it starts, and shows an Update button at the bottom of the window when there is one. Nothing is downloaded until you press it (unless the next option is on)." />
                     <CheckBox Content="Auto-download HandPeg updates in the background" IsChecked="{Binding AutoDownloadAppUpdates}" Margin="0,2,0,6" AutomationProperties.Name="Auto-Download App Updates"
@@ -347,7 +347,7 @@
                     <!-- Diagnostics: crash reports (CrashReporter), written here and sent once each (CrashReports.UploadPendingAsync) -->
                     <TextBlock Text="Diagnostics" Style="{StaticResource SectionTitle}" />
                     <CheckBox x:Name="CrashReportsCheck" Content="Save anonymous crash reports" IsChecked="{Binding SendCrashReports}" Margin="0,2" AutomationProperties.Name="Send Crash Reports"
-                              ToolTip="When HandPeg falls over, a crash report (.hpcrash) is written to the crash reports folder: the error, the parts of HandPeg that were running, its last few steps, the kind of media open (container, codecs, resolution, frame rate, length) and the computer (processor, memory, graphics cards, display, engine versions), with no file names, paths, names, serial numbers or words from your media. Reports stay on this PC; HandPeg never sends them (attach one to a GitHub issue to share it). On, a small watcher process (a second HandPeg.exe, using no processor time) runs beside HandPeg to catch crashes in libmpv or a graphics driver. Off: nothing is written and the watcher does not run. Applied when you press Save." />
+                              ToolTip="When HandPeg falls over, a crash report (.hpcrash) is written to the crash reports folder: the error, the parts of HandPeg that were running, its last few steps, the kind of media open (container, codecs, resolution, frame rate, length) and the computer (processor, memory, graphics cards, display, engine versions), with no file names, paths, names, serial numbers or words from your media. Reports stay on this PC; HandPeg never sends them (attach one to a GitHub issue to share it). On, a small watcher process (a second HandPeg.exe, using no processor time) runs beside HandPeg to catch crashes in a graphics driver or another native library. Off: nothing is written and the watcher does not run. Applied when you press Save." />
                     <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,6">
                         <Run Text="Uses 0% CPU during normal editing, 20 KB of shared memory, and a ~6.8 MB idle background sentinel process. A report holds no file names, paths, names or words from your media; the newest 50 are kept here." />
                         <Hyperlink Click="PrivacyPolicy_Click" Foreground="{DynamicResource AccentBrush}" AutomationProperties.Name="Diagnostics Privacy Policy">Privacy Policy</Hyperlink>
@@ -367,11 +367,11 @@
                 <StackPanel>
                     <TextBlock Text="Timeline" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Whether waveforms are drawn, and whether a strip of pictures from the video is drawn along the timeline behind them. (How tall the timeline is, is the slider beside the volume in the main window.) The pictures are made in the background after each load, from the same sheet as the hover previews below." />
+                               Text="Whether waveforms are drawn, and whether a strip of pictures from the video is drawn along the timeline behind them. (How tall the timeline is, is the slider beside the volume in the main window.) The pictures are the finished sequence (every track, crop, mask, effect and blurred background), drawn by the GPU engine on the background graphics card and drawn again a moment after each edit, from the same sheet as the hover previews below." />
                     <CheckBox Content="Show waveforms" IsChecked="{Binding ShowTimelineWaveform}"
                               ToolTip="After each load, draws the mix of the active audio tracks behind the timeline, and each audio track's own waveform on its row of the timeline. Applies to the next video you load." />
                     <CheckBox Content="Show Timeline Thumbnails" IsChecked="{Binding ShowTimelineThumbnails}"
-                              ToolTip="Draws a strip of pictures from the video along the timeline, behind the waveform. On by default. Applies to the next video you load." />
+                              ToolTip="Draws a strip of pictures of the finished sequence along the Overview Bar, behind the waveform, drawn again a moment after each edit. On by default." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Video Layer Thumbnail Count:" Style="{StaticResource FieldLabel}" />
                         <Slider Width="150" Minimum="1" Maximum="25" VerticalAlignment="Center"
@@ -438,7 +438,7 @@
 
                     <TextBlock Text="Hover previews" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="A small picture of the video appears above the pointer as it moves along the timeline. The pictures are made in the background after each load; a long video spaces them further apart so one sheet covers all of it." />
+                               Text="A small picture of the finished sequence appears above the pointer as it moves along the Overview Bar. The pictures are drawn by the GPU engine in the background, and drawn again a moment after each edit (only those the edit changed); a long sequence spaces them further apart so one sheet of 100 covers all of it. Where the GPU cannot draw them, they are the main file's key frames." />
                     <CheckBox Content="Auto-generate hover previews on load" IsChecked="{Binding GenerateHoverPreviews}" />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Thumbnail Interval (seconds):" Style="{StaticResource FieldLabel}" />
@@ -453,20 +453,35 @@
                     </StackPanel>
 
                     <TextBlock Text="Player" Style="{StaticResource SectionTitle}" />
-                    <CheckBox Content="Use GPU acceleration in the video player" IsChecked="{Binding PlayerHardwareAcceleration}"
-                              ToolTip="The graphics card decodes the video as well as drawing it (Direct3D 11), which keeps high-resolution and high-frame-rate footage smooth and the processor free. With Live Preview on, the card still decodes and each frame is handed to the filters. Turn this off if the picture is green, garbled or stutters: the processor then decodes. Applied when you press Save." />
+                    <CheckBox Content="Hardware video decoding (GPU preview)" IsChecked="{Binding PlayerHardwareAcceleration}" AutomationProperties.Name="Hardware Video Decoding"
+                              ToolTip="The graphics card decodes the preview's video (Media Foundation on Direct3D 11) as well as drawing it, which keeps high-resolution and high-frame-rate footage smooth and the processor free. Turn this off if the preview shows broken frames (green, garbled or blocky pictures from a driver's decoder): the processor then decodes, more slowly. Exports are not affected. Applies when the player starts again (Reload Player, or the next start of HandPeg)." />
                     <CheckBox Content="Edit Layers on Video Preview" IsChecked="{Binding EditLayersOnPlayer}" AutomationProperties.Name="Edit Layers on Video Preview"
                               ToolTip="With Live Preview on, click a layer on the player to select it, then drag it to move it, its corner to resize it, its round handle to turn it and its gold dot to move its anchor, as in the Canvas. Only the selected layer's outline and handles are drawn over the video, and none while it plays; a click on the video away from it hides them. Also in the Canvas's title row and the playback bar." />
                     <CheckBox Content="Show advanced playback controls" IsChecked="{Binding ShowAdvancedPlayback}"
                               ToolTip="A transport row centred under the player: reload player, previous I-frame, back one frame, play/pause, forward one frame, next I-frame and render preview, with a playback speed selector (0.25x to 2x) beside it." />
-                    <StackPanel Style="{StaticResource Row}"
-                                ToolTip="Live Preview, while the playhead is dragged or wound back. Still Frame: each video layer shows the I-frame nearest the playhead, which keeps up with the drag. Live: the layers are decoded to the exact frame, which is slow for 4K or AV1 files. Hidden: the layers are left out. They play live again as soon as the playhead is let go.">
-                        <TextBlock Text="Video Layers While Scrubbing:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox MinWidth="150" Margin="0" ItemsSource="{x:Static services:AppSettings.ScrubLayerChoices}" SelectedItem="{Binding LayersWhileScrubbing}"
-                                  AutomationProperties.Name="Video Layers While Scrubbing" />
+
+                    <!-- The v5.0 sound engine (5.0C, SettingsWindow.AudioEngine.cs): the device list is filled when the section is shown. -->
+                    <TextBlock Text="Audio playback" Style="{StaticResource SectionTitle}" />
+                    <StackPanel x:Name="AudioEngineSection" Loaded="AudioEngineSection_Loaded">
+                        <TextBlock Style="{StaticResource Hint}"
+                                   Text="The GPU preview's sound: every clip mixed live as the export mixes it, and the clock the picture follows. A smaller buffer answers seeks and edits sooner; a larger one rides out a busy processor. Applied when you press Save." />
+                        <StackPanel Style="{StaticResource Row}"
+                                    ToolTip="Where the editor's sound plays. System Default follows Windows' default output, also when it changes while HandPeg is open. A chosen device that is unplugged plays on the default one until it is back.">
+                            <TextBlock Text="Output Device:" Style="{StaticResource FieldLabel}" />
+                            <ComboBox x:Name="AudioDeviceBox" MinWidth="250" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                      SelectedValue="{Binding AudioOutputDeviceId}" AutomationProperties.Name="Audio Output Device" />
+                        </StackPanel>
+                        <StackPanel Style="{StaticResource Row}">
+                            <TextBlock Text="Audio Buffer (ms):" Style="{StaticResource FieldLabel}" />
+                            <TextBox Width="60" Text="{Binding AudioBufferMs, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Audio Buffer"
+                                     local:NumericInput.Default="10" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="3" local:NumericInput.Maximum="40" local:NumericInput.Decimals="0"
+                                     ToolTip="How much sound is kept queued for the device, in milliseconds (3 to 40). Never less than one and a half of the device's own periods. Default: 10." />
+                            <TextBlock Text="Audio Sync Offset (ms):" Style="{StaticResource FieldLabel}" Margin="28,0,8,0" />
+                            <TextBox Width="60" Text="{Binding AudioSyncOffsetMs, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Audio Sync Offset"
+                                     local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Minimum="-250" local:NumericInput.Maximum="250" local:NumericInput.Decimals="0"
+                                     ToolTip="Moves the sound against the picture in the editor, in milliseconds (-250 to 250): positive plays the sound later. For speakers or a headset whose own delay Windows does not report (Bluetooth). Exports are not changed. Default: 0." />
+                        </StackPanel>
                     </StackPanel>
-                    <CheckBox Content="Draft Mode: skip red-cost effects while scrubbing" IsChecked="{Binding DraftScrubSkipHeavyEffects}" AutomationProperties.Name="Draft Mode"
-                              ToolTip="Live Preview: while the playhead is dragged or wound back, the effects marked red on the Effects pane (Denoise, Matte Smooth) are left out, so scrubbing keeps up. They are back as soon as the playhead is let go; exports always have them." />
 
                     <TextBlock Text="Tabs and bars" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Show Command Preview Tab" IsChecked="{Binding ShowCommandPreviewTab}"
@@ -521,13 +536,13 @@
                                 ToolTip="Deletes everything in the media browser's cache now." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
-                                ToolTip="How large the proxy cache may grow (proxies of heavy videos, and timeline proxies). Past it, the proxies used longest ago are deleted; a proxy playing now never is.">
+                                ToolTip="How large the proxy cache may grow (the proxies clips asked for). Past it, the proxies used longest ago are deleted; a proxy playing now never is. The cache is always on: a proxy is there only because a clip asked for one.">
                         <TextBlock Text="Proxy Cache Size (GB):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="70" Text="{Binding ProxyCacheGigabytes, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Proxy Cache Size"
                                  local:NumericInput.Default="20" local:NumericInput.DragStep="0.05" local:NumericInput.Minimum="0.25" local:NumericInput.Maximum="2000" local:NumericInput.Decimals="2" />
                         <TextBlock x:Name="ProxyCacheUsage" Style="{StaticResource FieldLabel}" Margin="16,0,12,0" Foreground="{DynamicResource MutedTextBrush}" />
                         <Button Content="Clear Proxy Cache" Padding="12,3" Tag="Proxies" Click="ClearCache_Click" AutomationProperties.Name="Clear Proxy Cache"
-                                ToolTip="Deletes every proxy in the proxy cache now. They are made again, in the background, when they are needed." />
+                                ToolTip="Deletes every proxy in the proxy cache now. Those clips still ask for are made again, in the background." />
                     </StackPanel>
                     <CheckBox Content="Remove previews of deleted files at startup" IsChecked="{Binding PurgeMissingAtStartup}" AutomationProperties.Name="Remove Previews of Deleted Files"
                               ToolTip="A while after HandPeg starts, the timeline and media browser caches let go of what was made from files that have since been deleted or changed. Files on a drive that is not plugged in are kept." />
@@ -542,24 +557,12 @@
 
                     <TextBlock Text="Proxies" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="A proxy is a small copy of a heavy video (4K, AV1, VP9, ProRes, 10-bit HEVC, far between I-frames) that Live Preview plays in its place, so that seeking and playing cost what a 540-line H.264 file costs. Proxies are made in the background, on the second graphics card where there is one, once HandPeg has been left alone a few seconds. Exports always read the original files, and the sound always comes from the originals. A clip's right-click menu can ask for a proxy, or for the original." />
-                    <CheckBox Content="Per-clip video proxies (heavy files)" IsChecked="{Binding VideoProxies}" AutomationProperties.Name="Per-Clip Video Proxies"
-                              ToolTip="Heavy videos on the timeline get a proxy, which Live Preview plays in their place. Off, only clips set to Make Proxy (right-click) get one." />
+                               Text="A proxy is a small copy of a video whose I-frames are far apart (a long-GOP recording) that the GPU preview plays in its place, so that seeking and scrubbing it cost what a 540-line H.264 file costs. Most cards need none: the preview decodes the original on the graphics card and keeps what it has decoded in video memory (Instant Seek, Export &amp; Hardware). So a clip's right-click Optimize Long-GOP Clip for Scrubbing is offered only where it helps: a long-GOP video layer whose codec the card cannot decode, a preview on the processor, or one that has been slow to show exact frames; hold Shift as the menu opens to have it anyway. Proxies are made in the background, on the second graphics card where there is one. Exports always read the original files, and the sound always comes from the originals." />
                     <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Make Proxies For:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox MinWidth="250" Margin="0" ItemsSource="{x:Static services:AppSettings.ProxyScopes}" SelectedItem="{Binding ProxyScope}"
-                                  AutomationProperties.Name="Make Proxies For"
-                                  ToolTip="The video layers only, or the main video as well. A proxied main video plays its picture from the proxy and its sound from the original." />
-                    </StackPanel>
-                    <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Heavy: Larger Than (p):" Style="{StaticResource FieldLabel}" />
-                        <TextBox Width="70" Text="{Binding ProxyHeavyHeight, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Heavy Larger Than"
-                                 local:NumericInput.Default="1080" local:NumericInput.DragStep="2" local:NumericInput.Minimum="240" local:NumericInput.Maximum="8640" local:NumericInput.Decimals="0"
-                                 ToolTip="A video larger than this counts as heavy: 1080 means anything above 1080p, upright or on its side (by its shorter side). AV1, VP9, ProRes and 10-bit HEVC always count, whatever their size." />
-                        <TextBlock Text="or I-Frames Further Apart Than (s):" Style="{StaticResource FieldLabel}" Margin="20,0,12,0" />
-                        <TextBox Width="60" Text="{Binding ProxyHeavyIFrameSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Heavy I-Frames Further Apart Than"
+                        <TextBlock Text="Long-GOP: I-Frames Further Apart Than (s):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="60" Text="{Binding ProxyHeavyIFrameSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Long-GOP I-Frames Further Apart Than"
                                  local:NumericInput.Default="2" local:NumericInput.DragStep="0.02" local:NumericInput.Minimum="0.5" local:NumericInput.Maximum="60" local:NumericInput.Decimals="1"
-                                 ToolTip="Every seek decodes from the I-frame before it: a video whose I-frames are further apart than this counts as heavy." />
+                                 ToolTip="Every seek decodes from the I-frame before it: a video layer whose I-frames are further apart than this (at the median) is long-GOP, and its right-click menu offers Optimize Long-GOP Clip for Scrubbing when the preview cannot decode it fast." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Proxy Height (lines):" Style="{StaticResource FieldLabel}" />
@@ -576,16 +579,6 @@
                         <ComboBox MinWidth="150" Margin="0" ItemsSource="{x:Static services:AppSettings.ProxyEncoders}" SelectedItem="{Binding ProxyEncoder}" AutomationProperties.Name="Proxy Encoder"
                                   ToolTip="What encodes H.264 proxies. Auto: the background graphics card's encoder (Settings, Performance), then the main card's, then the processor. An encoder that fails is followed by the next." />
                     </StackPanel>
-                    <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Start Making Proxies After (seconds idle):" Style="{StaticResource FieldLabel}" />
-                        <TextBox Width="60" Text="{Binding ProxyIdleSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Start Making Proxies After"
-                                 local:NumericInput.Default="10" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="3600" local:NumericInput.Decimals="0"
-                                 ToolTip="Proxies are made once nothing heavy has happened for this long (no scrubbing, no clip or box being dragged), and HandPeg is not playing or exporting. Ordinary mouse moves and clicks do not put it off." />
-                        <TextBlock Text="With a Background Card:" Style="{StaticResource FieldLabel}" Margin="20,0,12,0" />
-                        <TextBox Width="60" Text="{Binding ProxyIdleSecondsWithBackgroundCard, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Start Making Proxies After With a Background Card"
-                                 local:NumericInput.Default="2" local:NumericInput.DragStep="0.2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="3600" local:NumericInput.Decimals="0"
-                                 ToolTip="The wait instead, when a graphics card other than the player's makes the proxies (Background Graphics Card, under Performance): it takes nothing from playback, so the proxy can be ready sooner." />
-                    </StackPanel>
                     <CheckBox Content="Pause making proxies while playing" IsChecked="{Binding PauseProxiesWhilePlaying}" AutomationProperties.Name="Pause Making Proxies While Playing"
                               ToolTip="A proxy being made stops where it is while the player plays, and goes on afterwards." />
                     <StackPanel Style="{StaticResource Row}">
@@ -597,8 +590,6 @@
                               ToolTip="A while after HandPeg starts, the proxies of files that have since been deleted or changed are deleted (files on missing drives are kept, as above)." />
                     <CheckBox Content="Delete a project's proxies when it is closed" IsChecked="{Binding ClearProjectProxiesOnExit}" AutomationProperties.Name="Delete Project Proxies on Close"
                               ToolTip="When another video or project is opened, or HandPeg closes, the proxies of the files the project used are deleted. Saves disk space; they are made again next time." />
-                    <CheckBox Content="Composed timeline proxy" IsChecked="{Binding TimelineProxy}" AutomationProperties.Name="Composed Timeline Proxy"
-                              ToolTip="Once the timeline has not changed for a while, the whole sequence is rendered in the background as one small video, which the player then plays with no live filters at all (the sound is still mixed live from the originals). Any change goes back to Live Preview at once. For heavy layouts with many layers; off by default." />
 
                     <TextBlock Text="Media browser" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
@@ -767,16 +758,89 @@
                     <CheckBox Content="Save the Target File Size with each preset" IsChecked="{Binding SaveTargetSizeInPresets}"
                               ToolTip="When on, Save Preset also stores the Target File Size set at the time, and applying that preset brings it back." />
 
-                    <TextBlock Text="Hardware" Style="{StaticResource SectionTitle}" />
-                    <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Hardware Decode Adapter:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="DecodeAdapterBox" MinWidth="300" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Index"
-                                  SelectedValue="{Binding HardwareDecodeAdapter}" AutomationProperties.Name="Hardware Decode Adapter"
-                                  ToolTip="Which graphics card decodes the video for an encode, when Enable Hardware Decoding is ticked on the Video tab. Automatic leaves it to FFmpeg (-hwaccel auto). Choosing a card names it to FFmpeg (-hwaccel d3d11va -hwaccel_device and its number), so that a second card can take the decoding while the first one encodes or runs a game." />
+                    <!-- The four GPU roles (5.0-0): each card's job, set by hand or by Test & Auto-Tune Hardware (HardwareBenchmarkService) -->
+                    <TextBlock Text="GPU Roles" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="Which graphics card does what. Auto suits most computers. Test &amp; Auto-Tune Hardware measures every card in a few seconds (decoding speed, seeking, accuracy, and how fast frames cross between cards) and sets all four from what it finds; each stays yours to change." />
+                    <!-- One option: the button, its status, and (after a test) why each role went where it did -->
+                    <StackPanel>
+                        <StackPanel Style="{StaticResource Row}">
+                            <Button x:Name="BenchmarkButton" Padding="12,4" Margin="0" Click="Benchmark_Click" AutomationProperties.Name="Test &amp; Auto-Tune Hardware"
+                                    ToolTip="Runs the hardware benchmark: each graphics card decodes a short 1080p60 test clip in hardware and the processor decodes it too, for speed, seek time and accuracy against the processor's picture, then frames are sent to and from each card and between two cards. The results are drawn beside this list, kept, and the four GPU roles below are set from them. It runs in a process of its own, so a driver that falls over cannot take HandPeg with it. Press again to stop it.">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" />
+                                    <TextBlock x:Name="BenchmarkButtonText" Text="Test &amp; Auto-Tune Hardware" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <TextBlock x:Name="BenchmarkStatusText" Margin="10,0,0,0" MaxWidth="360" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}"
+                                       TextTrimming="CharacterEllipsis" AutomationProperties.AutomationId="BenchmarkStatus" />
+                        </StackPanel>
+                        <TextBlock x:Name="BenchmarkReasonsText" Visibility="Collapsed" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap"
+                                   Margin="0,0,0,6" AutomationProperties.AutomationId="BenchmarkReasons" />
                     </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Compositor GPU:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="CompositorGpuBox" MinWidth="260" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding CompositorGpuAdapter}" AutomationProperties.Name="Compositor GPU"
+                                  ToolTip="Viewport &amp; HLSL Shader Compositor GPU: the card the GPU compositor draws the player on and renders every layer, effect and transition with. Auto: the high-performance card (the one Windows gives demanding programs). Takes effect the next time the compositor starts." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Timeline Decode GPU:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DecodeGpuBox" MinWidth="260" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding DecodeGpuAdapter}" AutomationProperties.Name="Timeline Decode GPU"
+                                  ToolTip="Timeline Layer Hardware Decode GPU: the card that decodes the timeline's video layers for the compositor. Auto: the compositor's own card, so decoded frames never leave its memory (zero-copy). Another card decodes and copies each frame across (worth it only when it is much faster: the benchmark measures both)." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Background GPU:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="BackgroundGpuBox" MinWidth="260" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding BackgroundGpu}" AutomationProperties.Name="Background Graphics Card"
+                                  ToolTip="Background Jobs, Whisper &amp; Analysis GPU: the card background tools decode on (and proxies are encoded on). Auto: a card other than the one the player draws on, when there is one (an Intel Arc beside a Radeon, say), so the player's card is left to the player. Processor Only: no graphics card." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Export GPU:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DecodeAdapterBox" MinWidth="260" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Index"
+                                  SelectedValue="{Binding HardwareDecodeAdapter}" AutomationProperties.Name="Hardware Decode Adapter"
+                                  ToolTip="Hardware Encode Export GPU: which graphics card decodes the video for an encode, when Enable Hardware Decoding is ticked on the Video tab. Automatic leaves it to FFmpeg (-hwaccel auto). Choosing a card names it to FFmpeg (-hwaccel d3d11va -hwaccel_device and its number), so that a second card can take the decoding while the first one encodes or runs a game." />
+                    </StackPanel>
+
+                    <!-- The GPU preview engine (5.0D, SettingsWindow.GpuEngine.cs): Instant Seek's frame cache (its readout refreshed while
+                         this page is shown) and the compositor's decode threads -->
+                    <TextBlock Text="GPU Preview Engine" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource Hint}"
+                               Text="The player: the GPU compositor draws every layer, effect and transition on the graphics card, plays the sound through its own mixer, and seeks with Instant Seek: every frame it decodes is kept in video memory, so steps back, scrubs and seeks over anything decoded once cost nothing. Should the card fail, the player says so and starts again by itself, on the processor (WARP) if the card fails twice; Reload Player tries the card again." />
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Frame Cache (MB):" Style="{StaticResource FieldLabel}" />
+                        <TextBox Width="70" Text="{Binding GpuFrameCacheMb, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="GPU Frame Cache"
+                                 local:NumericInput.Default="0" local:NumericInput.DragStep="2" local:NumericInput.Minimum="-1" local:NumericInput.Maximum="65536" local:NumericInput.Decimals="0"
+                                 ToolTip="How much video memory Instant Seek may keep decoded frames in, in megabytes. 0 is Auto: an eighth of the compositor card's own memory, at most 3 GB. -1 turns it off: every frame is decoded when it is shown (only the few on screen are kept). Windows' own budget for HandPeg always caps it, so the cache shrinks at once when a game needs the memory. Applies as soon as you press Save." />
+                        <TextBlock x:Name="GpuCacheUsage" Style="{StaticResource FieldLabel}" Margin="16,0,12,0" Foreground="{DynamicResource MutedTextBrush}" />
+                        <Button x:Name="ClearGpuCacheButton" Content="Clear" Padding="12,3" Click="ClearGpuFrameCache_Click" AutomationProperties.Name="Clear GPU Frame Cache"
+                                ToolTip="Lets go of every frame the cache holds now: its video memory goes back at once. Frames are decoded again as they are shown." />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="What the frame cache is doing in the running player, twice a second while this page is shown: the frames it keeps, how often a frame asked for was already there (hits) or had to be decoded (misses), and how long the last exact frame took to arrive after it was asked for.">
+                        <TextBlock Text="Instant Seek Now:" Style="{StaticResource FieldLabel}" />
+                        <TextBlock x:Name="GpuCacheReadout" Style="{StaticResource FieldLabel}" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis"
+                                   AutomationProperties.AutomationId="GpuCacheReadout" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Decode Threads:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="GpuDecodeThreadsBox" MinWidth="130" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding GpuDecodeThreads}" AutomationProperties.Name="GPU Decode Threads"
+                                  ToolTip="How many frames the compositor decodes at once, each on a thread of its own: what the player shows first, then what it is about to show, then the moments under the pointer and round the playhead. Auto: two (most graphics cards decode two streams at full speed at once), one without a graphics card. Applies after HandPeg is restarted." />
+                    </StackPanel>
+
+                    <TextBlock Text="Hardware" Style="{StaticResource SectionTitle}" />
                     <Button x:Name="RetestEncodersButton" Content="Test Hardware Encoders Again" HorizontalAlignment="Left" Padding="12,4" Margin="0,4,0,0"
                             Click="RetestEncoders_Click" AutomationProperties.Name="Test Hardware Encoders Again"
                             ToolTip="The hardware encoders are tested with a short encode once for each FFmpeg and graphics driver, and the result is kept. Press this to test them again (after changing a card, say): the test runs when you press Save, or at the next start." />
+                    <!-- What renders an export's frames (5.0, AppSettings.Export.cs); the Export tab's Render choice is the same setting -->
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Export Renderer:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox MinWidth="200" Margin="0" ItemsSource="{x:Static services:AppSettings.ExportRenderers}" DisplayMemberPath="Display" SelectedValuePath="Value"
+                                  SelectedValue="{Binding ExportRenderer}" AutomationProperties.Name="Export Renderer"
+                                  ToolTip="What draws an export's frames. GPU Compositor (default): the engine that draws the player renders every frame on the Compositor GPU, exact to the frame, and FFmpeg encodes them with the export's own sound, captions and subtitles: the composing is taken off the processor. FFmpeg Filter Graph: FFmpeg composes the picture itself, as the Command Preview shows (the bit-exact reference). A Copy export, a GIF or WebP, a hand-edited command, the queue and anything the compositor cannot draw yet always go through FFmpeg, and so does a GPU export that fails, from the start." />
+                    </StackPanel>
                     <CheckBox Content="Fall back to the software encoder when a hardware encode fails" IsChecked="{Binding AutoFallbackToSoftware}"
                               ToolTip="If an encode or queue job fails on a hardware encoder, it is tried once more with libx264 (or libx265 for HEVC, SVT-AV1 for AV1)." />
                     <CheckBox Content="Install FFmpeg 8.1 instead of the newest build (for older NVIDIA drivers)" IsChecked="{Binding UseFfmpegForOlderNvidiaDrivers}"
@@ -813,12 +877,6 @@
                               ToolTip="Background work waiting to start waits while the player plays. Work already running carries on." />
                     <CheckBox Content="Pause background work while exporting" IsChecked="{Binding PauseBackgroundWhileExporting}" AutomationProperties.Name="Pause Background Work While Exporting"
                               ToolTip="Background work waiting to start waits while an export, Render Preview or the queue runs. Work already running carries on." />
-                    <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Background Graphics Card:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="BackgroundGpuBox" MinWidth="300" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
-                                  SelectedValue="{Binding BackgroundGpu}" AutomationProperties.Name="Background Graphics Card"
-                                  ToolTip="The graphics card background tools decode on (and proxies are encoded on). Auto: a card other than the one the player draws on, when there is one (an Intel Arc beside a Radeon, say), so the player's card is left to the player. Processor Only: no graphics card." />
-                    </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Threads per Background Tool:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="BackgroundThreadsBox" MinWidth="130" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
@@ -1172,7 +1230,7 @@
                 <StackPanel>
                     <TextBlock Text="Dependencies" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Everything HandPeg downloads, and what is installed. Nothing ships with HandPeg itself. FFmpeg, libmpv and whisper.cpp come from the builds this version of HandPeg was tested with (pinned, each checked against its SHA-256), unless untested updates are allowed; yt-dlp from its newest release. One button installs what is missing and replaces what is not the build to have; a tool with a path of your own (Advanced, below) is left alone." />
+                               Text="Everything HandPeg downloads, and what is installed. Nothing ships with HandPeg itself. FFmpeg and whisper.cpp come from the builds this version of HandPeg was tested with (pinned, each checked against its SHA-256), unless untested updates are allowed; yt-dlp from its newest release. One button installs what is missing and replaces what is not the build to have; a tool with a path of your own (Advanced, below) is left alone." />
                     <local:DependencyPanel x:Name="Dependencies" />
 
                     <!-- Folded until opened (4.3-0B); the search box opens it when something inside matches -->

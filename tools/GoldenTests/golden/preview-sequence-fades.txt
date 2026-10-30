@@ -1,0 +1,24 @@
+# Render Preview's stretches and the sequence's fades (5.0-Verify): faded only where a stretch overlaps the sequence's first or last second, on the sequence's clock, picture and sound alike (the sound engine's render fades the same moments); before, every preview's picture faded in from black at its start.
+
+the start (0 to 2 s):
+  GPU: fade=t=in:st=0:d=1
+  FFmpeg: fade=t=in:st=0:d=1 | afade=t=in:st=0:d=1
+
+inside the fade in (0.4 to 2.4 s):
+  GPU: setpts=PTS+0.4/TB,fade=t=in:st=0:d=1,setpts=PTS-0.4/TB
+  FFmpeg: setpts=PTS+0.4/TB,fade=t=in:st=0:d=1,setpts=PTS-0.4/TB | asetpts=PTS+0.4/TB,afade=t=in:st=0:d=1,asetpts=PTS-0.4/TB
+
+the middle (4 to 6 s):
+  GPU: no fade
+  FFmpeg: no fade
+
+the end (8.5 to 10 s):
+  GPU: setpts=PTS+8.5/TB,fade=t=out:st=9:d=1,setpts=PTS-8.5/TB
+  FFmpeg: setpts=PTS+8.5/TB,fade=t=out:st=9:d=1,setpts=PTS-8.5/TB | asetpts=PTS+8.5/TB,afade=t=out:st=9:d=1,asetpts=PTS-8.5/TB
+
+the whole (0 to 10 s):
+  GPU: fade=t=in:st=0:d=1,fade=t=out:st=9:d=1
+  FFmpeg: fade=t=in:st=0:d=1,fade=t=out:st=9:d=1 | afade=t=in:st=0:d=1,afade=t=out:st=9:d=1
+
+two joined (0.5 to 2 s, 9 to 10 s):
+  FFmpeg: setpts=PTS+0.5/TB,fade=t=in:st=0:d=1,setpts=PTS-0.5/TB | asetpts=PTS+0.5/TB,afade=t=in:st=0:d=1,asetpts=PTS-0.5/TB | setpts=PTS+9/TB,fade=t=out:st=9:d=1,setpts=PTS-9/TB | asetpts=PTS+9/TB,afade=t=out:st=9:d=1,asetpts=PTS-9/TB

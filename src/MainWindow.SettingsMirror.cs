@@ -9,7 +9,7 @@ namespace HandPegApp;
 // The Settings screen shows, above its drawn pictures, the part of the editor the option looked at is about, as it is now
 // (a VisualBrush of it: SettingsStagePreview.ShowMirror). Only a pane that is on show is offered: one that is closed,
 // hidden, behind another tab or not made yet is never made or shown for it (that would cost the memory and the work of a
-// pane the user did not open). The player's picture is drawn by mpv in a window of its own, which no brush can see: a
+// pane the user did not open). The player's picture is drawn by the GPU preview in a window of its own, which no brush can see: a
 // still from the thumbnail sheet at the playhead stands in for it.
 public partial class MainWindow
 {
@@ -55,29 +55,22 @@ public partial class MainWindow
         element is { IsVisible: true, ActualWidth: >= 40, ActualHeight: >= 20 } ? element : null;
 
     /// <summary>
-    /// The thumbnail sheet's picture nearest the playhead, as the timeline's strip cuts them (RebuildFilmstrip), or null
-    /// while there is no sheet. The sheet is made from the main video's own time; the playhead is the sequence's, which
-    /// is near enough for a stand-in.
+    /// The Overview Bar's picture nearest the playhead, as the timeline's strip cuts them (RebuildFilmstrip), or null while
+    /// there is no sheet: the sequence's own (drawn by the GPU engine), else the main file's key frames, whose own time is
+    /// near enough to the sequence's for a stand-in.
     /// </summary>
     private ImageSource? StillAtPlayhead()
     {
-        var (interval, duration) = (_viewModel.SpriteIntervalSeconds, _viewModel.DurationMs / 1000);
-        if (_spriteSheet is not { } sheet || interval <= 0 || duration <= 0)
+        var duration = _viewModel.DurationMs / 1000;
+        if (OverviewSheet is not { } sheet || duration <= 0)
             return null;
 
-        const int grid = FfmpegRunner.SpriteGridSize;
-        var (cellWidth, cellHeight) = (sheet.PixelWidth / grid, sheet.PixelHeight / grid);
-        if (cellWidth <= 0 || cellHeight <= 0)
-            return null;
-
-        var last = Math.Max(Math.Min(grid * grid, (int)Math.Ceiling(duration / interval)) - 1, 0);
-        var index = Math.Clamp((int)(_viewModel.PositionMs / 1000 / interval), 0, last);
-        if (_mirrorStill is { } kept && ReferenceEquals(kept.Sheet, sheet) && kept.Index == index)
+        var index = Math.Min(sheet.IndexAt(_viewModel.PositionMs / 1000), LastPicture(sheet, duration));
+        if (_mirrorStill is { } kept && ReferenceEquals(kept.Sheet, sheet.Picture) && kept.Index == index)
             return kept.Still;
 
-        var still = new CroppedBitmap(sheet, new Int32Rect(index % grid * cellWidth, index / grid * cellHeight, cellWidth, cellHeight));
-        still.Freeze();
-        _mirrorStill = (sheet, index, still);
+        var still = sheet.Cell(index);
+        _mirrorStill = (sheet.Picture, index, still);
         return still;
     }
 }

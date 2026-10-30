@@ -74,6 +74,8 @@ public partial class MainViewModel
 
         // The cuts and chapters lists are rewritten whenever the settings change, so the job gets copies of its own.
         CaptionJob? captions = null;
+        string? ownCaptions = null;
+        var copies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
         {
             // The caption file likewise is the job's own: the command names it the way a filter needs it written.
@@ -82,13 +84,13 @@ public partial class MainViewModel
             if (CommandUsesCaptions(command))
             {
                 Directory.CreateDirectory(QueueFolder);
-                var own = Path.Combine(QueueFolder, $"captions_{Guid.NewGuid():N}.ass");
+                var own = ownCaptions = Path.Combine(QueueFolder, $"captions_{Guid.NewGuid():N}.ass");
                 command = command.Replace(FilterGraphBuilder.CaptionFilter(CaptionsFilePath), FilterGraphBuilder.CaptionFilter(own), StringComparison.OrdinalIgnoreCase);
 
                 if (HasTextCues)
                 {
                     var lines = GetCueCaptions();
-                    WriteCaptionFile(lines.SelectMany(l => l).ToList(), lines, own, 0, forPlayer: false);
+                    WriteCaptionFile(lines.SelectMany(l => l).ToList(), lines, own, 0);
                 }
                 else
                 {
@@ -114,6 +116,7 @@ public partial class MainViewModel
                 var copy = Path.Combine(QueueFolder, $"{Path.GetFileNameWithoutExtension(shared)}_{Guid.NewGuid():N}{Path.GetExtension(shared)}");
                 File.Copy(shared, copy);
                 command = command.Replace(shared, copy, StringComparison.OrdinalIgnoreCase);
+                copies[shared] = copy;
 
                 // And it is that copy the job's captions are heard from.
                 if (heard)
@@ -128,7 +131,39 @@ public partial class MainViewModel
 
         return new QueueJob(
             SourcePath.Trim().Trim('"'), DestinationPath.Trim().Trim('"'), command,
-            TimeSpan.FromSeconds(GetOutputDuration()), CaptureState()) { Captions = captions };
+            TimeSpan.FromSeconds(GetOutputDuration()), CaptureState()) { Captions = captions, ExportState = JobExportState(command, ownCaptions, copies) };
+    }
+
+    /// <summary>
+    /// The sequence a job is made from, its captions, cuts, chapters and voiceover the job's own copies (CreateQueueJob), for
+    /// the GPU compositor to draw the job by (RunExportAsync): kept only when it makes the job's command exactly, so it can
+    /// never draw anything but what the command says. Null for a command edited by hand, or one it does not make.
+    /// </summary>
+    private SequenceExportState? JobExportState(string command, string? captions, IReadOnlyDictionary<string, string> copies)
+    {
+        if (IsCommandManuallyEdited)
+            return null;
+        try
+        {
+            string Own(string path) => copies.TryGetValue(path, out var copy) ? copy : path;
+            var state = CompileExportState();
+            state = state with
+            {
+                CaptionsFilePath = captions ?? state.CaptionsFilePath,
+                CutsFilePath = Own(state.CutsFilePath),
+                ChaptersFilePath = Own(state.ChaptersFilePath),
+                VoiceoverPath = Own(state.VoiceoverPath),
+            };
+            if (string.Equals(FilterGraphBuilder.BuildExportCommand(state).CommandLine, command, StringComparison.Ordinal))
+                return state;
+            AppLog.Write("A queued job's command is not its sequence's: FFmpeg's graph makes it.");
+            return null;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("A queued job keeps no sequence of its own (FFmpeg's graph makes it)", ex);
+            return null;
+        }
     }
 
     /// <summary>Starts following a job's status, so the queue count and buttons stay right as it runs.</summary>
@@ -329,7 +364,10 @@ public partial class MainViewModel
                 var jobSummary = CrashSummaries.Command(job.Command, expected);
                 CrashReporter.SetContext("export", "queue job: " + jobSummary);
                 CrashReporter.Note("queue", "job started: " + jobSummary);
-                await FfmpegRunner.RunAsync(job.Command, progress, cancellationToken, graphInFile: true);
+
+                // A job is its finished command line (perhaps edited by hand), and the sequence it was made from when that
+                // makes the line exactly (QueueJob.ExportState): the GPU compositor draws it then, FFmpeg's graph otherwise.
+                await RunExportAsync(job.Command, job.ExportState, progress, cancellationToken);
                 CrashReporter.Note("queue", "job finished");
                 job.Status = QueueJob.Complete;
                 job.Progress = 100;

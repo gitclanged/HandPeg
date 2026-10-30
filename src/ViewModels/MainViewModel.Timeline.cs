@@ -392,7 +392,8 @@ public partial class MainViewModel
         }
 
         // The sequence's look (4.4), only where it differs: a step that did not touch it leaves the graph's filters as they are.
-        if (snapshot.Look is { } look && look != CaptureLook())
+        // (Compared as JSON: it holds the blurred background's cards, a list, since 5.0-Release.)
+        if (snapshot.Look is { } look && !SameJson(look, CaptureLook()))
             ApplyLook(look);
 
         // A change made right after this is a step of its own, never the end of a burst from before it.

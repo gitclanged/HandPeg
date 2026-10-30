@@ -1,0 +1,6 @@
+# Media time from the first video frame in every container (5.0-Verify: an MPEG-TS layer's sound was 2.1 s early): the engine's sound against the export's, MP4, Matroska, MPEG-TS, M2TS and MPEG-PS made by HandPeg's FFmpeg with a non-zero start.
+MP4: the engine's sound against the export's, video start told and learnt: lag 0, correlation over 0.99
+Matroska: the engine's sound against the export's, video start told and learnt: lag 0, correlation over 0.99
+MPEG-TS: the engine's sound against the export's, video start told and learnt: lag 0, correlation over 0.99
+M2TS (sound first): the engine's sound against the export's, video start told and learnt: lag 0, correlation over 0.99
+MPEG-PS: the engine's sound against the export's, video start told and learnt: lag within 1 sample, correlation over 0.99

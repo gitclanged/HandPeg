@@ -290,8 +290,62 @@ public partial class MainWindow
     private FrameworkElement ExportContent()
     {
         var content = RealizeTabContent(ExportTab);
+        AddExportRendererChoice();
         FillExportSection();
         return content;
+    }
+
+    // ----- What renders the export's frames (5.0, AppSettings.ExportRenderer) -----
+
+    private ComboBox? _exportRendererBox;
+
+    /// <summary>
+    /// The Export tab's Render choice, after Easy Social Export | Advanced Export: the GPU compositor or FFmpeg's filter
+    /// graph, the very setting Settings' Export Renderer row shows (shown afresh whenever the window is active again, so a
+    /// change made there is seen here).
+    /// </summary>
+    private void AddExportRendererChoice()
+    {
+        if (_exportRendererBox is not null)
+            return;
+
+        var label = new TextBlock { Text = "Render:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 6, 0) };
+        label.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+        var box = new ComboBox
+        {
+            ItemsSource = AppSettings.ExportRenderers,
+            DisplayMemberPath = nameof(ExportRendererChoice.Display),
+            SelectedValuePath = nameof(ExportRendererChoice.Value),
+            MinWidth = 150,
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "What draws the export's frames. GPU Compositor: the engine that draws the player renders every frame on the graphics card, "
+                      + "and FFmpeg encodes them with the export's own sound, captions and subtitles. FFmpeg Filter Graph: FFmpeg composes the picture "
+                      + "itself, as the Command Preview shows (the bit-exact reference). A Copy export, a GIF or WebP, a hand-edited command and anything "
+                      + "the compositor cannot draw yet always go through FFmpeg, and so does a GPU export that fails, from the start. The same setting "
+                      + "as Settings > Export & Hardware > Export Renderer.",
+        };
+        AutomationProperties.SetName(box, "Export Renderer");
+        _exportRendererBox = box;
+        SyncExportRenderer();
+        box.SelectionChanged += (_, _) =>
+        {
+            if (box.SelectedValue is string value && !string.Equals(value, AppSettings.Current.ExportRenderer, StringComparison.Ordinal))
+                _viewModel.SetViewSetting(s => s.ExportRenderer = value);
+        };
+
+        ExportModeBar.Children.Add(label);
+        ExportModeBar.Children.Add(box);
+        Activated += (_, _) => SyncExportRenderer();
+    }
+
+    /// <summary>The Render choice as the setting is now; one saved as neither shows the GPU (what it is taken as).</summary>
+    private void SyncExportRenderer()
+    {
+        if (_exportRendererBox is not { } box)
+            return;
+        var value = AppSettings.Current.WantsGpuExport ? AppSettings.ExportRendererGpu : AppSettings.ExportRendererFfmpeg;
+        if (!Equals(box.SelectedValue, value))
+            box.SelectedValue = value;
     }
 
     /// <summary>

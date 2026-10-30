@@ -6,178 +6,12 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Services;
 
-// ----- The graph builder's sound: the live sound graph, the main video's sound, voiceover, layers' and tracks'
-// sound, clip fades, tempo and retiming, and the export's audio options -----
+// ----- The graph builder's sound: the main video's sound, voiceover, layers' and tracks' sound, clip fades, tempo and
+// retiming, and the export's audio options -----
 public static partial class FilterGraphBuilder
 {
     private sealed partial class Pass
     {
-        /// <summary>
-        /// The sound half of the live graph, from the player's audio tracks to its speakers: every audio track
-        /// of the video that is kept (not muted), with what the export does to it, and the sound of the layers
-        /// (video layers that carry sound, and audio clips), mixed. Empty when there is nothing to it but one
-        /// track played as it is: the player is then given no audio graph, and plays that track itself.
-        ///
-        /// Each track, as the export has it: its silenced stretches, its slip, ducked under the voices when it is
-        /// set to duck, then its own gain and processing (filters, EQ, compressor...). The fades in and out are
-        /// heard too. Not loudness normalization, which holds seconds of sound back and would fall out of step
-        /// with the picture.
-        ///
-        /// A layer's sound is read from its file inside the graph (amovie), as the export reads it, and mpv
-        /// does not seek such a source: after every jump it begins again at its beginning. Nor does the mix look
-        /// at time stamps; it adds up whatever samples arrive. So the sound is laid out from one moment, the one
-        /// playback starts at: every layer is cut and held back as that moment needs, each track of the video is
-        /// made to begin exactly there (aresample's first_pts drops what comes before it and fills in what is
-        /// missing), and all of them are then counted sample by sample from that moment (asetpts) and start level.
-        /// A jump to another moment needs the graph built again for that moment, which is for whoever plays it to ask for.
-        ///
-        /// The count is kept on the sequence's clock, the one the picture ([vo]) is on: the sound's first sample is
-        /// stamped with that moment, not 0. mpv lines the two up by their time stamps when playback starts, and drops
-        /// the sound it holds before the picture's first frame: a sound counted from 0 was dropped for as long as the
-        /// moment was into the sequence, and then played that far ahead of the picture (seen at 300 s: the layer's file
-        /// 418 s in under the frame of 118 s in).
-        /// </summary>
-        /// <param name="from">The moment playback starts from, in sequence seconds.</param>
-        /// <param name="mainTrack">Negative when the video has no sound of its own; otherwise every kept track is heard.</param>
-        public string BuildLiveAudioGraph(double from, int mainTrack)
-        {
-            if (!HasSource)
-                return "";
-
-            // Only what still has something to play: a clip that ended before this moment is not opened at all,
-            // nor one that starts after the window (the graph is built again before it does).
-            var layers = GetLayerAudioSources()
-                .Where(l => (l.Duration <= 0.001 || LayerAudioStart(l) + l.Duration > from + 0.05)
-                            && InWindow(LayerAudioStart(l), l.Duration > 0.001 ? LayerAudioStart(l) + l.Duration : double.PositiveInfinity))
-                .ToList();
-            var tracks = mainTrack < 0 ? [] : GetOutputAudioTracks().Where(t => !t.IsSilentBase).ToList();
-
-            // Nothing that could be heard at all. Otherwise the sound always goes through the graph, even one plain
-            // track: once a graph has taken mpv's audio tracks, mpv does not give them back to plain playback, so a
-            // graph without sound after one with sound is silence (muting down to one track did exactly that).
-            // With every track muted, the graph plays silence rather than mpv playing a muted track.
-            if (layers.Count == 0 && mainTrack < 0)
-                return "";
-
-            // Every input in the one form, and counted from the moment playback starts, on the sequence's clock: what
-            // is mixed, and what is ducked under what, then lines up sample for sample, and with the picture.
-            const string form = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
-            var first = ((long)Math.Round(from * 48000)).ToString(CultureInfo.InvariantCulture);
-            var fromHere = $"asetpts=(N+{first})/SR/TB";
-            var graph = new List<string>();
-            var inputs = new List<(string Name, bool Voice, bool Ducked, IReadOnlyList<string> Filters)>();
-
-            // Where the main video is not on the sequence the player plays a stand-in stretch of its file
-            // (see MainViewModel.PlayerSource), whose sound is not to be heard; nor where its clips are silenced. (The
-            // player places the file's sound as it places its picture, so that is what is let through: a J or L cut, or a
-            // slip, of one of its clips is exact in the export, and heard here as its picture is placed, until the player
-            // is given the sound's own places.)
-            var gate = IsMainWholeSequence ? "" : $"volume=0:enable='not({FilterGraphBuilder.BuildMainGate(GetMainHeard(), 0, SequenceSeconds)})',";
-
-            // And it fades in and out with its clips' pictures, at each clip's gain.
-            if (MainSoundEnvelope() is { } envelope)
-                gate += $"volume='{envelope}':eval=frame,";
-            for (var k = 0; k < tracks.Count; k++)
-            {
-                var track = tracks[k];
-                var steps = new List<string>();
-
-                // Silenced where it was silenced on the timeline: the times are the track's own, as the player reads it.
-                foreach (var (start, end) in track.MutedSpans)
-                    steps.Add($"volume=0:enable='between(t,{Number(start)},{Number(end)})'");
-
-                // Slipped later: held back by as much. Slipped earlier: what comes before the moment it now plays
-                // at is dropped, and the rest moved up. (Slipped later, the first moments after a jump are silent:
-                // what would play there comes from before the point the player reads the track from.)
-                if (track.Offset > 0.001)
-                    steps.Add($"adelay={(int)Math.Round(track.Offset * 1000)}:all=1");
-                else if (track.Offset < -0.001)
-                    steps.Add($"atrim=start={Number(from - track.Offset)},asetpts=PTS-{Number(-track.Offset)}/TB");
-
-                graph.Add($"[aid{(track.Index + 1).ToString(CultureInfo.InvariantCulture)}]{gate}{string.Concat(steps.Select(step => step + ","))}"
-                          + $"aresample=48000:async=1:first_pts={first},{fromHere},{form}[lt{k}]");
-                inputs.Add(($"lt{k}", track.IsVoice, track.AutoDuck && !track.IsVoice, track.GetFilterChain()));
-            }
-
-            if (tracks.Count == 0)
-            {
-                // No sound of the video's own: silence to the end of the sequence, for the rest to be mixed into.
-                graph.Add($"anullsrc=r=48000:cl=stereo,atrim=end={Number(Math.Max(SequenceSeconds - from, 0.1))},{fromHere},{form}[lt_base]");
-                inputs.Add(("lt_base", false, false, []));
-            }
-
-            // The layers bring their own gain and processing (see BuildLayerAudio).
-            for (var n = 0; n < layers.Count; n++)
-            {
-                graph.Add($"{BuildLayerAudio(layers[n], from)},{fromHere},{form}[ll{n}]");
-                inputs.Add(($"ll{n}", layers[n].IsVoice, layers[n] is { AutoDuck: true, IsVoice: false }, []));
-            }
-
-            // Auto-duck: the voices are mixed into one signal, which presses each ducked sound down while it is loud.
-            var voices = inputs.Where(i => i.Voice).ToList();
-            var ducked = inputs.Where(i => i.Ducked).ToList();
-            if (voices.Count > 0 && ducked.Count > 0)
-            {
-                var keys = new List<string>();
-                foreach (var voice in voices)
-                {
-                    graph.Add($"[{voice.Name}]asplit=2[{voice.Name}_hear][{voice.Name}_key]");
-                    keys.Add($"[{voice.Name}_key]");
-                    Rename(voice.Name, $"{voice.Name}_hear");
-                }
-
-                var key = keys[0];
-                if (keys.Count > 1)
-                {
-                    graph.Add($"{string.Concat(keys)}amix=inputs={keys.Count}:duration=longest:normalize=0[dkey]");
-                    key = "[dkey]";
-                }
-
-                if (ducked.Count > 1)
-                {
-                    graph.Add($"{key}asplit={ducked.Count}{string.Concat(ducked.Select((_, n) => $"[dkey{n}]"))}");
-                    for (var n = 0; n < ducked.Count; n++)
-                        Duck(ducked[n].Name, $"[dkey{n}]");
-                }
-                else
-                {
-                    Duck(ducked[0].Name, key);
-                }
-
-                // (A ducked sound is never a voice, so it still has the name it was given.)
-                void Duck(string name, string keyLabel)
-                {
-                    graph.Add($"[{name}]{keyLabel}{DuckFilter}[{name}_ducked]");
-                    Rename(name, $"{name}_ducked");
-                }
-            }
-
-            // Each track's own gain and processing, after the ducking, as in the export.
-            foreach (var input in inputs.Where(i => i.Filters.Count > 0).ToList())
-            {
-                graph.Add($"[{input.Name}]{string.Join(",", input.Filters)}[{input.Name}_fx]");
-                Rename(input.Name, $"{input.Name}_fx");
-            }
-
-            // The fades over the whole, on the sequence's clock, which the mix is on.
-            var finish = new List<string>();
-            if (FadeIn && from < FadeSeconds)
-                finish.Add($"volume='clip(t/{Number(FadeSeconds)},0,1)':eval=frame");
-            if (FadeOut && SequenceSeconds > FadeSeconds)
-                finish.Add($"volume='clip(({Number(SequenceSeconds)}-t)/{Number(FadeSeconds)},0,1)':eval=frame");
-
-            // The first input sets how long the mix lasts: a track of the video, or the silence standing in for one.
-            var mix = inputs.Count == 1 ? $"[{inputs[0].Name}]anull" : $"{string.Concat(inputs.Select(i => $"[{i.Name}]"))}amix=inputs={inputs.Count}:duration=first:normalize=0:dropout_transition=0";
-            graph.Add($"{mix}{string.Concat(finish.Select(f => "," + f))}{LiveAudioOutput}");
-            return string.Join(";", graph);
-
-            void Rename(string name, string to)
-            {
-                var at = inputs.FindIndex(i => i.Name == name);
-                inputs[at] = inputs[at] with { Name = to };
-            }
-        }
-
         /// <summary>
         /// What puts the main video's own sound where its picture is on the sequence: cut to the part of the
         /// file that is used, and held back until the main video comes in. Empty while the main video is the
@@ -279,33 +113,6 @@ public static partial class FilterGraphBuilder
                 yield return $"afade=t=out:st={Number(at + length - fadeOut)}:d={Ratio(fadeOut)}";
         }
 
-        /// <summary>
-        /// The main video's sound as its clips' fades and gains shape it, on the sequence's clock, for the live mix: each
-        /// fade's ramp and each clip's gain inside the clip, one everywhere else, so that a clip's fade or gain leaves the
-        /// clips beside it alone. Null when no clip fades or has a gain.
-        /// </summary>
-        private string? MainSoundEnvelope()
-        {
-            var terms = new StringBuilder();
-            foreach (var clip in GetMainHeard())
-            {
-                var length = clip.End - clip.Start;
-                var fadeIn = Math.Min(clip.FadeIn, length);
-                if (fadeIn > 0.01)
-                    terms.Append($"*({Progress("t", clip.Start, fadeIn)}+lt(t,{Number(clip.Start)}))");
-                var fadeOut = Math.Min(clip.FadeOut, Math.Max(length - fadeIn, 0));
-                if (fadeOut > 0.01)
-                    terms.Append($"*(clip(({Number(clip.End)}-t)/{Ratio(fadeOut)},0,1)+gte(t,{Number(clip.End)}))");
-                if (MainSoundGain(clip) is not null)
-                {
-                    var factor = Math.Pow(10, Math.Clamp(clip.GainDb, -40, 24) / 20) - 1;
-                    terms.Append($"*(1{(factor < 0 ? "-" : "+")}{Ratio(Math.Abs(factor))}*gte(t,{Number(clip.Start)})*lt(t,{Number(clip.End)}))");
-                }
-            }
-
-            return terms.Length > 0 ? "1" + terms : null;
-        }
-
         /// <summary>The voiceover's own steps: cut to its trim handles, moved to where it starts, set to its gain.</summary>
         private string BuildVoiceoverChain()
         {
@@ -337,11 +144,13 @@ public static partial class FilterGraphBuilder
                 preparedAudio.TryGetValue(track.Index, out var ready) ? ready : $"[0:a:{track.Index}]";
 
             // A track with a gain or processing of its own (the Audio tab) gets that first, as a step of the
-            // graph, and whatever is done with the track afterwards continues from there.
+            // graph, and whatever is done with the track afterwards continues from there. A track made ready in
+            // BuildFfmpegCommand has had it already (before the clips' sound was mixed in: the track's alone), and the
+            // silent base has none: neither is processed again.
             var prepared = new Dictionary<int, string>();
             string Prepared(ExportAudioTrack track)
             {
-                if (!track.HasProcessing || track.GetFilterChain() is not { Count: > 0 } chain)
+                if (preparedAudio.ContainsKey(track.Index) || track.IsSilentBase || !track.HasProcessing || track.GetFilterChain() is not { Count: > 0 } chain)
                     return Source(track);
 
                 if (!prepared.TryGetValue(track.Index, out var label))
@@ -498,33 +307,25 @@ public static partial class FilterGraphBuilder
         /// <summary>
         /// The sound of a video layer, as a chain that ends where the caller labels it: read from the layer's file
         /// inside the graph, started where the layer's picture starts (or as far from there as it was slipped),
-        /// and no longer than the layer is on screen.
+        /// and no longer than the layer is on screen. The chain's clock is the sequence's, from its start: what a
+        /// sound slipped to before then would have played is skipped in its file, and a later one is held back.
         /// </summary>
-        /// <param name="from">
-        /// The moment of the sequence the chain's sound begins at: 0 for the export, which plays the whole
-        /// sequence, and for Live Preview the moment playback starts from. What the layer would have played
-        /// before then is skipped in its file, and it is held back only by what is left until it starts.
-        /// </param>
-        private string BuildLayerAudio(Layer layer, double from = 0)
+        private string BuildLayerAudio(Layer layer)
         {
             // The clip's length is in the timeline's seconds; at its speed it plays that many times as much of its file.
             var speed = GetSpeed(layer);
             var startsAt = LayerAudioStart(layer);
-            var into = layer.MediaOffset + Math.Max(from - startsAt, 0) * speed;
+            var before = Math.Max(-startsAt, 0);
+            var into = layer.MediaOffset + before * speed;
 
             // Cut on the file's own time stamps from where its picture starts, as the picture is (see AppendVideoFile):
             // a sample is heard with the frame that has its time stamp. Counted from the file's first sample instead,
             // the sound was out by as much as the picture starts after it (7 ms in a webm, over a second in some
-            // recordings). A file not inspected yet is counted from 0, as its picture is in a live graph.
+            // recordings). A file not inspected yet is counted from 0.
             var origin = S.MediaStarts.TryGetValue(layer.ImagePath.Trim().Trim('"'), out var videoStart) ? videoStart : 0;
             var cut = origin + into;
 
-            // Read from a little before where it is wanted, when that is well into the file: the cut that follows is exact.
-            var source = $"amovie='{EscapeFilterPath(layer.ImagePath)}'";
-            if (from > 0 && into > 2)
-                source += $":seek_point={Number(into - 1)}";
-
-            var chain = new List<string> { source };
+            var chain = new List<string> { $"amovie='{EscapeFilterPath(layer.ImagePath)}'" };
             var trim = cut > 0.0005 ? $"atrim=start={Number(cut)}" : "";
             if (layer.Duration > 0.001)
                 trim = (trim.Length > 0 ? trim + ":" : "atrim=") + $"end={Number(origin + layer.MediaOffset + layer.Duration * speed)}";
@@ -537,16 +338,16 @@ public static partial class FilterGraphBuilder
             chain.AddRange(BuildTempo(speed));
             // Its own processing and gain, as a track of the video has them.
             chain.AddRange(layer.AudioFilters.BuildChain(Math.Clamp(layer.AudioGainDb, -40, 24)));
-            chain.AddRange(BuildClipFades(layer, Math.Max(from - startsAt, 0)));
-            if (startsAt - from > 0.01)
-                chain.Add($"adelay={(int)Math.Round((startsAt - from) * 1000)}:all=1");
+            chain.AddRange(BuildClipFades(layer, before));
+            if (startsAt > 0.01)
+                chain.Add($"adelay={(int)Math.Round(startsAt * 1000)}:all=1");
             return string.Join(",", chain);
         }
 
         /// <summary>
         /// A clip's sound fades (its gain line's handles, and crossfades): in over its first seconds, out over its last, on
-        /// the clock of the chain, which starts <paramref name="into"/> seconds into the clip (Live Preview, played from
-        /// the middle of it). Started inside a fade, the fade runs from there on, from silence (a preview's approximation).
+        /// the clock of the chain, which starts <paramref name="into"/> seconds into the clip (a sound slipped to before the
+        /// sequence's start). Started inside a fade, the fade runs from there on, from silence.
         /// </summary>
         private static IEnumerable<string> BuildClipFades(Layer layer, double into)
         {

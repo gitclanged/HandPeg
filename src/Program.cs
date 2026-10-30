@@ -1,9 +1,10 @@
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace HandPegApp;
 
-public static class Program
+public static partial class Program
 {
     /// <summary>
     /// The entry point, written out by hand (App.xaml is built as a Page, so none is generated) because
@@ -24,6 +25,21 @@ public static class Program
             return;
         }
 
+        // The GPU compositor and the hardware benchmark (Pass 5.0-Core) are HandPeg.exe too, started by HandPeg itself
+        // (Services.WorkerProcess): the same, with no second program to publish. Like the sentinel, neither loads the
+        // updater, the settings or WPF.
+        if (args.Length > 0 && args[0] == Compositor.CompositorWorker.Argument)
+        {
+            Environment.ExitCode = Compositor.CompositorWorker.Run(args);
+            return;
+        }
+
+        if (args.Length > 0 && args[0] == Compositor.HardwareBenchmark.Argument)
+        {
+            Environment.ExitCode = Compositor.HardwareBenchmark.Run(args);
+            return;
+        }
+
         Start();
     }
 
@@ -31,6 +47,11 @@ public static class Program
     private static void Start()
     {
         Services.StartupTrace.Mark("Main");
+
+        // Windows shows the "working in background" pointer from the moment Explorer starts a windowed program until the
+        // program first asks for its messages. Asked at once (nothing is waiting, nothing is taken), the pointer is back
+        // to an arrow while the window is still being built, not only after the first frame (the user's 5.0 directive 2).
+        _ = PeekMessageW(out _, 0, 0, 0, 0);
 
         // Multi-core JIT (Pass 4.1C): the methods this start had to compile (mostly generic code over HandPeg's own
         // types, which ReadyToRun cannot compile ahead of time: about 2,500 at each start) are recorded, and from the
@@ -122,6 +143,21 @@ public static class Program
             // Another copy of HandPeg is using it, or it is gone already: the next start tries again.
         }
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Message
+    {
+        public nint Window;
+        public uint Id;
+        public nint WParam, LParam;
+        public uint Time;
+        public int X, Y;
+        public uint Private;
+    }
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PeekMessageW(out Message message, nint window, uint first, uint last, uint remove);
 
     /// <summary>
     /// Velopack's bootstrap on an ordinary start, run beside the window's start: the update checker waits for it before

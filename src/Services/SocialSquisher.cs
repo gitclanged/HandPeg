@@ -84,13 +84,13 @@ public sealed record SquishResult(string Path, long Bytes, string Encoder, int V
 /// decides the bitrate (the whole file's bits, less a margin, spread over its length, less the sound's
 /// share), the bitrate decides how large a picture is worth keeping, and the slowest, most careful preset of
 /// the encoder is used, since at these bitrates that is where the detail comes from. A hardware encoder is
-/// preferred (NVENC, then QuickSync, then AMF) and libx264 does it otherwise. The result is weighed: if it
+/// preferred (NVENC, then QuickSync, then AMF, then Media Foundation's, the ARM64 path) and libx264 does it otherwise. The result is weighed: if it
 /// is over after all, the bitrate comes down by as much and it is done again.
 /// </summary>
 public static class SocialSquisher
 {
     /// <summary>The encoders, best first for this job.</summary>
-    private static readonly string[] Hierarchy = ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"];
+    private static readonly string[] Hierarchy = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264"];
 
     private const int MostAttempts = 5;
 
@@ -123,6 +123,8 @@ public static class SocialSquisher
             "h264_nvenc" => $"-preset {preset ?? "p7"} -tune hq -rc vbr -multipass fullres",
             "h264_qsv" => $"-preset {preset ?? "veryslow"}",
             "h264_amf" => $"-quality {preset ?? "quality"} -rc vbr_peak",
+            // No presets: peak-constrained VBR held to the -maxrate that follows, on the hardware only.
+            "h264_mf" => $"-rate_control pc_vbr {MediaFoundationEncoder.HardwareOnlyArgument}",
             _ => $"-preset {preset ?? "veryslow"}",
         };
     }

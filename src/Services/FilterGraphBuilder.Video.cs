@@ -32,22 +32,6 @@ public static partial class FilterGraphBuilder
             if (Deinterlace)
                 filters.Add("yadif");
 
-            // Live Preview: fewer frames from a fast source, and fewer pixels, before anything else is done to them.
-            // Every other frame is kept as it is, at its own time stamp: fps= gives each frame a place on its own clock
-            // instead, and on time stamps kept to the millisecond it took the later of two frames for some places,
-            // showing the picture a frame early (17 ms at 60 frames a second) against its sound.
-            if (_buildingLiveGraph)
-            {
-                if (SourceFrameRate > 40)
-                    filters.Add("select='not(mod(n,2))'");
-
-                // The player's frames are the proxy's when the main video has one (S.MainPreviewHeight): smaller to
-                // start with, they are only made smaller when they are still larger than the frame needs.
-                var factor = S.MainPreviewHeight > 0 && SourceHeight > 0 ? Math.Min(SourceHeight * _liveScale / S.MainPreviewHeight, 1) : _liveScale;
-                if (factor < 0.999)
-                    filters.Add($"scale=trunc(iw*{Number(factor)}/2)*2:trunc(ih*{Number(factor)}/2)*2:flags=fast_bilinear");
-            }
-
             // The crop is written as fractions of the input frame, so the same settings cut the same part out
             // of a source of any resolution. Width and height are kept even, as most encoders need.
             string? crop = null;
@@ -56,8 +40,8 @@ public static partial class FilterGraphBuilder
 
             // A main video in several clips has no one time of its own left once it is composed. Its burned-in
             // subtitles are drawn on its own frames first, in the file's time (which a preview's input has been
-            // wound forward in). Not for Live Preview, whose frames already come in the sequence's time.
-            if (FrameEngine && IsMainSpliced && !_buildingLiveGraph && BuildSubtitleBurnFilters(LocalMediaPath) is { Count: > 0 } early)
+            // wound forward in).
+            if (FrameEngine && IsMainSpliced && BuildSubtitleBurnFilters(LocalMediaPath) is { Count: > 0 } early)
             {
                 if (_inputOrigin > 0.001)
                     filters.Add($"setpts=PTS{Signed(_inputOrigin)}/TB");
@@ -86,9 +70,9 @@ public static partial class FilterGraphBuilder
                 // A vertical size is not the source's shape, so both sides are spelled out; otherwise a side
                 // left blank follows the other in the source's shape (-2).
                 if (UseVerticalResolution && GetRequestedSize() is { } vertical)
-                    filters.Add($"scale={Sized(vertical.Width)}:{Sized(vertical.Height)}");
+                    filters.Add($"scale={vertical.Width}:{vertical.Height}");
                 else if (hasWidth || hasHeight)
-                    filters.Add($"scale={(hasWidth ? Sized(width) : -2)}:{(hasHeight ? Sized(height) : -2)}");
+                    filters.Add($"scale={(hasWidth ? width : -2)}:{(hasHeight ? height : -2)}");
 
                 if (GetSampleAspectRatio() is { } sampleAspectRatio)
                     filters.Add($"setsar={sampleAspectRatio}");
@@ -107,7 +91,7 @@ public static partial class FilterGraphBuilder
             // in sequence seconds; this stretch's clock starts at its beginning.
             if (T.SequenceEffects.Count > 0)
             {
-                var (outWidth, outHeight) = (Sized(Math.Min(FrameWidth, SourceWidth > 0 ? SourceWidth : FrameWidth)), Sized(Math.Min(FrameHeight, SourceHeight > 0 ? SourceHeight : FrameHeight)));
+                var (outWidth, outHeight) = (Math.Min(FrameWidth, SourceWidth > 0 ? SourceWidth : FrameWidth), Math.Min(FrameHeight, SourceHeight > 0 ? SourceHeight : FrameHeight));
                 var context = EffectContext(outWidth, outHeight, -from);
                 var output = new List<(string Filter, bool Geometric)>();
                 foreach (var effect in T.SequenceEffects)
@@ -130,19 +114,17 @@ public static partial class FilterGraphBuilder
         /// One side of a cut taken out of a picture's frames by a fraction of them, even (trunc(iw*F/2)*2), as a crop and
         /// the pieces cut from the main video (a game style's HUD) are written. Held to 2 pixels at least wherever it could
         /// come out at nothing, which FFmpeg refuses ("Invalid too big or non positive size"), taking the whole graph down
-        /// with it: in every live graph, whose [vid1] is not always the main video's frames (wherever no clip of it is under
-        /// the playhead, a gap left by a clip dragged away, before or after it, the player runs its stand-in clock, 64 by 36
-        /// and scaled down with the rest, 16 by 8 at a quarter: a piece a fifth of the source high was cut 0 high there, and
-        /// mpv could not configure the graph), and whose layers may be read from small proxies; in an export only where the
-        /// picture's own size (<paramref name="known"/>) leaves less than 2, or is not known, so a valid export is written as it
-        /// always was. The fraction is at most 1: never more than the picture.
+        /// with it: where the picture's own size (<paramref name="known"/>) leaves less than 2, or is not known, so a valid
+        /// export is written as it always was. (4.4-BugHunt held every cut of the libmpv player's live graphs so: a piece a
+        /// fifth of the source high was cut 0 high from its 16 by 8 stand-in clock.) The fraction is at most 1: never more
+        /// than the picture.
         /// </summary>
         /// <param name="side">iw or ih.</param>
         private string EvenCut(string side, double fraction, int known)
         {
             var written = Fraction(fraction);
             var cut = $"trunc({side}*{written}/2)*2";
-            var guard = _buildingLiveGraph || known <= 0 || Math.Truncate(known * double.Parse(written, CultureInfo.InvariantCulture) / 2) * 2 < 2;
+            var guard = known <= 0 || Math.Truncate(known * double.Parse(written, CultureInfo.InvariantCulture) / 2) * 2 < 2;
             return guard ? $"'max(2,{cut})'" : cut;
         }
 
@@ -176,27 +158,102 @@ public static partial class FilterGraphBuilder
 
         /// <summary>
         /// A frame-filling copy of a video (<see cref="Lowered.BlurTwins"/>) scaled to cover its box (the frame) about its
-        /// middle, cut to it and blurred as the blurred background is: in Live Preview blurred small and scaled back up, in an
-        /// encode on the graphics card where it can be (the background's radius held to what the colour planes allow, its
-        /// passes and dimming).
+        /// middle, cut to it and blurred as the blurred background is (<see cref="BackgroundRecipe"/>, without its cards).
         /// </summary>
-        private string TwinBlur(int width, int height)
+        private string TwinBlur(int width, int height) => "," + BackgroundRecipe(width, height, 0, cards: false);
+
+        /// <summary>
+        /// The blurred background's recipe (5.0-Release: the main video's video-only child), as one chain of filters: the
+        /// picture scaled to cover the frame enlarged by its zoom, cut to the frame about its middle, box-blurred (held to what
+        /// the colour planes allow; none below 0.05, sharp, as on the GPU) so many passes on the graphics card where it can
+        /// be, darkened, then its own Look cards (<paramref name="cards"/>; their keys and ranges in seconds of the sequence,
+        /// which begins at <paramref name="sequenceStart"/> on this picture's clock). DrawBlurFill draws the same. Its radius
+        /// is boxblur's whole one (half a pixel up, so no radius but 0 is ever sharp), except that a radius with a fraction
+        /// below <see cref="FractionalBoxesBelow"/> pixels is PSBoxBlur's very boxes (<see cref="FractionalBoxes"/>).
+        /// </summary>
+        private string BackgroundRecipe(int width, int height, double sequenceStart, bool cards)
         {
-            var dim = Number(Math.Clamp(BackgroundDim, -0.5, 0));
-            var passes = Math.Clamp(BlurPasses, 1, 5);
-            if (_buildingLiveGraph)
+            var zoom = Math.Clamp(double.IsFinite(S.BackgroundZoom) ? S.BackgroundZoom : 1, 1, 4);
+            var (coverWidth, coverHeight) = zoom > 1.0005 ? (Even(width * zoom), Even(height * zoom)) : (width, height);
+            var recipe = new StringBuilder($"scale={coverWidth}:{coverHeight}:force_original_aspect_ratio=increase,crop={width}:{height}");
+
+            var radius = Math.Min(Math.Clamp(double.IsFinite(BlurRadius) ? BlurRadius : 20, 0, EffectRegistry.BackgroundMostRadius),
+                Math.Max(Math.Min(width, height) / 4 - 1, 1));
+            var passes = Math.Clamp(BlurPasses, 1, 4);
+            var whole = Math.Round(radius, MidpointRounding.AwayFromZero);
+            if (radius >= 0.05 && Math.Abs(radius - whole) >= 0.001 && radius < FractionalBoxesBelow)
             {
-                var (smallWidth, smallHeight) = (Math.Max(width / 8 * 2, 16), Math.Max(height / 8 * 2, 16));
-                var smallRadius = Math.Clamp((int)Math.Round(Math.Clamp(BlurRadius, 5, 50) * _liveScale / 4), 1, Math.Max(Math.Min(smallWidth, smallHeight) / 4 - 1, 1));
-                return $",scale={smallWidth}:{smallHeight}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop={smallWidth}:{smallHeight},"
-                       + $"boxblur={smallRadius}:{passes},eq=brightness={dim},scale={width}:{height}:flags=bilinear";
+                foreach (var pass in FractionalBoxes(radius, passes))
+                    recipe.Append(',').Append(pass);
+            }
+            else if (radius >= 0.05)
+            {
+                var box = (int)Math.Max(whole, 1);
+                recipe.Append(S.OpenClBlur
+                    ? $",format=yuv420p,hwupload,boxblur_opencl={box}:{passes},hwdownload,format=yuv420p"
+                    : $",boxblur={box}:{passes}");
             }
 
-            var radius = Math.Min(Math.Clamp(BlurRadius, 5, 50), Math.Max(Math.Min(width, height) / 4 - 1, 1));
-            var blur = S.OpenClBlur
-                ? $"format=yuv420p,hwupload,boxblur_opencl={radius}:{passes},hwdownload,format=yuv420p"
-                : $"boxblur={radius}:{passes}";
-            return $",scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},{blur},eq=brightness={dim}";
+            if (Math.Clamp(BackgroundDim, -0.5, 0) is < 0 and var dim)
+                recipe.Append($",eq=brightness={Number(dim)}");
+
+            if (cards && S.BackgroundEffects.Count > 0)
+            {
+                var context = EffectContext(width, height, sequenceStart);
+                var filters = new List<(string Filter, bool Geometric)>();
+                foreach (var state in S.BackgroundEffects)
+                    AppendEffect(filters, EffectInstance.FromState(state), EffectZone.Look, context);
+                foreach (var (filter, _) in filters)
+                    recipe.Append(',').Append(filter);
+            }
+
+            return recipe.ToString();
+        }
+
+        /// <summary>
+        /// Below this radius (output pixels) the GPU blurs the blurred background at the frame's own size (SceneRenderer
+        /// BlurFillShrink), so its boxes are the frame's; and so many passes of them fit convolution's 49 weights.
+        /// </summary>
+        private const double FractionalBoxesBelow = 6;
+
+        /// <summary>
+        /// The blurred background's boxes for a radius with a fraction, as PSBoxBlur draws them: weight 1 out to the whole
+        /// radius and the fraction on the next pixel each side, run <paramref name="passes"/> times across and down; as one row
+        /// and one column of convolution on each colour plane (boxblur's planes), its weights in thousandths (convolution takes
+        /// whole numbers) over their sum.
+        /// </summary>
+        private static string[] FractionalBoxes(double radius, int passes)
+        {
+            var whole = (int)Math.Floor(radius);
+            var box = new double[2 * whole + 3];
+            Array.Fill(box, 1.0);
+            box[0] = box[^1] = radius - whole;
+
+            double[] weights = [1];
+            for (var p = 0; p < passes; p++)
+            {
+                var next = new double[weights.Length + box.Length - 1];
+                for (var i = 0; i < weights.Length; i++)
+                {
+                    for (var k = 0; k < box.Length; k++)
+                        next[i + k] += weights[i] * box[k];
+                }
+
+                weights = next;
+            }
+
+            // In thousandths, the ends that come to nothing left out (the weights are the same from either end).
+            var sum = weights.Sum();
+            var thousandths = weights.Select(w => (int)Math.Round(1000 * w / sum)).ToArray();
+            var cut = 0;
+            while (cut < thousandths.Length / 2 && thousandths[cut] == 0)
+                cut++;
+            var kept = thousandths[cut..^cut];
+            var matrix = string.Join(" ", kept.Select(w => w.ToString(CultureInfo.InvariantCulture)));
+            var divide = (1.0 / kept.Sum()).ToString("0.############", CultureInfo.InvariantCulture);
+            string Pass(string mode) =>
+                $"convolution=0m='{matrix}':1m='{matrix}':2m='{matrix}':0rdiv={divide}:1rdiv={divide}:2rdiv={divide}:0mode={mode}:1mode={mode}:2mode={mode}";
+            return [Pass("row"), Pass("column")];
         }
 
         // A preview encode opens the main video's file already wound forward to where it begins; the file's frames
@@ -241,25 +298,22 @@ public static partial class FilterGraphBuilder
         /// reach the ones below, because by then they are a finished picture. One shortcut is kept: the blurred
         /// background is not made at all while the main video would hide every pixel of it.
         ///
-        /// Live Preview is the exception to the canvas: the player's frames are the clock there, the player having
-        /// been given the sequence to play, so the canvas is made from them and what comes from the main video is
-        /// switched off outside the main video's stretch instead of being cut to it.
+        /// A main video whose length is not known is the exception to the canvas: its own frames are the clock there, so
+        /// the canvas is made from them and what comes from the main video is switched off outside the main video's
+        /// stretch instead of being cut to it.
         /// </summary>
         /// <param name="from">Where on the sequence the stretch begins, in seconds: the clock of what is composed starts there.</param>
         /// <param name="to">Where it ends.</param>
         private string BuildFrameEngine(string? centerCrop, string s, double from, double to)
         {
-            var live = _buildingLiveGraph;
-            var (width, height) = (Sized(FrameWidth), Sized(FrameHeight));
+            var (width, height) = (FrameWidth, FrameHeight);
             var full = GetCenterRect();
-            var center = (X: Placed(full.X), Y: Placed(full.Y), Width: Sized(full.Width), Height: Sized(full.Height));
+            var center = (X: full.X, Y: full.Y, Width: full.Width, Height: full.Height);
             var main = T.MainLayer;
 
             // How much of this stretch the main video is there for. A file whose length is not known is taken to
-            // be all of it, and lends the canvas its clock as it does for Live Preview. A live graph with a window
-            // looks at the window only: where the main video is not on screen there, its branches (the blurred
-            // background, the main video, the pieces cut from it) are not made at all.
-            var (seenFrom, seenTo) = live && _window is { } window ? (Math.Max(window.From, 0), Math.Min(window.To, SequenceSeconds)) : (from, to);
+            // be all of it, and lends the canvas its clock.
+            var (seenFrom, seenTo) = (from, to);
             var seen = GetSeenMain(seenFrom, seenTo);
             var known = seenTo - seenFrom > 0.001 && MainMediaSeconds > 0;
 
@@ -277,12 +331,11 @@ public static partial class FilterGraphBuilder
                     throughout = seen[i].From - seen[i - 1].To < 0.001;
             }
 
-            var clockFromInput = live || !known;
+            var clockFromInput = !known;
 
-            // The stack, bottom first, without the layers that have nothing to show: nothing of theirs in the
-            // window, and the video layers while scrubbing hides them.
+            // The stack, bottom first, without the layers that have nothing to show.
             var stack = GetStack().Where(l => l.IsMainVideo ? !l.IsHidden && centerSeen
-                : l.IsUsable && (!l.IsVideo || mainSeen) && InWindow(l) && !(live && l.IsVideoFile && _layerMode == LiveLayerMode.Hidden)).ToList();
+                : l.IsUsable && (!l.IsVideo || mainSeen)).ToList();
             var motions = stack.ConvertAll(l => GetMotion(l, width, height, from));
 
             // Each one's fades, and what its slides and zooms do to where it is laid and how large (an adjustment layer's
@@ -315,15 +368,13 @@ public static partial class FilterGraphBuilder
             {
                 if (stack[n].IsVideo)
                     branches.Add($"[ui{n}_in{s}]");
-                else if (live && stack[n].IsStill && motions[n].Reshapes)
-                    branches.Add($"[ui{n}_tick{s}]");
             }
 
             var graph = RentBuilder();
 
             // The main video, cut to what this stretch shows of it and set down where it comes in. Left as it is
             // when it is the whole sequence and all of it is wanted. A crossfade between two of its clips lays the
-            // later one's head over the earlier one (AppendMainCrossfades); on the player's own clock it is a cut.
+            // later one's head over the earlier one (AppendMainCrossfades); on its own clock it is a cut.
             if (!clockFromInput && seen.Count > 0 && !(IsMainWholeSequence && from < 0.001 && to >= SequenceSeconds - 0.001 && _inputOrigin == 0))
             {
                 if (GetSeenCrossfades(from, to) is { Count: > 0 } heads)
@@ -340,15 +391,15 @@ public static partial class FilterGraphBuilder
                 _ => $"split={branches.Count}{string.Concat(branches)};",
             });
 
-            // The canvas. For Live Preview four pixels of the player's own frame are blackened and stretched, which
-            // keeps its clock: frame for frame, through seeking.
+            // The canvas. On the main video's own clock four pixels of its frame are blackened and stretched, which
+            // keeps its clock: frame for frame.
             if (clockFromInput)
                 graph.Append($"[canvas_in{s}]crop=2:2:0:0,format=yuv420p,lutyuv=y=16:u=128:v=128,scale={width}:{height}:flags=neighbor");
             else
                 graph.Append($"color=c=black:s={width}x{height}:r={CanvasRate}:d={Number(to - from)},format=yuv420p");
 
             // What comes from the main video is there only while the main video is. Composed on the canvas, its
-            // frames run out and the canvas carries on; on the player's clock it is switched off outside its stretch.
+            // frames run out and the canvas carries on; on its own clock it is switched off outside its stretch.
             var mainEnding = clockFromInput ? "" : ":eof_action=pass";
             // Between two clips that do not meet there is nothing of it either, whichever clock it is on. The one piece is
             // there only for its own clips, when some of the chain's ride alone.
@@ -358,27 +409,11 @@ public static partial class FilterGraphBuilder
             if (blurred)
             {
                 graph.Append($"[base{s}];[bg_in{s}]");
-                if (live)
-                {
-                    // Blurred small and scaled back up: the blur hides the difference, and it is a sixteenth of the work.
-                    var (smallWidth, smallHeight) = (Math.Max(width / 8 * 2, 16), Math.Max(height / 8 * 2, 16));
-                    var smallRadius = Math.Clamp((int)Math.Round(Math.Clamp(BlurRadius, 5, 50) * _liveScale / 4), 1, Math.Max(Math.Min(smallWidth, smallHeight) / 4 - 1, 1));
-                    graph.Append($"scale={smallWidth}:{smallHeight}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop={smallWidth}:{smallHeight},"
-                                 + $"boxblur={smallRadius}:{Math.Clamp(BlurPasses, 1, 5)},eq=brightness={Number(Math.Clamp(BackgroundDim, -0.5, 0))},"
-                                 + $"scale={width}:{height}:flags=bilinear");
-                }
-                else
-                {
-                    // The blur radius cannot exceed half the smaller side of the colour planes, which are half size.
-                    var radius = Math.Min(Math.Clamp(BlurRadius, 5, 50), Math.Max(Math.Min(width, height) / 4 - 1, 1));
-                    // On the graphics card where it can be (OpenCL, which every vendor's driver has): the frame is
-                    // uploaded, blurred there and brought back. Otherwise the processor blurs, as it always could.
-                    var blur = S.OpenClBlur
-                        ? $"format=yuv420p,hwupload,boxblur_opencl={radius}:{Math.Clamp(BlurPasses, 1, 5)},hwdownload,format=yuv420p"
-                        : $"boxblur={radius}:{Math.Clamp(BlurPasses, 1, 5)}";
-                    graph.Append($"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
-                                 + $"{blur},eq=brightness={Number(Math.Clamp(BackgroundDim, -0.5, 0))}");
-                }
+
+                // Its zoom, its blur (the radius no more than half the smaller side of the colour planes, which are half size;
+                // on the graphics card where it can be, OpenCL, which every vendor's driver has, else the processor), its
+                // darkening and its own effects: BackgroundRecipe.
+                graph.Append(BackgroundRecipe(width, height, -from, cards: true));
 
                 // Made of the main video, it comes on and goes with it: from black, by a dissolve whatever the main video's style.
                 if (stack.FindIndex(l => l.IsMainVideo) is >= 0 and var mainAt && fades[mainAt].Count > 0)
@@ -418,11 +453,10 @@ public static partial class FilterGraphBuilder
                 // has one, 4.4); the background uses the whole picture, and each cut-out its own part of it (its source
                 // rectangle, less its own crop: AppendLayer).
                 var mainSource = layer.IsMainVideo || T.Riders.Contains(layer)
-                    ? $"[{name}_in{s}]{(StreamCropOf(layer, centerCrop) is { } cut ? cut + "," : "")}scale={builtWidth}:{builtHeight}{LiveScaleFlags}"
+                    ? $"[{name}_in{s}]{(StreamCropOf(layer, centerCrop) is { } cut ? cut + "," : "")}scale={builtWidth}:{builtHeight}"
                     : null;
-                var tick = live && layer.IsStill && motion.Reshapes ? $"[ui{n}_tick{s}]" : null;
                 graph.Append($"[stage{n}{s}];");
-                AppendLayer(graph, layer, name, s, builtWidth, builtHeight, from, motion, mainSource, tick, fades[n]);
+                AppendLayer(graph, layer, name, s, builtWidth, builtHeight, from, motion, mainSource, fades[n]);
 
                 // A turned picture is larger than the layer it was; it stays where its middle was, or, turned about an
                 // anchor point that is not its middle, where that point puts its middle (see Pivot).
@@ -486,7 +520,7 @@ public static partial class FilterGraphBuilder
                 // under it. So does a still that was made into a stream to be animated.
                 if (layer.IsVideoFile)
                     ending.Append(_videoEnding);
-                else if (layer.IsStill && motion.Reshapes && !live)
+                else if (layer.IsStill && motion.Reshapes)
                     ending.Append(":shortest=1");
 
                 // A layer with a time to appear and a time to go is only laid on between the two. The clock the
@@ -513,7 +547,7 @@ public static partial class FilterGraphBuilder
                 }
 
                 // Zone 4's blend mode: Normal is the overlay every layer always had.
-                if (layer.BlendModeName is "multiply" or "screen" or "addition" or "overlay" && !layer.IsMainVideo)
+                if (layer.BlendModeName is "multiply" or "screen" or "addition" or "overlay" or "softlight" or "hardlight" or "difference" && !layer.IsMainVideo)
                     AppendBlend(graph, under, top, $"{name}{s}", $"{At(0, 0)}{ending}", layer.BlendModeName);
                 else
                     graph.Append($";[{under}][{top}]overlay={At(0, 0)}{ending}");
@@ -769,10 +803,10 @@ public static partial class FilterGraphBuilder
 
         // ----- Effect stacks (Models/Effects) -----
 
-        /// <summary>What an effect's compile is told: the picture's size, the frame's, how much smaller Live Preview builds it, and the clip's clock.</summary>
+        /// <summary>What an effect's compile is told: the picture's size, the frame's, and the clip's clock.</summary>
         private EffectCompileContext EffectContext(int width, int height, double clipStart) => new()
         {
-            Width = width, Height = height, FrameWidth = Sized(FrameWidth), PixelScale = _liveScale, ClipStart = clipStart,
+            Width = width, Height = height, FrameWidth = FrameWidth, ClipStart = clipStart,
             Exists = Exists, EscapePath = EscapeFilterPath, KeyExpression = (keys, start) => KeyExpression(keys, start, 1),
             InstanceName = $"fx{++_effectInstances}",
         };
@@ -782,14 +816,12 @@ public static partial class FilterGraphBuilder
 
         /// <summary>
         /// A card's filters, if it belongs to the zone being compiled and does anything: switched off, a missing effect,
-        /// values that change nothing and (while scrubbing in Draft Mode) a red-cost effect emit nothing. A card with a
+        /// values that change nothing emit nothing. A card with a
         /// range is only at work inside it; <paramref name="gate"/> limits it further (an adjustment layer's own stretch).
         /// </summary>
         private void AppendEffect(List<(string Filter, bool Geometric)> filters, EffectInstance effect, EffectZone zone, EffectCompileContext context, string? gate = null)
         {
             if (!effect.Enabled || effect.Definition is not { Compile: { } compile } definition || definition.Zone != zone)
-                return;
-            if (_skipHeavyEffects && definition.Cost == EffectCost.Red)
                 return;
             if (compile(context, effect) is not { Count: > 0 } compiled)
                 return;
@@ -797,10 +829,14 @@ public static partial class FilterGraphBuilder
             var range = effect.Range is { } window
                 ? $"between(t,{Number(context.ClipStart + window.Start)},{Number(context.ClipStart + window.End)})"
                 : null;
-            // sendcmd has no timeline: it is never switched off, and the filter it talks to is.
+            // sendcmd has no timeline: it is never switched off, and the filter it talks to is. Nor has format (Color Balance
+            // works in 16-bit RGB, 5.0-AudioAnd3D): the picture stays converted outside the stretch, which changes nothing.
             var when = range is not null && gate is not null ? $"{range}*{gate}" : range ?? gate;
             foreach (var filter in compiled)
-                filters.Add((when is null || filter.StartsWith("sendcmd=", StringComparison.Ordinal) ? filter : WithOption(filter, $"enable='{when}'"), definition.Geometric));
+            {
+                var untimed = filter.StartsWith("sendcmd=", StringComparison.Ordinal) || filter.StartsWith("format=", StringComparison.Ordinal);
+                filters.Add((when is null || untimed ? filter : WithOption(filter, $"enable='{when}'"), definition.Geometric));
+            }
         }
 
         /// <summary>One more option on a filter: after its others, or as its first.</summary>
@@ -874,12 +910,12 @@ public static partial class FilterGraphBuilder
                 var hasMask = maskFile.Length > 0 && Exists(maskFile);
                 if (hasMask)
                 {
-                    sources.Append(';').Append(BuildMaskSource(layer, maskFile, S.AlphaMasks.Contains(maskFile), width, height, _liveScale, (SourceWidth, SourceHeight), PictureCropOf(layer)))
+                    sources.Append(';').Append(BuildMaskSource(layer, maskFile, S.AlphaMasks.Contains(maskFile), width, height, 1, (SourceWidth, SourceHeight), PictureCropOf(layer)))
                         .Append(StillMask).Append($"[{p}_cmask{s}]");
                     run.Add(MultiplyByStill($"{p}_cmask{s}"));
                 }
 
-                if (BuildLayerMask(layer, width, height, _liveScale, softEdge: !hasMask) is { } shape)
+                if (BuildLayerMask(layer, width, height, 1, softEdge: !hasMask) is { } shape)
                 {
                     sources.Append($";color=c=black:s={width}x{height}:r=1,format=gray,geq=lum='255*{shape}'").Append(StillMask).Append($"[{p}_smask{s}]");
                     run.Add(MultiplyByStill($"{p}_smask{s}"));
@@ -889,7 +925,7 @@ public static partial class FilterGraphBuilder
             IEnumerable<EffectInstance> cards = layer.EffectsBypassed ? [] : layer.Effects;
             foreach (var effect in cards)
             {
-                if (!effect.Enabled || effect.Definition is not { Zone: EffectZone.KeyAndMatte } definition || _skipHeavyEffects && definition.Cost == EffectCost.Red)
+                if (!effect.Enabled || effect.Definition is not { Zone: EffectZone.KeyAndMatte } definition)
                     continue;
 
                 switch (definition.Type)
@@ -915,13 +951,27 @@ public static partial class FilterGraphBuilder
 
                         chain.Append($",{keyer}=0x{key}:{similarity}:{blend}{gate}");
 
-                        // The key colour's spill on what is left: green or blue, whichever the key is nearer.
+                        // The key colour's spill on what is left: green or blue, whichever the key is nearer. Taken off the
+                        // screen's own channel (5.0-AudioAnd3D, the user's Q2): despill's scales take it off green by default,
+                        // which for a blue screen left the blue cast and darkened the greens.
                         if (effect.Get("despill") is >= 0.005 and var despill)
                         {
                             var blue = Convert.ToInt32(key[4..6], 16) > Convert.ToInt32(key[2..4], 16);
-                            chain.Append($",despill=type={(blue ? "blue" : "green")}:mix={Number(Math.Clamp(despill, 0, 1))}:expand=0{gate}");
+                            chain.Append($",despill=type={(blue ? "blue" : "green")}:mix={Number(Math.Clamp(despill, 0, 1))}:expand=0{(blue ? ":green=0:blue=-1" : "")}{gate}");
                         }
 
+                        // Its Advanced Choke and Smooth (5.0-Release), on its transparency: Matte Choke's passes of erosion or
+                        // dilation, and Matte Smooth's Hann weights laid out in space (PSMatteChoke and PSMatteSmooth draw the same).
+                        var timed = effect.Range is { } stretch ? $"enable='between(t,{Number(clipStart + stretch.Start)},{Number(clipStart + stretch.End)})'" : null;
+                        var choke = Math.Clamp(effect.Get("choke"), -20, 20);
+                        if (Math.Abs(choke) >= 0.5)
+                        {
+                            var passes = Math.Max((int)Math.Round(Math.Abs(choke) * context.PixelScale), 1);
+                            run.Add(string.Join(",", Enumerable.Repeat(choke > 0 ? "erosion" : "dilation", passes).Select(f => timed is null ? f : WithOption(f, timed))));
+                        }
+
+                        if ((int)Math.Round(Math.Clamp(effect.Get("smooth"), 0, 20) * context.PixelScale) is >= 1 and var smooth)
+                            run.Add(string.Join(",", HannSmooth(smooth).Select(f => timed is null ? f : WithOption(f, timed))));
                         break;
                     }
 
@@ -944,6 +994,20 @@ public static partial class FilterGraphBuilder
 
             Flush();
             Format();
+        }
+
+        /// <summary>
+        /// A grey picture (a transparency) smoothed over <paramref name="radius"/> pixels either side with Hann weights,
+        /// sin^2(pi k / (2r + 2)) for k = 1 .. 2r + 1 (Matte Smooth's, in space): a row, then a column, of convolution, its
+        /// weights in thousandths (convolution takes whole numbers) over their sum. PSMatteSmooth is the same in float.
+        /// </summary>
+        private static string[] HannSmooth(int radius)
+        {
+            radius = Math.Clamp(radius, 1, 24);
+            var weights = Enumerable.Range(1, 2 * radius + 1).Select(k => (int)Math.Round(1000 * Math.Pow(Math.Sin(Math.PI * k / (2 * radius + 2)), 2))).ToArray();
+            var matrix = string.Join(" ", weights);
+            var divide = (1.0 / weights.Sum()).ToString("0.############", CultureInfo.InvariantCulture);
+            return [$"convolution=0m='{matrix}':0rdiv={divide}:0mode=row", $"convolution=0m='{matrix}':0rdiv={divide}:0mode=column"];
         }
 
         /// <summary>
@@ -973,8 +1037,7 @@ public static partial class FilterGraphBuilder
         /// </summary>
         /// <param name="width">The size it is built at: its size on the frame, or the largest it gets when that is animated.</param>
         /// <param name="mainSource">For the main video: the chain that brings its picture, already scaled.</param>
-        /// <param name="tick">For a still that changes shape in Live Preview: the branch of the player's frames that gives it a clock.</param>
-        private void AppendLayer(StringBuilder chain, Layer layer, string name, string s, int width, int height, double startSeconds, Motion motion, string? mainSource = null, string? tick = null,
+        private void AppendLayer(StringBuilder chain, Layer layer, string name, string s, int width, int height, double startSeconds, Motion motion, string? mainSource = null,
             List<PictureFade>? fades = null)
         {
             if (mainSource is not null)
@@ -988,7 +1051,7 @@ public static partial class FilterGraphBuilder
                 AppendVideoFile(chain, layer, startSeconds);
                 if (FileCropOf(layer) is { } cut)
                     chain.Append(',').Append(cut);
-                chain.Append(T.BlurTwins.Contains(layer) ? TwinBlur(width, height) : $",scale={width}:{height}{LiveScaleFlags}");
+                chain.Append(T.BlurTwins.Contains(layer) ? TwinBlur(width, height) : $",scale={width}:{height}");
             }
             else if (layer.IsImage)
             {
@@ -1018,7 +1081,7 @@ public static partial class FilterGraphBuilder
                 // (Never cut to nothing: see EvenCut. Where its corner and size run past the picture, crop moves the corner in.)
                 var (sourceX, sourceY, sourceWidth, sourceHeight) = layer.CroppedSource;
                 chain.Append($"[{name}_in{s}]crop={EvenCut("iw", sourceWidth, SourceWidth)}:{EvenCut("ih", sourceHeight, SourceHeight)}:"
-                             + $"iw*{Fraction(sourceX)}:ih*{Fraction(sourceY)},scale={width}:{height}{LiveScaleFlags}");
+                             + $"iw*{Fraction(sourceX)}:ih*{Fraction(sourceY)},scale={width}:{height}");
             }
 
             // Zone 2, the Look effects, in stack order, on the clip's clock: keys count from its start (the primary chain's
@@ -1046,17 +1109,9 @@ public static partial class FilterGraphBuilder
                 chain.Append($",lutyuv=a=val*{Number(opacity)}");
 
             // A still picture is one frame, and one frame cannot change shape as time passes: it is made into a
-            // frame for every tick first. For an encode it is simply repeated at the canvas's rate. For Live
-            // Preview it is laid on see-through frames cut from the player's own, which carry the player's clock
-            // through every seek; a stream counted up from nothing would have to be run through to catch up.
+            // frame for every tick first, repeated at the canvas's rate.
             if (layer.IsStill && motion.Reshapes)
-            {
-                if (tick is null)
-                    chain.Append($",loop=loop=-1:size=1,setpts=N/({CanvasRate}*TB)");
-                else
-                    chain.Append($"[{name}_still{s}];{tick}crop=2:2:0:0,format=yuva420p,lutyuv=a=0,scale={width}:{height}:flags=neighbor[{name}_clock{s}];"
-                                 + $"[{name}_clock{s}][{name}_still{s}]overlay=format=auto,format=yuva420p");
-            }
+                chain.Append($",loop=loop=-1:size=1,setpts=N/({CanvasRate}*TB)");
 
             // Fading by keyframes: only the transparency is worked out again for each frame, on the frame's own time.
             if (motion.Opacity is { } fade)
@@ -1082,8 +1137,6 @@ public static partial class FilterGraphBuilder
             {
                 var across = boxWidth == width ? motion.Width : $"({motion.Width})*{Ratio((double)boxWidth / width)}";
                 chain.Append($",scale=w='max(2,trunc({across}))':h='max(2,trunc(({across})*{Ratio((double)boxHeight / boxWidth)}))':eval=frame");
-                if (_buildingLiveGraph)
-                    chain.Append(":flags=fast_bilinear");
             }
 
             chain.Append($"[{name}_layer{s}]");
@@ -1103,88 +1156,37 @@ public static partial class FilterGraphBuilder
         /// is opened at the I-frame before that moment (seek_point), cut exactly there and at the clip's end on the
         /// file's own time stamps, and moved to its place. Nothing before that moment is decoded and nothing after
         /// the clip's end: its decoder stops there, and the overlay lets the picture under it through. The moment
-        /// is the playhead for a live graph with a window, the start of the stretch for an export.
+        /// is the start of the stretch.
         ///
         /// A clip with no length repeats without end from the file's first frame, counted on an even clock, as
-        /// layers always were; so is a clip from a file not yet inspected, in an export (a live graph takes such a
-        /// file to start at 0). While scrubbing (<see cref="LiveLayerMode.Still"/>) a clip is one frame, the I-frame
-        /// at or before the playhead, held.
+        /// layers always were; so is a clip from a file not yet inspected.
         /// At a speed other than 1 the clip covers its file that many times as fast: how far into the file it is, is
         /// worked out in the file's own seconds, and its frames are then given the timeline's.
         /// </summary>
-        // How far before the moment wanted a video layer's file is asked to seek to, in seconds: live, and in an export.
-        private const double LiveSeekLead = 0.05, ExportSeekLead = 1;
-
-        // How far before the playhead a live graph's video layer is cut from, in the timeline's seconds (see AppendVideoFile).
-        private const double LiveCutLead = 0.1;
+        // How far before the moment wanted a video layer's file is asked to seek to, in seconds.
+        private const double SeekLead = 1;
 
         private void AppendVideoFile(StringBuilder chain, Layer layer, double startSeconds)
         {
-            // Live Preview reads the file's proxy when it has one: a small copy, starting at its first frame.
             var file = layer.ImagePath.Trim().Trim('"');
-            string? proxy = null;
-            var proxied = _buildingLiveGraph && S.PreviewPaths.TryGetValue(file, out proxy);
-            var path = EscapeFilterPath(proxied ? proxy! : file);
+            var path = EscapeFilterPath(file);
             var speed = GetSpeed(layer);
             var retimed = IsRetimed(speed);
-            var windowed = _buildingLiveGraph && _window is not null;
-
-            // A proxy has its own clock: FFmpeg moves a file's time stamps when it makes one, by the container's start or
-            // by the picture's, depending on the container. Its picture's start is its own (inspected like any file), and
-            // never the original's: the original's first frame is its first frame (0 until it is known).
-            double origin;
-            bool known;
-            if (proxied)
-                (known, origin) = (true, S.MediaStarts.GetValueOrDefault(proxy!));
-            else
-                known = S.MediaStarts.TryGetValue(file, out origin) || _buildingLiveGraph;
+            var known = S.MediaStarts.TryGetValue(file, out var origin);
 
             if (layer.Duration > 0.001 && known)
             {
                 // How far into the file it is read from, and where on this stretch's clock its first moment falls.
-                var into = layer.MediaOffset + Math.Max((windowed ? _playhead : startSeconds) - layer.StartTime, 0) * speed;
+                var into = layer.MediaOffset + Math.Max(startSeconds - layer.StartTime, 0) * speed;
                 var lead = layer.StartTime - startSeconds;
                 chain.Append($"movie='{path}'");
 
-                if (windowed && _layerMode == LiveLayerMode.Still)
-                {
-                    // Half-second steps, so that a drag of a pixel or two asks for the frame it already has.
-                    var at = Math.Floor(into * 2) / 2;
-                    if (at > 0.01)
-                        chain.Append(":sp=").Append(Number(at));
-                    chain.Append(",trim=end_frame=1,setpts=PTS-STARTPTS");
-                    _videoEnding = "";
-                    return;
-                }
-
-                // The seek lands on the I-frame at or before the point asked for (movie= seeks backwards), and the
-                // cut that follows is exact. Live, it is asked a hair early, only so that rounding never lands it past
-                // the point: a second early decoded up to a second more before the first frame came out, which was
-                // the wait on pressing Play. An export keeps the second: a file with no index (MPEG-TS) may land on a
-                // frame that is not an I-frame, and the frames up to the next one would be lost.
-                // Live, the cut starts a few frames before the playhead (never before the clip): the frame mpv stops on
-                // after a seek can be the main picture's frame just before the moment asked for, and with a layer that
-                // only began after it, overlay lets the picture under it through, and the paused frame has no layer
-                // (seen with the graph that carries sound, which mpv lands a frame early on). The clock is unchanged.
-                var cutFrom = windowed ? Math.Max(into - LiveCutLead * speed, layer.MediaOffset) : into;
-                var early = _buildingLiveGraph ? LiveSeekLead : ExportSeekLead;
-
-                // Live, with the file's I-frames listed: opened at the I-frame at or before the cut, exactly. A lead before
-                // the cut lands one I-frame early whenever an I-frame lies within the lead of the cut (a whole GOP more to
-                // decode, seconds of 4K AV1). The seek point is counted from the container's clock, and is a millisecond past
-                // the I-frame (never halfway to the next), so that rounding can never put it before it.
-                if (_buildingLiveGraph && !proxied && S.SeekIndexes.TryGetValue(file, out var index) && index.Around(origin + cutFrom) is { At: var iFrame, Next: var next })
-                {
-                    var point = iFrame - index.ContainerStart + Math.Min(0.001, (next - iFrame) / 2);
-                    if (point > 0.0005)
-                        chain.Append(":sp=").Append(point.ToString("0.######", CultureInfo.InvariantCulture));
-                }
-                else if (cutFrom - early > 0.01)
-                {
-                    chain.Append(":sp=").Append(Number(cutFrom - early));
-                }
-                if (_buildingLiveGraph && _decodeThreads > 0)
-                    chain.Append(":dec_threads=").Append(_decodeThreads.ToString(CultureInfo.InvariantCulture));
+                // The seek lands on the I-frame at or before the point asked for (movie= seeks backwards), and the cut
+                // that follows is exact. It is asked a second early: a file with no index (MPEG-TS) may land on a frame
+                // that is not an I-frame, and the frames up to the next one would be lost.
+                var cutFrom = into;
+                if (cutFrom - SeekLead > 0.01)
+                    chain.Append(":sp=").Append(Number(cutFrom - SeekLead));
 
                 chain.Append(",trim=");
                 if (cutFrom > 0.001)
@@ -1539,16 +1541,16 @@ public static partial class FilterGraphBuilder
         }
 
         /// <summary>
-        /// The fades of a layer's picture in this stretch: its own two, the main video's those of each of its clips. In a
-        /// live graph, only those its window sees. None for a sound, an adjustment layer's (see AppendAdjustment) or a fade
-        /// a crossfade has given to the clip over it (PictureFadeInOff).
+        /// The fades of a layer's picture in this stretch: its own two, the main video's those of each of its clips. None for
+        /// a sound, an adjustment layer's (see AppendAdjustment) or a fade a crossfade has given to the clip over it
+        /// (PictureFadeInOff).
         /// </summary>
         private List<PictureFade> PictureFades(Layer layer, double from)
         {
             var fades = new List<PictureFade>();
             void Add(double start, double length, bool fadeIn, TransitionStyle style)
             {
-                if (length > 0.01 && InWindow(start, start + length))
+                if (length > 0.01)
                     fades.Add(new PictureFade(start - from, length, fadeIn, style));
             }
 
@@ -1747,14 +1749,11 @@ public static partial class FilterGraphBuilder
             var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
             var (x, y, width, height) = CaptionLayer.GetOutputRect(frameWidth, frameHeight, 0, 0);
             (width, height) = (Math.Max(width, 16), Math.Max(height, 16));
-
-            // Live Preview draws everything smaller; the caption file is written for the box, whatever its size on the canvas.
-            (x, y, width, height) = (Placed(x), Placed(y), Sized(width), Sized(height));
             var rate = GetTargetFramerate() ?? Number(SourceFrameRate);
             var opacity = Math.Clamp(CaptionLayer.Opacity, 0, 100) / 100.0;
 
             var layer = $"color=c=black@0:s={width}x{height}:r={rate},format=rgba,{CaptionFilter(assPath)}:alpha=1";
-            if (BuildLayerMask(CaptionLayer, width, height, _liveScale) is { } mask)
+            if (BuildLayerMask(CaptionLayer, width, height, 1) is { } mask)
                 layer += $",format=gbrap,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{mask}{(opacity < 1 ? "*" + Number(opacity) : "")}'";
             else if (opacity < 1)
                 layer += $",colorchannelmixer=aa={Number(opacity)}";

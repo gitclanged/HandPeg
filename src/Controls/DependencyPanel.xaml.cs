@@ -538,7 +538,7 @@ public partial class DependencyPanel : UserControl
     private void UseExisting_Click(object sender, RoutedEventArgs e) => UseExistingFfmpegRequested?.Invoke();
 
     // ----- Pinned builds or the newest ones (the settings) -----
-    // FFmpeg, libmpv and whisper.cpp are installed from the builds this version of HandPeg was tested with (see
+    // FFmpeg and whisper.cpp are installed from the builds this version of HandPeg was tested with (see
     // DependencyUpdater.PinnedBuilds). Force Update puts the newest upstream builds in their place, after a warning, and
     // keeps them coming; Restore Pinned turns that off again and puts the tested builds back. Both change the setting at
     // once (it is what every later update goes by), and say so through UnpinnedChanged to a host editing a copy of the settings.
@@ -560,9 +560,9 @@ public partial class DependencyPanel : UserControl
     /// <param name="installNow">Whether going ahead installs them at once (Force Update), or only lets later updates do so.</param>
     public static bool ConfirmUnpinned(Window? owner, bool installNow)
     {
-        var message = "HandPeg installs the builds of FFmpeg, libmpv (the player) and whisper.cpp that this version was tested with. "
-                      + "The newest upstream builds are untested with it: a new FFmpeg can change filter syntax, so that exports, Render Preview "
-                      + "or Live Preview fail, and a new libmpv or whisper.cpp can bring playback, export or caption instability.\n\n"
+        var message = "HandPeg installs the builds of FFmpeg and whisper.cpp that this version was tested with. "
+                      + "The newest upstream builds are untested with it: a new FFmpeg can change filter syntax, so that exports or Render Preview "
+                      + "fail, and a new whisper.cpp can bring caption instability.\n\n"
                       + (installNow
                           ? "The newest builds are installed now, and every update after that installs the newest again."
                           : "From now on, Install / Update and the background updates install the newest builds.")
@@ -619,8 +619,8 @@ public partial class DependencyPanel : UserControl
             }
 
             AppLog.Write(allowed
-                ? "Untested dependency updates allowed: the newest FFmpeg, libmpv and whisper.cpp are installed from now on."
-                : "Dependencies pinned again: FFmpeg, libmpv and whisper.cpp go back to the builds this version was tested with.");
+                ? "Untested dependency updates allowed: the newest FFmpeg and whisper.cpp are installed from now on."
+                : "Dependencies pinned again: FFmpeg and whisper.cpp go back to the builds this version was tested with.");
         }
 
         DependencyUpdater.ForgetAnswers();

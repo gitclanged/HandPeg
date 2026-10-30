@@ -10,12 +10,33 @@ namespace HandPegApp.Services;
 /// </summary>
 public static class EncoderProber
 {
+    /// <summary>
+    /// The hardware encoders looked for, in the order they are offered: every vendor's own first, then Windows' Media
+    /// Foundation ones (the way to a Snapdragon / Adreno ARM64 machine's encoder; see <see cref="MediaFoundationEncoder"/>).
+    /// </summary>
     public static IReadOnlyList<string> HardwareEncoders { get; } =
     [
         "h264_nvenc", "hevc_nvenc", "av1_nvenc",
         "h264_qsv", "hevc_qsv", "av1_qsv",
         "h264_amf", "hevc_amf", "av1_amf",
+        .. MediaFoundationEncoder.Names,
     ];
+
+    /// <summary>
+    /// The vendor encoder that already does a Media Foundation encoder's codec here (h264_nvenc for h264_mf), or null; null
+    /// for any other encoder. A Media Foundation encoder reaches the same chip as a vendor's own encoder of its codec, by a
+    /// narrower door (no presets, fewer controls): it is offered only for a codec no vendor encoder here does (Snapdragon /
+    /// Adreno ARM64 machines, a card whose vendor's encoder FFmpeg lacks or cannot run), the user's call (5.0-Verify Q3).
+    /// <see cref="HardwareEncoders"/> lists the vendors first, so each is known before its codec's Media Foundation encoder.
+    /// </summary>
+    /// <param name="supported">The encoders that passed their test so far.</param>
+    public static string? CoveringVendorEncoder(string encoder, IEnumerable<string> supported)
+    {
+        if (!MediaFoundationEncoder.Is(encoder) || encoder.IndexOf('_') is not (> 0 and var underscore))
+            return null;
+        var codec = encoder[..(underscore + 1)];
+        return supported.FirstOrDefault(s => s.StartsWith(codec, StringComparison.Ordinal) && !MediaFoundationEncoder.Is(s));
+    }
 
     /// <summary>
     /// The hardware encoders that work here, and for those that are in FFmpeg but do not, why not. Two steps:
@@ -45,6 +66,13 @@ public static class EncoderProber
         // Each encoder is tested on its own: AV1 failing on a card that has no AV1 says nothing about its H.264.
         foreach (var encoder in built)
         {
+            // A Media Foundation encoder whose codec a vendor encoder here already does is not tested, so never offered.
+            if (CoveringVendorEncoder(encoder, supported) is { } vendor)
+            {
+                Log($"Hardware encoder {encoder} not tested: {vendor} does {encoder[..encoder.IndexOf('_')]} here.");
+                continue;
+            }
+
             var result = await TestEncodeAsync(encoder, "yuv420p", [], cancellationToken);
             if (result.ExitCode == 0)
             {
@@ -58,15 +86,18 @@ public static class EncoderProber
                 foreach (var (feature, pixelFormat, options) in FeatureTests.Where(t => isNvenc || t.Feature == TenBit))
                 {
                     // QuickSync has no 10-bit H.264, and its test would not say so: FFmpeg hands the encoder
-                    // 8-bit frames instead of stopping.
-                    if (encoder == "h264_qsv" && feature == TenBit)
+                    // 8-bit frames instead of stopping. Nor has any hardware encoder behind Media Foundation.
+                    if (encoder is "h264_qsv" or "h264_mf" && feature == TenBit)
                     {
                         refused.Add($"{encoder}:{feature}");
                         continue;
                     }
 
-                    var test = await TestEncodeAsync(encoder, pixelFormat, options, cancellationToken);
-                    if (test.ExitCode == 0)
+                    // A Media Foundation encoder that does not take 10-bit frames is handed 8-bit ones the same way, and
+                    // FFmpeg says so only as a warning: its warnings are read for it.
+                    var mf = MediaFoundationEncoder.Is(encoder);
+                    var test = await TestEncodeAsync(encoder, pixelFormat, options, cancellationToken, warnings: mf);
+                    if (test.ExitCode == 0 && !(mf && test.StandardError.Contains("Incompatible pixel format", StringComparison.OrdinalIgnoreCase)))
                         continue;
 
                     refused.Add($"{encoder}:{feature}");
@@ -103,8 +134,9 @@ public static class EncoderProber
     private sealed record SavedResult(string Key, List<string> Supported, List<string> Problems, List<string> Refused, bool NvencNeedsOlderFfmpeg,
         bool OpenClKnown, bool OpenClBlur, string OpenClDevice);
 
-    // Raised when what the tests check changes, so that a result saved by an older HandPeg is not used.
-    private const int TestsVersion = 1;
+    // Raised when what the tests check changes, so that a result saved by an older HandPeg is not used (2: the Media
+    // Foundation encoders, 5.0).
+    private const int TestsVersion = 2;
 
     private static List<string> _lastSupported = [], _lastProblems = [];
     private static bool _openClKnown;
@@ -238,11 +270,14 @@ public static class EncoderProber
 
     // A real frame size and rate, in a pixel format the encodes use: NVENC and AMF reject frames below their
     // minimum size, and NVENC ones in a format it was not told to expect, which would make a working GPU
-    // look unsupported.
-    private static Task<BufferedCommandResult> TestEncodeAsync(string encoder, string pixelFormat, string[] options, CancellationToken cancellationToken) =>
+    // look unsupported. A Media Foundation encoder is held to the hardware ("-hw_encoding 1"), as every export holds it:
+    // Windows' software encoder passing the test would offer a "hardware" encoder there is not.
+    private static Task<BufferedCommandResult> TestEncodeAsync(string encoder, string pixelFormat, string[] options, CancellationToken cancellationToken,
+        bool warnings = false) =>
         ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
-            .WithArguments(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=640x360:rate=30",
-                "-frames:v", "3", "-pix_fmt", pixelFormat, "-c:v", encoder, .. options, "-f", "null", "-"])
+            .WithArguments(["-hide_banner", "-loglevel", warnings ? "warning" : "error", "-f", "lavfi", "-i", "color=size=640x360:rate=30",
+                "-frames:v", "3", "-pix_fmt", pixelFormat, "-c:v", encoder, .. options,
+                .. MediaFoundationEncoder.Is(encoder) ? MediaFoundationEncoder.HardwareOnly : [], "-f", "null", "-"])
             .WithValidation(CommandResultValidation.None), cancellationToken);
 
     private static string FirstLine(BufferedCommandResult result) =>

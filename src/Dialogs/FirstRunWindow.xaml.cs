@@ -9,7 +9,7 @@ namespace HandPegApp;
 /// <summary>
 /// Shown before the main window on a first start (and again from Settings): the theme, the workspace the window starts
 /// laid out as, the required components and their download, the encoders HandPeg starts with (the hardware ones always
-/// looked for before it closes), what happens on closing and after a failed hardware encode, and whether crash reports
+/// looked for before it closes), an optional hardware test that sets the GPU roles (5.0-0), what happens on closing and after a failed hardware encode, and whether crash reports
 /// are written (with the Privacy Policy beside it). Closing it without pressing Start leaves the settings alone, and
 /// it is shown again next time.
 /// </summary>
@@ -18,6 +18,9 @@ public partial class FirstRunWindow : Window
     // The theme in effect when the window opened, put back if it is closed without confirming.
     private readonly string _originalTheme = AppSettings.Current.Theme;
     private bool _confirmed;
+
+    // The roles the hardware test recommended: written into the settings only by Start (Finish), as every other choice here.
+    private HardwareBenchmarkRoles? _benchmarkRoles;
     private bool _closed;
 
     // Whether the workspace was chosen here by hand: opened again from the settings, the window keeps the arrangement in use unless it was.
@@ -118,13 +121,14 @@ public partial class FirstRunWindow : Window
         if (EditorTier.IsChecked == true)
             Dependencies.SelectPayloads(DependencyUpdater.Tools, [TierBaseModel, TierDefaultModel, DependencyUpdater.VadModel]);
         else
-            Dependencies.SelectPayloads([DependencyUpdater.Ffmpeg, DependencyUpdater.Mpv, DependencyUpdater.YtDlp], []);
+            Dependencies.SelectPayloads([DependencyUpdater.Ffmpeg, DependencyUpdater.YtDlp], []);
     }
 
     // ----- The default encoders -----
 
-    // The best hardware encoder is the first of these that works here: NVENC, then QuickSync, then AMF.
-    private static readonly string[] PreferredHardware = ["h264_nvenc", "h264_qsv", "h264_amf"];
+    // The best hardware encoder is the first of these that works here: NVENC, then QuickSync, then AMF, then Media
+    // Foundation (the ARM64 path: Snapdragon / Adreno machines have none of the other three).
+    private static readonly string[] PreferredHardware = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf"];
 
     private readonly CancellationTokenSource _probeCancellation = new();
 
@@ -150,7 +154,8 @@ public partial class FirstRunWindow : Window
     /// <summary>Hardware encoders that work here first, best vendor first; then the software ones; Copy last.</summary>
     private void FillEncoders(IReadOnlyList<string> hardware)
     {
-        var rank = (string name) => name.EndsWith("_nvenc", StringComparison.Ordinal) ? 0 : name.EndsWith("_qsv", StringComparison.Ordinal) ? 1 : 2;
+        var rank = (string name) => name.EndsWith("_nvenc", StringComparison.Ordinal) ? 0 : name.EndsWith("_qsv", StringComparison.Ordinal) ? 1
+            : MediaFoundationEncoder.Is(name) ? 3 : 2;
         var encoders = hardware.OrderBy(rank).Select(EncoderOption.FromHardwareName).Concat(EncoderOption.Software).Append(EncoderOption.Copy).ToList();
 
         var best = PreferredHardware.FirstOrDefault(hardware.Contains) ?? EncoderOption.Software[0].Name;
@@ -231,6 +236,72 @@ public partial class FirstRunWindow : Window
             if (run == _probeRun)
                 ProbeBar.Visibility = Visibility.Collapsed;
         }
+    }
+
+    // ----- Test & Auto-Tune Hardware (5.0-0): the four GPU roles from a few seconds' measuring -----
+
+    // The benchmark running from here, while it runs: pressing the button again, or closing the window, cancels it.
+    private CancellationTokenSource? _benchmarkRun;
+
+    /// <summary>
+    /// Runs the hardware benchmark and, when it finishes, puts the roles it recommends into the settings in effect: unsaved,
+    /// like every choice here, so Start keeps them (Finish saves a copy of those settings) and closing the window does not.
+    /// </summary>
+    private async void Benchmark_Click(object sender, RoutedEventArgs e)
+    {
+        if (_benchmarkRun is { } running)
+        {
+            running.Cancel();
+            BenchmarkStatusText.Text = "Stopping...";
+            return;
+        }
+
+        using var run = _benchmarkRun = new CancellationTokenSource();
+        Closed += Cancel;
+        BenchmarkButtonText.Text = "Stop the Test";
+        BenchmarkStatusText.Text = "Starting the test...";
+        BenchmarkStatusText.ToolTip = null;
+        var progress = new Progress<HardwareBenchmarkProgress>(step =>
+        {
+            if (ReferenceEquals(_benchmarkRun, run))
+                BenchmarkStatusText.Text = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{step.Message}  {Math.Clamp(step.Fraction, 0, 1) * 100:0}%");
+        });
+
+        HardwareBenchmarkResult? result;
+        try
+        {
+            result = await HardwareBenchmarkService.RunAsync(progress, run.Token);
+        }
+        finally
+        {
+            Closed -= Cancel;
+            _benchmarkRun = null;
+            BenchmarkButtonText.Text = "Test & Auto-Tune Hardware";
+        }
+
+        if (_closed)
+            return;
+
+        if (result is null)
+        {
+            BenchmarkStatusText.Text = HardwareBenchmarkService.LastFailure is { Length: > 0 } why ? why : "The test could not be run.";
+            return;
+        }
+
+        if (result.Error.Length > 0 || result.Adapters.Count == 0)
+        {
+            BenchmarkStatusText.Text = result.Error.Length > 0 ? $"Stopped short ({result.Error}): the GPU roles stay on Auto." : "No graphics card to test: the GPU roles stay on Auto.";
+            return;
+        }
+
+        _benchmarkRoles = result.Recommended;
+        // A card Windows lists twice (SameCardAs) is one card.
+        var cards = result.Adapters.Count(a => a.SameCardAs < 0);
+        BenchmarkStatusText.Text = string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"Done in {result.TotalSeconds:0.0} s: {cards} graphics card{(cards == 1 ? "" : "s")} measured, the four GPU roles set.");
+        BenchmarkStatusText.ToolTip = result.Recommended.Reasons.Count > 0 ? string.Join(Environment.NewLine, result.Recommended.Reasons) : null;
+
+        void Cancel(object? window, EventArgs closed) => run.Cancel();
     }
 
     // What a crash report holds, and what it never does.
@@ -359,6 +430,8 @@ public partial class FirstRunWindow : Window
         if (!settings.FirstRunComplete || _workspaceChosen)
             settings.FirstRunLayout = ChosenWorkspace();
         settings.FirstRunComplete = true;
+        if (_benchmarkRoles is { } roles)
+            HardwareBenchmarkService.WriteRoles(roles, settings);
 
         // The captions package's larger model is the one captions use, once it is there.
         if (EditorTier.IsChecked == true && File.Exists(DependencyUpdater.GetWhisperModelPath(TierDefaultModel)))

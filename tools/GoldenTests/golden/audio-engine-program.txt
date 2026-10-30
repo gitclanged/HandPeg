@@ -1,0 +1,28 @@
+# AudioProgram.Build (5.0C): a timeline read into strips and voices with the FFmpeg path's semantics.
+sequence 12.25 s, fade in True, fade out False, duck mix 0.8222
+strip main:0 (MainTrack) ducked
+  effect Gain(0.7943, 0, 0, 0, 0, 0, 0, 0)
+strip main:1 (MainTrack) voice
+strip clip:music.m4a|2|-2200000 (Clip) ducked
+  effect HighPass(90, 0.707, 3, 0, 0, 0, 0, 0)
+  effect Compressor(0.1, 3, 20, 250, 2.8284, 1, 1, 1)
+  effect Gain(0.7079, 0, 0, 0, 0, 0, 0, 0)
+strip clip:voice.wav|3|3000000 (Clip) voice
+voice main a:0 clip 0 -> strip 0: main.mp4 a:0 (video start 0.033)
+  sequence 0 to 6, media -0.1 to end, rate 1, pitch 1, gain 0 dB
+  fades in 0 out 0 (ending 6), silenced 2.1-2.6
+voice main a:0 clip 1 -> strip 0: main.mp4 a:0 (video start 0.033)
+  sequence 5.5 to 12.25, media 19.4 to end, rate 1, pitch 1, gain -6 dB
+  fades in 0 out 0 (ending 12.25), silenced 
+voice main a:1 clip 0 -> strip 1: main.mp4 a:1 (video start 0.033)
+  sequence 0 to 6, media 0 to end, rate 1, pitch 1, gain 0 dB
+  fades in 0 out 0 (ending 6), silenced 
+voice main a:1 clip 1 -> strip 1: main.mp4 a:1 (video start 0.033)
+  sequence 5.5 to 12.25, media 19.5 to end, rate 1, pitch 1, gain -6 dB
+  fades in 0 out 0 (ending 12.25), silenced 
+voice clip music.m4a -> strip 2: music.m4a a:0 (video start 0)
+  sequence 1 to 11, media 4 to 16.5, rate 1.25, pitch 1, gain 0 dB
+  fades in 1 out 2 (ending 11), silenced 
+voice clip voice.wav -> strip 3: voice.wav a:0 (video start 0)
+  sequence 3 to 8, media 0 to 5, rate 1, pitch 1, gain 0 dB
+  fades in 0 out 0 (ending 8), silenced 

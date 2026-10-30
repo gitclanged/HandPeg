@@ -35,7 +35,7 @@ public partial class MainWindow
         // no click, so they went to the native video window and were lost): a nearly see-through fill, as the boxes have.
         PlayerOverlay.Background = PlayerHitBrush;
 
-        // A file loaded is seen whole again, on the Canvas and in the player (mpv keeps its zoom from file to file).
+        // A file loaded is seen whole again, on the Canvas and in the player (the engine keeps its zoom from file to file).
         _viewModel.MediaLoaded += _ => ResetNavigationViews();
         LayoutCanvas.SizeChanged += (_, _) => ClampCanvasView();
         PlayerOverlay.SizeChanged += (_, _) =>
@@ -92,6 +92,7 @@ public partial class MainWindow
         {
             ["file.save"] = (always, () => _viewModel.SaveProjectNowCommand.Execute(null)),
             ["file.saveAs"] = (always, () => _viewModel.SaveProjectAsCommand.Execute(null)),
+            ["file.saveBundle"] = (always, () => SaveProjectAs(bundle: true)),
             ["edit.undo"] = (always, () => RunUndo(redo: false)),
             ["edit.redo"] = (always, () => RunUndo(redo: true)),
             ["file.addMedia"] = (always, () => AddMedia_Click(AddMediaButton, new RoutedEventArgs())),
@@ -134,6 +135,7 @@ public partial class MainWindow
             ["view.zoomOut"] = (source, () => ZoomAboutPlayhead(1 / 1.6)),
             ["view.fit"] = (source, () => FitTimeline()),
             ["view.toggleSnap"] = (always, ToggleSnap),
+            ["view.exploded3d"] = (() => CanToggleExplodedView, ToggleExplodedView),
 
             ["key.toggle"] = (source, () => ToggleKeyframe_Click(this, new RoutedEventArgs())),
             ["key.prev"] = (source, () => StepKeyframe(-1)),
@@ -208,10 +210,20 @@ public partial class MainWindow
     /// <summary>Ripple Delete (R, Shift+Delete by default): the clips after it closing the gap.</summary>
     private void RippleDeleteSelected()
     {
+        // Clips selected together (Ctrl / Shift): every one of them, closed up behind, one undo step.
+        if (GroupHolds)
+        {
+            LetGoOfDrag();
+            if (_viewModel.DeleteClips(_viewModel.SelectedClips, ripple: true))
+                ClearClipSelection();
+            ScheduleClipRedraw();
+            return;
+        }
+
         if (_selectedClip is Layer { HasTiming: true } selected)
         {
             if (_viewModel.RippleDelete(selected))
-                (_selectedClip, _mainClipSelected) = (null, false);
+                ClearClipSelection();
             ScheduleClipRedraw();
         }
         else
@@ -619,7 +631,7 @@ public partial class MainWindow
         return SurfaceAt(over) is var surface and not NavSurface.None ? surface : NavSurface.Timeline;
     }
 
-    private bool PlayerNavigable => _mpv is not null && VideoView.IsVisible;
+    private bool PlayerNavigable => _gpu is not null && VideoView.IsVisible;
 
     // Which surface a press is on: the timeline (its pane, the overview bar or the keyframe lanes), the Canvas or the player.
     private NavSurface SurfaceAt(DependencyObject? source)
@@ -733,6 +745,10 @@ public partial class MainWindow
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
             seconds *= NavFast;
 
+        // The 3D exploded view takes W, S (zoom) and A, D (orbit) over the player while it is up.
+        if (_navSurface == NavSurface.Player && ExplodedNavigates(zoom, pan, seconds))
+            return;
+
         switch (_navSurface)
         {
             case NavSurface.Timeline:
@@ -825,7 +841,7 @@ public partial class MainWindow
             view.Matrix = Covering(view.Matrix, LayoutCanvas.ActualWidth, LayoutCanvas.ActualHeight);
     }
 
-    // The player: mpv zooms and pans the picture (nothing is filtered again), and the boxes, the crop and the safe margins
+    // The player: the engine zooms and pans the picture (the scene is not planned again), and the boxes, the crop and the safe margins
     // drawn over it follow by the same matrix on the overlay (their own maths is in its coordinates, so it stays right).
     private MatrixTransform PlayerView
     {
@@ -845,7 +861,7 @@ public partial class MainWindow
     {
         var (width, height) = (PlayerOverlay.ActualWidth, PlayerOverlay.ActualHeight);
         var picture = _navPicture;
-        if (_mpv is null || width <= 0 || height <= 0 || picture.Width <= 0 || picture.Height <= 0)
+        if (_gpu is null || width <= 0 || height <= 0 || picture.Width <= 0 || picture.Height <= 0)
             return;
 
         var scale = Math.Pow(2, _playerZoom);
@@ -872,7 +888,7 @@ public partial class MainWindow
 
     private void ApplyPlayerView()
     {
-        _mpv?.SetViewZoom(_playerZoom, _playerPanX, _playerPanY);
+        _gpu?.SetView(_playerZoom, _playerPanX, _playerPanY);
         var scale = Math.Pow(2, _playerZoom);
         var matrix = Matrix.Identity;
         matrix.ScaleAt(scale, scale, PlayerOverlay.ActualWidth / 2, PlayerOverlay.ActualHeight / 2);
@@ -880,7 +896,7 @@ public partial class MainWindow
         PlayerView.Matrix = matrix;
     }
 
-    // The picture as mpv fits it into the player: the output frame (the source's size without one), letterboxed.
+    // The picture as the engine fits it into the player: the output frame (the source's size without one), letterboxed.
     private Size PictureSize()
     {
         var (width, height) = (PlayerOverlay.ActualWidth, PlayerOverlay.ActualHeight);
@@ -899,7 +915,7 @@ public partial class MainWindow
         (_playerZoom, _playerPanX, _playerPanY) = (0, 0, 0);
         if (_playerView is { } player)
             player.Matrix = Matrix.Identity;
-        _mpv?.SetViewZoom(0, 0, 0);
+        _gpu?.SetView(0, 0, 0);
         if (_canvasView is { } canvas)
             canvas.Matrix = Matrix.Identity;
     }
@@ -1097,16 +1113,15 @@ public partial class MainWindow
         const double Megabyte = 1024 * 1024;
         var extent = TimelineExtent;
         var span = ViewSpan;
-        var lines = new List<string>(9)
+        var lines = new List<string>(8)
         {
             "X-Ray",
             frame > 0 ? FormattableString.Invariant($"UI frame   {frame:0.0} ms ({1000 / frame:0} fps)") : "UI frame   idle",
             FormattableString.Invariant($"Memory     {Environment.WorkingSet / Megabyte:0} MB working set, {GC.GetTotalMemory(false) / Megabyte:0} MB managed"),
             FormattableString.Invariant($"Work       {lanes[0]} foreground, {lanes[1]} interactive, {lanes[2]} background, {lanes[3]} idle"),
-            _mpv is { } player
-                ? FormattableString.Invariant($"Player     {(player.IsPlaying ? "playing" : "paused")} at {TimeDisplay.Format(player.PositionMs / 1000.0)}{(player.LastError is { Length: > 0 } error ? "; " + error : "")}")
+            _gpu is { } gpu
+                ? FormattableString.Invariant($"Player     GPU engine {(gpu.IsPlaying ? "playing" : "paused")} at {TimeDisplay.Format(gpu.Position)}; cache {gpu.CacheStats.Frames} frames, {gpu.CacheStats.Bytes / Megabyte:0} of {gpu.CacheStats.BudgetBytes / Megabyte:0} MB, {gpu.CacheStats.Hits} hits, {gpu.CacheStats.Misses} misses, last exact {gpu.CacheStats.LastExactLatencyMs:0.0} ms")
                 : "Player     not started",
-            FormattableString.Invariant($"Live graph version {_liveStateVersion}"),
             _viewModel.UndoMark is null ? "Undo       nothing to undo" : "Undo       a step to undo",
             extent > 0 && span > 0
                 ? FormattableString.Invariant($"Timeline   {TimeDisplay.Format(_viewStart)} to {TimeDisplay.Format(_viewStart + span)}, {extent / span:0.#}x")
@@ -1145,6 +1160,14 @@ public partial class MainWindow
         if (AppSettings.Current.QuickStartTourDone || !IsLoaded)
             return;
 
+        // Never before FFmpeg is there: a tour of an editor that cannot read its files is no welcome. It waits until FFmpeg is
+        // installed, however it comes (the first-run window, Settings), and is offered by the same rules then.
+        if (!DependencyUpdater.EnginesInstalled)
+        {
+            OfferTourOnceEnginesAreIn();
+            return;
+        }
+
         if (ComponentDispatcher.IsThreadModal)
         {
             EventHandler? left = null;
@@ -1171,6 +1194,35 @@ public partial class MainWindow
 
         if (TryStartQuickStartTour())
             MarkTourDone();
+    }
+
+    // Waits (once) for the install that completes the engines; the window closing lets go of the wait.
+    private bool _tourWaitsForEngines;
+
+    private void OfferTourOnceEnginesAreIn()
+    {
+        if (_tourWaitsForEngines)
+            return;
+
+        _tourWaitsForEngines = true;
+        void Installed(string tool) => Dispatcher.BeginInvoke(() =>
+        {
+            if (!_tourWaitsForEngines || !DependencyUpdater.EnginesInstalled)
+                return;
+
+            Stop();
+            Dispatcher.BeginInvoke(OfferTourWhenFree, DispatcherPriority.ApplicationIdle);
+        });
+        void Closing(object? sender, EventArgs e) => Stop();
+        void Stop()
+        {
+            _tourWaitsForEngines = false;
+            DependencyUpdater.Installed -= Installed;
+            Closed -= Closing;
+        }
+
+        DependencyUpdater.Installed += Installed;
+        Closed += Closing;
     }
 
     /// <summary>
@@ -1231,8 +1283,8 @@ public partial class MainWindow
         return
         [
             new("Add Your Media",
-                "Click Add Media, or drop videos, pictures and sounds anywhere on HandPeg. The first video opens as the main track; "
-                + "what you add after it lands on the timeline at the playhead.",
+                "Click Add Media, or drop videos, pictures and sounds anywhere on HandPeg: each one lands on the timeline at the playhead, "
+                + "ready to cut, stack and arrange.",
                 () => DropHint.IsVisible ? DropHint : AddMediaHost),
             new("The Timeline",
                 $"Every track is here, with the main video's sound and the captions under it. Drag a clip to move it, drag its edges to trim, "

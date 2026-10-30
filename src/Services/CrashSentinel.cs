@@ -8,7 +8,7 @@ namespace HandPegApp.Services;
 /// <summary>
 /// HandPeg.exe --crash-sentinel &lt;pid&gt; &lt;shared memory&gt; &lt;crashes folder&gt;: a second copy of HandPeg that does
 /// one thing. It waits, using no processor time, for the HandPeg it was started by to end, and when that HandPeg died
-/// of a fault and wrote nothing itself (a native crash in libmpv or a graphics driver leaves nothing standing in the
+/// of a fault and wrote nothing itself (a native crash in a graphics driver or a system library leaves nothing standing in the
 /// process to write with), it writes the report from the shared memory HandPeg kept for it (<see cref="CrashSharedMemory"/>).
 ///
 /// Handled at the very top of Program.Main, before the updater, the settings, the presets or anything of WPF, and
@@ -311,7 +311,6 @@ public static partial class CrashSentinel
                 Mode = Env("mode") ?? "",
                 SelfContained = CrashSharedMemory.SelfContained(block),
                 Ffmpeg = Env("env.ffmpeg"),
-                Mpv = Env("env.mpv"),
             },
             Breadcrumbs = CrashSharedMemory.Breadcrumbs(block).Select(c => new CrashBreadcrumb
             {

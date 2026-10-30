@@ -221,7 +221,7 @@ public partial class SettingsWindow
         ["General"] = "How HandPeg looks, how it starts, how it keeps itself and its tools up to date, and how it looks after a project and its crash reports.",
         ["Timeline & Player"] = "How the timeline is drawn, how it snaps and edits, the hover previews above it, and the player.",
         ["Preview & Cache"] = "Render Preview, what is kept on disk and how much of it, proxies of heavy videos, the media browser and downloads.",
-        ["Export & Hardware"] = "The encoding a new export starts with, the graphics card that decodes for the player, and how much of the computer background work may take.",
+        ["Export & Hardware"] = "The encoding a new export starts with, which graphics card does what (and the test that tunes it), and how much of the computer background work may take.",
         ["Auto-Captions"] = "The speech model that writes captions, how it listens, Remove Dead Air, and the style new captions start with.",
         ["Automation & Drop Targets"] = "Smart rules for files that are dropped or loaded, the targets of the drop overlay, and the Social Sharing Squisher's presets.",
         ["Keybinds & Lightning Dial"] = "What the Lightning Dial's slices hold, every key of the main window (from a preset or set by hand), and the Quick-Start Tour.",
@@ -259,7 +259,6 @@ public partial class SettingsWindow
         ["Canvas: show the selected clip's motion path"] = "Canvas",
         ["Canvas: snap to the middle and the safe margins"] = "Canvas",
         ["New Clips on the Frame"] = "Canvas",
-        ["Draft Mode: skip red-cost effects while scrubbing"] = "Effects",
     };
 
     /// <summary>

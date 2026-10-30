@@ -367,6 +367,8 @@ public partial class SettingsWindow : Window
             _settings.HardwareDecodeAdapter = GpuAdapter.Automatic.Index;
         DecodeAdapterBox.ItemsSource = adapters.Prepend(GpuAdapter.Automatic).ToList();
         DecodeAdapterBox.SelectedValue = _settings.HardwareDecodeAdapter;
+        InitializeGpuRoles(adapters);
+        InitializeGpuEngine();
 
         // Performance: the choices that are numbers, with Auto first.
         static List<NumberChoice> Numbers(string auto, IEnumerable<int> values) => [new(auto, 0), .. values.Select(v => new NumberChoice(v.ToString(System.Globalization.CultureInfo.InvariantCulture), v))];
@@ -377,7 +379,7 @@ public partial class SettingsWindow : Window
         ReservedCoresBox.ItemsSource = new List<NumberChoice> { new($"Auto ({new AppSettings { ReservedCores = -1 }.EffectiveReservedCores})", -1), new("None", 0) }
             .Concat(Enumerable.Range(1, Math.Max(Math.Min(cores - 2, 8), 0)).Select(v => new NumberChoice(v.ToString(System.Globalization.CultureInfo.InvariantCulture), v))).ToList();
         BackgroundGpuBox.ItemsSource = new List<NumberChoice> { new(GpuAdapters.BackgroundAdapter is { } card && _settings.BackgroundGpu == -1 ? $"Auto ({card.Name})" : "Auto", -1), new("Processor Only", -2) }
-            .Concat(adapters.Select(a => new NumberChoice(a.Display, a.Index))).ToList();
+            .Concat(DistinctCards(adapters).Select(a => new NumberChoice(a.Display, a.Index))).ToList();
         foreach (var (box, value) in new[] { (BackgroundJobsBox, _settings.BackgroundJobs), (BackgroundThreadsBox, _settings.BackgroundToolThreads),
                      (WhisperThreadsBox, _settings.WhisperThreads), (ReservedCoresBox, _settings.ReservedCores), (BackgroundGpuBox, _settings.BackgroundGpu) })
         {
@@ -1054,8 +1056,10 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        // The keys and the dial go into effect once they are saved (a failed save, then Cancel, keeps the old ones).
+        // The keys and the dial go into effect once they are saved (a failed save, then Cancel, keeps the old ones), and so
+        // does the GPU frame cache's budget (SettingsWindow.GpuEngine.cs).
         KeybindManager.Reload(_settings);
+        ApplyGpuEngine();
         DialogResult = true;
     }
 }

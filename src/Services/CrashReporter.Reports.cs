@@ -234,7 +234,6 @@ public static partial class CrashReporter
             Mode = mode,
             SelfContained = AppPaths.IsSelfContained,
             Ffmpeg = _ffmpegVersion is null ? null : CrashSanitizer.Sanitize(_ffmpegVersion, 100),
-            Mpv = _mpvVersion is null ? null : CrashSanitizer.Sanitize(_mpvVersion, 100),
         };
 
         // What was learnt after the first frame: before it, a report says only the above.
@@ -257,7 +256,7 @@ public static partial class CrashReporter
     /// the first frame, so that the whole path (the handler or the sentinel, the file, HandPeg.CrashDesk) can be tried:
     /// managed, an exception on a thread of its own; dispatcher, one on the window's thread; task, a task's exception
     /// nobody looks at (HandPeg carries on); native, an access violation inside ntdll.dll on a thread the runtime knows
-    /// nothing of, as a fault in libmpv or a driver arrives (the sentinel names the module and the offset);
+    /// nothing of, as a fault in a driver or a system library arrives (the sentinel names the module and the offset);
     /// native-null, a thread started at address 0, which Windows' control-flow guard ends at once with a fail-fast
     /// (0xC0000409) that no filter sees: the sentinel writes it from the exit code alone.
     /// </summary>

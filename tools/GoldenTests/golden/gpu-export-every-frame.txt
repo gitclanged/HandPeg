@@ -1,0 +1,7 @@
+# The GPU export of recorders' sources (long key frame intervals, B-frames), every frame against FFmpeg's export.
+canvas 640 x 360, 6 s exported at 60 fps; frames compared at 320 x 180, each the same frame as FFmpeg's at 30 dB or better (the game style 20 dB), none held over
+  H.264, 60 fps, a key frame every 4 s, B-frames (MP4)
+  HEVC, 60 fps, full range, a key frame every 4 s, B-frames (Matroska)
+  HEVC, 420 fps on a millisecond clock, a key frame every 240 frames (Matroska)
+  the game style after Remove Dead Air (4 main clips, 3 HUD cut-outs with masks, the blurred background; 1080 x 1920 shape) on the HEVC 60 fps source
+  the game style after Remove Dead Air on the 420 fps source

@@ -9,7 +9,8 @@ namespace HandPegApp.Services;
 
 /// <summary>
 /// The media browser's pictures of a video: a strip of a few frames spread over its length (15 by default, 480
-/// pixels tall), made once by FFmpeg and kept in the browser's cache (<see cref="PreviewCache.Browser"/>), and the
+/// pixels tall), made once (by the GPU compositor with the GPU preview engine, else by FFmpeg: the same strip either way,
+/// see <see cref="FfmpegRunner.GenerateFilmstripAsync"/>) and kept in the browser's cache (<see cref="PreviewCache.Browser"/>), and the
 /// frames cut from it at the size a tile shows them. What a file is (its length and shape) is kept there too, so a
 /// folder opened again needs no FFmpeg at all. With the cache off, both are kept for the session only.
 /// </summary>
@@ -211,7 +212,8 @@ public static class MediaBrowserFrames
     /// <summary>
     /// How a strip is laid out, from its header alone (no pixels decoded): its size in pixels and how many frames it holds.
     /// FFmpeg makes every frame of a strip the same width (scale=-2: the video's shape at the strip's height, to an even
-    /// pixel) and sets them side by side, so the strip is exactly that many of them: the count is the one nearest what
+    /// pixel; the compositor's strip keeps to the same rule, GpuFilmstrips.FrameWidth) and sets them side by side, so the
+    /// strip is exactly that many of them: the count is the one nearest what
     /// the video's shape gives that divides the strip's width (the shape as probed can be a pixel or two off the frames').
     /// </summary>
     private static (int Width, int Height, int Count)? Layout(string strip, double shape)

@@ -3,6 +3,65 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.0.0 — The Native GPU Engine & 3D Layer Stack
+
+### User-Facing Highlights
+- **HandPeg's own GPU engine plays, scrubs and exports your edit.** The player is a native Direct3D 11 compositor: every
+  layer, mask, key, blend, shadow, transition and caption is drawn by HLSL shaders on your graphics card, from video decoded
+  straight into graphics memory. It runs in a process of its own, so a driver hiccup restarts the engine in about a tenth
+  of a second ("Preview engine recovered") instead of taking HandPeg down. Exports render on the same engine, frame-exact
+  (a 1440p60 game-style edit exports at about 200 frames a second), with FFmpeg encoding and as the fallback.
+- **Instant Seek.** Clicks, scrubs and frame steps land on the exact frame with no proxy: a frame cache in graphics memory
+  that gives way at once when a game needs the memory, two decode lanes, the nearest frame shown at once and the exact one
+  a moment later, and pre-decoding round the playhead and ahead of a scrub.
+- **Smooth playback across rapid cuts.** Every cut in the next 3 seconds is prepared ahead: its first frames decoded and
+  held, a decoder parked at each one. A montage of 0.3-second cuts from an 8-second-GOP recording that dropped about 300
+  frames in 35 seconds of playback now drops none.
+- **Zero-lag hover.** Rest the pointer anywhere on the Timeline, its ruler or the Overview Bar and HandPeg quietly decodes
+  that moment and half a second of playback from it, so a click there and Space start at once. The pointer is sampled at
+  most 30 times a second and hover work always gives way to playback.
+- **Drop to a full timeline in about a second.** Hovering a video in the Media pane, starting a drag, or holding a file over
+  a style's drop target opens it ahead on a local SSD; the Overview Bar is drawn from key frames only. Dropping a 4-minute
+  1440p60 recording on a game style fills the whole Overview Bar in about 1.4 seconds (it took over 6).
+- **The 3D Exploded View.** One button fans the layer stack out in depth, every layer at its full source resolution, so
+  you can zoom right up to one and see it sharp. Orbit with the right mouse button, pick a layer with the left, move it,
+  resize it by its corner, Ctrl + wheel through the stack, Shift + drag it in front of or behind others: the Timeline's
+  track order follows at once (one undo step), and a parent's expanded children show above it when they sit in front and
+  below it when behind. The selection outline stays solid while you drag an effect's slider during playback.
+- **The magnifier loupe.** While you drag a feather, mask, matte or key slider, the player shows that layer's edge at 400 %
+  in a corner, over a checkerboard.
+- **The Overview Bar shows the finished sequence**, drawn on the GPU and redrawn only where an edit changed something;
+  Timeline clip blocks keep their own media's frames so clips stay easy to tell apart.
+- **Effects you can see.** Every effect starts at a visible value (Blur 12 px, Sharpen 0.6, a 25-degree Vignette, ...), Add Effect
+  works the same from the Effects pane and a clip's menu, and each card keeps its main sliders on top with an **Advanced**
+  section for the rest: Blur passes, horizontal/vertical ratio and dimming; Vignette roundness and feather; Chroma Key
+  spill, choke and smoothing; Drop Shadow softness, angle, colour and opacity.
+- **The blurred background is a layer of its own.** Select its row: a smooth Blur Radius from 0 to 64 px, a Zoom, and any
+  look effect on it (colour, LUT, vignette...). Video-only layers (the background, HUD cut-outs and masks) no longer offer
+  audio menu items.
+- **Sound on its own engine.** A WASAPI mixer is the master clock (picture and sound within a millisecond), with correct
+  timing for MKV, MP4, MPEG-TS and MPEG-PS recordings.
+- **Hardware benchmark and auto-tune.** Settings > Export & Hardware tests every graphics card in about two seconds
+  (decode speed and accuracy, seeks, transfers, encoders) and gives compositing, decoding, background work and exports
+  to the card best at each.
+- **Project bundles (.hpb).** Save a project with every video, sound and picture it uses as one file (Save As >
+  "HandPeg project bundle", or Save as Bundle... in the Project Manager), stored without recompression so it is about as
+  quick as copying. Open it anywhere: it unpacks beside itself and opens. No folder of your PC goes inside.
+- **Quiet editing.** No more Windows beeps from Alt or F10 combinations; no Sticky Keys or Filter Keys prompt when you
+  hold or tap Shift while trimming (only while HandPeg is in front, and only when those features are off); notifications
+  are silent, and while you are in HandPeg they go to the status line.
+- **Multi-select** on the Timeline (Ctrl / Shift): drag, trim, delete, ripple, mute and paste effects on many clips in one
+  step. Caption blocks select the captions, and the caption box drags and resizes on the player; a project opened with
+  captions shows them.
+
+### Under the Hood & Fixes
+- libmpv is gone: no player library is loaded in-process; the old `deps\mpv` folders are deleted once.
+- Project format 6: the background's settings kept together, anchored captions saved once. HandPeg 5.0 opens format 6
+  only (earlier projects are not converted).
+- The compositor protocol is version 3 (32-byte seek hints with spans and deadlines); cut entries are held in the frame
+  cache within its budget; the 3D view's planes share one 512 MB budget.
+- The GPU export's every frame is checked against FFmpeg's (no frame held over); 67 golden test cases.
+
 ## HandPeg v4.4.0
 
 ### User-Facing Highlights

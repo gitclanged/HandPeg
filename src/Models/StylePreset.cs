@@ -74,9 +74,17 @@ public sealed class ColorSection
     public double Sharpen { get; set; }
 }
 
+/// <summary>The blurred background's look (5.0-Release: a continuous radius from 0, its zoom and its own effect stack).</summary>
 public sealed class BlurSection
 {
-    public int Radius { get; set; } = 20;
+    public double Radius { get; set; } = 20;
     public int Passes { get; set; } = 2;
     public double Dim { get; set; } = -0.15;
+    public double Zoom { get; set; } = 1;
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<HandPegApp.Models.Effects.EffectState>? Effects { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool EffectsBypassed { get; set; }
 }

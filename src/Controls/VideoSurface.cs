@@ -7,7 +7,7 @@ using System.Windows.Media;
 namespace HandPegApp;
 
 /// <summary>
-/// Where the video is drawn: a native child window for the player (mpv) to draw into, and, lying exactly over
+/// Where the video is drawn: a native child window for the player (the GPU preview's swap chain) to draw into, and, lying exactly over
 /// it, a transparent window of its own for WPF content. A native window always covers the WPF content of the
 /// window it is in, so anything that has to appear on top of the video (the crop rectangle, the drop hint)
 /// cannot simply be placed over it; it is the content of this layer instead, and is shown in that second

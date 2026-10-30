@@ -1,0 +1,18 @@
+# Which Media Foundation encoders are offered (5.0-Verify Q3): only for a codec no vendor encoder here does.
+x64, an RTX 30 card (NVENC H.264 and HEVC; Media Foundation reaches the same chip, no AV1 encoder behind it):
+  offered: h264_nvenc, hevc_nvenc
+  not tested: h264_mf (covered by h264_nvenc), hevc_mf (covered by hevc_nvenc)
+ARM64, a Snapdragon / Adreno PC (no vendor encoder at all):
+  offered: h264_mf, hevc_mf, av1_mf
+  not tested: none
+mixed: NVENC refused by its driver, AMF HEVC only:
+  offered: hevc_amf, h264_mf
+  not tested: hevc_mf (covered by hevc_amf)
+x64, no hardware encoder passes:
+  offered: none
+  not tested: none
+h264_mf with [h264_nvenc]: h264_nvenc
+hevc_mf with [h264_nvenc, hevc_qsv]: hevc_qsv
+av1_mf with [h264_nvenc, hevc_nvenc]: not covered
+h264_mf with [h264_mf]: not covered
+h264_nvenc with [h264_qsv]: not covered

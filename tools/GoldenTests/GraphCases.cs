@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text;
 using HandPegApp.Models;
 using HandPegApp.Models.Effects;
@@ -15,8 +14,9 @@ public sealed record GraphResult(string Golden, string Text, IReadOnlyList<strin
 
 /// <summary>
 /// The fixtures of FilterGraphBuilder: timelines written in code (neutral paths, files that need not exist), each made into
-/// an export command, a live graph at a moment, or a Render Preview command. Exports and live graphs with sound are also
-/// run through the A/V check (<see cref="AvCheck"/>).
+/// an export command or a Render Preview command. Exports with sound are also run through the A/V check
+/// (<see cref="AvCheck"/>), and the same timelines through its GPU side (<see cref="GpuAvInvariant"/>: the player has no
+/// graph since 5.0-Verify).
 /// </summary>
 public static class GraphCases
 {
@@ -26,13 +26,6 @@ public static class GraphCases
     private static readonly Media Clip3 = Media.Mp4("D:/media/clip3.mp4", 40);
     private static readonly Media Recording = Media.Ts("D:/media/recording.ts", 90, indexed: true);
     private static readonly Media Music = Media.Mp4("D:/media/music.m4a", 240);
-
-    /// <summary>The live request the player makes: its size, where it plays from, and its sound laid out from there.</summary>
-    internal static LiveGraphRequest Live(double at, LiveLayerMode layers = LiveLayerMode.Live) => new()
-    {
-        SurfaceWidth = 960, SurfaceHeight = 540, AudioFrom = layers == LiveLayerMode.Live ? at : null, MainAudioTrack = 0,
-        VideoFrom = at, Layers = layers, DecodeThreads = 2,
-    };
 
     public static IEnumerable<GraphResult> All()
     {
@@ -49,18 +42,7 @@ public static class GraphCases
         yield return Export(HardwareScene(tenBit: false), "export-hardware", "A hardware encoder (h264_nvenc) on an odd-sized 4:4:4 screen recording: the picture ends cropped to even sides and converted to yuv420p with full chroma filtering.");
         yield return Export(HardwareScene(tenBit: true), "export-hardware-10bit", "The same with 10-bit on (hevc_nvenc): the tail ends in p010le.");
         yield return Export(LoopScene(), "export-loop-to-end", "A 2 s video with sound to the end of a 60 s timeline, fading in and out: written as its rounds (4.2.0's loop as clips), read as the one repeating source 4.2.0 made of it.");
-        yield return LiveGraph(LoopScene(), "live-loop-to-end-at-30", "The same live at 30 s: one repeating source, not one for each round.", Live(30));
-
-        // ----- Live, at a seek, with sound -----
-        var live = LiveScene(proxies: false);
-        foreach (var at in new[] { 100.0, 300, 600 })
-            yield return LiveGraph(live, $"live-sound-at-{at.ToString(CultureInfo.InvariantCulture)}", $"Live graph after a seek to {at} s, sound laid out from there: the layers' amovie and the main video's two tracks.", Live(at));
-
-        var proxied = LiveScene(proxies: true);
-        foreach (var at in new[] { 100.0, 300 })
-            yield return LiveGraph(proxied, $"live-proxies-at-{at.ToString(CultureInfo.InvariantCulture)}", $"The same at {at} s with proxies ready for the clips: the picture read from the proxy (its clock from 0), the sound from the original.", Live(at));
-
-        yield return LiveGraph(live, "live-scrub-at-120", "Scrubbing at 120 s: each clip one held frame, no sound.", Live(120, LiveLayerMode.Still));
+        yield return Export(TrackProcessingScene(), "export-track-processing-scope", "A main track's own processing (5.0-Verify Q1) is that track's alone: the game track ducked, then its gain, compressor and EQ, then the clips' sound mixed in; the microphone's chain on its own stream; the music clip's on itself.");
 
         // ----- Render Preview -----
         yield return Preview(LayersScene(), "preview-layers", "Render Preview of two stretches of the layered timeline at half size.", null);
@@ -195,10 +177,30 @@ public static class GraphCases
         return scene;
     }
 
-    private static Scene LiveScene(bool proxies)
+    /// <summary>
+    /// The main file's game track (auto-ducked; -3 dB, a compressor, an EQ band) and microphone (a voice; a high-pass and a
+    /// gate, +2 dB), a video clip with sound and a music clip with its own bass and gain, ducked too.
+    /// </summary>
+    private static Scene TrackProcessingScene()
+    {
+        var scene = new Scene("track-processing") { Main = MainVideo };
+        var game = new TrackAudioFilters { Compressor = true, CompressorThreshold = -18, CompressorRatio = 3, Equalizer = true };
+        game.EqualizerGains[2] = 4;
+        var mic = new TrackAudioFilters { HighPass = true, HighPassHz = 90, NoiseGate = true, GateThreshold = -40 };
+        scene.AudioTracks.Add(new ExportAudioTrack(0, "Game", "aac", "160k", false, false, AutoDuck: true, IsVoice: false, false, HasProcessing: true, [], game.BuildChain(-3)));
+        scene.AudioTracks.Add(new ExportAudioTrack(1, "Microphone", "aac", "160k", false, false, AutoDuck: false, IsVoice: true, false, HasProcessing: true, [], mic.BuildChain(2)));
+        scene.AddVideo(1, Clip1, start: 10, duration: 12, offset: 3, place: (0.05, 0.05, 0.4));
+        var music = scene.AddSound(2, Music, 0, 60);
+        (music.AudioGainDb, music.AutoDuck) = (-8, true);
+        music.AudioFilters = new TrackAudioFilters { BassTreble = true, BassGain = 3 };
+        return scene;
+    }
+
+    /// <summary>A long session: two main tracks, clips of three files on two tracks (one faster), music; proxies made for two of the files.</summary>
+    private static Scene SessionScene(bool proxies)
     {
         var main = Media.Mp4("D:/media/session.mp4", 1900);
-        var scene = new Scene(proxies ? "live-proxies" : "live") { Main = main }.WithMainAudio(2);
+        var scene = new Scene(proxies ? "session-proxies" : "session") { Main = main }.WithMainAudio(2);
         scene.AddVideo(1, Clip1 with { Seconds = 130 }, start: 58, duration: 121, offset: 0, place: (0.34, 0, 0.32));
         scene.AddVideo(1, Recording with { Seconds = 1700 }, start: 182, duration: 1400, offset: 0, place: (0.34, 0, 0.32));
         var faster = scene.AddVideo(2, Clip3 with { Seconds = 60 }, start: 95, duration: 30, offset: 10, place: (0.02, 0.6, 0.3));
@@ -229,30 +231,33 @@ public static class GraphCases
         text.AppendLine().Append(GoldenText.Command(command.CommandLine, graphs));
 
         // The A/V check follows the sequence's clock through the graph, which is the output's.
-        var problems = AvCheck.Check(files, state, graphs, live: false, at: null, audioFrom: 0, out var moments);
+        var problems = AvCheck.Check(files, state, graphs, out var moments);
         return new GraphResult(golden, text.ToString(), problems, moments) { CommandLine = command.CommandLine };
     }
 
-    private static GraphResult LiveGraph(Scene scene, string golden, string description, LiveGraphRequest request) =>
-        LiveGraph(scene.Compile(), scene.Clips.Select(c => c.Media).OfType<Media>(), golden, description, request);
-
-    /// <summary>A live graph of a state made by hand, its files given for the A/V check.</summary>
-    internal static GraphResult LiveGraph(SequenceExportState state, IEnumerable<Media> files, string golden, string description, LiveGraphRequest request)
+    /// <summary>
+    /// The GPU side of the A/V invariant (gpu-av-invariant, 5.0-Verify) on the timelines the live graphs were checked on before:
+    /// the exports' from each clip's start, the long session from where its seeks went (with its proxies, read by the clips
+    /// that ask for them in the preview), the loop from 30 s, and the document-made timelines (<see cref="TimelineGraphCases"/>).
+    /// </summary>
+    public static GraphResult GpuAvInvariant()
     {
-        var graph = FilterGraphBuilder.BuildLiveGraph(state, request);
-        var text = new StringBuilder();
-        text.Append("# ").AppendLine(description);
-        text.Append("# request: surface ").Append(GoldenText.Num(request.SurfaceWidth)).Append('x').Append(GoldenText.Num(request.SurfaceHeight))
-            .Append(", video from ").Append(request.VideoFrom is { } v ? GoldenText.Num(v) : "-").Append(", sound from ").Append(request.AudioFrom is { } a ? GoldenText.Num(a) : "-")
-            .Append(", layers ").Append(request.Layers).Append(", decode threads ").Append(request.DecodeThreads.ToString(CultureInfo.InvariantCulture)).AppendLine();
-        text.Append("# rebuild at: ").AppendLine(double.IsPositiveInfinity(graph.RebuildAt) ? "never" : GoldenText.Num(graph.RebuildAt));
-        text.AppendLine().Append(GoldenText.Graph(graph.Text, "live graph"));
+        static GpuAvFixture Of(Scene scene, params double[] playheads) => new(scene.Name, scene.Compile(), scene.Clips.Select(c => c.Media).OfType<Media>().ToList(), playheads);
 
-        var problems = new List<string>();
-        var moments = 0;
-        if (request is { AudioFrom: { } from, Layers: LiveLayerMode.Live })
-            problems.AddRange(AvCheck.Check(files, state, [graph.Text], live: true, at: request.VideoFrom, audioFrom: from, out moments));
-        return new GraphResult(golden, text.ToString(), problems, moments);
+        var proxied = SessionScene(proxies: true);
+        var preview = proxied.Compile() with { IsPreview = true };
+        foreach (var clip in preview.Timeline.Tracks.SelectMany(t => t.Clips).Where(c => c.SourcePath is { } path && preview.PreviewPaths.ContainsKey(path)))
+            clip.ProxyChoice = ProxyChoice.Make;
+
+        GpuAvFixture[] fixtures =
+        [
+            Of(BakedCutsScene(), 0), Of(LayersScene(), 0), Of(RecordingScene(), 0), Of(EffectsScene(), 0), Of(KeyframesScene(), 0),
+            Of(TransitionsScene(), 0), Of(CrossfadeScene(), 0), Of(HardwareScene(tenBit: false), 0), Of(LoopScene(), 0, 30),
+            Of(SessionScene(proxies: false), 100, 300, 600),
+            new(proxied.Name, preview, proxied.Clips.Select(c => c.Media).OfType<Media>().ToList(), [100, 300]),
+            .. TimelineGraphCases.GpuAvFixtures(),
+        ];
+        return AvCheck.GpuInvariant(fixtures);
     }
 
     private static GraphResult Preview(Scene scene, string golden, string description, string? videoEncode)

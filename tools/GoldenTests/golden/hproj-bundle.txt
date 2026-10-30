@@ -1,0 +1,11 @@
+# A project bundle (.hpb): what goes in, and the project's files named as its entries.
+
+entry: bundle.json
+entry: media/clip1 (2).mp4 (6427 bytes, stored True)
+entry: media/clip1.mp4 (5650 bytes, stored True)
+entry: media/main.mp4 (5242880 bytes, stored True)
+entry: media/music.m4a (7204 bytes, stored True)
+entry: media/outtake.mp4 (4873 bytes, stored True)
+entry: project.hproj
+named in the project: media/clip1 (2).mp4, media/clip1.mp4, media/main.mp4, media/music.m4a, media/outtake.mp4
+bundle.json: format handpeg-bundle, version 1, 5 media entries

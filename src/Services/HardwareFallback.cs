@@ -8,7 +8,7 @@ namespace HandPegApp.Services;
 /// </summary>
 public static partial class HardwareFallback
 {
-    [GeneratedRegex(@"-c:v (?<codec>h264|hevc|av1)_(?<vendor>nvenc|qsv|amf)\b")]
+    [GeneratedRegex(@"-c:v (?<codec>h264|hevc|av1)_(?<vendor>nvenc|qsv|amf|mf)\b")]
     private static partial Regex HardwareEncoderRegex();
 
     // The constant-quality arguments of each vendor; the number carries over as a CRF.
@@ -28,6 +28,13 @@ public static partial class HardwareFallback
 
     [GeneratedRegex(@"-rc cqp -qp_i (?<q>\d+) -qp_p \d+")]
     private static partial Regex AmfQualityRegex();
+
+    // Media Foundation's (5.0): its quality (100 the best) as a CRF again, and its own switches, which no software encoder knows.
+    [GeneratedRegex(@"-rate_control quality -quality (?<q>\d+)")]
+    private static partial Regex MfQualityRegex();
+
+    [GeneratedRegex(@" -(?:rate_control \w+|hw_encoding \d|scenario \w+)\b")]
+    private static partial Regex MfTuningRegex();
 
     [GeneratedRegex(@" -(?:preset|quality) (?:p[1-7]|speed|balanced|quality|veryfast|faster|fast|medium|slow|slower|veryslow)\b")]
     private static partial Regex VendorPresetRegex();
@@ -71,6 +78,7 @@ public static partial class HardwareFallback
         {
             "nvenc" => NvencQualityRegex().Replace(rewritten, "-crf ${q}"),
             "qsv" => QsvQualityRegex().Replace(rewritten, "-crf ${q}"),
+            "mf" => MfQualityRegex().Replace(rewritten, quality => "-crf " + CrfFromMfQuality(quality.Groups["q"].Value)),
             _ => AmfQualityRegex().Replace(rewritten, "-crf ${q}"),
         };
 
@@ -81,6 +89,10 @@ public static partial class HardwareFallback
             rewritten = NvencTuningRegex().Replace(rewritten, "");
             if (lossless)
                 rewritten = HardwareEncoderRegex().Replace(rewritten, "${0} -crf 0", 1);
+        }
+        else if (match.Groups["vendor"].Value == "mf")
+        {
+            rewritten = MfTuningRegex().Replace(rewritten, "");
         }
         else
         {
@@ -107,6 +119,11 @@ public static partial class HardwareFallback
         rewritten = OpenClBlurRegex().Replace(rewritten, "boxblur=${radius}:${passes}").Replace($" {EncoderProber.OpenClDeviceArguments}", "");
         return true;
     }
+
+    // Media Foundation's quality (0 to 100, 100 the best) as the CRF it was made from (MediaFoundationEncoder.QualityFromCrf).
+    private static string CrfFromMfQuality(string quality) =>
+        Math.Clamp((int)Math.Round(51 - int.Parse(quality, System.Globalization.CultureInfo.InvariantCulture) * 0.51), 0, 51)
+            .ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     private static string SoftwareFor(string codec) => codec switch
     {

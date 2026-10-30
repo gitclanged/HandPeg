@@ -1,0 +1,61 @@
+# Picture subtitles in the GPU preview: a PGS file made here, its cues, its pictures as HandPeg's FFmpeg decodes them, and GpuScenePlan's stills at sampled moments.
+
+file: 3 cue(s): 0.5-1.5, 2-3, 3.2-3.8
+pictures: 3 on a 640 x 360 canvas
+  picture 1: 0.5-1.5 s at (100, 280) 400 x 40
+  picture 2: 2-3 s at (60, 20) 200 x 30
+  picture 3: 3.2-3.8 s at (220, 300) 200 x 40
+track (the second cue retimed by +1 s, every cue by the offset, +0.25 s): 640 x 360
+  0.75-1.75 s: picture 1
+  3.25-4.25 s: picture 2
+  3.45-4.05 s: picture 3
+
+plain 1280 x 720 frame, a 1280 x 720 source filling it: 1280 x 720, 3 entries
+  at 1 s before the playhead came near: 0 still(s)
+  at 0.5 s: 1 layer(s)
+    Media source 0 at 0.500 box (0.0, 0.0) 1280.0 x 720.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Main]
+  at 1 s: 2 layer(s)
+    Media source 0 at 1.000 box (0.0, 0.0) 1280.0 x 720.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Main]
+    Still still 0 box (200.0, 560.0) 800.0 x 80.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 1  [Picture Subtitles]
+  at 2.5 s: 1 layer(s)
+    Media source 0 at 2.500 box (0.0, 0.0) 1280.0 x 720.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Main]
+  at 3.3 s: 2 layer(s)
+    Media source 0 at 3.300 box (0.0, 0.0) 1280.0 x 720.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Main]
+    Still still 1 box (120.0, 40.0) 400.0 x 60.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 1  [Picture Subtitles]
+  at 3.6 s: 2 layer(s)
+    Media source 0 at 3.600 box (0.0, 0.0) 1280.0 x 720.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Main]
+    Still still 2 box (440.0, 600.0) 400.0 x 80.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 1  [Picture Subtitles]
+  at 4.1 s: 2 layer(s)
+    Media source 0 at 4.100 box (0.0, 0.0) 1280.0 x 720.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Main]
+    Still still 1 box (120.0, 40.0) 400.0 x 60.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 1  [Picture Subtitles]
+  at 4.5 s: 1 layer(s)
+    Media source 0 at 4.500 box (0.0, 0.0) 1280.0 x 720.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Main]
+
+vertical 720 x 1280 frame, a 1920 x 1080 source cropped by a tenth at each side, across the middle: 720 x 1280, 3 entries
+  at 1 s before the playhead came near: 0 still(s)
+  at 0.5 s: 2 layer(s)
+    Media source 0 at 0.500 box (0.0, 0.0) 720.0 x 1280.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Blurred Background]
+    Media source 0 at 0.500 box (0.0, 387.0) 720.0 x 506.0, crop (0.100, 0.000)-(0.900, 1.000), opacity 1.000, z 1  [Main]
+  at 1 s: 3 layer(s)
+    Media source 0 at 1.000 box (0.0, 0.0) 720.0 x 1280.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Blurred Background]
+    Media source 0 at 1.000 box (0.0, 387.0) 720.0 x 506.0, crop (0.100, 0.000)-(0.900, 1.000), opacity 1.000, z 1  [Main]
+    Still still 0 box (50.625, 780.556) 562.5 x 56.222, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 2  [Picture Subtitles]
+  at 2.5 s: 2 layer(s)
+    Media source 0 at 2.500 box (0.0, 0.0) 720.0 x 1280.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Blurred Background]
+    Media source 0 at 2.500 box (0.0, 387.0) 720.0 x 506.0, crop (0.100, 0.000)-(0.900, 1.000), opacity 1.000, z 1  [Main]
+  at 3.3 s: 3 layer(s)
+    Media source 0 at 3.300 box (0.0, 0.0) 720.0 x 1280.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Blurred Background]
+    Media source 0 at 3.300 box (0.0, 387.0) 720.0 x 506.0, crop (0.100, 0.000)-(0.900, 1.000), opacity 1.000, z 1  [Main]
+    Still still 1 box (-5.625, 415.111) 281.25 x 42.167, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 2  [Picture Subtitles]
+  at 3.6 s: 3 layer(s)
+    Media source 0 at 3.600 box (0.0, 0.0) 720.0 x 1280.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Blurred Background]
+    Media source 0 at 3.600 box (0.0, 387.0) 720.0 x 506.0, crop (0.100, 0.000)-(0.900, 1.000), opacity 1.000, z 1  [Main]
+    Still still 2 box (219.375, 808.667) 281.25 x 56.222, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 2  [Picture Subtitles]
+  at 4.1 s: 3 layer(s)
+    Media source 0 at 4.100 box (0.0, 0.0) 720.0 x 1280.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Blurred Background]
+    Media source 0 at 4.100 box (0.0, 387.0) 720.0 x 506.0, crop (0.100, 0.000)-(0.900, 1.000), opacity 1.000, z 1  [Main]
+    Still still 1 box (-5.625, 415.111) 281.25 x 42.167, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 2  [Picture Subtitles]
+  at 4.5 s: 2 layer(s)
+    Media source 0 at 4.500 box (0.0, 0.0) 720.0 x 1280.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, z 0  [Blurred Background]
+    Media source 0 at 4.500 box (0.0, 387.0) 720.0 x 506.0, crop (0.100, 0.000)-(0.900, 1.000), opacity 1.000, z 1  [Main]
+a cue at 10 s, where the file shows nothing: no track

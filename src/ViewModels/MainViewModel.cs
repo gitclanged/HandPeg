@@ -61,6 +61,7 @@ public partial class MainViewModel : ObservableObject
         nameof(MasterTimelineHeight), nameof(LayerTrackHeight), nameof(AudioTrackHeight), nameof(LayerBarHeight),
         nameof(ShowKeyframesPane), nameof(ShowEffectsPane), nameof(ShowMediaBrowser), nameof(IsMediaBrowserVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
         nameof(RecentActions), nameof(HideDroppedTracks), nameof(HasSelectedKeyframe), nameof(SelectedKeyEasing), nameof(PreviewSubtitles),
+        nameof(BackgroundSelected),
     ];
 
 
@@ -161,8 +162,8 @@ public partial class MainViewModel : ObservableObject
         AudioTracks.CollectionChanged += (_, _) => KeepCaptionTrackValid();
         CaptionLayer.PropertyChanged += (_, _) => GenerateCommand();
 
-        // The preview's caption file is written for the box where and as large as it is, with its opacity and
-        // its shadow: a preview of it follows the box being moved, resized or restyled.
+        // The preview's captions are drawn in the box where and as large as it is, with its opacity and its
+        // shadow: a preview of them follows the box being moved, resized or restyled.
         CaptionLayer.PropertyChanged += (_, e) =>
         {
             if (PreviewSubtitles && e.PropertyName is nameof(Layer.SizeWidth) or nameof(Layer.SizeHeight)
@@ -333,9 +334,11 @@ public partial class MainViewModel : ObservableObject
         CenterZoom = preset.CenterZoom is > 0 and var zoom ? Math.Clamp(zoom, SmallestCenterZoom, LargestCenterZoom) : 1;
         CenterOffsetX = Math.Clamp(preset.CenterOffsetX, -100, 100);
         CenterOffsetY = Math.Clamp(preset.CenterOffsetY, -100, 100);
-        BlurRadius = Math.Clamp(preset.BlurRadius, 5, 50);
-        BlurPasses = Math.Clamp(preset.BlurPasses, 1, 5);
+        BlurRadius = Math.Clamp(preset.BlurRadius, 0, Models.Effects.EffectRegistry.BackgroundMostRadius);
+        BlurPasses = Math.Clamp(preset.BlurPasses, 1, MostBlurPasses);
         BackgroundDim = Math.Clamp(preset.BackgroundDim, -0.5, 0);
+        BackgroundZoom = Math.Clamp(preset.BackgroundZoom, 1, MostBackgroundZoom);
+        SetBackgroundEffects(preset.BackgroundEffects, preset.BackgroundEffectsBypassed);
         // Its layout (app data, not a project): its layers as a template on the timeline, the main video's look on its
         // clips. A project's settings carry none: its timeline is its own (RestoreStateAsync puts it in place after this).
         if (withLayout)
@@ -1581,7 +1584,6 @@ public partial class MainViewModel : ObservableObject
 
         // The proxy settings may name another height, format or place: proxies are looked for again under them.
         _proxies.Clear();
-        _proxyLooked.Clear();
         PreviewCache.Proxies.QueueTrim();
 
         ApplyDisplaySettings();
@@ -1636,6 +1638,10 @@ public partial class MainViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(CommandPreview))
             return "There is no command to run.";
 
+        // Nothing open and nothing on the timeline: the command names a stand-in for a source, which FFmpeg cannot open.
+        if (!HasSource && !(SequenceSeconds > 0) && !IsCommandManuallyEdited)
+            return "There is nothing to export: open a video or a project first.";
+
         // Copy keeps the picture as it is: said once more before the time is spent, when there is work it would skip.
         if (CopyBypassWarning.Length > 0 && !IsCommandManuallyEdited && Confirm is not null
             && !Confirm("Stream Copy", $"{CopyBypassWarning}\n\nThe video is copied as it is: nothing set on the Layers and Filters tabs, and no crop or resize, reaches the output. To apply them, choose an encoder on the Video tab.", "Encode Anyway"))
@@ -1686,7 +1692,7 @@ public partial class MainViewModel : ObservableObject
             var exportSummary = CrashSummaries.Command(command, expected);
             CrashReporter.SetContext("export", "running: " + exportSummary);
             CrashReporter.Note("export", "started: " + exportSummary);
-            await FfmpegRunner.RunAsync(command, progress, cancellationToken, graphInFile: true);
+            await RunExportAsync(command, ExportStateForGpu(), progress, cancellationToken);
             CrashReporter.Note("export", "finished");
             NotifyFinished("Encode complete", Path.GetFileName(DestinationPath.Trim().Trim('"')));
             return "Encode complete.";
@@ -1717,7 +1723,8 @@ public partial class MainViewModel : ObservableObject
             IsProgressIndeterminate = true;
             SetTaskbarProgress(TaskbarItemProgressState.Normal);
             CrashReporter.Note("export", $"{hardware} failed, retried with {software}");
-            await FfmpegRunner.RunAsync(retry, progress, cancellationToken, graphInFile: true);
+            // The retry is the GPU's too where the settings make it (the encoder switched on the Video tab); a patched command is FFmpeg's.
+            await RunExportAsync(retry, ExportStateForGpu(), progress, cancellationToken);
             CrashReporter.Note("export", "finished");
             NotifyFinished("Encode complete", Path.GetFileName(DestinationPath.Trim().Trim('"')));
             return $"Encode complete on {software}: the hardware encoder {hardware} failed, so the software encoder was used.";
@@ -1836,14 +1843,12 @@ public partial class MainViewModel : ObservableObject
     private void ResetForNewSource()
     {
         ForgetProjectProxies();
-        _timelineProxy = null;
         PendingStartMs = null;
         PositionMs = 0;
         DurationMs = 0;
 
         // A new main video starts where any does: at the beginning of the timeline, whole, and keeping still (PlaceMainVideo,
         // once it has been looked at). The other clips stay; the bin and the markers were the old video's.
-        _playerMediaSeconds = 0;
         SetBin(null);
         SetMarkers(null);
         Document.Markers = [];
@@ -1932,8 +1937,7 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(CaptionHint));
         OnPropertyChanged(nameof(CopyBypassWarning));
 
-        // The timeline proxy no longer shows the timeline; the proxies follow the files now on it.
-        DropTimelineProxy();
+        // The proxies follow the files now on it.
         RefreshProxies();
         WarmLayerFiles();
 

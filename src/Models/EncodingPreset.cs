@@ -84,10 +84,19 @@ public sealed class EncodingPreset
     [JsonPropertyName("VerticalOffset")]
     public double CenterOffsetY { get; set; }
 
-    // The blurred background
-    public int BlurRadius { get; set; } = 20;
+    // The blurred background (5.0-Release: the main video's video-only child): its blur in pixels of the frame (0 sharp to
+    // 64, continuous), its passes (1 to 4), its darkening, its zoom about the middle (1 covers the frame), and its own
+    // effect stack (Look cards; null for none).
+    public double BlurRadius { get; set; } = 20;
     public int BlurPasses { get; set; } = 2;
     public double BackgroundDim { get; set; } = -0.15;
+    public double BackgroundZoom { get; set; } = 1;
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<Models.Effects.EffectState>? BackgroundEffects { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool BackgroundEffectsBypassed { get; set; }
 
     /// <summary>Pieces of the source and images placed on the frame, each with where it comes from and where it goes. In stacking order, bottom first.</summary>
     public List<LayerState> Layers { get; set; } = [];

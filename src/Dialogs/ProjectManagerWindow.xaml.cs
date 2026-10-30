@@ -264,6 +264,36 @@ public partial class ProjectManagerWindow : Window
         RefreshList();
     }
 
+    /// <summary>Asked for by Save as Bundle: the window closes and the main window asks where (Save As with the bundle type).</summary>
+    public bool BundleRequested { get; private set; }
+
+    private void SaveBundle_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_viewModel.HasSource)
+        {
+            MessageText.Text = "Load a video first: a bundle is a project with the files it uses.";
+            return;
+        }
+
+        BundleRequested = true;
+        DialogResult = true;
+    }
+
+    private void OpenFile_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Open a Project or Bundle",
+            Filter = $"HandPeg projects and bundles|*{ProjectStore.Extension};*{ProjectBundle.Extension}|All files|*.*",
+            InitialDirectory = Directory.Exists(ProjectStore.Folder) ? ProjectStore.Folder : "",
+        };
+        if (dialog.ShowDialog(this) != true || !ProjectStore.IsProjectFile(dialog.FileName))
+            return;
+
+        ProjectToLoad = dialog.FileName;
+        DialogResult = true;
+    }
+
     private void NewProject_Click(object sender, RoutedEventArgs e)
     {
         NewProjectRequested = true;

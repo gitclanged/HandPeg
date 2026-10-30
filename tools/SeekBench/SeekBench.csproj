@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+      Instant Seek's bench (Pass 5.0-AudioAnd3D wrote it, Pass 5.0-Verify runs it): a real compositor worker, a long-GOP
+      file, and timed seeks, frame steps, scrubs, hover-then-click and playback. A program of its own beside HandPeg
+      (HandPegApp.csproj leaves tools\ out of its build) that hosts the worker itself, as the golden tests do.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>HandPeg.SeekBench</AssemblyName>
+    <RootNamespace>HandPegSeekBench</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\HandPegApp.csproj" />
+    <!-- The A/V harness's project session (the app's view model with no window, the settings file put back), for the project mode. -->
+    <Compile Include="..\AvSync\ProjectSession.cs" Link="ProjectSession.cs" />
+  </ItemGroup>
+
+</Project>

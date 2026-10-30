@@ -1,0 +1,14 @@
+# Media Foundation encoders (5.0): export options, the Video tab's names, and the software fallback's rewrite.
+crf 0 is quality 100
+crf 18 is quality 65
+crf 23 is quality 55
+crf 28 is quality 45
+crf 51 is quality 1
+constant bitrate: -rate_control cbr -b:v 8000k -maxrate 8000k -bufsize 16000k -hw_encoding 1
+average bitrate: -rate_control u_vbr -b:v 8000k -hw_encoding 1
+constant quality: -rate_control quality -quality 55 -hw_encoding 1
+h264_mf: "Media Foundation H.264 (h264_mf)", MediaFoundation, hardware True, falls back to libx264
+hevc_mf: "Media Foundation H.265 (hevc_mf)", MediaFoundation, hardware True, falls back to libx265
+av1_mf: "Media Foundation AV1 (av1_mf)", MediaFoundation, hardware True, falls back to libsvtav1
+hevc_mf -> libx265: ffmpeg -i in.mp4 -c:v libx265 -preset medium -crf 23 -pix_fmt yuv420p out.mp4
+h264_mf -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset medium -b:v 8000k -maxrate 8000k -bufsize 16000k out.mp4

@@ -145,7 +145,7 @@ public sealed partial class AppSettings
     // ----- Pinned dependency builds (v4.1) -----
 
     /// <summary>
-    /// Off (the default): FFmpeg, libmpv and whisper.cpp are installed and updated only to the builds this version of HandPeg
+    /// Off (the default): FFmpeg and whisper.cpp are installed and updated only to the builds this version of HandPeg
     /// was tested with (see <see cref="DependencyUpdater.PinnedBuilds"/>). On: to their newest upstream releases, untested.
     /// Turned on only after a warning; Restore Pinned Recommended Versions turns it off again. yt-dlp follows its newest release either way.
     /// </summary>
@@ -294,30 +294,11 @@ public sealed partial class AppSettings
     // ----- Proxies (Settings > Preview & Cache > Proxies; see ProxyCache) -----
 
     /// <summary>
-    /// Per-Clip Video Proxies: heavy videos on the timeline (taller than <see cref="ProxyHeavyHeight"/>, AV1, VP9,
-    /// 10-bit HEVC, ProRes, or I-frames further apart than <see cref="ProxyHeavyIFrameSeconds"/>) get a small copy
-    /// made in the background, which Live Preview plays in their place. Exports always read the originals.
+    /// A video whose I-frames are further apart than this, in seconds (at the median), is long-GOP: every seek decodes that
+    /// far. Its clip's right-click menu offers Optimize Long-GOP Clip for Scrubbing when the preview cannot decode it fast
+    /// (MainViewModel.OptimizeIsUseful). Settings > Preview &amp; Cache > Proxies.
     /// </summary>
-    public bool VideoProxies { get; set; } = true;
-
-    public const string ProxyLayersOnly = "Video layers only", ProxyAllVideos = "Video layers and the main video";
-
-    public static IReadOnlyList<string> ProxyScopes { get; } = [ProxyLayersOnly, ProxyAllVideos];
-
-    /// <summary>Which videos may get a proxy: the video layers, or the main video as well.</summary>
-    public string ProxyScope { get; set; } = ProxyLayersOnly;
-
-    /// <summary>A video whose shorter side is longer than this, in pixels, counts as heavy (1080: anything above 1080p, upright or on its side).</summary>
-    public int ProxyHeavyHeight { get; set; } = 1080;
-
-    /// <summary>A video whose I-frames are further apart than this, in seconds, counts as heavy (every seek decodes that far).</summary>
     public double ProxyHeavyIFrameSeconds { get; set; } = 2;
-
-    /// <summary>
-    /// The Composed Timeline Proxy: the whole sequence rendered once, in the background, as one small video the
-    /// player plays with no filter graph at all; dropped at once when anything is changed. Off by default.
-    /// </summary>
-    public bool TimelineProxy { get; set; }
 
     public static IReadOnlyList<int> ProxyTiers { get; } = [480, 540, 720];
 
@@ -338,12 +319,6 @@ public sealed partial class AppSettings
     /// <summary>Which encoder makes H.264 proxies: Auto (the background card's, then the main card's, then the processor), or one named.</summary>
     public string ProxyEncoder { get; set; } = ProxyEncoderAuto;
 
-    /// <summary>How long HandPeg has to be left alone (no input, not playing, not exporting) before proxies start being made, in seconds.</summary>
-    public int ProxyIdleSeconds { get; set; } = 10;
-
-    /// <summary>The same wait when a graphics card other than the player's makes the proxies (Settings, Performance): it takes nothing from playback.</summary>
-    public int ProxyIdleSecondsWithBackgroundCard { get; set; } = 2;
-
     /// <summary>A proxy being made is paused (its FFmpeg suspended) while the player plays, and goes on after.</summary>
     public bool PauseProxiesWhilePlaying { get; set; } = true;
 
@@ -363,9 +338,13 @@ public sealed partial class AppSettings
     /// <summary>The proxies of the project's files are deleted when the project is closed (another opened, or HandPeg closed).</summary>
     public bool ClearProjectProxiesOnExit { get; set; }
 
-    /// <summary>Whether anything uses the proxy cache.</summary>
+    /// <summary>
+    /// Whether the proxy cache is on: always (5.0D; no on/off switch, the user's Q6 in 5.0-Verify). A proxy is there only
+    /// because a clip asked for one (Optimize Long-GOP Clip for Scrubbing), so the cache's controls are its size limit, its
+    /// usage and Clear Proxy Cache (Settings > Preview &amp; Cache > Caches); off, a proxy asked for would have nowhere to go.
+    /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool UsesProxies => VideoProxies || TimelineProxy;
+    public bool UsesProxies => true;
 
     // ----- Cache clean-up at startup -----
 
@@ -508,20 +487,10 @@ public sealed partial class AppSettings
     /// <summary>Which of the style presets HandPeg comes with have been written to the Styles folder; they are written once.</summary>
     public int BuiltInStylesVersion { get; set; }
 
-    public const string ScrubLayersLive = "Live", ScrubLayersStill = "Still frame", ScrubLayersHidden = "Hidden";
-
     /// <summary>
-    /// Live Preview, while the playhead is dragged or wound back: video layers decoded as they play (Live), one
-    /// frame each, the I-frame nearest the playhead (Still frame), or left out (Hidden). They play live again
-    /// as soon as the playhead is let go.
-    /// </summary>
-    public string LayersWhileScrubbing { get; set; } = ScrubLayersStill;
-
-    public static IReadOnlyList<string> ScrubLayerChoices { get; } = [ScrubLayersLive, ScrubLayersStill, ScrubLayersHidden];
-
-    /// <summary>
-    /// The graphics card decodes the video in the player, as well as drawing it. Off, the processor decodes:
-    /// for a driver that shows a green or garbled picture, or stutters.
+    /// Hardware video decoding in the GPU preview: the graphics card decodes the preview's video (Media Foundation on the
+    /// compositor's Direct3D 11 device) as well as drawing it. Off, the processor decodes: for a driver whose decoder shows
+    /// broken (green, garbled) frames. Exports are not affected. Settings > Timeline &amp; Player > Player.
     /// </summary>
     public bool PlayerHardwareAcceleration { get; set; } = true;
 
@@ -702,9 +671,6 @@ public sealed partial class AppSettings
 
     /// <summary>The Effects pane: the selected clip's effect stack, or the Sequence Output's. Tabbed with Keyframes to start with.</summary>
     public bool ShowEffectsPane { get; set; } = true;
-
-    /// <summary>Draft Mode: while the playhead is dragged or wound back, Live Preview leaves out the effects that cost it most (red). Exports always have them.</summary>
-    public bool DraftScrubSkipHeavyEffects { get; set; } = true;
 
     /// <summary>The media browser pane in the side column: a folder's videos, or the project's files, to drag onto the timeline. Shown to start with.</summary>
     public bool ShowMediaBrowser { get; set; }

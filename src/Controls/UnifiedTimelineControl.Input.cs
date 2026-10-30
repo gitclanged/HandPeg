@@ -12,7 +12,9 @@ namespace HandPegApp;
 // along its row or onto another, trimming either end, rippling with Ctrl, rolling a shared cut, slipping with Alt, dragging
 // fade handles and gain lines, snapping, Shift for frame steps without snapping, auto-scroll near the ends, putting a drag
 // back when the mouse is taken away, cursors and tooltips), plus what 4.4 adds: the headers' switches and chevrons, the J/L
-// cut (Alt on the lower half of an edge), Alt + click to cut, the seams and gap pills, the skim line and the menus.
+// cut (Alt on the lower half of an edge), Alt + click to cut, the seams and gap pills, the skim line and the menus; and what
+// 5.0 adds: a group of selected blocks dragged (moved, or trimmed at either end) as one, the captions under a clip following
+// it as it is dragged, clicks told apart from presses, and the moment under the pointer for Instant Seek's hints.
 public sealed partial class UnifiedTimelineControl
 {
     // How close to the gain line the pointer has to be to take hold of it.
@@ -64,6 +66,15 @@ public sealed partial class UnifiedTimelineControl
 
         /// <summary>Whether what goes with the block (its children) can go where it is drawn: a child would start before the timeline's start otherwise.</summary>
         public bool FamilyFits { get; set; } = true;
+
+        /// <summary>The other selected blocks dragged with it (5.0, a group): moved, or trimmed at the same end, by as much. Null for none.</summary>
+        public List<Coupled>? Group { get; set; }
+
+        /// <summary>A group moved: the lowest the block's left edge may go, so that none of the group passes the timeline's start.</summary>
+        public double GroupFloor { get; set; }
+
+        /// <summary>The block itself rides with another block of its group (its parent's move or trim takes it): only the group's other edits are made.</summary>
+        public bool CarriedByGroup { get; set; }
     }
 
     // An edge pressed at a seam of folded dead air (4.4 BugHunt, Q11): the seam, which edge (true: the later clip's start,
@@ -85,7 +96,10 @@ public sealed partial class UnifiedTimelineControl
     // open; its unlinked sound; the main file's sound under it), drawn on the overlay as the parent is dragged. Moved by the
     // parent's travel, or with the parent's start or end edge (a trim, a roll, a seam), or left where it is and shown to come
     // loose (Detaching: a trim leaves it wholly outside the parent, which unlinks it). Where it was when the drag began.
-    private enum Follows { Move, Start, End, SeamEdge }
+    // 5.0: a caption under a clip goes with it too (moved with it; trimmed, cut to it as it is now: Within; slipped, slid
+    // with what of its file it plays and cut to it: SlipWithin), and so do the other blocks of a selected group (Member),
+    // moved or trimmed at the same end. Root is the block whose edges a child is held to (its parent, its clip, itself).
+    private enum Follows { Move, Start, End, SeamEdge, Within, SlipWithin }
 
     private sealed class Coupled
     {
@@ -96,10 +110,15 @@ public sealed partial class UnifiedTimelineControl
         public double Left0 { get; init; }
         public double Width0 { get; init; }
         public bool Detaching { get; set; }
+        public TimelineBlock? Root { get; init; }
+        public bool Member { get; init; }
     }
 
     private readonly List<Coupled> _coupled = [];
     private readonly HashSet<TimelineBlock> _coupledSet = new(ReferenceEqualityComparer.Instance);
+
+    // The other blocks of the selected group being dragged (5.0): never gathered as anyone's child.
+    private readonly HashSet<TimelineBlock> _groupSet = new(ReferenceEqualityComparer.Instance);
 
     // A J/L cut being dragged: which edge of the sound (true: where it starts), where the pointer was, and the cut's lead-in
     // and tail-out when it began and now (seconds).
@@ -139,6 +158,9 @@ public sealed partial class UnifiedTimelineControl
 
     private IReadOnlyList<double> _snapTimes = [];
     private double _skimSeconds = double.NaN;
+
+    // The moment under the pointer last told (PointerSecondsChanged), NaN for none.
+    private double _pointerSeconds = double.NaN;
 
     // What the tooltip is up for (a row or a block, and which part of it), so it is set once per thing, not on every move.
     private object? _tipTarget;
@@ -201,6 +223,7 @@ public sealed partial class UnifiedTimelineControl
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         e.Handled = true;
+        _clickOnly = null;
 
         // The rows the host still owes (an edit just made) are laid out first, and a fold still sliding is where it was
         // going: what is found under the pointer is the timeline as it is now, never as it was before the last edit.
@@ -259,7 +282,10 @@ public sealed partial class UnifiedTimelineControl
         }
 
         var pressed = block;
-        if (!Raise(() => BlockPressed?.Invoke(row, pressed, e)))
+        PressRipples = RipplesAt(block, laid.X, Keyboard.Modifiers);
+        var told = Raise(() => BlockPressed?.Invoke(row, pressed, e));
+        PressRipples = false;
+        if (!told)
             return;
         var (found, again) = Refind(index, row, block);
         if (again is null)
@@ -268,6 +294,10 @@ public sealed partial class UnifiedTimelineControl
         (index, block) = (found, again);
         lane = _lanes[index];
         row = lane.Row;
+
+        // Until a drag starts (BeginDrag), the press is a click: let go where it was, it is told as one (5.0-Verify), for a
+        // block that is not dragged too (one that cannot be, a lane drawn small).
+        _clickOnly = (row, block, laid);
 
         // A lane drawn small is not edited on: a click on a lane of a collapsed stack opens the stack.
         if (!lane.Detailed)
@@ -322,9 +352,23 @@ public sealed partial class UnifiedTimelineControl
         }
         else if (modifiers.HasFlag(ModifierKeys.Alt) && block.Edit is not null)
         {
+            _clickOnly = null;
             var cut = block;
             Raise(() => RazorRequested?.Invoke(row, cut, TimeAt(point.X)));
         }
+    }
+
+    // A block pressed that started no drag, its row and where it was pressed (laid out): let go there, a click (BlockClicked).
+    private (TimelineRow Row, TimelineBlock Block, Point At)? _clickOnly;
+
+    /// <summary>Whether a press at a laid-out x, with these keys, ripples the block's edge: Ctrl on an edge that StartDrag trims there.</summary>
+    private static bool RipplesAt(TimelineBlock block, double x, ModifierKeys modifiers)
+    {
+        if (!modifiers.HasFlag(ModifierKeys.Control) || block is not { Edit: not null, CanDrag: not null, Commit: not null })
+            return false;
+
+        var (left, right, edge) = (block.Left, block.Left + block.Width, TimelineTrack.EdgePixels);
+        return block.Resizable && x > right - edge || block.TrimmableStart && x < left + edge;
     }
 
     // A click on a lane of a collapsed stack: its stack opens, and every closed stack above it, so the lane is shown in full.
@@ -336,7 +380,16 @@ public sealed partial class UnifiedTimelineControl
 
         foreach (var (row, stack) in closed)
             SetExpanded(row, stack, true);
+
+        // The lane clicked stays in view while the stacks open round it (5.0-Release: the Background Blur, last of its stack,
+        // was pushed below the bottom by the rows opening above it, and its selection could not be seen).
+        if (closed.Count > 0)
+            (_keepInView, _keepInViewUntil) = (_lanes[index].Row, System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency);
     }
+
+    // A lane kept in view while the stacks opened by a click on it grow (OpenStacksAbove), until when (Stopwatch ticks).
+    private TimelineRow? _keepInView;
+    private long _keepInViewUntil;
 
     /// <summary>
     /// The block pressed, found again after its press was told: the host may have made the rows again for it (a selection
@@ -397,6 +450,11 @@ public sealed partial class UnifiedTimelineControl
         {
             // A double click on the name opens or closes all of its stacks (every second click of a quick run of them).
             SetExpanded(row, !IsExpanded(row));
+        }
+        else
+        {
+            // Its name: the host may select what the row stands for (5.0-Verify: the captions, the background).
+            Raise(() => HeaderClicked?.Invoke(row));
         }
     }
 
@@ -496,6 +554,7 @@ public sealed partial class UnifiedTimelineControl
     // overlay draws it as it goes).
     private void BeginDrag()
     {
+        _clickOnly = null;
         IReadOnlyList<double> times = [];
         Raise(() => times = SnapTimes?.Invoke() ?? []);
         _snapTimes = times;
@@ -520,7 +579,12 @@ public sealed partial class UnifiedTimelineControl
         _coupled.Clear();
         _coupledSet.Clear();
         _loose.Clear();
+        _groupSet.Clear();
         Invalidate();
+
+        // Let go with the pointer outside: nothing is under it any more.
+        if (!new Rect(RenderSize).Contains(Mouse.GetPosition(this)))
+            PointerSeconds(double.NaN);
         Raise(() => DragEnded?.Invoke());
     }
 
@@ -530,6 +594,7 @@ public sealed partial class UnifiedTimelineControl
     /// </summary>
     public void AbortDrag()
     {
+        _clickOnly = null;
         if (!IsDragging)
             return;
 
@@ -545,23 +610,25 @@ public sealed partial class UnifiedTimelineControl
     /// Finds what goes with a dragged block, on every lane (open or collapsed): moved, the children that ride with it
     /// (and theirs); a trim (or a seam's edge), the children on that edge of it, through an unbroken line of children on
     /// that edge, and the children the trim may leave outside it; a roll, the earlier clip's on its end and the later's on
-    /// its start; a slip, none.
+    /// its start; a slip, none. 5.0: the other blocks of a selected group the block is one of (moved, or trimmed at the same
+    /// end) with what each of them carries along, and the captions under every clip dragged (see <see cref="Captions"/>).
     /// </summary>
     private void CollectFamily(BlockDrag drag)
     {
         _coupled.Clear();
         _coupledSet.Clear();
         _loose.Clear();
-        if (drag.Kind == BlockEdit.Slip || drag.Block.Family is null)
-            return;
+        _groupSet.Clear();
+        (drag.Group, drag.CarriedByGroup) = (null, false);
 
-        // The blocks of every lane by the parent they belong to.
+        // The blocks of every lane by the parent they belong to (the dragged block and its roll's neighbour among them: a
+        // group's other block may be the parent of either).
         var byParent = new Dictionary<object, List<(TimelineRow Row, TimelineBlock Block)>>();
         foreach (var lane in _lanes)
         {
             foreach (var block in lane.Row.Blocks)
             {
-                if (block.Family is not { Parent: { } parent } || ReferenceEquals(block, drag.Block) || ReferenceEquals(block, drag.Neighbor))
+                if (block.Family is not { Parent: { } parent })
                     continue;
                 if (!byParent.TryGetValue(parent, out var children))
                     byParent[parent] = children = [];
@@ -569,29 +636,69 @@ public sealed partial class UnifiedTimelineControl
             }
         }
 
-        if (byParent.Count == 0)
-            return;
-
-        switch (drag.Kind)
+        var members = GroupOf(drag, byParent);
+        if (members.Count > 0)
         {
-            case BlockEdit.Move:
-                Gather(drag.Block, null, Follows.Move, false);
-                break;
-            case BlockEdit.TrimEnd:
-                Gather(drag.Block, BlockEdges.End, drag.Seam is null ? Follows.End : Follows.SeamEdge, false);
-                break;
-            case BlockEdit.TrimStart:
-                Gather(drag.Block, BlockEdges.Start, drag.Seam is null ? Follows.Start : Follows.SeamEdge, false);
-                break;
-            case BlockEdit.Roll:
-                Gather(drag.Block, BlockEdges.End, Follows.End, false);
-                if (drag.Neighbor is { } next)
-                    Gather(next, BlockEdges.Start, Follows.Start, true);
-                break;
+            var how = drag.Kind switch { BlockEdit.TrimEnd => Follows.End, BlockEdit.TrimStart => Follows.Start, _ => Follows.Move };
+            var lowest = drag.Block.MayStartBeforeZero ? double.PositiveInfinity : drag.Left;
+            drag.Group = new List<Coupled>(members.Count);
+            foreach (var (row, member) in members)
+            {
+                var entry = new Coupled { Row = row, Block = member, How = how, Root = member, Member = true, Left0 = member.Left, Width0 = member.Width };
+                drag.Group.Add(entry);
+                _coupled.Add(entry);
+                _coupledSet.Add(member);
+                _groupSet.Add(member);
+                if (!member.MayStartBeforeZero)
+                    lowest = Math.Min(lowest, member.Left);
+            }
+
+            // Moved as one, the group stops where the first of it would pass the timeline's start.
+            drag.GroupFloor = double.IsPositiveInfinity(lowest) ? double.NegativeInfinity : drag.Left - lowest;
+        }
+
+        if (drag.Kind != BlockEdit.Slip && byParent.Count > 0)
+        {
+            switch (drag.Kind)
+            {
+                case BlockEdit.Move:
+                    Gather(drag.Block, null, Follows.Move, false);
+                    break;
+                case BlockEdit.TrimEnd:
+                    Gather(drag.Block, BlockEdges.End, drag.Seam is null ? Follows.End : Follows.SeamEdge, false);
+                    break;
+                case BlockEdit.TrimStart:
+                    Gather(drag.Block, BlockEdges.Start, drag.Seam is null ? Follows.Start : Follows.SeamEdge, false);
+                    break;
+                case BlockEdit.Roll:
+                    Gather(drag.Block, BlockEdges.End, Follows.End, false);
+                    if (drag.Neighbor is { } next)
+                        Gather(next, BlockEdges.Start, Follows.Start, true);
+                    break;
+            }
+
+            // What each other block of the group carries along goes with it the same way.
+            foreach (var member in drag.Group ?? [])
+            {
+                Gather(member.Block, drag.Kind switch { BlockEdit.TrimEnd => BlockEdges.End, BlockEdit.TrimStart => BlockEdges.Start, _ => null },
+                    member.How, false);
+            }
+        }
+
+        // The captions under every clip dragged (5.0): never at a seam of folded dead air (what slides there is the fold's).
+        if (drag.Seam is null)
+        {
+            var how = drag.Kind switch { BlockEdit.Move => Follows.Move, BlockEdit.Slip => Follows.SlipWithin, _ => Follows.Within };
+            Captions(drag.Row, drag.Block, how);
+            if (drag.Neighbor is { } next)
+                Captions(drag.Row, next, Follows.Within);
+            foreach (var member in drag.Group ?? [])
+                Captions(member.Row, member.Block, how);
         }
 
         // Every child (and theirs, the children on the same edge) that rides with the block: on that edge (a trim), or
-        // all of them (a move). A trim also shows the children it may leave outside the parent, which come loose.
+        // all of them (a move). A trim also shows the children it may leave outside the parent, which come loose. The
+        // dragged block, its neighbour and the group's own blocks are never anyone's children here: each goes by itself.
         void Gather(TimelineBlock root, BlockEdges? edge, Follows how, bool ofNeighbor)
         {
             var queue = new Queue<TimelineBlock>();
@@ -604,34 +711,141 @@ public sealed partial class UnifiedTimelineControl
 
                 foreach (var (row, child) in children)
                 {
-                    if (child.Family is not { Rides: true } childFamily || _coupledSet.Contains(child))
+                    if (child.Family is not { Rides: true } childFamily || _coupledSet.Contains(child) || ReferenceEquals(child, drag.Block)
+                        || ReferenceEquals(child, drag.Neighbor) || _groupSet.Contains(child))
+                    {
                         continue;
+                    }
 
                     var onEdge = edge is { } wanted && (childFamily.OnParentEdges & wanted) != 0;
                     if (edge is not null && !onEdge)
                     {
                         // Off the dragged edge: only the root's own children can be left outside by a trim, and come loose.
                         if (ReferenceEquals(parent, root) && drag.Seam is null && drag.Kind is BlockEdit.TrimEnd or BlockEdit.TrimStart)
-                            Add(row, child, how, ofNeighbor, mayDetach: true);
+                            Add(row, child, how, ofNeighbor, mayDetach: true, root);
                         continue;
                     }
 
-                    Add(row, child, how, ofNeighbor, mayDetach: false);
+                    Add(row, child, how, ofNeighbor, mayDetach: false, root);
                     queue.Enqueue(child);
                 }
             }
         }
 
-        void Add(TimelineRow row, TimelineBlock child, Follows how, bool ofNeighbor, bool mayDetach)
+        void Add(TimelineRow row, TimelineBlock child, Follows how, bool ofNeighbor, bool mayDetach, TimelineBlock root)
         {
             _coupled.Add(new Coupled
             {
                 Row = row, Block = child, How = mayDetach ? Follows.Move : how, OfNeighbor = ofNeighbor, Left0 = child.Left, Width0 = child.Width,
-                Detaching = false,
+                Detaching = false, Root = root,
             });
             _coupledSet.Add(child);
             if (mayDetach)
                 _loose.Add(child);
+        }
+    }
+
+    /// <summary>
+    /// The other selected blocks a drag of a selected block takes along (5.0, multi-select): a move, or a plain trim of either
+    /// end (no ripple, roll, slip or seam), of one of them is made to every one that can take it (moved: it can be dragged;
+    /// trimmed: it has that edge). One the model moves or trims with another of them (a child riding with its parent, on
+    /// the edge trimmed) is left to it; when the dragged block itself is such a child, its own edit is left out.
+    /// </summary>
+    private List<(TimelineRow Row, TimelineBlock Block)> GroupOf(BlockDrag drag, Dictionary<object, List<(TimelineRow Row, TimelineBlock Block)>> byParent)
+    {
+        var found = new List<(TimelineRow Row, TimelineBlock Block)>();
+        if (drag.Kind is not (BlockEdit.Move or BlockEdit.TrimEnd or BlockEdit.TrimStart) || drag.Ripple || drag.Seam is not null || drag.Alt
+            || IsSelected is not { } isSelected || drag.Block.Clip is not { } pressed)
+        {
+            return found;
+        }
+
+        var selected = false;
+        Raise(() => selected = isSelected(pressed));
+        if (!selected)
+            return found;
+
+        foreach (var lane in _lanes)
+        {
+            foreach (var block in lane.Row.Blocks)
+            {
+                if (ReferenceEquals(block, drag.Block) || block.Clip is not { } clip || !Takes(block))
+                    continue;
+
+                var chosen = false;
+                if (Raise(() => chosen = isSelected(clip)) && chosen)
+                    found.Add((lane.Row, block));
+            }
+        }
+
+        if (found.Count == 0)
+            return found;
+
+        // What the model takes along with each of them (and with the dragged block): never edited twice.
+        var edge = drag.Kind switch { BlockEdit.TrimEnd => BlockEdges.End, BlockEdit.TrimStart => BlockEdges.Start, _ => BlockEdges.None };
+        var carried = new HashSet<TimelineBlock>(ReferenceEqualityComparer.Instance);
+        Reach(drag.Block);
+        foreach (var (_, member) in found)
+            Reach(member);
+        found.RemoveAll(m => carried.Contains(m.Block));
+        drag.CarriedByGroup = carried.Contains(drag.Block);
+        return found;
+
+        bool Takes(TimelineBlock block) => drag.Kind switch
+        {
+            BlockEdit.Move => block.Commit is not null && block.CanDrag is { } can && CanDragNow(can),
+            BlockEdit.TrimEnd => block.Resizable && block.Commit is not null && block.CanDrag is not null,
+            _ => block.TrimmableStart && block.Edit is not null && block.CanDrag is not null,
+        };
+
+        bool CanDragNow(Func<bool> can)
+        {
+            var yes = false;
+            return Raise(() => yes = can()) && yes;
+        }
+
+        void Reach(TimelineBlock root)
+        {
+            var queue = new Queue<TimelineBlock>();
+            queue.Enqueue(root);
+            while (queue.Count > 0)
+            {
+                var parent = queue.Dequeue();
+                if (parent.Family is not { } family || !byParent.TryGetValue(family.Key, out var children))
+                    continue;
+
+                foreach (var (_, child) in children)
+                {
+                    if (child.Family is not { Rides: true } childFamily || (edge != BlockEdges.None && (childFamily.OnParentEdges & edge) == 0) || !carried.Add(child))
+                        continue;
+                    queue.Enqueue(child);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The captions under a clip's row (5.0, the user's directive 2): the blocks of a captions lane in the row's own stack
+    /// (the captions are anchored to the sound of its track) that lie within the clip as the drag began. They go with it
+    /// every move, as its HUD pieces do: moved by as much; trimmed or rolled, cut to the clip as it is now (what its new
+    /// edge leaves outside it is not shown); slipped, slid with what of its file it plays.
+    /// </summary>
+    private void Captions(TimelineRow row, TimelineBlock clip, Follows how)
+    {
+        var (left, right) = (clip.Left, clip.Left + clip.Width);
+        foreach (var lane in _lanes)
+        {
+            if (lane.Row.Kind != TimelineRowKind.Captions || !ReferenceEquals(lane.Row.Parent, row))
+                continue;
+
+            foreach (var caption in lane.Row.Blocks)
+            {
+                if (_coupledSet.Contains(caption) || Math.Min(caption.Left + caption.Width, right) - Math.Max(caption.Left, left) < 0.5)
+                    continue;
+
+                _coupled.Add(new Coupled { Row = lane.Row, Block = caption, How = how, Root = clip, Left0 = caption.Left, Width0 = caption.Width });
+                _coupledSet.Add(caption);
+            }
         }
     }
 
@@ -673,14 +887,24 @@ public sealed partial class UnifiedTimelineControl
         var block = drag.Block;
         var (startMoved, endMoved) = (block.Left - drag.Left, block.Left + block.Width - (drag.Left + drag.Width));
         var cutMoved = drag.Neighbor is { } next ? next.Left - drag.NeighborLeft : 0;
-        var (parentLeft, parentRight) = (block.Left, block.Left + block.Width);
         var seamGrowth = drag.Seam is { } grip ? grip.Seconds * PixelsPerSecond : 0;
         var fits = true;
         foreach (var child in _coupled)
         {
             var (left, width) = (child.Left0, child.Width0);
+            var root = child.Root ?? block;
             switch (child.How)
             {
+                // A caption: where it was (slid with its clip's file, slipped), cut to its clip as it is now; nothing of it
+                // when it lies outside.
+                case Follows.Within or Follows.SlipWithin:
+                {
+                    var from = child.Left0 + (child.How == Follows.SlipWithin ? drag.Slip : 0);
+                    var (cutLeft, cutRight) = (Math.Max(from, root.Left), Math.Min(from + child.Width0, root.Left + root.Width));
+                    (child.Block.Left, child.Block.Width) = (cutLeft, Math.Max(cutRight - cutLeft, 0));
+                    continue;
+                }
+
                 case Follows.Move when drag.Kind == BlockEdit.Move:
                     left += startMoved;
                     if (!child.Block.MayStartBeforeZero && left < -0.5)
@@ -701,7 +925,17 @@ public sealed partial class UnifiedTimelineControl
                     break;
             }
 
+            // One of a selected group: never loose; trimmed no shorter than a block is drawn, nor before the timeline's start.
+            if (child.Member)
+            {
+                if (left < 0 && !child.Block.MayStartBeforeZero && drag.Kind == BlockEdit.TrimStart)
+                    (left, width) = (0, width + left);
+                (child.Block.Left, child.Block.Width) = (left, Math.Max(width, 4));
+                continue;
+            }
+
             // Trimmed past: left wholly outside its parent, it comes loose and stays where it was.
+            var (parentLeft, parentRight) = (root.Left, root.Left + root.Width);
             var loose = _loose.Contains(child.Block)
                 ? drag.Kind == BlockEdit.TrimEnd && child.Left0 >= parentRight - 0.5 || drag.Kind == BlockEdit.TrimStart && child.Left0 + child.Width0 <= parentLeft + 0.5
                 : width < 1;
@@ -909,8 +1143,11 @@ public sealed partial class UnifiedTimelineControl
         {
             PanRequested?.Invoke(from - point.X);
             _panFrom = point.X;
+            NotePointer(point);
             return;
         }
+
+        NotePointer(point);
 
         var laid = Laid(point);
         if (_splitDrag is { } split)
@@ -1001,12 +1238,17 @@ public sealed partial class UnifiedTimelineControl
 
             default:
             {
-                // Either edge of a moved block snaps, whichever is the nearer to something.
+                // Either edge of a moved block snaps, whichever is the nearer to something. A selected group (5.0) moves as
+                // one along its rows, stopping where the first of it would pass the timeline's start; it goes onto no other row.
                 var left = drag.Left + moved;
                 var (toLeft, toRight) = (Snap(left) - left, Snap(left + drag.Width) - (left + drag.Width));
                 left += Math.Abs(toLeft) <= Math.Abs(toRight) ? toLeft : toRight;
-                drag.Block.Left = drag.Block.MayStartBeforeZero ? left : Math.Max(left, 0);
-                if (pointerMoved)
+                drag.Block.Left = drag.Group is { Count: > 0 } ? Math.Max(left, drag.GroupFloor) : drag.Block.MayStartBeforeZero ? left : Math.Max(left, 0);
+                if (drag.Group is { Count: > 0 })
+                {
+                    drag.Target = null;
+                }
+                else if (pointerMoved)
                 {
                     TargetUnder(drag, point);
                 }
@@ -1318,6 +1560,88 @@ public sealed partial class UnifiedTimelineControl
         _ => "",
     };
 
+    /// <summary>
+    /// The moment under a point of the control told to Instant Seek (5.0, <see cref="PointerSecondsChanged"/>): in the time
+    /// area, the sequence's seconds there (never before 0); over the headers or outside, none.
+    /// </summary>
+    private void NotePointer(Point point) =>
+        PointerSeconds(point.X >= _headerWidth && point.X <= ActualWidth && point.Y >= 0 && point.Y <= ActualHeight ? Math.Max(TimeAt(point.X), 0) : double.NaN);
+
+    /// <summary>
+    /// The pointer is over the ruler beside the rows at a moment (seconds), or has left it (null): the host relays the ruler's
+    /// own pointer (TimelineRuler.PointerSecondsChanged) so that <see cref="PointerSecondsChanged"/> tells of both (5.0).
+    /// </summary>
+    public void NotePointerOverRuler(double? seconds) => PointerSeconds(seconds is { } at ? Math.Max(at, 0) : double.NaN);
+
+    // Tells of the moment under the pointer when it is another (NaN: none, told once).
+    private void PointerSeconds(double seconds)
+    {
+        if (seconds.Equals(_pointerSeconds))
+            return;
+
+        var was = _pointerSeconds;
+        _pointerSeconds = seconds;
+        if (PointerSecondsChanged is not { } changed)
+            return;
+
+        try
+        {
+            if (!double.IsNaN(seconds))
+                changed(seconds);
+            else if (!double.IsNaN(was))
+                changed(null);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // A hint is never worth a fault: told once in the log, the pointer goes on.
+            Services.AppLog.Write("Timeline: telling of the moment under the pointer failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// The blocks between two (found by what they stand for), for Shift + click (5.0): those of every lane from the one's to
+    /// the other's (the lanes shown in full between them, and the two lanes themselves) that overlap the time from the earlier
+    /// one's start to the later one's end, top to bottom. Empty when either is not on the timeline.
+    /// </summary>
+    public List<TimelineBlock> BlocksInRange(object from, object to)
+    {
+        var found = new List<TimelineBlock>();
+        var (first, last) = (LaneAndBlockOf(from), LaneAndBlockOf(to));
+        if (first is not { } a || last is not { } b)
+            return found;
+
+        var (top, bottom) = (Math.Min(a.Lane, b.Lane), Math.Max(a.Lane, b.Lane));
+        var (left, right) = (Math.Min(a.Block.Left, b.Block.Left), Math.Max(a.Block.Left + a.Block.Width, b.Block.Left + b.Block.Width));
+        for (var i = top; i <= bottom; i++)
+        {
+            if (!_lanes[i].Detailed && i != a.Lane && i != b.Lane)
+                continue;
+
+            foreach (var block in _lanes[i].Row.Blocks)
+            {
+                if (Math.Min(block.Left + block.Width, right) - Math.Max(block.Left, left) >= 0.5 && !found.Contains(block))
+                    found.Add(block);
+            }
+        }
+
+        return found;
+    }
+
+    // The lane and the block that stand for something (the first found, top to bottom); null when none does.
+    private (int Lane, TimelineBlock Block)? LaneAndBlockOf(object clip)
+    {
+        for (var i = 0; i < _lanes.Count; i++)
+        {
+            foreach (var block in _lanes[i].Row.Blocks)
+            {
+                if (Equals(block.Clip, clip))
+                    return (i, block);
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Moves the skim line to a moment (NaN: none) and says so.</summary>
     private void Skim(double seconds)
     {
@@ -1347,6 +1671,7 @@ public sealed partial class UnifiedTimelineControl
         HoverGap(null, -1);
         NoTip();
         Skim(double.NaN);
+        PointerSeconds(double.NaN);
     }
 
     private void AutoScroll_Tick(object? sender, EventArgs e)
@@ -1476,6 +1801,15 @@ public sealed partial class UnifiedTimelineControl
 
         if (_drag is not { } drag)
         {
+            // A block pressed that started no drag, let go where it was: a click all the same (5.0-Verify).
+            if (_clickOnly is { } click)
+            {
+                _clickOnly = null;
+                var at = Laid(e.GetPosition(this));
+                if (Math.Abs(at.X - click.At.X) < RazorTravel && Math.Abs(at.Y - click.At.Y) < RazorTravel)
+                    Raise(() => BlockClicked?.Invoke(click.Row, click.Block));
+            }
+
             base.OnMouseLeftButtonUp(e);
             return;
         }
@@ -1507,8 +1841,15 @@ public sealed partial class UnifiedTimelineControl
 
             var changed = Math.Abs(block.Left - drag.Left) > 0.5 || Math.Abs(block.Width - drag.Width) > 0.5;
 
+            // A selected group (5.0): every one of its blocks moved or trimmed as one step (refused as one, laid back).
+            if (drag.Group is { Count: > 0 } group)
+            {
+                if (changed)
+                    made = CommitGroup(drag, group);
+            }
+
             // Let go on another row: it goes there (or, refused, is laid back where it was).
-            if (drag.Target is { } target && block.MoveTo is { } moveTo)
+            else if (drag.Target is { } target && block.MoveTo is { } moveTo)
             {
                 var at = block.Left;
                 made = Raise(() => moveTo(target.Data, at));
@@ -1530,6 +1871,13 @@ public sealed partial class UnifiedTimelineControl
                 var (left, width) = (block.Left, block.Width);
                 made = Raise(() => commit(left, width));
             }
+
+            // Pressed and let go where it was: a click, which the host may make something of (5.0: the selection).
+            if (!changed && drag.Travel < RazorTravel && Math.Abs(drag.Slip) <= 0.5)
+            {
+                var row = drag.Row;
+                Raise(() => BlockClicked?.Invoke(row, block));
+            }
         }
         finally
         {
@@ -1539,10 +1887,66 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
+    /// <summary>
+    /// A selected group let go (5.0): the dragged block's edit and each other block's, made as one through
+    /// <see cref="Together"/> (one step of Undo, refused as a whole). Moved, they are made from the far end of the way they
+    /// went, so that none is let go onto another of them that has yet to move. False when it was refused or failed.
+    /// </summary>
+    private bool CommitGroup(BlockDrag drag, List<Coupled> group)
+    {
+        var edits = new List<(double Left0, Action Edit)>(group.Count + 1);
+        if (!drag.CarriedByGroup && EditOf(drag.Block) is { } own)
+            edits.Add((drag.Left, own));
+        foreach (var member in group)
+        {
+            if (EditOf(member.Block) is { } edit)
+                edits.Add((member.Left0, edit));
+        }
+
+        if (edits.Count == 0)
+            return true;
+
+        if (drag.Kind == BlockEdit.Move)
+            edits.Sort((a, b) => drag.Block.Left >= drag.Left ? b.Left0.CompareTo(a.Left0) : a.Left0.CompareTo(b.Left0));
+
+        var count = group.Count + 1;
+        var label = drag.Kind switch
+        {
+            BlockEdit.TrimEnd => string.Create(CultureInfo.InvariantCulture, $"trim the ends of {count} clips"),
+            BlockEdit.TrimStart => string.Create(CultureInfo.InvariantCulture, $"trim the starts of {count} clips"),
+            _ => string.Create(CultureInfo.InvariantCulture, $"move {count} clips"),
+        };
+
+        void Body()
+        {
+            foreach (var (_, edit) in edits)
+                edit();
+        }
+
+        var made = true;
+        return Raise(() => made = Together is { } together ? together(label, Body) : RunAll(Body)) && made;
+
+        static bool RunAll(Action body)
+        {
+            body();
+            return true;
+        }
+
+        // What letting go of one block of the group does, as it is drawn now.
+        Action? EditOf(TimelineBlock block)
+        {
+            var (left, width) = (block.Left, block.Width);
+            if (drag.Kind == BlockEdit.TrimStart)
+                return block.Edit is { } edit ? () => edit(new BlockEditDone(BlockEdit.TrimStart, left, width, 0, false, null)) : null;
+            return block.Commit is { } commit ? () => commit(left, width) : null;
+        }
+    }
+
     protected override void OnLostMouseCapture(MouseEventArgs e)
     {
         base.OnLostMouseCapture(e);
         _panFrom = null;
+        _clickOnly = null;
         if (IsDragging)
             Revert();
     }

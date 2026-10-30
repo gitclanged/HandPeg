@@ -150,6 +150,18 @@ public sealed record EffectParam(
 
     public string Tip { get; init; } = "";
 
+    /// <summary>
+    /// The value a card the user adds starts with (Add Effect, a track's Add Effect menu; 5.0-Release, the user's Q1): visible
+    /// at once. Null: <see cref="Default"/>, which stays what a value missing from a saved card reads as (mostly "changes nothing").
+    /// </summary>
+    public double? Starting { get; init; }
+
+    /// <summary>The words a card the user adds starts with (a choice's value); null: <see cref="TextDefault"/>.</summary>
+    public string? StartingText { get; init; }
+
+    /// <summary>A deeper control: the Effects pane shows it in the card's folded Advanced section, under the main ones (5.0-Release).</summary>
+    public bool IsAdvanced { get; init; }
+
     public int Decimals => Step >= 1 ? 0 : Step >= 0.1 ? 1 : Step >= 0.01 ? 2 : 3;
 
     /// <summary>
@@ -217,6 +229,30 @@ public sealed record EffectDefinition(
     public int GpuPacketCount => GpuSlot == GpuShaderSlot.None ? 0 : Math.Max((GpuLaneCount + GpuEffectPacket.Lanes - 1) / GpuEffectPacket.Lanes, 1);
 
     public EffectParam? Param(string key) => Params.FirstOrDefault(p => p.Key == key);
+
+    /// <summary>Whether any of its parameters is an Advanced one (the card has the folded section).</summary>
+    public bool HasAdvanced => Params.Any(p => p.IsAdvanced);
+
+    /// <summary>
+    /// A new card as the user adds it: each value with a starting value (<see cref="EffectParam.Starting"/>,
+    /// <see cref="EffectParam.StartingText"/>) written into it, so that it shows at once. A value bound to the layer is the
+    /// layer's, and is left alone.
+    /// </summary>
+    public EffectInstance NewCard()
+    {
+        var card = new EffectInstance { Type = Type };
+        foreach (var param in Params)
+        {
+            if (param.Bind is not null)
+                continue;
+            if (param.Starting is { } value)
+                card.Values[param.Key] = Math.Clamp(value, param.Min, param.Max);
+            if (param.StartingText is { } text)
+                card.Texts[param.Key] = text;
+        }
+
+        return card;
+    }
 }
 
 /// <summary>What an effect's compile is told about where it is being built.</summary>
@@ -325,12 +361,19 @@ public static partial class EffectRegistry
         Hue = "builtin.color.hue", Balance = "builtin.color.balance", Temperature = "builtin.color.temperature", Curves = "builtin.color.curves",
         Blur = "builtin.blur.box", Sharpen = "builtin.detail.sharpen", Vignette = "builtin.look.vignette",
         ChromaKey = "builtin.key.chroma", Choke = "builtin.matte.choke", Smooth = "builtin.matte.smooth", Mask = "builtin.matte.mask", Edges = "builtin.matte.edges",
-        Opacity = "builtin.composite.opacity", Shadow = "builtin.composite.shadow", BlendMode = "builtin.composite.blend";
+        Opacity = "builtin.composite.opacity", Shadow = "builtin.composite.shadow", BlendMode = "builtin.composite.blend",
+        BackgroundBlur = "builtin.background.blur";
 
     private static readonly Dictionary<string, EffectDefinition> Definitions = new(StringComparer.Ordinal);
 
     /// <summary>In the order the Add Effect menu lists them.</summary>
     public static IReadOnlyList<EffectDefinition> All => [.. Definitions.Values];
+
+    /// <summary>The categories, in the order the Add Effect menus list them (the Effects pane's, a track's); any other after them.</summary>
+    private static readonly string[] Categories = ["Color", "Detail", "Blur", "Look", "Transform", "Key", "Matte", "Composite"];
+
+    /// <summary>Where a category comes in the Add Effect menus.</summary>
+    public static int CategoryRank(string category) => Array.IndexOf(Categories, category) is var i and >= 0 ? i : Categories.Length;
 
     public static EffectDefinition? Find(string? type) => type is not null && Definitions.TryGetValue(type, out var definition) ? definition : null;
 
@@ -342,7 +385,7 @@ public static partial class EffectRegistry
     {
         // ----- Look -----
         Register(new(Flip, "Flip", "Transform", EffectZone.Look,
-            [new("h", "Flip Horizontally", ParamKind.Toggle), new("v", "Flip Vertically", ParamKind.Toggle)], EffectCost.Green,
+            [new("h", "Flip Horizontally", ParamKind.Toggle) { Starting = 1 }, new("v", "Flip Vertically", ParamKind.Toggle)], EffectCost.Green,
             (_, fx) => [.. (fx.IsOn("h") ? ["hflip"] : Array.Empty<string>()), .. (fx.IsOn("v") ? ["vflip"] : Array.Empty<string>())])
         {
             GpuSlot = GpuShaderSlot.Flip, Geometric = true, Description = "Mirrors the picture left to right, or upside down.",
@@ -365,10 +408,10 @@ public static partial class EffectRegistry
 
         Register(new(Grade, "Color Grade", "Color", EffectZone.Look,
             [
-                new("contrast", "Contrast", Min: 0, Max: 2, Default: 1, Animation: ParamAnimation.Expression),
+                new("contrast", "Contrast", Min: 0, Max: 2, Default: 1, Animation: ParamAnimation.Expression) { Starting = 1.1 },
                 new("brightness", "Brightness", Min: -1, Max: 1, Default: 0, Animation: ParamAnimation.Expression),
-                new("saturation", "Saturation", Min: 0, Max: 3, Default: 1, Animation: ParamAnimation.Expression),
-                new("gamma", "Gamma", Min: 0.1, Max: 3, Default: 1, Animation: ParamAnimation.Expression),
+                new("saturation", "Saturation", Min: 0, Max: 3, Default: 1, Animation: ParamAnimation.Expression) { Starting = 1.2 },
+                new("gamma", "Gamma", Min: 0.1, Max: 3, Default: 1, Animation: ParamAnimation.Expression) { IsAdvanced = true },
             ], EffectCost.Green, CompileGrade)
         {
             GpuSlot = GpuShaderSlot.ColorGrade, Description = "Contrast, brightness, saturation and gamma.",
@@ -376,50 +419,33 @@ public static partial class EffectRegistry
 
         Register(new(Hue, "Hue", "Color", EffectZone.Look,
             [
-                new("h", "Hue", Min: -180, Max: 180, Default: 0, Step: 1, Unit: "°", Animation: ParamAnimation.Expression),
-                new("s", "Saturation", Min: 0, Max: 10, Default: 1, Animation: ParamAnimation.Expression),
+                new("h", "Hue", Min: -180, Max: 180, Default: 0, Step: 1, Unit: "°", Animation: ParamAnimation.Expression) { Starting = 20 },
+                new("s", "Saturation", Min: 0, Max: 10, Default: 1, Animation: ParamAnimation.Expression) { Starting = 1.15 },
             ], EffectCost.Green, CompileHue)
         {
             GpuSlot = GpuShaderSlot.HueSaturation, Description = "Turns every colour round the colour wheel.",
         });
 
-        string[] balanceKeys = ["rs", "gs", "bs", "rm", "gm", "bm", "rh", "gh", "bh"];
         Register(new(Balance, "Color Balance", "Color", EffectZone.Look,
             [
-                new("rs", "Shadows Red", Min: -1, Max: 1, Animation: ParamAnimation.Command), new("gs", "Shadows Green", Min: -1, Max: 1, Animation: ParamAnimation.Command),
-                new("bs", "Shadows Blue", Min: -1, Max: 1, Animation: ParamAnimation.Command),
+                new("rs", "Shadows Red", Min: -1, Max: 1, Animation: ParamAnimation.Command) { Starting = -0.05 }, new("gs", "Shadows Green", Min: -1, Max: 1, Animation: ParamAnimation.Command),
+                new("bs", "Shadows Blue", Min: -1, Max: 1, Animation: ParamAnimation.Command) { Starting = 0.1 },
                 new("rm", "Midtones Red", Min: -1, Max: 1, Animation: ParamAnimation.Command), new("gm", "Midtones Green", Min: -1, Max: 1, Animation: ParamAnimation.Command),
                 new("bm", "Midtones Blue", Min: -1, Max: 1, Animation: ParamAnimation.Command),
-                new("rh", "Highlights Red", Min: -1, Max: 1, Animation: ParamAnimation.Command), new("gh", "Highlights Green", Min: -1, Max: 1, Animation: ParamAnimation.Command),
-                new("bh", "Highlights Blue", Min: -1, Max: 1, Animation: ParamAnimation.Command),
-                new("pl", "Preserve Lightness", ParamKind.Toggle),
+                new("rh", "Highlights Red", Min: -1, Max: 1, Animation: ParamAnimation.Command) { Starting = 0.1 }, new("gh", "Highlights Green", Min: -1, Max: 1, Animation: ParamAnimation.Command),
+                new("bh", "Highlights Blue", Min: -1, Max: 1, Animation: ParamAnimation.Command) { Starting = -0.05 },
+                new("pl", "Preserve Lightness", ParamKind.Toggle) { Starting = 1, IsAdvanced = true },
             ], EffectCost.Green,
-            (context, fx) =>
-            {
-                // Animated by commands: every value the keyframes touch is written, from where they start, and sent on.
-                var animated = balanceKeys.Where(fx.HasKeys).ToList();
-                var set = balanceKeys.Where(k => animated.Contains(k) || Math.Abs(fx.Get(k)) >= 0.005).Select(k => $"{k}={context.Initial(fx, k, -1, 1)}").ToList();
-                if (set.Count == 0)
-                    return null;
-                if (fx.IsOn("pl"))
-                    set.Add("pl=1");
-                if (animated.Count == 0)
-                    return [$"colorbalance={string.Join(":", set)}"];
-
-                var commands = context.Commands(fx, "colorbalance", [.. animated.Select(k => (k, k, -1.0, 1.0))]);
-                return commands is null
-                    ? [$"colorbalance={string.Join(":", set)}"]
-                    : [commands, $"colorbalance@{context.InstanceName}={string.Join(":", set)}"];
-            })
+            CompileBalance)
         {
             GpuSlot = GpuShaderSlot.ColorBalance, Description = "Pushes the shadows, midtones and highlights towards red, green or blue.",
         });
 
         Register(new(Temperature, "Color Temperature", "Color", EffectZone.Look,
             [
-                new("temperature", "Temperature", Min: 1000, Max: 40000, Default: 6500, Step: 50, Unit: "K", Animation: ParamAnimation.Command),
-                new("mix", "Mix", Default: 1, Animation: ParamAnimation.Command),
-                new("pl", "Preserve Lightness", Default: 0),
+                new("temperature", "Temperature", Min: 1000, Max: 40000, Default: 6500, Step: 50, Unit: "K", Animation: ParamAnimation.Command) { Starting = 5200 },
+                new("mix", "Mix", Default: 1, Animation: ParamAnimation.Command) { IsAdvanced = true },
+                new("pl", "Preserve Lightness", Default: 0) { IsAdvanced = true },
             ], EffectCost.Green,
             (context, fx) =>
             {
@@ -440,7 +466,7 @@ public static partial class EffectRegistry
             [
                 new("preset", "Preset", ParamKind.Choice)
                 {
-                    TextDefault = "none",
+                    TextDefault = "none", StartingText = "medium_contrast",
                     Choices =
                     [
                         ("none", "None"), ("lighter", "Lighter"), ("darker", "Darker"), ("increase_contrast", "Increase Contrast"),
@@ -448,7 +474,7 @@ public static partial class EffectRegistry
                         ("cross_process", "Cross Process"), ("vintage", "Vintage"), ("color_negative", "Color Negative"), ("negative", "Negative"),
                     ],
                 },
-                new("master", "Master Curve", ParamKind.Text) { Tip = "Points of the curve as input/output pairs from 0 to 1, e.g. 0/0 0.5/0.6 1/1. Applied after the preset." },
+                new("master", "Master Curve", ParamKind.Text) { IsAdvanced = true, Tip = "Points of the curve as input/output pairs from 0 to 1, e.g. 0/0 0.5/0.6 1/1. Applied after the preset." },
             ], EffectCost.Green,
             (_, fx) =>
             {
@@ -466,35 +492,34 @@ public static partial class EffectRegistry
         });
 
         Register(new(Blur, "Blur", "Blur", EffectZone.Look,
-            [new("radius", "Radius", Min: 0, Max: 50, Default: 0, Step: 0.5, Unit: "px") { Tip = "In pixels of a 1080-wide frame, scaled to the frame being made." }], EffectCost.Amber,
-            (context, fx) =>
-            {
-                var radius = Math.Clamp(fx.Get("radius"), 0, 50);
-                if (radius < 0.05)
-                    return null;
-
-                // A box blur run twice, as wide as a Gaussian of half the radius (never gblur: libmpv's FFmpeg crashes on it
-                // in a layer's chain), held to what the colour planes of a picture this size allow.
-                var sigma = Math.Max(radius * context.FrameWidth / 1080.0 / 2, 0.2);
-                var box = (int)Math.Round((Math.Sqrt(6 * sigma * sigma + 1) - 1) / 2);
-                box = Math.Min(Math.Max(box, 1), Math.Max(Math.Min(context.Width, context.Height) / 4 - 1, 0));
-                return box > 0 ? [$"boxblur={box}:2"] : null;
-            })
+            [
+                new("radius", "Radius", Min: 0, Max: 50, Default: 0, Step: 0.5, Unit: "px") { Starting = 12, Tip = "In pixels of a 1080-wide frame, scaled to the frame being made." },
+                new("passes", "Passes", Min: 1, Max: 4, Default: 2, Step: 1)
+                    { IsAdvanced = true, Tip = "How many times the box is run: more passes fall off more smoothly (as a Gaussian does) over the same reach." },
+                new("ratio", "Horizontal / Vertical", Min: 0.25, Max: 4, Default: 1, Step: 0.05)
+                    { IsAdvanced = true, Tip = "Above 1 blurs less down than across (the radius down is the radius divided by it); below 1 less across than down." },
+                new("dim", "Dim", Min: 0, Max: 50, Default: 0, Step: 1, Unit: "%") { IsAdvanced = true, Tip = "Darkens the blurred picture by so much (eq's brightness)." },
+            ], EffectCost.Amber, CompileBlur)
         {
-            GpuSlot = GpuShaderSlot.BoxBlur, Description = "Softens the picture (a box blur run twice).",
+            GpuSlot = GpuShaderSlot.BoxBlur, Description = "Softens the picture (a box blur run twice, or as many times as its Passes).",
         });
 
         Register(new(Sharpen, "Sharpen", "Detail", EffectZone.Look,
-            [new("strength", "Strength", Min: 0, Max: 1)], EffectCost.Amber,
+            [new("strength", "Strength", Min: 0, Max: 1) { Starting = 0.6 }], EffectCost.Amber,
             (_, fx) => fx.Get("strength") < 0.005 ? null : [$"cas=strength={N(Math.Clamp(fx.Get("strength"), 0, 1))}"])
         {
             GpuSlot = GpuShaderSlot.Sharpen, Description = "Contrast-adaptive sharpening: crisper edges without halos.",
         });
 
         Register(new(Vignette, "Vignette", "Look", EffectZone.Look,
-            [new("angle", "Strength", Min: 0, Max: 1.5, Default: Math.PI / 5, Animation: ParamAnimation.Expression) { Tip = "The lens angle: larger darkens more of the corners." }], EffectCost.Green,
-            (context, fx) => fx.Get("angle") < 0.005 && !fx.HasKeys("angle") ? null
-                : [$"vignette=angle={context.Value(fx, "angle", 0, 1.5708)}{(fx.HasKeys("angle") ? ":eval=frame" : "")}"])
+            [
+                new("angle", "Strength", Min: 0, Max: 1.5, Default: Math.PI / 5, Animation: ParamAnimation.Expression)
+                    { Starting = 0.44, Tip = "The lens angle, in radians (0.44 is 25 degrees): larger darkens more of the corners." },
+                new("round", "Roundness", Min: 0, Max: 100, Default: 100, Step: 1, Unit: "%")
+                    { IsAdvanced = true, Tip = "100 % a circle; less, towards the frame's own shape (an ellipse as wide as the picture)." },
+                new("feather", "Feather", Min: 5, Max: 100, Default: 100, Step: 1, Unit: "%")
+                    { IsAdvanced = true, Tip = "How much of the way out from the middle it darkens over: 100 % all of it (a lens's falloff), less a harder edge nearer the corners." },
+            ], EffectCost.Green, CompileVignette)
         {
             GpuSlot = GpuShaderSlot.Vignette, Description = "Darkens the corners, as an old lens does.",
         });
@@ -505,14 +530,18 @@ public static partial class EffectRegistry
                 new("color", "Key Color", ParamKind.Color) { Bind = nameof(Layer.ChromaColor), TextDefault = "#00FF00" },
                 new("similarity", "Similarity", Min: 0.01, Max: 1, Default: 0.15, Animation: ParamAnimation.Command) { Bind = nameof(Layer.ChromaSimilarity) },
                 new("blend", "Blend", Min: 0, Max: 1, Default: 0.05, Animation: ParamAnimation.Command) { Bind = nameof(Layer.ChromaBlend) },
-                new("despill", "Despill", Min: 0, Max: 1, Default: 0) { Tip = "Takes the key colour's spill off the edges that remain (a linear despill)." },
+                new("despill", "Spill", Min: 0, Max: 1, Default: 0) { IsAdvanced = true, Tip = "Takes the key colour's spill off the edges that remain (a linear despill)." },
+                new("choke", "Choke", Min: -20, Max: 20, Default: 0, Step: 1, Unit: "px")
+                    { IsAdvanced = true, Tip = "Pulls the key's edge in (above 0) or pushes it out (below 0) by so many pixels, as Matte Choke does." },
+                new("smooth", "Smooth", Min: 0, Max: 20, Default: 0, Step: 1, Unit: "px")
+                    { IsAdvanced = true, Tip = "Softens the key's edge: its transparency averaged over so many pixels either side (Hann weights)." },
             ], EffectCost.Amber)
         {
             GpuSlot = GpuShaderSlot.ChromaKey, Feature = nameof(Layer.ChromaKey), Description = "Makes one colour transparent: a green or blue screen.",
         });
 
         Register(new(Choke, "Matte Choke", "Matte", EffectZone.KeyAndMatte,
-            [new("amount", "Amount", Min: -20, Max: 20, Default: 0, Step: 1, Unit: "px") { Tip = "Above 0 shrinks what shows (erosion); below 0 spreads it (dilation)." }], EffectCost.Amber,
+            [new("amount", "Amount", Min: -20, Max: 20, Default: 0, Step: 1, Unit: "px") { Starting = 2, Tip = "Above 0 shrinks what shows (erosion); below 0 spreads it (dilation)." }], EffectCost.Amber,
             (context, fx) =>
             {
                 var amount = Math.Clamp(fx.Get("amount"), -20, 20);
@@ -547,9 +576,9 @@ public static partial class EffectRegistry
                 new("grow", "Grow", Min: -Layer.MaskGrowLimit, Max: Layer.MaskGrowLimit, Default: 0, Step: 1, Unit: "px") { Bind = nameof(Layer.MaskGrow) },
                 new("invert", "Invert", ParamKind.Toggle) { Bind = nameof(Layer.MaskInvert) },
                 new("offsetX", "Mask Offset X", Min: -Layer.MaskOffsetLimit, Max: Layer.MaskOffsetLimit, Default: 0, Step: 0.1, Unit: "%")
-                    { Bind = nameof(Layer.MaskOffsetX), Tip = "Moves the mask picture left (negative) or right, in percent of the layer's width: a mask nudged to fit, not drawn again." },
+                    { Bind = nameof(Layer.MaskOffsetX), IsAdvanced = true, Tip = "Moves the mask picture left (negative) or right, in percent of the layer's width: a mask nudged to fit, not drawn again." },
                 new("offsetY", "Mask Offset Y", Min: -Layer.MaskOffsetLimit, Max: Layer.MaskOffsetLimit, Default: 0, Step: 0.1, Unit: "%")
-                    { Bind = nameof(Layer.MaskOffsetY), Tip = "Moves the mask picture up (negative) or down, in percent of the layer's height." },
+                    { Bind = nameof(Layer.MaskOffsetY), IsAdvanced = true, Tip = "Moves the mask picture up (negative) or down, in percent of the layer's height." },
             ], EffectCost.Amber)
         {
             GpuSlot = GpuShaderSlot.LayerMask, Feature = nameof(Layer.CustomMask), Description = "A drawn, picture or whole-frame mask: the layer shows where it is white.",
@@ -559,10 +588,27 @@ public static partial class EffectRegistry
             [
                 new("radius", "Corner Radius", Min: 0, Max: 50, Default: 0, Step: 1, Unit: "%") { Bind = nameof(Layer.CornerRadius) },
                 new("feather", "Soft Edges", ParamKind.Toggle) { Bind = nameof(Layer.Feather) },
-                new("featherRadius", "Feather Radius", Min: 1, Max: 100, Default: 12, Step: 1, Unit: "px") { Bind = nameof(Layer.FeatherRadius) },
+                new("featherRadius", "Feather Radius", Min: 1, Max: 100, Default: 12, Step: 1, Unit: "px") { Bind = nameof(Layer.FeatherRadius), IsAdvanced = true },
             ], EffectCost.Amber)
         {
             GpuSlot = GpuShaderSlot.CornerFeather, Feature = "Edges", Description = "Rounds the corners, and lets the outline fade out.",
+        });
+
+        // ----- The blurred background's own (5.0-Release) -----
+        // Not a card: the pinned first row of the background's stack in the Effects pane, its values the sequence's
+        // (MainViewModel.BlurRadius, BackgroundZoom, BlurPasses, BackgroundDim), drawn by DrawBlurFill and the builder's [bg].
+        Register(new(BackgroundBlur, "Background Blur", "Blur", EffectZone.Look,
+            [
+                new("radius", "Blur Radius", Min: 0, Max: BackgroundMostRadius, Default: 20, Step: 0.5, Unit: "px")
+                    { Tip = "How far the blurred background is blurred, in pixels of the frame: 0 is sharp, and every value between is its own." },
+                new("zoom", "Zoom", Min: 100, Max: 400, Default: 100, Step: 1, Unit: "%")
+                    { Tip = "How much the background is enlarged about its middle: 100 % just covers the frame." },
+                new("passes", "Blur Passes", Min: 1, Max: 4, Default: 2, Step: 1)
+                    { IsAdvanced = true, Tip = "How many times its box blur is run: more passes fall off more smoothly, and blur further." },
+                new("dim", "Dim", Min: 0, Max: 50, Default: 15, Step: 1, Unit: "%") { IsAdvanced = true, Tip = "How much darker than the video it is (eq's brightness)." },
+            ], EffectCost.Amber)
+        {
+            Pinned = true, Description = "The blurred copy of the main video that fills the frame behind everything: its blur and zoom.",
         });
 
         // ----- Composite -----
@@ -575,10 +621,10 @@ public static partial class EffectRegistry
         Register(new(Shadow, "Drop Shadow", "Composite", EffectZone.Composite,
             [
                 new("distance", "Distance", Min: 0, Max: 100, Default: LayerState.DefaultShadowDistance, Step: 1, Unit: "px") { Bind = nameof(Layer.ShadowDistance) },
-                new("angle", "Angle", Min: 0, Max: 360, Default: LayerState.DefaultShadowAngle, Step: 1, Unit: "\u00B0") { Bind = nameof(Layer.ShadowAngle) },
-                new("softness", "Softness", Min: 0, Max: 50, Default: LayerState.DefaultShadowSoftness, Step: 1, Unit: "px") { Bind = nameof(Layer.ShadowSoftness) },
-                new("opacity", "Shadow Opacity", Min: 0, Max: 1, Default: 0.5) { Bind = nameof(Layer.ShadowOpacity) },
-                new("color", "Shadow Color", ParamKind.Color) { Bind = nameof(Layer.ShadowColor), TextDefault = "#000000" },
+                new("angle", "Angle", Min: 0, Max: 360, Default: LayerState.DefaultShadowAngle, Step: 1, Unit: "\u00B0") { Bind = nameof(Layer.ShadowAngle), IsAdvanced = true },
+                new("softness", "Softness", Min: 0, Max: 50, Default: LayerState.DefaultShadowSoftness, Step: 1, Unit: "px") { Bind = nameof(Layer.ShadowSoftness), IsAdvanced = true },
+                new("opacity", "Shadow Opacity", Min: 0, Max: 1, Default: 0.5) { Bind = nameof(Layer.ShadowOpacity), IsAdvanced = true },
+                new("color", "Shadow Color", ParamKind.Color) { Bind = nameof(Layer.ShadowColor), TextDefault = "#000000", IsAdvanced = true },
             ], EffectCost.Amber)
         {
             GpuSlot = GpuShaderSlot.DropShadow, Feature = nameof(Layer.Shadow),
@@ -589,13 +635,207 @@ public static partial class EffectRegistry
             [
                 new("mode", "Mode", ParamKind.Choice)
                 {
-                    TextDefault = "normal",
-                    Choices = [("normal", "Normal"), ("multiply", "Multiply"), ("screen", "Screen"), ("addition", "Add"), ("overlay", "Overlay")],
+                    TextDefault = "normal", StartingText = "overlay",
+                    // Append-only (the GPU packet carries the index): Soft Light, Hard Light and Difference came with 5.0-Core.
+                    Choices = [("normal", "Normal"), ("multiply", "Multiply"), ("screen", "Screen"), ("addition", "Add"), ("overlay", "Overlay"),
+                        ("softlight", "Soft Light"), ("hardlight", "Hard Light"), ("difference", "Difference")],
                 },
             ], EffectCost.Amber)
         {
             GpuSlot = GpuShaderSlot.BlendMode, Description = "How the layer's colours mix with the picture under it. Any mode but Normal works in RGB over the whole frame.",
         });
+    }
+
+    // ----- Blur and Vignette (5.0-Release: their Advanced values) -----
+
+    /// <summary>The blurred background's widest blur, in pixels of the frame (5.0-Release: from 0, sharp, continuously).</summary>
+    public const double BackgroundMostRadius = 64;
+
+    /// <summary>
+    /// Blur: a box blur run Passes times (never gblur: an FFmpeg built for a player crashed on it in a layer's chain), as wide
+    /// as a Gaussian of half the radius (<see cref="BlurSizes"/>), then the Dim. The same box across and down is boxblur (the
+    /// two passes it always was, by default); a different one avgblur, once a pass. PSBoxBlur draws the same boxes.
+    /// </summary>
+    private static IReadOnlyList<string>? CompileBlur(EffectCompileContext context, EffectInstance fx)
+    {
+        var filters = new List<string>();
+        var radius = Math.Clamp(fx.Get("radius"), 0, 50);
+        if (radius >= 0.05)
+        {
+            var passes = (int)Math.Round(Math.Clamp(fx.Get("passes"), 1, 4));
+            var (across, down) = BlurSizes(radius, fx.Get("ratio"), passes, context.FrameWidth, context.Width, context.Height);
+            if (across > 0 && down > 0)
+            {
+                filters.Add(across == down ? $"boxblur={across}:{passes}"
+                    : string.Join(",", Enumerable.Repeat($"avgblur=sizeX={across}:sizeY={down}", passes)));
+            }
+        }
+
+        var dim = Math.Clamp(fx.Get("dim"), 0, 50);
+        if (dim >= 0.5)
+            filters.Add($"eq=brightness={N(-dim / 100)}");
+        return filters.Count > 0 ? filters : null;
+    }
+
+    /// <summary>
+    /// A blur's boxes, across and down, in pixels of the picture: so many passes of a box are as wide as a Gaussian of half the
+    /// radius (in pixels of a 1080-wide frame, scaled to <paramref name="frameWidth"/>): p r (r + 1) / 3 = sigma squared. Above
+    /// 1, <paramref name="ratio"/> narrows the box down (the radius divided by it); below 1 the box across. Each is at least 1
+    /// and held to what the colour planes of a picture this size allow (0 when it is too small for any).
+    /// </summary>
+    public static (int Across, int Down) BlurSizes(double radius, double ratio, int passes, int frameWidth, int width, int height)
+    {
+        ratio = double.IsFinite(ratio) && ratio > 0 ? Math.Clamp(ratio, 0.25, 4) : 1;
+        passes = Math.Clamp(passes, 1, 4);
+        var sigma = Math.Max(radius * frameWidth / 1080.0 / 2, 0.2);
+        var limit = Math.Max(Math.Min(width, height) / 4 - 1, 0);
+        int Box(double s) => Math.Min(Math.Max((int)Math.Round((Math.Sqrt(12 * s * s / passes + 1) - 1) / 2), 1), limit);
+        return (Box(sigma * Math.Min(1, ratio)), Box(sigma * Math.Min(1, 1 / ratio)));
+    }
+
+    /// <summary>
+    /// Vignette: FFmpeg's vignette (cos(angle d)^4 by the distance d from the middle over the half-diagonal), its aspect from
+    /// the Roundness (<see cref="VignetteAspect"/>). Feathered (below 100 %), the distance is first narrowed to the outer part
+    /// of the way out ((d - (1 - feather)) / feather, held to 0..1), which vignette cannot do: geq draws the same factor then,
+    /// on the luma and about the chroma's middle as vignette does (its angle, when animated, its keyframes' expression on
+    /// geq's clock, T, as vignette's eval=frame follows them on t). PSVignette draws the same in every case.
+    /// </summary>
+    private static IReadOnlyList<string>? CompileVignette(EffectCompileContext context, EffectInstance fx)
+    {
+        var animated = fx.HasKeys("angle");
+        if (fx.Get("angle") < 0.005 && !animated)
+            return null;
+
+        var aspect = VignetteAspect(fx.Get("round"), context.Width, context.Height);
+        var feather = Math.Clamp(fx.Get("feather"), 5, 100) / 100;
+        if (feather < 0.995)
+        {
+            // (The keyframes' expression names the clock t, as every filter's does, and nothing else is a lone t in it.)
+            var angle = animated
+                ? $"clip({Regex.Replace(context.KeyExpression(fx.GetKeys("angle"), context.ClipStart), @"\bt\b", "T")},0,{N(1.5708)})"
+                : context.Initial(fx, "angle", 0, 1.5708);
+            var d = $"hypot(X-W/2,(Y-H/2)*{N(aspect)})/hypot(W/2,H/2)";
+            var factor = $"if(gt({d},1),0,pow(cos({angle}*clip(({d}-{N(1 - feather)})/{N(feather)},0,1)),4))";
+            return ["format=yuva444p", $"geq=lum='p(X,Y)*{factor}':cb='(p(X,Y)-128)*{factor}+128':cr='(p(X,Y)-128)*{factor}+128':a='alpha(X,Y)'"];
+        }
+
+        var shape = Math.Abs(aspect - 1) < 1e-4 ? "" : $":aspect={N(aspect)}";
+        return [$"vignette=angle={context.Value(fx, "angle", 0, 1.5708)}{shape}{(animated ? ":eval=frame" : "")}"];
+    }
+
+    /// <summary>
+    /// The vignette's aspect for a roundness (0..100 %) on a picture: 1 at 100 % (a circle), the picture's own shape at 0. With
+    /// square pixels vignette stretches the distance down by it (its yscale), so the darkening follows an ellipse that wide.
+    /// </summary>
+    public static double VignetteAspect(double round, int width, int height) =>
+        Math.Pow((double)Math.Max(width, 1) / Math.Max(height, 1), 1 - Math.Clamp(double.IsFinite(round) ? round : 100, 0, 100) / 100);
+
+    // Color Balance's values in the order of its ranges (shadows, midtones, highlights), red, green and blue in each.
+    private static readonly string[] BalanceKeys = ["rs", "gs", "bs", "rm", "gm", "bm", "rh", "gh", "bh"];
+
+    // The picture at half its values in 16-bit RGB, lifted 2/65535 off black, and back (see CompileBalance).
+    private const string BalanceHalve = "lutrgb=r='val/2+2':g='val/2+2':b='val/2+2'", BalanceRestore = "lutrgb=r='(val-2)*2':g='(val-2)*2':b='(val-2)*2'";
+
+    /// <summary>
+    /// Color Balance (5.0-AudioAnd3D, the user's Q1): its three tonal ranges weighed by the colour's HSL lightness,
+    /// (max + min) / 2, and Preserve Lightness as the new colour's hue and chroma at the original's lightness, with no colour
+    /// turned grey. FFmpeg's colorbalance weighs by max + min (twice the lightness), and preserving greys out any colour
+    /// with a channel at 0 or 1. Both are mended around the filter, which is used as it is:
+    /// <list type="bullet">
+    /// <item>it is given the picture at half its values (16-bit RGB, a lutrgb before it and one doubling them back after it),
+    /// whose max + min is the whole picture's (max + min) / 2, and half of each value, so each push is the same;</item>
+    /// <item>lifted 2/65535 off black there, so no channel is 0; and, preserving, each range's three values are moved together
+    /// until the least is 0: an equal push on the three channels is all lightness, which is put back, so the picture is the
+    /// same, and no push takes a channel below black, where preservel would grey it.</item>
+    /// </list>
+    /// The GPU's PSColorBalance (and CompositorReference) is the same math in closed form. Animated by commands: every value
+    /// a keyframe touches (preserving, its range's three) is sent at each moment.
+    /// </summary>
+    private static IReadOnlyList<string>? CompileBalance(EffectCompileContext context, EffectInstance fx)
+    {
+        var (animated, any) = (false, false);
+        foreach (var key in BalanceKeys)
+        {
+            animated |= fx.HasKeys(key);
+            any |= fx.HasKeys(key) || Math.Abs(fx.Get(key)) >= 0.005;
+        }
+
+        if (!any)
+            return null;
+
+        var preserve = fx.IsOn("pl");
+        var start = BalanceAt(fx, Math.Max(-context.ClipStart, 0), preserve);
+        var options = string.Join(":", BalanceKeys.Select((key, i) => $"{key}={N(start[i])}"));
+        var commands = animated ? BalanceCommands(context, fx, preserve) : null;
+        var name = commands is null ? "colorbalance" : $"colorbalance@{context.InstanceName}";
+        return commands is null
+            ? ["format=gbrp16le", BalanceHalve, $"{name}={options}{(preserve ? ":pl=1" : "")}", BalanceRestore]
+            : ["format=gbrp16le", BalanceHalve, commands, $"{name}={options}{(preserve ? ":pl=1" : "")}", BalanceRestore];
+    }
+
+    /// <summary>The nine values at a moment of the clip as the filter is given them: held to -1..1, preserving each range moved down to its least, halved.</summary>
+    private static double[] BalanceAt(EffectInstance fx, double time, bool preserve)
+    {
+        var values = new double[BalanceKeys.Length];
+        for (var i = 0; i < values.Length; i++)
+            values[i] = Math.Clamp(fx.HasKeys(BalanceKeys[i]) ? EasingCurves.ValueAt(fx.GetKeys(BalanceKeys[i]), time) : fx.Get(BalanceKeys[i]), -1, 1);
+
+        for (var range = 0; range < 3; range++)
+        {
+            var least = preserve ? Math.Min(values[3 * range], Math.Min(values[3 * range + 1], values[3 * range + 2])) : 0;
+            for (var c = 3 * range; c < 3 * range + 3; c++)
+                values[c] = (values[c] - least) / 2;
+        }
+
+        return values;
+    }
+
+    /// <summary>
+    /// The sendcmd that animates Color Balance (as EffectCompileContext.Commands does: each animated value's keyframes and,
+    /// between two that differ, so many a second along its easing), with every value of the moment worked out as
+    /// <see cref="BalanceAt"/> gives it; null when nothing is sent.
+    /// </summary>
+    private static string? BalanceCommands(EffectCompileContext context, EffectInstance fx, bool preserve)
+    {
+        var times = new SortedSet<double>();
+        var ranges = new bool[3];
+        for (var i = 0; i < BalanceKeys.Length; i++)
+        {
+            if (fx.GetKeys(BalanceKeys[i]) is not { Count: > 0 } keys)
+                continue;
+
+            ranges[i / 3] = true;
+            foreach (var key in keys)
+                times.Add(key.Time);
+            var step = Math.Max(1 / EffectCompileContext.CommandsPerSecond, (keys[^1].Time - keys[0].Time) / EffectCompileContext.MostCommands);
+            for (var k = 1; k < keys.Count; k++)
+            {
+                if (keys[k - 1].Easing == EasingType.Hold || Math.Abs(keys[k].Value - keys[k - 1].Value) < 1e-9)
+                    continue;
+                for (var at = keys[k - 1].Time + step; at < keys[k].Time - step / 2; at += step)
+                    times.Add(Math.Round(at, 3));
+            }
+        }
+
+        var moments = new List<string>();
+        foreach (var time in times)
+        {
+            var clock = Math.Round(context.ClipStart + time, 3);
+            if (clock <= 0)
+                continue;
+
+            var values = BalanceAt(fx, time, preserve);
+            var sent = new List<string>();
+            for (var i = 0; i < BalanceKeys.Length; i++)
+            {
+                if (fx.HasKeys(BalanceKeys[i]) || (preserve && ranges[i / 3]))
+                    sent.Add($"colorbalance@{context.InstanceName} {BalanceKeys[i]} {N(values[i])}");
+            }
+
+            moments.Add($"{N(clock)} {string.Join(",", sent)}");
+        }
+
+        return moments.Count == 0 ? null : $"sendcmd=c='{string.Join(";", moments)}'";
     }
 
     private static IReadOnlyList<string>? CompileGrade(EffectCompileContext context, EffectInstance fx)

@@ -2,16 +2,16 @@ using System.IO;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Threading;
+using HandPegApp.Models;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
 
 namespace HandPegApp.Tools.AvSync;
 
 /// <summary>
-/// A project opened in the app's own view model, with no window: the graphs the harness plays are the ones the app
-/// would send the player for the same moment (MainViewModel.BuildLiveFilterGraph, from the state CompileExportState
-/// gathers: the files' starts and I-frames, the proxies in use, the decode threads), and the player's source is
-/// the app's own (MainViewModel.PlayerSource: the EDL with the stand-in clock).
+/// A project opened in the app's own view model, with no window: what the harness draws and plays is what the app hands
+/// its GPU engine (MainViewModel.LivePreviewState, the state CompileExportState gathers: the files' starts and I-frames,
+/// the proxies in use, the preview's own reading of them).
 ///
 /// The settings file is never written: the view model saves some settings when they change, so the file is read
 /// before the project is opened and put back as it was when the session ends. The project file is only read.
@@ -33,11 +33,9 @@ internal sealed class ProjectSession : IDisposable
         // (Application.Current.Dispatcher) runs while the harness pumps that thread (see Pump).
         _application = Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
 
-        // In this process only: nothing is downloaded, and no proxy is made while the harness runs.
+        // In this process only: nothing is downloaded, and no proxy is made while the harness runs (see UseProxies).
         var settings = AppSettings.Current;
         settings.AutoUpdateDependencies = false;
-        settings.ProxyIdleSeconds = 3600;
-        settings.ProxyIdleSecondsWithBackgroundCard = 3600;
         settings.ClearProjectProxiesOnExit = false;
         settings.SendCrashReports = false;
 
@@ -53,12 +51,9 @@ internal sealed class ProjectSession : IDisposable
 
     public static ProjectSession Open(string project, TextWriter log) => new(project, log);
 
-    /// <summary>The player's source as the app would open it now.</summary>
-    public string PlayerSource => ViewModel.PlayerSource;
-
     /// <summary>
-    /// Waits for what the app learns in the background after a project opens and builds its graphs with: the stand-in
-    /// clock file, and where each video layer's picture starts. Returns what is still missing (empty when nothing is).
+    /// Waits for what the app learns in the background after a project opens and places its pictures and sounds with:
+    /// where each video layer's picture starts. Returns what is still missing (empty when nothing is).
     /// </summary>
     public List<string> WaitForFacts(TimeSpan timeout)
     {
@@ -66,8 +61,6 @@ internal sealed class ProjectSession : IDisposable
         {
             var missing = new List<string>();
             var timeline = FilterGraphBuilder.Lowering(State());
-            if (!timeline.IsMainWholeSequence && !PlayerSource.Contains("clock_", StringComparison.OrdinalIgnoreCase))
-                missing.Add("the stand-in clock file");
             foreach (var layer in timeline.Stack.Where(l => l.IsVideoFile))
             {
                 var file = layer.ImagePath.Trim().Trim('"');
@@ -78,7 +71,7 @@ internal sealed class ProjectSession : IDisposable
             return missing;
         }
 
-        // A first state asks the app to learn what it does not know yet (LearnVideoStart, StandInClock).
+        // A first state asks the app to learn what it does not know yet (LearnVideoStart).
         _ = Missing();
         WaitUntil(() => Missing().Count == 0, timeout);
         Invalidate();
@@ -86,19 +79,26 @@ internal sealed class ProjectSession : IDisposable
     }
 
     /// <summary>
-    /// Switches Settings' Per-Clip Video Proxies on or off (in this process), and with it the main video's proxy when
-    /// <paramref name="mainProxy"/> names a file to stand for it; then lets the app bring its proxies in line, as it does
-    /// after every change. Returns the proxies the app now plays, by the file they stand for.
+    /// Switches the proxies on or off (in this process): the clips whose file has a proxy made already are set to Optimize
+    /// Long-GOP Clip for Scrubbing (on) or back (off), the main video's too when <paramref name="mainProxy"/> names a file
+    /// to stand for it (5.0-Verify: proxies are asked for clip by clip, nothing is made by itself; a file with no proxy is
+    /// left alone, so none is made while the harness runs); then lets the app bring its proxies in line, as it does after
+    /// every change. Returns the proxies the app now plays, by the file they stand for.
     /// </summary>
     public IReadOnlyDictionary<string, string> UseProxies(bool on, string? mainProxy)
     {
-        var settings = AppSettings.Current;
-        settings.VideoProxies = on;
-        settings.ProxyScope = on && mainProxy is not null ? AppSettings.ProxyAllVideos : AppSettings.ProxyLayersOnly;
         if (mainProxy is not null)
         {
             var made = (Dictionary<string, string>)typeof(MainViewModel).GetField("_proxies", Hidden)!.GetValue(ViewModel)!;
             made[ViewModel.LocalMediaPath.Trim().Trim('"')] = mainProxy;
+        }
+
+        foreach (var clip in ViewModel.Layers.Where(l => !l.IsDeleted).ToList())
+        {
+            var hasProxy = clip.IsVideoFile ? ProxyCache.Find(clip.ImagePath.Trim().Trim('"'), ViewModel.CurrentProjectPath) is not null
+                : clip.IsMainVideo && mainProxy is not null;
+            if (hasProxy)
+                ViewModel.SetProxyChoice(clip, on ? ProxyChoice.Make : ProxyChoice.Auto);
         }
 
         typeof(MainViewModel).GetMethod("RefreshProxies", Hidden)!.Invoke(ViewModel, null);
@@ -108,21 +108,10 @@ internal sealed class ProjectSession : IDisposable
             StringComparer.OrdinalIgnoreCase);
     }
 
-    /// <summary>
-    /// The graph the app sends with a seek to <paramref name="seconds"/>: built for that moment, with the sound laid out
-    /// from it (a seek while playing, or the paused player's graph once it has settled), as ApplyLiveFilterNow asks for it.
-    /// </summary>
-    public LiveGraph Graph(double seconds, (int Width, int Height) surface, bool sound = true)
-    {
-        var ms = (long)Math.Round(seconds * 1000);
-        return ViewModel.BuildLiveFilterGraph(surface.Width, surface.Height, sound ? ms : null, ms, LiveLayerMode.Live);
-    }
+    /// <summary>The state the app hands the GPU engine (its copies of the clips, the files' starts, the proxies in use, the soloed tracks).</summary>
+    public SequenceExportState State() => ViewModel.LivePreviewState();
 
-    /// <summary>The state the app compiles for its graphs (its copies of the layers, the files' starts, the proxies in use).</summary>
-    public SequenceExportState State() =>
-        (SequenceExportState)typeof(MainViewModel).GetMethod("CompileExportState", Hidden)!.Invoke(ViewModel, null)!;
-
-    // Something the graphs are built from changed: the app gathers its state again for the next one.
+    // Something the state is gathered from changed: the app gathers it again for the next one.
     private void Invalidate() => typeof(MainViewModel).GetMethod("InvalidateLiveFilter", Hidden)!.Invoke(ViewModel, null);
 
     /// <summary>Runs the interface thread's queue for a while: what the app hands to it (a fact learnt, a file made) happens.</summary>

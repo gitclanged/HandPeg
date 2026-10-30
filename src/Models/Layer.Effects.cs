@@ -235,6 +235,34 @@ public sealed partial class Layer
     /// <summary>The blend mode the layer is laid on with, as FFmpeg's blend names it; "normal" for an ordinary overlay.</summary>
     public string BlendModeName => FxOn(EffectRegistry.BlendMode) && Find(EffectRegistry.BlendMode) is { } blend ? blend.GetText("mode") : "normal";
 
+    /// <summary>
+    /// Whether an effect can go on this clip (the Effects pane's Add Effect and a track's): an adjustment layer and the blurred
+    /// background take the Look effects; any other clip what its kind allows, and an effect it may have once (a key, a mask,
+    /// the edges, the shadow, the blend) only while it has none, unless <paramref name="ignorePresent"/>.
+    /// </summary>
+    public bool CanTake(EffectDefinition definition, bool ignorePresent = false)
+    {
+        if (definition.Pinned)
+            return false;
+        if (IsAdjustment || IsBackground)
+            return definition.ForWholePicture;
+
+        var allowed = definition.Zone switch
+        {
+            EffectZone.Look => HasFilters,
+            EffectZone.KeyAndMatte => definition.Type == EffectRegistry.ChromaKey ? HasKeying : HasMask && !IsCaptions,
+            EffectZone.Composite => HasStyle && !IsCaptions,
+            _ => false,
+        };
+        return allowed && (ignorePresent || definition.Feature is null && definition.Type != EffectRegistry.BlendMode || Find(definition.Type) is null);
+    }
+
+    /// <summary>
+    /// A layer with a picture and no sound of its own, made to go with a video (5.0-Release): the blurred background, and the
+    /// pieces cut out of the main video's frame (HUD cut-outs, a mask's pieces). Their menus offer nothing about sound.
+    /// </summary>
+    public bool IsVideoOnlyChild => IsBackground || IsVideo;
+
     /// <summary>Puts a card at the bottom of its zone (a missing effect at the very end), and returns it.</summary>
     public EffectInstance AddEffect(EffectInstance effect)
     {

@@ -17,7 +17,7 @@ public sealed record ProjectEntry(string FilePath, string Name, string SourceNam
     public string SavedText => $"Saved {SavedAt:g}";
 }
 
-// ----- The project file (.hproj), format 5 -----
+// ----- The project file (.hproj), format 6 -----
 // A project is its timeline, a TimelineDocument (every track and clip, the main video's among them, the markers and the
 // Sequence Output's effects), and what lies around it: where its video comes from, where the export goes, what is done
 // with each of the main file's own audio streams, the recycle bin, and the export's settings. The file is laid out that
@@ -25,15 +25,17 @@ public sealed record ProjectEntry(string FilePath, string Name, string SourceNam
 // version, the HandPeg that wrote it) comes first, so that it is read from the first few kilobytes, and before anything
 // else of the file.
 //
-// Format 5 is HandPeg 4.3.0's, the first whose timeline is the document, and the only one this version opens. Projects
-// of formats 1 to 4 (HandPeg 1.x's .txt, and the .hproj of HandPeg 2.0 to 4.2.0, laid out as a cut list, the main video
-// and tracks of layers) are refused with the reason, and not converted. A newer format is opened only when the user
-// asks, and is never written over.
+// Format 6 is HandPeg 5.0's (the GPU engine's), and the only one this version opens: v5.0 owes earlier projects nothing (the
+// user's call), so projects of formats 1 to 5 (HandPeg 1.x's .txt, the .hproj of HandPeg 2.0 to 4.4) are refused with the
+// reason, and not converted. A newer format is opened only when the user asks, and is never written over. Format 6 is
+// format 5's layout (HandPeg 4.3's, the first whose timeline is the document) with the background behind the main video as
+// a layer of its own (sequence.background: its blur, zoom and effects), and anchored captions written once, as their anchors
+// in their source's time: the cues that showed them on the timeline are made again from those, never written.
 //
-// Since 4.4 a save also carries the undo and redo history (undoFormat, undoHistory, redoHistory, just before the timeline),
-// so that Ctrl+Z goes on where the save left it. It is optional and left out when empty, so format 5 stays format 5: a
-// version without it reads the file as before. Read leniently: a history of another shape, or one that is not a history
-// at all, is let go, never the project.
+// A save also carries the undo and redo history (undoFormat, undoHistory, redoHistory, just before the timeline), so that
+// Ctrl+Z goes on where the save left it. It is optional and left out when empty. Read leniently: a history of another
+// shape, or one that is not a history at all, is let go, never the project. A project bundle (.hpb, ProjectBundle) is a
+// format 6 project with the files it reads, in one archive.
 
 /// <summary>A project as it is written to disk.</summary>
 public sealed class ProjectFile
@@ -41,7 +43,7 @@ public sealed class ProjectFile
     public const string FormatName = "handpeg-project";
 
     /// <summary>The format this version writes, and the only one it opens (a newer one too, as far as it knows it, when asked).</summary>
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 6;
 
     // No defaults here: a file that does not say what it is must not pass for one that does. These three come first in the
     // file (its values are written in the order they are declared here), where PeekHeader finds them.
@@ -226,8 +228,8 @@ public sealed class ProjectSequence
     /// <summary>Splits and the playhead keep to the main video's I-frames.</summary>
     public bool SnapToIFrames { get; set; }
 
-    /// <summary>The blurred background behind the main video is switched off, leaving the black canvas.</summary>
-    public bool BackgroundHidden { get; set; }
+    /// <summary>The blurred background behind the main video, a layer of its own (format 6): written only where it differs from a new one's.</summary>
+    public ProjectBackground Background { get; set; } = new();
 
     /// <summary>
     /// The main video's own audio streams, each as it is heard wherever the main video's clips are: what is done with it in
@@ -247,6 +249,26 @@ public sealed class ProjectSequence
 }
 
 /// <summary>
+/// The blurred background behind the main video as format 6 writes it (5.0-Release: the main video's video-only child): whether
+/// it is shown, its blur in pixels of the frame (0 sharp to 64), its passes, its darkening, its zoom about the middle (1
+/// covers the frame) and its own effect stack. The settings hold the same values while the project is open (EncodingPreset);
+/// the file keeps them here, together, and the settings it writes leave them out. The defaults are a new project's.
+/// </summary>
+public sealed class ProjectBackground
+{
+    public bool Hidden { get; set; }
+    public double Radius { get; set; } = 20;
+    public int Passes { get; set; } = 2;
+    public double Dim { get; set; } = -0.15;
+    public double Zoom { get; set; } = 1;
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<Models.Effects.EffectState>? Effects { get; set; }
+
+    public bool EffectsBypassed { get; set; }
+}
+
+/// <summary>
 /// A project file of a newer format than this version reads. It can still be opened when the user asks (reading what this
 /// version knows of it), but is never written over: what the newer version put in it would be lost. An IOException, so that
 /// whatever opens or lists projects reports it as a file it could not read.
@@ -259,7 +281,7 @@ public sealed class NewerProjectFormatException(int version, string? writtenBy)
     public string? WrittenBy { get; } = writtenBy;
 }
 
-/// <summary>Project files live in the Projects folder (see <see cref="AppPaths"/>), as .hproj: JSON in the layout above, format 5.</summary>
+/// <summary>Project files live in the Projects folder (see <see cref="AppPaths"/>), as .hproj: JSON in the layout above, format 6.</summary>
 public static class ProjectStore
 {
     public const string Extension = ".hproj";
@@ -476,7 +498,7 @@ public static class ProjectStore
         File.Move(partial, path, overwrite: true);
     }
 
-    /// <summary>The state as a format 5 file. The state is left as it was: its timeline is written from a copy of its own.</summary>
+    /// <summary>The state as a format 6 file. The state is left as it was: its timeline is written from a copy of its own.</summary>
     public static string Serialize(ProjectState state) => JsonSerializer.Serialize(ToFile(state), JsonOptions);
 
     /// <param name="unpackMasks">Write the masks the project carries into the masks folder and point its looks at them, take up the seek indexes of its video files, and read its undo history (4.4): when it is being opened, not when it is only being listed.</param>
@@ -484,8 +506,8 @@ public static class ProjectStore
     public static ProjectState Load(string filePath, bool unpackMasks = true, bool allowNewer = false) => Deserialize(File.ReadAllText(filePath), unpackMasks, allowNewer);
 
     /// <summary>
-    /// Reads a format 5 project from its text, its timeline with it (<see cref="ProjectState.Timeline"/>). What the text says
-    /// it is is read first, before anything else of it: a file that is not a HandPeg project, or one of formats 1 to 4 (which
+    /// Reads a format 6 project from its text, its timeline with it (<see cref="ProjectState.Timeline"/>). What the text says
+    /// it is is read first, before anything else of it: a file that is not a HandPeg project, or one of formats 1 to 5 (which
     /// are not converted), is refused with <see cref="InvalidDataException"/> saying so, and one of a newer format with
     /// <see cref="NewerProjectFormatException"/> unless <paramref name="allowNewer"/>. A project without its timeline is refused.
     /// </summary>
@@ -502,25 +524,26 @@ public static class ProjectStore
         {
             var writer = header.WrittenBy is { Length: > 0 } by ? $" (saved by {by})" : "";
             throw new InvalidDataException($"This project is in format {header.Version}{writer}. This version of HandPeg opens format {ProjectFile.CurrentVersion} "
-                                           + "projects only: projects of formats 1 to 4 (HandPeg 4.2 and earlier) are not converted.");
+                                           + "projects only: projects of formats 1 to 5 (HandPeg 4.4 and earlier) are not converted.");
         }
 
         var file = JsonSerializer.Deserialize<ProjectFile>(json, JsonOptions) ?? throw new InvalidDataException("The project file is empty.");
         if (file.Timeline is not { } timeline)
-            throw new InvalidDataException("This project has no timeline: a format 5 project keeps its tracks and clips there.");
+            throw new InvalidDataException("This project has no timeline: a format 6 project keeps its tracks and clips there.");
         return FromFile(file, timeline, unpackMasks);
     }
 
-    /// <summary>A timeline as a format 5 file writes it: camel case, enums by name, nothing at its default.</summary>
+    /// <summary>A timeline as a format 6 file writes it: camel case, enums by name, nothing at its default.</summary>
     public static System.Text.Json.Nodes.JsonNode? TimelineNode(TimelineDocument document) => JsonSerializer.SerializeToNode(document, JsonOptions);
 
-    /// <summary>Whether a piece of JSON says it is a .hproj project of a format this version opens: 5, or a newer one (which asks before it opens).</summary>
+    /// <summary>Whether a piece of JSON says it is a .hproj project of a format this version opens: 6, or a newer one (which asks before it opens).</summary>
     public static bool IsProject(System.Text.Json.Nodes.JsonObject node) =>
         node["format"] is System.Text.Json.Nodes.JsonValue format && format.TryGetValue<string>(out var name) && name == ProjectFile.FormatName
         && node["version"] is System.Text.Json.Nodes.JsonValue version && version.TryGetValue<int>(out var number) && number >= ProjectFile.CurrentVersion;
 
-    /// <summary>Whether a file is one to open as a project (typed in, dropped, chosen): a .hproj that is there.</summary>
-    public static bool IsProjectFile(string path) => path.EndsWith(Extension, StringComparison.OrdinalIgnoreCase) && File.Exists(path);
+    /// <summary>Whether a file is one to open as a project (typed in, dropped, chosen): a .hproj, or a project bundle (.hpb, 5.0-Release), that is there.</summary>
+    public static bool IsProjectFile(string path) =>
+        (path.EndsWith(Extension, StringComparison.OrdinalIgnoreCase) || path.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase)) && File.Exists(path);
 
     // ----- Between the window's state and the file -----
 
@@ -567,6 +590,9 @@ public static class ProjectStore
         // background and its streams, the Sequence Output's effects): each is written once, where it is kept.
         var rest = JsonSerializer.Deserialize<EncodingPreset>(JsonSerializer.Serialize(settings))!;
         (rest.Name, rest.Layers, rest.MainLayer, rest.MainVideoIndex, rest.BackgroundHidden, rest.AudioTracks) = ("", [], null, 0, false, []);
+        var fresh = new EncodingPreset();
+        (rest.BlurRadius, rest.BlurPasses, rest.BackgroundDim, rest.BackgroundZoom, rest.BackgroundEffects, rest.BackgroundEffectsBypassed) =
+            (fresh.BlurRadius, fresh.BlurPasses, fresh.BackgroundDim, fresh.BackgroundZoom, null, false);
         (rest.SequenceEffects, rest.SequenceEffectsBypassed) = (null, false);
 
         // The file's own timeline, its looks too: they are pointed at the masks carried with them (below), while the state's
@@ -594,14 +620,19 @@ public static class ProjectStore
                 ChapterMarkers = state.ChapterMarkers,
                 ChaptersAtCuts = state.ChaptersAtCuts,
                 ChaptersAtMarkers = state.ChaptersAtMarkers,
-                Subtitles = state.Subtitles,
+                Subtitles = WrittenOnce(state.Subtitles),
                 TargetFileSize = state.TargetFileSize,
                 ManualCommand = state.ManualCommand,
             },
             Sequence = new ProjectSequence
             {
                 SnapToIFrames = state.SnapToIFrames,
-                BackgroundHidden = settings.BackgroundHidden,
+                Background = new ProjectBackground
+                {
+                    Hidden = settings.BackgroundHidden, Radius = settings.BlurRadius, Passes = settings.BlurPasses, Dim = settings.BackgroundDim,
+                    Zoom = settings.BackgroundZoom, Effects = settings.BackgroundEffects is { Count: > 0 } effects ? effects : null,
+                    EffectsBypassed = settings.BackgroundEffectsBypassed,
+                },
                 Audio = state.AudioTracks,
                 Subtitles = state.SubtitleTracks,
 
@@ -637,6 +668,20 @@ public static class ProjectStore
 
         return file;
     }
+
+    /// <summary>
+    /// The subtitle track as format 6 writes it: anchored captions as their anchors alone, the cues that showed them on the
+    /// timeline (Projected) left out, since opening makes them again from the anchors and the clips (CaptionProjection).
+    /// Cues of the user's own (imported, typed, cut loose) are written as they are.
+    /// </summary>
+    private static SubtitleTrackData? WrittenOnce(SubtitleTrackData? track) =>
+        track is { IsImage: false, Source.IsAnchored: true, Anchors.Count: > 0, Cues: { } cues } && cues.Any(c => c.Projected)
+            ? new SubtitleTrackData
+            {
+                SourcePath = track.SourcePath, IsImage = track.IsImage, OffsetMs = track.OffsetMs, Cues = [.. cues.Where(c => !c.Projected)],
+                Source = track.Source, Anchors = track.Anchors,
+            }
+            : track;
 
     /// <summary>A history as the file carries it: its newest twenty steps, oldest first, each in Base64; null when empty.</summary>
     private static List<ProjectUndoStep>? StepsOf(List<UndoStepState>? steps) =>
@@ -745,7 +790,10 @@ public static class ProjectStore
         var audio = sequence.Audio ?? [];
         var settings = file.Settings;
         settings.Name = file.Name;
-        (settings.BackgroundHidden, settings.AudioTracks) = (sequence.BackgroundHidden, audio);
+        var background = sequence.Background ?? new ProjectBackground();
+        (settings.BackgroundHidden, settings.AudioTracks) = (background.Hidden, audio);
+        (settings.BlurRadius, settings.BlurPasses, settings.BackgroundDim, settings.BackgroundZoom, settings.BackgroundEffects, settings.BackgroundEffectsBypassed) =
+            (background.Radius, background.Passes, background.Dim, background.Zoom, background.Effects, background.EffectsBypassed);
 
         var state = new ProjectState
         {
@@ -789,8 +837,8 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// Saved projects (the .hproj files), most recently saved first: format 5's, and a newer format's (which asks before it
-    /// opens). Files that cannot be read are left out, and so are projects of formats 2 to 4, which this version does not open.
+    /// Saved projects (the .hproj files), most recently saved first: format 6's, and a newer format's (which asks before it
+    /// opens). Files that cannot be read are left out, and so are projects of formats 2 to 5, which this version does not open.
     /// </summary>
     public static List<ProjectEntry> ListRecent()
     {

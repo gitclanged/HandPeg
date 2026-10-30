@@ -5,84 +5,63 @@ using HandPegApp.Services;
 namespace HandPegGoldenTests;
 
 /// <summary>
-/// The A/V invariant, checked on the graphs by code rather than by their text: for every video clip with sound, a moment
-/// of its file is seen and heard at the same moment of the sequence, and that moment is where the timeline puts it
+/// The A/V invariant, checked on the export's graphs by code rather than by their text: for every video clip with sound, a
+/// moment of its file is seen and heard at the same moment of the sequence, and that moment is where the timeline puts it
 /// (the clip's start plus how far into the clip the moment is, at the clip's speed).
 ///
 /// The picture's moment is followed from its movie= through the graph to the overlay that lays it on the canvas; the
-/// canvas's own clock is followed the same way, from the sequence's canvas (color=, or the player's frames) to that
+/// canvas's own clock is followed the same way, from the sequence's canvas (color=, or the first input's frames) to that
 /// overlay, so the frame's time stamp there says which moment of the sequence shows it. The sound's moment is followed
 /// from its amovie= to the amix it is mixed by; amix lines its inputs up by their first samples, so the moment of the
 /// sequence it is heard at is its distance from its stream's first sample plus where the mix's first input (a track of
 /// the main video, or the silence standing in for one) starts on the sequence, followed the same way.
+/// <para>The player has no graph since 5.0-Verify: its side of the invariant is <see cref="GpuInvariant"/>, the GPU scene
+/// against the sound engine's program at the same moments.</para>
 /// </summary>
-public static class AvCheck
+public static partial class AvCheck
 {
     // The graphs write times to the millisecond; a few of them add up.
     private const double Tolerance = 0.002;
 
+    /// <summary>The offsets into a clip, in seconds of its file, of the moments followed.</summary>
+    private static readonly double[] Offsets = [0.02, 0.5, 1.5, 7];
+
     /// <param name="files">The media files the fixture imagines, for where their pictures and sounds start and their frame rates.</param>
-    /// <param name="graphs">The graphs of the command or the player: an export's -filter_complex and -vf, or the live graph.</param>
-    /// <param name="at">The playhead of a live graph (it holds and reads from there); null for an export.</param>
-    /// <param name="audioFrom">Where a live graph's sound is laid out from; 0 for an export.</param>
-    public static List<string> Check(IEnumerable<Media> files, SequenceExportState state, IReadOnlyList<string> graphs, bool live, double? at, double audioFrom, out int checkedMoments)
+    /// <param name="graphs">The graphs of the export's command: its -filter_complex and -vf.</param>
+    public static List<string> Check(IEnumerable<Media> files, SequenceExportState state, IReadOnlyList<string> graphs, out int checkedMoments)
     {
         var problems = new List<string>();
         checkedMoments = 0;
         var parsed = graphs.Where(g => g.Length > 0).Select(FilterGraph.Parse).ToList();
-        var label = live ? $"live at {Num(at ?? 0)} s" : "export";
         var known = files.DistinctBy(m => m.Path, StringComparer.OrdinalIgnoreCase).ToList();
 
-        // Every video clip on the timeline whose sound is heard, the first of each file (the graph's first source of the file is
-        // the one followed). Not the primary file's: its clips are read from the first input or the player's own stream (the
-        // primary chain), and one of them that is a layer would be taken for the chain's first.
-        var heard = state.Timeline.Tracks
-            .Where(t => t.Kind is not (HandPegApp.Models.Timeline.TimelineTrackKind.Audio or HandPegApp.Models.Timeline.TimelineTrackKind.Subtitle) && !t.IsMuted)
-            .SelectMany(t => t.Clips)
-            .Where(c => c.ContentKind == LayerKind.VideoFile && c.HasSound && !c.IsHidden && !c.IsMuted && c.SourcePath is not null && !SamePath(c.SourcePath, state.LocalMediaPath))
-            .DistinctBy(c => c.SourcePath!, StringComparer.OrdinalIgnoreCase);
-        foreach (var layer in heard)
+        foreach (var layer in HeardLayers(state))
         {
             if (known.FirstOrDefault(m => SamePath(m.Path, layer.SourcePath!)) is not { HasAudio: true } media)
                 continue;
 
-            var proxy = live && state.PreviewPaths.TryGetValue(media.Path, out var proxyPath) ? proxyPath : null;
-            var picture = FindSource(parsed, "movie", proxy ?? media.Path);
+            var picture = FindSource(parsed, "movie", media.Path);
             var sound = FindSource(parsed, "amovie", media.Path);
-            var name = $"{label}, {System.IO.Path.GetFileName(media.Path)}{(proxy is null ? "" : " (proxy)")}";
+            var name = $"export, {System.IO.Path.GetFileName(media.Path)}";
             if (picture is null || sound is null)
             {
-                // Out of the live graph's window, or not yet on: nothing to check.
                 if (picture is null != sound is null)
                     problems.Add($"{name}: the {(picture is null ? "picture" : "sound")} is not in the graph but the {(picture is null ? "sound" : "picture")} is.");
                 continue;
             }
 
             // The picture of a moment is where the clip puts it; its sound as far from there as an unlinked clip's sound was slipped.
-            var speed = Math.Clamp(layer.Speed, Layer.SlowestSpeed, Layer.FastestSpeed);
             var slip = layer.AudioLinked ? 0 : layer.AudioSlipSeconds;
-            var playhead = at ?? 0;
-            var into = Math.Max(playhead - layer.Start, 0);
-            var lowest = media.VideoStart + layer.MediaOffset + into * speed;
-            var shownTo = layer.Duration;
-            if (live)
-                shownTo = Math.Min(shownTo, playhead + FilterGraphBuilder.LiveLookAhead - layer.Start);
-            var highest = media.VideoStart + layer.MediaOffset + shownTo * speed;
 
             // Seeks that land after the cut lose the start of what was asked for.
-            problems.AddRange(CheckSeek(picture.Value, media, proxy is not null, name + ": picture"));
-            problems.AddRange(CheckSeek(sound.Value, media, false, name + ": sound"));
+            problems.AddRange(CheckSeek(picture.Value, media, name + ": picture"));
+            problems.AddRange(CheckSeek(sound.Value, media, name + ": sound"));
 
-            foreach (var offset in new[] { 0.02, 0.5, 1.5, 7 })
+            foreach (var (moment, expected) in FileMoments(layer, media, playhead: 0))
             {
-                var moment = OnFrame(media, lowest + offset * speed);
-                if (moment >= highest - 0.05)
-                    continue;
-
                 checkedMoments++;
-                var expected = layer.Start + (moment - media.VideoStart - layer.MediaOffset) / speed;
-                var seen = Seen(picture.Value, media, proxy is not null, moment, state, live, at, out var whyNotSeen);
-                var heardAt = Heard(sound.Value, media, moment, state, live, audioFrom, out var whyNotHeard);
+                var seen = Seen(picture.Value, media, moment, state, out var whyNotSeen);
+                var heardAt = Heard(sound.Value, media, moment, state, out var whyNotHeard);
                 var what = $"{name}, file moment {Num(moment)} s (timeline {Num(expected)} s{(slip != 0 ? $", its sound slipped {Num(slip)} s" : "")})";
                 if (seen is null || heardAt is null)
                 {
@@ -103,13 +82,42 @@ public static class AvCheck
         return problems;
     }
 
+    /// <summary>
+    /// Every video clip on the timeline whose sound is heard, the first of each file (the graph's first source of the file is
+    /// the one followed). Not the primary file's: its clips are read from the first input (the primary chain), and one of
+    /// them that is a layer would be taken for the chain's first.
+    /// </summary>
+    private static IEnumerable<HandPegApp.Models.Timeline.TimelineClip> HeardLayers(SequenceExportState state) => state.Timeline.Tracks
+        .Where(t => t.Kind is not (HandPegApp.Models.Timeline.TimelineTrackKind.Audio or HandPegApp.Models.Timeline.TimelineTrackKind.Subtitle) && !t.IsMuted)
+        .SelectMany(t => t.Clips)
+        .Where(c => c.ContentKind == LayerKind.VideoFile && c.HasSound && !c.IsHidden && !c.IsMuted && c.SourcePath is not null && !SamePath(c.SourcePath, state.LocalMediaPath))
+        .DistinctBy(c => c.SourcePath!, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The moments of a clip's file that are followed (each on a frame of the file, from <paramref name="playhead"/> or the
+    /// clip's start on), with the moment of the sequence the timeline shows each at.
+    /// </summary>
+    private static IEnumerable<(double File, double Sequence)> FileMoments(HandPegApp.Models.Timeline.TimelineClip layer, Media media, double playhead)
+    {
+        var speed = Math.Clamp(layer.Speed, Layer.SlowestSpeed, Layer.FastestSpeed);
+        var into = Math.Max(playhead - layer.Start, 0);
+        var lowest = media.VideoStart + layer.MediaOffset + into * speed;
+        var highest = media.VideoStart + layer.MediaOffset + layer.Duration * speed;
+        foreach (var offset in Offsets)
+        {
+            var moment = OnFrame(media, lowest + offset * speed);
+            if (moment < highest - 0.05)
+                yield return (moment, layer.Start + (moment - media.VideoStart - layer.MediaOffset) / speed);
+        }
+    }
+
     // ----- The picture -----
 
-    private static double? Seen((FilterGraph Graph, GraphNode Node) source, Media media, bool proxy, double moment, SequenceExportState state, bool live, double? at, out string why)
+    private static double? Seen((FilterGraph Graph, GraphNode Node) source, Media media, double moment, SequenceExportState state, out string why)
     {
         why = "";
         var (graph, movie) = source;
-        var clock = new Timing.Clock(proxy ? moment - media.VideoStart : moment, Landing(movie, media, proxy, video: true));
+        var clock = new Timing.Clock(moment, Landing(movie, media, video: true));
         List<Timing.Arrival> arrivals;
         try
         {
@@ -129,7 +137,7 @@ public static class AvCheck
 
         // Where the canvas under it is on the sequence: its clock followed from the canvas to the same overlay.
         var overlay = arrivals[0].Node;
-        var canvas = CanvasClock(graph, overlay, state, live, at);
+        var canvas = CanvasClock(graph, overlay, state);
         if (canvas is null)
         {
             why = "the canvas it is laid on could not be followed";
@@ -141,7 +149,7 @@ public static class AvCheck
     }
 
     /// <summary>The canvas's time at an overlay as a moment of the sequence: sequence = t * scale + shift.</summary>
-    private static (double Scale, double Shift)? CanvasClock(FilterGraph graph, GraphNode overlay, SequenceExportState state, bool live, double? at)
+    private static (double Scale, double Shift)? CanvasClock(FilterGraph graph, GraphNode overlay, SequenceExportState state)
     {
         var starts = new List<(GraphNode Node, int Pad, Func<double, Timing.Clock> Clock)>();
         foreach (var node in graph.Nodes.Where(n => n.IsSource && n.Name is "color" or "nullsrc"))
@@ -149,7 +157,7 @@ public static class AvCheck
         foreach (var name in new[] { "vid1", "0:v:0", "0:v" })
         {
             foreach (var consumer in graph.ConsumersOf(name))
-                starts.Add((consumer.Node, consumer.Pad, t => new Timing.Clock(t, live ? Math.Max((at ?? 0) - FilterGraphBuilder.LiveLookBehind, 0) : 0)));
+                starts.Add((consumer.Node, consumer.Pad, t => new Timing.Clock(t, 0)));
         }
 
         foreach (var (node, pad, clockAt) in starts)
@@ -176,11 +184,11 @@ public static class AvCheck
 
     // ----- The sound -----
 
-    private static double? Heard((FilterGraph Graph, GraphNode Node) source, Media media, double moment, SequenceExportState state, bool live, double audioFrom, out string why)
+    private static double? Heard((FilterGraph Graph, GraphNode Node) source, Media media, double moment, SequenceExportState state, out string why)
     {
         why = "";
         var (graph, amovie) = source;
-        var clock = new Timing.Clock(moment, Landing(amovie, media, false, video: false));
+        var clock = new Timing.Clock(moment, Landing(amovie, media, video: false));
         List<Timing.Arrival> arrivals;
         try
         {
@@ -200,7 +208,7 @@ public static class AvCheck
 
         var mix = arrivals[0].Node;
         var position = arrivals[0].Clock.T - arrivals[0].Clock.First;
-        var start = MixStart(graph, mix, state, live, audioFrom);
+        var start = MixStart(graph, mix, state);
         if (start is null)
         {
             why = "where the mix it goes into starts on the sequence could not be followed";
@@ -215,23 +223,21 @@ public static class AvCheck
 
     /// <summary>
     /// The moment of the sequence the mix's first sample is: its first input followed from the main video's track (or the
-    /// silence). Live, the player's track is the sequence's own clock. In an export the track is the file's, placed where the
-    /// main file's clips are (cut, held back, mixed clip by clip): a moment of the file is followed from where the timeline
-    /// says it is heard, a little into each clip of the main video in turn (a clip plays its file from its offset at its start).
+    /// silence). The track is the file's, placed where the main file's clips are (cut, held back, mixed clip by clip): a
+    /// moment of the file is followed from where the timeline says it is heard, a little into each clip of the main video in
+    /// turn (a clip plays its file from its offset at its start).
     /// </summary>
-    private static double? MixStart(FilterGraph graph, GraphNode mix, SequenceExportState state, bool live, double audioFrom)
+    private static double? MixStart(FilterGraph graph, GraphNode mix, SequenceExportState state)
     {
         // Through the mixes that place the track clip by clip (followed), to this one.
         bool? Stop(GraphNode node, int pad) => ReferenceEquals(node, mix) ? (pad == 0 ? true : null) : node.Name == "sidechaincompress" && pad >= 1 ? null : false;
 
-        // (file moment, sequence moment) pairs to follow: the sequence's own moments live; in an export, the file's clips.
-        var probes = live
-            ? [(audioFrom + 5, audioFrom + 5)]
-            : state.Timeline.Tracks.SelectMany(t => t.Clips)
-                .Where(c => c.ContentKind == LayerKind.MainVideo && c.SourcePath is not null && SamePath(c.SourcePath, state.LocalMediaPath) && Math.Abs(c.Speed - 1) < 0.0005)
-                .Select(c => (File: c.MediaOffset + Math.Min(0.5, c.Duration / 2), Sequence: c.Start + Math.Min(0.5, c.Duration / 2)))
-                .Append((5.0, 5.0))
-                .ToList();
+        // (file moment, sequence moment) pairs to follow: the file's clips.
+        var probes = state.Timeline.Tracks.SelectMany(t => t.Clips)
+            .Where(c => c.ContentKind == LayerKind.MainVideo && c.SourcePath is not null && SamePath(c.SourcePath, state.LocalMediaPath) && Math.Abs(c.Speed - 1) < 0.0005)
+            .Select(c => (File: c.MediaOffset + Math.Min(0.5, c.Duration / 2), Sequence: c.Start + Math.Min(0.5, c.Duration / 2)))
+            .Append((5.0, 5.0))
+            .ToList();
 
         var tracks = graph.ExternalInputs().Where(l => l.StartsWith("aid", StringComparison.Ordinal) || l.StartsWith("0:a:", StringComparison.Ordinal));
         foreach (var consumer in tracks.SelectMany(graph.ConsumersOf))
@@ -239,7 +245,7 @@ public static class AvCheck
             // A track of the main video: where its sample of a moment is in the mix, counted from the mix's first sample.
             double? Position(double moment)
             {
-                var arrivals = Timing.Walk(graph, consumer.Node, consumer.Pad, new Timing.Clock(moment, live ? audioFrom : 0), 48000, Stop);
+                var arrivals = Timing.Walk(graph, consumer.Node, consumer.Pad, new Timing.Clock(moment, 0), 48000, Stop);
                 return arrivals.Count > 0 ? arrivals[0].Clock.T - arrivals[0].Clock.First : null;
             }
 
@@ -250,11 +256,11 @@ public static class AvCheck
             }
         }
 
-        // Silence standing in for the main video's sound: it is laid from the moment the sound is laid out from.
+        // Silence standing in for the main video's sound: it is laid from the sequence's start.
         foreach (var silence in graph.Nodes.Where(n => n.IsSource && n.Name == "anullsrc"))
         {
             if (Timing.Walk(graph, silence, -1, new Timing.Clock(5, 0), 48000, Stop) is [var arrival, ..])
-                return 5 - (arrival.Clock.T - arrival.Clock.First) + (live ? audioFrom : 0);
+                return 5 - (arrival.Clock.T - arrival.Clock.First);
         }
 
         return null;
@@ -264,32 +270,31 @@ public static class AvCheck
 
     /// <summary>
     /// The first frame or sample a source gives, on the file's clock: the stream's start, or where its seek lands. sp= and
-    /// seek_point= count from the container's start (a proxy's is 0). A picture lands on the I-frame at or before the aim.
+    /// seek_point= count from the container's start. A picture lands on the I-frame at or before the aim.
     /// A sound lands on a packet at or before it, but which one is the demuxer's to say (an MPEG-TS seek aimed at 18.4 s was
     /// measured landing at 18.08 s): so the sound is taken to land on its cut when it aims at or past it, and an aim past the
     /// cut is reported on its own by <see cref="CheckSeek"/>.
     /// </summary>
-    private static double Landing(GraphNode source, Media media, bool proxy, bool video)
+    private static double Landing(GraphNode source, Media media, bool video)
     {
-        var start = proxy ? 0 : video ? media.VideoStart : media.AudioStart;
-        if (Aim(source, media, proxy) is not { } target)
+        var start = video ? media.VideoStart : media.AudioStart;
+        if (Aim(source, media) is not { } target)
             return start;
 
         if (!video)
             return Math.Max(start, FirstCut(source) is { } cut ? Math.Min(target, cut) : target);
 
-        var frames = proxy ? media.IFrames.Select(f => f - media.VideoStart).ToArray() : media.IFrames;
-        var landing = frames.Where(f => f <= target + 1e-9).DefaultIfEmpty(start).Max();
+        var landing = media.IFrames.Where(f => f <= target + 1e-9).DefaultIfEmpty(start).Max();
         return Math.Max(start, landing);
     }
 
     /// <summary>Where a source's seek aims on the file's clock; null when it reads from the start.</summary>
-    private static double? Aim(GraphNode source, Media media, bool proxy)
+    private static double? Aim(GraphNode source, Media media)
     {
         var video = source.Name == "movie";
         if (source.Options.Get(video ? "sp" : "seek_point", -1, video ? "seek_point" : "sp") is not { } seek)
             return null;
-        return (proxy ? 0 : media.ContainerStart) + double.Parse(seek, CultureInfo.InvariantCulture);
+        return media.ContainerStart + double.Parse(seek, CultureInfo.InvariantCulture);
     }
 
     /// <summary>The first cut after a source, before anything else changes the time stamps: on the file's clock.</summary>
@@ -306,7 +311,7 @@ public static class AvCheck
         return null;
     }
 
-    private static IEnumerable<string> CheckSeek((FilterGraph Graph, GraphNode Node) source, Media media, bool proxy, string name)
+    private static IEnumerable<string> CheckSeek((FilterGraph Graph, GraphNode Node) source, Media media, string name)
     {
         var (_, node) = source;
         if (FirstCut(node) is not { } cut)
@@ -314,11 +319,11 @@ public static class AvCheck
 
         if (node.Name == "movie")
         {
-            var landing = Landing(node, media, proxy, video: true);
+            var landing = Landing(node, media, video: true);
             if (landing > cut + 0.001)
                 yield return $"{name}: the seek lands at {Num(landing)} s on the file's clock, after the cut at {Num(cut)} s: what lies between is lost.";
         }
-        else if (Aim(node, media, proxy) is { } target && target > cut + 0.001)
+        else if (Aim(node, media) is { } target && target > cut + 0.001)
         {
             yield return $"{name}: the seek aims at {Num(target)} s on the file's clock, past the cut at {Num(cut)} s (seek_point counts from the container's start, "
                          + $"{Num(media.ContainerStart)} s here): where it lands is up to the demuxer, and up to {Num(target - cut)} s of the cut's start may be lost.";

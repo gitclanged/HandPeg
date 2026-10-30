@@ -1,18 +1,19 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Text.Json;
-using CliWrap;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using HandPegApp.Models;
 using HandPegApp.Services;
+using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.ViewModels;
 
 // The subtitle track: cues imported from a file (.srt, .vtt; or the timings of a .sup or VobSub), made from the
 // auto-captions, or typed in the Subtitle Editor. There is one. While it has text cues, the captions are made
 // of them instead of being transcribed: they are drawn in the caption style, in the caption box, by the same
-// steps (the player's own subtitle track for the preview, the caption overlay for the export).
+// steps (the GPU preview's captions, the caption overlay for the export). A picture track's pictures are decoded
+// for the GPU preview, which draws them over the main video's picture (5.0-Verify); the export leaves them out.
 public partial class MainViewModel
 {
     public ObservableCollection<SubtitleCue> SubtitleCues { get; } = [];
@@ -56,10 +57,9 @@ public partial class MainViewModel
 
     private double SubtitleOffsetSeconds => double.IsFinite(SubtitleOffsetMs) ? SubtitleOffsetMs / 1000 : 0;
 
-    // A picture track as it was read from its file, cue for cue: what the edited times are measured against.
+    // A picture track as it was read from its file, cue for cue: what the edited times are measured against, and how each
+    // cue is matched to its picture.
     private List<SubtitleCue> _subtitleOriginal = [];
-    private string _imageSubtitleFile = "";
-    private int _imageSubtitleRun;
 
     /// <summary>Reads a subtitle file in as the subtitle track, replacing the one there was. Returns false, with the reason in the status bar, when it cannot be read.</summary>
     public bool ImportSubtitles(string path)
@@ -107,7 +107,8 @@ public partial class MainViewModel
             AutoCaptions = true;
         if (HasSource && !_isBackgroundWorker)
         {
-            // Pictures are handed to the player as they are; words are shown by the subtitles preview, switched on for them.
+            // Pictures are drawn by the player as they are (decoded first, in the background); words are shown by the
+            // subtitles preview, switched on for them.
             if (!images && !PreviewSubtitles)
                 PreviewSubtitles = true;
             else
@@ -148,6 +149,8 @@ public partial class MainViewModel
 
         _subtitleOriginal = images ? SubtitleCues.Select(c => c.Clone()).ToList() : [];
         (SubtitleSourcePath, SubtitlesAreImages, SubtitleOffsetMs) = (path, images, offsetMs);
+        if (!images)
+            ForgetPictureSubtitles();
         NotifySubtitlesChanged();
     }
 
@@ -179,7 +182,7 @@ public partial class MainViewModel
         if (_captionAnchorSource is null || SubtitlesAreImages || IsSubtitleEditorOpen)
             return;
 
-        // Told only when something moved: the preview's caption file is then written again (SyncEditorCaptions).
+        // Told only when something moved: the preview's captions are then made again (SyncEditorCaptions).
         if (ShowCaptionAnchors([.. SubtitleCues.Where(c => c.Piece is null).Select(StateOf)]))
             NotifySubtitlesChanged();
     }
@@ -415,8 +418,8 @@ public partial class MainViewModel
 
     private void NotifySubtitlesChanged()
     {
-        // Told once as a document put in place is done (4.4-BugHunt): one caption file written, one swap of the player's
-        // subtitles, not one for each part of the step that touched them.
+        // Told once as a document put in place is done (4.4-BugHunt): the captions made once, the player told once, not
+        // once for each part of the step that touched them.
         if (_restoring > 0)
         {
             _subtitlesChangedPending = true;
@@ -436,7 +439,7 @@ public partial class MainViewModel
 
     /// <summary>
     /// Called when cues were edited by hand (in the Subtitle Editor): they are put in order and numbered again,
-    /// the timeline shows them as they are now, and the main player's subtitles are written again.
+    /// the timeline shows them as they are now, and the main player is given them again.
     /// </summary>
     public void CommitSubtitleEdits()
     {
@@ -492,110 +495,158 @@ public partial class MainViewModel
             return;
 
         if (SubtitlesAreImages || !HasSubtitleCues)
-        {
-            _imageSubtitleFile = HasSubtitleCues ? WriteImageSubtitles() ?? "" : "";
-            InvalidateLiveFilter();
-        }
+            ShowPictureSubtitles();
 
         if (PreviewSubtitles && !IsSubtitleEditorOpen)
             RefreshLiveCaptionsSoon();
     }
 
-    /// <summary>The picture track as a file a player can be given: the imported file itself while nothing was moved, a retimed copy of it otherwise.</summary>
-    private string? WriteImageSubtitles()
-    {
-        if (!SubtitlesAreImages || !File.Exists(SubtitleSourcePath))
-            return null;
+    // ----- The picture track in the GPU preview (5.0-Verify) -----
+    // Its file is decoded once, in the background (PictureSubtitleDecoder: HandPeg's FFmpeg, the pictures kept packed in
+    // memory), and each cue is paired with the picture its file shows at the cue's own moment there (_subtitleOriginal), so
+    // a cue retimed in the Subtitle Editor or moved by the offset keeps its picture. The GPU preview is given them with the
+    // sequence (PreviewPictureSubtitles, the state's PictureSubtitles) and told when they changed (CaptionsChanged).
 
-        var moved = Math.Abs(SubtitleOffsetSeconds) > 0.0005 || _subtitleOriginal.Count != SubtitleCues.Count
-            || SubtitleCues.Where((cue, i) => Math.Abs(cue.Start - _subtitleOriginal[i].Start) > 0.0005 || Math.Abs(cue.End - _subtitleOriginal[i].End) > 0.0005).Any();
-        if (!moved)
-            return SubtitleFiles.IdxPathOf(SubtitleSourcePath) is var idx && Path.GetExtension(SubtitleSourcePath).ToLowerInvariant() is ".sub" or ".vobsub" ? idx : SubtitleSourcePath;
-
-        try
-        {
-            // A new name each time: the player only loads a file again when its name has changed.
-            return SubtitleFiles.WriteRetimed(SubtitleSourcePath, _subtitleOriginal, SubtitleCues, SubtitleOffsetSeconds, _workFolder, $"subtitles_retimed_{++_imageSubtitleRun}");
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
-        {
-            StatusText = $"The retimed subtitles could not be written: {ex.Message}";
-            return null;
-        }
-    }
-
-    /// <summary>The picture track's file for the main player; empty when there is none, or while the Subtitle Editor shows it instead.</summary>
-    private string LiveImageSubtitlePath => SubtitlesAreImages && HasSubtitleCues && !IsSubtitleEditorOpen ? _imageSubtitleFile : "";
+    // The file's pictures as far as they have been read, which file (its path, size and time) they are of, the decode
+    // under way, and the cues paired with them.
+    private PictureSubtitleSet? _pictureSet;
+    private string _pictureSetOf = "";
+    private CancellationTokenSource? _pictureDecode;
+    private PictureSubtitleTrack? _pictureTrack;
+    private bool _toldPictures;
 
     /// <summary>
-    /// Writes the subtitle track as a file for a player to draw over a blank picture: the Subtitle Editor's
-    /// own. Text is written as captions for the whole frame, in the caption style; a picture track is its
-    /// file, retimed. Returns the file, or null when there is nothing to show.
+    /// The picture track's cues with their pictures, for the GPU preview (as far as its file has been read: a track put in
+    /// with nothing open is read the first time the preview asks); null when there is none, or while the Subtitle Editor
+    /// shows the track instead.
     /// </summary>
-    public string? WriteSubtitlePreview(string name)
+    public PictureSubtitleTrack? PreviewPictureSubtitles()
     {
-        if (!HasSubtitleCues)
+        if (!SubtitlesAreImages || !HasSubtitleCues || IsSubtitleEditorOpen)
             return null;
-        if (SubtitlesAreImages)
-            return WriteImageSubtitles();
-
-        // Written for the caption box alone, not the frame: the editor's player shows a picture of the box's
-        // shape, so the words fill it and are large enough to read, however small the box is on the frame.
-        var path = Path.Combine(_workFolder, name + ".ass");
-        var lines = GetCueCaptions();
-        WriteCaptionFile(lines.SelectMany(l => l).ToList(), lines, path, 0, forPlayer: false);
-        return path;
+        if (_pictureSetOf.Length == 0)
+            ShowPictureSubtitles();
+        return _pictureTrack;
     }
 
     /// <summary>
-    /// Makes the blank video the Subtitle Editor's player plays: black, the shape of the output frame, as long
-    /// as the timeline. It is a real file, encoded once and kept for the session, because a player can go to
-    /// any moment of a file at once; a picture generated as it is played (lavfi's "color") can only be played
-    /// forwards, and every seek into it breaks it. It is tiny (the subtitles are drawn at the size of the
-    /// window, not of the video), so it is made in a moment and is a few hundred kilobytes for hours.
-    /// Returns the file, or null when it could not be made.
+    /// The picture track as it is now into the preview: its file decoded the first time (and again once it changed on disk),
+    /// its cues paired with their pictures again, and the preview told. Without a picture track, what was read is let go.
     /// </summary>
-    public async Task<string?> PrepareSubtitleCanvasAsync(double seconds, CancellationToken cancellationToken)
+    private void ShowPictureSubtitles()
     {
+        if (_isBackgroundWorker)
+            return;
+
+        var file = FileState.Get(SubtitleSourcePath);
+        if (!SubtitlesAreImages || !HasSubtitleCues || !file.Exists)
+        {
+            ForgetPictureSubtitles();
+            return;
+        }
+
+        var of = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{SubtitleSourcePath}|{file.Length}|{file.WrittenUtc.Ticks}");
+        if (of != _pictureSetOf)
+            DecodePictureSubtitles(of);
+        PairPictureSubtitles();
+    }
+
+    /// <summary>Pairs each cue with its picture (as far as the file has been read) and tells the preview.</summary>
+    private void PairPictureSubtitles()
+    {
+        var offset = SubtitleOffsetSeconds;
+        _pictureTrack = _pictureSet is { } set && _subtitleOriginal.Count == SubtitleCues.Count
+            ? PictureSubtitleTrack.Match(set, [.. _subtitleOriginal.Select(c => (c.Start, c.End))], [.. SubtitleCues.Select(c => (c.Start + offset, c.End + offset))])
+            : null;
+        CaptionsChanged?.Invoke();
+    }
+
+    private void ForgetPictureSubtitles()
+    {
+        _pictureDecode?.Cancel();
+        (_pictureDecode, _pictureSet, _pictureSetOf, _toldPictures) = (null, null, "", false);
+        if (_pictureTrack is null)
+            return;
+        _pictureTrack = null;
+        CaptionsChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Reads the picture track's file on the background lane: what has been read is shown about once a second while the
+    /// rest is read, so the first pictures are up at once. A decode of a file let go (another track, the file changed) is
+    /// stopped and its pictures dropped.
+    /// </summary>
+    private void DecodePictureSubtitles(string of)
+    {
+        _pictureDecode?.Cancel();
+        var decode = _pictureDecode = new CancellationTokenSource();
+        (_pictureSet, _pictureSetOf) = (null, of);
+
+        // A VobSub is read from its .idx (FFmpeg finds the .sub beside it); a .sup as it is.
+        var path = SubtitleSourcePath;
+        var input = Path.GetExtension(path).ToLowerInvariant() is ".sub" or ".vobsub" ? SubtitleFiles.IdxPathOf(path) : path;
         if (!File.Exists(DependencyUpdater.FfmpegPath))
-            return null;
-
-        var (frameWidth, frameHeight) = SubtitleFrameSize;
-        const int height = 72;
-        var width = Math.Clamp((int)Math.Round(height * (double)frameWidth / Math.Max(frameHeight, 1) / 2) * 2, 16, 1024);
-        var length = (int)Math.Clamp(Math.Ceiling(seconds), 1, 12 * 3600);
-        var path = Path.Combine(_workFolder, $"subtitle_canvas_{width}x{height}_{length}.mkv");
-        if (File.Exists(path) && new FileInfo(path).Length > 0)
-            return path;
-
-        Directory.CreateDirectory(_workFolder);
-        var making = Path.Combine(_workFolder, $"subtitle_canvas_{Guid.NewGuid():N}.mkv");
-        try
         {
-            // An I-frame every second, so that any moment is a short step from one.
-            var result = await WorkScheduler.Run(new WorkSpec("Preparing the Subtitle Editor", WorkLane.Interactive) { Visible = false },
-                work => ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
-                    .WithArguments(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", $"color=c=black:s={width}x{height}:r=10",
-                        "-t", length.ToString(System.Globalization.CultureInfo.InvariantCulture), "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-                        "-g", "10", "-pix_fmt", "yuv420p", making])
-                    .WithValidation(CommandResultValidation.None), work.Token), cancellationToken);
-            if (result.ExitCode != 0 || !File.Exists(making))
-            {
-                AppLog.Write($"The Subtitle Editor's blank video could not be made (exit code {result.ExitCode}): {result.StandardError.Trim()}");
-                return null;
-            }
-
-            File.Move(making, path, overwrite: true);
-            return path;
+            TellPictures("The picture subtitles are shown in the player once FFmpeg is installed (Settings, Tools).");
+            return;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+
+        var home = SynchronizationContext.Current;
+        _ = ReadAsync();
+
+        async Task ReadAsync()
         {
-            AppLog.Write("The Subtitle Editor's blank video could not be made", ex);
-            return null;
+            try
+            {
+                var set = await WorkScheduler.Run(new WorkSpec($"Reading the pictures of {Path.GetFileName(path)}", WorkLane.Background),
+                    work => PictureSubtitleDecoder.DecodeAsync(input, 0, DependencyUpdater.FfmpegPath, partial => home?.Post(_ => Take(partial), null), work.Token),
+                    decode.Token);
+                Take(set);
+                if (ReferenceEquals(_pictureDecode, decode))
+                {
+                    if (set is null)
+                        TellPictures($"The pictures of {Path.GetFileName(path)} could not be read for the player (the log says why). The cues are kept.");
+                    else if (set.OverBudget)
+                        TellPictures($"{Path.GetFileName(path)} has more pictures than the player keeps: those after {TimeSpan.FromSeconds(set.Pictures[^1].Start):h\\:mm\\:ss} are not shown.");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Let go of (another track, the file changed, closing): nothing to show.
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                AppLog.Write($"Picture subtitles: {Path.GetFileName(path)} could not be read for the player", ex);
+            }
+        }
+
+        // What has been read, into the preview (the UI thread): unless the decode was let go since.
+        void Take(PictureSubtitleSet? set)
+        {
+            if (!ReferenceEquals(_pictureDecode, decode) || decode.IsCancellationRequested || set is null)
+                return;
+            _pictureSet = set;
+            PairPictureSubtitles();
         }
     }
 
-    /// <summary>The size of the frame the subtitles are placed on, for a player that shows them on a blank picture of that shape.</summary>
+    private void TellPictures(string message)
+    {
+        if (_toldPictures)
+            return;
+        _toldPictures = true;
+        StatusText = message;
+    }
+
+    /// <summary>
+    /// What the Subtitle Editor's preview draws a text track with: its cues as captions on the timeline's clock (one line per
+    /// cue, its words timed as the export times them), the caption style, and what the style's sizes are multiplied by in
+    /// the caption box (as <see cref="WriteCaptionFile"/> works it out). The box is <see cref="SubtitleFrameSize"/>.
+    /// </summary>
+    public (IReadOnlyList<List<CaptionWord>> Lines, CaptionStyle Style, double TextScale) SubtitleEditorCaptions() =>
+        (GetCueCaptions(), CaptionStyle, CaptionTextScale());
+
+    /// <summary>The size of the frame the Subtitle Editor shows the subtitles on: the caption box for words, the output frame for pictures.</summary>
     public (int Width, int Height) SubtitleFrameSize
     {
         get
@@ -842,7 +893,7 @@ public partial class MainViewModel
                 _subtitleOriginal = [];
             }
 
-            _imageSubtitleFile = WriteImageSubtitles() ?? "";
+            ShowPictureSubtitles();
         }
     }
 }

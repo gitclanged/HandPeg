@@ -333,7 +333,7 @@ public static partial class CrashSanitizer
             return extension is null ? Mark("path") : Mark("file") + "." + extension;
         }
 
-        // A library or a program by its file name alone ('libmpv-2.dll', 'ffmpeg.exe') is the code's; a path to one went above.
+        // A library or a program by its file name alone ('d3d11.dll', 'ffmpeg.exe') is the code's; a path to one went above.
         return CodeToken().IsMatch(inside) || ModuleFileName().IsMatch(inside) ? "'" + inside + "'" : Mark("text");
     }
 

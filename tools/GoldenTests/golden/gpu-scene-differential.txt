@@ -1,0 +1,11 @@
+# The GPU scene (GpuScenePlan) against the FFmpeg export graph of the same timeline, at sampled moments (PSNR, dB).
+  plain main video: 3 moments, each at least 42 dB of luma (2 x 2 blocks)
+  rider with its own keys: 3 moments, each at least 22 dB of luma (2 x 2 blocks)
+  game style (HUD cut-out, blurred background): 2 moments, each at least 27 dB of luma (2 x 2 blocks)
+  picture in picture (crop, turn, opacity keys): 2 moments, each at least 26 dB of luma (2 x 2 blocks)
+  transition (wipe in, dissolve out): 3 moments, each at least 39 dB of luma (2 x 2 blocks)
+  text clip: 1 moments, each at least 24 dB of luma (2 x 2 blocks)
+  masked layer (grown, soft edge): 1 moments, each at least 28 dB of luma (2 x 2 blocks)
+  adjustment layer: 2 moments, each at least 33 dB of luma (2 x 2 blocks)
+  blurred background child (radius 9, zoom 1.5, its own vignette): 2 moments, each at least 25 dB of luma (2 x 2 blocks)
+  advanced values (a 3-pass blur wider across, dimmed; a frame-shaped feathered vignette): 2 moments, each at least 30 dB of luma (2 x 2 blocks)

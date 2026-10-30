@@ -136,8 +136,8 @@ public static partial class FilterGraphBuilder
         public required IReadOnlyList<EffectInstance> SequenceEffects { get; init; }
     }
 
-    // One lowering for each document, kept as long as the document is: a live graph is built for every seek from the same
-    // state, and Live Preview's solo hands the builder copies of the state that share its document.
+    // One lowering for each document, kept as long as the document is: the GPU scene plan, the sound engine's program and
+    // the exports are built from the same state again and again, and from copies of it that share its document.
     private static readonly ConditionalWeakTable<TimelineDocument, Lowered> LoweredTimelines = new();
 
     /// <summary>A state's timeline, lowered: from the document's cache when it was lowered with the same inputs.</summary>
@@ -663,6 +663,7 @@ public static partial class FilterGraphBuilder
         }
 
         var layer = Layer.FromState(made, state.SourceWidth, state.SourceHeight, document.Width, document.Height);
+        layer.ClipId = clip.Id;
         FoldConstantKeys(layer);
         if (main && IsCropped(crop))
             streamCrops[layer] = crop;
@@ -698,6 +699,7 @@ public static partial class FilterGraphBuilder
         }
 
         var layer = Layer.FromState(made, state.SourceWidth, state.SourceHeight, document.Width, document.Height);
+        layer.ClipId = clip.Id;
         FoldConstantKeys(layer);
         if (ownCrop)
             streamCrops[layer] = Layer.HeldCrop(look);
@@ -777,6 +779,7 @@ public static partial class FilterGraphBuilder
 
         var made = Layer.FromState(twin, state.SourceWidth, state.SourceHeight, document.Width, document.Height);
         (made.PictureFadeInOff, made.PictureFadeOutOff) = (layer.PictureFadeInOff, layer.PictureFadeOutOff);
+        made.ClipId = layer.ClipId;
         return made;
     }
 

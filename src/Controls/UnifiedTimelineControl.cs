@@ -38,7 +38,7 @@ public enum ChildStack { Visual, Audio }
 /// <summary>
 /// One row of the unified timeline: a track, with its blocks laid out in pixels (seconds times the control's
 /// PixelsPerSecond), and the rows that belong to it (its mini-stack: HUD cut-outs, the main file's sound streams, the
-/// captions), drawn under it as thin lanes until it is expanded.
+/// captions), drawn under it as thin lanes until it is expanded (then those in front of it above it, <see cref="InFront"/>).
 /// </summary>
 public sealed class TimelineRow
 {
@@ -66,6 +66,13 @@ public sealed class TimelineRow
 
     /// <summary>Which of its parent's mini-stacks it is in: the layers' (the default) or the sound's. The host keeps each stack's lanes together.</summary>
     public ChildStack Stack { get; set; }
+
+    /// <summary>
+    /// A child of the layers' stack drawn in front of its parent (the compositor draws it over it: the captions, a cut-out
+    /// over the video), as the host decides it from the draw order (5.0-Release). While the stack is open it is laid above
+    /// the parent's row (the frontmost at the top); the others under it. Closed, every child is in the mini-stack under it.
+    /// </summary>
+    public bool InFront { get; set; }
 
     /// <summary>Which switch glyphs its header shows.</summary>
     public RowSwitches Offered { get; set; }
@@ -137,9 +144,10 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     private const double DeckIndent = 14;
 
     // One lane: its row, how deep in a mini-stack, where it is (DIPs from the top of all the rows) and how tall, whether
-    // it is drawn small (a lane of a collapsed stack), whether it is the first and the last of its stack of its parent's,
-    // its parent's lane, whether its deck hangs from its parent's second chevron (the sound's, beside the layers'), and
-    // which stacks of its own it has (its chevrons: Stacks bits, 1 the layers', 2 the sound's).
+    // it is drawn small (a lane of a collapsed stack), whether it is the first and the last of its stack of its parent's
+    // (down the control: above the parent, the first is the topmost), its parent's lane, whether its deck hangs from its
+    // parent's second chevron (the sound's, beside the layers'), which stacks of its own it has (its chevrons: Stacks bits,
+    // 1 the layers', 2 the sound's), and whether it is laid above its parent's lane (in front of it, its stack open).
     private struct Lane
     {
         public TimelineRow Row;
@@ -152,6 +160,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         public int Parent;
         public bool SecondDeck;
         public int Stacks;
+        public bool Above;
 
         public readonly double Bottom => Top + Height;
 
@@ -403,6 +412,36 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     /// <summary>The pointer moved over the time area: the moment under it (seconds), the skim line's; null when it leaves.</summary>
     public event Action<double?>? SkimChanged;
 
+    /// <summary>
+    /// The sequence moment under the pointer (seconds), for Instant Seek's hints (5.0): raised as the pointer moves over the
+    /// rows' time area (during a drag too) and, relayed by the host, over the ruler (<see cref="NotePointerOverRuler"/>); null
+    /// when it leaves the control or goes over the headers, or a drag ends with it outside. Raised only when the moment
+    /// changes, and allocates nothing.
+    /// </summary>
+    public event Action<double?>? PointerSecondsChanged;
+
+    /// <summary>
+    /// A block was clicked with the left button: pressed and let go without moving (5.0). What the host decides on a click
+    /// rather than on the press: Ctrl or Shift on a block already selected, a group narrowed to the one block clicked.
+    /// </summary>
+    public event Action<TimelineRow, TimelineBlock>? BlockClicked;
+
+    /// <summary>
+    /// Whether the press being told (<see cref="BlockPressed"/>) is a ripple of an edge: Ctrl on the edge of a block that can
+    /// be trimmed there, as <c>StartDrag</c> decides it (5.0-Verify). The host leaves the selection alone until it is let go.
+    /// </summary>
+    public bool PressRipples { get; private set; }
+
+    /// <summary>A row's name in its header was clicked with the left button (not its chevron or a switch; 5.0-Verify).</summary>
+    public event Action<TimelineRow>? HeaderClicked;
+
+    /// <summary>
+    /// Makes several edits as one (5.0: a group of selected blocks dragged together): the step's label and what makes them;
+    /// true when it was made. The host makes them one step of Undo, refused or failed as a whole (MainViewModel.EditTogether).
+    /// Without it, each block's edit is made by itself.
+    /// </summary>
+    public Func<string, Action, bool>? Together { get; set; }
+
     /// <summary>A row's mini-stack was opened or closed (by a click on its chevron or <see cref="SetExpanded(TimelineRow, bool)"/>).</summary>
     public event Action<TimelineRow>? ExpansionChanged;
 
@@ -604,7 +643,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         _lanes.Clear();
         var top = 0.0;
         for (var i = 0; i < _rows.Count; i++)
-            AddLanes(_rows[i], null, 0, -1, 1, false, false, false, ref top);
+            AddLanes(_rows[i], null, 0, -1, 1, 1, false, false, false, false, ref top);
 
         foreach (var lane in _lanes)
             FindGaps(lane);
@@ -621,46 +660,130 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             // A shorter extent may leave the rows scrolled past their end.
             VerticalOffset = _verticalOffset;
         }
+
+        KeepLaneInView();
     }
 
-    // A row's lane and, under it, its children's: a child is as tall as its stack of its parent's is open (a fifth of its
-    // height closed, all of it open; the openness is already eased, fastest at first), and a child of a closed one is
-    // closed too. Each of the parent's stacks (the layers', the sound's) is laid together, the layers' first.
-    private void AddLanes(TimelineRow row, TimelineRow? parent, int depth, int parentLane, double openness, bool firstChild, bool lastChild,
-        bool secondDeck, ref double top)
+    /// <summary>While stacks a click opened grow, the lane clicked is scrolled into view (its whole height, when it fits).</summary>
+    private void KeepLaneInView()
+    {
+        if (_keepInView is not { } row)
+            return;
+        if (System.Diagnostics.Stopwatch.GetTimestamp() > _keepInViewUntil)
+        {
+            _keepInView = null;
+            return;
+        }
+
+        foreach (var lane in _lanes)
+        {
+            if (!Equals(lane.Row.Key, row.Key))
+                continue;
+            var height = ActualHeight;
+            if (lane.Bottom > _verticalOffset + height)
+                VerticalOffset = Math.Min(lane.Top, lane.Bottom - height);
+            else if (lane.Top < _verticalOffset)
+                VerticalOffset = lane.Top;
+            return;
+        }
+    }
+
+    // A lane above its parent's, laid before the parent's index is known: set once it is.
+    private const int PendingParent = int.MinValue;
+
+    // A row's lane and its children's: a child is as tall as its stack of its parent's is open (a fifth of its height
+    // closed, all of it open; the openness is already eased, fastest at first), and a child of a closed one is closed too.
+    // Each of the parent's stacks (the layers', the sound's) is laid together under it, the layers' first. While the
+    // layers' stack is open or opening, its children drawn in front of the parent (TimelineRow.InFront: the captions, a
+    // cut-out over the video) are laid above the parent's row instead, in their order (the frontmost at the top), and only
+    // those behind it under it (5.0-Release, the user's directive 4); closed, they are all the thin mini-stack under it, as
+    // ever. Neither end of the move jumps: while the stack opens, those in front grow above it from nothing as their thin
+    // lanes under it shrink away (closing, the other way round), so the parent's row and everything under it move smoothly;
+    // every lane of a subtree that comes or goes so is <paramref name="fade"/> as tall as it would be, its gap with it. The
+    // lanes stay in order down the control (LaneAt). <paramref name="above"/>: this row is laid above its parent's.
+    private void AddLanes(TimelineRow row, TimelineRow? parent, int depth, int parentLane, double openness, double fade, bool firstChild, bool lastChild,
+        bool secondDeck, bool above, ref double top)
     {
         if (parent is not null)
             row.Parent ??= parent;
 
         var full = Math.Max(row.Height, MiniLeast);
         var small = Math.Max(full * MiniStackFraction, MiniLeast);
-        var height = depth == 0 ? full : small + (full - small) * Math.Clamp(openness, 0, 1);
-        var mini = depth > 0 && openness < 0.999;
+        var height = (depth == 0 ? full : small + (full - small) * Math.Clamp(openness, 0, 1)) * fade;
+        var mini = depth > 0 && (openness < 0.999 || fade < 0.999);
         var stacks = 0;
         foreach (var child in row.Children)
             stacks |= StackBit(child.Stack);
+
+        // The children in front of it, while its layers' stack shows at all: above it, each with its own stacks; until the
+        // stack is open, their thin lanes are under it as well, shrinking away (leaving).
+        var layersOpen = Math.Min(openness, Openness(row, ChildStack.Visual));
+        var aboveCount = 0;
+        if (layersOpen > 0)
+        {
+            foreach (var child in row.Children)
+                aboveCount += child is { Stack: ChildStack.Visual, InFront: true } ? 1 : 0;
+        }
+
+        bool Above(TimelineRow child) => aboveCount > 0 && child is { Stack: ChildStack.Visual, InFront: true };
+        var leaving = aboveCount > 0 && layersOpen < 1;
+
+        var firstAbove = _lanes.Count;
+        if (aboveCount > 0)
+        {
+            var k = 0;
+            foreach (var child in row.Children)
+            {
+                if (!Above(child))
+                    continue;
+                AddLanes(child, row, depth + 1, PendingParent, layersOpen, fade * layersOpen, k == 0, k == aboveCount - 1, false, true, ref top);
+                k++;
+            }
+        }
 
         var index = _lanes.Count;
         _lanes.Add(new Lane
         {
             Row = row, Depth = depth, Top = top, Height = height, Mini = mini, FirstChild = firstChild, LastChild = lastChild,
-            Parent = parentLane, SecondDeck = secondDeck, Stacks = stacks,
+            Parent = parentLane, SecondDeck = secondDeck, Stacks = stacks, Above = above,
         });
         foreach (var block in row.Blocks)
             block.IsMini = mini;
-        top += height + LaneGap;
+        top += height + LaneGap * fade;
 
-        if (row.Children.Count == 0)
+        for (var i = firstAbove; i < index; i++)
+        {
+            if (_lanes[i].Parent != PendingParent)
+                continue;
+            var lane = _lanes[i];
+            lane.Parent = index;
+            _lanes[i] = lane;
+        }
+
+        if (row.Children.Count == aboveCount && !leaving)
             return;
 
+        // The rest under it (and, leaving, those in front: thin and closed, as the closed stack has them), each stack
+        // together: first and last of its stack among those laid under it.
+        bool Under(TimelineRow child) => leaving || !Above(child);
         var two = stacks == 3;
         for (var i = 0; i < row.Children.Count; i++)
         {
             var child = row.Children[i];
-            var first = i == 0 || row.Children[i - 1].Stack != child.Stack;
-            var last = i == row.Children.Count - 1 || row.Children[i + 1].Stack != child.Stack;
-            var open = Math.Min(openness, Openness(row, child.Stack));
-            AddLanes(child, row, depth + 1, index, open, first, last, two && child.Stack == ChildStack.Audio, ref top);
+            if (!Under(child))
+                continue;
+
+            var before = i - 1;
+            while (before >= 0 && !Under(row.Children[before]))
+                before--;
+            var after = i + 1;
+            while (after < row.Children.Count && !Under(row.Children[after]))
+                after++;
+
+            var first = before < 0 || row.Children[before].Stack != child.Stack;
+            var last = after >= row.Children.Count || row.Children[after].Stack != child.Stack;
+            var (open, share) = Above(child) ? (0.0, fade * (1 - layersOpen)) : (Math.Min(openness, Openness(row, child.Stack)), fade);
+            AddLanes(child, row, depth + 1, index, open, share, first, last, two && child.Stack == ChildStack.Audio, false, ref top);
         }
     }
 
@@ -1009,12 +1132,14 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
         protected override List<AutomationPeer>? GetChildrenCore()
         {
+            // (A row has two lanes for a moment while its stack moves, AddLanes: one peer.)
             var children = new List<AutomationPeer>(owner._lanes.Count);
             foreach (var lane in owner._lanes)
             {
                 if (!_rowPeers.TryGetValue(lane.Row.Key, out var peer))
                     _rowPeers[lane.Row.Key] = peer = new RowPeer(owner, lane.Row.Key);
-                children.Add(peer);
+                if (!children.Contains(peer))
+                    children.Add(peer);
             }
 
             return children;

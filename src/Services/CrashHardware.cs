@@ -302,7 +302,7 @@ public static partial class CrashHardware
 
     // ----- Into the report, and through the shared memory -----
 
-    /// <summary>The engines' versions (whisper.cpp, yt-dlp), learnt beside FFmpeg's and libmpv's.</summary>
+    /// <summary>The engines' versions (whisper.cpp, yt-dlp), learnt beside FFmpeg's.</summary>
     public static string? Whisper { get; set; }
     public static string? YtDlp { get; set; }
 

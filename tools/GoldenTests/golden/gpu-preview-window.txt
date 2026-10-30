@@ -1,0 +1,2 @@
+# Render Preview on the GPU compositor (5.0-Verify Q5): a 2 s stretch of the gpu-export timeline, its frames against the FFmpeg export's.
+from 1 to 3 s at 30 fps, full size: 60 frames, the first the export's frame 30, the last its 89 (best matched within 10); its sound 2 s long (within 25 ms)

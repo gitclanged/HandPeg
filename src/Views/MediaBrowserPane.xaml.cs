@@ -204,6 +204,43 @@ public partial class MediaBrowserPane : UserControl
     /// <summary>A file was asked to be opened as the main video.</summary>
     public event Action<string>? LoadRequested;
 
+    /// <summary>
+    /// A video is likely to be dropped or opened soon (Pass 5.0-Release): its tile was rested on for <see cref="PrewarmRestMs"/>
+    /// (false), or a drag of it began (true). The host may make ready what a drop of it needs (on a fast local drive only,
+    /// MainWindow.Drops).
+    /// </summary>
+    public event Action<string, bool>? PrewarmRequested;
+
+    /// <summary>How long the pointer stays on a video's tile before it counts as likely to be dropped, ms.</summary>
+    public const int PrewarmRestMs = 120;
+
+    // The tile the pointer is on, and the timer that tells of it once it has stayed (made once, on the first tile).
+    private MediaBrowserItem? _restingOn;
+    private DispatcherTimer? _restTimer;
+
+    /// <summary>The pointer came onto a video's tile: <see cref="PrewarmRequested"/> once it has stayed there (moves within it change nothing).</summary>
+    private void RestOn(MediaBrowserItem item)
+    {
+        if (ReferenceEquals(_restingOn, item))
+            return;
+        _restingOn = item;
+        if (_restTimer is null)
+        {
+            _restTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(PrewarmRestMs) };
+            _restTimer.Tick += RestTimer_Tick;
+        }
+
+        _restTimer.Stop();
+        _restTimer.Start();
+    }
+
+    private void RestTimer_Tick(object? sender, EventArgs e)
+    {
+        _restTimer?.Stop();
+        if (_restingOn is { IsFile: true } item)
+            PrewarmRequested?.Invoke(item.Path, false);
+    }
+
     /// <summary>How large the files are shown (the size slider, 0 a list to 100 the largest tiles): the Media tab's menu sets it (4.2B-2).</summary>
     public double TileSize
     {
@@ -989,6 +1026,10 @@ public partial class MediaBrowserPane : UserControl
 
     private void Picture_MouseMove(object sender, MouseEventArgs e)
     {
+        // Resting on a video's tile: a drop of it is likely (5.0-Release).
+        if (sender is FrameworkElement { DataContext: MediaBrowserItem { IsVideo: true } hovered })
+            RestOn(hovered);
+
         // A tile showing a poster made on its own (4.2D): its strip is made now, in the Interactive lane, not left to wait
         // for the second pass. Not while the button is down (4.3E): that is a drag beginning, and the file is about to be
         // dropped (and probed), not scrubbed.
@@ -1078,6 +1119,8 @@ public partial class MediaBrowserPane : UserControl
 
     private void Picture_MouseLeave(object sender, MouseEventArgs e)
     {
+        _restTimer?.Stop();
+        _restingOn = null;
         if (sender is FrameworkElement { DataContext: MediaBrowserItem item })
             (item.HoverFraction, item.HoverFrame, item.HoverText) = (double.NaN, null, "");
     }
@@ -1209,6 +1252,9 @@ public partial class MediaBrowserPane : UserControl
         // background work is held back and its tools stopped where they are, the pane's own work waits between files, and
         // a strip being made for the pointer is stopped (4.3E). The drop's own work holds it from there (MainWindow.Drops).
         StopStripOnDemand();
+        _restTimer?.Stop();
+        if (pressed.IsVideo)
+            PrewarmRequested?.Invoke(pressed.Path, true);
         using (WorkScheduler.HoldBackground())
             DragDrop.DoDragDrop(Items, data, DragDropEffects.Copy);
     }

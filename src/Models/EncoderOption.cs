@@ -11,6 +11,9 @@ public enum EncoderFamily
     Nvenc,
     Qsv,
     Amf,
+
+    /// <summary>Windows' Media Foundation hardware encoders (h264_mf, hevc_mf, av1_mf): the ARM64 path, see MediaFoundationEncoder.</summary>
+    MediaFoundation,
 }
 
 /// <summary>A video encoder as offered in the Video tab.</summary>
@@ -19,7 +22,7 @@ public sealed record EncoderOption(string Name, string DisplayName, EncoderFamil
     /// <summary>Passes the source stream through untouched.</summary>
     public static EncoderOption Copy { get; } = new("copy", "Copy (Stream Copy)", EncoderFamily.Copy);
 
-    public bool IsHardware => Family is EncoderFamily.Nvenc or EncoderFamily.Qsv or EncoderFamily.Amf;
+    public bool IsHardware => Family is EncoderFamily.Nvenc or EncoderFamily.Qsv or EncoderFamily.Amf or EncoderFamily.MediaFoundation;
 
     public static IReadOnlyList<EncoderOption> Software { get; } =
     [
@@ -31,7 +34,10 @@ public sealed record EncoderOption(string Name, string DisplayName, EncoderFamil
         new("dnxhd", "Avid DNxHR (dnxhd)", EncoderFamily.Intermediate),
     ];
 
-    /// <summary>Describes an FFmpeg hardware encoder such as "hevc_qsv" as "Intel QuickSync H.265 (hevc_qsv)".</summary>
+    /// <summary>
+    /// Describes an FFmpeg hardware encoder such as "hevc_qsv" as "Intel QuickSync H.265 (hevc_qsv)", and "hevc_mf" as
+    /// "Media Foundation H.265 (hevc_mf)".
+    /// </summary>
     public static EncoderOption FromHardwareName(string name)
     {
         var parts = name.Split('_');
@@ -47,6 +53,7 @@ public sealed record EncoderOption(string Name, string DisplayName, EncoderFamil
             "nvenc" => ("NVIDIA NVENC", EncoderFamily.Nvenc),
             "qsv" => ("Intel QuickSync", EncoderFamily.Qsv),
             "amf" => ("AMD AMF", EncoderFamily.Amf),
+            "mf" => ("Media Foundation", EncoderFamily.MediaFoundation),
             _ => ("Hardware", EncoderFamily.Software),
         };
 

@@ -80,6 +80,9 @@ public partial class MainViewModel
         BlurRadius = BlurRadius,
         BlurPasses = BlurPasses,
         BackgroundDim = BackgroundDim,
+        BackgroundZoom = BackgroundZoom,
+        BackgroundEffects = CaptureBackgroundEffects(),
+        BackgroundEffectsBypassed = _backgroundRow.EffectsBypassed,
         AudioTracks = CaptureAudioTracks(),
         CaptionLayer = CaptionLayer.ToState(),
         WhisperPrompt = WhisperPrompt,
@@ -471,6 +474,7 @@ public partial class MainViewModel
         ResetCenterVideo();
         ResetBlurSettings();
         _backgroundRow.IsHidden = false;
+        SetBackgroundEffects(null, false);
         _layoutSourceAspect = 0;
         _mainLookToCome = null;
 
@@ -517,6 +521,90 @@ public partial class MainViewModel
         {
             return StatusText = $"Could not save the project: {ex.Message}";
         }
+    }
+
+    // ----- Project bundles (5.0-Release, Services/ProjectBundle.cs) -----
+
+    /// <summary>
+    /// Saves the project with every file it reads as one bundle (.hpb), away from the interface's thread, the status line
+    /// counting. The project open stays where it was saved before (a bundle is a copy to carry, not where Save writes).
+    /// </summary>
+    public async Task SaveBundleAsync(string path)
+    {
+        if (!HasSource)
+        {
+            StatusText = "There is nothing to save yet: load a video first.";
+            return;
+        }
+
+        var name = Path.GetFileNameWithoutExtension(path);
+        ProjectState state;
+        try
+        {
+            state = CaptureStateForSave(name);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            StatusText = $"Could not save the bundle: {ex.Message}";
+            return;
+        }
+
+        var shown = -1;
+        var progress = new Progress<double>(share =>
+        {
+            var percent = (int)(share * 100);
+            if (percent != shown)
+                StatusText = $"Saving the bundle {name}: {(shown = percent).ToString(System.Globalization.CultureInfo.InvariantCulture)} %";
+        });
+        try
+        {
+            var (files, missing) = await WorkScheduler.Run(new WorkSpec($"Saving the bundle {name}", WorkLane.Interactive),
+                work => Task.Run(() => ProjectBundle.Pack(state, path, progress, work.Token)), _shutdown.Token);
+            StatusText = $"Bundle saved: {path} ({files} file{(files == 1 ? "" : "s")} inside"
+                         + (missing > 0 ? $"; {missing} the project names {(missing == 1 ? "is" : "are")} not on this PC and stayed out)" : ")");
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "The bundle was not saved (cancelled).";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidDataException or ArgumentException)
+        {
+            StatusText = $"Could not save the bundle: {ex.Message}";
+        }
+    }
+
+    /// <summary>Unpacks a bundle beside it (ProjectBundle.Unpack) and opens the project in it.</summary>
+    private async Task OpenBundleAsync(string bundlePath)
+    {
+        var name = Path.GetFileNameWithoutExtension(bundlePath);
+        var shown = -1;
+        var progress = new Progress<double>(share =>
+        {
+            var percent = (int)(share * 100);
+            if (percent != shown)
+                StatusText = $"Unpacking the bundle {name}: {(shown = percent).ToString(System.Globalization.CultureInfo.InvariantCulture)} %";
+        });
+
+        string project;
+        try
+        {
+            CrashReporter.KeepOut(bundlePath);
+            project = await WorkScheduler.Run(new WorkSpec($"Unpacking the bundle {name}", WorkLane.Interactive) { Urgent = true },
+                work => Task.Run(() => ProjectBundle.Unpack(bundlePath, progress, work.Token)), _shutdown.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "The bundle was not opened (cancelled).";
+            return;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidDataException or System.Text.Json.JsonException
+                                       or ArgumentException)
+        {
+            StatusText = $"Could not open the bundle: {ex.Message}";
+            return;
+        }
+
+        await LoadProjectAsync(project);
     }
 
     // What the project looked like when it was last autosaved: nothing is written while nothing has changed.
@@ -584,6 +672,10 @@ public partial class MainViewModel
 
     public Task LoadProjectAsync(string filePath)
     {
+        // A bundle is unpacked beside itself first, and the project in it opened (5.0-Release).
+        if (filePath.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase))
+            return OpenBundleAsync(filePath);
+
         ProjectState state;
         var opened = "Project loaded";
         try
@@ -632,7 +724,23 @@ public partial class MainViewModel
 
         EditingJob = null;
         RefreshRecentProjects(name);
-        return RestoreStateAsync(state, $"{opened}: {name}");
+        return OpenShowingCaptionsAsync(state, $"{opened}: {name}");
+    }
+
+    /// <summary>
+    /// The project put in place, then its captions shown in the player when its export burns them in (5.0-Release: the GPU
+    /// preview draws them at no cost, and a project opened with Auto-Captions on and words to show looked as if it had none,
+    /// Preview Subtitles being off after every load). After the restore, which is a running operation the preview would wait for.
+    /// </summary>
+    private async Task OpenShowingCaptionsAsync(ProjectState state, string doneMessage)
+    {
+        await RestoreStateAsync(state, doneMessage);
+        if (_isBackgroundWorker || PreviewSubtitles || !AutoCaptions || !HasTextCues || IsBusy)
+            return;
+
+        var said = StatusText;
+        PreviewSubtitles = true;
+        StatusText = said;
     }
 
     // ----- Manual cut entry -----

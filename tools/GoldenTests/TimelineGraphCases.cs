@@ -11,12 +11,11 @@ namespace HandPegGoldenTests;
 /// and is read as a layer in the main video's box) and a crossfade from a picture into a clip of the chain (a dip: the two
 /// cannot be laid over each other). Under it all, a picture in picture of the main video's own file stays a layer (it is
 /// not the main video). A clip of the chain has a J and an L cut, a layer has both too, another's sound is unlinked and
-/// slipped, and an Audio track has a crossfade and a gain of its own. The export and a live graph, both through the A/V check.
+/// slipped, and an Audio track has a crossfade and a gain of its own. The export, through the A/V check.
 ///
 /// 4.4-BugHunt adds two timelines. One where every kind of clip is cropped (the user's Q2: every clip's crop reframes its
-/// picture, on every track), exported and live. And a game style live at a quarter of its size with the playhead in the gap
-/// a dragged clip left, as the user's player was when FFmpeg refused a HUD piece cut 0 pixels high from the stand-in clock
-/// (its sides are held to 2 pixels in every live graph).
+/// picture, on every track), exported. And a game style with the main video split and its later part dragged 2 s on (a gap).
+/// All three are on the GPU side of the A/V check too (<see cref="GpuAvFixtures"/>), as their live graphs were before 5.0-Verify.
 /// </summary>
 public static class TimelineGraphCases
 {
@@ -37,25 +36,26 @@ public static class TimelineGraphCases
             "A timeline written as a document: Video 1 with a gap first and between clips, a picture, a clip at double speed and another file's clip of its own; J and L cuts, a slip, a crossfade into the chain and one on an Audio track.");
         yield return export with { Problems = [.. problems, .. export.Problems] };
 
-        yield return GraphCases.LiveGraph(state, files, "live-timeline-native-at-20",
-            "The same timeline live at 20 s, sound laid out from there.", GraphCases.Live(20));
-
         // ----- Every clip's crop reframes its picture (4.4-BugHunt, the user's Q2) -----
         var (cropped, cropProblems) = UnifiedCrop();
         Media[] cropFiles = [Main, Clip1];
         var cropExport = GraphCases.Export(cropped, cropFiles, "export-unified-crop",
             "Every clip cropped: a main video clip cropped otherwise than the first (a rider, cut from the stream by its own crop, in its own box), a piece cut from the main video with a mask of the whole frame, a picture, another file's video with a mask of its own picture, and words.");
         yield return cropExport with { Problems = [.. cropProblems, .. cropExport.Problems] };
+    }
 
-        yield return GraphCases.LiveGraph(cropped, cropFiles, "live-unified-crop-at-11",
-            "The same live at 11 s: the cropped main clip (rider), the cut piece, the picture, the video and the words, each cut before it is scaled; sound laid out from there.", GraphCases.Live(11));
-
-        // ----- A game style at a quarter of its size, the playhead in a gap (the user's crashing player, 4.4-BugHunt) -----
+    /// <summary>
+    /// The three timelines for the GPU side of the A/V check (AvCheck.GpuInvariant): from each clip's start, and from the moments
+    /// their live graphs were built at (20 s; 11 s; 11 s, in the game style's gap, and on into its later part).
+    /// </summary>
+    internal static IEnumerable<GpuAvFixture> GpuAvFixtures()
+    {
+        var (native, nativeProblems) = Native();
+        yield return new GpuAvFixture("timeline-native", native, [Main, Clip1, Clip2, Music], [0, 20]) { Problems = nativeProblems };
+        var (cropped, cropProblems) = UnifiedCrop();
+        yield return new GpuAvFixture("unified-crop", cropped, [Main, Clip1], [0, 11]) { Problems = cropProblems };
         var (game, gameProblems) = GameStyle();
-        var quarter = GraphCases.LiveGraph(game, [Match], "live-game-style-quarter-at-11",
-            "A vertical game style (the main video cropped to its middle, two HUD pieces with masks of the whole frame, the blurred background) live in a player of 200 x 356 (a quarter scale), at 11 s: in the gap left by the main video's split-off part dragged 2 s on. Every cut from the player's frames is held to 2 pixels: max(2,...).",
-            GraphCases.Live(11) with { SurfaceWidth = 200, SurfaceHeight = 356 });
-        yield return quarter with { Problems = [.. gameProblems, .. quarter.Problems] };
+        yield return new GpuAvFixture("game-style", game, [Match], [0, 11]) { Problems = gameProblems };
     }
 
     private static (SequenceExportState State, List<string> Problems) Native()
@@ -210,8 +210,8 @@ public static class TimelineGraphCases
     /// the main video cropped to its middle (left and right 20 %) and laid across the frame, the blurred background, and two
     /// HUD pieces cut from it (Killfeed and Health &amp; Name, at their style's fractions), each with a mask of the whole frame
     /// read by its transparency and grown (19 and 2 pixels). The main video was split at 10 s and its later part dragged 2 s
-    /// on, its pieces split and moved with it: a gap from 10 to 12 s, where the player plays its stand-in clock (64 x 36,
-    /// 16 x 8 at a quarter scale), which the graph is not told of.
+    /// on, its pieces split and moved with it: a gap from 10 to 12 s, where nothing of it is drawn (the 4.4 player played its
+    /// stand-in clock there, 16 x 8 pixels at a quarter scale, and a HUD piece cut from it crashed FFmpeg).
     /// </summary>
     private static (SequenceExportState State, List<string> Problems) GameStyle()
     {

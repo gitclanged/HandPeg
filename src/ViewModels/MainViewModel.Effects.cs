@@ -40,6 +40,59 @@ public partial class MainViewModel
 
     private List<EffectState> CaptureSequenceEffects() => [.. SequenceEffects.Select(e => e.ToState())];
 
+    // ----- The blurred background's own stack (5.0-Release) -----
+
+    /// <summary>The blurred background is what the Effects pane works on: its row or block was selected on the timeline.</summary>
+    [ObservableProperty] private bool _backgroundSelected;
+
+    /// <summary>Replaces the blurred background's effects (a project, a preset, a style, Undo): Look cards only, one notice.</summary>
+    private void SetBackgroundEffects(IEnumerable<EffectState>? states, bool bypassed)
+    {
+        var cards = (states ?? []).Select(EffectInstance.FromState).Where(c => c.Definition is null or { Zone: EffectZone.Look, Pinned: false }).ToList();
+        if (!bypassed && _backgroundRow.EffectsBypassed == bypassed && cards.Count == 0 && _backgroundRow.Effects.Count == 0)
+            return;
+
+        using var whole = DeferCommand();
+        _backgroundRow.SetEffects(cards, bypassed);
+    }
+
+    /// <summary>The blurred background's effects as a project, a preset and Undo keep them; null for none.</summary>
+    private List<EffectState>? CaptureBackgroundEffects() =>
+        _backgroundRow.Effects.Count == 0 ? null : [.. _backgroundRow.Effects.Select(e => e.ToState())];
+
+    /// <summary>
+    /// An effect put on a clip or on the blurred background with its visible starting values (EffectDefinition.NewCard; the
+    /// user's Q1, 5.0-Release): the Effects pane's Add Effect and a track's Add Effect menu both come here. The clip's own
+    /// (Layer.Echo, as the pane's edits are), one step of Undo; an effect a clip has once at most (a key, a shadow, the edges,
+    /// the blend) is switched on as Layer Properties would, its card the one there. Returns the card; null where it cannot go.
+    /// </summary>
+    public EffectInstance? AddEffectCard(Layer layer, EffectDefinition definition)
+    {
+        if (definition.Pinned)
+            return null;
+
+        Checkpoint($"add {definition.Name}");
+        EffectInstance card;
+        using (Layer.Echo())
+        {
+            switch (definition.Feature)
+            {
+                case nameof(Layer.ChromaKey): layer.ChromaKey = true; break;
+                case nameof(Layer.Shadow): layer.Shadow = true; break;
+                case "Edges" when layer.CornerRadius == 0 && !layer.Feather: layer.CornerRadius = 8; break;
+            }
+
+            card = layer.Find(definition.Type) is { } present && (definition.Feature is not null || definition.Type == EffectRegistry.BlendMode)
+                ? present
+                : layer.AddEffect(definition.NewCard());
+        }
+
+        ShowEffectsPane = true;
+        StatusText = $"{definition.Name} added to {layer.Name}. Ctrl+Z takes it off.";
+        Log($"Effect added: {definition.Name} on {layer.Name}");
+        return card;
+    }
+
     /// <summary>The Effects pane: on to start with, beside the Keyframes pane.</summary>
     [ObservableProperty] private bool _showEffectsPane = AppSettings.Current.ShowEffectsPane;
 
@@ -67,7 +120,7 @@ public partial class MainViewModel
         };
 
         // Something to see at once: a grade, which the Effects pane then shows to be changed.
-        element.AddEffect(new EffectInstance { Type = EffectRegistry.Grade });
+        element.AddEffect(EffectRegistry.Find(EffectRegistry.Grade)?.NewCard() ?? new EffectInstance { Type = EffectRegistry.Grade });
         if (!PlaceLayer(element, start, start + length, "add an adjustment layer"))
             return;
 

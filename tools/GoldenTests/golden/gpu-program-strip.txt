@@ -1,0 +1,6 @@
+# The Overview Bar's pictures drawn from the sequence by the GPU engine (GpuProgramStrip).
+canvas 360 x 640, 5.789 s; sheet of 29 pictures of 90 x 160, 10 a row, one every 0.2 s; 29 drawn
+every picture the finished frame at its moment: luma 22 dB or better against FFmpeg's export
+the same state again: 0 drawn
+the third main clip moved: 8 drawn, the 8 over it expected
+one picture a second, the key frames known: moments 0.50 1.50 2.50 3.30 3.30 5.50

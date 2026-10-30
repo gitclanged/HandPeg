@@ -1,0 +1,10 @@
+# A clip's gain and fades (linear, as afade), on a constant level of 0.5.
+0.500 s: level 0.0000
+1.250 s: level 0.0626
+1.500 s: level 0.1253
+1.900 s: level 0.2255
+3.000 s: level 0.2506
+5.500 s: level 0.1879
+6.500 s: level 0.0626
+6.900 s: level 0.0125
+7.500 s: level 0.0000

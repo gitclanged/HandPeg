@@ -9,8 +9,9 @@ namespace HandPegApp;
 /// into the XAML that went stale when the keys changed. <c>KeyTip.Text</c> holds the words, with "{keys}" where " (F)" goes
 /// (nothing while <c>KeyTip.Action</c> has no key) and "{key:action.id}" for another action's key inside a sentence (the
 /// action's name while it has none; "{key:action.id|words}" says what to write instead). The tooltip is filled in each time
-/// it opens, so keys changed in Settings show at once; one set before the key map is made holds the words without keys
-/// until it first opens (the map is made at the first key or tooltip, never before the first frame). Text never starts
+/// it opens, so keys changed in Settings show at once. Until then the element holds the words without keys, made without
+/// asking KeybindManager anything (5.0: even asking whether its map was made made its table of actions, before the first
+/// frame, for every KeyTip of the window and the timeline); the map is made at the first key or tooltip. Text never starts
 /// with "{" (XAML would read it as a markup extension). OverflowStrip's "..." menu reads it too (<see cref="Render"/>).
 /// </summary>
 public static class KeyTip
@@ -36,7 +37,8 @@ public static class KeyTip
 
         element.ToolTipOpening -= Opening;
         element.ToolTipOpening += Opening;
-        element.ToolTip = Fill(text, GetAction(element), keys: KeybindManager.IsMapMade);
+        // A stand-in, so there is a tooltip to open: Opening fills in the keys before it is ever seen.
+        element.ToolTip = Fill(text, GetAction(element), keys: false);
     }
 
     // WPF reads the tooltip after raising ToolTipOpening, so what is set here is what shows.
@@ -51,7 +53,8 @@ public static class KeyTip
         GetText(element) is { } text ? Fill(text, GetAction(element), keys: true) : null;
 
     // "{keys}" becomes " (F)" (or nothing), "{key:id}" the key's name (or the action's, or the words after "|"); anything else
-    // in braces stays as it is. Without keys (before the map is made), every key is left out the same way an unbound one is.
+    // in braces stays as it is. Without keys (the stand-in), every key is left out the same way an unbound one is, and an
+    // action with no words after "|" is named by its id: the stand-in never touches KeybindManager, and is never seen.
     private static string Fill(string text, string? action, bool keys)
     {
         if (text.IndexOf('{') < 0)
@@ -83,7 +86,7 @@ public static class KeyTip
                 var gesture = keys ? KeybindManager.GestureText(id) : "";
                 built.Append(gesture.Length > 0 ? gesture
                     : bar >= 0 ? token[(bar + 1)..]
-                    : KeybindManager.Action(id)?.Label.TrimEnd('.') ?? id);
+                    : keys ? KeybindManager.Action(id)?.Label.TrimEnd('.') ?? id : id);
             }
             else
             {

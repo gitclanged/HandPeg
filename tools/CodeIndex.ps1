@@ -103,6 +103,8 @@ $groups = [ordered]@{
     'src/Views/' = { param($f) $f.DirectoryName -eq "$src\Views" }
     'src/ViewModels/' = { param($f) $f.DirectoryName -eq "$src\ViewModels" }
     'src/Services/' = { param($f) $f.DirectoryName -eq "$src\Services" }
+    'src/Services/Gpu/ and src/Services/Audio/ (5.0)' = { param($f) $f.DirectoryName -like "$src\Services\*" }
+    'src/Compositor/ (the GPU worker, 5.0)' = { param($f) $f.DirectoryName -eq "$src\Compositor" -or $f.DirectoryName -like "$src\Compositor\*" }
     'src/Models/' = { param($f) $f.DirectoryName -eq "$src\Models" -or $f.DirectoryName -like "$src\Models\*" }
 }
 $files = Get-ChildItem $src -Recurse -Include *.cs, *.xaml | Where-Object { $_.FullName -notmatch '[\\/](obj|bin)[\\/]' -and $_.Name -ne 'AssemblyInfo.cs' } | Sort-Object FullName

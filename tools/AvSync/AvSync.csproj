@@ -1,9 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-      The A/V sync harness (see tools\README.md, "AvSyncTest.ps1"): plays a project's live graphs headless in libmpv's
-      encoding mode, exactly as the app sends them, and measures how far the picture and the sound it wrote are from
-      the files they came from. It builds the graphs with the app's own FilterGraphBuilder, so it references the app.
+      The A/V sync harness (see tools\README.md, "AvSyncTest.ps1"): draws a project's picture with a real compositor
+      worker and renders its sound with the real mixer, as the GPU engine makes them, and measures how far they are from
+      the files they came from; or plays it in real time through a real GpuPreviewEngine and measures the frames shown
+      against the sound heard. It opens the project in the app's own view model, so it references the app (and starts
+      itself again as the compositor's worker, as HandPeg does).
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>

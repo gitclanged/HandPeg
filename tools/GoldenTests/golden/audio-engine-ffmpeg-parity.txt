@@ -1,0 +1,11 @@
+# Against HandPeg's FFmpeg (when installed): each processing filter, and an AAC file's start (its priming dropped where FFmpeg drops it).
+highpass 120 Hz: within -60 dB of FFmpeg's
+bass +4 dB, treble -3 dB: within -60 dB of FFmpeg's
+equalizer 125 Hz +5, 2 kHz -4: within -60 dB of FFmpeg's
+compressor -20 dB 4:1: within -35 dB of FFmpeg's
+noise gate -30 dB: within -30 dB of FFmpeg's
+stereo widener 1.5: within -80 dB of FFmpeg's
+limiter -6 dB (its delay only: the music peaks at -8 dB): within -80 dB of FFmpeg's
+limiter -12 dB (limiting): within -80 dB of FFmpeg's
+an AAC file (.m4a): the same samples as the export reads (amovie, cut on its time stamps), at the same moment (within a sample)
+an MP4 with a picture: its sound on the picture's clock as the export has it (within a sample)

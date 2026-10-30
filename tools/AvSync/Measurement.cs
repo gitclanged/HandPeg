@@ -1,16 +1,17 @@
 using System.Globalization;
-using System.IO;
-using System.Text.RegularExpressions;
 using HandPegApp.Models;
+using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
+using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.Tools.AvSync;
 
 /// <summary>What was heard and seen at one moment, against what the files say should have been.</summary>
 /// <param name="What">What was measured: the layer's file (its extension only) or the main video.</param>
 /// <param name="VideoLateMs">
-/// How late the picture is, in milliseconds: from the graph's own time stamps and the files' (exact), checked against
-/// which frames the output really shows (<paramref name="VideoRange"/>). Positive: an earlier frame than due is shown.
+/// How late the picture is, in milliseconds: from the moment of its file the scene plan gives the worker and the file's
+/// own time stamps (exact), checked against which frames the output really shows (<paramref name="VideoRange"/>).
+/// Positive: an earlier frame than due is shown.
 /// </param>
 /// <param name="VideoRange">The lateness the frames shown allow, from matching every output frame to the file's frames.</param>
 /// <param name="AudioLateMs">How late the sound is, from where the output's sound is found in the file. Positive: behind.</param>
@@ -27,96 +28,128 @@ internal sealed record PointResult(
 }
 
 /// <summary>
-/// Measures an output of the player (written by mpv's encoding mode on the sequence's clock) at a moment: which part of
-/// the file the sound is from (cross-correlation with the file's own sound, to the sample), and which frames the
-/// picture shows (each output frame matched against the file's frames around where it should be).
+/// Measures what the GPU engine made from a moment (<see cref="GpuRun"/>: the worker's frames and the mixer's sound on the
+/// sequence's clock): which part of the file the sound is from (cross-correlation with the file's own sound, to the
+/// sample), and which frames the picture shows (each output frame matched against the file's frames around where it
+/// should be). Where the picture is and what it reads come from the scene plan itself (Evaluate and LayerInfoAt: the
+/// layer of the measured clip, its box, its crop and its moment of the file), as the worker was told them.
 /// </summary>
-internal static partial class Measurement
+internal static class Measurement
 {
-    // How much of the output is compared: from a little after the start (the first moments after a restart are allowed
-    // to settle) for this long.
+    // How much of the output is compared: from a little after the start (the first moments after a seek are allowed to
+    // settle) for this long.
     private const double SoundSettle = 0.4, SoundLength = 2.0, SoundWindow = 1.0;
 
-    public static PointResult Measure(SequenceExportState state, string graph, string output, double at, double seconds,
-        IReadOnlyDictionary<string, string> proxies)
+    public static PointResult Measure(SequenceExportState state, GpuScenePlan plan, GpuRun run, double at, double seconds, Shift shift)
     {
         var notes = new List<string>();
 
-        // What is to be heard at this moment: a layer's sound (the top one that plays here), or else the main video's
-        // (the timeline as the builder lowers it: FilterGraphBuilder.Lowering).
+        // What is to be heard at this moment: a video layer's sound (the top one that plays here), or else the main video's
+        // (the timeline as the builder lowers it: FilterGraphBuilder.Lowering, which the plan and the sound program read too).
         var timeline = FilterGraphBuilder.Lowering(state);
-        var layer = timeline.LayerAudio.LastOrDefault(l => l.StartTime <= at + 0.001 && (l.Duration <= 0.001 || at < l.StartTime + l.Duration - 0.5));
+        var layer = timeline.LayerAudio.LastOrDefault(l => l.IsVideoFile && l.StartTime <= at + 0.001 && (l.Duration <= 0.001 || at < l.StartTime + l.Duration - 0.5));
         if (layer is not null)
-            return MeasureLayer(state, graph, output, at, seconds, layer, proxies, notes);
+            return MeasureLayer(state, plan, run, at, seconds, layer, shift, notes);
         if (timeline.MainClips.FirstOrDefault(c => c.Start <= at && at < c.End - 0.5) is { End: > 0 } clip)
-            return MeasureMain(state, graph, output, at, seconds, clip, proxies, notes);
-        return new PointResult(at, "nothing", null, null, 0, 0, null, 0, "neither a clip of the main video nor a layer with sound plays here");
+            return MeasureMain(state, plan, run, at, seconds, clip, shift, notes);
+        return new PointResult(at, "nothing", null, null, 0, 0, null, 0, "neither a clip of the main video nor a video layer with sound plays here");
     }
 
-    private static PointResult MeasureLayer(SequenceExportState state, string graph, string output, double at, double seconds, Layer layer,
-        IReadOnlyDictionary<string, string> proxies, List<string> notes)
+    private static PointResult MeasureLayer(SequenceExportState state, GpuScenePlan plan, GpuRun run, double at, double seconds, Layer layer, Shift shift,
+        List<string> notes)
     {
         var file = layer.ImagePath.Trim().Trim('"');
-        var speed = layer.HasSpeed && double.IsFinite(layer.Speed) ? layer.Speed : 1;
+        var speed = layer.HasSpeed && double.IsFinite(layer.Speed) ? Math.Clamp(layer.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
 
         // The truth, from the file itself: its moment 0 is its first picture (as the export cuts it), so a moment t of the
         // sequence shows and plays the file's time stamp origin + MediaOffset + (t - start) x speed.
         var origin = Media.StreamStart(file, "v") ?? 0;
         double Due(double t) => origin + layer.MediaOffset + (t - layer.StartTime) * speed;
 
-        // The sound.
-        var (audioLate, score) = LocateSound(output, at, file, [0], Due, seconds, notes);
+        var (audioLate, score) = LocateSound(run.Output, at, file, [0], Due, seconds, notes);
 
-        // The picture: where the layer is in the output frame, and the lateness its graph gives it.
+        // The picture: the layer of a clip of this file the plan draws (the worker's moment of it is from its first frame).
+        var probe = at + SoundSettle;
+        var drawn = Find(state, plan, probe - shift.VideoSeconds, c => c.ContentKind == LayerKind.VideoFile && SamePath(c.SourcePath, file));
         double? videoLate = null;
         (double, double)? range = null;
         int matched = 0, compared = 0;
-        var proxied = proxies.TryGetValue(file, out var proxy);
-        if (FindLayerPlacement(graph, file, proxied ? proxy! : file) is { } placement)
+        var proxied = false;
+        if (drawn is { } d)
         {
-            // Read from a proxy, the graph's time stamps are the proxy's: a proxy's frame q is the original's q + shift.
-            var shift = proxied ? origin - (Media.StreamStart(proxy!, "v") ?? 0) : 0;
-            if (placement.Shift is { } k && Math.Abs(speed - 1) < 0.0005)
-                videoLate = (k - shift - (layer.StartTime - origin - layer.MediaOffset)) * 1000;
-            else
-                notes.Add("the picture's lateness is taken from the frames alone (the clip's graph is not the plain form)");
-
-            (range, matched, compared) = MatchFrames(output, at, seconds, file, placement.Visible, f => layer.StartTime + (f - origin - layer.MediaOffset) / speed, notes);
-            videoLate ??= range is { } r ? (r.Item1 + r.Item2) / 2 : null;
+            proxied = d.Clip.ProxyChoice == ProxyChoice.Make && state.IsPreview && state.PreviewPaths.ContainsKey(file);
+            videoLate = (Due(probe) - (d.Layer.MediaSeconds + origin)) / speed * 1000;
+            (range, matched, compared) = MatchFrames(run, at, seconds, file, Placement(d.Layer, run, notes), f => layer.StartTime + (f - origin - layer.MediaOffset) / speed, notes);
         }
         else
         {
-            notes.Add("the layer was not found in the graph");
+            notes.Add("the layer is not in the scene the plan draws");
         }
 
-        return new PointResult(at, $"layer {Path.GetExtension(file)}{(proxied ? " (proxy)" : "")}", videoLate, range, matched, compared, audioLate, score, string.Join("; ", notes));
+        return new PointResult(at, $"layer {System.IO.Path.GetExtension(file)}{(proxied ? " (proxy)" : "")}", videoLate, range, matched, compared, audioLate, score, string.Join("; ", notes));
     }
 
-    private static PointResult MeasureMain(SequenceExportState state, string graph, string output, double at, double seconds, MainClip clip,
-        IReadOnlyDictionary<string, string> proxies, List<string> notes)
+    private static PointResult MeasureMain(SequenceExportState state, GpuScenePlan plan, GpuRun run, double at, double seconds, MainClip clip, Shift shift,
+        List<string> notes)
     {
         var file = state.LocalMediaPath.Trim().Trim('"');
 
-        // The player plays the main video's clip from its file's time stamp Offset at the clip's start (its EDL).
-        double Due(double t) => clip.Offset + (t - clip.Start);
+        // The main clips' offsets count from the container's start (the export's first input): a moment t of the sequence
+        // is the file's time stamp ContainerStart + Offset + (t - start).
+        var container = Media.ContainerStart(file) ?? 0;
+        var origin = Media.StreamStart(file, "v") ?? container;
+        double Due(double t) => container + clip.Offset + (t - clip.Start);
         var tracks = state.AudioTracks.Where(t => !t.IsSilentBase).Select(t => t.Index).ToList();
-        var (audioLate, score) = tracks.Count == 0 ? (null, 0) : LocateSound(output, at, file, tracks, Due, seconds, notes);
+        var (audioLate, score) = tracks.Count == 0 ? (null, 0) : LocateSound(run.Output, at, file, tracks, Due, seconds, notes);
+        if (tracks.Count == 0)
+            notes.Add("the main video has no sound kept");
 
-        // The picture fills the frame where it is not placed otherwise; through its proxy, a proxy's frame q is the original's q + shift.
-        var proxied = proxies.TryGetValue(file, out var proxy);
-        var shift = proxied ? (Media.StreamStart(file, "v") ?? 0) - (Media.StreamStart(proxy!, "v") ?? 0) : 0;
-        var visible = FindCenterPlacement(graph);
-        var (range, matched, compared) = MatchFrames(output, at, seconds, file, visible, f => clip.Start + (f - clip.Offset), notes);
+        var probe = at + SoundSettle;
+        var drawn = Find(state, plan, probe - shift.VideoSeconds, c => c.ContentKind == LayerKind.MainVideo);
+        double? videoLate = null;
+        (double, double)? range = null;
+        int matched = 0, compared = 0;
+        var proxied = false;
+        if (drawn is { } d)
+        {
+            proxied = d.Clip.ProxyChoice == ProxyChoice.Make && state.IsPreview && state.PreviewPaths.ContainsKey(file);
+            videoLate = (Due(probe) - (d.Layer.MediaSeconds + origin)) * 1000;
+            (range, matched, compared) = MatchFrames(run, at, seconds, file, Placement(d.Layer, run, notes), f => clip.Start + (f - container - clip.Offset), notes);
+        }
+        else
+        {
+            notes.Add("the main video is not in the scene the plan draws");
+        }
 
-        // The EDL lays the original's time stamps on the sequence as they are, and the proxy's by its first frame.
-        double? videoLate = proxied ? (MediaProbe.KnownVideoStart(file) ?? 0) * 1000 - shift * 1000 : 0;
         return new PointResult(at, $"main video{(proxied ? " (proxy)" : "")}", videoLate, range, matched, compared, audioLate, score, string.Join("; ", notes));
     }
 
     /// <summary>
+    /// The topmost layer the plan draws at a moment for a clip that <paramref name="wanted"/> picks (its picture, not a
+    /// blurred background): the descriptor the worker is given and the clip it is of (LayerInfoAt, in Evaluate's order).
+    /// </summary>
+    private static (GpuLayerDescriptor Layer, TimelineClip Clip)? Find(SequenceExportState state, GpuScenePlan plan, double moment, Func<TimelineClip, bool> wanted)
+    {
+        var layers = new GpuLayerDescriptor[CompositorProtocol.MaxLayers];
+        var infos = new GpuLayerInfo[CompositorProtocol.MaxLayers];
+        var header = default(FrameSceneHeader);
+        var count = Math.Min(plan.Evaluate(moment, ref header, layers), plan.LayerInfoAt(moment, infos));
+        var clips = state.Timeline.Tracks.SelectMany(t => t.Clips).ToDictionary(c => c.Id);
+        for (var i = count - 1; i >= 0; i--)
+        {
+            if (layers[i].SourceKind != (int)GpuSourceKind.Media || (layers[i].Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0)
+                continue;
+            if (Guid.TryParse(infos[i].ClipId, out var id) && clips.TryGetValue(id, out var clip) && wanted(clip))
+                return (layers[i], clip);
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Where the output's sound at <paramref name="at"/> is found in <paramref name="file"/>, near where it is due; and if
-    /// it is not found there, anywhere from a little before that to as far after it as the moment is into the sequence
-    /// (where a graph whose sound is counted from 0 puts it). Returns the lateness in milliseconds and the correlation.
+    /// it is not found there, anywhere from a little before that to as far after it as the moment is into the sequence.
+    /// Returns the lateness in milliseconds and the correlation.
     /// </summary>
     private static (double? LateMs, double Score) LocateSound(string output, double at, string file, IReadOnlyList<int> streams, Func<double, double> due,
         double seconds, List<string> notes)
@@ -143,10 +176,13 @@ internal static partial class Measurement
             var rough = Media.Sound(file, start, span, streams, rate: coarse);
             var (roughLag, roughScore, _) = Media.Locate(Media.Sound(output, from, length, [0], seek: false, rate: coarse), rough);
             var near = start + roughLag / coarse;
-            reference = Media.Sound(file, near - 0.1, length + 0.2, streams);
+            reference = Media.Sound(file, Math.Max(near - 0.1, 0), length + 0.2, streams);
             (lag, score, runner) = Media.Locate(heard, reference);
-            found = near - 0.1 + lag / Media.Rate;
-            notes.Add($"the sound is far from where it is due (coarse match {roughScore:0.00})");
+            found = Math.Max(near - 0.1, 0) + lag / Media.Rate;
+            notes.Add(string.Create(CultureInfo.InvariantCulture,
+                $"the sound is far from where it is due: {(expected - near) * 1000:+0;-0} ms by a coarse match ({roughScore:0.00}) at {near:0.###} s of the file, due at {expected:0.###} s"));
+            if (double.IsNaN(lag))
+                return (null, 0);
         }
 
         if (runner > score * 0.9)
@@ -154,60 +190,39 @@ internal static partial class Measurement
         return ((expected - found) * 1000, score);
     }
 
-    /// <summary>The visible part of a picture in the output frame (x, y, width, height) and, in the picture's own pixels as scaled, where that part begins.</summary>
-    internal readonly record struct Placement((int X, int Y, int W, int H) Rect, (int X, int Y) Inside, (int W, int H) Scaled, (int W, int H) Frame);
-
     /// <summary>
-    /// A layer's chain in the graph: the movie= source reading <paramref name="read"/>, scaled to its size, laid on the
-    /// frame by an overlay at its place. Returns where it shows and the plain setpts shift that puts it on the clock.
+    /// The visible part of a picture in the output frame (x, y, width, height), the size its box is scaled to, where the
+    /// visible part begins inside it, and the part of the file's picture the box shows (its crop, FFmpeg's crop of the file's
+    /// frames; null: the whole picture).
     /// </summary>
-    private static (Placement Visible, double? Shift)? FindLayerPlacement(string graph, string file, string read)
+    internal readonly record struct Placed((int X, int Y, int W, int H) Rect, (int X, int Y) Inside, (int W, int H) Scaled, string? SourceCrop);
+
+    /// <summary>A layer's place in the output, from its descriptor (canvas pixels, the crop as fractions of its picture); null when it is turned.</summary>
+    private static Placed? Placement(in GpuLayerDescriptor d, GpuRun run, List<string> notes)
     {
-        var chains = graph.Split(';');
-        var escaped = FilterGraphBuilderPath(read);
-        var chain = chains.FirstOrDefault(c => c.StartsWith("movie='", StringComparison.Ordinal) && c.Contains(escaped, StringComparison.Ordinal));
-        if (chain is null)
+        if (Math.Abs(d.Rotation) > 0.01)
+        {
+            notes.Add("the picture is turned: its frames are not matched");
             return null;
+        }
 
-        var label = LabelAtEnd().Match(chain);
-        var scales = ScaleTo().Matches(chain);
-        var overlay = chains.Select(c => OverlayOf().Match(c)).FirstOrDefault(m => m.Success && m.Groups[1].Value == label.Groups[1].Value);
-        if (!label.Success || scales.Count == 0 || overlay is null || FrameSize(graph) is not { } frame)
-            return null;
-
-        var scaled = (W: Int(scales[^1].Groups[1].Value), H: Int(scales[^1].Groups[2].Value));
-        var place = (X: Int(overlay.Groups[2].Value), Y: Int(overlay.Groups[3].Value));
-        double? shift = SetptsShift().Match(chain) is { Success: true } s ? double.Parse(s.Groups[1].Value, CultureInfo.InvariantCulture) : null;
-        return (Visible(place, scaled, frame), shift);
+        var s = run.Scale;
+        var place = ((int)Math.Round(d.X * s), (int)Math.Round(d.Y * s));
+        var scaled = (Math.Max((int)Math.Round(d.Width * s), 2), Math.Max((int)Math.Round(d.Height * s), 2));
+        var whole = d.CropLeft <= 0.0005 && d.CropTop <= 0.0005 && d.CropRight >= 0.9995 && d.CropBottom >= 0.9995;
+        string F(double v) => v.ToString("0.######", CultureInfo.InvariantCulture);
+        var crop = whole ? null
+            : $"crop=iw*{F(d.CropRight - d.CropLeft)}:ih*{F(d.CropBottom - d.CropTop)}:iw*{F(d.CropLeft)}:ih*{F(d.CropTop)}";
+        return Visible(place, scaled, run.Size, crop);
     }
 
-    /// <summary>The main video's picture: laid on the frame as the center layer, or the whole frame.</summary>
-    private static Placement? FindCenterPlacement(string graph)
-    {
-        if (FrameSize(graph) is not { } frame)
-            return null;
-        var chains = graph.Split(';');
-        var chain = chains.FirstOrDefault(c => c.StartsWith("[center_in]", StringComparison.Ordinal));
-        var overlay = chains.Select(c => OverlayOf().Match(c)).FirstOrDefault(m => m.Success && m.Groups[1].Value == "center_layer");
-        if (chain is null || overlay is null || ScaleTo().Matches(chain) is not { Count: > 0 } scales)
-            return Visible((0, 0), frame, frame);
-        return Visible((Int(overlay.Groups[2].Value), Int(overlay.Groups[3].Value)), (Int(scales[^1].Groups[1].Value), Int(scales[^1].Groups[2].Value)), frame);
-    }
-
-    private static Placement Visible((int X, int Y) place, (int W, int H) scaled, (int W, int H) frame)
+    private static Placed Visible((int X, int Y) place, (int W, int H) scaled, (int W, int H) frame, string? crop)
     {
         var x0 = Math.Max(place.X, 0);
         var y0 = Math.Max(place.Y, 0);
         var x1 = Math.Min(place.X + scaled.W, frame.W);
         var y1 = Math.Min(place.Y + scaled.H, frame.H);
-        return new Placement((x0, y0, Math.Max(x1 - x0, 0), Math.Max(y1 - y0, 0)), (x0 - place.X, y0 - place.Y), scaled, frame);
-    }
-
-    // The size of the finished frame: the canvas's last scale before [stage0].
-    private static (int W, int H)? FrameSize(string graph)
-    {
-        var canvas = graph.Split(';').FirstOrDefault(c => c.EndsWith("[stage0]", StringComparison.Ordinal));
-        return canvas is not null && ScaleTo().Matches(canvas) is { Count: > 0 } scales ? (Int(scales[^1].Groups[1].Value), Int(scales[^1].Groups[2].Value)) : null;
+        return new Placed((x0, y0, Math.Max(x1 - x0, 0), Math.Max(y1 - y0, 0)), (x0 - place.X, y0 - place.Y), scaled, crop);
     }
 
     /// <summary>
@@ -215,8 +230,8 @@ internal static partial class Measurement
     /// the range of the picture's lateness (ms) that every match allows, with how many frames matched surely. A frame
     /// shown at moment p that is the file's frame k says the lateness d is in (p - due(k + 1), p - due(k)].
     /// </summary>
-    private static ((double Lo, double Hi)? Range, int Matched, int Compared) MatchFrames(string output, double at, double seconds, string file,
-        Placement? visible, Func<double, double> shownAt, List<string> notes)
+    private static ((double Lo, double Hi)? Range, int Matched, int Compared) MatchFrames(GpuRun run, double at, double seconds, string file,
+        Placed? visible, Func<double, double> shownAt, List<string> notes)
     {
         if (visible is not { Rect.W: > 8, Rect.H: > 8 } place)
         {
@@ -225,14 +240,14 @@ internal static partial class Measurement
         }
 
         var (w, h) = place.Rect.W >= place.Rect.H ? (64, Math.Max((int)Math.Round(64.0 * place.Rect.H / place.Rect.W), 8)) : (Math.Max((int)Math.Round(64.0 * place.Rect.W / place.Rect.H), 8), 64);
-        var shown = Media.Frames(output, at, seconds, $"crop={place.Rect.W}:{place.Rect.H}:{place.Rect.X}:{place.Rect.Y}", w, h, seek: false);
+        var shown = Media.Frames(run.Output, at, seconds, $"crop={place.Rect.W}:{place.Rect.H}:{place.Rect.X}:{place.Rect.Y}", w, h, seek: false);
 
-        // The file's frames, scaled as the graph scales them and cut to the part that shows.
-        var crop = place.Rect.W == place.Scaled.W && place.Rect.H == place.Scaled.H ? null
-            : $"scale={place.Scaled.W}:{place.Scaled.H},crop={place.Rect.W}:{place.Rect.H}:{place.Inside.X}:{place.Inside.Y}";
+        // The file's frames, cut and scaled as the worker draws them and cut to the part that shows.
+        var cut = place.Rect.W == place.Scaled.W && place.Rect.H == place.Scaled.H ? null : $"crop={place.Rect.W}:{place.Rect.H}:{place.Inside.X}:{place.Inside.Y}";
+        var filters = string.Join(",", new[] { place.SourceCrop, cut is null && place.SourceCrop is null ? null : $"scale={place.Scaled.W}:{place.Scaled.H}", cut }.OfType<string>());
         var firstDue = Inverse(shownAt, at);
         var lastDue = Inverse(shownAt, at + seconds);
-        var files = Media.Frames(file, firstDue - 0.6, lastDue - firstDue + 1.2, crop, w, h);
+        var files = Media.Frames(file, firstDue - 0.6, lastDue - firstDue + 1.2, filters.Length == 0 ? null : filters, w, h);
         if (shown.Count == 0 || files.Count < 2)
         {
             notes.Add("no frames to compare");
@@ -285,20 +300,6 @@ internal static partial class Measurement
         return (double)sum / a.Length;
     }
 
-    // The file name as FilterGraphBuilder writes it into a graph (EscapeFilterPath): forward slashes, the drive's colon escaped.
-    private static string FilterGraphBuilderPath(string path) => path.Replace('\\', '/').Replace(":", "\\:").Replace("'", "'\\\\\\''");
-
-    private static int Int(string text) => int.Parse(text, CultureInfo.InvariantCulture);
-
-    [GeneratedRegex(@"\[([A-Za-z0-9_]+)\]$")]
-    private static partial Regex LabelAtEnd();
-
-    [GeneratedRegex(@"(?<![a-z_])scale=(\d+):(\d+)")]
-    private static partial Regex ScaleTo();
-
-    [GeneratedRegex(@"^\[[A-Za-z0-9_]+\]\[([A-Za-z0-9_]+)\]overlay=(-?\d+):(-?\d+)")]
-    private static partial Regex OverlayOf();
-
-    [GeneratedRegex(@",setpts=PTS([+-][0-9.]+)/TB")]
-    private static partial Regex SetptsShift();
+    private static bool SamePath(string? a, string b) =>
+        a is not null && string.Equals(a.Trim().Trim('"').Replace('\\', '/'), b.Trim().Trim('"').Replace('\\', '/'), StringComparison.OrdinalIgnoreCase);
 }

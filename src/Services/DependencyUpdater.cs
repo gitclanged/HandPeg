@@ -65,7 +65,7 @@ public enum PinState
 /// </summary>
 /// <param name="Variant">
 /// Which build of the tool: <see cref="DependencyUpdater.OlderNvidiaVariant"/> for the FFmpeg that older NVIDIA drivers take,
-/// <see cref="DependencyUpdater.Arm64Variant"/> for FFmpeg's and libmpv's ARM64 builds, the file's name for whisper.cpp (a
+/// <see cref="DependencyUpdater.Arm64Variant"/> for FFmpeg's ARM64 builds, the file's name for whisper.cpp (a
 /// build per kind of hardware); empty otherwise.
 /// </param>
 /// <param name="Repository">The GitHub repository that publishes it, as owner/name.</param>
@@ -73,7 +73,7 @@ public enum PinState
 /// <param name="Asset">The file attached to that release.</param>
 /// <param name="Sha256">Its SHA-256, checked whatever the release says now.</param>
 /// <param name="Size">Its size in bytes, shown before it is downloaded.</param>
-/// <param name="Version">What the build reports itself as (ffmpeg -version; the release date for libmpv, the tag for whisper.cpp): it recognises a copy put in before it was pinned.</param>
+/// <param name="Version">What the build reports itself as (ffmpeg -version; the tag for whisper.cpp): it recognises a copy put in before it was pinned.</param>
 /// <param name="Published">When the release was made: a stand-in from outside the list is looked for nearest this.</param>
 /// <param name="Label">How the list names it.</param>
 /// <param name="Mirror">Another address of the very same file, for when the release has gone from GitHub: checked against the same SHA-256.</param>
@@ -89,7 +89,7 @@ public sealed record PinnedBuild(
 /// Installs and updates FFmpeg (with ffprobe), yt-dlp and whisper.cpp, and the speech models, in the deps
 /// folder (see <see cref="AppPaths"/>): a folder per tool. Nothing is shipped with HandPeg itself.
 ///
-/// FFmpeg, libmpv and whisper.cpp are installed from the builds this version of HandPeg was tested with
+/// FFmpeg and whisper.cpp are installed from the builds this version of HandPeg was tested with
 /// (<see cref="PinnedBuilds"/>), not from whatever upstream published last night; yt-dlp follows its newest release.
 /// Settings can allow the newest builds instead (<see cref="AppSettings.AllowUnpinnedDependencyUpdates"/>).
 ///
@@ -103,35 +103,19 @@ public static partial class DependencyUpdater
     public const string YtDlp = "yt-dlp";
     public const string Whisper = "whisper";
 
-    /// <summary>libmpv: the video player.</summary>
-    public const string Mpv = "mpv";
-
-    /// <summary>The tools, in the order they are listed and installed.</summary>
-    public static IReadOnlyList<string> Tools { get; } = [Ffmpeg, Mpv, YtDlp, Whisper];
-
-    // The library alone, from the builds the mpv project points Windows users to. Its name carries the date
-    // and the commit, so it is recognised by its shape; the "v3" builds need a newer processor and are passed over.
-    private const string MpvReleaseUrl = "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest";
-    private const string MpvLibraryName = "libmpv-2.dll";
-
-    [GeneratedRegex(@"^mpv-dev-x86_64-\d{8}-git-[0-9a-f]+\.7z$")]
-    private static partial Regex MpvX64AssetRegex();
-
-    [GeneratedRegex(@"^mpv-dev-aarch64-\d{8}-git-[0-9a-f]+\.7z$")]
-    private static partial Regex MpvArm64AssetRegex();
+    /// <summary>The tools, in the order they are listed and installed. (The libmpv player went in 5.0-Verify: see <see cref="DeleteRetiredPlayer"/>.)</summary>
+    public static IReadOnlyList<string> Tools { get; } = [Ffmpeg, YtDlp, Whisper];
 
     // ----- ARM64 (4.3D): a win-arm64 HandPeg takes the ARM64 build of every tool -----
-    // libmpv runs inside HandPeg, so an ARM64 process can load only an ARM64 build of it; FFmpeg, yt-dlp and whisper.cpp
-    // run beside it and would run emulated (Prism) as x64, but each publishes an ARM64 build, which is what is installed.
-    // The tools of an ARM64 HandPeg have folders of their own (ToolFolder), so neither build ever lands in the other's.
+    // FFmpeg, yt-dlp and whisper.cpp run beside HandPeg and would run emulated (Prism) as x64, but each publishes an ARM64
+    // build, which is what is installed. The tools of an ARM64 HandPeg have folders of their own (ToolFolder), so neither
+    // build ever lands in the other's.
 
-    /// <summary>The variant of FFmpeg and libmpv built for ARM64 Windows (<see cref="PinnedBuild.Variant"/>).</summary>
+    /// <summary>The variant of FFmpeg built for ARM64 Windows (<see cref="PinnedBuild.Variant"/>).</summary>
     public const string Arm64Variant = "arm64";
 
     /// <summary>HandPeg runs as an ARM64 process (the win-arm64 build, on Windows on ARM): its tools are the ARM64 builds.</summary>
     public static bool IsArm64 => RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
-
-    private static Regex MpvAssetRegex() => IsArm64 ? MpvArm64AssetRegex() : MpvX64AssetRegex();
 
     private static string YtDlpAssetName => IsArm64 ? "yt-dlp_arm64.exe" : "yt-dlp.exe";
     private static string FfmpegAssetName => IsArm64 ? "ffmpeg-master-latest-winarm64-gpl.zip" : "ffmpeg-master-latest-win64-gpl.zip";
@@ -161,18 +145,16 @@ public static partial class DependencyUpdater
     private static readonly string[] SumsAssetNames = ["SHA2-256SUMS", "checksums.sha256"];
 
     // ----- The builds this version of HandPeg was tested with -----
-    // FFmpeg, libmpv and whisper.cpp publish new builds every day, and a new FFmpeg can rename a filter's option or a
-    // new libmpv crash where the last one did not. So these three are installed from the builds HandPeg was tested
-    // with, each checked against its SHA-256, and yt-dlp alone follows its newest release (sites change under it,
-    // and an old yt-dlp simply stops downloading). How long each upstream keeps a build (as of 2026-10-24):
+    // FFmpeg and whisper.cpp publish new builds every day, and a new FFmpeg can rename a filter's option. So these two
+    // are installed from the builds HandPeg was tested with, each checked against its SHA-256, and yt-dlp alone follows
+    // its newest release (sites change under it, and an old yt-dlp simply stops downloading). How long each upstream
+    // keeps a build (as of 2026-10-24):
     //   BtbN/FFmpeg-Builds: the last 14 daily builds, and the last build of each month for two years.
-    //   shinchiro/mpv-winbuild-cmake: its last 30 releases on GitHub (about a month); the weekly builds stay on
-    //     SourceForge far longer (its listing went back a year, to 2025-11-16), the very same files.
     //   ggml-org/whisper.cpp: every release so far, with its files (back to 2022).
-    // So the tested FFmpeg (a daily build) and libmpv go from GitHub within weeks: each has a stand-in listed after it
-    // that is kept far longer (the month's last FFmpeg build; a weekly libmpv build on SourceForge), and past those the
-    // dated build nearest the tested one is taken. A stand-in is logged and named in the dependency list, never taken
-    // silently, and the newest nightly is only ever installed when the user has allowed it.
+    // So the tested FFmpeg (a daily build) goes from GitHub within weeks: it has a stand-in listed after it that is kept
+    // far longer (the month's last build), and past that the dated build nearest the tested one is taken. A stand-in is
+    // logged and named in the dependency list, never taken silently, and the newest nightly is only ever installed when
+    // the user has allowed it.
 
     /// <summary>The FFmpeg build for NVIDIA drivers before 610 (see <see cref="AppSettings.UseFfmpegForOlderNvidiaDrivers"/>): the 8.1 line.</summary>
     public const string OlderNvidiaVariant = "8.1";
@@ -213,14 +195,6 @@ public static partial class DependencyUpdater
             "7b801cdd3a1a0bb54ae6f572187e68b4ed54f52086cfee133fab2180bfb429fa", 193109593, "n8.1.3-9-g29e619e767-20260930", MonthEndFfmpegDate,
             "8.1.3-9 (2026-09-30)"),
 
-        // libmpv: the build of 2026-10-21, then the weekly one of 2026-10-18, which SourceForge keeps once GitHub has let it go.
-        new(Mpv, "", "shinchiro/mpv-winbuild-cmake", "20261021", "mpv-dev-x86_64-20261021-git-e471496c56.7z",
-            "efc719eff3dc5954b4a5efc800632808bcec01cc9034940dd14e5eb7fe9ea633", 31622190, "20261021", new(2026, 10, 21, 0, 54, 32, DateTimeKind.Utc),
-            "20261021"),
-        new(Mpv, "", "shinchiro/mpv-winbuild-cmake", "20261018", "mpv-dev-x86_64-20261018-git-01e2533f31.7z",
-            "d7f5621f42b6e161fe032df914a10bdece28a89df3e57c6c3e16a5a250929b5e", 31595598, "20261018", new(2026, 10, 18, 0, 35, 2, DateTimeKind.Utc),
-            "20261018", "https://sourceforge.net/projects/mpv-player-windows/files/libmpv/mpv-dev-x86_64-20261018-git-01e2533f31.7z/download"),
-
         // whisper.cpp: build b5454, in each kind HandPeg chooses between (see WhisperAssetNames).
         new(Whisper, "whisper-bin-win-cuda-12.4.0-x64.zip", "ggml-org/whisper.cpp", "b5454", "whisper-bin-win-cuda-12.4.0-x64.zip",
             "afef0b881c500958921c3f5523b50e59ee2ec9b6f5cbd25b324c51ed308a957a", 684913404, "b5454", TestedWhisperDate, "b5454 (CUDA)"),
@@ -229,19 +203,13 @@ public static partial class DependencyUpdater
         new(Whisper, WhisperX64AssetName, "ggml-org/whisper.cpp", "b5454", WhisperX64AssetName,
             "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb", 8928640, "b5454", TestedWhisperDate, "b5454"),
 
-        // ARM64 (4.3D): FFmpeg's master build of the same two days, libmpv's aarch64 builds of the same two releases.
+        // ARM64 (4.3D): FFmpeg's master build of the same two days.
         new(Ffmpeg, Arm64Variant, "BtbN/FFmpeg-Builds", "autobuild-2026-10-23-13-04", "ffmpeg-N-127957-g935f29eaae-winarm64-gpl.zip",
             "b5b208ab10d60e0d7a920823d6e9688041a951a2b9f7f6ee063805324373946d", 141597500, "N-127957-g935f29eaae-20261023", TestedFfmpegArm64Date,
             "N-127957 (2026-10-23, ARM64)"),
         new(Ffmpeg, Arm64Variant, "BtbN/FFmpeg-Builds", "autobuild-2026-09-30-13-08", "ffmpeg-N-127021-ge0c94b2d1c-winarm64-gpl.zip",
             "5e6560100382843f6bc6e163c958ed4f0f5a2e479e63faf101b998d349915a43", 139295788, "N-127021-ge0c94b2d1c-20260930", MonthEndFfmpegArm64Date,
             "N-127021 (2026-09-30, ARM64)"),
-        new(Mpv, Arm64Variant, "shinchiro/mpv-winbuild-cmake", "20261021", "mpv-dev-aarch64-20261021-git-e471496c56.7z",
-            "015f133399b3525021b6d937cf54ace2761d4f70224d5e62f5df24191b28f398", 26183268, "20261021", new(2026, 10, 21, 0, 54, 42, DateTimeKind.Utc),
-            "20261021 (ARM64)"),
-        new(Mpv, Arm64Variant, "shinchiro/mpv-winbuild-cmake", "20261018", "mpv-dev-aarch64-20261018-git-01e2533f31.7z",
-            "062b07022d1fadefd341485602658a51d973c216bb4282859e10daa09ad55478", 26166873, "20261018", new(2026, 10, 18, 0, 35, 12, DateTimeKind.Utc),
-            "20261018 (ARM64)"),
 
         // whisper.cpp b5454 for ARM64: CUDA (an NVIDIA card), OpenCL on Qualcomm's Adreno graphics, and the processor alone.
         new(Whisper, WhisperArm64CudaAssetName, "ggml-org/whisper.cpp", "b5454", WhisperArm64CudaAssetName,
@@ -398,9 +366,6 @@ public static partial class DependencyUpdater
 
     public static string VadModelPath => GetWhisperModelPath(VadModel);
 
-    /// <summary>The libmpv library the player loads.</summary>
-    public static string MpvPath => Path.Combine(ToolFolder(Mpv), MpvLibraryName);
-
     private static string OrDefault(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
     /// <summary>
@@ -426,7 +391,6 @@ public static partial class DependencyUpdater
     {
         Ffmpeg => "FFmpeg and ffprobe",
         YtDlp => "yt-dlp",
-        Mpv => "Video player (libmpv)",
         _ => "whisper.cpp",
     };
 
@@ -435,7 +399,6 @@ public static partial class DependencyUpdater
     {
         Ffmpeg => AppSettings.Current.FfmpegPath,
         YtDlp => AppSettings.Current.YtDlpPath,
-        Mpv => "",
         _ => AppSettings.Current.WhisperPath,
     }).Trim();
 
@@ -443,7 +406,6 @@ public static partial class DependencyUpdater
     {
         Ffmpeg => [LocalFfmpegPath, LocalFfprobePath],
         YtDlp => [LocalYtDlpPath],
-        Mpv => [MpvPath],
         _ => [LocalWhisperPath],
     };
 
@@ -513,7 +475,6 @@ public static partial class DependencyUpdater
             Arm64Variant => FfmpegArm64AssetRegex().IsMatch(name),
             _ => FfmpegMasterAssetRegex().IsMatch(name),
         },
-        Mpv => variant == Arm64Variant ? MpvArm64AssetRegex().IsMatch(name) : MpvX64AssetRegex().IsMatch(name),
         Whisper => name == variant,
         _ => false,
     };
@@ -564,8 +525,8 @@ public static partial class DependencyUpdater
 
         // Looked at before it is run: Windows answers an attempt to start a file that is not a program for
         // this machine with a dialog of its own, which nobody asked for.
-        if (!IsProgramForThisMachine(Path.Combine(folder, program)))
-            throw new InvalidOperationException($"{program} is not a 64-bit Windows program.");
+        if (!IsBinaryForThisMachine(Path.Combine(folder, program)))
+            throw new InvalidOperationException($"{program} is not a {ExpectedMachine} Windows program.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(60));
@@ -599,30 +560,58 @@ public static partial class DependencyUpdater
         };
     }
 
-    /// <summary>True when the file is a Windows executable built for 64-bit Intel/AMD processors, going by its header.</summary>
-    private static bool IsProgramForThisMachine(string path)
+    /// <summary>The PE machine types HandPeg's tools are built for: 64-bit Intel/AMD and 64-bit ARM.</summary>
+    public const ushort MachineAmd64 = 0x8664, MachineArm64 = 0xAA64;
+
+    /// <summary>
+    /// True when a program whose PE header names <paramref name="machine"/> can be run by a HandPeg running on
+    /// <paramref name="architecture"/>: every tool is a program run beside HandPeg, never a library loaded into it. An x64
+    /// HandPeg takes x64 only; an ARM64 HandPeg runs ARM64 programs or, emulated, x64 ones.
+    /// </summary>
+    public static bool IsMachineAccepted(ushort machine, Architecture architecture) => architecture switch
     {
-        const ushort Amd64 = 0x8664;
+        Architecture.X64 => machine == MachineAmd64,
+        Architecture.Arm64 => machine is MachineArm64 or MachineAmd64,
+        _ => false,
+    };
+
+    /// <summary>
+    /// The machine type a PE file's header names (read from the start of <paramref name="stream"/>), or null when it is
+    /// not a Windows program or library at all.
+    /// </summary>
+    public static ushort? PeMachineOf(Stream stream)
+    {
+        using var reader = new BinaryReader(stream, System.Text.Encoding.ASCII, leaveOpen: true);
+        stream.Position = 0;
+        if (stream.Length < 0x40 || reader.ReadUInt16() != 0x5A4D)
+            return null;
+
+        // The old DOS header says where the real one starts.
+        stream.Position = 0x3C;
+        var header = reader.ReadUInt32();
+        if (header + 6L > stream.Length)
+            return null;
+
+        stream.Position = header;
+        return reader.ReadUInt32() == 0x00004550 ? reader.ReadUInt16() : null;
+    }
+
+    /// <summary>True when the file is a Windows program this machine can run, going by its header.</summary>
+    private static bool IsBinaryForThisMachine(string path)
+    {
         try
         {
-            using var reader = new BinaryReader(File.OpenRead(path));
-            if (reader.BaseStream.Length < 0x40 || reader.ReadUInt16() != 0x5A4D)
-                return false;
-
-            // The old DOS header says where the real one starts.
-            reader.BaseStream.Position = 0x3C;
-            var header = reader.ReadUInt32();
-            if (header + 6 > reader.BaseStream.Length)
-                return false;
-
-            reader.BaseStream.Position = header;
-            return reader.ReadUInt32() == 0x00004550 && reader.ReadUInt16() == Amd64;
+            using var stream = File.OpenRead(path);
+            return PeMachineOf(stream) is { } machine && IsMachineAccepted(machine, RuntimeInformation.ProcessArchitecture);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return false;
         }
     }
+
+    /// <summary>What a refused program should have been, for the message.</summary>
+    private static string ExpectedMachine => IsArm64 ? "64-bit ARM or x64" : "64-bit Intel/AMD (x64)";
 
     // ----- What is available -----
 
@@ -635,7 +624,6 @@ public static partial class DependencyUpdater
     {
         Ffmpeg => OrDefault(AppSettings.Current.FfmpegReleaseUrl, AppSettings.DefaultFfmpegReleaseUrl),
         YtDlp => OrDefault(AppSettings.Current.YtDlpReleaseUrl, AppSettings.DefaultYtDlpReleaseUrl),
-        Mpv => MpvReleaseUrl,
         _ => OrDefault(AppSettings.Current.WhisperReleaseUrl, AppSettings.DefaultWhisperReleaseUrl),
     };
 
@@ -644,12 +632,11 @@ public static partial class DependencyUpdater
     {
         Ffmpeg => name == FfmpegAssetName,
         YtDlp => name == YtDlpAssetName,
-        Mpv => MpvAssetRegex().IsMatch(name),
         _ => name is not null && WhisperAssetNames.Contains(name),
     };
 
     /// <summary>
-    /// Whether the tool is installed from its pinned builds: FFmpeg, libmpv and whisper.cpp, unless the settings allow the
+    /// Whether the tool is installed from its pinned builds: FFmpeg and whisper.cpp, unless the settings allow the
     /// newest releases or name a release address of the user's own. yt-dlp never is.
     /// </summary>
     public static bool IsPinned(string tool) => tool != YtDlp && !AppSettings.Current.AllowUnpinnedDependencyUpdates && !HasOwnReleaseUrl(tool);
@@ -666,7 +653,6 @@ public static partial class DependencyUpdater
     private static IReadOnlyList<string> WantedVariants(string tool) => tool switch
     {
         Ffmpeg => [IsArm64 ? Arm64Variant : AppSettings.Current.UseFfmpegForOlderNvidiaDrivers ? OlderNvidiaVariant : ""],
-        Mpv => [IsArm64 ? Arm64Variant : ""],
         Whisper => WhisperAssetNames.Where(name => PinnedBuilds.Any(b => b.Tool == Whisper && b.Variant == name)).ToList(),
         _ => [""],
     };
@@ -913,7 +899,7 @@ public static partial class DependencyUpdater
 
     /// <summary>
     /// Quietly checks whether Install/Update would have anything to do for the tools everything depends on:
-    /// yt-dlp, FFmpeg or libmpv is missing, or is not the build Install/Update puts in (the pinned build, or the newest
+    /// yt-dlp or FFmpeg is missing, or is not the build Install/Update puts in (the pinned build, or the newest
     /// release where builds are not pinned). Tools replaced by a path from the settings are not checked. A failed check
     /// (offline, rate limited) reports false rather than raising an alarm.
     /// </summary>
@@ -921,7 +907,7 @@ public static partial class DependencyUpdater
     {
         try
         {
-            foreach (var tool in new[] { YtDlp, Ffmpeg, Mpv })
+            foreach (var tool in new[] { YtDlp, Ffmpeg })
             {
                 switch (GetLocalState(tool))
                 {
@@ -992,17 +978,11 @@ public static partial class DependencyUpdater
             // The stamp travels with the files, so the two can never disagree about what is installed.
             File.WriteAllText(StampPath(fresh, tool), asset.Stamp);
 
-            // A library is not something to run: it is looked at instead, and its release date is its version.
             progress.Report(new InstallProgress(1, $"Testing {name}..."));
-            if (tool == Mpv && !IsProgramForThisMachine(Path.Combine(fresh, MpvLibraryName)))
-                throw new InvalidOperationException($"{MpvLibraryName} is not a 64-bit Windows library.");
-            File.WriteAllText(VersionPath(fresh), tool == Mpv ? asset.Tag : await ProbeVersionAsync(tool, fresh, cancellationToken));
+            File.WriteAllText(VersionPath(fresh), await ProbeVersionAsync(tool, fresh, cancellationToken));
 
             cancellationToken.ThrowIfCancellationRequested();
-            if (tool == Mpv)
-                SwapLibrary(fresh, ToolFolder(tool));
-            else
-                Swap(fresh, ToolFolder(tool), parked, name);
+            Swap(fresh, ToolFolder(tool), parked, name);
             var kind = asset.Pin switch
             {
                 PinState.Pinned => "the pinned build",
@@ -1010,10 +990,85 @@ public static partial class DependencyUpdater
                 _ => "the newest release",
             };
             AppLog.Write($"Installed {name} {asset.Label} {asset.Name}, {kind} ({(expected is null ? "no checksum published" : "SHA-256 verified")}).");
+            RaiseInstalled(tool);
         }
         finally
         {
             DeleteFolder(staging);
+        }
+    }
+
+    /// <summary>
+    /// Raised when a tool has been installed or replaced (from any of the places that install one: the first-run window,
+    /// Settings, a feature's download prompt, the player's own fetch, the background update), with the tool's name. On the
+    /// thread the install ran on: a window marshals it to its own. A handler that throws is logged and never fails the install.
+    /// </summary>
+    public static event Action<string>? Installed;
+
+    private static void RaiseInstalled(string tool)
+    {
+        foreach (var handler in Installed?.GetInvocationList() ?? [])
+        {
+            try
+            {
+                ((Action<string>)handler)(tool);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"A handler of the {tool} install failed", ex);
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when the engine everything else waits for is there: FFmpeg (the player decodes with Media Foundation, but
+    /// inspecting files, waveforms, filmstrips and exports are FFmpeg's).
+    /// </summary>
+    public static bool EnginesInstalled => File.Exists(FfmpegPath);
+
+    // ----- The libmpv player's folders (gone in 5.0-Verify) -----
+
+    // Where versions before 5.0-Verify installed libmpv (ToolFolder of its old name, "mpv", on x64 and on ARM64), and the
+    // cache's folder of the stand-in clocks it was fed in a timeline's gaps (short black clips, one per rate and sound).
+    private static readonly string[] RetiredPlayerFolders = ["mpv", $"mpv-{Arm64Variant}"];
+    private const string RetiredClockFolder = "clock";
+
+    /// <summary>
+    /// Deletes what earlier versions made for the libmpv player, which HandPeg no longer has (the GPU preview engine is the
+    /// only player): its folders in the deps folder, x64's and ARM64's, and its stand-in clocks' folder in the cache, when
+    /// they are there. Only those three folders, only directly inside <see cref="AppPaths.Deps"/> and
+    /// <see cref="AppPaths.Cache"/>, never through a link, each one logged. Idle work after Frame 1 (MainWindow), done
+    /// once: a later start finds them gone; a folder that cannot go now (a file in use) goes at a later start.
+    /// </summary>
+    public static void DeleteRetiredPlayer()
+    {
+        foreach (var name in RetiredPlayerFolders)
+            DeleteRetired(new DirectoryInfo(Path.Combine(AppPaths.Deps, name)), "the libmpv player's old folder");
+        DeleteRetired(new DirectoryInfo(Path.Combine(AppPaths.Cache, RetiredClockFolder)), "the libmpv player's old stand-in clocks");
+    }
+
+    private static void DeleteRetired(DirectoryInfo folder, string what)
+    {
+        var said = char.ToUpperInvariant(what[0]) + what[1..];
+        try
+        {
+            if (!folder.Exists)
+                return;
+            if (folder.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                AppLog.Write($"{said} {folder.FullName} is a link: left alone.");
+                return;
+            }
+
+            var (files, bytes) = (0, 0L);
+            foreach (var file in folder.EnumerateFiles("*", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint }))
+                (files, bytes) = (files + 1, bytes + file.Length);
+            folder.Delete(recursive: true);
+            AppLog.Write($"Removed {what} {folder.FullName} ({files} files, {PreviewCache.Describe(bytes)}): HandPeg no longer uses it.");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"{said} {folder.FullName} could not be removed yet", ex);
         }
     }
 
@@ -1046,53 +1101,12 @@ public static partial class DependencyUpdater
         }
     }
 
-    /// <summary>
-    /// The player's library is in use for as long as HandPeg runs, so its folder cannot be set aside like a
-    /// tool's. Windows does let a library in use be renamed: the old one steps aside under another name,
-    /// the new one takes its place, and is the one loaded the next time HandPeg starts. What stepped aside
-    /// before is cleared away first, now that nothing uses it any more.
-    /// </summary>
-    private static void SwapLibrary(string fresh, string live)
-    {
-        Directory.CreateDirectory(live);
-        foreach (var stale in Directory.EnumerateFiles(live, "*.old"))
-        {
-            try
-            {
-                File.Delete(stale);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Still the one in use, from an update earlier in this same session.
-            }
-        }
-
-        var library = Path.Combine(live, MpvLibraryName);
-        if (File.Exists(library))
-            File.Move(library, Path.Combine(live, $"{MpvLibraryName}.{Guid.NewGuid():N}.old"));
-        foreach (var file in Directory.EnumerateFiles(fresh))
-            File.Move(file, Path.Combine(live, Path.GetFileName(file)), overwrite: true);
-    }
-
     private static void Unpack(string tool, string download, string folder, CancellationToken cancellationToken)
     {
         if (tool == YtDlp)
         {
             // Not an archive: the download is the program.
             File.Move(download, Path.Combine(folder, "yt-dlp.exe"));
-            return;
-        }
-
-        if (tool == Mpv)
-        {
-            // A 7z archive holding the library and the headers for programmers; only the library is wanted.
-            using var packed = SharpCompress.Archives.SevenZip.SevenZipArchive.OpenArchive(download);
-            var library = packed.Entries.FirstOrDefault(e => !e.IsDirectory && Path.GetFileName(e.Key ?? "").Equals(MpvLibraryName, StringComparison.OrdinalIgnoreCase))
-                          ?? throw new InvalidDataException($"The libmpv archive did not contain {MpvLibraryName}.");
-            cancellationToken.ThrowIfCancellationRequested();
-            using var source = library.OpenEntryStream();
-            using var target = File.Create(Path.Combine(folder, MpvLibraryName));
-            source.CopyTo(target);
             return;
         }
 

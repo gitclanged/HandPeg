@@ -12,7 +12,7 @@ namespace HandPegApp.Services;
 ///
 /// Four kinds of fall are caught. An exception nobody handled, one thrown on the window's thread, and a task's exception
 /// nobody looked at are written here, in the process (CrashReporter.Reports.cs). A native fault (an access violation in
-/// libmpv or a graphics driver) leaves no managed code standing to write anything, so a tiny second copy of HandPeg, the
+/// a graphics driver or a system library) leaves no managed code standing to write anything, so a tiny second copy of HandPeg, the
 /// sentinel (<see cref="CrashSentinel"/>), watches from outside: when the process dies badly without having written a
 /// report, the sentinel writes one from the shared memory this class keeps up to date (CrashReporter.Watch.cs).
 ///
@@ -344,7 +344,7 @@ public static partial class CrashReporter
 
     /// <summary>
     /// The top-level filter Windows calls when a fault reaches the top of a thread with nothing to handle it: the way a
-    /// crash in libmpv or a graphics driver arrives. It copies numbers only (the code, the address, the module's base)
+    /// crash in a graphics driver or a system library arrives. It copies numbers only (the code, the address, the module's base)
     /// into the shared memory, with no allocation, no lock and nothing that can throw; for a native fault it then wakes
     /// the sentinel and gives it a moment to name the module from outside, while there is still a process to look at.
     /// Then it hands over to the filter that was there before (the runtime's) and returns what that returns.

@@ -18,13 +18,15 @@ namespace HandPegApp;
 /// Only the selected layer's box is outlined and has the handles (corner grip, rotation handle, anchor dot), and only
 /// while paused: the video is never cluttered with the others. A click on the video away from it hides the outline
 /// until another layer is selected. Moving, resizing, turning and the anchor go through the same code as the layout
-/// pane's (MoveTrackLayer, ResizeTrackLayer, WireGizmo). Shown with Live Preview and the frame engine on.
+/// pane's (MoveTrackLayer, ResizeTrackLayer, WireGizmo). Shown with Live Preview and the frame engine on. The caption box
+/// is one of them while captions are on (5.0-Verify, the user's bug 3): on top, moved and sized like the Canvas's (no turn,
+/// no anchor), selected by a press on it or on any caption on the timeline.
 /// </summary>
 public partial class MainWindow
 {
     private readonly List<(Thumb Box, Layer Clip, Action Place)> _playerBoxes = [];
     private readonly List<(Layer Layer, PropertyChangedEventHandler Handler)> _playerSubscriptions = [];
-    private LayerGizmoAdorner? _playerGizmo;
+    private Adorner? _playerGizmo;
     private Rect _playerFrame;
     private double _playerScale;
 
@@ -63,7 +65,7 @@ public partial class MainWindow
                         RedrawForClipsShown();
                     break;
                 case nameof(MainViewModel.EditLayersOnPlayer) or nameof(MainViewModel.LivePreview)
-                    or nameof(MainViewModel.IsPlaying) or nameof(MainViewModel.FrameEngine) or nameof(MainViewModel.HasSource)
+                    or nameof(MainViewModel.IsPlaying) or nameof(MainViewModel.FrameEngine) or nameof(MainViewModel.AutoCaptions) or nameof(MainViewModel.HasSource)
                     or nameof(MainViewModel.FrameWidth) or nameof(MainViewModel.FrameHeight)
                     or nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer):
                     RedrawPlayerLayout();
@@ -77,6 +79,48 @@ public partial class MainWindow
         // the clip they were taken from (4.4); both catch up when it ends. The seek bar's and the scroll bars' drags hold nothing.
         EventManager.RegisterClassHandler(typeof(Thumb), Thumb.DragStartedEvent, new DragStartedEventHandler((sender, _) => HoldForDrag(sender, true)), handledEventsToo: true);
         EventManager.RegisterClassHandler(typeof(Thumb), Thumb.DragCompletedEvent, new DragCompletedEventHandler((sender, _) => HoldForDrag(sender, false)), handledEventsToo: true);
+
+        // A slider or a number box bound straight to a value that shapes a clip's edge, in any window (Layer Properties, the
+        // mask tools): while the pointer holds it, the player magnifies that clip's edge (the loupe, 5.0-Verify, the user's
+        // bug 6). The Effects pane's cards say so themselves (their values are bound to the cards).
+        EventManager.RegisterClassHandler(typeof(Slider), PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler((sender, _) => HoldBoundEdge(sender, true)), handledEventsToo: true);
+        EventManager.RegisterClassHandler(typeof(Slider), PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler((sender, _) => HoldBoundEdge(sender, false)), handledEventsToo: true);
+        EventManager.RegisterClassHandler(typeof(Slider), Mouse.LostMouseCaptureEvent, new MouseEventHandler((sender, _) => HoldBoundEdge(sender, false)), handledEventsToo: true);
+        NumericInput.DragHeld += (box, held) => HoldBoundEdge(box, held);
+    }
+
+    // Whether the edge being tuned was begun by a bound slider or box (HoldBoundEdge): only its own letting go ends it.
+    private bool _boundEdgeHeld;
+
+    private void HoldBoundEdge(object sender, bool held)
+    {
+        if (!held)
+        {
+            if (_boundEdgeHeld)
+            {
+                _boundEdgeHeld = false;
+                _viewModel.EndEdgeTuning();
+            }
+
+            return;
+        }
+
+        var bound = sender is Slider ? RangeBase.ValueProperty : TextBox.TextProperty;
+        if (sender is not FrameworkElement control || System.Windows.Data.BindingOperations.GetBindingExpression(control, bound) is not { ResolvedSource: Layer layer } binding)
+            return;
+
+        var kind = binding.ResolvedSourcePropertyName switch
+        {
+            nameof(Layer.FeatherRadius) or nameof(Layer.CornerRadius) => EdgeTuningKind.Feather,
+            nameof(Layer.MaskGrow) or nameof(Layer.MaskOffsetX) or nameof(Layer.MaskOffsetY) => EdgeTuningKind.Mask,
+            nameof(Layer.ChromaSimilarity) or nameof(Layer.ChromaBlend) => EdgeTuningKind.ChromaKey,
+            _ => EdgeTuningKind.None,
+        };
+        if (kind == EdgeTuningKind.None)
+            return;
+
+        _boundEdgeHeld = true;
+        _viewModel.BeginEdgeTuning(layer, kind);
     }
 
     // A drag holding the boxes and the Center controls' clip (HoldForDrag), and whether the playhead brought other clips during it.
@@ -108,23 +152,34 @@ public partial class MainWindow
 
     private void PlayerLayoutCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => RedrawPlayerLayout();
 
-    /// <summary>Whether layers are edited on the player now: Live Preview and the frame engine on, paused, nothing else drawn on the video.</summary>
+    /// <summary>Whether layers are edited on the player now: Live Preview and the frame engine (or the captions) on, paused, nothing else drawn on the video.</summary>
     private bool PlayerLayoutActive =>
-        _viewModel.EditLayersOnPlayer && _viewModel.LivePreview && _viewModel.FrameEngine && _viewModel.HasSource
+        _viewModel.EditLayersOnPlayer && _viewModel.LivePreview && _viewModel.CanEditLayout && _viewModel.HasSource
         && !_viewModel.IsPlaying && CurrentOverlayMode == OverlayMode.None && _viewModel.FrameWidth > 0 && _viewModel.FrameHeight > 0;
 
-    /// <summary>Each track's clip on screen at the playhead (shown, a picture): the boxes the player has, the main video's track's among them (4.3D).</summary>
+    /// <summary>
+    /// Each track's clip on screen at the playhead (shown, a picture): the boxes the player has, the main video's track's among
+    /// them (4.3D); and last, over them all as the captions are drawn, the caption box while captions are on (5.0-Verify).
+    /// </summary>
     private List<Layer> PlayerClips()
     {
         var at = _viewModel.PositionMs / 1000;
         var total = _viewModel.SequenceSeconds;
-        return
-        [
-            .. _viewModel.Layers.Where(l => l is { IsAudio: false, IsEmptyTrack: false, IsHidden: false, IsCaptions: false } && l.IsPicture)
-                .Where(l => l.GetSpan(total) is var (start, end) && at >= start - 0.0005 && at < end)
-                .GroupBy(l => l.TrackId).Select(t => t.First()),
-        ];
+        List<Layer> clips = _viewModel.FrameEngine
+            ?
+            [
+                .. _viewModel.Layers.Where(l => l is { IsAudio: false, IsEmptyTrack: false, IsHidden: false, IsCaptions: false } && l.IsPicture)
+                    .Where(l => l.GetSpan(total) is var (start, end) && at >= start - 0.0005 && at < end)
+                    .GroupBy(l => l.TrackId).Select(t => t.First()),
+            ]
+            : [];
+        if (_viewModel.AutoCaptions)
+            clips.Add(_viewModel.CaptionLayer);
+        return clips;
     }
+
+    /// <summary>What the player outlines: the captions while they are what is selected (they are never the key layer), else the key layer.</summary>
+    private Layer PlayerSelected => _selectedClip is Layer { IsCaptions: true } captions ? captions : _viewModel.ActiveKeyLayer;
 
     private bool SamePlayerClips()
     {
@@ -140,7 +195,7 @@ public partial class MainWindow
         if (!active || PlayerLayoutCanvas.ActualWidth <= 0 || PlayerLayoutCanvas.ActualHeight <= 0)
             return;
 
-        // The picture as mpv fits it into the player: the output frame, letterboxed.
+        // The picture as the GPU engine fits it into the player: the output frame, letterboxed.
         var (frameWidth, frameHeight) = ((double)_viewModel.FrameWidth, (double)_viewModel.FrameHeight);
         _playerScale = Math.Min(PlayerLayoutCanvas.ActualWidth / frameWidth, PlayerLayoutCanvas.ActualHeight / frameHeight);
         _playerFrame = new Rect((PlayerLayoutCanvas.ActualWidth - frameWidth * _playerScale) / 2, (PlayerLayoutCanvas.ActualHeight - frameHeight * _playerScale) / 2,
@@ -165,7 +220,7 @@ public partial class MainWindow
         box.PreviewMouseLeftButtonDown += (_, _) =>
         {
             _playerOutlineHidden = false;
-            if (!ReferenceEquals(_viewModel.ActiveKeyLayer, clip))
+            if (!ReferenceEquals(PlayerSelected, clip))
                 SelectClip(clip);
             else
                 UpdatePlayerSelection();
@@ -220,7 +275,7 @@ public partial class MainWindow
             _playerGizmo = null;
         }
 
-        var selected = _viewModel.ActiveKeyLayer;
+        var selected = PlayerSelected;
         var shown = false;
         foreach (var (box, clip, _) in _playerBoxes)
         {
@@ -230,8 +285,26 @@ public partial class MainWindow
                 continue;
 
             var name = clip.Name;
-            _playerGizmo = new LayerGizmoAdorner(box, (Style)FindResource("LayerGrip"), name, () => new Point(clip.AnchorX, clip.AnchorY));
-            WireGizmo(_playerGizmo, box, clip, name, PlayerLayoutCanvas, () => TrackLayerRect(clip), (deltaX, deltaY) => ResizeTrackLayer(clip, deltaX, deltaY), _playerScale);
+            if (clip.IsCaptions)
+            {
+                // The caption box is not turned and has no anchor: only its corner grip, as on the Canvas.
+                var grip = new ResizeAdorner(box, (Style)FindResource("LayerGrip"), name);
+                var resizeStep = new DragStep(_viewModel, $"resize {name}");
+                grip.ResizeStarted += (_, _) => resizeStep.Pressed();
+                grip.ResizeDelta += (_, e) =>
+                {
+                    resizeStep.Changing();
+                    ResizeTrackLayer(clip, e.HorizontalChange / _playerScale, e.VerticalChange / _playerScale);
+                };
+                _playerGizmo = grip;
+            }
+            else
+            {
+                var gizmo = new LayerGizmoAdorner(box, (Style)FindResource("LayerGrip"), name, () => new Point(clip.AnchorX, clip.AnchorY));
+                WireGizmo(gizmo, box, clip, name, PlayerLayoutCanvas, () => TrackLayerRect(clip), (deltaX, deltaY) => ResizeTrackLayer(clip, deltaX, deltaY), _playerScale);
+                _playerGizmo = gizmo;
+            }
+
             layer.Add(_playerGizmo);
             shown = true;
         }

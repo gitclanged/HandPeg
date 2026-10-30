@@ -131,7 +131,7 @@
                     <TextBlock Text="Core Video &amp; Playback Engine" Style="{StaticResource CardTitle}" />
                     <TextBlock Text="Required" Style="{StaticResource CardBadge}" />
                     <TextBlock Style="{StaticResource CardText}"
-                               Text="FFmpeg, the encoding and filter engine; libmpv, the live GPU preview player; and yt-dlp, for importing a video from a link. Everything editing and exporting needs." />
+                               Text="FFmpeg, the engine that reads, inspects and exports your media, and yt-dlp, for importing a video from a link. Everything editing and exporting needs; the preview plays on the graphics card with no download." />
                     <TextBlock Style="{StaticResource CardText}" Margin="0,10,0,0" Text="About 120 MB" />
                 </StackPanel>
             </RadioButton>
@@ -169,6 +169,20 @@
         </StackPanel>
         <TextBlock x:Name="CopyWarningText" Visibility="Collapsed" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0"
                    Text="Warning: The Frame and Layer Engine features will be unavailable during 'Copy' exports unless the encoder is changed in the project settings." />
+
+        <!-- ===== The graphics cards: Test & Auto-Tune Hardware (5.0-0) sets the four GPU roles; Settings shows the measurements ===== -->
+        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+            <Button x:Name="BenchmarkButton" Padding="12,4" Click="Benchmark_Click" AutomationProperties.Name="Test &amp; Auto-Tune Hardware"
+                    ToolTip="Measures each graphics card in a few seconds (hardware decoding speed, seeking, accuracy, and how fast frames cross between cards) and gives each of the four GPU roles (compositor, timeline decoding, background work, exports) to the card that suits it. Needs FFmpeg for its test clip. Optional: Auto works without it, and it can be run any time from Settings, Export &amp; Hardware, which also draws the results. Press again to stop it.">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" />
+                    <TextBlock x:Name="BenchmarkButtonText" Text="Test &amp; Auto-Tune Hardware" Margin="7,0,0,0" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+            <TextBlock x:Name="BenchmarkStatusText" VerticalAlignment="Center" Margin="10,0,0,0" MaxWidth="520" TextTrimming="CharacterEllipsis"
+                       Foreground="{DynamicResource MutedTextBrush}" AutomationProperties.AutomationId="BenchmarkStatus"
+                       Text="Optional: gives each graphics card the work it does best." />
+        </StackPanel>
 
         <!-- ===== Behaviour ===== -->
         <StackPanel Orientation="Horizontal" Margin="0,18,0,0">

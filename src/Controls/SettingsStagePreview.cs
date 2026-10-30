@@ -79,7 +79,7 @@ public sealed class SettingsStagePreview : FrameworkElement
             StageKind.Appearance => 236,
             StageKind.Timeline => 262,
             StageKind.Cache => 272,
-            StageKind.Hardware => 40 + CoreRows() * (CoreCell(width) + CoreGap) + 150,
+            StageKind.Hardware => 40 + CoreRows() * (CoreCell(width) + CoreGap) + 180 + BenchmarkHeight(),
             StageKind.Captions => 96,
             _ => 0,
         };
@@ -154,8 +154,8 @@ public sealed class SettingsStagePreview : FrameworkElement
 
     /// <summary>
     /// Shows a part of the editor above the picture, live: the element, the part of it (in its own coordinates), and for
-    /// the player a still standing in for its video with where the video lies in it (mpv draws the video in a window of
-    /// its own, which no brush sees). Null shows none, and lets go of the element shown before.
+    /// the player a still standing in for its video with where the video lies in it (the GPU preview draws the video in a
+    /// window of its own, which no brush sees). Null shows none, and lets go of the element shown before.
     /// </summary>
     public void ShowMirror(FrameworkElement? source, Rect view, ImageSource? video, Rect videoRect)
     {
@@ -387,10 +387,6 @@ public sealed class SettingsStagePreview : FrameworkElement
         drawing.DrawLine(Line(MutedBrush, 1), new Point(pointer, preview.Bottom), new Point(pointer, 92));
         Text(drawing, string.Create(CultureInfo.InvariantCulture, $"Hover preview ×{zoom:0.##}"), Math.Min(preview.Right + 8, right - 110), preview.Top, 11, MutedBrush);
 
-        // How video layers look while scrubbing.
-        var scrub = _settings.LayersWhileScrubbing;
-        Text(drawing, $"Layers while scrubbing: {scrub}", right, 0, 11, TextBrush, alignRight: true);
-
         // The ruler and its I-frames; the snap zone round the one nearest the playhead.
         drawing.DrawRectangle(WellBrush, null, new Rect(left, 86, span, 12));
         var iframe = Line(MutedBrush, 1);
@@ -590,24 +586,151 @@ public sealed class SettingsStagePreview : FrameworkElement
             : string.Create(CultureInfo.InvariantCulture, $"Auto, {WorkScheduler.LaneLimit(WorkLane.Background)}");
         Text(drawing, $"Background tools ({jobs} at once)", 146, y, 11, TextBrush);
 
-        // Which card decodes for the player, and which one background work (proxies, previews) is given.
+        // The four GPU roles (5.0-0): which card composites, decodes the timeline's layers, takes background work, and exports.
         y += 24;
         var adapters = GpuAdapters.All;
         string Named(int index) => adapters.FirstOrDefault(a => a.Index == index)?.Name ?? "Automatic";
-        var player = _settings.HardwareDecodeAdapter < 0 ? "Automatic" : Named(_settings.HardwareDecodeAdapter);
+        var compositor = _settings.CompositorGpuAdapter < 0 ? "Auto: the high-performance card" : Named(_settings.CompositorGpuAdapter);
+        var decode = _settings.DecodeGpuAdapter < 0 ? "Auto: the compositor's card" : Named(_settings.DecodeGpuAdapter);
         var background = _settings.BackgroundGpu switch
         {
             -2 => "Processor only",
             -1 => GpuAdapters.BackgroundAdapter is { } card ? $"Auto: {card.Name}" : "Automatic",
             var index => Named(index),
         };
+        var export = _settings.HardwareDecodeAdapter < 0 ? "Automatic (FFmpeg's choice)" : Named(_settings.HardwareDecodeAdapter);
 
         var half = (width - 10) / 2;
-        Card(drawing, new Rect(0, y, half, 54), "Player decodes on", player);
-        Card(drawing, new Rect(half + 10, y, half, 54), "Background work on", background);
+        Card(drawing, new Rect(0, y, half, 54), "Compositor (player and shaders)", compositor);
+        Card(drawing, new Rect(half + 10, y, half, 54), "Timeline layers decode on", decode);
+        Card(drawing, new Rect(0, y + 62, half, 54), "Background work on", background);
+        Card(drawing, new Rect(half + 10, y + 62, half, 54), "Exports decode on", export);
         var encoder = _settings.DefaultVideoEncoder.Length == 0 ? "the built-in default (Copy)" : _settings.DefaultVideoEncoder;
-        Text(drawing, $"A new export encodes with {encoder}", 0, y + 64, 11, MutedBrush, width: width);
+        Text(drawing, $"A new export encodes with {encoder}", 0, y + 126, 11, MutedBrush, width: width);
+
+        if (BenchmarkHeight() > 0)
+            DrawBenchmark(drawing, y + 150, width);
     }
+
+    // ----- The hardware benchmark (5.0-0): each card's measured decoding, seeking, accuracy and transfer speeds -----
+
+    private HardwareBenchmarkResult? _benchmark;
+    private double? _benchmarkFraction;
+    private string _benchmarkMessage = "";
+    private bool _benchmarkStale;
+
+    // Heights of the benchmark's parts: its heading (with the progress track while it runs), a card's block, the cross-card line.
+    private const double BenchHeading = 22, BenchProgress = 10, BenchCard = 78, BenchCross = 40, BenchLine = 18;
+
+    /// <summary>
+    /// The hardware benchmark's results drawn under the GPU roles: the last saved, or (with <paramref name="fraction"/>,
+    /// while it runs) what it has measured so far and how far it has got. A null result and fraction draw nothing.
+    /// </summary>
+    public void ShowBenchmark(HardwareBenchmarkResult? result, double? fraction, string message, bool stale)
+    {
+        (_benchmark, _benchmarkFraction, _benchmarkMessage, _benchmarkStale) = (result, fraction, message, stale);
+        if (Kind == StageKind.Hardware)
+        {
+            InvalidateMeasure();
+            InvalidateVisual();
+        }
+    }
+
+    private double BenchmarkHeight()
+    {
+        if (_benchmark is null && _benchmarkFraction is null)
+            return 0;
+
+        var height = BenchHeading + (_benchmarkFraction is null ? 0 : BenchProgress) + 6;
+        if (_benchmark is { } result)
+        {
+            height += result.Adapters.Count * BenchCard;
+            if (result.CrossAdapter is not null)
+                height += BenchCross;
+            if (result.Error.Length > 0)
+                height += BenchLine;
+        }
+
+        return height;
+    }
+
+    private void DrawBenchmark(DrawingContext drawing, double y, double width)
+    {
+        var result = _benchmark;
+        Text(drawing, "Hardware benchmark", 0, y, 11, TextBrush, bold: true);
+        var status = _benchmarkFraction is not null ? _benchmarkMessage
+            : result is null ? ""
+            : _benchmarkStale ? "measured on other cards or drivers: test again"
+            : DateTime.TryParse(result.MeasuredAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at)
+                ? string.Create(CultureInfo.InvariantCulture, $"measured {at.ToLocalTime():d MMM yyyy, HH:mm} in {result.TotalSeconds:0.0} s")
+                : "";
+        Text(drawing, status, width, y, 11, _benchmarkStale && _benchmarkFraction is null ? WarningBrush : MutedBrush, alignRight: true);
+        y += BenchHeading;
+
+        if (_benchmarkFraction is { } fraction)
+        {
+            var track = new Rect(0, y, width, 4);
+            drawing.DrawRoundedRectangle(WellBrush, null, track, 2, 2);
+            drawing.DrawRoundedRectangle(AccentBrush, null, new Rect(0, y, Math.Max(width * Math.Clamp(fraction, 0, 1), 4), 4), 2, 2);
+            y += BenchProgress;
+        }
+
+        if (result is null)
+            return;
+
+        // Every bar of speed on one scale, so that cards compare at a glance; the processor's figure is measured once.
+        var software = result.Adapters.Count == 0 ? 0 : result.Adapters.Max(a => a.SoftwareDecodeFps);
+        var softwareSeek = result.Adapters.Count == 0 ? 0 : result.Adapters.Max(a => a.SoftwareSeekMs);
+        var fastest = Math.Max(software, result.Adapters.Count == 0 ? 0 : result.Adapters.Max(a => a.HardwareDecodeFps));
+        var processorBar = Tint(MutedBrush, 0.7);
+        foreach (var card in result.Adapters)
+        {
+            Text(drawing, string.Create(CultureInfo.InvariantCulture, $"{card.Index}: {card.Name}"), 0, y, 11, TextBrush, bold: true, width: width * 0.6);
+            var codecs = card.DecodeCodecs.Count > 0 ? string.Join(" ", card.DecodeCodecs) : "no hardware decoders";
+            var memory = card.DedicatedVideoMemoryMb > 0 ? string.Create(CultureInfo.InvariantCulture, $"{card.DedicatedVideoMemoryMb / 1024.0:0.#} GB · ") : "";
+            Text(drawing, memory + codecs, width, y, 10, MutedBrush, alignRight: true);
+            Meter(drawing, "Hardware", card.HardwareDecodeFps, fastest, Fps(card.HardwareDecodeFps), y + 18, width, AccentBrush);
+            Meter(drawing, "Processor", software, fastest, Fps(software), y + 34, width, processorBar);
+
+            var line = card.Note.Length > 0 ? card.Note : string.Join("  ·  ", new[]
+            {
+                card.HardwareSeekMs > 0 ? string.Create(CultureInfo.InvariantCulture, $"Seek {card.HardwareSeekMs:0.#} ms") + (softwareSeek > 0 ? string.Create(CultureInfo.InvariantCulture, $" (processor {softwareSeek:0.#})") : "") : "",
+                card.BitExact || card.PsnrDb >= 99 ? "PSNR bit-exact" : card.PsnrDb > 0 ? string.Create(CultureInfo.InvariantCulture, $"PSNR {card.PsnrDb:0.0} dB") : "",
+                card.ReadbackMBps > 0 ? "Readback " + MegabytesPerSecond(card.ReadbackMBps) : "",
+                card.UploadMBps > 0 ? "Upload " + MegabytesPerSecond(card.UploadMBps) : "",
+            }.Where(part => part.Length > 0));
+            Text(drawing, line, 0, y + 52, 10, card.Note.Length > 0 ? WarningBrush : MutedBrush, width: width);
+            y += BenchCard;
+        }
+
+        if (result.CrossAdapter is { } cross)
+        {
+            Text(drawing, string.Create(CultureInfo.InvariantCulture, $"Across the bus, card {cross.DecodeAdapter} to card {cross.CompositeAdapter}"), 0, y, 11, TextBrush, bold: true);
+            Text(drawing, string.Create(CultureInfo.InvariantCulture, $"{cross.TransferMsPerFrame:0.##} ms a 1080p frame"), width, y, 10, MutedBrush, alignRight: true);
+            var widest = Math.Max(cross.BandwidthMBps, result.Adapters.Count == 0 ? 0 : result.Adapters.Max(a => Math.Max(a.ReadbackMBps, a.UploadMBps)));
+            Meter(drawing, "PCIe", cross.BandwidthMBps, widest, MegabytesPerSecond(cross.BandwidthMBps), y + 18, width, cross.CrossIsFaster ? AccentBrush : processorBar);
+            y += BenchCross;
+        }
+
+        if (result.Error.Length > 0)
+            Text(drawing, $"Stopped short: {result.Error}", 0, y, 10, WarningBrush, width: width);
+    }
+
+    // A labelled bar with its figure at the right: the share of the greatest figure it is drawn against.
+    private void Meter(DrawingContext drawing, string name, double value, double greatest, string figure, double y, double width, Brush brush)
+    {
+        const double labelWidth = 66, figureWidth = 84;
+        Text(drawing, name, 0, y, 10, MutedBrush, width: labelWidth - 4);
+        var track = new Rect(labelWidth, y + 3, Math.Max(width - labelWidth - figureWidth, 20), 8);
+        drawing.DrawRoundedRectangle(WellBrush, Line(BorderBrush, 1), track, 4, 4);
+        if (value > 0 && greatest > 0)
+            drawing.DrawRoundedRectangle(brush, null, new Rect(track.Left, track.Top, Math.Max(track.Width * Math.Clamp(value / greatest, 0, 1), 8), track.Height), 4, 4);
+        Text(drawing, value > 0 ? figure : "none", width, y, 10, value > 0 ? TextBrush : MutedBrush, alignRight: true);
+    }
+
+    private static string Fps(double fps) => string.Create(CultureInfo.InvariantCulture, $"{fps:#,0} fps");
+
+    private static string MegabytesPerSecond(double rate) => string.Create(CultureInfo.InvariantCulture, $"{rate:#,0} MB/s");
 
     private void Card(DrawingContext drawing, Rect box, string heading, string value)
     {

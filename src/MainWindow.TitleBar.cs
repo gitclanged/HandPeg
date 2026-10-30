@@ -38,6 +38,24 @@ public partial class MainWindow
         SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(TitleBarHook);
         TitleText.Text = Title;
         ApplyWindowState();
+        CompositorClient.EngineRecovered += ms => Dispatcher.BeginInvoke(() => ShowEngineRecovered(ms));
+    }
+
+    private System.Windows.Threading.DispatcherTimer? _engineBadgeTimer;
+
+    /// <summary>
+    /// The GPU compositor fell over (a TDR, a driver fault) and its standby took over (CompositorClient, 5.0-Core): a dimmed
+    /// note in the title bar for six seconds, how long it took in its tooltip. Never a dialog; nothing for the user to do.
+    /// </summary>
+    private void ShowEngineRecovered(double milliseconds)
+    {
+        EngineRecoveredBadge.ToolTip = string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"The preview's graphics engine stopped (a driver reset or fault) and was restarted in {milliseconds:0} ms. Nothing was lost.");
+        EngineRecoveredBadge.Visibility = Visibility.Visible;
+        _engineBadgeTimer ??= new System.Windows.Threading.DispatcherTimer(TimeSpan.FromSeconds(6), System.Windows.Threading.DispatcherPriority.Background,
+            (_, _) => { EngineRecoveredBadge.Visibility = Visibility.Collapsed; _engineBadgeTimer!.Stop(); }, Dispatcher);
+        _engineBadgeTimer.Stop();
+        _engineBadgeTimer.Start();
     }
 
     private static bool StatusBarShown => AppSettings.Current.ShowStatusBar;

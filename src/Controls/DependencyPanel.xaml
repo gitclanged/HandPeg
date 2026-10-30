@@ -80,10 +80,10 @@
         <WrapPanel x:Name="PinRow" Margin="0,8,0,0" Visibility="Collapsed">
             <Button x:Name="ForceLatestButton" Content="Force Update to Latest Releases..." Click="ForceLatest_Click" Margin="0,0,6,4"
                     AutomationProperties.Name="Force Update to Latest Releases"
-                    ToolTip="Installs the newest upstream builds of FFmpeg, libmpv and whisper.cpp now, in place of the ones this version of HandPeg was tested with, and keeps them up to date from then on (the same as allowing untested dependency updates on the General tab). Asks first: untested builds may change filter syntax or bring playback or export instability. Only the tools that are installed; a tool with a path of your own is left alone." />
+                    ToolTip="Installs the newest upstream builds of FFmpeg and whisper.cpp now, in place of the ones this version of HandPeg was tested with, and keeps them up to date from then on (the same as allowing untested dependency updates on the General tab). Asks first: untested builds may change filter syntax or bring export or caption instability. Only the tools that are installed; a tool with a path of your own is left alone." />
             <Button x:Name="RestorePinnedButton" Content="Restore Pinned Recommended Versions" Click="RestorePinned_Click" Margin="0,0,6,4"
                     AutomationProperties.Name="Restore Pinned Recommended Versions"
-                    ToolTip="Turns untested dependency updates off and puts back the builds of FFmpeg, libmpv and whisper.cpp this version of HandPeg was tested with, wherever another build is installed. Each download is checked against the SHA-256 the build was pinned with. A tool with a path of your own is left alone." />
+                    ToolTip="Turns untested dependency updates off and puts back the builds of FFmpeg and whisper.cpp this version of HandPeg was tested with, wherever another build is installed. Each download is checked against the SHA-256 the build was pinned with. A tool with a path of your own is left alone." />
         </WrapPanel>
 
         <TextBlock x:Name="MessageText" TextWrapping="Wrap" Margin="0,8,0,0" />

@@ -1,0 +1,3 @@
+# The polyphase resampler: a 1 kHz sine from 44.1 and 96 kHz to 48 kHz, THD+N.
+44.1 kHz to 48 kHz: THD+N below -80 dB
+96 kHz to 48 kHz: THD+N below -80 dB

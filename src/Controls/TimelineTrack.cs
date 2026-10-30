@@ -1543,6 +1543,28 @@ public sealed class TimelineRuler : TimelineBar
     public event Action<double>? PanRequested;
 
     /// <summary>
+    /// The moment under the pointer (seconds, never before 0) as it moves over the ruler, a seek's drag too; null when it
+    /// leaves (5.0, Instant Seek's hints). Raised only when the moment changes, and allocates nothing.
+    /// </summary>
+    public event Action<double?>? PointerSecondsChanged;
+
+    // The moment last told (PointerSecondsChanged), NaN for none.
+    private double _pointerSeconds = double.NaN;
+
+    private void NotePointer(double seconds)
+    {
+        if (seconds.Equals(_pointerSeconds))
+            return;
+
+        var was = _pointerSeconds;
+        _pointerSeconds = seconds;
+        if (!double.IsNaN(seconds))
+            PointerSecondsChanged?.Invoke(seconds);
+        else if (!double.IsNaN(was))
+            PointerSecondsChanged?.Invoke(null);
+    }
+
+    /// <summary>
     /// Shows a stretch of the sequence: from <paramref name="start"/> seconds, <paramref name="span"/> seconds across,
     /// of a sequence <paramref name="sequence"/> seconds long, with its markers (in seconds).
     /// </summary>
@@ -1720,6 +1742,7 @@ public sealed class TimelineRuler : TimelineBar
     {
         base.OnMouseMove(e);
         var at = e.GetPosition(this).X;
+        NotePointer(ActualWidth > 0 && _span > 0 ? Math.Max(TimeAt(Math.Clamp(at, 0, ActualWidth)), 0) : double.NaN);
         if (_panFrom is { } from)
         {
             PanRequested?.Invoke(from - at);
@@ -1735,6 +1758,17 @@ public sealed class TimelineRuler : TimelineBar
     {
         base.OnLostMouseCapture(e);
         (_seeking, _panFrom) = (false, null);
+
+        // A seek's drag let go outside the ruler: nothing of it is under the pointer.
+        if (!IsMouseOver)
+            NotePointer(double.NaN);
+    }
+
+    protected override void OnMouseLeave(MouseEventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (!IsMouseCaptured)
+            NotePointer(double.NaN);
     }
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)

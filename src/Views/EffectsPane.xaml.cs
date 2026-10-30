@@ -21,9 +21,10 @@ using HandPegApp.ViewModels;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Effects pane: one card per effect of the target's stack (the selected clip, or the Sequence Output), in the
-/// order they are applied, with zone headings. Cards are built here, not templated: each parameter kind has its own
-/// row, and the values are read from the card (or, for the effects whose values are the layer's, from the layer).
+/// The Effects pane: one card per effect of the target's stack (the selected clip, the blurred background, or the Sequence
+/// Output), in the order they are applied, with zone headings. Cards are built here, not templated: each parameter kind has
+/// its own row, and the values are read from the card (or, for the effects whose values are the layer's, from the layer).
+/// A card's main values come first; its Advanced ones (EffectParam.IsAdvanced) are folded under a chevron (5.0-Release).
 /// What the pane changes is the clip's own (Layer.Echo): the track's other clips do not follow it.
 /// </summary>
 public partial class EffectsPane : UserControl
@@ -34,8 +35,24 @@ public partial class EffectsPane : UserControl
     private Layer? _layer;
     private ObservableCollection<EffectInstance>? _stack;
 
+    // No clip to show (5.0-Verify, the user's bug 2): what the panes would work on is a stand-in that is no clip on the
+    // timeline (the main video's, while it has no clip). Nothing is shown or added then: a card put on it would be drawn nowhere.
+    private bool _noClip;
+
     private readonly List<ParamModel> _params = [];
     private readonly HashSet<Guid> _collapsed = [];
+
+    // The effects whose Advanced section is open (by type): folded to start with, and remembered while HandPeg runs.
+    private static readonly HashSet<string> AdvancedOpen = new(StringComparer.Ordinal);
+
+    // The Advanced section's chevron: a right-pointing stroke, turned down while the section is open.
+    private static readonly Geometry Chevron = FrozenGeometry("M 0,0 L 4,4 L 0,8");
+
+    // A slider dragged writes its value at most this often (the user's call, 5.0-Release: the pointer sampled at a limited
+    // rate): each write is a new scene for the preview and a new command, and a pointer reports far more often than that.
+    private const double DragWritesPerSecond = 30;
+    private readonly DispatcherTimer _dragWrite = new() { Interval = TimeSpan.FromSeconds(1 / DragWritesPerSecond) };
+    private (ParamModel Model, double Value)? _pendingWrite;
 
     // Copy Effects's cards, for Paste Effects and Paste Some Effects...: shared by every target.
     private static List<EffectState>? _clipboard;
@@ -65,6 +82,7 @@ public partial class EffectsPane : UserControl
     public EffectsPane()
     {
         InitializeComponent();
+        _dragWrite.Tick += (_, _) => FlushDragWrite();
         _addClose.Tick += AddClose_Tick;
         AddPopup.Opened += AddPopup_Opened;
         AddPopup.Closed += AddPopup_Closed;
@@ -78,6 +96,13 @@ public partial class EffectsPane : UserControl
         return brush;
     }
 
+    private static Geometry FrozenGeometry(string path)
+    {
+        var geometry = Geometry.Parse(path);
+        geometry.Freeze();
+        return geometry;
+    }
+
     public void Attach(MainViewModel viewModel)
     {
         _vm = viewModel;
@@ -86,7 +111,7 @@ public partial class EffectsPane : UserControl
         {
             switch (e.PropertyName)
             {
-                case nameof(MainViewModel.ActiveKeyLayer):
+                case nameof(MainViewModel.ActiveKeyLayer) or nameof(MainViewModel.BackgroundSelected):
                     Retarget();
                     break;
                 case nameof(MainViewModel.PositionMs):
@@ -94,6 +119,12 @@ public partial class EffectsPane : UserControl
                     break;
                 case nameof(MainViewModel.SequenceEffectsBypassed):
                     UpdateHeader();
+                    break;
+
+                // The blurred background's own values, set elsewhere (Blur Settings..., the timeline's inspector, Undo).
+                case nameof(MainViewModel.BlurRadius) or nameof(MainViewModel.BlurPasses) or nameof(MainViewModel.BackgroundDim) or nameof(MainViewModel.BackgroundZoom)
+                    when _layer is { IsBackground: true }:
+                    QueueRefresh();
                     break;
             }
         };
@@ -113,17 +144,23 @@ public partial class EffectsPane : UserControl
         if (_vm is null)
             return;
 
-        var layer = IsSequence ? null : _vm.ActiveKeyLayer;
-        var stack = layer?.Effects ?? _vm.SequenceEffects;
-        if (ReferenceEquals(layer, _layer) && ReferenceEquals(stack, _stack))
+        // The blurred background (5.0-Release) is no clip of the timeline, and is one all the same: the main video's video-only child.
+        var layer = IsSequence ? null : _vm.BackgroundSelected ? _vm.BackgroundLayer : _vm.ActiveKeyLayer;
+        var noClip = layer is { IsBackground: false } && !_vm.Layers.Contains(layer);
+        if (noClip)
+            layer = null;
+        var stack = noClip ? null : layer?.Effects ?? _vm.SequenceEffects;
+        if (ReferenceEquals(layer, _layer) && ReferenceEquals(stack, _stack) && noClip == _noClip)
             return;
 
+        FlushDragWrite();
         if (_stack is not null)
             _stack.CollectionChanged -= Stack_CollectionChanged;
         if (_layer is not null)
             _layer.PropertyChanged -= Layer_PropertyChanged;
-        (_layer, _stack) = (layer, stack);
-        _stack.CollectionChanged += Stack_CollectionChanged;
+        (_layer, _stack, _noClip) = (layer, stack, noClip);
+        if (_stack is not null)
+            _stack.CollectionChanged += Stack_CollectionChanged;
         if (_layer is not null)
             _layer.PropertyChanged += Layer_PropertyChanged;
         Rebuild();
@@ -185,8 +222,9 @@ public partial class EffectsPane : UserControl
     private void UpdateHeader()
     {
         var bypassed = _layer?.EffectsBypassed ?? _vm?.SequenceEffectsBypassed ?? false;
-        TargetLabel.Text = _layer is null ? "Sequence Output" : $"Clip: {_layer.Name}";
+        TargetLabel.Text = _noClip ? "No clip" : _layer is null ? "Sequence Output" : _layer.IsBackground ? _layer.Name : $"Clip: {_layer.Name}";
         BypassButton.IsChecked = bypassed;
+        BypassButton.IsEnabled = !_noClip;
         BypassButton.Content = bypassed ? "" : "";
         AddButton.IsEnabled = EffectRegistry.All.Any(d => Fits(d, ignorePresent: true));
     }
@@ -200,10 +238,15 @@ public partial class EffectsPane : UserControl
         _params.Clear();
         UpdateHeader();
         if (_stack is null)
+        {
+            EmptyHint.Text = _noClip ? "No clip to give effects to: add a video, or select a clip on the timeline (or Sequence Output)." : "";
+            EmptyHint.Visibility = EmptyHint.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
             return;
+        }
 
         EmptyHint.Text = _stack.Count > 0 ? ""
             : _layer is null ? "No effects on the Sequence Output. Add Effect puts one on the finished picture, over the whole sequence."
+            : _layer.IsBackground ? "Add Effect puts colour, a LUT, a vignette or any other look on the blurred background alone."
             : _layer.IsAdjustment ? "This adjustment layer has no effects yet: Add Effect, and they work on everything under it while it lasts."
             : _layer.HasFilters ? "No effects on this clip yet. Add Effect, or select another clip on the timeline (or Sequence Output)."
             : "This clip takes no effects: select a video, picture or text clip, or Sequence Output.";
@@ -224,6 +267,10 @@ public partial class EffectsPane : UserControl
         // The opacity: always there for a picture, animated by the layer's own Opacity keyframes.
         if (_layer is { HasStyle: true, IsAdjustment: false } && EffectRegistry.Find(EffectRegistry.Opacity) is { } opacity)
             PinnedPanel.Children.Add(BuildCard(null, opacity));
+
+        // The blurred background's own blur and zoom (5.0-Release): the sequence's, at the top of its stack.
+        if (_layer is { IsBackground: true } && EffectRegistry.Find(EffectRegistry.BackgroundBlur) is { } blur)
+            CardsPanel.Children.Insert(0, BuildCard(null, blur));
     }
 
     private TextBlock ZoneHeading(EffectZone zone)
@@ -300,9 +347,9 @@ public partial class EffectsPane : UserControl
         {
             var (brush, tip) = definition.Cost switch
             {
-                EffectCost.Green => (GreenCost, "Green: Live Preview barely feels it."),
-                EffectCost.Amber => (AmberCost, "Amber: felt on large frames in Live Preview."),
-                _ => (RedCost, "Red: slows Live Preview; left out while scrubbing in Draft Mode (Settings)."),
+                EffectCost.Green => (GreenCost, "Green: the GPU preview barely feels it."),
+                EffectCost.Amber => (AmberCost, "Amber: felt on 4K frames, and in exports."),
+                _ => (RedCost, "Red: the heaviest on the GPU (and on exports): many of these on large frames can slow playback."),
             };
             var dot = new Ellipse { Width = 8, Height = 8, Fill = brush, Margin = new Thickness(6, 0, 2, 0), VerticalAlignment = VerticalAlignment.Center, ToolTip = tip };
             DockPanel.SetDock(dot, Dock.Right);
@@ -341,10 +388,63 @@ public partial class EffectsPane : UserControl
         }
 
         foreach (var param in definition.Params)
-            body.Children.Add(BuildRow(card, param, title));
+        {
+            if (!param.IsAdvanced)
+                body.Children.Add(BuildRow(card, param, title));
+        }
+
+        if (definition.HasAdvanced)
+            body.Children.Add(BuildAdvanced(card, definition, title));
         if (card is not null)
             body.Children.Add(BuildRangeRow(card, title));
         return border;
+    }
+
+    /// <summary>
+    /// A card's Advanced values (5.0-Release), under a chevron: folded to start with, and kept open or folded for every card
+    /// of that effect while HandPeg runs.
+    /// </summary>
+    private FrameworkElement BuildAdvanced(EffectInstance? card, EffectDefinition definition, string title)
+    {
+        var section = new StackPanel { Margin = new Thickness(0, 3, 0, 0) };
+        var open = AdvancedOpen.Contains(definition.Type);
+        var turn = new RotateTransform(open ? 90 : 0, 2, 4);
+        var chevron = new System.Windows.Shapes.Path
+        {
+            Data = Chevron, StrokeThickness = 1.4, Width = 6, Height = 9, Margin = new Thickness(2, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center,
+            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round, RenderTransform = turn,
+        };
+        chevron.SetResourceReference(Shape.StrokeProperty, "MutedTextBrush");
+        var label = new TextBlock { Text = "Advanced", FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
+        label.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+        var header = new ToggleButton
+        {
+            IsChecked = open, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(2, 1, 6, 1), Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0), Content = new StackPanel { Orientation = Orientation.Horizontal, Children = { chevron, label } },
+            ToolTip = "Shows or hides this effect's deeper controls (kept open or folded for every card of this effect while HandPeg runs).",
+        };
+        AutomationProperties.SetName(header, $"{title} Advanced");
+        section.Children.Add(header);
+
+        var rows = new StackPanel { Margin = new Thickness(10, 2, 0, 0), Visibility = open ? Visibility.Visible : Visibility.Collapsed };
+        foreach (var param in definition.Params)
+        {
+            if (param.IsAdvanced)
+                rows.Children.Add(BuildRow(card, param, title));
+        }
+
+        section.Children.Add(rows);
+        header.Click += (_, _) =>
+        {
+            var shown = header.IsChecked == true;
+            rows.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+            turn.Angle = shown ? 90 : 0;
+            if (shown)
+                AdvancedOpen.Add(definition.Type);
+            else
+                AdvancedOpen.Remove(definition.Type);
+        };
+        return section;
     }
 
     /// <summary>
@@ -400,7 +500,7 @@ public partial class EffectsPane : UserControl
 
     private FrameworkElement BuildRow(EffectInstance? card, EffectParam param, string title)
     {
-        var model = new ParamModel(this, card, param, _layer);
+        var model = new ParamModel(this, card, param, _layer, card is null && _vm is not null && _layer is { IsBackground: true } ? BackgroundValue(_vm, param.Key) : null);
         _params.Add(model);
         var name = $"{title} {param.Label}";
 
@@ -461,6 +561,14 @@ public partial class EffectsPane : UserControl
                 AutomationProperties.SetName(box, name + " Value");
                 Grid.SetColumn(box, 2);
                 row.Children.Add(box);
+
+                // A value that shapes the clip's edge (a key's, a matte's, a mask's, the corners' and feather's): while it is
+                // held by the pointer, the player magnifies that edge (the loupe, 5.0-Verify, the user's bug 6).
+                if (EdgeKindOf(card?.Type) is not EdgeTuningKind.None and var edge)
+                {
+                    NumericInput.WatchHold(slider, held => HoldEdge(held, edge));
+                    NumericInput.WatchHold(box, held => HoldEdge(held, edge));
+                }
 
                 if (param.Animation != ParamAnimation.None)
                     row.Children.Add(BuildKeyButtons(model, name));
@@ -532,6 +640,40 @@ public partial class EffectsPane : UserControl
         return buttons;
     }
 
+    // ----- An edge being tuned (the player's loupe) -----
+
+    /// <summary>What a card's values shape of the clip's edge, for the loupe; None for a card whose values shape no edge.</summary>
+    private static EdgeTuningKind EdgeKindOf(string? type) => type switch
+    {
+        EffectRegistry.ChromaKey => EdgeTuningKind.ChromaKey,
+        EffectRegistry.Choke or EffectRegistry.Smooth => EdgeTuningKind.Matte,
+        EffectRegistry.Mask => EdgeTuningKind.Mask,
+        EffectRegistry.Edges => EdgeTuningKind.Feather,
+        _ => EdgeTuningKind.None,
+    };
+
+    // One of those values pressed (its slider) or dragged (its box), and let go: the player shows the clip's edge magnified meanwhile.
+    private void HoldEdge(bool held, EdgeTuningKind kind)
+    {
+        if (held && _layer is not null)
+            _vm?.BeginEdgeTuning(_layer, kind);
+        else if (!held)
+            _vm?.EndEdgeTuning();
+    }
+
+    /// <summary>
+    /// The blurred background's own values (the pinned Background Blur card, 5.0-Release): the sequence's blur radius, zoom,
+    /// passes and dimming, read from and written to the view model, which takes their undo steps.
+    /// </summary>
+    private static (Func<double> Get, Action<double> Set)? BackgroundValue(MainViewModel vm, string key) => key switch
+    {
+        "radius" => (() => vm.BlurRadius, value => vm.BlurRadius = value),
+        "zoom" => (() => vm.BackgroundZoom * 100, value => vm.BackgroundZoom = value / 100),
+        "passes" => (() => vm.BlurPasses, value => vm.BlurPasses = (int)Math.Round(value)),
+        "dim" => (() => -vm.BackgroundDim * 100, value => vm.BackgroundDim = -value / 100),
+        _ => null,
+    };
+
     // ----- Writing values -----
 
     private void Burst(string what)
@@ -542,12 +684,58 @@ public partial class EffectsPane : UserControl
         _lastWrite = now;
     }
 
+    /// <summary>
+    /// A value from a row. While the pointer drags a slider, at most <see cref="DragWritesPerSecond"/> a second: the newest
+    /// is held (and shown) until the next write, and the last is written when the pointer lets go (or the pane moves on).
+    /// </summary>
     private void WriteValue(ParamModel model, double value)
+    {
+        if (Mouse.LeftButton == MouseButtonState.Pressed && Mouse.Captured is Thumb or Slider or RepeatButton or TextBoxBase)
+        {
+            if (_pendingWrite is { } pending && !ReferenceEquals(pending.Model, model))
+                FlushDragWrite();
+            _pendingWrite = (model, value);
+            model.Pending = value;
+            if (!_dragWrite.IsEnabled)
+                _dragWrite.Start();
+            return;
+        }
+
+        if (_pendingWrite is { } held && ReferenceEquals(held.Model, model))
+            (_pendingWrite, model.Pending) = (null, null);
+        Write(model, value);
+    }
+
+    /// <summary>The value held back from a drag written now; the timer stops once the pointer has let go.</summary>
+    private void FlushDragWrite()
+    {
+        if (_pendingWrite is not { } pending)
+        {
+            _dragWrite.Stop();
+            return;
+        }
+
+        _pendingWrite = null;
+        pending.Model.Pending = null;
+        Write(pending.Model, pending.Value);
+        if (Mouse.LeftButton != MouseButtonState.Pressed)
+            _dragWrite.Stop();
+    }
+
+    private void Write(ParamModel model, double value)
     {
         var param = model.Param;
         value = Math.Clamp(param.Step >= 1 ? Math.Round(value / param.Step) * param.Step : Math.Round(value, param.Decimals + 1), param.Min, param.Max);
         if (Math.Abs(value - model.Value) < 1e-9)
             return;
+
+        // A value of the view model's own (the blurred background's blur): it takes its own undo step.
+        if (model.Bound is { } own)
+        {
+            own.Set(value);
+            model.Refresh();
+            return;
+        }
 
         Burst($"change {param.Label}");
         using (Layer.Echo())
@@ -658,17 +846,7 @@ public partial class EffectsPane : UserControl
     {
         if (definition.Pinned || _stack is null)
             return false;
-        if (_layer is null || _layer.IsAdjustment)
-            return definition.ForWholePicture;
-
-        var allowed = definition.Zone switch
-        {
-            EffectZone.Look => _layer.HasFilters,
-            EffectZone.KeyAndMatte => definition.Type == EffectRegistry.ChromaKey ? _layer.HasKeying : _layer.HasMask && !_layer.IsCaptions,
-            EffectZone.Composite => _layer.HasStyle && !_layer.IsCaptions,
-            _ => false,
-        };
-        return allowed && (ignorePresent || definition.Feature is null && definition.Type != EffectRegistry.BlendMode || _layer.Find(definition.Type) is null);
+        return _layer is null ? definition.ForWholePicture : _layer.CanTake(definition, ignorePresent);
     }
 
     private void Add(EffectDefinition definition)
@@ -677,32 +855,23 @@ public partial class EffectsPane : UserControl
             return;
 
         CloseAdd();
-        _vm.Checkpoint($"add {definition.Name}");
-        using (Layer.Echo())
+        if (_layer is null)
         {
-            if (_layer is null)
+            _vm.Checkpoint($"add {definition.Name}");
+            using (Layer.Echo())
             {
-                var card = new EffectInstance { Type = definition.Type };
+                var card = definition.NewCard();
                 _stack.Insert(Layer.InsertionIndex(_stack, card), card);
             }
-            else
-            {
-                // The effects whose values are the layer's are switched on as Layer Properties would, which brings their card.
-                switch (definition.Feature)
-                {
-                    case nameof(Layer.ChromaKey): _layer.ChromaKey = true; break;
-                    case nameof(Layer.Shadow): _layer.Shadow = true; break;
-                    case "Edges" when _layer.CornerRadius == 0 && !_layer.Feather: _layer.CornerRadius = 8; break;
-                }
 
-                if (_layer.Find(definition.Type) is null || definition.Feature is null && definition.Type != EffectRegistry.BlendMode)
-                    _layer.AddEffect(new EffectInstance { Type = definition.Type });
-            }
+            _vm.StatusText = $"{definition.Name} added to the Sequence Output. Ctrl+Z takes it off.";
+            return;
         }
 
-        _vm.StatusText = $"{definition.Name} added to {(_layer is null ? "the Sequence Output" : _layer.Name)}. Ctrl+Z takes it off.";
-        if (definition.Type == EffectRegistry.Mask && _layer is not null && !_layer.CustomMask)
-            EditMaskRequested?.Invoke(_layer);
+        // A clip's (or the background's) card, with its visible starting values: the same as a track's Add Effect menu.
+        var layer = _layer;
+        if (_vm.AddEffectCard(layer, definition) is not null && definition.Type == EffectRegistry.Mask && !layer.CustomMask)
+            EditMaskRequested?.Invoke(layer);
     }
 
     private void Remove(EffectInstance card)
@@ -815,6 +984,13 @@ public partial class EffectsPane : UserControl
         if (_clipboard is null || _vm is null)
             return;
 
+        // Clips selected together (Ctrl / Shift on the timeline): every one of them, one undo step.
+        if (!toTrack && _layer is { } target && _vm.IsInClipGroup(target))
+        {
+            _vm.PasteEffectsToClips(_vm.SelectedClips, _clipboard);
+            return;
+        }
+
         if (toTrack && CanPasteToTrack)
         {
             _vm.PasteEffectsToTrack(_layer!, _clipboard);
@@ -840,6 +1016,13 @@ public partial class EffectsPane : UserControl
         if (dialog.ToTrack && CanPasteToTrack)
         {
             _vm.PasteEffectsToTrack(_layer!, chosen, append: true);
+            return;
+        }
+
+        // Clips selected together: the chosen effects are added to every one of them, one undo step.
+        if (_layer is { } grouped && _vm.IsInClipGroup(grouped))
+        {
+            _vm.PasteEffectsToClips(_vm.SelectedClips, chosen, append: true);
             return;
         }
 
@@ -955,8 +1138,6 @@ public partial class EffectsPane : UserControl
 
     // ----- Add Effect: the flyout -----
 
-    private static readonly string[] CategoryOrder = ["Color", "Detail", "Blur", "Look", "Transform", "Key", "Matte", "Composite"];
-
     private void OpenAdd(bool focusSearch)
     {
         _addClose.Stop();
@@ -972,7 +1153,7 @@ public partial class EffectsPane : UserControl
         AddList.Children.Clear();
         bool Matches(string text) => search.Length == 0 || text.Contains(search, StringComparison.OrdinalIgnoreCase);
         var available = EffectRegistry.All.Where(d => Fits(d) && (Matches(d.Name) || Matches(d.Category)))
-            .GroupBy(d => d.Category).OrderBy(g => Array.IndexOf(CategoryOrder, g.Key) is var i and >= 0 ? i : CategoryOrder.Length);
+            .GroupBy(d => d.Category).OrderBy(g => EffectRegistry.CategoryRank(g.Key));
         foreach (var group in available)
         {
             AddList.Children.Add(MenuHeading(group.Key));
@@ -1108,7 +1289,8 @@ public partial class EffectsPane : UserControl
 
     // ----- A parameter's row, as the bindings see it -----
 
-    private sealed class ParamModel(EffectsPane pane, EffectInstance? card, EffectParam param, Layer? layer) : INotifyPropertyChanged
+    private sealed class ParamModel(EffectsPane pane, EffectInstance? card, EffectParam param, Layer? layer, (Func<double> Get, Action<double> Set)? bound = null)
+        : INotifyPropertyChanged
     {
         public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -1116,7 +1298,13 @@ public partial class EffectsPane : UserControl
 
         public EffectInstance? Card => card;
 
-        private System.Reflection.PropertyInfo? Bound => param.Bind is { } name && layer is not null ? typeof(Layer).GetProperty(name) : null;
+        /// <summary>A value of the view model's (the blurred background's blur) rather than a card's or a layer's.</summary>
+        public (Func<double> Get, Action<double> Set)? Bound => bound;
+
+        /// <summary>A value a slider's drag has given and that is not written yet (<see cref="WriteValue"/>): shown meanwhile.</summary>
+        public double? Pending { get; set; }
+
+        private System.Reflection.PropertyInfo? BoundProperty => param.Bind is { } name && layer is not null ? typeof(Layer).GetProperty(name) : null;
 
         public IReadOnlyList<Keyframe> Keys => param.Bind == nameof(Layer.Opacity) && layer is not null ? layer.GetKeys(KeyProperty.Opacity)
             : card?.GetKeys(param.Key) ?? [];
@@ -1127,9 +1315,13 @@ public partial class EffectsPane : UserControl
         {
             get
             {
+                if (Pending is { } pending)
+                    return pending;
+                if (bound is { } own)
+                    return own.Get();
                 if (card is not null && param.Bind != nameof(Layer.Opacity) && card.HasKeys(param.Key))
                     return Evaluate(card.GetKeys(param.Key), Math.Max(pane.ClipTime, 0));
-                if (Bound is { } property)
+                if (BoundProperty is { } property)
                     return property.GetValue(layer) switch { int whole => whole, double number => number, bool on => on ? 1 : 0, _ => param.Default };
                 if (card is null)
                     return param.Default;
@@ -1146,7 +1338,7 @@ public partial class EffectsPane : UserControl
 
         public string Text
         {
-            get => Bound is { } property ? property.GetValue(layer) as string ?? "" : card?.GetText(param.Key) ?? "";
+            get => BoundProperty is { } property ? property.GetValue(layer) as string ?? "" : card?.GetText(param.Key) ?? "";
             set => pane.WriteText(this, value ?? "");
         }
 
@@ -1162,8 +1354,9 @@ public partial class EffectsPane : UserControl
     {
         public event PropertyChangedEventHandler? PropertyChanged;
 
-        // How long the target is, for a range switched on: the clip's length, or 5 s for one with none.
-        private double Length => pane._layer is { Duration: > 0.01 } clip ? clip.Duration : 5;
+        // How long the target is, for a range switched on: the clip's length (the blurred background's: the sequence's), or 5 s for one with none.
+        private double Length => pane._layer is { IsBackground: true } && pane._vm is { SequenceSeconds: > 0.01 } vm ? vm.SequenceSeconds
+            : pane._layer is { Duration: > 0.01 } clip ? clip.Duration : 5;
 
         public bool IsOn
         {

@@ -1,0 +1,10 @@
+# DependencyUpdater.PeMachineOf and IsMachineAccepted (5.0): x64 takes x64 only; ARM64 runs ARM64 or x64 programs.
+header x64 (0x8664) reads as 0x8664
+header ARM64 (0xAA64) reads as 0xAA64
+header x86 (0x014C) reads as 0x014C
+too short: nothing
+no MZ: nothing
+header past the end: nothing
+no PE signature: nothing
+x64 HandPeg, program: takes x64
+ARM64 HandPeg, program: takes x64, ARM64

@@ -1,0 +1,3 @@
+# An unlinked video clip's slip moves its sound; a sound clip's is ignored (the lowering's rule).
+video clip 2-6 s from 3 s, sound slipped 0.25 s later: at 3.0 s the file at 3.75 s; nothing before 2.25 s
+sound clip 2-6 s from 3 s, slip set: ignored (a sound clip has no picture to slip from): at 3.0 s the file at 4.0 s

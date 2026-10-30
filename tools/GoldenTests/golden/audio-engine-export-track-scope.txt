@@ -1,0 +1,3 @@
+# A main track's own processing is that track's sound alone (5.0-Verify Q1): the engine's mix against the FFmpeg export's sound of one timeline.
+the main file's track 1 (music: auto-ducked, -12 dB, a compressor at -24 dB 4:1, bass +6 dB), track 2 (the voice: bursts at 1 and 3 s), a 1 kHz clip at -2 dB from 0.5 to 3.5 s
+the engine's mix against the export's two tracks summed: within -30 dB, correlation over 0.99, no lag

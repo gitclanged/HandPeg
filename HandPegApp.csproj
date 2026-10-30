@@ -12,9 +12,9 @@
     <RootNamespace>HandPegApp</RootNamespace>
     <Product>HandPeg</Product>
     <AssemblyTitle>HandPeg</AssemblyTitle>
-    <Version>4.4.0</Version>
-    <AssemblyVersion>4.4.0.0</AssemblyVersion>
-    <FileVersion>4.4.0.0</FileVersion>
+    <Version>5.0.0</Version>
+    <AssemblyVersion>5.0.0.0</AssemblyVersion>
+    <FileVersion>5.0.0.0</FileVersion>
 
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>
@@ -22,11 +22,11 @@
     <!-- Windows Forms is referenced for two things WPF lacks: the system colour picker and tray notifications. -->
     <UseWindowsForms>true</UseWindowsForms>
 
-    <!-- 64-bit Intel/AMD, or 64-bit ARM when published for win-arm64 (4.3D): the tools and the player library HandPeg
-         downloads are the builds for the processor it runs on (DependencyUpdater.IsArm64). -->
+    <!-- 64-bit Intel/AMD, or 64-bit ARM when published for win-arm64 (4.3D): the tools HandPeg downloads are the builds
+         for the processor it runs on (DependencyUpdater.IsArm64). -->
     <PlatformTarget>x64</PlatformTarget>
     <PlatformTarget Condition="'$(RuntimeIdentifier)' == 'win-arm64'">ARM64</PlatformTarget>
-    <!-- For the native calls: libmpv through function pointers, Windows through generated [LibraryImport] code. -->
+    <!-- For the native calls: the compositor's COM by hand (function pointers), Windows through generated [LibraryImport] code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
@@ -74,10 +74,123 @@
     <Content Remove="tools\**" />
   </ItemGroup>
 
+  <!--
+      The GPU compositor's shaders (Pass 5.0-Core): every .hlsl under src\Compositor\Shaders is compiled at build time by
+      Windows' own d3dcompiler_47.dll (System32; no SDK, no NuGet), one blob per entry point named VS* (vs_5_0) or PS*
+      (ps_5_0), optimised, warnings as errors, and embedded as HandPegApp.Shaders.<entry>.cso. Nothing compiles at run
+      time. Incremental: only when a shader source changed.
+  -->
+  <ItemGroup>
+    <HlslSource Include="src\Compositor\Shaders\*.hlsl" />
+    <HlslHeader Include="src\Compositor\Shaders\*.hlsli" />
+    <None Remove="src\Compositor\Shaders\**" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <HlslOutput>$(BaseIntermediateOutputPath)shaders\</HlslOutput>
+  </PropertyGroup>
+
+  <UsingTask TaskName="CompileHlsl" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Sources ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <OutputDirectory ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Class" Language="cs"><![CDATA[
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
+
+public class CompileHlsl : Microsoft.Build.Utilities.Task
+{
+    [Microsoft.Build.Framework.Required] public Microsoft.Build.Framework.ITaskItem[] Sources { get; set; }
+    [Microsoft.Build.Framework.Required] public string OutputDirectory { get; set; }
+
+    [DllImport("d3dcompiler_47.dll", CharSet = CharSet.Unicode)]
+    private static extern int D3DCompileFromFile(string fileName, IntPtr defines, IntPtr include, [MarshalAs(UnmanagedType.LPStr)] string entry,
+        [MarshalAs(UnmanagedType.LPStr)] string target, uint flags1, uint flags2, out IntPtr code, out IntPtr errors);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate IntPtr BufferPointer(IntPtr blob);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate IntPtr BufferSize(IntPtr blob);
+
+    private static T Method<T>(IntPtr instance, int slot) where T : class =>
+        (T)(object)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(Marshal.ReadIntPtr(instance), slot * IntPtr.Size), typeof(T));
+
+    private static byte[] Bytes(IntPtr blob)
+    {
+        var pointer = Method<BufferPointer>(blob, 3)(blob);
+        var size = (long)Method<BufferSize>(blob, 4)(blob);
+        var bytes = new byte[size];
+        Marshal.Copy(pointer, bytes, 0, (int)size);
+        return bytes;
+    }
+
+    public override bool Execute()
+    {
+        // D3DCOMPILE_ENABLE_STRICTNESS | OPTIMIZATION_LEVEL3 | WARNINGS_ARE_ERRORS; the standard include handler.
+        const uint flags = (1u << 11) | (1u << 15) | (1u << 18);
+        var include = new IntPtr(1);
+        var entryPoint = new Regex(@"^\s*(?:float4|VsOut)\s+((?:VS|PS)\w+)\s*\(", RegexOptions.Multiline);
+        Directory.CreateDirectory(OutputDirectory);
+        foreach (var stale in Directory.GetFiles(OutputDirectory, "*.cso"))
+            File.Delete(stale);
+
+        var ok = true;
+        foreach (var source in Sources)
+        {
+            var path = source.GetMetadata("FullPath");
+            foreach (Match match in entryPoint.Matches(File.ReadAllText(path)))
+            {
+                var entry = match.Groups[1].Value;
+                var profile = entry.StartsWith("VS", StringComparison.Ordinal) ? "vs_5_0" : "ps_5_0";
+                IntPtr code, errors;
+                var hr = D3DCompileFromFile(path, IntPtr.Zero, include, entry, profile, flags, 0, out code, out errors);
+                if (errors != IntPtr.Zero)
+                {
+                    var text = System.Text.Encoding.ASCII.GetString(Bytes(errors)).TrimEnd('\0', '\r', '\n');
+                    Marshal.Release(errors);
+                    if (hr < 0)
+                        Log.LogError("HLSL", "HLSL0001", null, path, 0, 0, 0, 0, "{0} ({1}): {2}", entry, profile, text);
+                    else if (text.Length > 0)
+                        Log.LogMessage(Microsoft.Build.Framework.MessageImportance.Low, "{0}: {1}", entry, text);
+                }
+
+                if (hr < 0)
+                {
+                    ok = false;
+                    if (errors == IntPtr.Zero)
+                        Log.LogError("HLSL", "HLSL0002", null, path, 0, 0, 0, 0, "{0} ({1}) failed: 0x{2:X8}", entry, profile, hr);
+                    continue;
+                }
+
+                File.WriteAllBytes(Path.Combine(OutputDirectory, entry + ".cso"), Bytes(code));
+                Marshal.Release(code);
+            }
+        }
+
+        return ok && !Log.HasLoggedErrors;
+    }
+}
+]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="CompileShaders" BeforeTargets="BeforeBuild" Inputs="@(HlslSource);@(HlslHeader)" Outputs="$(HlslOutput)shaders.stamp">
+    <CompileHlsl Sources="@(HlslSource)" OutputDirectory="$(HlslOutput)" />
+    <Touch Files="$(HlslOutput)shaders.stamp" AlwaysCreate="true" />
+  </Target>
+
+  <Target Name="EmbedShaders" AfterTargets="CompileShaders" BeforeTargets="BeforeBuild">
+    <ItemGroup>
+      <_CompiledShader Include="$(HlslOutput)*.cso" />
+      <EmbeddedResource Include="@(_CompiledShader)" LogicalName="HandPegApp.Shaders.%(Filename)%(Extension)" />
+    </ItemGroup>
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="CliWrap" Version="3.10.5" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-    <PackageReference Include="SharpCompress" Version="0.50.4" />
     <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
 

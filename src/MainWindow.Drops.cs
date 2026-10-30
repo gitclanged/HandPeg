@@ -99,6 +99,10 @@ public partial class MainWindow
         if (_viewModel.HasSource || _viewModel.IsBusy)
             return;
 
+        // A file on its way to a style: what its drop will need is made ready while it is carried (on a fast drive).
+        if (Dragged(e.Data).File is { } carried)
+            PrewarmDrop(carried, carried: true);
+
         // Made at launch, once the window was idle (see PrepareDropTargets): only made again when the mode or the
         // presets have changed since.
         if (DropTargetsSignature() != _dropTargetsMode)
@@ -119,6 +123,9 @@ public partial class MainWindow
 
     private void HideDropOverlay()
     {
+        // Carried away, not dropped on a target: the player lets go of what it opened for it.
+        if (!_routingDrop)
+            UnPrewarm();
         _dropLeave.Stop();
         ClearDropMark();
         DropOverlay.Visibility = _dropTargetsBuilt ? Visibility.Hidden : Visibility.Collapsed;
@@ -135,12 +142,101 @@ public partial class MainWindow
     {
         if (sender is UIElement target)
             target.Opacity = 0.7;
+
+        // Over a style: its drop is near.
+        if (sender is FrameworkElement { DataContext: DropTargetItem { Target: StyleFile } } && Dragged(e.Data).File is { } carried)
+            PrewarmDrop(carried, carried: true);
     }
 
     private void DropTarget_DragLeave(object sender, DragEventArgs e)
     {
         if (sender is UIElement target)
             target.Opacity = 1;
+    }
+
+    // ----- Ahead of a drop (Pass 5.0-Release, the user's directive 5) -----
+    // A video likely to be dropped (its Media tile rested on, a drag of it begun, carried over the drop overlay's styles):
+    // on a fast local drive (DriveKind), what its drop will ask for first is done now. Its inspection (MediaProbe keeps
+    // it by FileState) and its key frames (kept by the seek index); the Overview Bar's worker started and the file opened
+    // in it; the player's worker opening it and decoding its first frames. A drop is urgent and never waits behind any of
+    // it; when no drop follows, the player lets go of it (UnPrewarm) and the Overview Bar's worker ends as ever when idle.
+
+    // The file made ready last, and when (Environment.TickCount64): asked again within this long, nothing is done again.
+    private string? _prewarmed;
+    private long _prewarmedAt;
+    private bool _prewarmedCarried;
+    private const int PrewarmAgainMs = 10_000;
+
+    // The inspection asked for the file made ready last (cancelled when another is made ready, or it is let go of).
+    private CancellationTokenSource? _prewarmProbe;
+
+    // When the last drop on a style was let go (the timing line written when its Overview Bar sheet comes), and whether a
+    // drop on a target is being routed (the overlay is put away for it, and what was made ready is kept).
+    private System.Diagnostics.Stopwatch? _dropClock;
+    private bool _routingDrop;
+
+    /// <summary>
+    /// A video likely to be dropped: made ready ahead on a fast local drive. <paramref name="carried"/>: it is being dragged
+    /// (its key frames are listed too: a long recording's listing reads the whole file, worth it only for a drag).
+    /// </summary>
+    private void PrewarmDrop(string path, bool carried)
+    {
+        if (string.IsNullOrWhiteSpace(path) || MainViewModel.IsWebAddress(path))
+            return;
+
+        // Learnt off the interface's thread, once per drive; until it is known, nothing (made ready when it is).
+        if (!DriveKind.IsFast(path))
+        {
+            _ = LearnDriveThenPrewarmAsync(path, carried);
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        if (string.Equals(path, _prewarmed, StringComparison.OrdinalIgnoreCase) && now - _prewarmedAt < PrewarmAgainMs && (_prewarmedCarried || !carried))
+            return;
+        var again = string.Equals(path, _prewarmed, StringComparison.OrdinalIgnoreCase);
+        (_prewarmed, _prewarmedAt, _prewarmedCarried) = (path, now, carried);
+
+        // Its inspection, as the drop asks for it: background work (held while a file is dragged, and never ahead of a
+        // drop's or a project's own loading on the interactive lane: the drop's urgent probe covers it), the one asked for
+        // the file made ready before let go of (5.0-Release review: tiles passed over queued a probe each ahead of the drop).
+        if (!again || _prewarmProbe is null)
+        {
+            _prewarmProbe?.Cancel();
+            _prewarmProbe = new CancellationTokenSource();
+            _ = MediaProbe.ProbeAsync(path, _prewarmProbe.Token, WorkLane.Background);
+        }
+
+        // Its key frames, for a drag: off the interface's thread (what is known of them is read from the cache's disk first).
+        if (carried)
+            _ = Task.Run(() => FfmpegRunner.GetIFramesAsync(path, CancellationToken.None));
+
+        // Opened in the Overview Bar's worker (started when it is not running) and in the player's.
+        if (GpuProgramStrip.IsWanted && (_viewModel.ShowTimelineThumbnails || _viewModel.ShowHoverPreviews))
+            ProgramStrip().Prewarm(path);
+        _gpu?.Prewarm(path);
+    }
+
+    private async Task LearnDriveThenPrewarmAsync(string path, bool carried)
+    {
+        try
+        {
+            if (await DriveKind.Learn(path))
+                PrewarmDrop(path, carried);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Ahead of a drop", ex);
+        }
+    }
+
+    /// <summary>No drop of the file made ready came (the drag left, or something else opened): the player lets go of it.</summary>
+    private void UnPrewarm()
+    {
+        _gpu?.Prewarm(null);
+        _prewarmed = null;
+        _prewarmProbe?.Cancel();
+        _prewarmProbe = null;
     }
 
     /// <summary>A file let go on a target: opened with that style, opened and given that encoding preset, or squished for that preset.</summary>
@@ -155,7 +251,9 @@ public partial class MainWindow
 
     private void RouteDrop(DropTargetItem item, DragEventArgs e)
     {
+        _routingDrop = true;
         HideDropOverlay();
+        _routingDrop = false;
 
         // A file, or a link, which is downloaded on the way: a style is given to the video the link loads, and the
         // Squisher squishes the download.
@@ -169,12 +267,27 @@ public partial class MainWindow
         switch (item.Target)
         {
             case StyleFile style:
-                _ = _viewModel.LoadFileWithStyleAsync(source, style.Path);
+                _dropClock = System.Diagnostics.Stopwatch.StartNew();
+                _ = TimeStyleDropAsync(_viewModel.LoadFileWithStyleAsync(source, style.Path), _dropClock);
                 break;
 
             case SquishPreset squish:
                 _ = SquishDroppedAsync(source, squish);
                 break;
+        }
+    }
+
+    /// <summary>How long a drop on a style took to open its file with the style (the log; the Overview Bar's sheet adds its own line).</summary>
+    private static async Task TimeStyleDropAsync(Task loading, System.Diagnostics.Stopwatch clock)
+    {
+        try
+        {
+            await loading;
+            AppLog.Write(string.Create(CultureInfo.InvariantCulture, $"Drop on a style: opened with the style in {clock.ElapsedMilliseconds} ms."));
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Drop on a style", ex);
         }
     }
 

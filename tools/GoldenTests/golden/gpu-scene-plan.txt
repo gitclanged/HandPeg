@@ -1,0 +1,89 @@
+# GpuScenePlan's scenes, layer by layer (no worker): what the GPU engine is told to draw at sampled moments; Evaluate allocates nothing.
+
+plain main video: 320 x 180, 4 s, 2 entries
+  at 0.5 s: 1 layer(s)
+    Media source 0 at 0.500 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+  at 1.5 s: 1 layer(s)
+    Media source 0 at 1.500 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+  at 3.2 s: 1 layer(s)
+    Media source 0 at 3.200 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+  3D places: 1 used of a stack 2 deep
+
+rider with its own keys: 320 x 180, 4 s, 3 entries
+  at 1 s: 1 layer(s)
+    Media source 0 at 1.000 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+  at 2.5 s: 2 layer(s)
+    Media source 0 at 2.500 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, flags 5, blur 20/2/-0.15  [Blurred Background, track 0]
+    Media source 0 at 2.500 box (24.0, 5.3) 301.3 x 169.5, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+  at 3.5 s: 2 layer(s)
+    Media source 0 at 3.500 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, flags 5, blur 20/2/-0.15  [Blurred Background, track 0]
+    Media source 0 at 3.500 box (72.0, 30.7) 210.7 x 118.5, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+  3D places: 2 used of a stack 2 deep
+
+game style (HUD cut-out, blurred background): 180 x 320, 4 s, 3 entries
+  at 0.7 s: 3 layer(s)
+    Media source 0 at 0.700 box (0.0, 0.0) 180.0 x 320.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, flags 5, blur 20/2/-0.15  [Blurred Background, track 0]
+    Media source 0 at 0.700 box (0.0, 76.0) 180.0 x 168.0, crop (0.200, 0.000)-(0.800, 1.000), opacity 1.000  [Main, track 0]
+    Media source 0 at 0.700 box (9.0, 10.0) 108.0 x 52.0, crop (0.000, 0.000)-(0.350, 0.300), opacity 1.000  [HUD, track 1, masked]
+  at 2.2 s: 3 layer(s)
+    Media source 0 at 2.200 box (0.0, 0.0) 180.0 x 320.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, flags 5, blur 20/2/-0.15  [Blurred Background, track 0]
+    Media source 0 at 2.200 box (0.0, 76.0) 180.0 x 168.0, crop (0.200, 0.000)-(0.800, 1.000), opacity 1.000  [Main, track 0]
+    Media source 0 at 2.200 box (9.0, 10.0) 108.0 x 52.0, crop (0.000, 0.000)-(0.350, 0.300), opacity 1.000  [HUD, track 1, masked]
+  3D places: 3 used of a stack 3 deep
+
+picture in picture (crop, turn, opacity keys): 320 x 180, 4 s, 3 entries
+  at 1 s: 2 layer(s)
+    Media source 0 at 1.000 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+    Media source 1 at 1.000 box (160.0, 18.0) 128.0 x 64.0, crop (0.100, 0.000)-(1.000, 0.800), turned 15.0 about (0.50, 0.50), opacity 0.800  [inset, track 1]
+  at 2.5 s: 2 layer(s)
+    Media source 0 at 2.500 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+    Media source 1 at 2.500 box (160.0, 18.0) 128.0 x 64.0, crop (0.100, 0.000)-(1.000, 0.800), turned 15.0 about (0.50, 0.50), opacity 0.500  [inset, track 1]
+  3D places: 2 used of a stack 3 deep
+
+transition (wipe in, dissolve out): 320 x 180, 4 s, 3 entries
+  at 0.5 s: 2 layer(s)
+    Media source 0 at 0.500 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+    Media source 1 at 0.500 box (96.0, 36.0) 160.0 x 90.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000: TransitionWipe(0.5 1 0 0.5)  [inset, track 1]
+  at 2 s: 2 layer(s)
+    Media source 0 at 2.000 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+    Media source 1 at 2.000 box (96.0, 36.0) 160.0 x 90.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [inset, track 1]
+  at 3.5 s: 2 layer(s)
+    Media source 0 at 3.500 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+    Media source 1 at 3.500 box (96.0, 36.0) 160.0 x 90.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000: TransitionDissolve(0.5 0 0 0.5)  [inset, track 1]
+  3D places: 2 used of a stack 3 deep
+
+text clip: 320 x 180, 4 s, 3 entries
+  at 1 s: 2 layer(s)
+    Media source 0 at 1.000 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+    Still still 1 box (32.0, 18.0) 160.0 x 56.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Title, track 1]
+  3D places: 2 used of a stack 3 deep
+
+masked layer (grown, soft edge): 320 x 180, 4 s, 3 entries
+  at 1.5 s: 2 layer(s)
+    Media source 0 at 1.500 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+    Media source 1 at 1.500 box (64.0, 27.0) 192.0 x 108.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [masked, track 1, masked]
+  3D places: 2 used of a stack 3 deep
+
+adjustment layer: 320 x 180, 4 s, 3 entries
+  at 0.5 s: 1 layer(s)
+    Media source 0 at 0.500 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+  at 2 s: 2 layer(s)
+    Media source 0 at 2.000 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+    None box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, flags 3: ColorGrade(1.3 0 0.5 1)  [Grade, track 1]
+  3D places: 2 used of a stack 3 deep
+
+blurred background child (radius 9, zoom 1.5, its own vignette): 320 x 180, 4 s, 2 entries
+  at 0.7 s: 2 layer(s)
+    Media source 0 at 0.700 box (0.0, 0.0) 320.0 x 180.0, crop (0.167, 0.167)-(0.833, 0.833), opacity 1.000, flags 5, blur 9/2/-0.15: Vignette(0.6 100 100 0)  [Blurred Background, track 0]
+    Media source 0 at 0.700 box (80.0, 45.0) 160.0 x 90.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+  at 2.2 s: 2 layer(s)
+    Media source 0 at 2.200 box (0.0, 0.0) 320.0 x 180.0, crop (0.167, 0.167)-(0.833, 0.833), opacity 1.000, flags 5, blur 9/2/-0.15: Vignette(0.6 100 100 0)  [Blurred Background, track 0]
+    Media source 0 at 2.200 box (80.0, 45.0) 160.0 x 90.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Main, track 0]
+  3D places: 2 used of a stack 2 deep
+
+advanced values (a 3-pass blur wider across, dimmed; a frame-shaped feathered vignette): 320 x 180, 4 s, 2 entries
+  at 1 s: 1 layer(s)
+    Media source 0 at 1.000 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000: BoxBlur(8 3 2 10), Vignette(0.7 0 60 0)  [Main, track 0]
+  at 3 s: 1 layer(s)
+    Media source 0 at 3.000 box (0.0, 0.0) 320.0 x 180.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000: BoxBlur(8 3 2 10), Vignette(0.7 0 60 0)  [Main, track 0]
+  3D places: 1 used of a stack 2 deep

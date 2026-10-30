@@ -1,0 +1,28 @@
+# The GPU export's FFmpeg command (the export's own, its picture piped), what it refuses, and the frames it pipes.
+
+the whole timeline, fades, auto-captions:
+  320 x 180, 120 frames at 30/1 (120 on the canvas), chapters file: False
+  ffmpeg -hide_banner -y -i D:/media/main.mp4 -f rawvideo -pix_fmt bgr0 -video_size 320x180 -framerate 30/1 -i pipe:0 -filter_complex anullsrc=r=48000:cl=stereo:d=4[aedit0];[aedit0]afade=t=in:st=0:d=1,afade=t=out:st=3:d=1[an0] -map 1:v:0 -map [an0] -vf scale=out_color_matrix=bt709:out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,setsar=1,fade=t=in:st=0:d=1,fade=t=out:st=3:d=1,null[cap_base];color=c=black@0:s=288x36:r=30,format=rgba,ass='D\:/media/captions.ass':alpha=1[cap_layer];[cap_base][cap_layer]overlay=16:126:shortest=1 -c:v libx264 -preset medium -crf 18 -metadata:s:a:0 "title=Track 1" -c:a:0 aac -b:a:0 160k -map_chapters -1 D:/media/out.mkv
+
+one whole clip, NVENC, burned subtitles, chapters, 24 fps:
+  320 x 180, 120 frames at 24/1 (150 on the canvas), chapters file: True
+  ffmpeg -hide_banner -y -i D:/media/main.mp4 -i D:/media/chapters.txt -f rawvideo -pix_fmt bgr0 -video_size 320x180 -framerate 24/1 -i pipe:0 -map 2:v:0 -map 0:a:0? -vf scale=out_color_matrix=bt709:out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,setsar=1,subtitles='D\:/media/main.mp4':si=0,crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0,scale=flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p -c:v h264_nvenc -preset p5 -rc vbr -cq 21 -b:v 0 -pix_fmt yuv420p -metadata:s:a:0 "title=Track 1" -c:a:0 aac -b:a:0 160k -map_chapters 1 D:/media/out.mp4
+
+refused:
+  Copy: a Copy export keeps the file's own picture
+  GIF: GIF and WebP are made by FFmpeg's palette steps
+  deinterlaced: deinterlacing is FFmpeg's (the compositor has no deinterlacer yet)
+  tone-mapped: tone mapping to SDR is FFmpeg's (the compositor has none yet)
+  burned subtitles on a spliced main video: the source's subtitles are burned into a main video in several clips, on its own frames
+  no known length: the main video's length is not known, so FFmpeg's canvas takes its clock from it
+  channel balance: the colour sliders' red, green and blue balance is FFmpeg's (the compositor has none yet)
+
+frames (canvas rate, its length, export rate: canvas frames, export frames, the first export frames' canvas frames):
+  30/1, 4 s, the same: 120 canvas, 120 out (30/1): 0 1 2 3 4 5 6 7 8 9 10 11
+  30/1, 4 s, 24: 120 canvas, 96 out (24/1): 0 1 3 4 5 6 8 9 10 11 13 14
+  30/1, 4 s, 60: 120 canvas, 240 out (60/1): 0 0 1 1 2 2 3 3 4 4 5 5
+  60/1, 10.01 s, 30: 601 canvas, 301 out (30/1): 0 2 4 6 8 10 12 14 16 18 20 22
+  30000/1001, 10 s, 29.97: 300 canvas, 300 out (2997/100): 0 1 2 3 4 5 6 7 8 9 10 11
+  24000/1001, 7.5 s, 25: 180 canvas, 188 out (25/1): 0 1 2 3 4 5 6 7 8 9 10 11
+  25/1, 3.333 s, 59.94: 84 canvas, 201 out (2997/50): 0 0 1 1 1 2 2 3 3 3 4 4
+  24/1, 0.02 s, the same: 1 canvas, 1 out (24/1): 0

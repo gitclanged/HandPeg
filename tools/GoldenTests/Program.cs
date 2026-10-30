@@ -14,6 +14,13 @@ public static class Program
 {
     public static int Main(string[] args)
     {
+        // The compositor's worker (and the hardware benchmark) are started as this program again, as HandPeg starts
+        // HandPeg.exe (WorkerProcess.ProgramPath is the running program): the same entry points, nothing else.
+        if (args.Length > 0 && args[0] == HandPegApp.Compositor.CompositorWorker.Argument)
+            return HandPegApp.Compositor.CompositorWorker.Run(args);
+        if (args.Length > 0 && args[0] == HandPegApp.Compositor.HardwareBenchmark.Argument)
+            return HandPegApp.Compositor.HardwareBenchmark.Run(args);
+
         // Everything HandPeg would keep (settings, caches, logs, the masks folder) goes into a folder of the test's own,
         // never the user's: set before any of HandPeg's code runs.
         var data = Path.Combine(Path.GetTempPath(), "HandPeg.GoldenTests", Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
@@ -51,8 +58,34 @@ public static class Program
         results.AddRange(RunnerTests.All(graphs));
         results.AddRange(TimelineDocumentTests.All());
         results.AddRange(TimelineGraphCases.All());
+        results.Add(GraphCases.GpuAvInvariant());
         results.AddRange(CaptionTests.All());
         results.AddRange(WaveformTests.All());
+        results.AddRange(PeMachineTests.All());
+        results.AddRange(MediaFoundationTests.All());
+        results.AddRange(AudioEngineTests.All());
+        if (filter is null || "compositor-parity".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.AddRange(CompositorParityTests.All());
+        if (filter is null || "gpu-scene-differential".Contains(filter, StringComparison.OrdinalIgnoreCase) || "gpu-scene-plan".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.AddRange(GpuSceneDifferentialTests.All());
+        if (filter is null || "gpu-export-command".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(GpuExportTests.Commands());
+        if (filter is null || "gpu-export".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(GpuExportTests.Exports());
+        if (filter is null || "gpu-preview-command".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(GpuExportTests.PreviewCommands());
+        if (filter is null || "gpu-preview-window".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(GpuExportTests.PreviewWindow());
+        if (filter is null || "gpu-export-every-frame".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(GpuExportTests.EveryFrame());
+        if (filter is null || "gpu-program-strip".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(GpuExportTests.ProgramStrip());
+        if (filter is null || "gpu-filmstrip".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.AddRange(GpuFilmstripTests.All());
+        if (filter is null || "gpu-scene-clip-effect".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(GpuSceneClipEffectTests.Run());
+        if (filter is null || "gpu-picture-subtitles".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(PictureSubtitleTests.Run());
         if (filter is not null)
             results = results.Where(r => r.Golden.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 

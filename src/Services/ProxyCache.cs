@@ -1,21 +1,21 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
-using CliWrap;
 
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Proxies: small copies of heavy videos (4K, AV1, 10-bit HEVC, long I-frame intervals...) that Live Preview plays in
-/// their place, so that seeking and playing a layer of one costs what a 540-line H.264 file costs. They are for
-/// looking at only: exports always read the original files, and the sound always comes from the original.
+/// Proxies: small copies of videos whose I-frames are far apart (long-GOP recordings) that the GPU preview plays in their
+/// place where it cannot decode the original fast (a codec the card has no decoder for, a preview on the processor), so
+/// that seeking and scrubbing a layer of one cost what a 540-line H.264 file costs. They are for looking at only: exports
+/// always read the original files, and the sound always comes from the original.
 ///
-/// A proxy is made in the background (see WorkScheduler) on the background graphics card where there is one, after
-/// HandPeg has been left alone for a while, one at a time; written beside its place and moved there when whole. It
-/// is kept in the proxy cache (PreviewCache.Proxies, or a folder beside the project: Settings), named after the file
-/// it stands for (its path, size and date), its height and its codec, and listed in that cache's manifest.
-///
-/// The composed timeline proxy (the whole sequence as one video) is made here too: see <see cref="MakeTimelineAsync"/>.
+/// A proxy is made on demand only (a clip's right-click Optimize Long-GOP Clip for Scrubbing, offered where it helps:
+/// MainViewModel.OptimizeIsUseful), in the background (see WorkScheduler) on the background graphics card where there is
+/// one, one at a time; written beside its place and moved there when whole. It is kept in
+/// the proxy cache (PreviewCache.Proxies, or a folder beside the project: Settings), named after the file it stands for
+/// (its path, size and date), its height and its codec, and listed in that cache's manifest. The composed timeline proxy
+/// of 4.x is gone: the GPU engine draws the timeline itself.
 /// </summary>
 public static class ProxyCache
 {
@@ -46,64 +46,6 @@ public static class ProxyCache
 
     /// <summary>The proxy of a file, when it has been made; null when it has not.</summary>
     public static string? Find(string media, string? projectPath) => Store(projectPath).Find(media, Kind, Extension);
-
-    // ----- Which files want one -----
-
-    /// <summary>
-    /// Whether a video is heavy enough to want a proxy: larger than Settings says (its shorter side over 1080 by default,
-    /// so a vertical 1080x1920 clip is 1080p as a landscape one is), in a codec that is
-    /// slow to decode in software (AV1, VP9, ProRes, 10-bit HEVC), or with I-frames further apart than Settings says
-    /// (2 s by default: every seek decodes that far). <paramref name="iFrameSeconds"/> is the measured interval, when known.
-    /// </summary>
-    public static bool IsHeavy(MediaInfo info, double? iFrameSeconds)
-    {
-        if (info.Video is not { } video)
-            return false;
-
-        var settings = AppSettings.Current;
-        var tenBit = video.PixelFormat.Contains("10", StringComparison.Ordinal) || video.PixelFormat.Contains("12", StringComparison.Ordinal);
-        return Math.Min(video.Width, video.Height) > Math.Max(settings.ProxyHeavyHeight, 240)
-               || video.Codec is "av1" or "vp9" or "prores"
-               || (video.Codec == "hevc" && tenBit)
-               || iFrameSeconds > Math.Max(settings.ProxyHeavyIFrameSeconds, 0.5);
-    }
-
-    // The I-frame interval of each file looked at this session.
-    private static readonly ConcurrentDictionary<string, double> IFrameIntervals = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// How far apart a file's I-frames are, on average, over its first thirty seconds: from the packets' flags,
-    /// nothing decoded. Null when it could not be read.
-    /// </summary>
-    public static async Task<double?> IFrameIntervalAsync(string media, CancellationToken token)
-    {
-        if (IFrameIntervals.TryGetValue(media, out var known))
-            return known;
-        if (!File.Exists(DependencyUpdater.FfprobePath))
-            return null;
-
-        var times = new List<double>();
-        await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfprobePath)
-            .WithArguments(["-v", "error", "-select_streams", "v:0", "-read_intervals", "%+30", "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", "-i", media])
-            .WithStandardOutputPipe(ProcessPipes.Lines(line =>
-            {
-                var comma = line.IndexOf(',');
-                if (comma > 0 && comma + 1 < line.Length && line[comma + 1] == 'K'
-                    && double.TryParse(line.AsSpan(0, comma), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
-                {
-                    times.Add(seconds);
-                }
-            }))
-            .WithValidation(CommandResultValidation.None), token);
-
-        if (times.Count < 2)
-            return null;
-
-        times.Sort();
-        var interval = (times[^1] - times[0]) / (times.Count - 1);
-        IFrameIntervals[media] = interval;
-        return interval;
-    }
 
     // ----- Making them -----
 
@@ -197,58 +139,6 @@ public static class ProxyCache
         catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"The proxy of {Path.GetFileName(media)} could not be made", ex);
-            return null;
-        }
-        finally
-        {
-            TryDelete(making);
-        }
-    }
-
-    /// <summary>
-    /// Makes the composed timeline proxy: the whole sequence, as Render Preview would make it (the export's own
-    /// graph, from the original files, without captions or sound), at the proxy height, by the proxies' encoders.
-    /// Kept in the proxy cache under the timeline's fingerprint, against the main video's file.
-    /// </summary>
-    /// <param name="previewCommand">Makes the Render Preview command for an output file and a scale in percent.</param>
-    public static async Task<string?> MakeTimelineAsync(string mainMedia, string fingerprint, int percent, Func<string, int, string, string> previewCommand,
-        IReadOnlyCollection<string> workingEncoders, double seconds, string? projectPath, WorkContext work)
-    {
-        var store = Store(projectPath);
-        var kind = $"timeline{fingerprint}";
-        if (store.Find(mainMedia, kind, ".mp4") is { } ready)
-            return ready;
-        if (store.PrepareWrite(mainMedia, kind, ".mp4") is not { } path)
-            return null;
-
-        var making = path + ".part.mp4";
-        var report = new Progress<FfmpegProgress>(p =>
-        {
-            if (p.Position is { } position && seconds > 0)
-                work.Report(Math.Clamp(position.TotalSeconds / seconds, 0, 1));
-        });
-
-        try
-        {
-            var encoders = Encoders(workingEncoders);
-            for (var i = 0; i < encoders.Count; i++)
-            {
-                try
-                {
-                    await FfmpegRunner.RunAsync(previewCommand(making, percent, EncodeArguments(encoders[i])), report, work.Token, graphInFile: true);
-                    break;
-                }
-                catch (InvalidOperationException ex) when (ex is not FfmpegCommandException && i + 1 < encoders.Count)
-                {
-                    AppLog.Write($"Timeline proxy: {encoders[i]} would not make it, the next encoder is tried: {ex.Message}");
-                }
-            }
-
-            return store.Keep(mainMedia, kind, ".mp4", making);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
-        {
-            AppLog.Write("The timeline proxy could not be made", ex);
             return null;
         }
         finally

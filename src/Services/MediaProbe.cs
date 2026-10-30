@@ -180,6 +180,9 @@ public static class MediaProbe
     /// <summary>Where a file's picture starts, when the file has been inspected this session; null when it has not.</summary>
     public static double? KnownVideoStart(string path) => Key(path) is { } key && VideoStarts.TryGetValue(key, out var start) ? start : null;
 
+    /// <summary>Where a probed file's container clock starts (seconds), even before its I-frames are listed; null when not probed.</summary>
+    public static double? KnownContainerStart(string path) => Key(path) is { } key && ContainerStarts.TryGetValue(key, out var start) ? start : null;
+
     // Where each file's container clock starts (the earliest of its streams), how long it is, and the time stamps of its
     // video's I-frames (with the size and last write of the file they were listed from): what a seek in the file lands
     // on. Learnt once per file and session, or taken up from what was kept of it (see Recall and Adopt).
@@ -193,6 +196,14 @@ public static class MediaProbe
     /// </summary>
     public static SeekIndex? KnownSeekIndex(string path) =>
         Key(path) is { } key && IFrames.TryGetValue(key, out var listed) && ContainerStarts.TryGetValue(key, out var start) ? new SeekIndex(start, listed.Times) : null;
+
+    /// <summary>
+    /// What a file was found to be this session, when it was inspected and has not changed since (as FileState sees it now);
+    /// null otherwise. Never inspects: for a question asked on the interface's thread (a clip's right-click menu).
+    /// </summary>
+    public static MediaInfo? KnownInfo(string path) =>
+        Key(path) is { } key && Probed.TryGetValue(key, out var kept) && FileState.Get(path) is { Exists: true } file
+            && file.Length == kept.Length && file.WrittenUtc.Ticks == kept.WrittenTicks ? kept.Info : null;
 
     /// <summary>A file's I-frame times when they are known for the file as it is now (not as it was before it changed); null otherwise.</summary>
     public static double[]? KnownIFrames(string path) =>
@@ -416,6 +427,7 @@ public static class MediaProbe
     {
         VideoStreamInfo? video = null;
         var videoStart = 0.0;
+        var streamSeconds = 0.0;
         var audio = new List<AudioStreamInfo>();
         var subtitles = new List<SubtitleStreamInfo>();
 
@@ -423,6 +435,7 @@ public static class MediaProbe
         {
             foreach (var stream in streams.EnumerateArray())
             {
+                streamSeconds = Math.Max(streamSeconds, StreamSeconds(stream));
                 var codec = Text(stream, "codec_name");
                 switch (Text(stream, "codec_type"))
                 {
@@ -477,9 +490,14 @@ public static class MediaProbe
             }
         }
 
+        // A container that gives no length (some Matroska and MPEG-TS files): its longest stream's.
+        var duration = hasFormat ? Number(format, "duration") : 0;
+        if (!(duration > 0) || !double.IsFinite(duration))
+            duration = streamSeconds;
+
         return new MediaInfo(
             hasFormat ? Text(format, "format_long_name") : "",
-            hasFormat ? Number(format, "duration") : 0,
+            duration,
             hasFormat ? (long)Number(format, "bit_rate") : 0,
             video, audio, subtitles)
         {
@@ -508,6 +526,22 @@ public static class MediaProbe
 
     private static string Tag(JsonElement stream, string name) =>
         stream.TryGetProperty("tags", out var tags) ? Text(tags, name) : "";
+
+    // A stream's length: its duration, or Matroska's DURATION tag ("00:04:04.223000000"); 0 when it gives neither.
+    private static double StreamSeconds(JsonElement stream)
+    {
+        if (Number(stream, "duration") is > 0 and var seconds && double.IsFinite(seconds))
+            return seconds;
+        var tag = Tag(stream, "DURATION");
+        if (tag.Length == 0)
+            return 0;
+
+        // TimeSpan takes at most seven decimals.
+        var dot = tag.IndexOf('.');
+        if (dot >= 0 && tag.Length - dot - 1 > 7)
+            tag = tag[..(dot + 8)];
+        return TimeSpan.TryParse(tag, System.Globalization.CultureInfo.InvariantCulture, out var span) ? span.TotalSeconds : 0;
+    }
 
     /// <summary>Evaluates a rate such as "30000/1001".</summary>
     private static double Ratio(string text)

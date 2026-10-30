@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.IO;
 using System.Text;
 using HandPegApp.Models;
@@ -129,9 +129,18 @@ public sealed record SequenceExportState
     /// <summary>The blurred background (made of the primary chain's frames, under everything) is switched off, leaving the black canvas.</summary>
     public bool BackgroundHidden { get; init; }
 
-    public int BlurRadius { get; init; } = 20;
+    /// <summary>
+    /// The blurred background's look (5.0-Release: the main video's video-only child): its box blur's radius in pixels of
+    /// the frame (0 sharp to 64, a fraction its own on the GPU, rounded for boxblur), its passes (1 to 4), its darkening
+    /// (eq's brightness, -0.5 to 0), its zoom about the middle (1 just covers the frame), and its own Look cards (keys and
+    /// ranges in seconds of the sequence), after the blur and the darkening. The blur twins are made the same way, without
+    /// the cards.
+    /// </summary>
+    public double BlurRadius { get; init; } = 20;
     public int BlurPasses { get; init; } = 2;
     public double BackgroundDim { get; init; } = -0.15;
+    public double BackgroundZoom { get; init; } = 1;
+    public IReadOnlyList<EffectState> BackgroundEffects { get; init; } = [];
 
     /// <summary>The box the auto-captions are drawn in.</summary>
     public required Layer CaptionLayer { get; init; }
@@ -288,70 +297,28 @@ public sealed record SequenceExportState
     public IReadOnlyDictionary<string, SeekIndex> SeekIndexes { get; init; } = new Dictionary<string, SeekIndex>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The proxies ready for the video layers' files (see ProxyCache), by the file they stand for. Only live graphs
-    /// read them; an export always reads the original. A proxy starts at its first frame (time 0), whatever the original's start.
+    /// The proxies ready for the video layers' files (see ProxyCache), by the file they stand for: of the files whose clips
+    /// asked for one (Optimize Long-GOP Clip for Scrubbing). Read by the preview only (the GPU scene plan of a state that
+    /// <see cref="IsPreview"/>, and live graphs); an export always reads the original. A proxy starts at its first frame
+    /// (time 0), whatever the original's start.
     /// </summary>
     public IReadOnlyDictionary<string, string> PreviewPaths { get; init; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// The state the GPU preview draws (MainViewModel.LivePreviewState, 5.0-Verify): only its scene plan reads a video layer's
+    /// proxy (<see cref="PreviewPaths"/>) in place of its file. False for every export, Render Preview and filmstrip.
+    /// </summary>
+    public bool IsPreview { get; init; }
+
     /// <summary>The height of the main video's proxy when the player plays that (Settings: proxies for the main video too); 0 when it plays the original.</summary>
     public int MainPreviewHeight { get; init; }
-}
-
-/// <summary>How the video layers from files are shown by a live graph.</summary>
-public enum LiveLayerMode
-{
-    /// <summary>Decoded and played as the export plays them.</summary>
-    Live,
-
-    /// <summary>One frame each (the I-frame at or before the moment), held: for scrubbing, where only the picture under the playhead counts.</summary>
-    Still,
-
-    /// <summary>Left out: for scrubbing on a slow machine.</summary>
-    Hidden,
-}
-
-/// <summary>What a live graph is built for: the player's size, and where it plays from.</summary>
-public sealed record LiveGraphRequest
-{
-    /// <summary>The player on screen, in screen pixels: the picture is not built larger than it is shown.</summary>
-    public double SurfaceWidth { get; init; }
-
-    public double SurfaceHeight { get; init; }
 
     /// <summary>
-    /// The moment playback starts from, in sequence seconds, for the layers' sound to be laid out from; null
-    /// leaves the sound out of the graph, and the player plays the main video's own as it is.
+    /// The subtitle track's pictures (a PGS or VobSub track, decoded for the preview: Gpu.PictureSubtitles.cs), which the GPU
+    /// preview draws over the main video's picture (5.0-Verify); null for none, and always in an export, which leaves them out.
     /// </summary>
-    public double? AudioFrom { get; init; }
-
-    /// <summary>Which of the main video's audio tracks the player plays, counted from 0; negative when it has none.</summary>
-    public int MainAudioTrack { get; init; }
-
-    /// <summary>
-    /// The playhead, in sequence seconds. The graph holds only what is on screen around it (see
-    /// <see cref="FilterGraphBuilder.LiveLookAhead"/>), and its video layers start reading their files there.
-    /// Null composes the whole sequence, each layer read from its first frame.
-    /// </summary>
-    public double? VideoFrom { get; init; }
-
-    public LiveLayerMode Layers { get; init; } = LiveLayerMode.Live;
-
-    /// <summary>Threads each video layer's decoder may use inside the player; 0 leaves it to FFmpeg.</summary>
-    public int DecodeThreads { get; init; }
-
-    /// <summary>The player plays the composed timeline proxy: its picture is finished, and only the sound is mixed.</summary>
-    public bool PictureIsComposed { get; init; }
-
-    /// <summary>Scrubbing with Settings' Draft Mode on: the effects that cost Live Preview most (red) are left out until the playhead is let go.</summary>
-    public bool DraftEffects { get; init; }
+    public Gpu.PictureSubtitleTrack? PictureSubtitles { get; init; }
 }
-
-/// <param name="Text">The graph, for mpv's lavfi-complex; empty for none.</param>
-/// <param name="RebuildAt">
-/// The moment of the sequence, while it plays forwards, at which the graph is to be built again: something
-/// that was left out of it is about to come on. Infinity when nothing is.
-/// </param>
-public readonly record struct LiveGraph(string Text, double RebuildAt);
 
 /// <summary>A finished export command, and which of the lists FFmpeg reads beside it the command refers to.</summary>
 /// <param name="UsesCutsFile">
@@ -362,9 +329,9 @@ public readonly record struct LiveGraph(string Text, double RebuildAt);
 public sealed record ExportCommand(string CommandLine, bool UsesCutsFile, bool UsesChaptersFile);
 
 /// <summary>
-/// Turns a sequence into FFmpeg: the export's command line, the graph Live Preview runs in the player, and the
-/// short encode of Render Preview. Three functions of a <see cref="SequenceExportState"/>, which is all they
-/// read; the same state gives the same text, whatever the application is doing meanwhile.
+/// Turns a sequence into FFmpeg: the export's command line and the short encode of Render Preview (and, lowered, what
+/// the GPU engine draws: FilterGraphBuilder.GpuScene.cs). Functions of a <see cref="SequenceExportState"/>, which is all
+/// they read; the same state gives the same text, whatever the application is doing meanwhile.
 ///
 /// Every number written into a filter or an option goes through <see cref="Number"/> or one of its kin, which
 /// write it the way FFmpeg reads it (a point for the decimals) whatever the language of the machine.
@@ -402,46 +369,6 @@ public static partial class FilterGraphBuilder
 
         return list.ToString();
     }
-
-    /// <summary>
-    /// The graph for mpv's lavfi-complex: from its video track to the screen and, while the layers have sound
-    /// to be heard, from its audio track to the speakers. Empty when the export would not filter the picture at
-    /// all and there is no such sound.
-    ///
-    /// Given the playhead (<see cref="LiveGraphRequest.VideoFrom"/>), the graph holds only what is on screen
-    /// from a moment before it to <see cref="LiveLookAhead"/> after it: a clip that has ended, or that starts
-    /// later than that, is not opened at all. Every video layer is read from the playhead (seek_point), so a
-    /// jump costs one I-frame interval of decoding, not everything from the start of the file. Such a graph
-    /// belongs to its moment: it is built again for every jump, and while playing at
-    /// <see cref="LiveGraph.RebuildAt"/>, just before something it left out comes on.
-    /// </summary>
-    public static LiveGraph BuildLiveGraph(SequenceExportState state, LiveGraphRequest request)
-    {
-        var pass = new Pass(state);
-        if (request.VideoFrom is { } at)
-            pass.SetLiveWindow(Math.Max(at, 0), request.Layers, request.DecodeThreads, request.DraftEffects);
-
-        var picture = request.PictureIsComposed ? "" : pass.BuildLiveFilterGraph(request.SurfaceWidth, request.SurfaceHeight);
-        var sound = request.AudioFrom is { } from ? pass.BuildLiveAudioGraph(Math.Max(from, 0), request.MainAudioTrack) : "";
-
-        // A graph with no [vo] has mpv show no picture at all: sound alone still passes the video through.
-        if (picture.Length == 0 && sound.Length > 0 && !state.SourceHasNoVideo)
-            picture = "[vid1]null[vo]";
-        var text = picture.Length > 0 && sound.Length > 0 ? $"{picture};{sound}" : picture + sound;
-        return new LiveGraph(text, text.Length > 0 ? pass.LiveRebuildAt() : double.PositiveInfinity);
-    }
-
-    /// <summary>How far past the playhead a live graph holds what is on screen, in seconds.</summary>
-    public const double LiveLookAhead = 30;
-
-    /// <summary>How long before something left out of a live graph comes on the graph is built again, so its file is open and waiting by then.</summary>
-    public const double LivePreRoll = 1.5;
-
-    /// <summary>How far before the playhead a live graph still holds what is on screen: a step back of a frame or two needs no new graph.</summary>
-    public const double LiveLookBehind = 0.5;
-
-    /// <summary>The output pad of the sound half of a live graph: a graph that has it mixes the layers' sound in.</summary>
-    public const string LiveAudioOutput = "[ao]";
 
     /// <summary>Render Preview: a short, small encode of the given stretches of the timeline.</summary>
     /// <param name="ranges">The stretches to show, joined end to end.</param>
@@ -620,7 +547,7 @@ public static partial class FilterGraphBuilder
         chain is [var only] && only.Start < 0.001 && only.Offset < 0.001 && (MainMediaSeconds <= 0 || Math.Abs(only.End - only.Start - MainMediaSeconds) < 0.02);
 
     private bool FrameEngine => S.FrameEngine;
-    private int BlurRadius => S.BlurRadius;
+    private double BlurRadius => S.BlurRadius;
     private int BlurPasses => S.BlurPasses;
     private double BackgroundDim => S.BackgroundDim;
     private Layer CaptionLayer => S.CaptionLayer;
@@ -663,9 +590,6 @@ public static partial class FilterGraphBuilder
     /// <summary>Where the primary file's sound is heard (see Lowered.MainSound): the clips of <see cref="GetMainClips"/> while it is placed as the picture is.</summary>
     private IReadOnlyList<MainClip> GetMainSound() => T.MainSound;
 
-    /// <summary>The chain's heard clips where their pictures are, with their gains (Lowered.MainHeard): what the player's own stream carries.</summary>
-    private IReadOnlyList<MainClip> GetMainHeard() => T.MainHeard;
-
     /// <summary>Length of the output in seconds: the sequence's, which the output is moment for moment.</summary>
     private double GetOutputDuration() => SequenceSeconds;
     private List<ExportAudioTrack> GetOutputAudioTracks() => [.. S.AudioTracks];
@@ -692,62 +616,6 @@ public static partial class FilterGraphBuilder
 
     /// <summary>Whether a file named in the state was there when the state was compiled.</summary>
     private bool Exists(string path) => S.ExistingFiles.Contains(path);
-
-    // ----- The live graph's window in time -----
-    // A live graph given the playhead holds only the stretch of the sequence around it: from a moment before
-    // it to LiveLookAhead after it. What lies wholly outside is not in the graph at all, so its file is never
-    // opened or decoded; the player is given a new graph before any of it comes on (LiveRebuildAt).
-
-    private (double From, double To)? _window;
-    private double _playhead;
-    private LiveLayerMode _layerMode = LiveLayerMode.Live;
-    private int _decodeThreads;
-
-    // Draft Mode while scrubbing: red-cost effects are left out (see LiveGraphRequest.DraftEffects).
-    private bool _skipHeavyEffects;
-
-    public void SetLiveWindow(double playhead, LiveLayerMode layers, int decodeThreads, bool draftEffects = false)
-    {
-        (_playhead, _layerMode, _decodeThreads, _skipHeavyEffects) = (playhead, layers, Math.Max(decodeThreads, 0), draftEffects);
-        _window = (playhead - LiveLookBehind, playhead + LiveLookAhead);
-    }
-
-    /// <summary>Whether a stretch of the sequence is inside the window: always, for a graph that has none.</summary>
-    private bool InWindow(double start, double end) => _window is not { } window || (end > window.From && start < window.To);
-
-    /// <summary>Whether a layer's picture is inside the window.</summary>
-    private bool InWindow(Layer layer)
-    {
-        if (layer.IsMainVideo || !layer.HasTiming)
-            return true;
-        var (start, end) = layer.GetSpan(SequenceSeconds);
-        return InWindow(start, end);
-    }
-
-    /// <summary>
-    /// When the graph built with a window must be built again while it plays: a little before the first thing it
-    /// left out comes on (a layer's picture or sound, or the main video coming back). Infinity when nothing does.
-    /// </summary>
-    public double LiveRebuildAt()
-    {
-        if (_window is not { } window)
-            return double.PositiveInfinity;
-
-        var next = double.PositiveInfinity;
-        void Consider(double start)
-        {
-            if (start >= window.To && start < next)
-                next = start;
-        }
-
-        foreach (var clip in GetMainClips())
-            Consider(clip.Start);
-        foreach (var layer in GetStack().Where(l => !l.IsMainVideo && l.HasTiming))
-            Consider(layer.StartTime);
-        foreach (var layer in GetLayerAudioSources())
-            Consider(LayerAudioStart(layer));
-        return double.IsPositiveInfinity(next) ? next : Math.Max(next - LivePreRoll, window.From + LiveLookBehind);
-    }
 
         // loudnorm works at 192 kHz internally and would hand that rate to the encoder; bring it back down.
         private string NormalizeFilters => $"loudnorm=I=-16:TP=-1.5:LRA=11,aresample={MixRate}";
@@ -928,6 +796,15 @@ public static partial class FilterGraphBuilder
                         label = $"[aduck{track.Index}]";
                     }
 
+                    // The track's own processing (the Audio tab's gain, EQ, compressor, gate) is the track's alone: after
+                    // its edits and its duck, before the clips' sound is mixed in, as the sound engine plays it (the
+                    // user's call, 5.0-Verify Q1). Never on the silent base, which has no sound of its own to process.
+                    if (!silent && track.HasProcessing && track.GetFilterChain() is { Count: > 0 } own)
+                    {
+                        graph.Add($"{label}{string.Join(",", own)}[aproc{track.Index}]");
+                        label = $"[aproc{track.Index}]";
+                    }
+
                     if (mixedIn.Count > 0)
                     {
                         for (var n = 0; n < mixedIn.Count; n++)
@@ -1023,73 +900,6 @@ public static partial class FilterGraphBuilder
         }
 
         /// <summary>
-        /// The filter graph Live Preview runs on the picture, for mpv's lavfi-complex: the same per-frame chain the
-        /// export uses (crop, the Frame &amp; Layer Engine, scaling, color, LUT), with the source's burned-in subtitles, from the
-        /// video track to the screen. Empty when the export would not filter the picture at all (Copy), which
-        /// is then what the preview shows too.
-        ///
-        /// It runs on the sequence's clock, which is the output's: what was cut out is not on the timeline, so there is
-        /// nothing to skip. The fades over the whole are left out of the picture, and so are auto-captions, which the
-        /// player draws by itself while Preview Subtitles is on.
-        /// </summary>
-        /// <param name="surfaceWidth">Width of the player on screen, in screen pixels: the picture is not built larger than it is shown.</param>
-        public string BuildLiveFilterGraph(double surfaceWidth, double surfaceHeight)
-        {
-            if (!HasSource || S.SourceHasNoVideo || (S.CopyVideoEncoder && !IsAnimatedOutput))
-                return "";
-
-            // The whole graph is built for a frame the size the player shows, not the size of the export: a 4K
-            // layout watched in a 900-pixel player is composed at a quarter of its width and a sixteenth of the
-            // work. The scale goes in steps, so that resizing the window a little does not rebuild the graph.
-            var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
-            var shown = surfaceWidth > 0 && surfaceHeight > 0 ? Math.Min(surfaceWidth / frameWidth, surfaceHeight / frameHeight) : 1;
-            _liveScale = LiveScaleSteps.FirstOrDefault(step => step >= shown, 1);
-
-            _buildingLiveGraph = true;
-            try
-            {
-                // The player's clock is the sequence's, so the whole of it is composed as one stretch from 0.
-                var chain = BuildVideoFilters(labelSuffix: "", 0, SequenceSeconds);
-                var (burn, shift) = (IsMainSpliced ? [] : BuildSubtitleBurnFilters(LocalMediaPath), MainShift);
-                if (burn.Count > 0 && Math.Abs(shift) > 0.001)
-                {
-                    chain.Add($"setpts=PTS{Signed(-shift)}/TB");
-                    chain.AddRange(burn);
-                    chain.Add($"setpts=PTS{Signed(shift)}/TB");
-                }
-                else
-                {
-                    chain.AddRange(burn);
-                }
-
-                // Auto-captions are not part of it: drawn here, the processor draws them on every frame, which
-                // a long video does not keep up with. Preview Subtitles has the player draw them itself.
-                return chain.Count == 0 ? "" : $"[vid1]{string.Join(",", chain)}[vo]";
-            }
-            finally
-            {
-                (_buildingLiveGraph, _liveScale) = (false, 1);
-            }
-        }
-
-        // What makes the live graph cheaper than the export's, while showing the same layers in the same places:
-        //   - everything is sized for the player (see above), sources being scaled down before anything is done to them;
-        //   - the blurred background is blurred at a quarter of that size and scaled back up, which a blur hides;
-        //   - a layer's rounded or feathered outline is worked out once and reused, where the export works it
-        //     out again for every frame;
-        //   - a source faster than 30 frames a second is previewed at half its rate.
-        private static readonly double[] LiveScaleSteps = [0.25, 1 / 3.0, 0.5, 0.75, 1];
-
-        private bool _buildingLiveGraph;
-        private double _liveScale = 1;
-
-        /// <summary>A size in output pixels as the graph being built needs it: as it is for the export, scaled (and kept even) for Live Preview.</summary>
-        private int Sized(int pixels) => _liveScale >= 1 ? pixels : Math.Max((int)Math.Round(pixels * _liveScale / 2) * 2, 2);
-
-        /// <summary>A distance in output pixels, scaled the same way but not rounded to an even number.</summary>
-        private int Placed(int pixels) => _liveScale >= 1 ? pixels : (int)Math.Round(pixels * _liveScale);
-
-        /// <summary>
         /// A layer's drop shadow (4.1.1-B), as the chain that makes it from the layer's own picture, and where it is
         /// laid against the layer: its outline in the shadow's colour at the shadow's opacity, moved along the light's
         /// angle. A soft shadow is first given room round it (padded, see-through) so its edge can feather outwards,
@@ -1098,7 +908,7 @@ public static partial class FilterGraphBuilder
         private (string Chain, int X, int Y) ShadowOf(Layer layer)
         {
             var (shiftX, shiftY) = layer.ShadowShift;
-            var soft = Placed(Math.Clamp(layer.ShadowSoftness, 0, 50));
+            var soft = Math.Clamp(layer.ShadowSoftness, 0, 50);
             var room = soft + (soft & 1); // even, so a 4:2:0 picture is padded exactly
             var (y, u, v) = ShadowYuv(layer.ShadowColor);
             var chain = new StringBuilder("format=yuva420p");
@@ -1106,7 +916,7 @@ public static partial class FilterGraphBuilder
                 chain.Append(CultureInfo.InvariantCulture, $",pad=w=iw+{2 * room}:h=ih+{2 * room}:x={room}:y={room}:color=black@0");
             chain.Append(CultureInfo.InvariantCulture, $",lutyuv=y={y}:u={u}:v={v}:a=val*{Number(Math.Clamp(layer.ShadowOpacity, 0, 1))}");
             chain.Append(soft > 0 ? string.Create(CultureInfo.InvariantCulture, $",boxblur=0:0:0:0:{soft}:2") : "");
-            return (chain.ToString(), Placed(shiftX) - room, Placed(shiftY) - room);
+            return (chain.ToString(), shiftX - room, shiftY - room);
         }
 
         /// <summary>A shadow colour (#RRGGBB) as limited-range BT.709 Y, U and V; black (16, 128, 128) when it cannot be read.</summary>
@@ -1124,12 +934,6 @@ public static partial class FilterGraphBuilder
         /// <summary>A shift added to a placement expression: nothing for 0, "+N" or "-N" otherwise.</summary>
         private static string Shift(int pixels) => pixels == 0 ? "" : (pixels > 0 ? "+" : "-") + Math.Abs(pixels).ToString(CultureInfo.InvariantCulture);
 
-        /// <summary>
-        /// How a picture that is scaled for every frame is scaled: the cheapest way for Live Preview, which is a
-        /// preview; the default (bicubic) for an export. Stills and masks are scaled once and keep the default.
-        /// </summary>
-        private string LiveScaleFlags => _buildingLiveGraph ? ":flags=fast_bilinear" : "";
-
         // ----- Render preview -----
 
         /// <summary>
@@ -1143,9 +947,9 @@ public static partial class FilterGraphBuilder
         {
             var burnFilters = IsMainSpliced ? [] : BuildSubtitleBurnFilters(LocalMediaPath);
 
-            // What is done once, to the finished picture. Fades are left out: they are placed by the length of
-            // the whole output, which a few seconds do not have.
-            var finishing = BuildWholeVideoFilters(duration: 0);
+            // What is done once, to the finished picture. The sequence's fades are each stretch's own (BuildStretchFades):
+            // only where it overlaps the sequence's first or last second, on its picture and its sound alike.
+            var finishing = new List<string>();
             if (captionsPath is not null)
                 finishing.Add(BuildCaptionOverlay(captionsPath));
             if (GetTargetFramerate() is { } framerate)
@@ -1167,25 +971,44 @@ public static partial class FilterGraphBuilder
                 var (startSeconds, durationSeconds) = (ranges[0].Start, ranges[0].End - ranges[0].Start);
                 var chain = BuildVideoFilters(labelSuffix: "");
                 chain.AddRange(burnFilters);
-                chain.AddRange(finishing);
 
                 if (ranges.Count > 1)
                 {
                     // Each stretch is opened as an input of its own, already cut to length, and the stretches are
-                    // joined before anything is done to the picture: what is filtered is the trimmed timeline.
+                    // joined before anything is done to the picture: what is filtered is the trimmed timeline. Each
+                    // stretch's fades are its own, before the join.
+                    chain.AddRange(finishing);
                     var cutInputs = string.Join(" ", ranges.Select(r => $"{hardware}-ss {Number(r.Start)} -t {Number(r.End - r.Start)} -i {Quote(LocalMediaPath)}"));
-                    var joined = $"{string.Concat(ranges.Select((_, i) => $"[{i}:v:0]"))}concat=n={ranges.Count}:v=1:a=0[joined];[joined]{string.Join(",", chain)}[v]";
-                    if (hasSound)
-                        joined += $";{string.Concat(ranges.Select((_, i) => $"[{i}:a:0]"))}concat=n={ranges.Count}:v=0:a=1[a]";
+                    var parts = new List<string>();
+                    string Faded(int i, string kind, bool sound)
+                    {
+                        var fades = BuildStretchFades(ranges[i].Start, ranges[i].End, sound);
+                        if (fades.Count == 0)
+                            return $"[{i}:{kind}:0]";
+                        parts.Add($"[{i}:{kind}:0]{string.Join(",", fades)}[f{kind}{i}]");
+                        return $"[f{kind}{i}]";
+                    }
 
-                    return WithOpenClDevice($"{ffmpeg} -hide_banner -y {cutInputs} -filter_complex \"{joined}\" -map \"[v]\"{(hasSound ? " -map \"[a]\"" : "")} {encode} {Quote(outputPath)}");
+                    var pictures = string.Concat(ranges.Select((_, i) => Faded(i, "v", sound: false)));
+                    var sounds = hasSound ? string.Concat(ranges.Select((_, i) => Faded(i, "a", sound: true))) : "";
+                    parts.Add($"{pictures}concat=n={ranges.Count}:v=1:a=0[joined];[joined]{string.Join(",", chain)}[v]");
+                    if (hasSound)
+                        parts.Add($"{sounds}concat=n={ranges.Count}:v=0:a=1[a]");
+
+                    return WithOpenClDevice($"{ffmpeg} -hide_banner -y {cutInputs} -filter_complex \"{string.Join(";", parts)}\" -map \"[v]\"{(hasSound ? " -map \"[a]\"" : "")} {encode} {Quote(outputPath)}");
                 }
 
                 // Seeking before the input is fast. Burned-in subtitles need the original timestamps, though,
                 // so with those the seek comes after the input: slower, but the text lands on the right frames.
+                // (The filters see the file's own clock then, which is the sequence's here: the fades need no shift.)
+                var clockAt = burnFilters.Count > 0 ? startSeconds : 0;
+                chain.AddRange(BuildStretchFades(startSeconds, ranges[0].End, sound: false, clockAt));
+                chain.AddRange(finishing);
+                var soundFades = hasSound ? BuildStretchFades(startSeconds, ranges[0].End, sound: true, clockAt) : [];
+                var soundFilters = soundFades.Count > 0 ? $" -af \"{string.Join(",", soundFades)}\"" : "";
                 var seek = $"-ss {Number(startSeconds)} -t {Number(durationSeconds)}";
                 var input = hardware + (burnFilters.Count > 0 ? $"-i {Quote(LocalMediaPath)} {seek}" : $"{seek} -i {Quote(LocalMediaPath)}");
-                return WithOpenClDevice($"{ffmpeg} -hide_banner -y {input} -map 0:v:0 -map 0:a:0? -vf \"{string.Join(",", chain)}\" {encode} {Quote(outputPath)}");
+                return WithOpenClDevice($"{ffmpeg} -hide_banner -y {input} -map 0:v:0 -map 0:a:0? -vf \"{string.Join(",", chain)}\"{soundFilters} {encode} {Quote(outputPath)}");
             }
 
             // With the engine every stretch of the sequence is composed on its own clock, from its start. The file is
@@ -1220,6 +1043,7 @@ public static partial class FilterGraphBuilder
                     chain.Add("setpts=PTS-STARTPTS");
                 }
 
+                chain.AddRange(BuildStretchFades(from, to, sound: false));
                 graph.Add($"[{i}:v:0]{string.Join(",", chain)}[pv{i}]");
                 if (!hasSound)
                     continue;
@@ -1238,7 +1062,8 @@ public static partial class FilterGraphBuilder
                 }
 
                 var mixed = heard.Count == 1 ? $"[pa{i}_0]" : $"{string.Concat(heard.Select((_, j) => $"[pa{i}_{j}]"))}amix=inputs={heard.Count}:normalize=0:dropout_transition=0,asetpts=N/SR/TB,";
-                graph.Add($"{mixed}apad=whole_dur={Number(to - from)}[pa{i}]");
+                var soundFades = BuildStretchFades(from, to, sound: true);
+                graph.Add($"{mixed}apad=whole_dur={Number(to - from)}{(soundFades.Count > 0 ? "," + string.Join(",", soundFades) : "")}[pa{i}]");
             }
 
             if (ranges.Count > 1)
@@ -1253,6 +1078,40 @@ public static partial class FilterGraphBuilder
 
             var sound = !hasSound ? "" : ranges.Count > 1 ? " -map \"[a]\"" : " -map \"[pa0]\"";
             return WithOpenClDevice($"{ffmpeg} -hide_banner -y {string.Join(" ", inputs)} -filter_complex \"{string.Join(";", graph)}\" -map \"[v]\"{sound} {encode} {Quote(outputPath)}");
+        }
+
+        /// <summary>
+        /// The sequence's own fades over a stretch of it (Render Preview's), as the export draws them over the whole: in over
+        /// the sequence's first second, out over its last, each only where the stretch overlaps it, and nothing in its
+        /// middle. A stretch's picture and sound alike (the sound engine fades the sequence's own moments so too, AudioMixer
+        /// .SequenceFades); before, every preview's picture faded in from black at its start, and its sound did not.
+        /// </summary>
+        /// <param name="from">Where the stretch's first frame (or sample) is on the sequence.</param>
+        /// <param name="to">Where the stretch ends on the sequence.</param>
+        /// <param name="sound">For its sound (afade, asetpts) rather than its picture (fade, setpts).</param>
+        /// <param name="clockAt">Where that first frame is on the clock of the chain the fades join: 0 (counted from the
+        /// stretch's start) unless said; the fades are placed on the sequence's clock by setting the frames forward and back again.</param>
+        private List<string> BuildStretchFades(double from, double to, bool sound, double clockAt = 0)
+        {
+            var filters = new List<string>();
+            var length = GetOutputDuration();
+            var fadeIn = FadeIn && from < FadeSeconds;
+            var fadeOut = FadeOut && length > FadeSeconds && to > length - FadeSeconds;
+            if (!fadeIn && !fadeOut)
+                return filters;
+
+            var (prefix, fade) = sound ? ("a", "afade") : ("", "fade");
+            var shift = from - clockAt;
+            var shifted = Math.Abs(shift) > 0.0005;
+            if (shifted)
+                filters.Add($"{prefix}setpts=PTS{Signed(shift)}/TB");
+            if (fadeIn)
+                filters.Add($"{fade}=t=in:st=0:d={Number(FadeSeconds)}");
+            if (fadeOut)
+                filters.Add($"{fade}=t=out:st={Number(length - FadeSeconds)}:d={Number(FadeSeconds)}");
+            if (shifted)
+                filters.Add($"{prefix}setpts=PTS{Signed(-shift)}/TB");
+            return filters;
         }
 
         /// <summary>

@@ -8,12 +8,13 @@ using HandPegApp.Services;
 namespace HandPegApp.ViewModels;
 
 /// <summary>
-/// The sequence's own look, which no clip holds (4.4): the colour grade, the sharpening and the blurred background. Kept
-/// with every undo step (TimelineSnapshot.Look), in memory only.
+/// The sequence's own look, which no clip holds (4.4): the colour grade, the sharpening and the blurred background (5.0-Release:
+/// its continuous radius, its zoom, and its own effect stack). Kept with every undo step (TimelineSnapshot.Look), in memory only.
 /// </summary>
 public sealed record SequenceLook(
     double Contrast, double Brightness, double Saturation, double Gamma, double Hue, double Red, double Green, double Blue,
-    double Sharpen, int BlurRadius, int BlurPasses, double BackgroundDim);
+    double Sharpen, double BlurRadius, int BlurPasses, double BackgroundDim, double BackgroundZoom = 1,
+    List<Models.Effects.EffectState>? BackgroundEffects = null, bool BackgroundEffectsBypassed = false);
 
 // ----- Universal undo (4.4) -----
 // An edit of the document takes its own step (OnDocumentCommitted), and so does whatever takes one by hand (Checkpoint):
@@ -70,14 +71,15 @@ public partial class MainViewModel
     /// <summary>The sequence's look as it is now, for an undo step.</summary>
     private SequenceLook CaptureLook() => new(
         ColorContrast, ColorBrightness, ColorSaturation, ColorGamma, ColorHue, ColorRed, ColorGreen, ColorBlue,
-        SharpenStrength, BlurRadius, BlurPasses, BackgroundDim);
+        SharpenStrength, BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom, CaptureBackgroundEffects(), _backgroundRow.EffectsBypassed);
 
     /// <summary>Puts the sequence's look back as an undo step had it.</summary>
     private void ApplyLook(SequenceLook look)
     {
         (ColorContrast, ColorBrightness, ColorSaturation, ColorGamma) = (look.Contrast, look.Brightness, look.Saturation, look.Gamma);
         (ColorHue, ColorRed, ColorGreen, ColorBlue, SharpenStrength) = (look.Hue, look.Red, look.Green, look.Blue, look.Sharpen);
-        (BlurRadius, BlurPasses, BackgroundDim) = (look.BlurRadius, look.BlurPasses, look.BackgroundDim);
+        (BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom) = (look.BlurRadius, look.BlurPasses, look.BackgroundDim, look.BackgroundZoom);
+        SetBackgroundEffects(look.BackgroundEffects, look.BackgroundEffectsBypassed);
     }
 
     /// <summary>
@@ -220,9 +222,10 @@ public partial class MainViewModel
     partial void OnColorGreenChanging(double value) => SequenceLookChanging(nameof(ColorGreen), "change the green balance");
     partial void OnColorBlueChanging(double value) => SequenceLookChanging(nameof(ColorBlue), "change the blue balance");
     partial void OnSharpenStrengthChanging(double value) => SequenceLookChanging(nameof(SharpenStrength), "change the sharpening");
-    partial void OnBlurRadiusChanging(int value) => SequenceLookChanging(nameof(BlurRadius), "change the background blur");
+    partial void OnBlurRadiusChanging(double value) => SequenceLookChanging(nameof(BlurRadius), "change the background blur");
     partial void OnBlurPassesChanging(int value) => SequenceLookChanging(nameof(BlurPasses), "change the background blur");
     partial void OnBackgroundDimChanging(double value) => SequenceLookChanging(nameof(BackgroundDim), "change the background's darkening");
+    partial void OnBackgroundZoomChanging(double value) => SequenceLookChanging(nameof(BackgroundZoom), "zoom the background");
 
     // The Center controls are a view of one clip of the main video (4.4): typed or slid, that clip's place changes.
     partial void OnCenterZoomChanging(double value) => SequenceLookChanging(nameof(CenterZoom), "zoom the main video");

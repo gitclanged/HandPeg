@@ -1,0 +1,2 @@
+# A track ducked under a voice: the dip is the amount asked for (-15 dB), and it comes back after the release.
+music 0.5 before the voice; ducked by 15 dB (12 to 17) while it speaks (2 to 3 s); back within 0.5 dB at 4.5 s

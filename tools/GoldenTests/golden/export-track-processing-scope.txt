@@ -1,0 +1,79 @@
+# A main track's own processing (5.0-Verify Q1) is that track's alone: the game track ducked, then its gain, compressor and EQ, then the clips' sound mixed in; the microphone's chain on its own stream; the music clip's on itself.
+# reads the cuts list: no; the chapters list: no
+
+command:
+  ffmpeg
+  -hide_banner
+  -y
+  -i
+  D:/media/main.mp4
+  -filter_complex <graph 1>
+  -map
+  0:v:0
+  -map
+  [amixed0]
+  -map
+  0:a:1?
+  -vf <graph 2>
+  -c:v
+  libx264
+  -preset
+  medium
+  -crf
+  23
+  -pix_fmt
+  yuv420p
+  -metadata:s:a:0
+  title=Game
+  -c:a:0
+  aac
+  -b:a:0
+  160k
+  -metadata:s:a:1
+  title=Microphone
+  -c:a:1
+  aac
+  -b:a:1
+  160k
+  -filter:a:1
+  highpass=f=90,agate=threshold=-40dB,volume=2dB
+  -map_chapters
+  -1
+  D:/out/track-processing.mp4
+
+graph 1 (-filter_complex): 8 chains, 698 characters
+  1| [0:a:1]anull
+   |   ,aresample=48000
+   |   ,apad[dvoice0]
+  2| [dvoice0]asplit=2[dkey0][dkey1]
+  3| [0:a:0][dkey0]sidechaincompress=threshold=0.02:ratio=20:attack=15:release=350:level_sc=16:mix=0.822[aduck0]
+  4| [aduck0]acompressor=threshold=-18dB:ratio=3
+   |   ,equalizer=f=125:t=o:w=1:g=4
+   |   ,volume=-3dB[aproc0]
+  5| amovie='D\:/media/clip1.mp4'
+   |   ,atrim=start=3:end=15
+   |   ,asetpts=PTS-3/TB
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,adelay=10000:all=1[alayer0]
+  6| amovie='D\:/media/music.m4a'
+   |   ,atrim=end=60
+   |   ,aresample=48000:async=1:first_pts=0
+   |   ,bass=g=3
+   |   ,volume=-8dB[alraw1]
+  7| [alraw1][dkey1]sidechaincompress=threshold=0.02:ratio=20:attack=15:release=350:level_sc=16:mix=0.822[alayer1]
+  8| [aproc0][alayer0][alayer1]amix=inputs=3:duration=first:normalize=0[amixed0]
+
+graph 2 (-vf): 6 chains, 384 characters
+  1| null[center_in]
+  2| color=c=black:s=1920x1080:r=30:d=120
+   |   ,format=yuv420p[stage0]
+  3| [center_in]scale=1920:1080
+   |   ,format=yuva420p[center_layer]
+  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
+  5| movie='D\:/media/clip1.mp4':sp=2
+   |   ,trim=start=3:end=15
+   |   ,setpts=PTS+7/TB
+   |   ,scale=768:432
+   |   ,format=yuva420p[ui1_layer]
+  6| [stage1][ui1_layer]overlay=96:54:eof_action=pass:enable='between(t,10,22)'
+   |   ,setsar=1

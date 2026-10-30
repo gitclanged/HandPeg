@@ -22,6 +22,9 @@ public partial class App : Application
         // The lanes for background work, the jobs its tools run in, and this thread's place among the processors.
         Services.WorkScheduler.Attach(Dispatcher);
 
+        // No menu beeps from any window, and no accessibility-hotkey prompts while HandPeg is the active application (5.0-Release).
+        Services.QuietKeys.Follow(this);
+
         // Before any window is made, so that the first thing drawn already has the theme and the Windows accent colour.
         Services.ThemeManager.Follow(this);
 
@@ -41,18 +44,18 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Neither FFmpeg nor libmpv is on this PC (the settings came from another one, or the tools folder was deleted):
-    /// nothing could be opened or played. At most three File.Exists in the local tools folder; an FFmpeg of the
-    /// user's own, named in the settings, counts as there without being looked for.
+    /// FFmpeg is not on this PC (the settings came from another one, or the tools folder was deleted): nothing could be
+    /// opened (inspected, drawn as a filmstrip) or exported. At most two File.Exists in the local tools folder; an FFmpeg
+    /// of the user's own, named in the settings, counts as there without being looked for.
     /// </summary>
     private static bool CoreEnginesMissing() =>
-        Services.DependencyUpdater.GetLocalState(Services.DependencyUpdater.Ffmpeg) == Services.DependencyState.Missing
-        && Services.DependencyUpdater.GetLocalState(Services.DependencyUpdater.Mpv) == Services.DependencyState.Missing;
+        Services.DependencyUpdater.GetLocalState(Services.DependencyUpdater.Ffmpeg) == Services.DependencyState.Missing;
 
     protected override void OnExit(ExitEventArgs e)
     {
         Services.CrashReporter.Note("app", "exit");
         Services.Notifier.Dispose();
+        Services.QuietKeys.Restore();
 
         // An update that was downloaded but not restarted into goes in once this process has gone.
         Services.AppUpdater.ApplyOnExit();

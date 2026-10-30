@@ -132,7 +132,7 @@ public partial class MainWindow
     /// <summary>
     /// Opens the Subtitle Editor on the subtitle track. With no track yet and captions on, the track is first made from
     /// them, so that what was transcribed is what is edited. While the editor is open the main player draws no subtitles:
-    /// the editor's own player does.
+    /// the editor's own preview does.
     /// </summary>
     private async Task OpenSubtitleEditorAsync()
     {

@@ -1,0 +1,22 @@
+# Render Preview on the GPU compositor (5.0-Verify Q5): its FFmpeg command (the piped stretch, the sound engine's sound, the preview's finishing) and the frames of its stretch.
+
+2 s from 1 s, half size, captions and sound:
+  320 x 180: canvas frames 30 on (60), 60 frames at 30/1: 30 31 32 33 34 35 36 37
+  ffmpeg -hide_banner -y -f rawvideo -pix_fmt bgr0 -video_size 320x180 -framerate 30/1 -i pipe:0 -f f32le -ar 48000 -ch_layout stereo -i D:/session/previews/preview.mp4.sound.f32 -map 0:v:0 -map 1:a:0 -vf scale=out_color_matrix=bt709:out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,setsar=1,null[cap_base];color=c=black@0:s=288x36:r=30,format=rgba,ass='D\:/session/previews/captions_preview.ass':alpha=1[cap_layer];[cap_base][cap_layer]overlay=16:126:shortest=1,scale=trunc(iw*0.5/2)*2:trunc(ih*0.5/2)*2,format=yuv420p -c:v libx264 -preset ultrafast -crf 24 -c:a aac -b:a 128k -movflags +faststart D:/session/previews/preview.mp4
+
+from between two frames (1.01 s): the captions' clock set back to the stretch's start:
+  320 x 180: canvas frames 31 on (60), 60 frames at 30/1: 31 32 33 34 35 36 37 38
+  ffmpeg -hide_banner -y -f rawvideo -pix_fmt bgr0 -video_size 320x180 -framerate 30/1 -i pipe:0 -f f32le -ar 48000 -ch_layout stereo -i D:/session/previews/preview.mp4.sound.f32 -map 0:v:0 -map 1:a:0 -vf scale=out_color_matrix=bt709:out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,setsar=1,setpts=PTS+0.023/TB,null[cap_base];color=c=black@0:s=288x36:r=30,format=rgba,ass='D\:/session/previews/captions_preview.ass':alpha=1[cap_layer];[cap_base][cap_layer]overlay=16:126:shortest=1,setpts=PTS-STARTPTS,scale=trunc(iw*0.5/2)*2:trunc(ih*0.5/2)*2,format=yuv420p -c:v libx264 -preset ultrafast -crf 24 -c:a aac -b:a 128k -movflags +faststart D:/session/previews/preview.mp4
+
+at 24 fps, full size, silent:
+  320 x 180: canvas frames 15 on (60), 48 frames at 24/1: 15 16 18 19 20 21 23 24
+  ffmpeg -hide_banner -y -f rawvideo -pix_fmt bgr0 -video_size 320x180 -framerate 24/1 -i pipe:0 -map 0:v:0 -vf scale=out_color_matrix=bt709:out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,setsar=1,scale=trunc(iw*1/2)*2:trunc(ih*1/2)*2,format=yuv420p -c:v libx264 -preset ultrafast -crf 24 -movflags +faststart D:/session/previews/preview.mp4
+
+past the end (3 to 6 s of a 4 s timeline):
+  320 x 180: canvas frames 90 on (30), 30 frames at 30/1: 90 91 92 93 94 95 96 97
+  ffmpeg -hide_banner -y -f rawvideo -pix_fmt bgr0 -video_size 320x180 -framerate 30/1 -i pipe:0 -f f32le -ar 48000 -ch_layout stereo -i D:/session/previews/preview.mp4.sound.f32 -map 0:v:0 -map 1:a:0 -vf scale=out_color_matrix=bt709:out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,setsar=1,scale=trunc(iw*0.5/2)*2:trunc(ih*0.5/2)*2,format=yuv420p -c:v libx264 -preset ultrafast -crf 24 -c:a aac -b:a 128k -movflags +faststart D:/session/previews/preview.mp4
+
+refused:
+  the source's burned subtitles: the source's subtitles are burned into a main video in several clips, on its own frames
+  Copy: a Copy export keeps the file's own picture
+  a stretch past the end: the stretch holds no frame

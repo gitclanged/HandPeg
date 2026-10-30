@@ -53,20 +53,80 @@ public partial class MainWindow
     private sealed record LayerSound(Layer Layer);
 
     // What is selected: a Layer (one clip, the main video's clips among them, or the background), an AudioClip, a LayerSound.
+    // 5.0: clips selected together (Ctrl + click, Shift + click) are the view model's SelectedClips; this is the primary one of
+    // them, what the inspector, the Center controls and the Keyframes pane show. The group holds only while it does.
     private object? _selectedClip;
     private bool _mainClipSelected;
     private bool _clipRedrawQueued;
+
+    // What a press on a block left to its click (5.0): a Ctrl or Shift click on a clip already selected, or a plain click on
+    // one of a group (narrowing it to that clip), decided as it is let go without moving; a drag of the group goes on instead.
+    // 5.0-Verify (the user's Q2, A): Ctrl on the edge of a clip not selected is a ripple trim of it alone when dragged, and
+    // adds it to the selection only when let go where it was (Add).
+    private enum ClickGesture { Toggle, Range, Narrow, Add }
+
+    private (Layer Clip, ClickGesture Gesture)? _clickGesture;
+
+    // Where a Shift + click range starts: the clip selected before the first Shift + click (held while the group is its own).
+    private Layer? _rangeAnchor;
 
     // The rows on the surface are older than the timeline (an edit, an undo, a change of scale since they were made): made
     // again at background priority, or at once by the next press on the timeline or the end of a drag (4.4 BugHunt).
     private bool _rowsStale;
 
     // A block was pressed, with either button: it is what is selected now (a right-click selects it too, so that the menu that opens is about it).
+    // 5.0: Ctrl + click adds a clip to the selection (or, clicked again, takes it out), Shift + click selects every clip from
+    // the one selected to it, across time and tracks; a press on one of a group keeps the group (dragged, it all goes).
     private void Timeline_BlockPressed(TimelineRow row, TimelineBlock block, MouseButtonEventArgs e)
     {
-        // A subtitle on the captions' row is not a clip: it is edited in the Subtitle Editor.
+        _clickGesture = null;
+
+        // A subtitle on the captions' row is not a clip of its own: a press on any of them selects the captions (their place,
+        // size and style in the inspector, their box over the player and on the Canvas; 5.0-Verify, the user's bug 3). Their
+        // words and times are the Subtitle Editor's: a double-click opens it.
         if (block.Clip is SubtitleRef)
+        {
+            SelectClip(_viewModel.CaptionLayer);
+            if (e.ChangedButton == MouseButton.Left && e.ClickCount == 2)
+                Dispatcher.BeginInvoke(EditCaptions, System.Windows.Threading.DispatcherPriority.Input);
             return;
+        }
+
+        if (block.Clip is Layer clip && _viewModel.CanGroup(clip))
+        {
+            var modifiers = Keyboard.Modifiers;
+            var (ctrl, shift) = (modifiers.HasFlag(ModifierKeys.Control), modifiers.HasFlag(ModifierKeys.Shift));
+            if (e.ChangedButton == MouseButton.Left && !modifiers.HasFlag(ModifierKeys.Alt) && (ctrl || shift))
+            {
+                // Not selected yet: in at once, so that a drag that follows takes it along. Selected: decided as it is let go.
+                // Ctrl on an edge is a ripple trim of the clip alone: it joins the selection only if let go without a drag.
+                if (!IsSelected(clip))
+                {
+                    if (ctrl && UnifiedTimeline.Surface.PressRipples)
+                        _clickGesture = (clip, ClickGesture.Add);
+                    else if (ctrl)
+                        AddToClipGroup(clip);
+                    else
+                        SelectClipRange(clip);
+                }
+                else
+                {
+                    _clickGesture = (clip, ctrl ? ClickGesture.Toggle : ClickGesture.Range);
+                }
+
+                return;
+            }
+
+            if (_viewModel.IsInClipGroup(clip) && GroupHolds)
+            {
+                // One of the group: the group stays (a drag takes it all, a right-click's menu is about it all); it is the
+                // one the panes show. Clicked and let go without a drag, it alone is selected.
+                SelectClip(clip, keepGroup: true);
+                if (e.ChangedButton == MouseButton.Left)
+                    _clickGesture = (clip, ClickGesture.Narrow);
+                return;
+            }
+        }
 
         SelectClip(block.Clip);
 
@@ -559,22 +619,148 @@ public partial class MainWindow
         FollowPlayhead();
     }
 
-    private bool IsSelected(object? clip) => clip is null ? _mainClipSelected && _selectedClip is null : Equals(clip, _selectedClip);
+    // Every caption block is outlined while the captions are what is selected (5.0-Verify).
+    private bool IsSelected(object? clip) => clip is null ? _mainClipSelected && _selectedClip is null
+        : Equals(clip, _selectedClip) || (clip is Layer layer && GroupHolds && _viewModel.IsInClipGroup(layer))
+        || clip is SubtitleRef && ReferenceEquals(_selectedClip, _viewModel.CaptionLayer);
 
-    private void SelectClip(object? clip)
+    /// <summary>Whether the clips selected together are the selection (5.0): its primary clip is one of them (any other selection made since ends the group).</summary>
+    private bool GroupHolds => _selectedClip is Layer primary && _viewModel.IsInClipGroup(primary);
+
+    /// <summary>The clips selected together, while they are the selection; else the one clip selected (when it could be one of a group), or none.</summary>
+    private IReadOnlyList<Layer> SelectedGroup()
+    {
+        if (GroupHolds)
+            return _viewModel.SelectedClips;
+        return _selectedClip is Layer one && _viewModel.CanGroup(one) ? [one] : [];
+    }
+
+    /// <summary>
+    /// Selects one thing (a clip, a part of an audio track, a clip's sound; null: the main video's clip at the playhead). The
+    /// clips selected together are let go, unless <paramref name="keepGroup"/> (5.0: the clip is one of them, made the one
+    /// the panes show).
+    /// </summary>
+    private void SelectClip(object? clip, bool keepGroup = false)
     {
         (_selectedClip, _mainClipSelected) = (clip, clip is null);
-        _viewModel.KeyLayer = clip switch { Layer { IsPicture: true } layer => layer, _ => _viewModel.KeyLayer };
 
-        // The outline is drawn by the surface from what is selected; the inspector shows the selection's values.
+        // The clip the Keyframes and Effects panes work on: a picture clip on the timeline. The captions are not one (they take
+        // no keyframes and few effects), nor is a view no clip has any more: the panes keep the clip they had (5.0-Verify).
+        _viewModel.KeyLayer = clip switch
+        {
+            Layer { IsPicture: true, IsCaptions: false } layer when _viewModel.Layers.Contains(layer) => layer,
+            _ => _viewModel.KeyLayer,
+        };
+
+        // The blurred background (5.0-Release): no clip, and the Effects pane's all the same while its row or block is selected.
+        _viewModel.BackgroundSelected = clip is Layer { IsBackground: true };
+        if (!keepGroup)
+        {
+            _rangeAnchor = null;
+            _viewModel.ClearClipGroup();
+        }
+
+        // The outline is drawn by the surface from what is selected; the inspector shows the selection's values, and the
+        // player's boxes outline it (the captions' too, which the key layer never is).
         UnifiedTimeline.Surface.Redraw();
         UpdateTimelineInspector();
+        if (clip is Layer { IsCaptions: true })
+            _playerOutlineHidden = false;
+        UpdatePlayerSelection();
     }
 
     /// <summary>Nothing is selected any more (after a split, a delete, an undo): the main video's clip at the playhead is what the tools work on.</summary>
     private void ClearClipSelection()
     {
         (_selectedClip, _mainClipSelected) = (null, false);
+        _rangeAnchor = null;
+        _viewModel.BackgroundSelected = false;
+        _viewModel.ClearClipGroup();
+        UpdateTimelineInspector();
+        UpdatePlayerSelection();
+    }
+
+    // ----- Clips selected together (5.0) -----
+
+    /// <summary>Ctrl + click on a clip not selected: it joins the selection (the one selected before with it), and is the one the panes show.</summary>
+    private void AddToClipGroup(Layer clip)
+    {
+        var group = SelectedGroup().ToList();
+        group.Add(clip);
+        _rangeAnchor = null;
+        _viewModel.SetClipSelection(group);
+        SelectClip(clip, keepGroup: true);
+        CrashReporter.Note("timeline", $"select: {_viewModel.SelectedClips.Count} clips");
+    }
+
+    /// <summary>Ctrl + click on a clip selected: it leaves the selection; the last one chosen of those left is the one the panes show.</summary>
+    private void RemoveFromClipGroup(Layer clip)
+    {
+        var group = SelectedGroup().Where(c => !ReferenceEquals(c, clip)).ToList();
+        _viewModel.SetClipSelection(group);
+        if (group.Count == 0)
+        {
+            ClearClipSelection();
+            UnifiedTimeline.Surface.Redraw();
+            return;
+        }
+
+        SelectClip(ReferenceEquals(_selectedClip, clip) ? group[^1] : _selectedClip, keepGroup: true);
+    }
+
+    /// <summary>
+    /// Shift + click: every clip from the one selected (where the range began, on a run of Shift + clicks) to the one clicked,
+    /// across the time from the earlier's start to the later's end and the tracks between them, is selected; the clip clicked
+    /// is the one the panes show. With nothing to begin from, the clip alone.
+    /// </summary>
+    private void SelectClipRange(Layer clip)
+    {
+        var anchor = _rangeAnchor is { } held && (GroupHolds ? _viewModel.IsInClipGroup(held) : ReferenceEquals(held, _selectedClip)) ? held
+            : _selectedClip as Layer;
+        if (anchor is null || !_viewModel.CanGroup(anchor) || ReferenceEquals(anchor, clip))
+        {
+            SelectClip(clip);
+            return;
+        }
+
+        var range = UnifiedTimeline.Surface.BlocksInRange(anchor, clip)
+            .Select(b => b.Clip).OfType<Layer>().Where(_viewModel.CanGroup).ToList();
+        range.Remove(anchor);
+        range.Remove(clip);
+        _viewModel.SetClipSelection([anchor, .. range, clip]);
+        SelectClip(clip, keepGroup: true);
+        _rangeAnchor = anchor;
+        CrashReporter.Note("timeline", $"select: a range of {_viewModel.SelectedClips.Count} clips");
+    }
+
+    // A block clicked and let go where it was (5.0): what its press left to the click.
+    private void Timeline_BlockClicked(TimelineRow row, TimelineBlock block)
+    {
+        if (_clickGesture is not { } pending || !ReferenceEquals(pending.Clip, block.Clip))
+            return;
+
+        _clickGesture = null;
+        switch (pending.Gesture)
+        {
+            case ClickGesture.Toggle:
+                RemoveFromClipGroup(pending.Clip);
+                break;
+            case ClickGesture.Range:
+                SelectClipRange(pending.Clip);
+                break;
+            case ClickGesture.Add:
+                AddToClipGroup(pending.Clip);
+                break;
+            default:
+                SelectClip(pending.Clip);
+                break;
+        }
+    }
+
+    // The group changed in the view model (an edit took its clips away, an undo, a choice made): the outlines follow it.
+    private void ClipGroup_Changed()
+    {
+        UnifiedTimeline.Surface.Redraw();
         UpdateTimelineInspector();
     }
 
@@ -681,6 +867,12 @@ public partial class MainWindow
         LetGoOfDrag();
         var at = _viewModel.PositionMs / 1000;
         CrashReporter.Note("timeline", string.Create(CultureInfo.InvariantCulture, $"split at {at:0.000} s"));
+        if (NotAClip(_selectedClip, "split") is { } refusal)
+        {
+            _viewModel.StatusText = refusal;
+            return;
+        }
+
         switch (_selectedClip)
         {
             case Layer layer when _viewModel.Layers.Contains(layer):
@@ -710,17 +902,45 @@ public partial class MainWindow
     {
         // A clip's sound is trimmed as its clip is; nothing selected, the main video's clip at the playhead.
         LetGoOfDrag();
+        if (NotAClip(_selectedClip, "trimmed") is { } refusal)
+        {
+            _viewModel.StatusText = refusal;
+            return;
+        }
+
         var clip = _selectedClip is LayerSound sound ? sound.Layer : _selectedClip ?? _viewModel.MainLayer;
         _viewModel.TrimClip(clip, start, _viewModel.PositionMs / 1000);
         ScheduleClipRedraw();
     }
 
+    /// <summary>
+    /// Why the selection is not something to cut (the captions, selected from their row since 5.0-Verify, and the
+    /// background are no clips): never the main video's clip in their place. Null for a clip, or nothing selected.
+    /// </summary>
+    private static string? NotAClip(object? selected, string what) => selected switch
+    {
+        Layer { IsCaptions: true } => $"The captions are words, not a clip: they are not {what}. Their words are edited in the Subtitle Editor; select a clip to cut it.",
+        Layer { IsBackground: true } => $"The background is not a clip: it is not {what}. Select a clip to cut it.",
+        _ => null,
+    };
+
     private void DeleteClip_Click(object sender, RoutedEventArgs e) => DeleteSelectedClip();
 
-    /// <summary>Delete: a clip goes (the main video's too); a part of an audio track is silenced (and, deleted again, plays again).</summary>
+    /// <summary>
+    /// Delete: a clip goes (the main video's too); a part of an audio track is silenced (and, deleted again, plays again).
+    /// Clips selected together (5.0) all go, one step of Undo.
+    /// </summary>
     private void DeleteSelectedClip()
     {
         LetGoOfDrag();
+        if (GroupHolds)
+        {
+            if (_viewModel.DeleteClips(_viewModel.SelectedClips, ripple: false))
+                ClearClipSelection();
+            ScheduleClipRedraw();
+            return;
+        }
+
         switch (_selectedClip)
         {
             case AudioClip { Piece: { } piece } audio:
@@ -732,6 +952,9 @@ public partial class MainWindow
                 return;
             case LayerSound sound:
                 _viewModel.StatusText = $"The sound belongs to {sound.Layer.Name}: delete or hide the layer to take it out.";
+                return;
+            case Layer { IsCaptions: true }:
+                _viewModel.StatusText = "The captions are words, not a clip: right-click their row for Delete Subtitle Track, or turn off Burn Captions into Export.";
                 return;
             default:
                 if (!_viewModel.DeleteClip(_selectedClip))
@@ -837,6 +1060,13 @@ public partial class MainWindow
             AddTrackItem(menu, header, action, enabled, tip, gesture);
         void Separate() => AddSeparator(menu);
 
+        // One of clips selected together (5.0): what is done to all of them comes first, each one step of Undo.
+        if (GroupHolds && _viewModel.IsInClipGroup(clip))
+        {
+            AddGroupItems(menu);
+            Separate();
+        }
+
         var at = _viewModel.PositionMs / 1000;
 
         // An empty track has nothing to set: it can only leave the mini-stack it is in, or be deleted.
@@ -861,12 +1091,14 @@ public partial class MainWindow
             Separate();
         }
 
-        // The track's own modifiers.
+        // The track's own modifiers, and an effect on the clip (or the blurred background) with its visible starting values.
         if (layer.HasFilters)
         {
             Add("Filters...", () => OpenLayerTool(layer, LayerTool.Filters));
             Add("Position & Transform...", () => OpenLayerTool(layer, LayerTool.Transform));
         }
+        if ((layer.HasFilters || layer.IsBackground) && AddEffectMenu(layer.IsBackground ? layer : clip) is { } addEffect)
+            menu.Items.Add(addEffect);
         if (layer.HasMask)
             Add(layer is { IsVideo: true, CustomMask: true } ? "Edit Mask..." : "Add Mask...", () => OpenLayerTool(layer, LayerTool.Mask));
         // The caption row's are its Caption Position & Look..., above.
@@ -1008,32 +1240,26 @@ public partial class MainWindow
             menu.Items.Add(speeds);
         }
 
-        // Live Preview's proxy for the clip's file (see ProxyCache): when it is heavy, always, or never.
-        if (clip.IsVideoFile || (clip.IsMainVideo && AppSettings.Current.ProxyScope == AppSettings.ProxyAllVideos))
+        // A proxy of the clip's file, on demand (5.0D, see ProxyCache), offered only where it helps (5.0-Verify, the user's Q6):
+        // a long-GOP video layer the preview cannot decode fast, a clip that has it on, or Shift held as the menu opens.
+        if ((clip.IsVideoFile || clip.IsMainVideo) && _viewModel.OptimizeIsUseful(clip, Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)))
         {
             Separate();
-            var proxy = new MenuItem { Header = "Proxy" };
-            proxy.Items.Add(new MenuItem { Header = _viewModel.ProxyStatus(clip), IsEnabled = false });
-            proxy.Items.Add(new Separator());
-            foreach (var (header, choice, tip) in new[]
-                     {
-                         ("Automatic (When the File Is Heavy)", ProxyChoice.Auto, "A proxy is made when the file is 4K, AV1, VP9, ProRes, 10-bit HEVC or far between I-frames (Settings, Proxies)."),
-                         ("Make Proxy", ProxyChoice.Make, "A proxy is made for this file whatever it is, and Live Preview plays it in its place. Exports always read the original."),
-                         ("Use Original", ProxyChoice.Original, "Live Preview plays the original file, even when it has a proxy."),
-                     })
+            var optimized = clip.ProxyChoice == ProxyChoice.Make;
+            var optimize = new MenuItem
             {
-                var item = new MenuItem { Header = header, IsCheckable = true, IsChecked = clip.ProxyChoice == choice, ToolTip = tip };
-                item.Click += (_, _) => RunGuarded("a clip's proxy", () => _viewModel.SetProxyChoice(clip, choice));
-                proxy.Items.Add(item);
-            }
-
-            menu.Items.Add(proxy);
+                Header = "Optimize Long-GOP Clip for Scrubbing", IsCheckable = true, IsChecked = optimized,
+                ToolTip = $"{_viewModel.ProxyStatus(clip)}. Makes a small proxy of this clip's file (its I-frames close together: Settings, Proxies), in the background, which the GPU preview plays in its place, so that seeking and scrubbing a recording whose I-frames are far apart cost little where the graphics card cannot decode it fast. Exports always read the original.",
+            };
+            optimize.Click += (_, _) => RunGuarded("a clip's proxy", () => _viewModel.SetProxyChoice(clip, optimized ? ProxyChoice.Auto : ProxyChoice.Make));
+            menu.Items.Add(optimize);
         }
 
         // Its sound: how loud the clip is, the track's filters, the clip's link to its picture (J and L cuts, slips), and what
         // the track's sound does when someone is speaking.
+        // (None of it on a video-only child, 5.0-Release: the blurred background, a HUD cut-out or a mask's piece.)
         var linkable = !clip.IsAudio && _viewModel.ClipOf(clip) is { HasSound: true };
-        if (layer.CarriesSound || clip.CarriesSound || linkable)
+        if (!layer.IsVideoOnlyChild && !clip.IsVideoOnlyChild && (layer.CarriesSound || clip.CarriesSound || linkable))
         {
             Separate();
             if (clip.CarriesSound)
@@ -1090,9 +1316,49 @@ public partial class MainWindow
 
         Separate();
         if (clips.Count > 1)
-            Add("Delete Clip", () => _viewModel.DeleteClip(clip), gesture: "edit.delete");
+            Add("Delete Clip", () => DeleteMenuClip(clip), gesture: "edit.delete");
         Add("Delete Track", () => _viewModel.RemoveTrack(layer),
             tip: clips.Count > 1 ? $"Deletes the whole track, its {clips.Count} clips with it (Undo brings them back)." : null);
+    }
+
+    /// <summary>
+    /// What a menu does to clips selected together (5.0): how many there are, Delete and Ripple Delete, Mute (or Unmute) of
+    /// their sound, each one step of Undo. Paste Effects onto all of them is the Effects pane's (MainViewModel.PasteEffectsToClips).
+    /// </summary>
+    private void AddGroupItems(ItemsControl menu)
+    {
+        var group = _viewModel.SelectedClips.ToList();
+        var count = group.Count.ToString(CultureInfo.InvariantCulture);
+        menu.Items.Add(new MenuItem { Header = $"{count} Clips Selected", IsEnabled = false, FontWeight = FontWeights.SemiBold });
+        AddTrackItem(menu, $"Delete {count} Clips", DeleteSelectedClip, gesture: "edit.delete",
+            tip: "Every selected clip goes into the recycle bin, their time left empty. One step of Undo.");
+        AddTrackItem(menu, $"Ripple Delete {count} Clips", () =>
+        {
+            if (_viewModel.DeleteClips(group, ripple: true))
+                ClearClipSelection();
+        }, gesture: "edit.rippleDelete", tip: "Every selected clip goes into the recycle bin, and what follows each closes up. One step of Undo.");
+
+        if (group.Exists(c => _viewModel.ClipOf(c) is { HasSound: true }))
+        {
+            var muted = _viewModel.AreClipsMuted(group);
+            AddTrackItem(menu, muted ? $"Unmute {count} Clips" : $"Mute {count} Clips", () => _viewModel.SetClipsMuted(group, !muted),
+                tip: muted ? "The sound of every selected clip is heard again." : "The sound of every selected clip is left out of the mix; their pictures stay.");
+        }
+
+        AddTrackItem(menu, "Select Only This Clip", () => SelectClip(_selectedClip),
+            tip: "Lets go of the others: only the clip right-clicked stays selected.");
+    }
+
+    /// <summary>Delete Clip on a clip's menu: the clip, or (one of clips selected together, 5.0) all of them.</summary>
+    private void DeleteMenuClip(Layer clip)
+    {
+        if (GroupHolds && _viewModel.IsInClipGroup(clip))
+        {
+            DeleteSelectedClip();
+            return;
+        }
+
+        _viewModel.DeleteClip(clip);
     }
 
     /// <summary>
@@ -1201,6 +1467,39 @@ public partial class MainWindow
     {
         if (!Equals(_selectedClip, clip))
             SelectClip(clip);
+    }
+
+    /// <summary>
+    /// Add Effect on a track's menu (5.0-Release, the user's Q1): every effect the clip can take (Layer.CanTake), by category,
+    /// each put on it with its visible starting values (MainViewModel.AddEffectCard, as the Effects pane's Add Effect does), the
+    /// clip then selected so that the Effects pane shows its new card; the preview follows the edit as any other. Null when the
+    /// clip takes none.
+    /// </summary>
+    private MenuItem? AddEffectMenu(Layer target)
+    {
+        var menu = new MenuItem { Header = "Add Effect", ToolTip = "Puts an effect on this clip, already set to show (the Effects pane then shows its card, to be tuned)." };
+        string? category = null;
+        foreach (var definition in Models.Effects.EffectRegistry.All.Where(d => target.CanTake(d)).OrderBy(d => Models.Effects.EffectRegistry.CategoryRank(d.Category)))
+        {
+            if (category is not null && definition.Category != category)
+                menu.Items.Add(new Separator());
+            category = definition.Category;
+            var item = new MenuItem { Header = definition.Name, ToolTip = definition.Description };
+            item.Click += (_, _) => RunGuarded($"add {definition.Name}", () =>
+            {
+                if (_viewModel.AddEffectCard(target, definition) is null)
+                    return;
+                SelectClip(target);
+                ScheduleClipRedraw();
+
+                // A mask card needs its mask: the editor opens, as Add Effect in the Effects pane opens it.
+                if (definition.Type == Models.Effects.EffectRegistry.Mask && !target.CustomMask)
+                    OpenLayerTool(target, LayerTool.Mask);
+            });
+            menu.Items.Add(item);
+        }
+
+        return menu.Items.Count > 0 ? menu : null;
     }
 
     /// <summary>

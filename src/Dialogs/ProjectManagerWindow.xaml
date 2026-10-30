@@ -13,13 +13,16 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Project name:" VerticalAlignment="Center" Margin="0,0,12,0" />
                 <TextBox Grid.Column="1" x:Name="NameBox" VerticalContentAlignment="Center"
                          ToolTip="Saving under the name of an existing project replaces it." />
                 <Button Grid.Column="2" Content="Save Project" Margin="6,0,0,0" Click="Save_Click"
                         ToolTip="Save the loaded source, its cut segments and all settings." />
-                <Button Grid.Column="3" Content="+ New Project" Margin="6,0,0,0" Click="NewProject_Click" AutomationProperties.Name="New Project"
+                <Button Grid.Column="3" Content="Save as Bundle..." Margin="6,0,0,0" Click="SaveBundle_Click" AutomationProperties.Name="Save Project Bundle"
+                        ToolTip="Saves the project with every video, sound and picture it uses in one .hpb file, to carry it to another PC or keep it whole. The files are stored as they are (no compression), so it is about as quick as copying them. Opening the bundle unpacks it into a folder beside it." />
+                <Button Grid.Column="4" Content="+ New Project" Margin="6,0,0,0" Click="NewProject_Click" AutomationProperties.Name="New Project"
                         ToolTip="Starts again with nothing open, as HandPeg starts: no video, no clips, cuts, markers or subtitles, the encoding settings back to their defaults. Changes not saved are asked about first." />
             </Grid>
         </Border>
@@ -32,8 +35,12 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <Button Content="Open Directory" Click="OpenDirectory_Click"
-                    ToolTip="Opens the projects folder in File Explorer." />
+            <StackPanel Orientation="Horizontal">
+                <Button Content="Open File..." Click="OpenFile_Click" AutomationProperties.Name="Open Project or Bundle File"
+                        ToolTip="Opens a project (.hproj) or a project bundle (.hpb) from anywhere." />
+                <Button Content="Open Directory" Margin="6,0,0,0" Click="OpenDirectory_Click"
+                        ToolTip="Opens the projects folder in File Explorer." />
+            </StackPanel>
             <Button Grid.Column="1" x:Name="DeleteButton" Content="Delete Project" Margin="6,0,0,0" IsEnabled="False" Click="Delete_Click"
                     ToolTip="Deletes the selected project file. The video it refers to is not touched." />
             <TextBlock Grid.Column="2" x:Name="MessageText" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"

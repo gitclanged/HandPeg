@@ -599,24 +599,87 @@ public sealed partial class VoiceRecorder
 /// <summary>
 /// Windows notifications. They are sent through a notification-area icon, which Windows 10 and 11 show
 /// as ordinary toasts and keep in the notification centre; no installer registration is needed for that.
+/// Since 5.0-Release they are silent (NIIF_NOSOUND: the user's "random loud system beeps"), and none is sent while HandPeg is
+/// the active application: the user is looking at it, and <see cref="Said"/> puts the same words on its status line.
 /// </summary>
-public static class Notifier
+public static partial class Notifier
 {
-    private static System.Windows.Forms.NotifyIcon? _icon;
+    private const uint NimAdd = 0, NimModify = 1, NimDelete = 2, NifIcon = 0x2, NifTip = 0x4, NifInfo = 0x10, NiifUser = 0x4, NiifNoSound = 0x10;
+    private const uint IconId = 1;
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private unsafe struct NotifyIconData
+    {
+        public uint Size;
+        public IntPtr Window;
+        public uint Id;
+        public uint Flags;
+        public uint CallbackMessage;
+        public IntPtr Icon;
+        public fixed char Tip[128];
+        public uint State;
+        public uint StateMask;
+        public fixed char Info[256];
+        public uint TimeoutOrVersion;
+        public fixed char InfoTitle[64];
+        public uint InfoFlags;
+        public Guid Item;
+        public IntPtr BalloonIcon;
+    }
+
+    [System.Runtime.InteropServices.LibraryImport("shell32.dll", EntryPoint = "Shell_NotifyIconW")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static partial bool ShellNotifyIcon(uint message, ref NotifyIconData data);
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    private static partial IntPtr GetForegroundWindow();
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    private static partial uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    private static readonly object Gate = new();
+
+    // The icon shown in the notification area (kept alive while it is there), and the window it is shown for; zero before the first.
+    private static System.Drawing.Icon? _icon;
+    private static IntPtr _owner;
+
+    /// <summary>A notification not sent because HandPeg was the active application: its title and words, for the status line (any thread).</summary>
+    public static event Action<string, string>? Said;
 
     public static void Show(string title, string message)
     {
+        if (IsActiveApplication())
+        {
+            Said?.Invoke(title, message);
+            return;
+        }
+
         try
         {
-            _icon ??= new System.Windows.Forms.NotifyIcon
+            lock (Gate)
             {
-                Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? "") ?? System.Drawing.SystemIcons.Application,
-                Text = "HandPeg",
-            };
+                var adding = _owner == IntPtr.Zero;
+                if (adding)
+                {
+                    _owner = Process.GetCurrentProcess().MainWindowHandle;
+                    if (_owner == IntPtr.Zero)
+                        return;
+                    _icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? "") ?? System.Drawing.SystemIcons.Application;
+                }
 
-            // Only in the notification area while there is something to say.
-            _icon.Visible = true;
-            _icon.ShowBalloonTip(5000, title, message, System.Windows.Forms.ToolTipIcon.None);
+                var data = Data(NifIcon | NifTip | NifInfo);
+                unsafe
+                {
+                    Copy("HandPeg", data.Tip, 128);
+                    Copy(title, data.InfoTitle, 64);
+                    Copy(message, data.Info, 256);
+                }
+
+                // Only in the notification area while there is something to say; never with the notification sound.
+                data.InfoFlags = NiifUser | NiifNoSound;
+                if (!ShellNotifyIcon(adding ? NimAdd : NimModify, ref data) && !adding)
+                    ShellNotifyIcon(NimAdd, ref data);
+            }
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception or IOException)
         {
@@ -627,8 +690,42 @@ public static class Notifier
     /// <summary>Takes the icon out of the notification area. Called as the application closes.</summary>
     public static void Dispose()
     {
-        _icon?.Dispose();
-        _icon = null;
+        lock (Gate)
+        {
+            if (_owner != IntPtr.Zero)
+            {
+                var data = Data(0);
+                ShellNotifyIcon(NimDelete, ref data);
+            }
+
+            _icon?.Dispose();
+            (_icon, _owner) = (null, IntPtr.Zero);
+        }
+    }
+
+    private static NotifyIconData Data(uint flags) => new()
+    {
+        Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NotifyIconData>(),
+        Window = _owner,
+        Id = IconId,
+        Flags = flags,
+        Icon = _icon?.Handle ?? IntPtr.Zero,
+        BalloonIcon = _icon?.Handle ?? IntPtr.Zero,
+    };
+
+    private static unsafe void Copy(string text, char* into, int capacity)
+    {
+        var length = Math.Min(text.Length, capacity - 1);
+        for (var i = 0; i < length; i++)
+            into[i] = text[i];
+        into[length] = '\0';
+    }
+
+    /// <summary>Whether the window in front belongs to HandPeg (any thread).</summary>
+    private static bool IsActiveApplication()
+    {
+        var front = GetForegroundWindow();
+        return front != IntPtr.Zero && GetWindowThreadProcessId(front, out var process) != 0 && process == (uint)Environment.ProcessId;
     }
 }
 

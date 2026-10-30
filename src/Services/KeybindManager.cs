@@ -89,6 +89,7 @@ public static class KeybindManager
     [
         new("file.save", "Save Project", Project, "\uE74E", ["Ctrl+S"], KeyActionFlags.WorksInText | KeyActionFlags.ChangesProject),
         new("file.saveAs", "Save Project As", Project, "\uE792", ["Ctrl+Alt+S"], KeyActionFlags.WorksInText | KeyActionFlags.ChangesProject),
+        new("file.saveBundle", "Save Project Bundle (.hpb)", Project, "\uE7B8", [], KeyActionFlags.WorksInText),
         new("edit.undo", "Undo", Project, "\uE7A7", ["Ctrl+Z"], KeyActionFlags.Fixed | KeyActionFlags.Repeat | KeyActionFlags.ChangesProject, Also: ["Mouse4"]),
         new("edit.redo", "Redo", Project, "\uE7A6", ["Ctrl+Y", "Ctrl+Shift+Z"], KeyActionFlags.Fixed | KeyActionFlags.Repeat | KeyActionFlags.ChangesProject),
         new("file.addMedia", "Add Media", Project, "\uE710", [], KeyActionFlags.ChangesProject),
@@ -128,6 +129,8 @@ public static class KeybindManager
         new("view.zoomOut", "Zoom Timeline Out", View, "\uE71F", ["-"], KeyActionFlags.Repeat),
         new("view.fit", "Fit Timeline", View, "\uE9A6", ["\\"]),
         new("view.toggleSnap", "Toggle Snap", View, "\uE80A", ["Caps"]),
+        // The player as the GPU engine's 3D exploded layer stack, and back (5.0D). Unbound: the left hand's keys are all taken.
+        new("view.exploded3d", "3D Exploded View", View, "\uE81E", []),
 
         new("nav.forward", "Zoom In Under the Pointer", Navigation, "\uE8A3", ["W"], KeyActionFlags.Continuous),
         new("nav.back", "Zoom Out Under the Pointer", Navigation, "\uE71F", ["S"], KeyActionFlags.Continuous),
@@ -262,10 +265,8 @@ public static class KeybindManager
     private static Map? _map;
 
     // Made the first time a key is looked up (never while the settings themselves are being loaded: they are read here).
+    // (Nothing before the first frame may touch this class: its table of actions is made with it. KeyTip's stand-ins ask it nothing.)
     private static Map Current => _map ??= Build(AppSettings.Current.KeybindPreset, AppSettings.Current.CustomKeybinds);
-
-    /// <summary>Whether the map has been made (a key looked up): a tooltip made before it leaves its keys for when it opens.</summary>
-    public static bool IsMapMade => _map is not null;
 
     private static List<DialCategoryState>? _dial;
 

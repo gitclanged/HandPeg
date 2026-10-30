@@ -1,296 +1,79 @@
-using System.ComponentModel;
-using System.Globalization;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Documents;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using HandPegApp.Models;
 using HandPegApp.Services;
-using HandPegApp.ViewModels;
-using Microsoft.Win32;
 
 namespace HandPegApp;
 
-// ----- Player: libmpv, Live Preview scheduling, the paused sound settle, J/K/L, scrubbing, solo and waveform seeks -----
+// ----- Player: the few places that drive the GPU preview engine, J/K/L, scrubbing, solo and waveform seeks -----
 public partial class MainWindow
 {
-    // ----- The player: libmpv -----
-    // mpv draws into the video surface, reports where it is as it plays, and can run an FFmpeg filter graph on
-    // the picture (its lavfi-complex property). That graph is Live Preview: with the box ticked it is the one
-    // the export would use for the picture, rebuilt whenever a setting changes; unticked, there is none and
-    // the source is shown as it is.
+    // ----- The player -----
+    // The player is the GPU preview engine (MainWindow.GpuPreview.cs; the only one since 5.0-Verify, libmpv is gone): the
+    // compositor draws the sequence's scene plan into the video surface, the WASAPI mixer plays its sound, and the mixer's
+    // clock is the playhead. Whatever moves or changes the player goes through the members here (PlayerSeek, PlayerSetPause,
+    // PlayerIsPlaying, TakePlayerPosition, ApplyLiveFilter and ScheduleLiveFilter, OpenInPlayer), which keep their names
+    // from the libmpv days so that their callers need not know: an edit is a new scene plan, a jump an exact seek.
 
-    private MpvPlayer? _mpv;
-    private bool _startingPlayer;
     private bool _shellDrawn;
 
-    // What to open once the player exists: a video loaded before it had started, or the one a reload is bringing back.
-    private (string Path, long StartMs, bool Paused)? _pendingMedia;
+    // What to open once the engine has started: the moment the sequence was loaded at (or a reload brings it back to), and
+    // whether paused.
+    private (long StartMs, bool Paused)? _pendingMedia;
 
-    // The graph mpv is running. A graph holds the stretch of the sequence around the moment it was built for
-    // (see FilterGraphBuilder.BuildLiveGraph): it was built with the settings as they were (_liveStamp) at
-    // _liveBuiltAtMs, and is good until _liveRebuildAt while playing forwards.
-    private string _liveGraph = "";
-    private LiveStamp _liveStamp;
-    private long _liveBuiltAtMs;
-    private double _liveRebuildAt = double.PositiveInfinity;
-
-    // The settings that mpv refused a graph for: no graph is offered for them again until they change.
-    private LiveStamp? _failedLiveStamp;
-
-    // Counts the changes to anything a graph is built from, so that a graph can tell it is still the one wanted.
-    private int _liveStateVersion;
-
-    /// <summary>What a live graph was built from, besides the moment: the settings (by their count of changes), the player's size, and what it shows.</summary>
-    private readonly record struct LiveStamp(int Version, bool Live, int Width, int Height, LiveLayerMode Layers, long? AudioFrom)
-    {
-        public bool SameSettings(LiveStamp other) => (Version, Live, Width, Height, Layers) == (other.Version, other.Live, other.Width, other.Height, other.Layers);
-    }
-
-    // Sliders report every step of a drag; the graph is rebuilt once they have been still for a moment.
-    private readonly System.Windows.Threading.DispatcherTimer _liveFilterTimer = new() { Interval = TimeSpan.FromMilliseconds(90) };
-
-    private bool PlayerIsPlaying => _mpv is { IsPlaying: true };
+    private bool PlayerIsPlaying => _gpu is { IsPlaying: true };
 
     // Whether the paused player was last sent to an exact moment by the user, which the playhead then keeps.
     private bool _pausedOnUsersMoment;
 
-    private void PlayerSetPause(bool paused) => _mpv?.SetPause(paused);
-
-    /// <summary>
-    /// Sends the player to a moment. A live graph belongs to its moment (its video layers start reading their
-    /// files there), so the graph for the new moment goes with the seek, and mpv runs it from there: see
-    /// ApplyLiveFilter. A graph that comes out the same is not sent again, and the seek goes alone.
-    /// </summary>
-    private void PlayerSeek(long positionMs, bool exact = true)
+    private void PlayerSetPause(bool paused)
     {
-        if (_mpv is null)
-            return;
-
-        // A jump while paused is answered by the quick graph without sound; the one ready to play follows when it settles.
-        // The moment it was sent to is the user's from then on (see OnPlayerTimeChanged).
-        if (!PlayerIsPlaying)
-            (_soundSettled, _pausedOnUsersMoment) = (false, exact);
-
-        // A jump of the user's own ends the wait for the player to come back from a graph it could not run (see OnPlayerError).
-        _recoveringToMs = null;
-
-        // The layers' sound is laid out in the graph from one moment on: after a jump it is laid out again, from
-        // where the jump lands.
-        if (LiveGraphHasSound)
-            _liveAudioSeekMs = positionMs;
-        CrashReporter.Note("seek", string.Create(CultureInfo.InvariantCulture, $"to {positionMs / 1000.0:0.0} s{(exact ? "" : " (to an I-frame)")}"));
-        ApplyLiveFilter((positionMs, exact));
+        if (_gpu is { } gpu)
+            GpuSetPaused(gpu, paused);
     }
 
-    /// <summary>How video layers are shown while the playhead is dragged or wound back (Settings, "Video layers while scrubbing").</summary>
-    private static LiveLayerMode ScrubLayerMode => AppSettings.Current.LayersWhileScrubbing switch
+    /// <summary>Sends the player to a moment: always the exact frame, answered at once (Instant Seek shows the nearest one meanwhile).</summary>
+    private void PlayerSeek(long positionMs)
     {
-        AppSettings.ScrubLayersLive => LiveLayerMode.Live,
-        AppSettings.ScrubLayersHidden => LiveLayerMode.Hidden,
-        _ => LiveLayerMode.Still,
-    };
+        if (_gpu is { } gpu)
+            GpuSeek(gpu, positionMs);
+
+        // The engine starting (or starting again after a fault): it opens where the user went meanwhile.
+        else if (_pendingMedia is { } pending)
+            _pendingMedia = (positionMs, pending.Paused);
+    }
 
     /// <summary>
     /// The video surface (a native window, which nothing of WPF's can be drawn over) is shown only while there is a
-    /// video and a player to draw it. Otherwise it is hidden (it keeps its window, and the player its surface), and
+    /// video and a player to draw it. Otherwise it is hidden (it keeps its window, and the engine its swap chain), and
     /// what lies under it in the pane shows: the drop hint while nothing is loaded, the engine notice while the player
-    /// is being downloaded. Being content of the pane, they belong to whichever window holds the player.
+    /// is stopped (see OnGpuFaulted). Being content of the pane, they belong to whichever window holds the player.
     /// </summary>
     private void UpdateVideoVisibility()
     {
-        VideoView.Visibility = _viewModel.HasSource && _mpv is not null ? Visibility.Visible : Visibility.Hidden;
+        VideoView.Visibility = _viewModel.HasSource && _gpu is not null ? Visibility.Visible : Visibility.Hidden;
         DropHint.Visibility = _viewModel.HasSource ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    // Whether anything has asked for the player yet: a video to open, a file dragged over the window, the Source
-    // box or Browse being used. Until then libmpv is not even loaded (it and the graphics driver it starts are
-    // well over a hundred megabytes of an idle window).
+    // Whether anything has asked for the player yet: a video to open, a file dragged over the window, the Source box or
+    // Browse being used. Until then the engine is not started (its worker, its swap chain and the audio device are well
+    // over a hundred megabytes of an idle window).
     private bool _playerWanted;
 
     /// <summary>Starts the player ahead of need: something is about to be opened (a file is being dragged in, a path typed).</summary>
     private void WarmUpPlayer()
     {
-        if (_mpv is not null || _playerWanted)
+        if (_gpu is not null || _playerWanted)
             return;
 
         _playerWanted = true;
-        _ = EnsurePlayerAsync();
-    }
-
-    /// <summary>
-    /// Starts the player when there is none yet and something wants it (see _playerWanted). Loading libmpv and
-    /// starting it take a moment, and happen on the thread pool: the window is never held up by them. Without
-    /// libmpv (not downloaded yet) there is simply no player; everything else works, and this is tried again
-    /// when the dependencies change.
-    /// </summary>
-    private async Task EnsurePlayerAsync()
-    {
-        if (_mpv is not null || _startingPlayer || !_shellDrawn)
-            return;
-
-        // Not there yet: it is fetched by itself, with a notice in the empty player saying so.
-        if (!MpvPlayer.IsInstalled)
-        {
-            _ = FetchPlayerAsync();
-            return;
-        }
-
-        if (!_playerWanted && _pendingMedia is null && !_viewModel.HasSource)
-            return;
-
-        var surface = VideoView.SurfaceHandle;
-        if (surface == IntPtr.Zero)
-            return;
-
-        EngineNotice.Visibility = Visibility.Collapsed;
-
-        _startingPlayer = true;
-        try
-        {
-            var acceleration = AppSettings.Current.PlayerHardwareAcceleration;
-            var startedAt = Environment.TickCount64;
-            var player = await Task.Run(() => MpvPlayer.Create(surface, acceleration));
-            AppLog.Write($"Player started in {Environment.TickCount64 - startedAt} ms.");
-
-            // mpv raises its events on a thread of its own; they are passed on only while this is still the player.
-            void OnUi(Action action) => Dispatcher.BeginInvoke(() =>
-            {
-                if (ReferenceEquals(player, _mpv))
-                    action();
-            });
-
-            // The position: while playing it is read once per screen refresh (see FollowPlayerByFrame); otherwise
-            // one look is asked for when it moves, however many reports come in before the UI thread gets to it.
-            player.PositionPending += () =>
-            {
-                if (!_followingByFrame)
-                    Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Render, () =>
-                    {
-                        if (ReferenceEquals(player, _mpv))
-                            TakePlayerPosition();
-                    });
-            };
-            player.GraphRefused += reason => OnUi(() => OnPlayerError($"lavfi-complex: {reason}", graphFailed: true));
-
-            // The timeline's length is the sequence's, which the view model works out; the player's word is
-            // only needed for a file that could not be inspected.
-            player.DurationChanged += length => OnUi(() => _viewModel.ReportPlayerDuration(length / 1000.0, _playerSource == _viewModel.LocalMediaPath));
-            player.StateChanged += () => OnUi(() =>
-            {
-                var wasPlaying = _viewModel.IsPlaying;
-                _viewModel.IsPlaying = player.IsPlaying;
-                FollowPlayerByFrame(player.IsPlaying);
-
-                // Not the end a graph mpv could not run made it take the file for (see OnPlayerError): Loop does not start over.
-                if (wasPlaying && player.IsEnded && _recoveringToMs is null)
-                    OnPlaybackEnded();
-
-                // The layers' sound is in the graph while it plays: it comes in as playback starts (unless the paused
-                // player has it already, see ArmSoundSettle), from where it starts. Paused, the graph with sound is
-                // kept as it is, ready to play on: it goes only with the next jump or edit.
-                if (wasPlaying && !player.IsPlaying && LiveGraphHasSound)
-                    _soundSettled = true;
-                if (wasPlaying != player.IsPlaying && _viewModel.LivePreview && (player.IsPlaying || LiveGraphHasSound))
-                    ApplyLiveFilter();
-            });
-            player.FileLoaded += () => OnUi(() =>
-            {
-                // Opening a file takes the graph off; it is given again, for this file.
-                ForgetLiveGraph();
-                player.SetAudioFilter(_viewModel.PlayerAudioFilter);
-                ApplyAudioTrack();
-                if (!SyncPlayerSource())
-                    ApplyLiveFilter();
-            });
-            player.ErrorLogged += text => OnUi(() => OnPlayerError(text));
-
-            _mpv = player;
-            UpdateVideoVisibility();
-            ForgetLiveGraph();
-            _failedLiveStamp = null;
-            player.SetVolume(_viewModel.Volume);
-            player.SetMute(_viewModel.IsPlayerMuted);
-            player.SetSpeed(_viewModel.PlaybackRate);
-
-            // A video may have been loaded while the player was still starting.
-            if (_pendingMedia is null && _viewModel.HasSource && File.Exists(_viewModel.LocalMediaPath))
-                _pendingMedia = (_viewModel.PlayerSource, (long)_viewModel.PositionMs, true);
-            if (_pendingMedia is { } media)
-            {
-                _pendingMedia = null;
-                _playerSource = media.Path;
-                player.Open(media.Path, media.StartMs, media.Paused);
-            }
-        }
-        catch (InvalidOperationException ex)
-        {
-            AppLog.Write("The player could not be started", ex);
-            _viewModel.StatusText = $"The video player could not be started: {ex.Message}";
-        }
-        finally
-        {
-            _startingPlayer = false;
-        }
+        EnsureGpuEngine();
     }
 
     private readonly CancellationTokenSource _windowClosing = new();
-    private bool _fetchingPlayer;
-    private bool _playerFetchFailed;
-
-    /// <summary>
-    /// Downloads libmpv, the video engine, when it is missing: by itself, in the background, with a notice
-    /// over the empty player so that it is clear why there is no picture yet. Tried once per session; when
-    /// it fails the notice says so, and the dependency list in the settings is the way to try again.
-    /// </summary>
-    private async Task FetchPlayerAsync()
-    {
-        if (_fetchingPlayer || _playerFetchFailed)
-            return;
-
-        _fetchingPlayer = true;
-        (EngineNotice.Visibility, EngineProgress.Visibility, EngineProgress.IsIndeterminate) = (Visibility.Visible, Visibility.Visible, true);
-        EngineNoticeTitle.Text = "Downloading Video Engine...";
-        EngineNoticeText.Text = "The player (libmpv, about 31 MB) is fetched once. Everything else can be used meanwhile.";
-        try
-        {
-            var token = _windowClosing.Token;
-            var latest = await DependencyUpdater.GetLatestAsync(DependencyUpdater.Mpv, token);
-            var progress = new Progress<InstallProgress>(report =>
-            {
-                EngineProgress.IsIndeterminate = report.Fraction < 0;
-                EngineProgress.Value = Math.Clamp(report.Fraction, 0, 1);
-                EngineNoticeText.Text = report.Text;
-            });
-            await Task.Run(() => DependencyUpdater.InstallToolAsync(DependencyUpdater.Mpv, latest, progress, token), token);
-            _viewModel.OnDependenciesChanged();
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-        catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex))
-        {
-            AppLog.Write("The video engine could not be downloaded", ex);
-            _playerFetchFailed = true;
-            EngineProgress.Visibility = Visibility.Collapsed;
-            EngineNoticeTitle.Text = "Video Engine Not Installed";
-            EngineNoticeText.Text = $"It could not be downloaded ({ex.Message}). Check the connection, then open Settings (the gear button) and press Install / Update All Dependencies.";
-            return;
-        }
-        finally
-        {
-            _fetchingPlayer = false;
-        }
-
-        await EnsurePlayerAsync();
-    }
 
     /// <summary>
     /// Opens a newly loaded source in the player, paused on its first frame (a project or a file opened is looked at
@@ -305,507 +88,71 @@ public partial class MainWindow
         }
 
         StopShuttle();
-        OpenInPlayer(_viewModel.PlayerSource, 0, paused: true);
+        OpenInPlayer(0, paused: true);
 
         // A new video is seen whole on the time bars.
         FitTimeline(announce: false);
     }
 
-    // What the player has open: the main video's file, or the sequence written out for it (see PlayerSource).
-    private string _playerSource = "";
-
-    /// <summary>
-    /// Has the player open the sequence as it is now, when that is no longer what it has open: the main video
-    /// was moved or trimmed, or a clip now reaches past its end. It carries on from where it was. Returns
-    /// whether it had to.
-    /// </summary>
-    private bool SyncPlayerSource()
+    /// <summary>The sequence into the player at a moment, paused or playing; given to the engine once it has started when it has not yet.</summary>
+    private void OpenInPlayer(long startMs, bool paused)
     {
-        if (_mpv is not { IsLoading: false } player || !_viewModel.HasSource || _reloadingPlayer)
-            return false;
-
-        var source = _viewModel.PlayerSource;
-        if (source == _playerSource || !FileState.Exists(_viewModel.LocalMediaPath))
-            return false;
-
-        OpenInPlayer(source, (long)_viewModel.PositionMs, paused: !player.IsPlaying);
-        return true;
-    }
-
-    private void OpenInPlayer(string path, long startMs, bool paused)
-    {
-        _playerSource = path;
-        if (_mpv is not { } player)
+        if (_gpu is not null)
         {
-            _pendingMedia = (path, startMs, paused);
-            _ = EnsurePlayerAsync();
+            GpuOpen(startMs, paused);
             return;
         }
 
-        // The graph belongs to the file that was playing; the new one gets its own once it is open. A graph mpv could not run
-        // for the one before may run for this one (it is the picture the graph starts from).
-        _liveFilterTimer.Stop();
-        ForgetLiveGraph();
-        (_failedLiveStamp, _recoveringToMs) = (null, null);
-        _refusedGraphs.Clear();
-        player.DropFilterGraph();
-        player.SetFiltering(false);
-        player.Open(path, startMs, paused);
+        _pendingMedia = (startMs, paused);
+        EnsureGpuEngine();
     }
 
-    private bool _reloadingPlayer;
-
     /// <summary>
-    /// Reload Player: for when the player has locked up and the timeline no longer responds. The player is
-    /// replaced with a new one, and the video is opened again where it was. The old one is told to quit and
-    /// is not waited for: a player that is truly stuck would otherwise take the window down with it.
+    /// Reload Player: for when the player has locked up or stopped (see OnGpuFaulted). The engine is replaced with a new
+    /// one (a new worker, audio device and viewport, on the graphics card again after a fall back to the processor), and
+    /// the sequence is opened again where it was.
     /// </summary>
-    private async void ReloadPlayer_Click(object sender, RoutedEventArgs e)
+    private void ReloadPlayer_Click(object sender, RoutedEventArgs e)
     {
-        var path = _viewModel.LocalMediaPath;
-        if (_reloadingPlayer || !_viewModel.HasSource || !File.Exists(path))
+        // An engine that gave up is let start again whatever is loaded (the notice says Reload Player starts it).
+        if (!_viewModel.HasSource || !File.Exists(_viewModel.LocalMediaPath))
         {
-            if (!_reloadingPlayer)
-                _viewModel.StatusText = "There is no video loaded to reload.";
+            if (_gpu is null && !_startingGpu)
+            {
+                ForgetGpuFailures();
+                EnsureGpuEngine();
+            }
+
+            _viewModel.StatusText = _viewModel.HasSource
+                ? "The main video's file is not there (an offline drive?): the player starts again once it is."
+                : "There is no video loaded to reload.";
             return;
         }
 
-        _reloadingPlayer = true;
         var (resumeAt, wasPlaying) = ((long)_viewModel.PositionMs, _viewModel.IsPlaying);
         _viewModel.StatusText = "Reloading the player...";
-
-        var retired = _mpv;
-        _mpv = null;
         _isScrubbing = false;
+        StopShuttle();
+        CloseGpuEngine();
+        ForgetGpuFailures();
         _viewModel.IsPlaying = false;
         FollowPlayerByFrame(false);
-        retired?.Close();
         UpdateVideoVisibility();
-
-        StopShuttle();
-        _pendingMedia = (_viewModel.PlayerSource, resumeAt, !wasPlaying);
-        await EnsurePlayerAsync();
-        if (_mpv is not null)
-        {
-            // The new player starts fitted: it is given the zoom the boxes and the crop over it still show.
-            if (_playerZoom != 0)
-                ApplyPlayerView();
-            _viewModel.StatusText = $"Player reloaded at {_viewModel.PositionText}.";
-        }
-        _reloadingPlayer = false;
+        _pendingMedia = (resumeAt, !wasPlaying);
+        EnsureGpuEngine();
     }
 
     // ----- Live Preview -----
 
-    /// <summary>A setting changed: the graph is rebuilt shortly, once the changes have stopped coming.</summary>
-    private void ScheduleLiveFilter()
-    {
-        // Also with Live Preview off: what the player has open follows the sequence either way.
-        // An edit while paused is shown by the quick graph first, as a jump is; whether it changed the graph at all is
-        // known only once it is built (ApplyLiveFilterNow), so the graph with sound is not given up here (4.1.1: a
-        // finished waveform, a refreshed row or a proxy made swapped to the quick graph and back, each swap moving the
-        // paused frame on).
-        if (_mpv is null)
-            return;
+    /// <summary>Something the picture or the sound is made from changed: the engine gets the sequence again within a frame.</summary>
+    private void ScheduleLiveFilter() => ScheduleGpuState();
 
-        _liveFilterTimer.Stop();
-        _liveFilterTimer.Start();
-    }
-
-    /// <summary>Takes the graph off: the source is shown.</summary>
-    /// <param name="seek">
-    /// Where the player is to be: the file is opened again there when a graph goes (MpvPlayer), and it is sent there when
-    /// none was running. Null for where mpv says it is, which after a graph it could not run is the end of the file.
-    /// </param>
-    private void ClearLiveFilter(MpvPlayer player, (long Ms, bool Exact)? seek = null)
-    {
-        _liveFilterTimer.Stop();
-        _failedLiveStamp = null;
-        if (_liveGraph.Length == 0)
-        {
-            if (seek is { } jump)
-                player.Seek(jump.Ms, jump.Exact);
-            return;
-        }
-
-        ForgetLiveGraph();
-        player.SetFilterGraph("", seek);
-        player.SetFiltering(false);
-    }
-
-    /// <summary>The player has no graph of ours (a file was just opened, or it was taken off).</summary>
-    private void ForgetLiveGraph()
-    {
-        (_liveGraph, _liveStamp, _liveRebuildAt) = ("", default, double.PositiveInfinity);
-        _liveAudioFromMs = null;
-    }
-
-    private void ApplyLiveFilter() => ApplyLiveFilter(null);
-
-    /// <summary>Whether a graph for <paramref name="stamp"/> differs from the running one only in the player's size.</summary>
-    private bool SameButSize(LiveStamp stamp) =>
-        _liveGraph.Length > 0 && stamp with { Width = _liveStamp.Width, Height = _liveStamp.Height } == _liveStamp;
-
-    // ----- Paused, ready to play -----
-    // A graph with the layers' sound in it (an [ao]) is what playing needs; one without jumps about far faster. So a
-    // seek or an edit while paused gets the graph without sound at once, and once it has been still for a moment the
-    // graph with sound replaces it, run from the paused frame: pressing Play then finds the graph it wants already
-    // running and only unpauses (no graph change, no file opened again on the click).
-
-    private const int SoundSettleMs = 300;
-    private readonly System.Windows.Threading.DispatcherTimer _liveSoundSettle = new() { Interval = TimeSpan.FromMilliseconds(SoundSettleMs) };
-    private bool _liveSoundSettleHooked;
-
-    // Paused this near the end, the player is not readied with the sound (4.4-BugHunt). The graph with sound, run from an exact
-    // seek within the last two seconds right after the one without, had FFmpeg's framesync spin for ever (in the blend of a
-    // HUD piece with its looped mask): mpv's core thread at full use and the player frozen until Reload Player. Play still
-    // brings the sound in, as it starts.
-    private const long SettleEndMarginMs = 2000;
-
-    /// <summary>Whether a moment is within <see cref="SettleEndMarginMs"/> of the end: of the sequence, or of the file the player has open, whichever comes first.</summary>
-    private bool NearPlayerEnd(double positionMs)
-    {
-        var end = _viewModel.DurationMs;
-        if (_mpv is { DurationMs: > 0 } player && (end <= 0 || player.DurationMs < end))
-            end = player.DurationMs;
-        return end > 0 && positionMs >= end - SettleEndMarginMs;
-    }
-
-    // Whether the paused player has settled, so the graph may carry the sound as it would while playing; and whether
-    // the graph being given is that one, made ahead of need (a seek or an edit asked meanwhile does not wait for it).
-    private bool _soundSettled, _readyingToPlay;
-
-    /// <summary>After a graph was given while paused without the sound playing would want: the one with sound follows, once nothing moves for a moment.</summary>
-    private void ArmSoundSettle()
-    {
-        _liveSoundSettle.Stop();
-        if (_soundSettled || _mpv is not { IsLoading: false, IsPlaying: false } || !_viewModel.HasSource || !_viewModel.LivePreview
-            || _isScrubbing || _shuttle != 0 || _viewModel.SoloTrack is not null || _liveSoundRefused || LiveGraphHasSound
-            || NearPlayerEnd(_viewModel.PositionMs))
-            return;
-
-        if (!_liveSoundSettleHooked)
-        {
-            _liveSoundSettle.Tick += (_, _) =>
-            {
-                _liveSoundSettle.Stop();
-                if (_mpv is not { IsPlaying: false } || _isScrubbing || _shuttle != 0 || NearPlayerEnd(_viewModel.PositionMs))
-                    return;
-
-                _soundSettled = true;
-                _readyingToPlay = true;
-                try
-                {
-                    ApplyLiveFilter();
-                }
-                finally
-                {
-                    _readyingToPlay = false;
-                }
-            };
-            _liveSoundSettleHooked = true;
-        }
-
-        _liveSoundSettle.Start();
-    }
-
-    /// <summary>
-    /// Hands mpv the filter graph for the settings as they are now, when it is not the one already running:
-    /// the export's graph while Live Preview is ticked, none while it is not.
-    ///
-    /// A graph is built for a moment (see FilterGraphBuilder.BuildLiveGraph): what is on screen around it, its
-    /// video layers reading their files from there. With <paramref name="seekTo"/> the player is being sent
-    /// somewhere, and the graph is built for that moment and goes with the seek (mpv runs it from there). Without,
-    /// it is built for where the player is, and only sent when something it is built from has changed, or the
-    /// player has moved out of what the running graph holds; a graph that is still good is left running, though
-    /// built now it would read its files from a later moment.
-    /// </summary>
-    private void ApplyLiveFilter((long Ms, bool Exact)? seekTo)
-    {
-        try
-        {
-            ApplyLiveFilterNow(seekTo);
-        }
-        finally
-        {
-            ArmSoundSettle();
-        }
-    }
-
-    private void ApplyLiveFilterNow((long Ms, bool Exact)? seekTo)
-    {
-        _liveFilterTimer.Stop();
-
-        // A file still being opened gets its graph when it is ready (see FileLoaded), not before.
-        if (_mpv is not { IsLoading: false } player || !_viewModel.HasSource)
-        {
-            if (seekTo is { } jump)
-                _mpv?.Seek(jump.Ms, jump.Exact);
-            return;
-        }
-
-        // The sequence has changed shape: it is opened afresh, and gets its graph when that is done.
-        if (SyncPlayerSource())
-            return;
-
-        // Preview Subtitles: the player draws the captions itself, with Live Preview on or off.
-        player.SetSubtitleFile(_viewModel.LiveCaptionsPath);
-
-        // Built for the player as large as it is on screen, in real pixels.
-        var dpi = VisualTreeHelper.GetDpi(this);
-        var (width, height) = (VideoView.ActualWidth * dpi.DpiScaleX, VideoView.ActualHeight * dpi.DpiScaleY);
-
-        // While a rectangle is being drawn on the video (the crop, or a layer's place in the source) the
-        // source itself is shown: what is drawn is a part of it, not of the finished frame.
-        var live = _viewModel.LivePreview && CurrentOverlayMode == OverlayMode.None;
-
-        // Dragged or wound back, the video layers are shown as the setting says (one frame each, by default).
-        var scrubbing = _isScrubbing || _shuttle < 0;
-        var layers = scrubbing ? ScrubLayerMode : LiveLayerMode.Live;
-        var at = seekTo?.Ms ?? (long)_viewModel.PositionMs;
-        LiveGraph Build(long? audioFromMs) => live
-            ? _viewModel.BuildLiveFilterGraph(width, height, audioFromMs, at, layers, scrubbing && AppSettings.Current.DraftScrubSkipHeavyEffects)
-            : new LiveGraph("", double.PositiveInfinity);
-
-        // The sound of the layers is part of the graph while the video plays forwards, and while it is paused and
-        // has settled (see ArmSoundSettle), ready to play: dragged, wound back or just sent somewhere, nothing is
-        // heard anyway, and a graph without sound in it jumps about far faster.
-        // It is laid out from one moment on. While nothing calls for another, that moment is kept, so that the
-        // graph compares equal to the one running; a jump, or any change to the graph, lays it out afresh
-        // from where playback is.
-        // Not while one track is played on its own either, nor after mpv has turned such a graph down.
-        // Paused and settled with the sound in, and no seek: a graph that would come out the same is left running (the
-        // version of the settings is taken up); only a change to the picture or the sound goes to the quick graph first.
-        if (seekTo is null && _soundSettled && !player.IsPlaying && !_readyingToPlay && !scrubbing && LiveGraphHasSound
-            && _liveAudioSeekMs is null && _liveAudioFromMs is { } settledFrom)
-        {
-            var settled = new LiveStamp(_liveStateVersion, live, (int)width, (int)height, layers, settledFrom);
-            if (SameButSize(settled) || Build(settledFrom).Text == _liveGraph)
-            {
-                _liveStamp = settled with { Width = _liveStamp.Width, Height = _liveStamp.Height };
-                ApplyAudioTrack();
-                return;
-            }
-
-            _soundSettled = false;
-        }
-
-        var wantsSound = (player.IsPlaying || _soundSettled) && !scrubbing && _viewModel.SoloTrack is null && !_liveSoundRefused;
-        var (jumpedTo, now) = (_liveAudioSeekMs ?? seekTo?.Ms, at);
-        _liveAudioSeekMs = null;
-        long? kept = wantsSound && jumpedTo is null && LiveGraphHasSound ? _liveAudioFromMs : null;
-        long? from = wantsSound ? kept ?? jumpedTo ?? now : null;
-
-        // Nothing it is built from has changed, and the player is still within what the running graph holds:
-        // it stays. (Built afresh it would differ only in where its layers start reading.)
-        // Nor for the player's size alone while paused or while the Layout selector previews layouts (4.1.1): mpv scales
-        // the running graph's frames to the surface, and a new graph moved the paused frame on with every card the
-        // pointer crossed. The new size is taken up by the next graph that is built for anything else.
-        var stamp = new LiveStamp(_liveStateVersion, live, (int)width, (int)height, layers, from);
-        var sameOrSize = stamp == _liveStamp || SameButSize(stamp) && (!player.IsPlaying || LayoutSelector.IsOpen);
-        if (seekTo is null && _liveGraph.Length > 0 && sameOrSize && at >= _liveBuiltAtMs - FilterGraphBuilder.LiveLookBehind * 1000 && at < _liveRebuildAt * 1000)
-        {
-            ApplyAudioTrack();
-            return;
-        }
-
-        // Settings that mpv could not run a graph for: the source is shown until they change.
-        if (live && _failedLiveStamp is { } failed && failed.SameSettings(stamp))
-        {
-            if (seekTo is { } jump)
-                player.Seek(jump.Ms, jump.Exact);
-            return;
-        }
-
-        var graph = Build(from);
-
-        // With the layers' sound in the graph, the silence where the main video is not there is part of the
-        // graph too; as a filter of the player's it would silence the layers with it.
-        var hasSound = graph.Text.Contains(FilterGraphBuilder.LiveAudioOutput, StringComparison.Ordinal);
-        player.SetAudioFilter(hasSound ? "" : _viewModel.PlayerAudioFilter);
-        if (graph.Text == _liveGraph)
-        {
-            // A track muted or heard again changes which one the player plays, graph or no graph.
-            ApplyAudioTrack();
-            (_liveStamp, _liveBuiltAtMs, _liveRebuildAt) = (stamp, at, graph.RebuildAt);
-            if (seekTo is { } jump)
-                player.Seek(jump.Ms, jump.Exact);
-            return;
-        }
-
-        if (hasSound && kept is not null && kept != now)
-        {
-            from = now;
-            graph = Build(from);
-            stamp = stamp with { AudioFrom = from };
-        }
-
-        // A graph mpv could not run is never given to it again (4.4-BugHunt): it would fail the same way, and every failure
-        // sends the player to the end of the file. A setting changed for nothing it is built from (the captions made again,
-        // a waveform finished) gave the same graph back after each failure. Without the layers' sound it may still run;
-        // otherwise the source is shown where the user is, as after the failure itself, until the settings change.
-        if (IsRefusedGraph(graph.Text))
-        {
-            if (hasSound && !_liveSoundRefused)
-            {
-                _liveSoundRefused = true;
-                ApplyLiveFilterNow(seekTo);
-                return;
-            }
-
-            var back = seekTo;
-            if (back is null && _liveGraph.Length > 0)
-                back = (at, true);
-            ClearLiveFilter(player, back);
-            _failedLiveStamp = stamp;
-            CrashReporter.SetContext("graph", "refused by the player before: the source is shown");
-            _viewModel.StatusText = "Live Preview could not run the filters as they are set, and shows the source instead.";
-            return;
-        }
-
-        // Filters work on frames in main memory, so decoding hands them over there while a graph is running.
-        if (graph.Text.Length > 0)
-            player.SetFiltering(true);
-
-        (_liveGraph, _liveAudioFromMs) = (graph.Text, hasSound ? from : null);
-        (_liveStamp, _liveBuiltAtMs, _liveRebuildAt) = (stamp, at, graph.RebuildAt);
-
-        // Where the graph is run from: where the player is being sent; with sound, the moment the sound was laid
-        // out from, so that the main video's own sound and the layers' set off together; otherwise where it is
-        // (mpv runs a new graph from where it is by itself).
-        (long Ms, bool Exact)? start = seekTo;
-        if (hasSound && from is { } soundFrom)
-            start = (soundFrom, true);
-        player.SetFilterGraph(graph.Text, start, mayBeOvertaken: _readyingToPlay);
-        if (graph.Text.Length == 0)
-            player.SetFiltering(false);
-
-        // For a crash report: the graph's size and its filters' names, never what is in them.
-        CrashReporter.SetContext("graph", graph.Text.Length == 0 ? "none" : CrashSummaries.Graph(graph.Text) + (hasSound ? ", with sound" : ""));
-
-        // Without sound in the graph the player plays a track of the file itself. After a graph that had sound
-        // it has none selected at all, so the track is given again.
-        ApplyAudioTrack();
-    }
-
-    // Whether the graph that is running mixes the layers' sound in, the moment it was laid out from, and a
-    // jump made since that it has yet to be laid out for.
-    private bool LiveGraphHasSound => _liveGraph.Contains(FilterGraphBuilder.LiveAudioOutput, StringComparison.Ordinal);
-    private long? _liveAudioFromMs;
-    private long? _liveAudioSeekMs;
-
-    // mpv turned down a graph with the layers' sound in it: the picture's graph is run without, until a setting changes.
-    private bool _liveSoundRefused;
-
-    /// <summary>
-    /// mpv logged an error. When it is about the filters, the graph is taken off again (one with the layers' sound is
-    /// tried without it first), so the source keeps playing from where the user had it, and is not tried a second time
-    /// until the settings have changed.
-    /// </summary>
-    /// <param name="graphFailed">mpv turned the graph down itself (GraphRefused), whatever the words.</param>
-    private void OnPlayerError(string text, bool graphFailed = false)
-    {
-        AppLog.Write($"Player: {text}");
-        CrashReporter.Note("player", text);
-
-        // mpv's last line about a graph FFmpeg could not set up (the reasons are in the lines before it).
-        graphFailed |= text.Contains("failed to configure the filter graph", StringComparison.OrdinalIgnoreCase);
-        if (graphFailed && _mpv is { } failing)
-            NoteRefusedGraph(failing.LastGraph);
-
-        if (_mpv is not { } player || _liveGraph.Length == 0
-            || !(graphFailed || text.Contains("lavfi", StringComparison.OrdinalIgnoreCase) || text.Contains("filter", StringComparison.OrdinalIgnoreCase)))
-        {
-            return;
-        }
-
-        // mpv takes a graph it could not run for the end of the file, and says the player is there (4.4-BugHunt: 117.8 s
-        // became 120.0 s): what follows starts again where the user had the playhead, never at that end, and the playhead
-        // stays there meanwhile. Reopened at the end, the player froze in the next graph (see ArmSoundSettle).
-        var back = UsersMomentBeforeFailure(player);
-        HoldPlayheadAt(back);
-
-        // A graph that mixes the layers' sound in is tried again without it first: the picture may be fine.
-        if (LiveGraphHasSound)
-        {
-            _liveSoundRefused = true;
-            _viewModel.StatusText = $"Live Preview could not mix the layers' sound in, and plays the main video's sound alone ({text}).";
-            ApplyLiveFilter((back, true));
-            return;
-        }
-
-        var refused = _liveStamp;
-        ClearLiveFilter(player, (back, true));
-        _failedLiveStamp = refused;
-        CrashReporter.SetContext("graph", "refused by the player: the source is shown");
-        _viewModel.StatusText = $"Live Preview could not run the filters as they are set, and shows the source instead ({text}).";
-    }
-
-    // ----- Graphs mpv could not run (4.4-BugHunt) -----
-
-    // The graphs mpv could not run, the newest last: none of them is given to it again (see ApplyLiveFilterNow). A few are
-    // kept, and a few written to the log in a session, so that a long one does not fill it.
-    private readonly List<string> _refusedGraphs = [];
-    private const int RefusedGraphsKept = 8, RefusedGraphsLogged = 4;
-    private int _refusedGraphsWritten;
-
-    // Where the player is to come back to after a graph it could not run, from when it was asked to (Environment.TickCount64);
-    // null when it is not on its way back. Reports further from it than RecoveryReachMs are not the playhead's meanwhile,
-    // and after RecoveryPatienceMs they are taken again, whether it got there or not.
-    private long? _recoveringToMs;
-    private long _recoveringSince;
-    private const long RecoveryReachMs = 1000, RecoveryPatienceMs = 3000;
-
-    /// <summary>
-    /// Keeps a graph mpv could not run, so that it is not given to it again, and the first time writes it to HandPeg.log in
-    /// full: the log stays on this computer (a crash report has only the graph's size and the names of its filters), and
-    /// the next report of such a failure then shows what failed.
-    /// </summary>
-    private void NoteRefusedGraph(string? graph)
-    {
-        if (string.IsNullOrEmpty(graph) || _refusedGraphs.Contains(graph))
-            return;
-
-        _refusedGraphs.Add(graph);
-        if (_refusedGraphs.Count > RefusedGraphsKept)
-            _refusedGraphs.RemoveAt(0);
-
-        if (_refusedGraphsWritten++ < RefusedGraphsLogged)
-            AppLog.Write($"Player: the graph mpv could not run ({graph.Length} characters): {graph}");
-        else if (_refusedGraphsWritten == RefusedGraphsLogged + 1)
-            AppLog.Write($"Player: mpv could not run another graph; after {RefusedGraphsLogged} in a session, they are no longer written out.");
-    }
-
-    private bool IsRefusedGraph(string graph) => graph.Length > 0 && _refusedGraphs.Contains(graph);
-
-    /// <summary>
-    /// Where the user had the playhead when mpv failed a graph: where it is, unless mpv's report of the end has already
-    /// been taken; then the moment the graph was made for, which the user had asked for (a seek, an edit, Play).
-    /// </summary>
-    private long UsersMomentBeforeFailure(MpvPlayer player)
-    {
-        var position = (long)_viewModel.PositionMs;
-        var end = player.DurationMs > 0 ? player.DurationMs : (long)_viewModel.DurationMs;
-        var moment = Math.Max(end > 0 && position >= end - 250 && _liveBuiltAtMs < position ? _liveBuiltAtMs : position, 0);
-        return _viewModel.DurationMs > 0 ? Math.Min(moment, (long)_viewModel.DurationMs) : moment;
-    }
-
-    /// <summary>Puts the playhead on a moment and keeps it there while the player is on its way back to it (see OnPlayerTimeChanged).</summary>
-    private void HoldPlayheadAt(long positionMs)
-    {
-        (_recoveringToMs, _recoveringSince, _pausedOnUsersMoment, _soundSettled) = (positionMs, Environment.TickCount64, true, false);
-        if (Math.Abs(_viewModel.PositionMs - positionMs) < 1)
-            return;
-
-        _updatingFromPlayer = true;
-        _viewModel.PositionMs = positionMs;
-        _updatingFromPlayer = false;
-    }
+    private void ApplyLiveFilter() => ScheduleGpuState();
 
     // ----- Following the player -----
-    // While it plays, the position is read once per screen refresh (CompositionTarget.Rendering), whatever mpv's
-    // frame rate: one look per frame drawn, and nothing queued behind a busy UI thread. Paused, the refresh is not
-    // followed (it would keep WPF drawing for nothing); a moved position asks for one look by itself.
+    // While it plays, the position is read once per screen refresh (CompositionTarget.Rendering): one look per frame
+    // drawn, and nothing queued behind a busy UI thread. Paused, the refresh is not followed (it would keep WPF drawing
+    // for nothing).
 
     private volatile bool _followingByFrame;
 
@@ -823,39 +170,23 @@ public partial class MainWindow
         {
             CompositionTarget.Rendering -= FollowPlayer_Rendering;
 
-            // A position that came in while it was being followed by frame was not asked about: it is taken now.
+            // Where it was when it stopped being followed by frame.
             TakePlayerPosition();
         }
     }
 
     private void FollowPlayer_Rendering(object? sender, EventArgs e) => TakePlayerPosition();
 
-    private void TakePlayerPosition()
-    {
-        if (_mpv is { } player && player.TryTakePosition(out var positionMs))
-            OnPlayerTimeChanged(positionMs);
-    }
+    private void TakePlayerPosition() => TakeGpuPosition();
 
     // ----- One audio track on its own -----
 
-    /// <summary>
-    /// Has the player play the track chosen on the Audio tab, or else the first one that is not muted (none when
-    /// all are), while no graph mixes the sound. mpv refuses a track change while a graph holds the tracks.
-    /// </summary>
-    private void ApplyAudioTrack()
-    {
-        if (_mpv is { } player && !LiveGraphHasSound)
-            player.SetAudioTrack(_viewModel.PlayerAudioTrack);
-    }
-
     private void OnSoloTrackChanged()
     {
-        if (_mpv is null || !_viewModel.HasSource)
+        if (_gpu is null || !_viewModel.HasSource)
             return;
 
-        ApplyAudioTrack();
-
-        // A track played on its own is played without the layers' sound.
+        // A track played on its own is played without the layers' sound (the engine's program is built for it).
         ScheduleLiveFilter();
 
         // The button is a play button: choosing a track starts it, and letting go of the last one pauses.
@@ -900,86 +231,27 @@ public partial class MainWindow
     // ----- Playback / scrubbing -----
 
     // ----- J, K, L -----
-    // L plays; pressed again it plays twice as fast, then four and eight times. J does the same backwards.
-    // K stops. mpv does not play a filtered picture backwards, so going back is done here: the player is
-    // paused and sent back along the timeline, step by step, as fast as was asked.
+    // L plays; pressed again it plays twice as fast, then four times. J does the same backwards (silent). K stops. The
+    // engine's clock runs at the speed asked, either way (GpuShuttle).
 
     // 0 while not shuttling; otherwise the speed, negative for backwards.
     private int _shuttle;
-    private double _shuttlePositionMs;
-    private readonly System.Windows.Threading.DispatcherTimer _shuttleTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
 
     private void Shuttle(int direction)
     {
-        if (!_viewModel.HasSource || _mpv is not { } player)
-            return;
-
-        if (direction == 0)
-        {
-            StopShuttle();
-            player.SetPause(true);
-            _viewModel.StatusText = "Paused.";
-            return;
-        }
-
-        // The same key again doubles the speed; the other key turns round, at normal speed. L while it is
-        // already playing is the second press.
-        var speed = Math.Sign(_shuttle) == direction ? Math.Min(Math.Abs(_shuttle) * 2, 8)
-            : direction > 0 && _shuttle == 0 && player.IsPlaying ? 2
-            : 1;
-        _shuttle = direction * speed;
-
-        if (direction > 0)
-        {
-            _shuttleTimer.Stop();
-            if (player.IsEnded)
-                PlayerSeek(0);
-            player.SetSpeed(speed);
-            player.SetPause(false);
-        }
-        else
-        {
-            player.SetPause(true);
-            _shuttlePositionMs = _viewModel.PositionMs;
-            _shuttleTimer.Start();
-        }
-
-        _viewModel.StatusText = $"{(direction > 0 ? "Forward" : "Reverse")} {speed}x. K stops; {(direction > 0 ? "L" : "J")} again goes faster.";
-    }
-
-    private void ShuttleBack()
-    {
-        if (_shuttle >= 0 || _mpv is null)
-        {
-            _shuttleTimer.Stop();
-            return;
-        }
-
-        _shuttlePositionMs = Math.Max(_shuttlePositionMs + _shuttle * _shuttleTimer.Interval.TotalMilliseconds, 0);
-        _updatingFromPlayer = true;
-        _viewModel.PositionMs = _shuttlePositionMs;
-        _updatingFromPlayer = false;
-
-        // At speed the player keeps up by landing on I-frames; slowly, it shows every step exactly.
-        PlayerSeek((long)_shuttlePositionMs, exact: _shuttle >= -2);
-        if (_shuttlePositionMs <= 0)
-            StopShuttle();
+        if (_gpu is { } gpu && _viewModel.HasSource)
+            GpuShuttle(gpu, direction);
     }
 
     /// <summary>Ends J/K/L shuttling, and puts the playback speed back to the one chosen in the speed box.</summary>
     private void StopShuttle()
     {
-        _shuttleTimer.Stop();
         if (_shuttle == 0)
             return;
 
-        var wasWindingBack = _shuttle < 0;
         _shuttle = 0;
-        _mpv?.SetSpeed(_viewModel.PlaybackRate);
-
-        // Wound back, the video layers were shown as while scrubbing: they play live again from here.
-        if (wasWindingBack)
-            ApplyLiveFilter();
+        if (_gpu is { } gpu)
+            gpu.Rate = _viewModel.PlaybackRate;
     }
 
     private void PlayPause_Click(object sender, RoutedEventArgs e)
@@ -989,44 +261,34 @@ public partial class MainWindow
         {
             _viewModel.LoadSourceCommand.Execute(null);
         }
-        else if (_mpv is not { } player)
+        else if (_gpu is { } gpu)
         {
-            _ = EnsurePlayerAsync();
+            // At the end: Play starts again from the beginning. Paused by hand: a Play Start to Stop under way is over.
+            if (!gpu.IsPlaying && gpu.Position >= gpu.SequenceSeconds - 0.001)
+                PlayerSeek(0);
+            if (gpu.IsPlaying)
+                _playUntilMs = null;
+            GpuSetPaused(gpu, gpu.IsPlaying);
         }
-        else if (player.IsEnded)
+        else if (_gpuGaveUp)
         {
-            // Held on the last frame: play starts again from the beginning.
-            PlayerSeek(0);
-            player.SetPause(false);
+            _viewModel.StatusText = "The GPU preview is stopped: Reload Player starts it again.";
         }
         else
         {
-            // Paused by hand: a Play Start to Stop under way is over.
-            if (!player.IsPaused)
-                _playUntilMs = null;
-            player.SetPause(!player.IsPaused);
+            // Not started yet (or about to start again, see OnGpuFailed): it starts, and opens what is loaded.
+            EnsureGpuEngine();
         }
     }
 
     private void OnPlayerTimeChanged(long timeMs)
     {
-        // Don't fight the user for the thumb while they are dragging it, or the shuttle while it is winding back.
-        if (_isScrubbing || _shuttle < 0)
+        // Don't fight the user for the thumb while they are dragging it.
+        if (_isScrubbing)
             return;
 
-        // On its way back from a graph it could not run (see OnPlayerError), the player's word on where it is (the end of
-        // the file, which mpv takes such a failure for) is not the playhead's, until it is back or has been given long enough.
-        if (_recoveringToMs is { } back)
-        {
-            if (Math.Abs(timeMs - back) > RecoveryReachMs && Environment.TickCount64 - _recoveringSince < RecoveryPatienceMs)
-                return;
-            _recoveringToMs = null;
-        }
-
         // Paused on a moment the user sent it to (a seek, a frame or key step, a click on the timeline), the playhead
-        // stays exactly there: the frame mpv shows for it is stamped a few milliseconds off (58.434 for 58.420), and a
-        // graph swapped in while paused restarts the player, so its reports would move the playhead off a keyframe it
-        // was put on (4.2D). Paused by Pause, the position it stopped at is still taken.
+        // stays exactly there (4.2D). Paused by Pause, the position it stopped at is still taken.
         if (PlayerIsPlaying)
             _pausedOnUsersMoment = false;
         else if (_pausedOnUsersMoment)
@@ -1036,28 +298,27 @@ public partial class MainWindow
         _viewModel.PositionMs = timeMs;
         _updatingFromPlayer = false;
 
-        // While playing: a graph made in time for what comes on next, and Play In to Out and Loop kept to their stretch.
-        if (!PlayerIsPlaying)
-            return;
+        // While playing: Play Start to Stop and Loop kept to their stretch, and the engine told where Loop goes back to.
+        if (PlayerIsPlaying)
+        {
+            if (_gpu is { } engine)
+            {
+                var (from, to) = LoopWrap();
+                engine.SetLoop(from, to);
+            }
 
-        // Something the running graph left out is about to come on: a graph that holds it is made now, so its
-        // file is open and waiting when it does.
-        if (_liveGraph.Length > 0 && timeMs >= _liveRebuildAt * 1000)
-            ApplyLiveFilter();
-
-        // Play Start to Stop, and Loop.
-        KeepPlaybackInRange(timeMs);
+            KeepPlaybackInRange(timeMs);
+        }
     }
 
     private void TimelineSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (_updatingFromPlayer || _mpv is null)
+        if (_updatingFromPlayer || _gpu is null)
             return;
 
         // Not a move of the playhead (4.1.1): the value pushed down by a timeline that became shorter (the slider
         // coerces it to its new end; what the sequence does about it is RefreshSequence's), or a step of less than a
-        // millisecond (a position given back in other units). Each was a seek, and while paused a swap to the quick
-        // graph and back, that moved the frame on.
+        // millisecond (a position given back in other units).
         if (e.NewValue == TimelineSlider.Maximum && e.OldValue > TimelineSlider.Maximum)
             return;
         if (!_isScrubbing && Math.Abs(e.NewValue - e.OldValue) < 1)
@@ -1081,59 +342,8 @@ public partial class MainWindow
             }
         }
 
-        // While the thumb is being dragged the player jumps from I-frame to I-frame, and is asked to no more
-        // than thirty times a second; the exact frame follows when the thumb is let go.
-        if (_isScrubbing)
-            QueueScrubSeek((long)e.NewValue);
-        else
-            PlayerSeek((long)e.NewValue, exact: true);
-    }
-
-
-    // ----- Scrubbing: fast seeks, paced -----
-    // A drag of the playhead is a stream of positions, far more of them than a player with several videos to
-    // decode can answer. Each is a fast seek (to the nearest I-frame, never frame-exact), and they are paced:
-    // the first goes at once, and after it at most one every 33 ms, always to the newest position. Whatever
-    // came in between is never sent. Letting go sends one exact seek to where the playhead was left.
-
-    private readonly System.Windows.Threading.DispatcherTimer _scrubPace = new(System.Windows.Threading.DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(33) };
-    private long _scrubWanted = -1, _scrubSent = -1;
-    private int _scrubSeeks, _scrubAsked;
-    private DateTime _scrubBegan;
-
-    private void QueueScrubSeek(long positionMs)
-    {
-        _scrubWanted = positionMs;
-        _scrubAsked++;
-        if (_scrubPace.IsEnabled)
-            return;
-
-        SendScrubSeek();
-        _scrubPace.Start();
-    }
-
-    private void ScrubPace_Tick(object? sender, EventArgs e)
-    {
-        if (!_isScrubbing || _scrubWanted == _scrubSent)
-            _scrubPace.Stop();
-        else
-            SendScrubSeek();
-    }
-
-    private void SendScrubSeek()
-    {
-        _scrubSent = _scrubWanted;
-        _scrubSeeks++;
-        PlayerSeek(_scrubSent, exact: false);
-    }
-
-    /// <summary>The end of a scrub: the pacing stops, and what it came to is noted in the log.</summary>
-    private void EndScrubPacing()
-    {
-        _scrubPace.Stop();
-        if (_scrubAsked > 0)
-            AppLog.Write($"Scrub: {_scrubAsked} positions over {(DateTime.UtcNow - _scrubBegan).TotalMilliseconds:0} ms, {_scrubSeeks} fast seeks sent, then one exact seek.");
-        (_scrubAsked, _scrubSeeks, _scrubWanted, _scrubSent) = (0, 0, -1, -1);
+        // The engine answers every position of a drag, exactly (Instant Seek): nothing to pace.
+        PlayerSeek((long)e.NewValue);
     }
 
     /// <summary>
@@ -1145,7 +355,7 @@ public partial class MainWindow
     /// </summary>
     private void TimelineSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (TimelineSlider.Template?.FindName("PART_Track", TimelineSlider) is not System.Windows.Controls.Primitives.Track { Thumb: { } thumb } track
+        if (TimelineSlider.Template?.FindName("PART_Track", TimelineSlider) is not Track { Thumb: { } thumb } track
             || thumb.IsMouseOver || thumb.IsDragging || TimelineSlider.Maximum <= TimelineSlider.Minimum)
         {
             return;
@@ -1167,29 +377,13 @@ public partial class MainWindow
         e.Handled = true;
     }
 
-    private void TimelineSlider_DragStarted(object sender, DragStartedEventArgs e)
-    {
-        _isScrubbing = true;
-        (_scrubBegan, _scrubAsked, _scrubSeeks) = (DateTime.UtcNow, 0, 0);
-
-        // Dragged while it plays: the layers' sound comes out of the graph for as long as the drag lasts.
-        if (LiveGraphHasSound)
-            ApplyLiveFilter();
-    }
+    private void TimelineSlider_DragStarted(object sender, DragStartedEventArgs e) => _isScrubbing = true;
 
     private void TimelineSlider_DragCompleted(object sender, DragCompletedEventArgs e)
     {
         _isScrubbing = false;
-        EndScrubPacing();
 
         // Let go (and a click on the timeline is a press let go at once): the exact frame, straight away.
         PlayerSeek((long)TimelineSlider.Value);
-
-        // And goes back in, from where the thumb was let go, if it is still playing.
-        if (PlayerIsPlaying && _viewModel.LivePreview)
-        {
-            _liveAudioSeekMs = (long)TimelineSlider.Value;
-            ScheduleLiveFilter();
-        }
     }
 }

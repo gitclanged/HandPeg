@@ -51,6 +51,7 @@ public sealed class PlaybackControlSet : ObservableObject
             new("LivePreview", "Live Preview", "Viewer", "Runs the export's filters on the picture as it plays."),
             new("SafeMargins", "Safe Margins", "Viewer", "Outlines the action-safe (90%) and title-safe (80%) areas of the frame over the picture."),
             new("EditOnVideo", "Edit Layers on Video Preview", "Viewer", "Move, resize and turn the selected layer on the player itself (with Live Preview)."),
+            new("Exploded3D", "3D Exploded View", "Viewer", "Turns the player into a 3D view of the layer stack: orbit it, spread the layers apart, drag them in their planes and along the stack (the GPU preview engine)."),
             new("ExportFrame", "Export Frame", "Viewer", "Saves the frame as it is shown, as a PNG beside the output."),
             new("RenderPreview", "Render Preview", "Viewer", "Encodes a few seconds as the export will look, and plays them."),
             new("Reload", "Reload Player", "Viewer", "For when the player has stopped answering."),
@@ -80,14 +81,35 @@ public sealed class PlaybackControlSet : ObservableObject
 
     // What the bar starts with.
     private static readonly string[] Defaults =
-        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "LivePreview", "RenderPreview", "Reload", "Volume", "Speed", "MarkIn", "MarkOut", "AddMarker", "EditOnVideo"];
+        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "LivePreview", "RenderPreview", "Reload", "Volume", "Speed", "MarkIn", "MarkOut", "AddMarker", "EditOnVideo", "Exploded3D"];
+
+    // The saved list's version (its last name, "@2"), and the controls each version brought: a list saved before a control
+    // existed shows it once (5.0-Verify, the user's Q4: the 3D Exploded View on bars saved before 5.0); after that, the
+    // user's choice is kept.
+    private const int Version = 2;
+    private const string VersionMark = "@";
+    private static readonly (string Id, int Since)[] Later = [("Exploded3D", 2)];
 
     /// <summary>Shows the controls named in a saved list; null for the defaults.</summary>
     public void Load(string? saved)
     {
-        var shown = saved is null
-            ? new HashSet<string>(Defaults)
-            : new HashSet<string>(saved.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        var names = saved?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
+        var savedVersion = 1;
+        foreach (var name in names)
+        {
+            if (name.StartsWith(VersionMark, StringComparison.Ordinal) && int.TryParse(name.AsSpan(VersionMark.Length), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var version))
+                savedVersion = version;
+        }
+
+        var shown = saved is null ? new HashSet<string>(Defaults) : new HashSet<string>(names);
+        if (saved is not null)
+        {
+            foreach (var (id, since) in Later)
+            {
+                if (savedVersion < since)
+                    shown.Add(id);
+            }
+        }
         var changed = Changed;
         Changed = null;
         try
@@ -101,6 +123,6 @@ public sealed class PlaybackControlSet : ObservableObject
         }
     }
 
-    /// <summary>The names of the controls shown, to save.</summary>
-    public string Save() => string.Join(",", Options.Where(o => o.IsShown).Select(o => o.Id));
+    /// <summary>The names of the controls shown, to save, and the list's version last.</summary>
+    public string Save() => string.Join(",", Options.Where(o => o.IsShown).Select(o => o.Id).Append(VersionMark + Version.ToString(System.Globalization.CultureInfo.InvariantCulture)));
 }

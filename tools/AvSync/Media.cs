@@ -9,7 +9,7 @@ namespace HandPegApp.Tools.AvSync;
 /// <summary>
 /// What the harness reads back with FFmpeg: sound as mono samples and pictures as small grey frames, each cut on the
 /// file's own time stamps (-copyts and a trim by time stamp, never by position), so that a moment means the same
-/// thing in the player's output and in the files the layers came from.
+/// thing in the engine's output (written on the sequence's clock) and in the files the layers came from.
 /// </summary>
 internal static class Media
 {
@@ -76,13 +76,27 @@ internal static class Media
 
     // A file opened on its own time stamps (-copyts), sought to a time stamp when one is given (a small file of the
     // harness's own is read from its start: FFmpeg seeking before the first time stamp of a Matroska file finds nothing).
-    private static string[] Opening(string file, double? seekTo) =>
-        seekTo is { } at && at > 0 ? ["-copyts", "-seek_timestamp", "1", "-ss", N(at), "-i", file] : ["-copyts", "-i", file];
+    // -ss counts from the container's start (FFmpeg adds its start_time): -seek_timestamp with -copyts was measured to
+    // lose 0.78 s of an MPEG-TS file's sound starting at 2.78 s, so the time stamp is made into a distance from there.
+    private static string[] Opening(string file, double? seekTo)
+    {
+        var start = seekTo is { } at && at > 0 ? at - (Starts.GetOrAdd(file, f => ContainerStart(f) ?? 0)) : 0;
+        return start > 0 ? ["-copyts", "-ss", N(start), "-i", file] : ["-copyts", "-i", file];
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, double> Starts = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The time stamp a file's first stream of one kind ("v" or "a") starts at, as FFmpeg reports it; null when it has none.</summary>
     public static double? StreamStart(string file, string kind)
     {
         var text = Encoding.UTF8.GetString(Run(Ffprobe, ["-v", "error", "-select_streams", $"{kind}:0", "-show_entries", "stream=start_time", "-of", "csv=p=0", file])).Trim();
+        return double.TryParse(text.Split('\n')[0].Trim().TrimEnd(','), NumberStyles.Float, CultureInfo.InvariantCulture, out var start) ? start : null;
+    }
+
+    /// <summary>Where a file's container's clock starts (FFmpeg's format start_time: what the main video's clip offsets count from); null when it says none.</summary>
+    public static double? ContainerStart(string file)
+    {
+        var text = Encoding.UTF8.GetString(Run(Ffprobe, ["-v", "error", "-show_entries", "format=start_time", "-of", "csv=p=0", file])).Trim();
         return double.TryParse(text.Split('\n')[0].Trim().TrimEnd(','), NumberStyles.Float, CultureInfo.InvariantCulture, out var start) ? start : null;
     }
 

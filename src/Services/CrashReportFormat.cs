@@ -51,7 +51,7 @@ public sealed class CrashReport
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<CrashInnerException>? Inner { get; set; }
 
-    /// <summary>For a native fault: the file name (never the path) of the module it happened in ("libmpv-2.dll"), when it is known.</summary>
+    /// <summary>For a native fault: the file name (never the path) of the module it happened in ("d3d11.dll"), when it is known.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? NativeModule { get; set; }
 
@@ -116,7 +116,7 @@ public enum CrashKind
     /// <summary>A task's exception nobody looked at (TaskScheduler.UnobservedTaskException).</summary>
     UnobservedTask,
 
-    /// <summary>A native fault (an access violation in libmpv or a driver), recorded by the process's unhandled-exception filter.</summary>
+    /// <summary>A native fault (an access violation in a driver or a system library), recorded by the process's unhandled-exception filter.</summary>
     Native,
 
     /// <summary>Written by the sentinel process: the process ended abnormally and wrote nothing itself.</summary>
@@ -152,12 +152,9 @@ public sealed class CrashEnvironment
 
     public bool SelfContained { get; set; }
 
-    /// <summary>The FFmpeg and libmpv builds in use, by their version strings only.</summary>
+    /// <summary>The FFmpeg build in use, by its version string only.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Ffmpeg { get; set; }
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Mpv { get; set; }
 
     // Since 4.1.0 (Pass 4.1B), each left out when it could not be learnt. Old reports have none of them.
 

@@ -52,8 +52,8 @@ public partial class MainViewModel
 
     // ----- Keeping the tools up to date by themselves (Settings: Auto-Update Dependencies) -----
     // A while after startup, as Idle work (it waits while playing or exporting), every tool HandPeg installed itself
-    // is compared with the build it should be and replaced when it is not, with its progress on the chip: FFmpeg,
-    // libmpv and whisper.cpp with the builds this version was tested with (their newest releases only when the settings
+    // is compared with the build it should be and replaced when it is not, with its progress on the chip: FFmpeg
+    // and whisper.cpp with the builds this version was tested with (their newest releases only when the settings
     // allow untested updates), yt-dlp with its newest release. A tool of the user's own (a path in the settings) and a
     // tool never installed are left alone. A tool in use cannot be replaced: nothing about it changes, and it is tried
     // again at the next start.

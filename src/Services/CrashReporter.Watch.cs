@@ -34,21 +34,6 @@ public static partial class CrashReporter
     private static List<string>? _gpus;
     private static List<GpuAdapter> _cards = [];
     private static string? _ffmpegVersion;
-    private static string? _mpvVersion;
-
-    /// <summary>
-    /// libmpv's own version string, for the report's environment, when the player knows it (the "mpv-version"
-    /// property). Until it is set, the version HandPeg installed is used.
-    /// </summary>
-    public static string? MpvVersion
-    {
-        get => _mpvVersion;
-        set
-        {
-            _mpvVersion = value;
-            SetContext("env.mpv", value);
-        }
-    }
 
     private static bool IsSentinelRunning => _sentinelProcess != 0 && WaitForSingleObject(_sentinelProcess, 0) == WaitTimeout;
 
@@ -150,8 +135,6 @@ public static partial class CrashReporter
         CrashHardware.Learn();
         _ffmpegVersion = InstalledVersion(DependencyUpdater.Ffmpeg);
         SetContext("env.ffmpeg", _ffmpegVersion);
-        if (_mpvVersion is null)
-            SetContext("env.mpv", _mpvVersion = InstalledVersion(DependencyUpdater.Mpv));
         CrashHardware.Whisper = InstalledVersion(DependencyUpdater.Whisper);
         CrashHardware.YtDlp = InstalledVersion(DependencyUpdater.YtDlp);
         PackEnvironment();

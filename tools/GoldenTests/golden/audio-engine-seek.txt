@@ -1,0 +1,7 @@
+# Seeks are exact to the sample (no resampling at the file's own rate), and silent before a clip.
+from 1 s: the file's sample 48000 first, the next 4800 exact
+from 2.5 s: the file's sample 120000 first, the next 4800 exact
+from 4.123456 s: the file's sample 197926 first, the next 4800 exact
+from 7.99 s: the file's sample 383520 first, the next 4800 exact
+from 9.5 s: the file's sample 456000 first, the next 4800 exact
+from 0.9 s: silence to 1.0 s, then the file from 1.0 s

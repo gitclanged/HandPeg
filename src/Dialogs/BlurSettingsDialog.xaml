@@ -5,10 +5,10 @@
         Title="Blur Settings" Width="480" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
-    <!-- Bound straight to the main window's settings: every change shows in the command at once. -->
+    <!-- Bound straight to the main window's settings: every change shows in the preview at once. -->
     <StackPanel Margin="16">
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
-                   Text="The background of the Frame &amp; Layer Engine: a copy of the video, zoomed to fill the frame, blurred and darkened. Use Render Preview to see the result." />
+                   Text="The blurred background behind the main video: a copy of it, zoomed to fill the frame, blurred and darkened. Select its row on the timeline to give it effects of its own in the Effects pane." />
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
@@ -19,25 +19,32 @@
                 <RowDefinition Height="34" />
                 <RowDefinition Height="34" />
                 <RowDefinition Height="34" />
+                <RowDefinition Height="34" />
             </Grid.RowDefinitions>
 
             <TextBlock Text="Blur Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Column="1" Minimum="5" Maximum="50" VerticalAlignment="Center"
+            <Slider Grid.Column="1" Minimum="0" Maximum="64" SmallChange="0.5" LargeChange="4" VerticalAlignment="Center"
                     Value="{Binding BlurRadius}" AutomationProperties.Name="Blur Radius" local:NumericInput.Default="20"
-                    ToolTip="How far the blur reaches, in pixels. Larger is softer." />
-            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding BlurRadius, StringFormat={}{0:0}}" AutomationProperties.Name="Blur Radius Value" local:NumericInput.Default="20" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="5" local:NumericInput.Maximum="50" /></StackPanel>
+                    ToolTip="How far the blur reaches, in pixels of the frame: 0 is sharp, larger is softer, and every value between is its own." />
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding BlurRadius, StringFormat={}{0:0.#}}" AutomationProperties.Name="Blur Radius Value" local:NumericInput.Default="20" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="64" /></StackPanel>
 
-            <TextBlock Grid.Row="1" Text="Blur Passes:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="1" Grid.Column="1" Minimum="1" Maximum="5" VerticalAlignment="Center"
+            <TextBlock Grid.Row="1" Text="Zoom:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="1" Grid.Column="1" Minimum="1" Maximum="4" SmallChange="0.01" LargeChange="0.1" VerticalAlignment="Center"
+                    Value="{Binding BackgroundZoom}" AutomationProperties.Name="Background Zoom" local:NumericInput.Default="1"
+                    ToolTip="How much the background is enlarged about its middle: 1 just covers the frame." />
+            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding BackgroundZoom, StringFormat={}{0:0.00}}" AutomationProperties.Name="Background Zoom Value" local:NumericInput.Default="1" local:NumericInput.DragStep="0.005" local:NumericInput.Decimals="2" local:NumericInput.Minimum="1" local:NumericInput.Maximum="4" /></StackPanel>
+
+            <TextBlock Grid.Row="2" Text="Blur Passes:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="2" Grid.Column="1" Minimum="1" Maximum="4" IsSnapToTickEnabled="True" TickFrequency="1" VerticalAlignment="Center"
                     Value="{Binding BlurPasses}" AutomationProperties.Name="Blur Passes" local:NumericInput.Default="2"
-                    ToolTip="How many times the blur is applied. More passes are smoother, and slower to encode." />
-            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding BlurPasses, StringFormat={}{0:0}}" AutomationProperties.Name="Blur Passes Value" local:NumericInput.Default="2" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="1" local:NumericInput.Maximum="5" /></StackPanel>
+                    ToolTip="How many times the blur is applied. More passes are smoother, and blur further." />
+            <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding BlurPasses, StringFormat={}{0:0}}" AutomationProperties.Name="Blur Passes Value" local:NumericInput.Default="2" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="1" local:NumericInput.Maximum="4" /></StackPanel>
 
-            <TextBlock Grid.Row="2" Text="Background Dimming:" VerticalAlignment="Center" Margin="0,0,12,0" />
-            <Slider Grid.Row="2" Grid.Column="1" Minimum="-0.5" Maximum="0" VerticalAlignment="Center"
+            <TextBlock Grid.Row="3" Text="Background Dimming:" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Slider Grid.Row="3" Grid.Column="1" Minimum="-0.5" Maximum="0" VerticalAlignment="Center"
                     Value="{Binding BackgroundDim}" AutomationProperties.Name="Background Dimming" local:NumericInput.Default="-0.15"
                     ToolTip="Darkens the background so the sharp video stands out. 0 leaves it as bright as the video." />
-            <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding BackgroundDim, StringFormat={}{0:0.00}}" AutomationProperties.Name="Background Dimming Value" local:NumericInput.Default="-0.15" local:NumericInput.DragStep="0.002" local:NumericInput.Decimals="2" local:NumericInput.Minimum="-0.5" local:NumericInput.Maximum="0" /></StackPanel>
+            <StackPanel Grid.Row="3" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding BackgroundDim, StringFormat={}{0:0.00}}" AutomationProperties.Name="Background Dimming Value" local:NumericInput.Default="-0.15" local:NumericInput.DragStep="0.002" local:NumericInput.Decimals="2" local:NumericInput.Minimum="-0.5" local:NumericInput.Maximum="0" /></StackPanel>
         </Grid>
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">

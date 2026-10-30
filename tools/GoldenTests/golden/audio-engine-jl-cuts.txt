@@ -1,0 +1,7 @@
+# The main file's sound: J and L cuts placed sample for sample (MainSound), mixed where they overlap.
+2.0 s: the first clip alone
+4.4 s: the first clip, before the J cut
+4.6 s: the first clip and the J cut's sound (12 s into the file less 0.4 s)
+7.0 s: the second clip
+10.1 s: the L cut's tail and the third clip
+10.3 s: the third clip, the tail over

@@ -218,13 +218,6 @@ public partial class MainViewModel
             StatusText = $"Playing {value.Title} on its own. Press its button again to stop; click another's to hear them together (Alt-click: alone).";
     }
 
-    /// <summary>
-    /// The audio track the player plays itself while no graph mixes the sound, counted from 0: the soloed one,
-    /// else the first that is not muted; -1 for none, when every track is muted.
-    /// </summary>
-    public int PlayerAudioTrack =>
-        SoloTrack?.Index ?? (_mediaInfo is null ? 0 : AudioTracks.FirstOrDefault(t => !t.IsDropped)?.Index ?? -1);
-
     // ----- The layers list -----
 
     /// <summary>

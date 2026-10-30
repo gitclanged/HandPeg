@@ -7,9 +7,11 @@
     <!--
         The timeline (4.4): every track on one drawn surface (UnifiedTimelineControl): the video layers front to back with the
         main video among them, the main file's sound streams under the main video's row, the sound clips, the captions and the
-        blurred background. Over it the ruler, beside it the scroll bars; the title row holds the editing tools, and under the
-        tracks an inspector shows the values of what is selected. Nothing here edits anything: every button goes out through
-        ToolClick, by its Tag, to MainWindow.UnifiedTimeline.cs, which acts on the selection it shares with the rest of the window.
+        blurred background. The ruler at the top edge, beside the tracks the scroll bars; under them (5.0, the user's call:
+        where the Layers tab had them) an inspector of the values of what is selected and the row of editing tools (made with
+        the pane; what is hidden at the first frame comes after it: DetailsTemplate). Nothing
+        here edits anything: every button goes out through ToolClick, by its Tag, to MainWindow.UnifiedTimeline.cs, which acts
+        on the selection it shares with the rest of the window.
         A UserControl cannot see the window's resources while it is made: what it needs of them is its own, below.
     -->
     <UserControl.Resources>
@@ -28,7 +30,7 @@
             <Setter Property="FontFamily" Value="Consolas" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
-        <!-- The tools of the title row: a glyph each, the same size as the other panes' title buttons. -->
+        <!-- The tools along the bottom: a glyph each, the same size as the other panes' title buttons. -->
         <Style x:Key="Tool" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
             <Setter Property="FontSize" Value="13" />
@@ -68,255 +70,373 @@
                         ToolTip="Puts this clip back on the timeline where it was." />
             </Grid>
         </DataTemplate>
+
+        <!--
+            What is under the tracks and hidden at the first frame (5.0, the user's Q5): Text Settings and the inspector (each
+            shown only while something is selected for them) and the flyouts of the tools' row (Add Layer's kinds, the recycle
+            bin's list). Not made with the window: made from this once the window is on screen (RealizeTools), into
+            DetailsHost, which is empty (and takes no room) until then, so the first frame is laid out as every later one is.
+            The tools' row itself is the pane's own, made with it.
+        -->
+        <DataTemplate x:Key="DetailsTemplate">
+            <Grid>
+                <StackPanel>
+                    <!--
+                        Text Settings: the words of the text clip that is selected, and how they are drawn. Not there while anything
+                        else is selected.
+                    -->
+                    <GroupBox Header="Text Settings" Margin="0,4,0,0" x:Name="TextSettingsPanel"
+                              Visibility="{Binding IsTextLayerSelected, Converter={StaticResource BoolToVisibility}}">
+                        <Grid DataContext="{Binding SelectedTextLayer}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" MinWidth="140" MaxWidth="420" />
+                                <ColumnDefinition Width="2*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox Text="{Binding TextContent, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="NoWrap"
+                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Height="72" VerticalContentAlignment="Top"
+                                     AutomationProperties.Name="Text Content"
+                                     ToolTip="The words. Enter starts a new line; the lines are centered. The clip's box follows what is typed." />
+                            <WrapPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Top">
+                                <StackPanel Orientation="Horizontal" Margin="0,2,14,4">
+                                    <TextBlock Text="Font:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
+                                    <!-- Its list (the fonts installed) and its choice are bound the first time Text Settings are shown (FontBox, in code). -->
+                                    <ComboBox x:Name="FontBox" Width="190" IsTextSearchEnabled="True" AutomationProperties.Name="Font"
+                                              ToolTip="The font, from those installed on this computer.">
+                                        <ComboBox.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <VirtualizingStackPanel />
+                                            </ItemsPanelTemplate>
+                                        </ComboBox.ItemsPanel>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,14,4"
+                                            ToolTip="The font's size, in pixels of the output frame. The clip's own Size, and its Scale keyframes, scale the words from there.">
+                                    <TextBlock Text="Size:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
+                                    <Slider Width="110" VerticalAlignment="Center" Minimum="8" Maximum="300" SmallChange="1" LargeChange="10" IsMoveToPointEnabled="True"
+                                            Value="{Binding FontSize}" AutomationProperties.Name="Font Size" local:NumericInput.Default="48" />
+                                    <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding FontSize, StringFormat={}{0:0}}" AutomationProperties.Name="Font Size Value"
+                                             local:NumericInput.Default="48" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="8" local:NumericInput.Maximum="400" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,14,4">
+                                    <TextBlock Text="Color:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
+                                    <Button Width="26" Height="22" Padding="0" Background="{Binding FontColor}" Tag="Font" Click="Tool_Click" Cursor="Hand"
+                                            AutomationProperties.Name="Pick Font Color" ToolTip="Click to pick the color of the letters." />
+                                    <TextBox Width="74" Margin="6,0,0,0" Padding="4,2" VerticalAlignment="Center" FontFamily="Consolas" MaxLength="7"
+                                             Text="{Binding FontColor, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Font Color"
+                                             ToolTip="The color of the letters, as #RRGGBB." />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,14,4">
+                                    <TextBlock Text="Outline:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
+                                    <Button Width="26" Height="22" Padding="0" Background="{Binding OutlineColor}" Tag="Outline" Click="Tool_Click" Cursor="Hand"
+                                            AutomationProperties.Name="Pick Outline Color" ToolTip="Click to pick the color of the line around the letters." />
+                                    <TextBox Width="74" Margin="6,0,0,0" Padding="4,2" VerticalAlignment="Center" FontFamily="Consolas" MaxLength="7"
+                                             Text="{Binding OutlineColor, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Outline Color"
+                                             ToolTip="The color of the line around the letters, as #RRGGBB." />
+                                    <Slider Width="80" Margin="10,0,0,0" VerticalAlignment="Center" Minimum="0" Maximum="20" SmallChange="1" LargeChange="2" TickFrequency="1"
+                                            IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" Value="{Binding OutlineThickness}" AutomationProperties.Name="Outline Thickness"
+                                            local:NumericInput.Default="2" ToolTip="How thick the line around the letters is, in pixels at the font's size; 0 for none." />
+                                    <TextBox Style="{StaticResource ValueBox}" Width="40" Text="{Binding OutlineThickness}" AutomationProperties.Name="Outline Thickness Value"
+                                             local:NumericInput.Default="2" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="20" />
+                                </StackPanel>
+                            </WrapPanel>
+                        </Grid>
+                    </GroupBox>
+
+                    <!--
+                        The inspector: the values of what is selected (shown while something is), in the row of tools after the
+                        tools themselves (RealizeTools moves it there: one row along the bottom, 5.0-Verify). A picture clip: its
+                        speed, size, place and turn, Properties and Delete; the background: its blur; a sound (a track of the main
+                        file, a sound clip, a video clip's own sound): its gain, mute, filters, voice and ducking. Its groups are
+                        shown and given what they edit by MainWindow (Inspect).
+                    -->
+                    <Border x:Name="Inspector" Margin="8,0,0,0" Padding="8,0" CornerRadius="4" Background="{DynamicResource InsetBrush}" VerticalAlignment="Center"
+                            Visibility="Collapsed" ClipToBounds="True" AutomationProperties.Name="Clip Inspector">
+                        <StackPanel Orientation="Horizontal" Height="24" TextElement.FontSize="11.5">
+                            <TextBlock x:Name="InspectedName" FontWeight="SemiBold" MaxWidth="200" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <StackPanel x:Name="PictureGroup" Orientation="Horizontal" Visibility="Collapsed">
+                                <StackPanel Orientation="Horizontal" Visibility="{Binding HasSpeed, Converter={StaticResource BoolToVisibility}}"
+                                            ToolTip="Speed: how many times as fast as recorded this clip runs, from 0.1 to 10. Its block gets shorter as it gets faster.">
+                                    <TextBlock Text="Speed x" Style="{StaticResource PairLabel}" />
+                                    <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding ClipSpeed, StringFormat={}{0:0.##}}" AutomationProperties.Name="Clip Speed"
+                                             local:NumericInput.Default="1" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="10" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Visibility="{Binding HasPlacement, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock Text="Size %" Style="{StaticResource PairLabel}" />
+                                    <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding SizePercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Clip Size"
+                                             local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="400"
+                                             ToolTip="Width of the clip as a percentage of the frame's width. It grows and shrinks about its middle. Drag sideways to adjust, or click to type." />
+                                    <StackPanel Orientation="Horizontal" Visibility="{Binding IsFreeHeight, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Text="H %" Style="{StaticResource PairLabel}" />
+                                        <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding SizeHeightPercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Clip Height"
+                                                 local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="200"
+                                                 ToolTip="Height of the clip as a percentage of the frame's height (its shape is not held while Lock Aspect is off)." />
+                                    </StackPanel>
+                                    <TextBlock Text="X %" Style="{StaticResource PairLabel}" />
+                                    <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding PositionXPercent, StringFormat={}{0:0.#}}" AutomationProperties.Name="Clip X Value"
+                                             local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+                                    <TextBlock Text="Y %" Style="{StaticResource PairLabel}" />
+                                    <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding PositionYPercent, StringFormat={}{0:0.#}}" AutomationProperties.Name="Clip Y Value"
+                                             local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
+                                    <StackPanel Orientation="Horizontal" Visibility="{Binding HasFilters, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Text="Rot &#176;" Style="{StaticResource PairLabel}" />
+                                        <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding Rotation, StringFormat={}{0:0.#}}" AutomationProperties.Name="Clip Rotation"
+                                                 local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-360" local:NumericInput.Maximum="360"
+                                                 ToolTip="Degrees the clip is turned clockwise about its middle." />
+                                    </StackPanel>
+                                </StackPanel>
+                                <ToggleButton Content="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="11" Padding="6,1" Margin="6,0,0,0" VerticalAlignment="Center"
+                                              IsChecked="{Binding LockAspectRatio}" AutomationProperties.Name="Lock Aspect"
+                                              Visibility="{Binding IsRemovable, Converter={StaticResource BoolToVisibility}}"
+                                              ToolTip="Lock Aspect. On: the clip keeps its own shape. Off: its width and height can be stretched separately with the corner handle in the Canvas." />
+                                <Button Content="Draw Target" Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center"
+                                        Visibility="{Binding IsVideo, Converter={StaticResource BoolToVisibility}}"
+                                        Command="{Binding DataContext.DrawTargetCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}"
+                                        ToolTip="Drag a rectangle on the video to mark what this layer shows." />
+                                <Button Content="Properties..." Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="Properties" Click="Tool_Click"
+                                        Visibility="{Binding HasStyle, Converter={StaticResource BoolToVisibility}}"
+                                        ToolTip="Opacity, rounded corners, soft edges and a drop shadow; for pictures and videos, a chroma key and a custom mask." />
+                                <Button Content="Caption Style..." Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="CaptionStyle" Click="Tool_Click"
+                                        Visibility="{Binding IsCaptions, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Caption Style"
+                                        ToolTip="The captions' font, size, colors, outline, words per line and animation." />
+                            </StackPanel>
+                            <StackPanel x:Name="BackgroundGroup" Orientation="Horizontal" Visibility="Collapsed">
+                                <TextBlock Text="Blur Radius" Style="{StaticResource PairLabel}" />
+                                <Slider Width="80" Minimum="0" Maximum="64" SmallChange="0.5" LargeChange="4" VerticalAlignment="Center" Value="{Binding BlurRadius}"
+                                        AutomationProperties.Name="Background Blur Radius" local:NumericInput.Default="20"
+                                        ToolTip="How far the blur of the background reaches, in pixels of the frame: 0 is sharp, larger is softer. The background shows wherever the main video does not cover the frame." />
+                                <TextBox Style="{StaticResource ValueBox}" Width="46" Margin="4,0,0,0" Text="{Binding BlurRadius, StringFormat={}{0:0.#}}" AutomationProperties.Name="Background Blur Radius Value"
+                                         local:NumericInput.Default="20" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="64" />
+                                <Button Content="More..." Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="BlurSettings" Click="Tool_Click"
+                                        ToolTip="Its zoom, blur passes and how much it is darkened. Its own effects (colour, a LUT, a vignette) are in the Effects pane while its row is selected." />
+                            </StackPanel>
+                            <StackPanel x:Name="SoundGroup" Orientation="Horizontal" Visibility="Collapsed">
+                                <!-- Gain and filters work on decoded sound: not on a track that is copied as it is (or dropped). -->
+                                <StackPanel Orientation="Horizontal" IsEnabled="{Binding IsReencoded}" ToolTipService.ShowOnDisabled="True"
+                                            ToolTip="Gain in decibels, and this sound's filters (compressor, gate, equalizer). Not for a track that is copied as it is.">
+                                    <TextBlock Text="Gain" Style="{StaticResource PairLabel}" />
+                                    <Slider Width="84" Minimum="-40" Maximum="24" VerticalAlignment="Center" Value="{Binding GainDb}" AutomationProperties.Name="Sound Gain" local:NumericInput.Default="0" />
+                                    <TextBox Style="{StaticResource ValueBox}" Width="40" Margin="4,0,0,0" Text="{Binding GainDb, StringFormat={}{0:0}}" AutomationProperties.Name="Sound Gain Value"
+                                             local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="-40" local:NumericInput.Maximum="24" />
+                                    <Button Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="TrackFilters" Click="Tool_Click" AutomationProperties.Name="Sound Filters...">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="Filters..." VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding FiltersCountText}" Margin="4,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
+                                        </StackPanel>
+                                    </Button>
+                                </StackPanel>
+                                <ToggleButton IsChecked="{Binding IsMuted}" Content="&#xE74F;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="6,1" Margin="6,0,0,0" VerticalAlignment="Center"
+                                              AutomationProperties.Name="Mute" ToolTip="Mute: leaves this sound out of the mix, in the preview and in the export. Press again to bring it back." />
+                                <!-- A sound clip's speed (a video clip's is with its picture's values; a stream of the main file has none). -->
+                                <StackPanel x:Name="SoundSpeedHost" Orientation="Horizontal">
+                                    <StackPanel Orientation="Horizontal" Visibility="{Binding HasSpeed, Converter={StaticResource BoolToVisibility}}"
+                                                ToolTip="Speed: how many times as fast as recorded this sound runs, from 0.1 to 10.">
+                                        <TextBlock Text="Speed x" Style="{StaticResource PairLabel}" />
+                                        <TextBox Style="{StaticResource ValueBox}" Width="44" Text="{Binding ClipSpeed, StringFormat={}{0:0.##}}" AutomationProperties.Name="Sound Speed"
+                                                 local:NumericInput.Default="1" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="10" />
+                                    </StackPanel>
+                                </StackPanel>
+                                <CheckBox Content="Voice" IsChecked="{Binding IsVoice}" Margin="8,0,0,0" VerticalAlignment="Center"
+                                          ToolTip="A voice: the sounds marked Duck make room for it." />
+                                <CheckBox Content="Duck" IsChecked="{Binding AutoDuck}" Margin="8,0,0,0" VerticalAlignment="Center"
+                                          ToolTip="Turned down while a sound marked Voice is speaking (by how much: the Audio tab's ducking amount)." />
+                            </StackPanel>
+                            <Button x:Name="InspectorDelete" Content="Delete" Padding="7,1" Margin="10,0,0,0" VerticalAlignment="Center" Tag="Delete" Click="Tool_Click"
+                                    local:KeyTip.Action="edit.delete" local:KeyTip.Text="Delete{keys}: the selected clip goes into the recycle bin; the selected part of an audio track is silenced." />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!--
+                    Add Layer's kinds, over its button (HoverFlyout: resting on the button opens them; leaving both closes them).
+                    Its target, the button's host, is in the pane's own name scope: set in code (RealizeTools).
+                -->
+                <Popup x:Name="AddLayerPopup" StaysOpen="True" AllowsTransparency="True" Placement="Top">
+                    <local:ButtonChrome x:Name="AddLayerFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6" Margin="0,0,0,2" PreviewKeyDown="AddLayerFlyout_PreviewKeyDown">
+                        <StackPanel x:Name="KindsPanel" TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="200">
+                            <StackPanel.Resources>
+                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Setter Property="Background" Value="Transparent" />
+                                    <Setter Property="BorderThickness" Value="0" />
+                                    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                                    <Setter Property="HorizontalContentAlignment" Value="Left" />
+                                    <Setter Property="Padding" Value="10,6" />
+                                    <Setter Property="Margin" Value="0,1" />
+                                </Style>
+                                <Style TargetType="Separator">
+                                    <Setter Property="Margin" Value="6,3" />
+                                </Style>
+                            </StackPanel.Resources>
+                            <Button Content="Empty Track" Tag="Empty" Click="AddLayerItem_Click"
+                                    ToolTip="A track with nothing on it yet: drop videos and pictures onto it. Kept in the project. The same as clicking Add Layer." />
+                            <Button Content="Video..." Tag="Video" Click="AddLayerItem_Click"
+                                    ToolTip="A video from a file: it plays alongside the main video, centred and fitted to the frame." />
+                            <Button Content="Image..." Tag="Image" Click="AddLayerItem_Click"
+                                    ToolTip="A .png or .jpg picture: a logo, a watermark, a frame." />
+                            <Button Content="Text" Tag="Text" Click="AddLayerItem_Click"
+                                    ToolTip="Words: a title or a label. Its words, font and colors are set under Text Settings while it is selected." />
+                            <Button Content="Adjustment Layer" Tag="Adjustment" Click="AddLayerItem_Click"
+                                    ToolTip="A clip with no picture: its effects (Effects pane) work on everything under it while it lasts. Narrow its rectangle in the Canvas to limit them to a part of the frame." />
+                            <Button Content="Region of Main Video" Tag="Region" Click="AddLayerItem_Click"
+                                    ToolTip="A piece of the source video (a minimap, an ammo counter) lifted onto the frame. Mark it with Draw Target." />
+                            <Button Content="HUD Layers from a Mask..." Tag="MaskLayers" Click="AddLayerItem_Click"
+                                    ToolTip="Choose a mask of the whole frame, white (or painted, on transparency) over the HUD: one layer is made for each HUD element it shows, all sharing the mask." />
+                            <Separator />
+                            <Button Content="Audio File..." Tag="Audio" Click="AddLayerItem_Click"
+                                    ToolTip="A sound from a file (music, a sound effect, another microphone), at the playhead, on a track of its own." />
+                            <Button Content="Record Voiceover..." Tag="Voiceover" Click="AddLayerItem_Click"
+                                    ToolTip="The Voiceover Studio: record over the video as it plays, then trim and place the take." />
+                            <Separator />
+                            <Button Content="Generate Auto-Captions..." Tag="Captions" Click="AddLayerItem_Click" AutomationProperties.Name="Generate Auto-Captions"
+                                    ToolTip="Transcribes the speech with whisper.cpp into captions that follow the sound they were heard in, through every cut." />
+                            <Button Content="Import Subtitles..." Tag="ImportSubtitles" Click="AddLayerItem_Click"
+                                    ToolTip="An .srt or .ass file as the captions." />
+                            <Button Content="Edit Captions..." Tag="EditCaptions" Click="AddLayerItem_Click"
+                                    ToolTip="The Subtitle Editor: what the captions say, and when." />
+                            <Button Content="Caption Style..." Tag="CaptionStyle" Click="AddLayerItem_Click"
+                                    ToolTip="How the captions look: their font, colors, outline and place." />
+                        </StackPanel>
+                    </local:ButtonChrome>
+                </Popup>
+
+                <!--
+                    The recycle bin's list, over its button: its target and its IsOpen (the button's IsChecked, both ways) are set
+                    in code, as are its Opened and Closed (RealizeTools).
+                -->
+                <Popup x:Name="BinPopup" Placement="Top" VerticalOffset="-4" StaysOpen="False" AllowsTransparency="True">
+                    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
+                        <StackPanel TextElement.Foreground="{DynamicResource TextBrush}">
+                            <DockPanel Margin="0,0,0,6">
+                                <Button DockPanel.Dock="Right" Content="Empty" Padding="10,3" Tag="EmptyBin" Click="Tool_Click" IsEnabled="{Binding HasDeleted}"
+                                        ToolTip="Throws away everything in the bin. (Ctrl+Z still brings it back.)" />
+                                <TextBlock Text="Recycle Bin" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            </DockPanel>
+                            <TextBlock Text="Nothing has been deleted." Foreground="{DynamicResource MutedTextBrush}" Width="380"
+                                       Visibility="{Binding HasDeleted, Converter={StaticResource InverseBoolToVisibility}}" />
+                            <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto">
+                                <ItemsControl ItemsSource="{Binding RecycleBin}" ItemTemplate="{StaticResource BinItemTemplate}" Focusable="False" />
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+                </Popup>
+            </Grid>
+        </DataTemplate>
     </UserControl.Resources>
 
     <Grid>
         <DockPanel>
             <!--
-                The title row: the pane's tab, then the tools, on one line; what does not fit goes into the "more" menu, the
-                least wanted first (OverflowStrip.Priority). Each works on what is selected on the timeline, or, with nothing
-                selected, on the main video's clip at the playhead.
+                The title row: the pane's tab, when its part shows it in a title (none in a part with a row of tabs, where
+                the row says nothing and the ruler is the pane's top edge). The tools are at the bottom.
             -->
-            <docking:PaneTitleRow DockPanel.Dock="Top" Margin="0,0,0,4">
-                <docking:PaneTitleSlot PaneId="UnifiedTimeline" />
-                <local:OverflowStrip x:Name="Toolbar" MinWidth="150" Margin="8,0,0,0" VerticalAlignment="Center">
-                    <!--
-                        Add Layer: a click adds an empty track to drop clips onto; resting the pointer on it (or Down) opens the
-                        kinds of layer under it. Its icon is drawn from geometry: two sheets and a plus.
-                    -->
-                    <Grid x:Name="AddLayerHost" local:OverflowStrip.Priority="100" Margin="0,0,6,0" Background="Transparent" VerticalAlignment="Center">
-                        <Button x:Name="AddLayerButton" Padding="9,4" AutomationProperties.Name="Add Layer" Command="{Binding AddEmptyTrackCommand}" PreviewKeyDown="AddLayerButton_PreviewKeyDown"
-                                ToolTip="Add Layer: a click adds an empty track to drop videos and pictures onto. Rest the pointer here (or press Down) for a video, an image, text, a sound, captions or a piece of the main video.">
-                            <StackPanel Orientation="Horizontal">
-                                <Path Width="18" Height="16" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                                      Data="M 1,6 L 8,2.5 L 15,6 L 8,9.5 Z M 1,9.5 L 8,13 L 11,11.5 M 14.5,10 L 14.5,16 M 11.5,13 L 17.5,13" />
-                                <TextBlock Text="Add Layer" Margin="6,0,0,0" VerticalAlignment="Center" />
-                            </StackPanel>
-                        </Button>
-                    </Grid>
-                    <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="95" Content="&#xE8C6;" Tag="Split" Click="Tool_Click" IsEnabled="{Binding HasSource}"
-                            AutomationProperties.Name="Split" local:KeyTip.Action="edit.split" local:KeyTip.Text="Split at Playhead{keys}: cuts the selected block in two at the playhead. A clip becomes two clips, an audio track two parts. With nothing selected, the main video's clip at the playhead is split. Alt + click on a block splits it there." />
-                    <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="60" Content="&#xE892;" Tag="TrimStart" Click="Tool_Click" IsEnabled="{Binding HasSource}"
-                            AutomationProperties.Name="Trim Start" local:KeyTip.Action="edit.trimStart" local:KeyTip.Text="Trim Start to Playhead{keys}: the selected clip begins at the playhead; what came before goes." />
-                    <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="60" Content="&#xE893;" Tag="TrimEnd" Click="Tool_Click" IsEnabled="{Binding HasSource}"
-                            AutomationProperties.Name="Trim End" local:KeyTip.Action="edit.trimEnd" local:KeyTip.Text="Trim End to Playhead{keys}: the selected clip ends at the playhead; what came after goes." />
-                    <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="85" Content="&#xE74D;" Tag="Delete" Click="Tool_Click" IsEnabled="{Binding HasSource}"
-                            AutomationProperties.Name="Delete" local:KeyTip.Action="edit.delete" local:KeyTip.Text="Delete{keys}: the selected clip goes into the recycle bin; the selected part of an audio track is silenced." />
-                    <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A7;" Margin="6,0,3,0" Tag="Undo" Click="Tool_Click"
-                            AutomationProperties.Name="Undo" local:KeyTip.Action="edit.undo" local:KeyTip.Text="Undo{keys}: takes back the last change. Twenty steps are kept." />
-                    <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A6;" Tag="Redo" Click="Tool_Click"
-                            AutomationProperties.Name="Redo" local:KeyTip.Action="edit.redo" local:KeyTip.Text="Redo{keys}: does again what was just undone." />
-                    <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="75" Margin="6,0,3,0" IsChecked="{Binding SnapClips}" AutomationProperties.Name="Snap"
-                                  local:KeyTip.Action="view.toggleSnap" local:KeyTip.Text="Snap{keys}: a dragged or dropped clip's edges catch on the edges of the other clips, the markers, the end of the sequence and the playhead. Hold Shift while dragging to place it freely, a frame at a time; Ctrl on an edge ripples.">
-                        <Path Width="14" Height="13" Stretch="None" StrokeThickness="1.3" StrokeLineJoin="Round"
-                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
-                              Data="M 2,1 L 2,7 A 5,5 0 0 0 12,7 L 12,1 L 9,1 L 9,7 A 2,2 0 0 1 5,7 L 5,1 Z M 2,4 L 5,4 M 9,4 L 12,4" />
-                    </ToggleButton>
-                    <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="55" Content="&#xE71B;" IsChecked="{Binding AudioLinked, Mode=OneWay}" Tag="LinkAudio" Checked="Tool_Click" Unchecked="Tool_Click"
-                                  AutomationProperties.Name="Link A/V" local:KeyTip.Text="Link Audio and Video: linked, sound follows its picture and is cut with it. Unlinked, a sound can be dragged on its own; linking again offers to snap it back. {key:clip.toggleLink|Link / Unlink A/V on a clip's menu} links or unlinks the selected clip alone." />
-                    <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="20" Content="&#xE8D6;" IsChecked="{Binding ShowLinkedAudio}"
-                                  AutomationProperties.Name="Show Linked Audio" ToolTip="Show Linked Audio: draws the sound that belongs to a picture in the lower part of its block (the main video's own audio on its clips, a video layer's on its clips)." />
-                    <Button Content="[" FontFamily="Consolas" FontWeight="Bold" FontSize="13" Padding="9,3" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="50" Command="{Binding AddStartPointCommand}"
-                            AutomationProperties.Name="Add In Point" local:KeyTip.Action="edit.in" local:KeyTip.Text="Add In Point{keys}: the stretch to split out begins at the playhead." />
-                    <Button Content="]" FontFamily="Consolas" FontWeight="Bold" FontSize="13" Padding="9,3" Margin="0,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="50" Command="{Binding AddStopPointCommand}"
-                            AutomationProperties.Name="Add Out Point" local:KeyTip.Action="edit.out" local:KeyTip.Text="Add Out Point{keys}: every unlocked track is split at the in point and at the playhead, so the stretch between is clips of its own." />
-                    <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="30" Content="&#xE70F;" Tag="Timecode" Click="Tool_Click" IsEnabled="{Binding HasSource}"
-                            AutomationProperties.Name="Split or Trim at Timecode..." ToolTip="Split or Trim at Timecode: type the time to split the selected clip at (or the main video, with nothing selected), or to trim its start or end to. The I-frames either side of the time are offered." />
-                    <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="45" Content="&#xE74F;" Tag="DeadAir" Click="Tool_Click" IsEnabled="{Binding HasSource}"
-                            AutomationProperties.Name="Remove Dead Air..." local:KeyTip.Action="edit.deadAir" local:KeyTip.Text="Remove Dead Air{keys}: finds the silences (or the gaps between captions) of the selected track (a video layer, an audio track, or otherwise the main video) and marks or folds them out." />
-                    <Button Content="HUD Masks" Padding="9,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="40" Tag="HudMasks" Click="Tool_Click" IsEnabled="{Binding IsVideoReencoded}"
-                            AutomationProperties.Name="HUD Masks" ToolTip="Takes a game's HUD apart into layers (killfeed, health, abilities, ultimate), all sharing one mask traced round the game's HUD, so each can be moved on its own." />
-                    <!-- The recycle bin: deleted clips wait here, and are put back from here (its list opens under it, BinPopup). -->
-                    <ToggleButton x:Name="BinButton" Padding="7,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="35" AutomationProperties.Name="Recycle Bin"
-                                  ToolTip="Recycle Bin: the clips that were deleted from the timeline. Nothing of them is rendered; any of them can be put back where it was.">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" />
-                            <TextBlock Text="{Binding RecycleBinText}" Margin="4,0,0,0" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </ToggleButton>
-                    <!-- The keyframes of the selected clip -->
-                    <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="14" Content="&#xE892;" Margin="6,0,3,0" Tag="PreviousKey" Click="Tool_Click"
-                            AutomationProperties.Name="Previous Keyframe" local:KeyTip.Action="key.prev" local:KeyTip.Text="Previous Keyframe of the selected clip{keys}." />
-                    <Button local:OverflowStrip.Priority="26" Content="&#x2666;" FontSize="13" Padding="9,3" Margin="0,0,3,0" VerticalAlignment="Center" Tag="ToggleKey" Click="Tool_Click" Foreground="{DynamicResource KeyAccentBrush}"
-                            AutomationProperties.Name="Add or Remove Keyframe" local:KeyTip.Action="key.toggle" local:KeyTip.Text="Add / Remove Keyframe{keys}: sets a keyframe for the selected clip at the playhead, or removes the one that is there." />
-                    <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="14" Content="&#xE893;" Tag="NextKey" Click="Tool_Click"
-                            AutomationProperties.Name="Next Keyframe" local:KeyTip.Action="key.next" local:KeyTip.Text="Next Keyframe of the selected clip{keys}." />
-                    <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="12" Content="&#xE7C8;" IsChecked="{Binding KeyframesEnabled}"
-                                  AutomationProperties.Name="Enable Keyframes" ToolTip="Enable Keyframes: while on, moving, resizing or turning a clip writes a keyframe." />
-                    <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="10" Content="&#xE840;" IsChecked="{Binding KeyframesSnap}" IsEnabled="{Binding KeyframesEnabled}"
-                                  AutomationProperties.Name="Snap to Nearest Keyframe" ToolTip="Snap to Nearest: a move changes the keyframe nearest the playhead. Off, it sets a new keyframe at the playhead." />
-                    <ToggleButton local:OverflowStrip.IsOverflowButton="True" Style="{StaticResource ToolToggle}" Content="&#xE712;" Margin="0"
-                                  AutomationProperties.Name="More Timeline Tools" ToolTip="More: the timeline tools this pane has no room for." />
-                </local:OverflowStrip>
+            <docking:PaneTitleRow DockPanel.Dock="Top">
+                <docking:PaneTitleSlot PaneId="UnifiedTimeline" Margin="0,0,0,4" />
             </docking:PaneTitleRow>
 
-            <!-- While the video is copied, layers and effects are not rendered: said once, over the tracks. -->
-            <Border DockPanel.Dock="Top" Margin="0,0,0,4" Padding="10,5" CornerRadius="4" Background="{DynamicResource InsetBrush}"
+            <!--
+                Under the tracks: Text Settings (DetailsTemplate, made after the first frame; hidden until a text clip is
+                selected, so the host is empty and takes no room at the first frame), then the one row of tools, which takes the
+                inspector of what is selected after its tools once that is made.
+            -->
+            <StackPanel DockPanel.Dock="Bottom">
+                <Border x:Name="DetailsHost" />
+                <!--
+                    The tools, on one line along the bottom edge; what does not fit goes into the "more" menu, the least
+                    wanted first (OverflowStrip.Priority). Each works on what is selected on the timeline, or, with nothing
+                    selected, on the main video's clip at the playhead. Made with the window (5.0, the user's Q5: what the
+                    first frame shows is all there in it); their flyouts come with DetailsTemplate.
+                -->
+                <Border Height="26" Margin="0,4,0,0">
+                    <local:OverflowStrip x:Name="Toolbar" MinWidth="150" VerticalAlignment="Center">
+                        <!-- Play / Pause, while neither the playback bar's nor the overview bar's is on screen (MainWindow shows it). -->
+                        <Button x:Name="PlayButton" Style="{StaticResource Tool}" local:OverflowStrip.Priority="110" Content="&#xE768;" Margin="0,0,6,0" Tag="PlayPause" Click="Tool_Click" Visibility="Collapsed"
+                                AutomationProperties.Name="Play / Pause" local:KeyTip.Action="transport.playPause" local:KeyTip.Text="Play / Pause{keys}." />
+                        <!--
+                            Add Layer: a click adds an empty track to drop clips onto; resting the pointer on it (or Down) opens the
+                            kinds of layer over it. Its icon is drawn from geometry: two sheets and a plus.
+                        -->
+                        <Grid x:Name="AddLayerHost" local:OverflowStrip.Priority="100" Margin="0,0,6,0" Background="Transparent" VerticalAlignment="Center">
+                            <Button x:Name="AddLayerButton" Padding="9,4" AutomationProperties.Name="Add Layer" Command="{Binding AddEmptyTrackCommand}" PreviewKeyDown="AddLayerButton_PreviewKeyDown"
+                                    ToolTip="Add Layer: a click adds an empty track to drop videos and pictures onto. Rest the pointer here (or press Down) for a video, an image, text, a sound, captions or a piece of the main video.">
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Width="18" Height="16" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                          Data="M 1,6 L 8,2.5 L 15,6 L 8,9.5 Z M 1,9.5 L 8,13 L 11,11.5 M 14.5,10 L 14.5,16 M 11.5,13 L 17.5,13" />
+                                    <TextBlock Text="Add Layer" Margin="6,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="95" Content="&#xE8C6;" Tag="Split" Click="Tool_Click" IsEnabled="{Binding HasSource}"
+                                AutomationProperties.Name="Split" local:KeyTip.Action="edit.split" local:KeyTip.Text="Split at Playhead{keys}: cuts the selected block in two at the playhead. A clip becomes two clips, an audio track two parts. With nothing selected, the main video's clip at the playhead is split. Alt + click on a block splits it there." />
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="60" Content="&#xE892;" Tag="TrimStart" Click="Tool_Click" IsEnabled="{Binding HasSource}"
+                                AutomationProperties.Name="Trim Start" local:KeyTip.Action="edit.trimStart" local:KeyTip.Text="Trim Start to Playhead{keys}: the selected clip begins at the playhead; what came before goes." />
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="60" Content="&#xE893;" Tag="TrimEnd" Click="Tool_Click" IsEnabled="{Binding HasSource}"
+                                AutomationProperties.Name="Trim End" local:KeyTip.Action="edit.trimEnd" local:KeyTip.Text="Trim End to Playhead{keys}: the selected clip ends at the playhead; what came after goes." />
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="85" Content="&#xE74D;" Tag="Delete" Click="Tool_Click" IsEnabled="{Binding HasSource}"
+                                AutomationProperties.Name="Delete" local:KeyTip.Action="edit.delete" local:KeyTip.Text="Delete{keys}: the selected clip goes into the recycle bin; the selected part of an audio track is silenced." />
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A7;" Margin="6,0,3,0" Tag="Undo" Click="Tool_Click"
+                                AutomationProperties.Name="Undo" local:KeyTip.Action="edit.undo" local:KeyTip.Text="Undo{keys}: takes back the last change. Twenty steps are kept." />
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A6;" Tag="Redo" Click="Tool_Click"
+                                AutomationProperties.Name="Redo" local:KeyTip.Action="edit.redo" local:KeyTip.Text="Redo{keys}: does again what was just undone." />
+                        <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="75" Margin="6,0,3,0" IsChecked="{Binding SnapClips}" AutomationProperties.Name="Snap"
+                                      local:KeyTip.Action="view.toggleSnap" local:KeyTip.Text="Snap{keys}: a dragged or dropped clip's edges catch on the edges of the other clips, the markers, the end of the sequence and the playhead. Hold Shift while dragging to place it freely, a frame at a time; Ctrl on an edge ripples.">
+                            <Path Width="14" Height="13" Stretch="None" StrokeThickness="1.3" StrokeLineJoin="Round"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                                  Data="M 2,1 L 2,7 A 5,5 0 0 0 12,7 L 12,1 L 9,1 L 9,7 A 2,2 0 0 1 5,7 L 5,1 Z M 2,4 L 5,4 M 9,4 L 12,4" />
+                        </ToggleButton>
+                        <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="55" Content="&#xE71B;" IsChecked="{Binding AudioLinked, Mode=OneWay}" Tag="LinkAudio" Checked="Tool_Click" Unchecked="Tool_Click"
+                                      AutomationProperties.Name="Link A/V" local:KeyTip.Text="Link Audio and Video: linked, sound follows its picture and is cut with it. Unlinked, a sound can be dragged on its own; linking again offers to snap it back. {key:clip.toggleLink|Link / Unlink A/V on a clip's menu} links or unlinks the selected clip alone." />
+                        <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="20" Content="&#xE8D6;" IsChecked="{Binding ShowLinkedAudio}"
+                                      AutomationProperties.Name="Show Linked Audio" ToolTip="Show Linked Audio: draws the sound that belongs to a picture in the lower part of its block (the main video's own audio on its clips, a video layer's on its clips)." />
+                        <Button Content="[" FontFamily="Consolas" FontWeight="Bold" FontSize="13" Padding="9,3" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="50" Command="{Binding AddStartPointCommand}"
+                                AutomationProperties.Name="Add In Point" local:KeyTip.Action="edit.in" local:KeyTip.Text="Add In Point{keys}: the stretch to split out begins at the playhead." />
+                        <Button Content="]" FontFamily="Consolas" FontWeight="Bold" FontSize="13" Padding="9,3" Margin="0,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="50" Command="{Binding AddStopPointCommand}"
+                                AutomationProperties.Name="Add Out Point" local:KeyTip.Action="edit.out" local:KeyTip.Text="Add Out Point{keys}: every unlocked track is split at the in point and at the playhead, so the stretch between is clips of its own." />
+                        <!-- Where the in point being set is (or that none is), beside its buttons. -->
+                        <TextBlock local:OverflowStrip.Priority="48" Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="3,0,6,0" FontSize="11" VerticalAlignment="Center" />
+                        <!-- The tracks' height (each layer's row), with the other layer tools (5.0-Verify: one row along the bottom). -->
+                        <StackPanel local:OverflowStrip.Priority="65" Orientation="Horizontal" Margin="6,0,6,0" VerticalAlignment="Center" Background="Transparent"
+                                    ToolTip="Track height: how tall each track's row is.">
+                            <TextBlock Text="&#xE1D8;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                            <Slider Width="60" Margin="5,0,0,0" VerticalAlignment="Center" Minimum="1" Maximum="50" SmallChange="1" LargeChange="5" IsMoveToPointEnabled="True"
+                                    Value="{Binding LayerTrackHeight}" AutomationProperties.Name="Track Height" local:NumericInput.Default="25" />
+                        </StackPanel>
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="30" Content="&#xE70F;" Tag="Timecode" Click="Tool_Click" IsEnabled="{Binding HasSource}"
+                                AutomationProperties.Name="Split or Trim at Timecode..." ToolTip="Split or Trim at Timecode: type the time to split the selected clip at (or the main video, with nothing selected), or to trim its start or end to. The I-frames either side of the time are offered." />
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="45" Content="&#xE74F;" Tag="DeadAir" Click="Tool_Click" IsEnabled="{Binding HasSource}"
+                                AutomationProperties.Name="Remove Dead Air..." local:KeyTip.Action="edit.deadAir" local:KeyTip.Text="Remove Dead Air{keys}: finds the silences (or the gaps between captions) of the selected track (a video layer, an audio track, or otherwise the main video) and marks or folds them out." />
+                        <Button Content="HUD Masks" Padding="9,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="40" Tag="HudMasks" Click="Tool_Click" IsEnabled="{Binding IsVideoReencoded}"
+                                AutomationProperties.Name="HUD Masks" ToolTip="Takes a game's HUD apart into layers (killfeed, health, abilities, ultimate), all sharing one mask traced round the game's HUD, so each can be moved on its own." />
+                        <!-- The recycle bin: deleted clips wait here, and are put back from here (its list opens under it, BinPopup). -->
+                        <ToggleButton x:Name="BinButton" Padding="7,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="35" AutomationProperties.Name="Recycle Bin"
+                                      ToolTip="Recycle Bin: the clips that were deleted from the timeline. Nothing of them is rendered; any of them can be put back where it was.">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding RecycleBinText}" Margin="4,0,0,0" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </ToggleButton>
+                        <!-- The keyframes of the selected clip -->
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="14" Content="&#xE892;" Margin="6,0,3,0" Tag="PreviousKey" Click="Tool_Click"
+                                AutomationProperties.Name="Previous Keyframe" local:KeyTip.Action="key.prev" local:KeyTip.Text="Previous Keyframe of the selected clip{keys}." />
+                        <Button local:OverflowStrip.Priority="26" Content="&#x2666;" FontSize="13" Padding="9,3" Margin="0,0,3,0" VerticalAlignment="Center" Tag="ToggleKey" Click="Tool_Click" Foreground="{DynamicResource KeyAccentBrush}"
+                                AutomationProperties.Name="Add or Remove Keyframe" local:KeyTip.Action="key.toggle" local:KeyTip.Text="Add / Remove Keyframe{keys}: sets a keyframe for the selected clip at the playhead, or removes the one that is there." />
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="14" Content="&#xE893;" Tag="NextKey" Click="Tool_Click"
+                                AutomationProperties.Name="Next Keyframe" local:KeyTip.Action="key.next" local:KeyTip.Text="Next Keyframe of the selected clip{keys}." />
+                        <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="12" Content="&#xE7C8;" IsChecked="{Binding KeyframesEnabled}"
+                                      AutomationProperties.Name="Enable Keyframes" ToolTip="Enable Keyframes: while on, moving, resizing or turning a clip writes a keyframe." />
+                        <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="10" Content="&#xE840;" IsChecked="{Binding KeyframesSnap}" IsEnabled="{Binding KeyframesEnabled}"
+                                      AutomationProperties.Name="Snap to Nearest Keyframe" ToolTip="Snap to Nearest: a move changes the keyframe nearest the playhead. Off, it sets a new keyframe at the playhead." />
+                        <ToggleButton local:OverflowStrip.IsOverflowButton="True" Style="{StaticResource ToolToggle}" Content="&#xE712;" Margin="0"
+                                      AutomationProperties.Name="More Timeline Tools" ToolTip="More: the timeline tools this pane has no room for." />
+                    </local:OverflowStrip>
+                </Border>
+            </StackPanel>
+
+            <!-- While the video is copied, layers and effects are not rendered: said once, under the tracks. -->
+            <Border DockPanel.Dock="Bottom" Margin="0,4,0,0" Padding="10,5" CornerRadius="4" Background="{DynamicResource InsetBrush}"
                     Visibility="{Binding IsVideoReencoded, Converter={StaticResource InverseBoolToVisibility}}">
                 <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}"
                            Text="The video is copied as it is (Video tab: Copy), so layers, filters and fades are not rendered: the main video's clips are joined end to end, each from the I-frame at or before its start. Choose a video encoder to edit with layers." />
             </Border>
-
-            <!--
-                The inspector: the values of what is selected, on one line under the tracks (shown while something is). A
-                picture clip: its speed, size, place and turn, Properties and Delete; the background: its blur; a sound (a
-                track of the main file, a sound clip, a video clip's own sound): its gain, mute, filters, voice and ducking.
-                Its groups are shown and given what they edit by MainWindow (Inspect).
-            -->
-            <Border x:Name="Inspector" DockPanel.Dock="Bottom" Margin="0,4,0,0" Padding="8,3" CornerRadius="4" Background="{DynamicResource InsetBrush}"
-                    Visibility="Collapsed" ClipToBounds="True" AutomationProperties.Name="Clip Inspector">
-                <StackPanel Orientation="Horizontal" Height="24" TextElement.FontSize="11.5">
-                    <TextBlock x:Name="InspectedName" FontWeight="SemiBold" MaxWidth="200" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,6,0" />
-                    <StackPanel x:Name="PictureGroup" Orientation="Horizontal" Visibility="Collapsed">
-                        <StackPanel Orientation="Horizontal" Visibility="{Binding HasSpeed, Converter={StaticResource BoolToVisibility}}"
-                                    ToolTip="Speed: how many times as fast as recorded this clip runs, from 0.1 to 10. Its block gets shorter as it gets faster.">
-                            <TextBlock Text="Speed x" Style="{StaticResource PairLabel}" />
-                            <TextBox Style="{StaticResource ValueBox}" Width="48" Text="{Binding ClipSpeed, StringFormat={}{0:0.##}}" AutomationProperties.Name="Clip Speed"
-                                     local:NumericInput.Default="1" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="10" />
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Visibility="{Binding HasPlacement, Converter={StaticResource BoolToVisibility}}">
-                            <TextBlock Text="Size %" Style="{StaticResource PairLabel}" />
-                            <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding SizePercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Clip Size"
-                                     local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="400"
-                                     ToolTip="Width of the clip as a percentage of the frame's width. It grows and shrinks about its middle. Drag sideways to adjust, or click to type." />
-                            <StackPanel Orientation="Horizontal" Visibility="{Binding IsFreeHeight, Converter={StaticResource BoolToVisibility}}">
-                                <TextBlock Text="H %" Style="{StaticResource PairLabel}" />
-                                <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding SizeHeightPercent, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Clip Height"
-                                         local:NumericInput.DragStep="0.25" local:NumericInput.Minimum="1" local:NumericInput.Maximum="200"
-                                         ToolTip="Height of the clip as a percentage of the frame's height (its shape is not held while Lock Aspect is off)." />
-                            </StackPanel>
-                            <TextBlock Text="X %" Style="{StaticResource PairLabel}" />
-                            <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding PositionXPercent, StringFormat={}{0:0.#}}" AutomationProperties.Name="Clip X Value"
-                                     local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
-                            <TextBlock Text="Y %" Style="{StaticResource PairLabel}" />
-                            <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding PositionYPercent, StringFormat={}{0:0.#}}" AutomationProperties.Name="Clip Y Value"
-                                     local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-200" local:NumericInput.Maximum="200" />
-                            <StackPanel Orientation="Horizontal" Visibility="{Binding HasFilters, Converter={StaticResource BoolToVisibility}}">
-                                <TextBlock Text="Rot &#176;" Style="{StaticResource PairLabel}" />
-                                <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding Rotation, StringFormat={}{0:0.#}}" AutomationProperties.Name="Clip Rotation"
-                                         local:NumericInput.Default="0" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-360" local:NumericInput.Maximum="360"
-                                         ToolTip="Degrees the clip is turned clockwise about its middle." />
-                            </StackPanel>
-                        </StackPanel>
-                        <ToggleButton Content="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="11" Padding="6,1" Margin="6,0,0,0" VerticalAlignment="Center"
-                                      IsChecked="{Binding LockAspectRatio}" AutomationProperties.Name="Lock Aspect"
-                                      Visibility="{Binding IsRemovable, Converter={StaticResource BoolToVisibility}}"
-                                      ToolTip="Lock Aspect. On: the clip keeps its own shape. Off: its width and height can be stretched separately with the corner handle in the Canvas." />
-                        <Button Content="Draw Target" Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center"
-                                Visibility="{Binding IsVideo, Converter={StaticResource BoolToVisibility}}"
-                                Command="{Binding DataContext.DrawTargetCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}"
-                                ToolTip="Drag a rectangle on the video to mark what this layer shows." />
-                        <Button Content="Properties..." Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="Properties" Click="Tool_Click"
-                                Visibility="{Binding HasStyle, Converter={StaticResource BoolToVisibility}}"
-                                ToolTip="Opacity, rounded corners, soft edges and a drop shadow; for pictures and videos, a chroma key and a custom mask." />
-                    </StackPanel>
-                    <StackPanel x:Name="BackgroundGroup" Orientation="Horizontal" Visibility="Collapsed">
-                        <TextBlock Text="Blur Radius" Style="{StaticResource PairLabel}" />
-                        <Slider Width="80" Minimum="5" Maximum="50" VerticalAlignment="Center" Value="{Binding BlurRadius}"
-                                AutomationProperties.Name="Background Blur Radius" local:NumericInput.Default="20"
-                                ToolTip="How far the blur of the background reaches, in pixels. Larger is softer. The background shows wherever the main video does not cover the frame." />
-                        <TextBox Style="{StaticResource ValueBox}" Width="46" Margin="4,0,0,0" Text="{Binding BlurRadius, StringFormat={}{0:0}}" AutomationProperties.Name="Background Blur Radius Value"
-                                 local:NumericInput.Default="20" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="5" local:NumericInput.Maximum="50" />
-                        <Button Content="More..." Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="BlurSettings" Click="Tool_Click"
-                                ToolTip="Blur passes and how much the background is darkened." />
-                    </StackPanel>
-                    <StackPanel x:Name="SoundGroup" Orientation="Horizontal" Visibility="Collapsed">
-                        <!-- Gain and filters work on decoded sound: not on a track that is copied as it is (or dropped). -->
-                        <StackPanel Orientation="Horizontal" IsEnabled="{Binding IsReencoded}" ToolTipService.ShowOnDisabled="True"
-                                    ToolTip="Gain in decibels, and this sound's filters (compressor, gate, equalizer). Not for a track that is copied as it is.">
-                            <TextBlock Text="Gain" Style="{StaticResource PairLabel}" />
-                            <Slider Width="84" Minimum="-40" Maximum="24" VerticalAlignment="Center" Value="{Binding GainDb}" AutomationProperties.Name="Sound Gain" local:NumericInput.Default="0" />
-                            <TextBox Style="{StaticResource ValueBox}" Width="40" Margin="4,0,0,0" Text="{Binding GainDb, StringFormat={}{0:0}}" AutomationProperties.Name="Sound Gain Value"
-                                     local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="-40" local:NumericInput.Maximum="24" />
-                            <Button Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="TrackFilters" Click="Tool_Click" AutomationProperties.Name="Sound Filters...">
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="Filters..." VerticalAlignment="Center" />
-                                    <TextBlock Text="{Binding FiltersCountText}" Margin="4,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
-                                </StackPanel>
-                            </Button>
-                        </StackPanel>
-                        <ToggleButton IsChecked="{Binding IsMuted}" Content="&#xE74F;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="6,1" Margin="6,0,0,0" VerticalAlignment="Center"
-                                      AutomationProperties.Name="Mute" ToolTip="Mute: leaves this sound out of the mix, in the preview and in the export. Press again to bring it back." />
-                        <!-- A sound clip's speed (a video clip's is with its picture's values; a stream of the main file has none). -->
-                        <StackPanel x:Name="SoundSpeedHost" Orientation="Horizontal">
-                            <StackPanel Orientation="Horizontal" Visibility="{Binding HasSpeed, Converter={StaticResource BoolToVisibility}}"
-                                        ToolTip="Speed: how many times as fast as recorded this sound runs, from 0.1 to 10.">
-                                <TextBlock Text="Speed x" Style="{StaticResource PairLabel}" />
-                                <TextBox Style="{StaticResource ValueBox}" Width="44" Text="{Binding ClipSpeed, StringFormat={}{0:0.##}}" AutomationProperties.Name="Sound Speed"
-                                         local:NumericInput.Default="1" local:NumericInput.DragStep="0.01" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0.1" local:NumericInput.Maximum="10" />
-                            </StackPanel>
-                        </StackPanel>
-                        <CheckBox Content="Voice" IsChecked="{Binding IsVoice}" Margin="8,0,0,0" VerticalAlignment="Center"
-                                  ToolTip="A voice: the sounds marked Duck make room for it." />
-                        <CheckBox Content="Duck" IsChecked="{Binding AutoDuck}" Margin="8,0,0,0" VerticalAlignment="Center"
-                                  ToolTip="Turned down while a sound marked Voice is speaking (by how much: the Audio tab's ducking amount)." />
-                    </StackPanel>
-                    <Button x:Name="InspectorDelete" Content="Delete" Padding="7,1" Margin="10,0,0,0" VerticalAlignment="Center" Tag="Delete" Click="Tool_Click"
-                            local:KeyTip.Action="edit.delete" local:KeyTip.Text="Delete{keys}: the selected clip goes into the recycle bin; the selected part of an audio track is silenced." />
-                </StackPanel>
-            </Border>
-
-            <!--
-                Text Settings: the words of the text clip that is selected, and how they are drawn. Not there while anything
-                else is selected.
-            -->
-            <GroupBox DockPanel.Dock="Bottom" Header="Text Settings" Margin="0,4,0,0" x:Name="TextSettingsPanel"
-                      Visibility="{Binding IsTextLayerSelected, Converter={StaticResource BoolToVisibility}}">
-                <Grid DataContext="{Binding SelectedTextLayer}">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" MinWidth="140" MaxWidth="420" />
-                        <ColumnDefinition Width="2*" />
-                    </Grid.ColumnDefinitions>
-                    <TextBox Text="{Binding TextContent, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="NoWrap"
-                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Height="72" VerticalContentAlignment="Top"
-                             AutomationProperties.Name="Text Content"
-                             ToolTip="The words. Enter starts a new line; the lines are centered. The clip's box follows what is typed." />
-                    <WrapPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Top">
-                        <StackPanel Orientation="Horizontal" Margin="0,2,14,4">
-                            <TextBlock Text="Font:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
-                            <!-- Its list (the fonts installed) and its choice are bound the first time Text Settings are shown (FontBox, in code). -->
-                            <ComboBox x:Name="FontBox" Width="190" IsTextSearchEnabled="True" AutomationProperties.Name="Font"
-                                      ToolTip="The font, from those installed on this computer.">
-                                <ComboBox.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <VirtualizingStackPanel />
-                                    </ItemsPanelTemplate>
-                                </ComboBox.ItemsPanel>
-                            </ComboBox>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,2,14,4"
-                                    ToolTip="The font's size, in pixels of the output frame. The clip's own Size, and its Scale keyframes, scale the words from there.">
-                            <TextBlock Text="Size:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
-                            <Slider Width="110" VerticalAlignment="Center" Minimum="8" Maximum="300" SmallChange="1" LargeChange="10" IsMoveToPointEnabled="True"
-                                    Value="{Binding FontSize}" AutomationProperties.Name="Font Size" local:NumericInput.Default="48" />
-                            <TextBox Style="{StaticResource ValueBox}" Width="50" Text="{Binding FontSize, StringFormat={}{0:0}}" AutomationProperties.Name="Font Size Value"
-                                     local:NumericInput.Default="48" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="8" local:NumericInput.Maximum="400" />
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,2,14,4">
-                            <TextBlock Text="Color:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
-                            <Button Width="26" Height="22" Padding="0" Background="{Binding FontColor}" Tag="Font" Click="Tool_Click" Cursor="Hand"
-                                    AutomationProperties.Name="Pick Font Color" ToolTip="Click to pick the color of the letters." />
-                            <TextBox Width="74" Margin="6,0,0,0" Padding="4,2" VerticalAlignment="Center" FontFamily="Consolas" MaxLength="7"
-                                     Text="{Binding FontColor, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Font Color"
-                                     ToolTip="The color of the letters, as #RRGGBB." />
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,2,14,4">
-                            <TextBlock Text="Outline:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
-                            <Button Width="26" Height="22" Padding="0" Background="{Binding OutlineColor}" Tag="Outline" Click="Tool_Click" Cursor="Hand"
-                                    AutomationProperties.Name="Pick Outline Color" ToolTip="Click to pick the color of the line around the letters." />
-                            <TextBox Width="74" Margin="6,0,0,0" Padding="4,2" VerticalAlignment="Center" FontFamily="Consolas" MaxLength="7"
-                                     Text="{Binding OutlineColor, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Outline Color"
-                                     ToolTip="The color of the line around the letters, as #RRGGBB." />
-                            <Slider Width="80" Margin="10,0,0,0" VerticalAlignment="Center" Minimum="0" Maximum="20" SmallChange="1" LargeChange="2" TickFrequency="1"
-                                    IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" Value="{Binding OutlineThickness}" AutomationProperties.Name="Outline Thickness"
-                                    local:NumericInput.Default="2" ToolTip="How thick the line around the letters is, in pixels at the font's size; 0 for none." />
-                            <TextBox Style="{StaticResource ValueBox}" Width="40" Text="{Binding OutlineThickness}" AutomationProperties.Name="Outline Thickness Value"
-                                     local:NumericInput.Default="2" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="20" />
-                        </StackPanel>
-                    </WrapPanel>
-                </Grid>
-            </GroupBox>
 
             <!--
                 The tracks: the ruler over the time area, the surface, the rows' scroll bar beside it and the time's scroll bar
@@ -355,86 +475,8 @@
                 <ScrollBar x:Name="RowScroll" Grid.Row="1" Grid.Column="1" Orientation="Vertical" Scroll="RowScroll_Scroll" Visibility="Hidden"
                            AutomationProperties.Name="Timeline Rows Scroll" />
 
-                <StackPanel x:Name="HeightCorner" Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,2,0,0">
-                    <!-- Play / Pause, while neither the playback bar's nor the overview bar's is on screen (MainWindow shows it). -->
-                    <Button x:Name="PlayButton" Style="{StaticResource ZoomTool}" Content="&#xE768;" Margin="0,0,6,0" Tag="PlayPause" Click="Tool_Click" Visibility="Collapsed"
-                            AutomationProperties.Name="Play / Pause" local:KeyTip.Action="transport.playPause" local:KeyTip.Text="Play / Pause{keys}." />
-                    <TextBlock Text="&#xE1D8;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-                    <Slider Width="60" Margin="5,0,0,0" VerticalAlignment="Center" Minimum="1" Maximum="50" SmallChange="1" LargeChange="5" IsMoveToPointEnabled="True"
-                            Value="{Binding LayerTrackHeight}" AutomationProperties.Name="Track Height" local:NumericInput.Default="25"
-                            ToolTip="Track height: how tall each track's row is." />
-                    <TextBlock Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="6,0,0,0" FontSize="11" />
-                </StackPanel>
                 <ScrollBar x:Name="TimeScroll" Grid.Row="2" Orientation="Horizontal" Margin="0,2,0,0" AutomationProperties.Name="Timeline Scroll" />
             </Grid>
         </DockPanel>
-
-        <!-- Add Layer's kinds, under its button (HoverFlyout: resting on the button opens them; leaving both closes them). -->
-        <Popup x:Name="AddLayerPopup" StaysOpen="True" AllowsTransparency="True" Placement="Bottom" PlacementTarget="{Binding ElementName=AddLayerHost}">
-            <local:ButtonChrome x:Name="AddLayerFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6" Margin="0,2,0,0" PreviewKeyDown="AddLayerFlyout_PreviewKeyDown">
-                <StackPanel x:Name="KindsPanel" TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="200">
-                    <StackPanel.Resources>
-                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-                            <Setter Property="Background" Value="Transparent" />
-                            <Setter Property="BorderThickness" Value="0" />
-                            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
-                            <Setter Property="HorizontalContentAlignment" Value="Left" />
-                            <Setter Property="Padding" Value="10,6" />
-                            <Setter Property="Margin" Value="0,1" />
-                        </Style>
-                        <Style TargetType="Separator">
-                            <Setter Property="Margin" Value="6,3" />
-                        </Style>
-                    </StackPanel.Resources>
-                    <Button Content="Empty Track" Tag="Empty" Click="AddLayerItem_Click"
-                            ToolTip="A track with nothing on it yet: drop videos and pictures onto it. Kept in the project. The same as clicking Add Layer." />
-                    <Button Content="Video..." Tag="Video" Click="AddLayerItem_Click"
-                            ToolTip="A video from a file: it plays alongside the main video, centred and fitted to the frame." />
-                    <Button Content="Image..." Tag="Image" Click="AddLayerItem_Click"
-                            ToolTip="A .png or .jpg picture: a logo, a watermark, a frame." />
-                    <Button Content="Text" Tag="Text" Click="AddLayerItem_Click"
-                            ToolTip="Words: a title or a label. Its words, font and colors are set under Text Settings while it is selected." />
-                    <Button Content="Adjustment Layer" Tag="Adjustment" Click="AddLayerItem_Click"
-                            ToolTip="A clip with no picture: its effects (Effects pane) work on everything under it while it lasts. Narrow its rectangle in the Canvas to limit them to a part of the frame." />
-                    <Button Content="Region of Main Video" Tag="Region" Click="AddLayerItem_Click"
-                            ToolTip="A piece of the source video (a minimap, an ammo counter) lifted onto the frame. Mark it with Draw Target." />
-                    <Button Content="HUD Layers from a Mask..." Tag="MaskLayers" Click="AddLayerItem_Click"
-                            ToolTip="Choose a mask of the whole frame, white (or painted, on transparency) over the HUD: one layer is made for each HUD element it shows, all sharing the mask." />
-                    <Separator />
-                    <Button Content="Audio File..." Tag="Audio" Click="AddLayerItem_Click"
-                            ToolTip="A sound from a file (music, a sound effect, another microphone), at the playhead, on a track of its own." />
-                    <Button Content="Record Voiceover..." Tag="Voiceover" Click="AddLayerItem_Click"
-                            ToolTip="The Voiceover Studio: record over the video as it plays, then trim and place the take." />
-                    <Separator />
-                    <Button Content="Generate Auto-Captions..." Tag="Captions" Click="AddLayerItem_Click" AutomationProperties.Name="Generate Auto-Captions"
-                            ToolTip="Transcribes the speech with whisper.cpp into captions that follow the sound they were heard in, through every cut." />
-                    <Button Content="Import Subtitles..." Tag="ImportSubtitles" Click="AddLayerItem_Click"
-                            ToolTip="An .srt or .ass file as the captions." />
-                    <Button Content="Edit Captions..." Tag="EditCaptions" Click="AddLayerItem_Click"
-                            ToolTip="The Subtitle Editor: what the captions say, and when." />
-                    <Button Content="Caption Style..." Tag="CaptionStyle" Click="AddLayerItem_Click"
-                            ToolTip="How the captions look: their font, colors, outline and place." />
-                </StackPanel>
-            </local:ButtonChrome>
-        </Popup>
-
-        <!-- The recycle bin's list, under its button. -->
-        <Popup x:Name="BinPopup" PlacementTarget="{Binding ElementName=BinButton}" Placement="Bottom" VerticalOffset="4" StaysOpen="False" AllowsTransparency="True"
-               IsOpen="{Binding IsChecked, ElementName=BinButton, Mode=TwoWay}" Opened="BinPopup_Opened" Closed="BinPopup_Closed">
-            <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
-                <StackPanel TextElement.Foreground="{DynamicResource TextBrush}">
-                    <DockPanel Margin="0,0,0,6">
-                        <Button DockPanel.Dock="Right" Content="Empty" Padding="10,3" Tag="EmptyBin" Click="Tool_Click" IsEnabled="{Binding HasDeleted}"
-                                ToolTip="Throws away everything in the bin. (Ctrl+Z still brings it back.)" />
-                        <TextBlock Text="Recycle Bin" FontWeight="SemiBold" VerticalAlignment="Center" />
-                    </DockPanel>
-                    <TextBlock Text="Nothing has been deleted." Foreground="{DynamicResource MutedTextBrush}" Width="380"
-                               Visibility="{Binding HasDeleted, Converter={StaticResource InverseBoolToVisibility}}" />
-                    <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto">
-                        <ItemsControl ItemsSource="{Binding RecycleBin}" ItemTemplate="{StaticResource BinItemTemplate}" Focusable="False" />
-                    </ScrollViewer>
-                </StackPanel>
-            </Border>
-        </Popup>
     </Grid>
 </UserControl>

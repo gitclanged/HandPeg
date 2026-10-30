@@ -340,54 +340,6 @@ public static partial class FfmpegRunner
         }
     }
 
-    /// <summary>
-    /// Makes the player's stand-in clock (see MainViewModel.PlayerSource): black, 64 by 36, at the given frame
-    /// rate, with a silent track for each channel layout given, I-frames a second apart so that it seeks at
-    /// once. Written beside its place and moved there when whole. Returns whether it was made.
-    /// </summary>
-    public static async Task<bool> MakeClockFileAsync(string path, double frameRate, IReadOnlyList<string> audioLayouts, double seconds, CancellationToken cancellationToken)
-    {
-        if (!File.Exists(DependencyUpdater.FfmpegPath))
-            return false;
-
-        var rate = frameRate.ToString("0.###", CultureInfo.InvariantCulture);
-        var part = path + ".part";
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", $"color=c=black:s=64x36:r={rate}" };
-            foreach (var layout in audioLayouts)
-                arguments.AddRange(["-f", "lavfi", "-i", $"anullsrc=r=48000:cl={layout}"]);
-            arguments.AddRange(["-map", "0:v"]);
-            for (var i = 0; i < audioLayouts.Count; i++)
-                arguments.AddRange(["-map", $"{i + 1}:a"]);
-            arguments.AddRange(["-t", seconds.ToString("0.###", CultureInfo.InvariantCulture),
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-pix_fmt", "yuv420p",
-                "-g", Math.Max((int)Math.Round(frameRate), 1).ToString(CultureInfo.InvariantCulture)]);
-            if (audioLayouts.Count > 0)
-                arguments.AddRange(["-c:a", "aac", "-b:a", "32k"]);
-            arguments.AddRange(["-f", "matroska", part]);
-
-            var said = new StringBuilder();
-            var result = await ProcessPipes.RunAsync(Cli.Wrap(DependencyUpdater.FfmpegPath).WithArguments(arguments)
-                .WithStandardErrorPipe(PipeTarget.ToStringBuilder(said)).WithValidation(CommandResultValidation.None), cancellationToken);
-            if (result.ExitCode != 0 || !File.Exists(part))
-            {
-                AppLog.Write($"The player's stand-in clock could not be made: {said.ToString().Trim()}");
-                return false;
-            }
-
-            File.Move(part, path, overwrite: true);
-            return true;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException or System.ComponentModel.Win32Exception)
-        {
-            if (ex is not OperationCanceledException)
-                AppLog.Write("The player's stand-in clock could not be made", ex);
-            return false;
-        }
-    }
-
     /// <summary>Thumbnails per row and per column of a hover-preview sheet.</summary>
     public const int SpriteGridSize = 10;
 
@@ -465,15 +417,20 @@ public static partial class FfmpegRunner
 
     /// <summary>
     /// A strip of frames from a video, evenly spread over its length and set side by side in one picture:
-    /// what a video's block on the timeline is drawn with. The background graphics card decodes where it can;
-    /// when that does not work out (a format the card does not take, a driver that will not open eight decoders
-    /// at once) the strip is made again by the processor. Background work (the media browser's: Idle).
+    /// what a video's block on the timeline (and the Overview Bar) is drawn with, and the media browser's frames.
+    /// A compositor draws it (5.0D, <see cref="GpuFilmstrips"/>: one decode per frame on the card, read back), the same
+    /// picture frame for frame; with Background GPU set to Processor Only, and whenever that does not work out, FFmpeg
+    /// makes it. The background graphics card decodes where it can; when that does not work out (a format the card
+    /// does not take, a driver that will not open eight decoders at once) the strip is made again by the processor.
+    /// Background work (the media browser's: Idle).
     /// </summary>
     /// <param name="height">How tall each frame is made, in pixels: 54 for a block on the timeline.</param>
     public static Task<bool> GenerateFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, CancellationToken cancellationToken,
         int height = 54, WorkLane lane = WorkLane.Background) =>
         Task.Run(() => WorkScheduler.Run(new WorkSpec($"Thumbnails of {Path.GetFileName(videoPath)}", lane) { Key = $"strip|{videoPath}|{count}|{height}|{imagePath}" }, async work =>
         {
+            if (await GpuFilmstrips.TryMakeAsync(videoPath, imagePath, count, durationSeconds, height, work.Token))
+                return true;
             if (!File.Exists(DependencyUpdater.FfmpegPath))
                 return false;
 
@@ -504,22 +461,18 @@ public static partial class FfmpegRunner
     /// <summary>Makes the strip once. Null when it was written; otherwise what FFmpeg said.</summary>
     private static async Task<string?> RunFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, bool hardware, int height, CancellationToken cancellationToken)
     {
-        count = Math.Clamp(count, 1, 40);
-        height = Math.Clamp(height / 2 * 2, 16, 1080);
+        // The frames' number, height and moments are GpuFilmstrips' (the compositor's strip is this one, frame for frame).
+        count = GpuFilmstrips.FrameCount(count, durationSeconds);
+        height = GpuFilmstrips.FrameHeight(height);
 
         // One frame from each of as many moments, evenly spread: the file is opened once per frame, already
         // wound forward to it, so that only that frame is decoded. Reading a long video from end to end for
-        // a dozen pictures is the difference between a moment and a minute.
+        // a dozen pictures is the difference between a moment and a minute. The last moment stays clear of the
+        // end: a file's length is often a little more than its picture's, and an input wound past its last frame
+        // has none to give, which loses the whole strip.
         var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-y" };
-        if (durationSeconds <= 0.2)
-            count = 1;
-
-        // The last moment asked for stays clear of the end: a file's length is often a little more than its
-        // picture's, and an input wound past its last frame has none to give, which loses the whole strip.
-        var last = Math.Max(durationSeconds - 0.5, 0);
-        for (var i = 0; i < count; i++)
+        foreach (var at in GpuFilmstrips.Moments(count, durationSeconds))
         {
-            var at = durationSeconds > 0.2 ? Math.Min(durationSeconds * (i + 0.5) / count, last) : 0;
             if (hardware)
                 arguments.AddRange(GpuAdapters.BackgroundDecodeArguments);
 

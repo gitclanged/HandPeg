@@ -103,9 +103,15 @@ public partial class MainViewModel
             Log($"Slipped {clip.Name}: it now plays its file from {TimeDisplay.Format(model.MediaOffset)}");
     }
 
-    /// <summary>Shift+Delete: the clip goes (to the recycle bin), and what came after it on its track (or every track) closes the gap.</summary>
+    /// <summary>
+    /// Shift+Delete: the clip goes (to the recycle bin), and what came after it on its track (or every track) closes the gap.
+    /// One of a group of clips selected together (5.0): the whole group, as one step (<see cref="DeleteClips"/>).
+    /// </summary>
     public bool RippleDelete(object? selected)
     {
+        if (selected is Layer member && IsInClipGroup(member))
+            return DeleteClips(SelectedClips, ripple: true);
+
         if (selected is not Layer view || ClipOf(view) is not { } clip || Document.TrackOf(clip) is not { } track)
             return DeleteClip(selected);
 

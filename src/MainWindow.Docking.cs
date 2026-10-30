@@ -386,7 +386,7 @@ public partial class MainWindow
     ///
     /// 4.2D: 4.2's panes brought the 10 s reading back to 213 to 219 MB (4.2C), so the give-back goes further. The large
     /// object heap is compacted too (the start's big buffers: XAML, the JIT profile, the dock's first measure), the process
-    /// heap is compacted (the native side's start: libmpv's and WPF's own allocations), and the pages the start touched
+    /// heap is compacted (the native side's start: WPF's own allocations and the drivers'), and the pages the start touched
     /// once and never again (start-up code, resources read once) leave the working set. They stay in memory as standby
     /// pages, so what is touched again comes back at once, from RAM, without a disk read.
     /// </summary>

@@ -58,4 +58,12 @@ public sealed partial class QueueJob(
 
     /// <summary>The caption file has been written: a job that is run again (after a cancel, or on the software encoder) does not transcribe twice.</summary>
     public bool CaptionsReady { get; set; }
+
+    /// <summary>
+    /// The sequence the job was made from, with the job's own copies of its captions, cuts, chapters and voiceover, kept only
+    /// when it makes the job's very command (FilterGraphBuilder.BuildExportCommand(ExportState) is <see cref="Command"/>):
+    /// the GPU compositor can then draw the job's frames (5.0-Verify Q5). Null for a command edited by hand; a command the
+    /// hardware fallback rewrites no longer matches it, and FFmpeg's graph makes that one. In memory only, as the queue is.
+    /// </summary>
+    public SequenceExportState? ExportState { get; init; }
 }

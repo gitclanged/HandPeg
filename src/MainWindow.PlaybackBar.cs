@@ -28,7 +28,8 @@ public partial class MainWindow
             switch (e.PropertyName)
             {
                 case nameof(ViewModels.MainViewModel.IsPlayerMuted):
-                    _mpv?.SetMute(_viewModel.IsPlayerMuted);
+                    if (_gpu is { } gpu)
+                        gpu.Muted = _viewModel.IsPlayerMuted;
                     break;
                 case nameof(ViewModels.MainViewModel.ShowSafeMargins) or nameof(ViewModels.MainViewModel.LivePreview) or nameof(ViewModels.MainViewModel.FrameWidth)
                     or nameof(ViewModels.MainViewModel.FrameHeight) or nameof(ViewModels.MainViewModel.SourceWidth) or nameof(ViewModels.MainViewModel.SourceHeight)
@@ -173,21 +174,34 @@ public partial class MainWindow
         return false;
     }
 
+    /// <summary>
+    /// Where Loop takes playback back from and to now, in seconds (the stretch played, the selected clip, else the sequence's
+    /// end to its start): the engine makes the cuts there ready before the wrap. NaN to: Loop off.
+    /// </summary>
+    private (double From, double To) LoopWrap()
+    {
+        if (!_viewModel.LoopPlayback)
+            return (double.NaN, double.NaN);
+        if (_playUntilMs is { } until)
+            return (until / 1000.0, _playFromMs / 1000.0);
+        return SelectedStretch() is { } stretch ? (stretch.To / 1000.0, stretch.From / 1000.0) : (double.PositiveInfinity, 0);
+    }
+
     /// <summary>Playback reached the end of what is open: with Loop on, it starts again from the beginning.</summary>
     private void OnPlaybackEnded()
     {
-        if (!_viewModel.LoopPlayback || _mpv is not { } player)
+        if (!_viewModel.LoopPlayback || _gpu is null)
             return;
 
         var from = _playUntilMs is not null ? (long)_playFromMs : SelectedStretch() is { } stretch ? (long)stretch.From : 0;
         _viewModel.PositionMs = from;
-        player.SetPause(false);
+        PlayerSetPause(false);
     }
 
     /// <summary>Saves the frame on screen, as the player shows it (with Live Preview, as the layout makes it), as a PNG in the output's folder.</summary>
     private void ExportFrame()
     {
-        if (_mpv is not { } player)
+        if (_gpu is not { } gpu)
             return;
 
         var folder = Path.GetDirectoryName(_viewModel.DestinationPath.Trim().Trim('"'));
@@ -200,8 +214,7 @@ public partial class MainWindow
         for (var n = 2; File.Exists(path); n++)
             path = Path.Combine(folder, $"{stem} ({n}).png");
 
-        player.SaveFrame(path);
-        _viewModel.StatusText = $"Frame saved: {path}";
+        GpuSaveFrame(gpu, path);
     }
 
     // ----- Safe margins -----
@@ -210,7 +223,7 @@ public partial class MainWindow
 
     /// <summary>
     /// Outlines the action-safe (90%) and title-safe (80%) areas of the picture as the player shows it: the output
-    /// frame with Live Preview on, the source with it off, fitted into the player as mpv fits it.
+    /// frame with Live Preview on, the source with it off, fitted into the player as the engine fits it.
     /// </summary>
     private void PlaceSafeMargins()
     {

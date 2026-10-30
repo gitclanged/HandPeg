@@ -12,8 +12,8 @@ using HandPegApp.ViewModels;
 namespace HandPegGoldenTests;
 
 /// <summary>
-/// The .hproj format, 5: the format 5 fixture read and written again (against a golden), read once more and compared field by
-/// field; a newer format refused, opened only when asked, and never written over; files of formats 1 to 4, and files that are
+/// The .hproj format, 6: the format 6 fixture read and written again (against a golden), read once more and compared field by
+/// field; a newer format refused, opened only when asked, and never written over; files of formats 1 to 5, and files that are
 /// not projects, refused with the reason; the seek indexes and the masks always written, the state's own looks left as they
 /// were, and both taken up again on opening. The files the projects name need not exist, except where seek indexes and masks
 /// are concerned (they are kept only for files that are there), which use files made in the scratch folder.
@@ -35,17 +35,18 @@ public static class ProjectTests
 
     public static IEnumerable<GraphResult> All(string fixtures, string scratch)
     {
-        yield return Format5RoundTrip(fixtures);
+        yield return Format6RoundTrip(fixtures);
         yield return NewerFormat(fixtures, scratch);
         yield return NotProjects(scratch);
         yield return SeekIndexes(scratch);
         yield return UndoHistory();
+        yield return Bundle(fixtures, scratch);
     }
 
-    private static GraphResult Format5RoundTrip(string fixtures)
+    private static GraphResult Format6RoundTrip(string fixtures)
     {
         var problems = new List<string>();
-        var original = File.ReadAllText(Path.Combine(fixtures, "format5.hproj"));
+        var original = File.ReadAllText(Path.Combine(fixtures, "format6.hproj"));
 
         // Opened as the window opens a project: the mask it carries goes into the masks folder (the test's own), and is
         // carried again from there when it is written.
@@ -57,8 +58,8 @@ public static class ProjectTests
         Expect(problems, names is ["format", "version", "writtenBy", ..] && names[^1] == "timeline",
             $"what says which file it is comes first, and the timeline last ({string.Join(", ", names)})");
         Expect(problems, header["format"]?.GetValue<string>() == ProjectFile.FormatName, "the written file says it is a HandPeg project");
-        Expect(problems, header["version"]?.GetValue<int>() == 5 && header["version"]?.GetValue<int>() == ProjectFile.CurrentVersion,
-            $"the written file is format 5 (it says {header["version"]})");
+        Expect(problems, header["version"]?.GetValue<int>() == 6 && header["version"]?.GetValue<int>() == ProjectFile.CurrentVersion,
+            $"the written file is format 6 (it says {header["version"]})");
         Expect(problems, header["writtenBy"]?.GetValue<string>() == ProjectStore.WriterName, $"the written file names the HandPeg that wrote it ({header["writtenBy"]})");
 
         // Values that a careless writer loses: a setting written under an older name (VerticalFramer is the Layer Engine), a
@@ -66,6 +67,13 @@ public static class ProjectTests
         // In-Out, a keyframe's constructor default), an effect no version knows yet with a setting of its own, and a Custom
         // Bézier's handles.
         Expect(problems, first.Settings.FrameEngine, "the Layer Engine setting is read (VerticalFramer in the file)");
+
+        // Format 6: the blurred background is a layer of its own, kept together under sequence.background (its blur, passes,
+        // darkening, zoom and effects), and the settings written leave it out.
+        Expect(problems, first.Settings is { BlurRadius: 12.5, BlurPasses: 3, BackgroundDim: -0.2, BackgroundZoom: 1.25, BackgroundEffects: [{ Type: "builtin.look.vignette" }] },
+            "the background's blur, passes, darkening, zoom and effects are read from sequence.background");
+        Expect(problems, header["sequence"]?["background"]?["radius"]?.GetValue<double>() == 12.5 && header["settings"]?["blurRadius"] is null && header["settings"]?["backgroundZoom"] is null,
+            "written, the background is under sequence.background and not in the settings");
         var clips = header["timeline"]?["tracks"]?[1]?["clips"];
         var brightness = clips?[0]?["state"]?["effects"]?[0]?["keys"]?["brightness"]?.AsArray();
         Expect(problems, brightness is { Count: 2 } && brightness[0]?["easing"]?.GetValue<string>() == "EaseIn" && brightness[1]?["easing"]?.GetValue<string>() == "Linear",
@@ -104,13 +112,13 @@ public static class ProjectTests
         withOld["sequence"]!["deleted"]!.AsArray().Add(new JsonObject { ["layer"] = new JsonObject { ["name"] = "old" }, ["index"] = 2 });
         Expect(problems, ProjectStore.Deserialize(withOld.ToJsonString()).Deleted.Count == 1, "a recycle bin entry of 4.2.0's shape is left out");
 
-        return new GraphResult("hproj-format5-round-trip", "# The format 5 fixture (fixtures/format5.hproj) as this version writes it.\n\n" + Pretty(written), problems, 0);
+        return new GraphResult("hproj-format6-round-trip", "# The format 6 fixture (fixtures/format6.hproj) as this version writes it.\n\n" + Pretty(written), problems, 0);
     }
 
     private static GraphResult NewerFormat(string fixtures, string scratch)
     {
         var problems = new List<string>();
-        var fixture = File.ReadAllText(Path.Combine(fixtures, "format5.hproj"));
+        var fixture = File.ReadAllText(Path.Combine(fixtures, "format6.hproj"));
         var newer = JsonNode.Parse(fixture)!.AsObject();
         var newerVersion = ProjectFile.CurrentVersion + 1;
         newer["version"] = newerVersion;
@@ -210,8 +218,8 @@ public static class ProjectTests
         Refused("Words, not JSON.", "a text that is not JSON", "not a HandPeg project");
         Refused(OneX, "a HandPeg 1.x project (format 1, which names no format)", "not a HandPeg project");
 
-        // Formats 2 to 4 (HandPeg 2.0 to 4.2.0) are not converted: refused, the reason naming the format and the one opened.
-        foreach (var version in new[] { 2, 3, 4 })
+        // Formats 2 to 5 (HandPeg 2.0 to 4.4) are not converted: refused, the reason naming the format and the one opened.
+        foreach (var version in new[] { 2, 3, 4, 5 })
             Refused(Older(version), $"a format {version} project", $"format {version}", $"format {ProjectFile.CurrentVersion} projects only", "not converted");
 
         // What a file says it is is read before anything else of it: a format 4 file whose sequence this version could not read
@@ -219,14 +227,14 @@ public static class ProjectTests
         Refused(new JsonObject { ["format"] = ProjectFile.FormatName, ["version"] = 4, ["sequence"] = "not a sequence this version reads" }.ToJsonString(),
             "a format 4 file this version could not read", "format 4");
 
-        // A format 5 project keeps its tracks and clips in its timeline: one without is not a project.
-        Refused(new JsonObject { ["format"] = ProjectFile.FormatName, ["version"] = 5, ["writtenBy"] = "HandPeg 4.3.0", ["name"] = "No timeline" }.ToJsonString(),
-            "a format 5 project without a timeline", "no timeline");
-        Refused("{\"format\":\"handpeg-project\",\"version\":5,\"name\":\"Null timeline\",\"timeline\":null}", "a format 5 project whose timeline is null", "no timeline");
+        // A format 6 project keeps its tracks and clips in its timeline: one without is not a project.
+        Refused(new JsonObject { ["format"] = ProjectFile.FormatName, ["version"] = 6, ["writtenBy"] = "HandPeg 5.0.0", ["name"] = "No timeline" }.ToJsonString(),
+            "a format 6 project without a timeline", "no timeline");
+        Refused("{\"format\":\"handpeg-project\",\"version\":6,\"name\":\"Null timeline\",\"timeline\":null}", "a format 6 project whose timeline is null", "no timeline");
         Refused("{\"format\":\"handpeg-project\",\"name\":\"No number\",\"timeline\":{}}", "a project that does not say which format it is", "does not say which format");
 
-        Expect(problems, !ProjectStore.IsProject(JsonNode.Parse(Older(4))!.AsObject()), "the backup importer does not take a format 4 project as one");
-        Expect(problems, ProjectStore.IsProject(new JsonObject { ["format"] = ProjectFile.FormatName, ["version"] = 5 }), "it takes a format 5 project");
+        Expect(problems, !ProjectStore.IsProject(JsonNode.Parse(Older(5))!.AsObject()), "the backup importer does not take a format 5 project as one");
+        Expect(problems, ProjectStore.IsProject(new JsonObject { ["format"] = ProjectFile.FormatName, ["version"] = 6 }), "it takes a format 6 project");
 
         // Open Project, drops and the address box take .hproj files only: a .txt, even a HandPeg 1.x project, is not one.
         Directory.CreateDirectory(scratch);
@@ -236,6 +244,9 @@ public static class ProjectTests
         var there = Path.Combine(scratch, "there.hproj");
         File.WriteAllText(there, "{}");
         Expect(problems, ProjectStore.IsProjectFile(there) && !ProjectStore.IsProjectFile(Path.Combine(scratch, "not there.hproj")), "a .hproj that is there is one");
+        var bundle = Path.Combine(scratch, "there.hpb");
+        File.WriteAllText(bundle, "");
+        Expect(problems, ProjectStore.IsProjectFile(bundle) && !ProjectStore.IsProjectFile(Path.Combine(scratch, "not there.hpb")), "a project bundle (.hpb) that is there is one too");
 
         return new GraphResult("hproj-not-projects", "# Files that are not projects this version reads are refused with a reason.\n", problems, 0);
     }
@@ -248,7 +259,7 @@ public static class ProjectTests
     {
         var file = new JsonObject { ["format"] = ProjectFile.FormatName, ["version"] = version };
         if (version >= 3)
-            file["writtenBy"] = version == 3 ? "HandPeg 4.1.0" : "HandPeg 4.2.0";
+            file["writtenBy"] = version switch { 3 => "HandPeg 4.1.0", 4 => "HandPeg 4.2.0", _ => "HandPeg 4.4.0" };
         file["name"] = "Older";
         file["source"] = new JsonObject { ["path"] = "D:/media/main.mp4" };
         file["sequence"] = JsonNode.Parse(
@@ -505,6 +516,180 @@ public static class ProjectTests
         golden.Append("undo: ").AppendJoin("; ", (opened.UndoHistory ?? []).Select(s => s.What)).Append('\n');
         golden.Append("redo: ").AppendJoin("; ", (opened.RedoHistory ?? []).Select(s => s.What)).Append('\n');
         return new GraphResult("hproj-undo-history", golden.ToString(), problems, 0);
+    }
+
+    /// <summary>
+    /// Project bundles (.hpb, 5.0-Release): the format 6 fixture pointed at files made in the scratch folder (two of one name
+    /// in different folders, an earlier export where the output goes), packed, then unpacked into a folder beside the bundle:
+    /// every file the project reads went in under one entry each and came out byte for byte with its write time, the export
+    /// did not go in, nothing in the bundle names this PC's folders, the unpacked project reads the unpacked files; opened
+    /// again it finds its folder and keeps what was saved there; a changed bundle unpacks into a folder of its own; an entry
+    /// name that would leave the folder is not written; a newer bundle format is refused.
+    /// </summary>
+    private static GraphResult Bundle(string fixtures, string scratch)
+    {
+        var problems = new List<string>();
+        var root = Path.Combine(scratch, "bundle");
+        if (Directory.Exists(root))
+            Directory.Delete(root, recursive: true);
+        var media = Path.Combine(root, "source media");
+        Directory.CreateDirectory(Path.Combine(media, "other"));
+        Directory.CreateDirectory(Path.Combine(media, "out"));
+
+        // The fixture's files, made here (deterministic bytes; one of 5 MB, past the copy buffer), its clip2 one of clip1's name.
+        var files = new Dictionary<string, string>
+        {
+            ["D:/media/main.mp4"] = Path.Combine(media, "main.mp4"),
+            ["D:/media/outtake.mp4"] = Path.Combine(media, "outtake.mp4"),
+            ["D:/media/clip1.mp4"] = Path.Combine(media, "clip1.mp4"),
+            ["D:/media/clip2.mp4"] = Path.Combine(media, "other", "clip1.mp4"),
+            ["D:/media/music.m4a"] = Path.Combine(media, "music.m4a"),
+            ["D:/out/main_HandPeg.mp4"] = Path.Combine(media, "out", "main_HandPeg.mp4"),
+        };
+        var size = 0;
+        foreach (var (_, path) in files)
+        {
+            var bytes = new byte[size == 0 ? 5 << 20 : 4096 + size * 777];
+            new Random(size + 17).NextBytes(bytes);
+            File.WriteAllBytes(path, bytes);
+            File.SetLastWriteTimeUtc(path, new DateTime(2026, 10, 1, 12, 0, size, DateTimeKind.Utc));
+            size++;
+        }
+
+        var text = File.ReadAllText(Path.Combine(fixtures, "format6.hproj"));
+        foreach (var (from, to) in files)
+        {
+            text = text.Replace(from, to.Replace('\\', '/'), StringComparison.Ordinal)
+                .Replace(from.Replace("/", @"\\", StringComparison.Ordinal), to.Replace(@"\", @"\\", StringComparison.Ordinal), StringComparison.Ordinal);
+        }
+
+        var state = ProjectStore.Deserialize(text);
+        state.UndoHistory = [new UndoStepState("a step naming this PC's files", [1, 2, 3])];
+        state.ManualCommand = $"ffmpeg -i \"{files["D:/media/main.mp4"]}\" out.mp4";
+        var bundlePath = Path.Combine(root, "Test.hpb");
+        var (packed, missing) = ProjectBundle.Pack(state, bundlePath);
+        Expect(problems, packed == 5 && missing == 0, $"the five files the project reads went in, none missing ({packed}, {missing} missing)");
+
+        var golden = new System.Text.StringBuilder("# A project bundle (.hpb): what goes in, and the project's files named as its entries.\n\n");
+        using (var archive = System.IO.Compression.ZipFile.OpenRead(bundlePath))
+        {
+            foreach (var entry in archive.Entries.OrderBy(e => e.FullName, StringComparer.Ordinal))
+                golden.Append("entry: ").Append(entry.FullName).Append(entry.FullName.StartsWith("media/", StringComparison.Ordinal) ? $" ({entry.Length} bytes, stored {entry.CompressedLength == entry.Length})" : "").Append('\n');
+            var manifest = new StreamReader(archive.GetEntry("bundle.json")!.Open()).ReadToEnd();
+            var project = new StreamReader(archive.GetEntry("project.hproj")!.Open()).ReadToEnd();
+            var here = root.Replace('\\', '/');
+            Expect(problems, !manifest.Contains(":\\", StringComparison.Ordinal) && !manifest.Contains(":/", StringComparison.Ordinal), "bundle.json names no folder of this PC");
+            Expect(problems, !project.Contains(here, StringComparison.OrdinalIgnoreCase) && !project.Contains(root.Replace(@"\", @"\\", StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase),
+                "the bundled project names no folder of this PC");
+            var json = JsonNode.Parse(project)!.AsObject();
+            Expect(problems, json["undoHistory"] is null && json["undoFormat"] is null, "the undo history is left out (its packed steps name this PC's files)");
+            Expect(problems, json["output"]?["manualCommand"] is null, "a hand-edited command (naming this PC's files) is left out");
+            Expect(problems, json["version"]?.GetValue<int>() == ProjectFile.CurrentVersion, "the bundled project is format 6");
+            Expect(problems, archive.GetEntry("media/main_HandPeg.mp4") is null && json["output"]?["path"]?.GetValue<string>() == "main_HandPeg.mp4",
+                "the export did not go in, and its path is the file's name alone");
+            var named = new SortedSet<string>(StringComparer.Ordinal);
+            void Walk(JsonNode? node)
+            {
+                switch (node)
+                {
+                    case JsonObject o: foreach (var (_, v) in o) Walk(v); break;
+                    case JsonArray a: foreach (var v in a) Walk(v); break;
+                    case JsonValue v when v.TryGetValue<string>(out var s) && s.StartsWith("media/", StringComparison.Ordinal): named.Add(s); break;
+                }
+            }
+
+            Walk(json);
+            golden.Append("named in the project: ").AppendJoin(", ", named).Append('\n');
+            var manifestJson = JsonNode.Parse(manifest)!.AsObject();
+            golden.Append("bundle.json: format ").Append(manifestJson["format"]?.GetValue<string>()).Append(", version ").Append(manifestJson["version"]?.ToJsonString())
+                .Append(", ").Append(manifestJson["media"]?.AsArray().Count).Append(" media entries\n");
+        }
+
+        // Unpacked beside it, into a folder named after it: the project reads the unpacked files, each as it was.
+        var opened = ProjectBundle.Unpack(bundlePath);
+        var folder = Path.Combine(root, "Test");
+        Expect(problems, opened == Path.Combine(folder, "Test.hproj") && File.Exists(opened), $"the project is unpacked beside the bundle ({opened})");
+        var unpacked = ProjectStore.Load(opened, unpackMasks: false);
+        Expect(problems, unpacked.SourcePath == Path.Combine(folder, "media", "main.mp4"), $"the main video is the unpacked one ({unpacked.SourcePath})");
+        Expect(problems, unpacked.DestinationPath == Path.Combine(folder, "main_HandPeg.mp4"), $"the export goes beside the unpacked project ({unpacked.DestinationPath})");
+        var clipFiles = unpacked.Timeline.Tracks.SelectMany(t => t.Clips).Select(c => c.SourcePath ?? "").Where(p => p.Length > 0).Distinct().ToList();
+        Expect(problems, clipFiles.Count > 0 && clipFiles.All(p => p.StartsWith(Path.Combine(folder, "media"), StringComparison.OrdinalIgnoreCase) && File.Exists(p)),
+            $"every clip reads an unpacked file ({string.Join(", ", clipFiles)})");
+        foreach (var (from, original) in files.Where(f => !f.Key.StartsWith("D:/out", StringComparison.Ordinal)))
+        {
+            var name = from == "D:/media/clip2.mp4" ? "clip1 (2).mp4" : Path.GetFileName(original);
+            var copy = Path.Combine(folder, "media", name);
+            Expect(problems, File.Exists(copy) && File.ReadAllBytes(copy).AsSpan().SequenceEqual(File.ReadAllBytes(original))
+                             && File.GetLastWriteTimeUtc(copy) == File.GetLastWriteTimeUtc(original), $"{name} came out byte for byte, with its write time");
+        }
+
+        // Opened again: the same folder, and what the user saved there kept.
+        var edited = JsonNode.Parse(File.ReadAllText(opened))!.AsObject();
+        edited["name"] = "Saved after unpacking";
+        File.WriteAllText(opened, edited.ToJsonString());
+        Expect(problems, ProjectBundle.Unpack(bundlePath) == opened && ProjectStore.Load(opened, unpackMasks: false).Name == "Saved after unpacking",
+            "opened again, the bundle finds its folder and keeps the project saved there");
+
+        // A changed bundle: a folder of its own, never over the user's work.
+        File.SetLastWriteTimeUtc(files["D:/media/music.m4a"], new DateTime(2026, 10, 2, 0, 0, 0, DateTimeKind.Utc));
+        ProjectBundle.Pack(state, bundlePath);
+        var second = ProjectBundle.Unpack(bundlePath);
+        Expect(problems, second == Path.Combine(root, "Test (2)", "Test.hproj"), $"a changed bundle unpacks into a folder of its own ({second})");
+
+        // An entry name that would leave the folder is not written; a newer bundle format is refused.
+        var hostile = Path.Combine(root, "Hostile.hpb");
+        using (var archive = System.IO.Compression.ZipFile.Open(hostile, System.IO.Compression.ZipArchiveMode.Create))
+        {
+            void Put(string name, string content)
+            {
+                using var writer = new StreamWriter(archive.CreateEntry(name).Open());
+                writer.Write(content);
+            }
+
+            Put("bundle.json", """{"format":"handpeg-bundle","version":1,"project":"project.hproj","media":[{"entry":"media/../../escaped.bin","length":4,"written":0}]}""");
+            Put("project.hproj", text);
+            Put("media/../../escaped.bin", "evil");
+        }
+
+        ProjectBundle.Unpack(hostile);
+        Expect(problems, !File.Exists(Path.Combine(root, "escaped.bin")) && !File.Exists(Path.Combine(scratch, "escaped.bin")), "an entry that would leave the folder is not written");
+        // A manifest of another shape (no media list, an entry with no name): read as far as it goes, the project unpacked.
+        var odd = Path.Combine(root, "Odd.hpb");
+        using (var archive = System.IO.Compression.ZipFile.Open(odd, System.IO.Compression.ZipArchiveMode.Create))
+        {
+            using (var writer = new StreamWriter(archive.CreateEntry("bundle.json").Open()))
+                writer.Write("""{"format":"handpeg-bundle","version":1,"project":"project.hproj","media":[null,{"entry":null},{"entry":""}]}""");
+            using (var writer = new StreamWriter(archive.CreateEntry("project.hproj").Open()))
+                writer.Write(text);
+        }
+
+        try
+        {
+            Expect(problems, File.Exists(ProjectBundle.Unpack(odd)), "a manifest with odd media entries still unpacks its project");
+        }
+        catch (Exception ex)
+        {
+            problems.Add($"a manifest with odd media entries threw {ex.GetType().Name}: {ex.Message}");
+        }
+
+        var newer = Path.Combine(root, "Newer.hpb");
+        using (var archive = System.IO.Compression.ZipFile.Open(newer, System.IO.Compression.ZipArchiveMode.Create))
+        {
+            using var writer = new StreamWriter(archive.CreateEntry("bundle.json").Open());
+            writer.Write("""{"format":"handpeg-bundle","version":2,"writtenBy":"HandPeg 9.9.9","project":"project.hproj","media":[]}""");
+        }
+
+        try
+        {
+            ProjectBundle.Unpack(newer);
+            problems.Add("a bundle of a newer format was unpacked");
+        }
+        catch (InvalidDataException refused)
+        {
+            Expect(problems, refused.Message.Contains("HandPeg 9.9.9", StringComparison.Ordinal), $"the refusal names the HandPeg that made it: {refused.Message}");
+        }
+
+        return new GraphResult("hproj-bundle", golden.ToString(), problems, 0);
     }
 
     // ----- Comparing -----

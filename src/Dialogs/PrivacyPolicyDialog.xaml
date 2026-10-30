@@ -104,7 +104,7 @@
                         </DockPanel>
                         <DockPanel>
                             <TextBlock Text="&#xE73E;" Style="{StaticResource Mark}" Foreground="{DynamicResource AccentBrush}" />
-                            <TextBlock Style="{StaticResource Item}" Text="The versions of FFmpeg, libmpv, whisper.cpp and yt-dlp, and the memory HandPeg was using" />
+                            <TextBlock Style="{StaticResource Item}" Text="The versions of FFmpeg, whisper.cpp and yt-dlp, and the memory HandPeg was using" />
                         </DockPanel>
                         <DockPanel>
                             <TextBlock Text="&#xE73E;" Style="{StaticResource Mark}" Foreground="{DynamicResource AccentBrush}" />
@@ -120,7 +120,7 @@
                         </DockPanel>
                         <DockPanel>
                             <TextBlock Text="&#xE73E;" Style="{StaticResource Mark}" Foreground="{DynamicResource AccentBrush}" />
-                            <TextBlock Style="{StaticResource Item}" Text="For a crash in a library or a driver: the error code and the file it happened in, such as libmpv-2.dll" Margin="0" />
+                            <TextBlock Style="{StaticResource Item}" Text="For a crash in a library or a driver: the error code and the file it happened in, such as a graphics driver's" Margin="0" />
                         </DockPanel>
                     </StackPanel>
                 </Border>

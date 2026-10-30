@@ -4,84 +4,76 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// Proxies (see ProxyCache): which files on the timeline want one, the ones ready, and the making of the rest in the
-// background once HandPeg has been left alone for a while. Live Preview plays a file's proxy in its place as soon as
-// it is ready; exports never do. And the composed timeline proxy: the whole sequence as one video, when Settings
-// switches it on.
+// Proxies (see ProxyCache): the files whose clips asked for one (a clip's right-click Optimize Long-GOP Clip for
+// Scrubbing, ProxyChoice.Make), the ones ready, and the making of the rest in the background, as soon as nothing plays or
+// exports. Since 5.0-Verify (the user's Q6) the item is offered only where it helps (OptimizeIsUseful: a long-GOP file the
+// preview cannot decode fast, or Shift held), nothing is made by itself, and the proxy cache has no on/off switch. The GPU
+// preview reads a video layer's proxy in place of its file once it is made (GpuScenePlan, through PreviewPaths, which only
+// the preview's state reads: SequenceExportState.IsPreview); exports never do, and the sound always comes from the originals.
 public partial class MainViewModel
 {
     // Proxies made (this session or before) for files, by the file.
     private readonly Dictionary<string, string> _proxies = new(StringComparer.OrdinalIgnoreCase);
 
-    // The proxies Live Preview plays now: of files on the timeline whose clips do not say Use Original.
+    // The proxies the preview plays now: of the files whose clips asked for one, made.
     private Dictionary<string, string> _proxiesInUse = new(StringComparer.OrdinalIgnoreCase);
 
-    // Files waiting for a proxy, first first; and files already looked at for whether they are heavy.
+    // Files waiting for a proxy, first first.
     private readonly List<string> _proxyQueue = [];
-    private readonly HashSet<string> _proxyLooked = new(StringComparer.OrdinalIgnoreCase);
     private bool _baking;
-    private long _lastActivity = Environment.TickCount64;
 
     /// <summary>
-    /// Something heavy is going on (scrubbing, a drag of a clip, an edge or a box): proxies are made once that has stopped
-    /// a while. Ordinary pointer moves, clicks and keys are not reported (see the main window).
+    /// The main video's proxy when one of its clips asked for one and it is made (a project of before 5.0-Verify: the item is
+    /// not offered on the main video, whose proxy the GPU preview does not read yet); null for the original. Read by the
+    /// live graphs (the golden tests' and the A/V harness's) only.
     /// </summary>
-    public void NoteActivity() => _lastActivity = Environment.TickCount64;
-
-    /// <summary>
-    /// How long HandPeg waits after heavy activity before making proxies: the short wait when a graphics card other
-    /// than the player's does the work (it takes nothing from playback), the usual one otherwise.
-    /// </summary>
-    private static int ProxyIdleSeconds => GpuAdapters.HasSeparateBackgroundCard
-        ? Math.Clamp(AppSettings.Current.ProxyIdleSecondsWithBackgroundCard, 0, 3600)
-        : Math.Clamp(AppSettings.Current.ProxyIdleSeconds, 0, 3600);
-
-    private bool LeftAlone => Environment.TickCount64 - _lastActivity >= ProxyIdleSeconds * 1000L && !IsPlaying && !IsBusy;
-
-    /// <summary>The main video's proxy when the player plays it (Settings: proxies for the main video too); null for the original.</summary>
     private string? MainProxy => HasSource && _proxiesInUse.TryGetValue(LocalMediaPath.Trim().Trim('"'), out var proxy) ? proxy : null;
 
-    /// <summary>How tall the main video's proxy is, when the player plays it; 0 when it plays the original.</summary>
+    /// <summary>How tall the main video's proxy is, when there is one in use (see <see cref="MainProxy"/>); 0 otherwise.</summary>
     private int MainProxyHeight => MainProxy is null ? 0 : Math.Min(AppSettings.ProxyTiers.Contains(AppSettings.Current.ProxyTier) ? AppSettings.Current.ProxyTier : 540, SourceHeight > 0 ? SourceHeight : int.MaxValue);
 
-    /// <summary>The files that may have a proxy, and what their clips say about it (Use Original on any clip wins, then Make Proxy).</summary>
+    /// <summary>
+    /// The files that may have a proxy, and whether one was asked for (Optimize on any clip of the file: Make; Auto
+    /// otherwise; an older project's Use Original counts as Auto): the video layers' files, and the main video's when one of
+    /// its clips asked (see <see cref="MainProxy"/>).
+    /// </summary>
     private Dictionary<string, ProxyChoice> ProxyFiles()
     {
         var files = new Dictionary<string, ProxyChoice>(StringComparer.OrdinalIgnoreCase);
         void Add(string path, ProxyChoice choice)
         {
             path = path.Trim().Trim('"');
-            if (path.Length == 0)
-                return;
-
-            files[path] = !files.TryGetValue(path, out var had) ? choice
-                : had == ProxyChoice.Original || choice == ProxyChoice.Original ? ProxyChoice.Original
-                : had == ProxyChoice.Make || choice == ProxyChoice.Make ? ProxyChoice.Make
-                : ProxyChoice.Auto;
+            if (path.Length > 0 && (choice == ProxyChoice.Make || !files.ContainsKey(path)))
+                files[path] = choice == ProxyChoice.Make ? ProxyChoice.Make : ProxyChoice.Auto;
         }
 
         foreach (var layer in Layers.Where(l => l.IsVideoFile && !l.IsDeleted))
             Add(layer.ImagePath, layer.ProxyChoice);
-        if (HasSource && _mediaInfo is { Video: not null } && AppSettings.Current.ProxyScope == AppSettings.ProxyAllVideos)
-            Add(LocalMediaPath, MainLayer.ProxyChoice);
+        if (HasSource && _mediaInfo is { Video: not null })
+        {
+            foreach (var view in Layers.Where(l => l.IsMainVideo && !l.IsDeleted && l.ProxyChoice == ProxyChoice.Make))
+                Add(LocalMediaPath, view.ProxyChoice);
+        }
+
         return files;
     }
 
+    /// <summary>Whether a file's proxy was asked for on one of its clips (Optimize Long-GOP Clip for Scrubbing), not found heavy.</summary>
+    private bool ProxyAskedFor(string file) => ProxyFiles().TryGetValue(file, out var choice) && choice == ProxyChoice.Make;
+
     /// <summary>
-    /// Brings the proxies in line with the timeline: those ready are played, a file whose clips say Make Proxy is
-    /// queued, and a file not looked at yet is looked at (in the background) for whether it is heavy. Cheap: asked
-    /// after every change.
+    /// Brings the proxies in line with the timeline: those ready are played, and a file whose clips asked for one and has
+    /// none is queued. Cheap: asked after every change.
     /// </summary>
     private void RefreshProxies()
     {
         if (_isBackgroundWorker)
             return;
 
-        var settings = AppSettings.Current;
         var inUse = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (file, choice) in ProxyFiles())
         {
-            if (choice == ProxyChoice.Original || (!settings.VideoProxies && choice != ProxyChoice.Make))
+            if (choice != ProxyChoice.Make)
                 continue;
 
             // Made before (an earlier session, or for another clip of the file).
@@ -94,12 +86,9 @@ public partial class MainViewModel
                 continue;
             }
 
-            if (_proxyQueue.Contains(file, StringComparer.OrdinalIgnoreCase))
-                continue;
-            if (choice == ProxyChoice.Make)
+            // One that failed this session (a file FFmpeg cannot decode, a full drive) waits for the user to ask again.
+            if (!_proxyQueue.Contains(file, StringComparer.OrdinalIgnoreCase) && !_proxyFailed.Contains(file))
                 QueueProxy(file);
-            else if (_proxyLooked.Add(file))
-                _ = LookForHeavinessAsync(file);
         }
 
         if (inUse.Count != _proxiesInUse.Count || inUse.Any(p => !_proxiesInUse.TryGetValue(p.Key, out var had) || had != p.Value))
@@ -109,19 +98,22 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>The clip's right-click choice: a proxy when its file is heavy (Automatic), always (Make Proxy), or never (Use Original).</summary>
+    /// <summary>
+    /// The clip's right-click choice: Optimize Long-GOP Clip for Scrubbing (<see cref="ProxyChoice.Make"/>: a proxy made
+    /// now, which the preview plays in the file's place once it is ready), or not (Auto: the original).
+    /// </summary>
     public void SetProxyChoice(Layer clip, ProxyChoice choice)
     {
         if (clip.ProxyChoice == choice)
             return;
 
         clip.ProxyChoice = choice;
+        _proxyFailed.Clear();
         RefreshProxies();
         Log(choice switch
         {
-            ProxyChoice.Make => $"{clip.Name}: a proxy will be made, and played in its place",
-            ProxyChoice.Original => $"{clip.Name}: the original file is played",
-            _ => $"{clip.Name}: a proxy is made when its file is heavy",
+            ProxyChoice.Make => $"{clip.Name}: optimized for scrubbing: a proxy is made, which the preview plays in its place (exports read the original)",
+            _ => $"{clip.Name}: no longer optimized for scrubbing: the original file is played",
         });
     }
 
@@ -131,32 +123,87 @@ public partial class MainViewModel
         var file = clip.ImagePath.Trim().Trim('"');
         if (clip.IsMainVideo)
             file = LocalMediaPath.Trim().Trim('"');
-        return _proxiesInUse.ContainsKey(file) ? "Playing from its proxy"
-            : _proxyQueue.Contains(file, StringComparer.OrdinalIgnoreCase) ? "Proxy waiting to be made (once HandPeg is left alone)"
-            : clip.ProxyChoice == ProxyChoice.Original ? "Playing the original"
-            : !AppSettings.Current.VideoProxies && clip.ProxyChoice != ProxyChoice.Make ? "Proxies are off (Settings)"
-            : "No proxy: the file is not heavy";
+        return clip.ProxyChoice != ProxyChoice.Make ? "Not optimized: the preview plays the original"
+            : _proxiesInUse.ContainsKey(file) ? clip.IsMainVideo ? "Its proxy is made, but the preview plays the main video's original" : "Optimized: the preview plays its proxy"
+            : _proxyQueue.Contains(file, StringComparer.OrdinalIgnoreCase) ? "Its proxy is being made"
+            : _proxyFailed.Contains(file) ? "Its proxy could not be made (HandPeg.log says why)"
+            : "Its proxy is to be made";
     }
 
-    /// <summary>Looks at a file (its size, codec and I-frame interval), in the background, and queues it for a proxy when it is heavy.</summary>
-    private async Task LookForHeavinessAsync(string file)
+    // ----- When the item is offered (5.0-Verify, the user's Q6: hidden unless it is needed) -----
+
+    /// <summary>With no hardware benchmark of the preview's card: an exact frame that took the preview longer than this (its worst this session) counts as slow.</summary>
+    private const double SlowExactFrameMs = 250;
+
+    /// <summary>
+    /// Whether a clip's right-click menu offers Optimize Long-GOP Clip for Scrubbing: when the clip has it on (so that it can
+    /// be turned off); when Shift is held as the menu opens (<paramref name="asked"/>); or when a video layer's file is
+    /// long-GOP (its I-frames further apart than Settings' heavy interval) and the preview cannot decode it fast (see
+    /// <see cref="PreviewDecodesFast"/>). Never otherwise for the main video, whose proxy the GPU preview does not read yet.
+    /// </summary>
+    public bool OptimizeIsUseful(Layer clip, bool asked)
     {
-        try
-        {
-            var heavy = await WorkScheduler.Run(new WorkSpec($"Looking at {Path.GetFileName(file)}", WorkLane.Background) { Visible = false, Key = $"heavy|{file}" }, async work =>
-                File.Exists(file) && await MediaProbe.ProbeAsync(file, work.Token) is { } info
-                && ProxyCache.IsHeavy(info, await ProxyCache.IFrameIntervalAsync(file, work.Token)), _shutdown.Token);
-            if (heavy)
-                QueueProxy(file);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
-        {
-            AppLog.Write($"Proxy: {Path.GetFileName(file)} could not be looked at", ex);
-        }
+        if (clip.ProxyChoice == ProxyChoice.Make)
+            return true;
+        if (!clip.IsVideoFile)
+            return false;
+        if (asked)
+            return true;
+
+        var file = clip.ImagePath.Trim().Trim('"');
+        return IsLongGop(file) && !PreviewDecodesFast(file);
     }
+
+    /// <summary>Whether a file's I-frames (listed this session) lie further apart than Settings' heavy interval, at the median; false while they are not known.</summary>
+    private static bool IsLongGop(string file)
+    {
+        if (MediaProbe.KnownIFrames(file) is not { Length: >= 2 } times)
+            return false;
+
+        var gaps = new double[times.Length - 1];
+        for (var i = 1; i < times.Length; i++)
+            gaps[i - 1] = times[i] - times[i - 1];
+        Array.Sort(gaps);
+        return gaps[gaps.Length / 2] > Math.Max(AppSettings.Current.ProxyHeavyIFrameSeconds, 0.5);
+    }
+
+    /// <summary>
+    /// Whether the GPU preview decodes a file fast: hardware decoding is on, the preview does not run on the processor
+    /// (WARP), and its card has a hardware decoder for the file's codec (the hardware benchmark's list for that card, when it
+    /// was measured on these cards and drivers). Without such a benchmark, by how long an exact frame has taken the running
+    /// preview at worst (<see cref="SlowExactFrameMs"/>); fast while nothing says otherwise.
+    /// </summary>
+    private static bool PreviewDecodesFast(string file)
+    {
+        if (!AppSettings.Current.PlayerHardwareAcceleration)
+            return false;
+
+        var engine = GpuPreviewEngine.Current;
+        if (engine is not null && engine.Client.Memory.Control.IsSoftwareDevice != 0)
+            return false;
+
+        var card = engine?.Client.Memory.Control.AdapterIndex ?? AppSettings.Current.CompositorGpuAdapter;
+        if (HardwareBenchmarkService.LoadSaved() is { } benchmark && HardwareBenchmarkService.IsCurrent(benchmark)
+            && benchmark.Adapters.FirstOrDefault(a => a.Index == card) is { } measured)
+        {
+            return HardwareCodec(MediaProbe.KnownInfo(file)?.Video) is { } codec && measured.DecodeCodecs.Contains(codec);
+        }
+
+        return engine is null || engine.CacheStats.WorstExactLatencyMs <= SlowExactFrameMs;
+    }
+
+    /// <summary>The hardware benchmark's name for a video's codec (<see cref="HardwareBenchmarkAdapter.DecodeCodecs"/>); null for one no card decodes for the preview.</summary>
+    private static string? HardwareCodec(VideoStreamInfo? video) => video?.Codec switch
+    {
+        "h264" => "H.264",
+        "hevc" => video.PixelFormat.Contains("10", StringComparison.Ordinal) ? "HEVC 10-bit" : "HEVC",
+        "vp9" => "VP9",
+        "av1" => "AV1",
+        _ => null,
+    };
+
+    // Files whose proxy could not be made this session: not tried again until a clip's choice changes.
+    private readonly HashSet<string> _proxyFailed = new(StringComparer.OrdinalIgnoreCase);
 
     private void QueueProxy(string file)
     {
@@ -168,9 +215,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Makes the proxies waiting, one at a time, each once HandPeg has been left alone for the idle delay (no input,
-    /// not playing, nothing busy): background work, decoded and encoded on the background card where there is one.
-    /// Then the timeline proxy, when it is switched on and the timeline has none.
+    /// Makes the proxies waiting, one at a time, as soon as nothing plays or exports. Background work, decoded and encoded
+    /// on the background card where there is one.
     /// </summary>
     private async Task BakeProxiesAsync()
     {
@@ -180,37 +226,31 @@ public partial class MainViewModel
         _baking = true;
         try
         {
-            while (!_shutdown.IsCancellationRequested)
+            while (_proxyQueue.Count > 0 && !_shutdown.IsCancellationRequested)
             {
-                while (!LeftAlone)
+                var file = _proxyQueue[0];
+                while (IsPlaying || IsBusy)
                     await Task.Delay(1000, _shutdown.Token);
 
-                if (_proxyQueue.Count > 0)
+                // No longer on the timeline (another project was opened meanwhile), or no longer wanted: not made.
+                if (ProxyAskedFor(file))
                 {
-                    var file = _proxyQueue[0];
-
-                    // No longer on the timeline (another project was opened meanwhile): not made.
-                    if (ProxyFiles().ContainsKey(file))
-                    {
-                        var working = VideoEncoders.Where(e => e.IsHardware).Select(e => e.Name).ToList();
-                        var made = await WorkScheduler.Run(
-                            new WorkSpec($"Proxy of {Path.GetFileName(file)}", WorkLane.Background)
-                            {
-                                Key = $"proxy|{file}",
-                                SuspendWhilePlaying = AppSettings.Current.PauseProxiesWhilePlaying,
-                            },
-                            work => ProxyCache.MakeAsync(file, CurrentProjectPath, working, work), _shutdown.Token);
-                        if (made is not null)
-                            _proxies[file] = made;
-                    }
-
-                    _proxyQueue.Remove(file);
-                    RefreshProxies();
-                    continue;
+                    var working = VideoEncoders.Where(e => e.IsHardware).Select(e => e.Name).ToList();
+                    var made = await WorkScheduler.Run(
+                        new WorkSpec($"Proxy of {Path.GetFileName(file)}", WorkLane.Background)
+                        {
+                            Key = $"proxy|{file}",
+                            SuspendWhilePlaying = AppSettings.Current.PauseProxiesWhilePlaying,
+                        },
+                        work => ProxyCache.MakeAsync(file, CurrentProjectPath, working, work), _shutdown.Token);
+                    if (made is not null)
+                        _proxies[file] = made;
+                    else
+                        _proxyFailed.Add(file);
                 }
 
-                if (!await BakeTimelineProxyAsync())
-                    break;
+                _proxyQueue.Remove(file);
+                RefreshProxies();
             }
         }
         catch (OperationCanceledException)
@@ -224,82 +264,6 @@ public partial class MainViewModel
         {
             _baking = false;
         }
-    }
-
-    // ----- The composed timeline proxy -----
-
-    // The timeline proxy for the timeline as it is now, when there is one; dropped the moment anything changes.
-    private string? _timelineProxy;
-
-    // The fingerprint the timeline proxy was looked for (or made) under, so an unchanged timeline is not looked at again.
-    private string _timelineProxyLooked = "";
-
-    /// <summary>Whether the player plays the composed timeline proxy (the picture finished, only the sound mixed live).</summary>
-    public bool PlaysTimelineProxy => _timelineProxy is not null;
-
-    /// <summary>Something changed: the timeline proxy no longer shows the timeline, and the live graph takes over at once.</summary>
-    private void DropTimelineProxy()
-    {
-        _timelineProxyLooked = "";
-        if (_timelineProxy is null)
-            return;
-
-        _timelineProxy = null;
-        InvalidateLiveFilter();
-        _ = BakeProxiesAsync();
-    }
-
-    /// <summary>
-    /// What the timeline proxy is named after: the whole sequence's preview command (every filter, layer and file of
-    /// it) with each file's size and date, and the proxy settings. An unchanged timeline finds its proxy again.
-    /// </summary>
-    private string TimelineFingerprint()
-    {
-        var command = BuildPreviewCommand("timeline", [(0, SequenceSeconds)], TimelinePercent(), null);
-        var files = new[] { LocalMediaPath }.Concat(Layers.Where(l => l.IsVideoFile || l.IsImage).Select(l => l.ImagePath))
-            .Select(f => FileState.Get(f) is var state ? $"{f}|{state.Length}|{state.WrittenUtc.Ticks}" : f);
-        var text = string.Join("\n", files.Prepend(command).Append(ProxyCache.Kind));
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)), 0, 8).ToLowerInvariant();
-    }
-
-    /// <summary>The scale, in percent of the output, the timeline proxy is made at: the proxy height.</summary>
-    private int TimelinePercent()
-    {
-        var (_, height) = (FrameWidth, FrameHeight);
-        var tier = AppSettings.ProxyTiers.Contains(AppSettings.Current.ProxyTier) ? AppSettings.Current.ProxyTier : 540;
-        return height > 0 ? Math.Clamp((int)Math.Round(tier * 100.0 / height), 5, 100) : 50;
-    }
-
-    /// <summary>
-    /// Finds or makes the timeline proxy for the timeline as it is, when Settings switches it on. Returns whether there
-    /// may be more to do (false: nothing is to be made now).
-    /// </summary>
-    private async Task<bool> BakeTimelineProxyAsync()
-    {
-        if (!AppSettings.Current.TimelineProxy || !HasSource || !FrameEngine || SequenceSeconds <= 0.5 || _timelineProxy is not null)
-            return false;
-
-        var fingerprint = TimelineFingerprint();
-        if (fingerprint == _timelineProxyLooked)
-            return false;
-
-        _timelineProxyLooked = fingerprint;
-        var working = VideoEncoders.Where(e => e.IsHardware).Select(e => e.Name).ToList();
-        var seconds = SequenceSeconds;
-        var made = await WorkScheduler.Run(
-            new WorkSpec("Timeline proxy", WorkLane.Background) { Key = $"timeline|{fingerprint}", SuspendWhilePlaying = AppSettings.Current.PauseProxiesWhilePlaying },
-            work => ProxyCache.MakeTimelineAsync(LocalMediaPath, fingerprint, TimelinePercent(),
-                (output, percent, encode) => FilterGraphBuilder.BuildPreviewCommand(CompileExportState(), output, [(0, seconds)], percent, null, encode),
-                working, seconds, CurrentProjectPath, work), _shutdown.Token);
-
-        // Kept only if nothing changed while it was being made.
-        if (made is not null && _timelineProxyLooked == fingerprint)
-        {
-            _timelineProxy = made;
-            InvalidateLiveFilter();
-        }
-
-        return false;
     }
 
     /// <summary>Called when a project or a source is closed: its proxies go too, when Settings says so.</summary>

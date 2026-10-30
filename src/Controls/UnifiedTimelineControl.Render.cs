@@ -234,9 +234,11 @@ public sealed partial class UnifiedTimelineControl
         return null;
     }
 
-    // Whether a lane slides with what is sliding: its row is among those named, or (none named) its track is not locked.
+    // Whether a lane slides with what is sliding: its row is among those named, or (none named) its track is not locked. The
+    // blurred background never does (it lasts as long as the sequence), in a stack or not.
     private static bool Applies(in Lane lane, Shift shift) =>
-        shift.Rows is { } rows ? rows.Contains(lane.Row.Key) : (lane.Row.State & RowSwitches.Locked) == 0 && lane.Row.Kind != TimelineRowKind.Background;
+        lane.Row.Kind != TimelineRowKind.Background
+        && (shift.Rows is { } rows ? rows.Contains(lane.Row.Key) : (lane.Row.State & RowSwitches.Locked) == 0);
 
     // Where a block (or a pill, a stretch) starting at a laid-out x is while something slides: moved (Dx along), wiped in
     // (the stretch that came back), or where it is.
@@ -1006,13 +1008,22 @@ public sealed partial class UnifiedTimelineControl
                 drawing.DrawRectangle(accent, null, new Rect(0, lane.Top, 3, lane.Height));
 
             // The deck: a line down from the parent's chevron to each lane of its stack. The sound's stack, under the
-            // layers' when a row has both, hangs from the second chevron, its line passing beside the layers' lanes.
+            // layers' when a row has both, hangs from the second chevron, its line passing beside the layers' lanes. The
+            // lanes laid above their parent (in front of it, 5.0-Release) have it rising to them from the parent's top.
             if (lane.Depth > 0)
             {
                 var x = DeckX(lane.Depth) + (lane.SecondDeck ? ChevronStep : 0) + 0.5;
                 var middle = lane.Top + Math.Min(lane.Height / 2, 11);
-                var top = lane.SecondDeck && lane.FirstChild && lane.Parent >= 0 ? _lanes[lane.Parent].Bottom : lane.Top - LaneGap;
-                drawing.DrawLine(_deckPen, new Point(x, top), new Point(x, lane.LastChild ? middle : lane.Bottom + LaneGap));
+                if (lane.Above)
+                {
+                    drawing.DrawLine(_deckPen, new Point(x, lane.FirstChild ? middle : lane.Top - LaneGap), new Point(x, lane.Bottom + LaneGap));
+                }
+                else
+                {
+                    var top = lane.SecondDeck && lane.FirstChild && lane.Parent >= 0 ? _lanes[lane.Parent].Bottom : lane.Top - LaneGap;
+                    drawing.DrawLine(_deckPen, new Point(x, top), new Point(x, lane.LastChild ? middle : lane.Bottom + LaneGap));
+                }
+
                 drawing.DrawLine(_deckPen, new Point(x, middle), new Point(x + 7, middle));
             }
 
@@ -1160,7 +1171,8 @@ public sealed partial class UnifiedTimelineControl
             return;
 
         // The block being dragged (and, rolled, the one after it), drawn as it is now; half seen while it is over another
-        // row, which shows where it would go there: blue where it may, red where it may not.
+        // row, which shows where it would go there: blue where it may, red where it may not. The other blocks of a selected
+        // group dragged with it (5.0) are drawn with what it carries along, each outlined as selected.
         if (_drag is { } drag && LaneOf(drag.Row) is >= 0 and var dragLane)
         {
             // What it carries along first, each in its own lane (a collapsed one draws it plainly), every move (4.4
@@ -1169,8 +1181,9 @@ public sealed partial class UnifiedTimelineControl
             var seamGrowth = drag.Seam is { } growing ? growing.Seconds * scale : 0;
             foreach (var child in _coupled)
             {
+                // A caption its clip's trim has left outside it is not shown until it is let go (5.0).
                 var childIndex = LaneOf(child.Row);
-                if (childIndex < 0)
+                if (childIndex < 0 || child.How is Follows.Within or Follows.SlipWithin && child.Block.Width < 1)
                     continue;
 
                 var childLane = _lanes[childIndex];

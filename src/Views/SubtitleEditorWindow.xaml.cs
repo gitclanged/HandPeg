@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using HandPegApp.Models;
 using HandPegApp.Services;
@@ -11,36 +13,31 @@ using HandPegApp.ViewModels;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Subtitle Editor: the subtitle track's cues on a timeline of their own, with a small player that shows
-/// nothing but the subtitles. The player is the editor's own, a second libmpv playing a blank black picture
-/// the shape of the output frame, so retiming a cue is seen at once and costs none of what the main window's
-/// player, with its graph of layers, would. The main window is told where the editor's playhead is only once
-/// it has rested for half a second, and draws no subtitles of its own while the editor is open.
+/// The Subtitle Editor: the subtitle track's cues on a timeline of their own, with a small preview that shows
+/// nothing but the subtitles: a black picture the shape of the caption box with the cue that is up drawn on it by
+/// WPF (<see cref="SubtitlePreview"/>, 5.0-Verify; no player), so retiming a cue is seen at once and costs none of
+/// what the main window's player, with its layers, would. Play runs the editor's own clock. The main window is told
+/// where the editor's playhead is only once it has rested for half a second, and draws no subtitles of its own
+/// while the editor is open.
 /// </summary>
 public partial class SubtitleEditorWindow : Window
 {
     private readonly MainViewModel _viewModel;
     private readonly bool _images;
 
-    // The editor's player; null until it has started, and when libmpv is not there.
-    private MpvPlayer? _player;
     private bool _closed;
 
     // Tells the main window where the playhead is: restarted by every move, so it fires half a second after the last.
     private readonly DispatcherTimer _mainSync = new() { Interval = TimeSpan.FromMilliseconds(500) };
 
-    // Writes the subtitles for the editor's player again: at most every so often while a cue is dragged or typed in.
+    // Gives the preview the cues again: at most every so often while a cue is dragged or typed in.
     private readonly DispatcherTimer _previewRefresh = new() { Interval = TimeSpan.FromMilliseconds(60) };
 
-    // Sends the player where the playhead is, no more often than it can keep up with: a scrub is a stream of
-    // positions, and each seek asked for while the last is still being answered is one too many. The newest
-    // position waits here and is sent when the timer next fires; the ones in between are never sent at all.
-    private readonly DispatcherTimer _seekPace = new() { Interval = TimeSpan.FromMilliseconds(40) };
-    private long _seekWanted = -1, _seekSent = -1;
-    private readonly CancellationTokenSource _starting = new();
+    // The editor's clock while it plays: the playhead is where Play was pressed plus the time since (each frame drawn).
+    private readonly Stopwatch _clock = new();
+    private double _playFrom;
+    private bool _playing;
 
-    private string _previewFile = "";
-    private int _previewRun;
     private bool _showingCue;
     private bool _filling;
     private bool _edited;
@@ -103,18 +100,6 @@ public partial class SubtitleEditorWindow : Window
                 _viewModel.PositionMs = Math.Clamp(Timeline.PositionSeconds * 1000, 0, _viewModel.DurationMs);
         };
         _previewRefresh.Tick += (_, _) => RefreshPreviewNow();
-        _playCheck.Tick += PlayCheck_Tick;
-        _seekPace.Tick += (_, _) =>
-        {
-            if (_seekWanted == _seekSent)
-                _seekPace.Stop();
-            else
-                SendSeek();
-        };
-
-        // A picture track is retimed by writing its whole file out again, which is not done sixteen times a second.
-        if (_images)
-            _previewRefresh.Interval = TimeSpan.FromMilliseconds(400);
 
         Fill(OffsetBox, _viewModel.SubtitleOffsetMs.ToString("0", CultureInfo.InvariantCulture));
         (AddButton.IsEnabled, DeleteButton.IsEnabled) = (!_images, false);
@@ -126,188 +111,99 @@ public partial class SubtitleEditorWindow : Window
         UpdateSummary();
         UpdateTime();
 
-        Surface.SurfaceReady += () => _ = StartPlayerAsync();
-        Loaded += (_, _) => _ = StartPlayerAsync();
+        RefreshPreviewNow();
         Closed += (_, _) => Shutdown();
         PreviewKeyDown += OnPreviewKeyDown;
     }
 
     private double OffsetSeconds => double.IsFinite(_viewModel.SubtitleOffsetMs) ? _viewModel.SubtitleOffsetMs / 1000 : 0;
 
-    // ----- The player -----
+    // ----- The preview -----
 
-    private async Task StartPlayerAsync()
+    // While it plays, each frame drawn moves the playhead on by the clock; the end of the timeline stops it there.
+    private void OnRendering(object? sender, EventArgs e)
     {
-        if (_player is not null || _closed || Surface.SurfaceHandle == IntPtr.Zero)
-            return;
-
-        if (!MpvPlayer.IsInstalled)
+        var seconds = _playFrom + _clock.Elapsed.TotalSeconds;
+        if (seconds >= Timeline.DurationSeconds)
         {
-            PlayerNotice.Text = "The player (libmpv) is not installed, so there is no preview here. The timeline still works.";
-            PlayerNotice.Visibility = Visibility.Visible;
-            return;
+            seconds = Timeline.DurationSeconds;
+            SetPlaying(false);
         }
-
-        try
-        {
-            var surface = Surface.SurfaceHandle;
-            var player = await Task.Run(() => MpvPlayer.Create(surface, AppSettings.Current.PlayerHardwareAcceleration));
-            if (_closed || _player is not null)
-            {
-                player.Close();
-                return;
-            }
-
-            _player = player;
-            player.TimeChanged += time => Dispatcher.BeginInvoke(() => OnPlayerTime(time));
-            player.StateChanged += () => Dispatcher.BeginInvoke(() =>
-            {
-                PlayButton.Content = player.IsPlaying ? "" : "";
-
-                // Stopped by itself at the end: that is then the state in hand. (An "end" anywhere else is the
-                // player's passing mistake, which the check after a click puts right.)
-                if (player.IsEnded && AtEnd)
-                    _wantPlaying = false;
-            });
-
-            // The blank picture is made by the player itself. Should this libmpv not be able to, the reason is
-            // shown in place of the picture (the player's own window would otherwise cover it); the timeline still works.
-            var opened = false;
-            player.FileLoaded += () => opened = true;
-            player.ErrorLogged += message => Dispatcher.BeginInvoke(() =>
-            {
-                if (opened || _closed)
-                    return;
-
-                Surface.Visibility = Visibility.Collapsed;
-                PlayerNotice.Text = $"The preview could not be started: {message}";
-                PlayerNotice.Visibility = Visibility.Visible;
-            });
-            player.SetVolume(0);
-            player.FileLoaded += () => Dispatcher.BeginInvoke(() =>
-            {
-                // The file is open: the subtitles go onto it, the playhead may have moved meanwhile, and Play may
-                // have been pressed while it was still opening.
-                RefreshPreviewNow();
-                ApplyPlaying();
-                if (_seekWanted >= 0 && _seekWanted != _seekSent)
-                    SendSeek();
-            });
-
-            // A blank video in the shape of the output frame, as long as the timeline: all that is ever seen on it
-            // is the subtitles. A file, so that the player can be sent to any moment of it.
-            if (await _viewModel.PrepareSubtitleCanvasAsync(Timeline.DurationSeconds, _starting.Token) is not { } canvas)
-            {
-                Surface.Visibility = Visibility.Collapsed;
-                PlayerNotice.Text = "The preview could not be started: the blank video it plays could not be made (see HandPeg.log). The timeline still works.";
-                PlayerNotice.Visibility = Visibility.Visible;
-                return;
-            }
-
-            if (_closed)
-                return;
-
-            _seekSent = (long)(Timeline.PositionSeconds * 1000);
-            player.Open(canvas, _seekSent, paused: true);
-            RefreshPreviewNow();
-        }
-        catch (OperationCanceledException)
-        {
-            // Closed while it was starting.
-        }
-        catch (InvalidOperationException ex)
-        {
-            PlayerNotice.Text = $"The preview could not be started: {ex.Message}";
-            PlayerNotice.Visibility = Visibility.Visible;
-        }
-    }
-
-    private void OnPlayerTime(long milliseconds)
-    {
-        // While it plays the timeline follows it; paused, the timeline is what moves the player.
-        if (_player is not { IsPlaying: true })
-            return;
-
-        // In the moment after Play is pressed the player may name a time far from where it was started (the
-        // end of the file, in passing): the playhead does not follow it there.
-        var (seconds, since) = (milliseconds / 1000.0, (DateTime.UtcNow - _playAsked).TotalSeconds);
-        if (since < 1.5 && Math.Abs(seconds - _playFrom) > since + 1.0)
-            return;
 
         Timeline.PositionSeconds = seconds;
+        Preview.Time = seconds;
         UpdateTime();
         _mainSync.Stop();
         _mainSync.Start();
     }
 
-    /// <summary>Moves the playhead: the editor's own player at once, the main window when it has rested.</summary>
+    private void SetPlaying(bool playing)
+    {
+        if (playing == _playing || (playing && _closed))
+            return;
+
+        _playing = playing;
+        if (playing)
+        {
+            _playFrom = Timeline.PositionSeconds;
+            _clock.Restart();
+            CompositionTarget.Rendering += OnRendering;
+        }
+        else
+        {
+            _clock.Stop();
+            CompositionTarget.Rendering -= OnRendering;
+        }
+
+        PlayButton.Content = playing ? "\uE769" : "\uE768";
+    }
+
+    /// <summary>Moves the playhead: the editor's preview at once, the main window when it has rested.</summary>
     private void MoveTo(double seconds, bool fromTimeline = false)
     {
         if (!fromTimeline)
             Timeline.PositionSeconds = seconds;
-        _seekWanted = (long)Math.Max(Timeline.PositionSeconds * 1000, 0);
-        if (!_seekPace.IsEnabled)
+
+        // Playing, the clock runs on from the new moment.
+        if (_playing)
         {
-            // The first of a run goes at once; the rest are paced.
-            SendSeek();
-            _seekPace.Start();
+            _playFrom = Timeline.PositionSeconds;
+            _clock.Restart();
         }
 
+        Preview.Time = Timeline.PositionSeconds;
         UpdateTime();
         _mainSync.Stop();
         _mainSync.Start();
     }
 
-    private void SendSeek()
-    {
-        // Not while the file is still being opened: it opens at the position it was given, and a seek sent
-        // into a file that is not there yet is what leaves a player with nothing to show.
-        if (_player is not { IsLoading: false } player || _closed)
-            return;
-
-        _seekSent = _seekWanted;
-        player.Seek(_seekSent, exact: true);
-    }
-
-    /// <summary>Writes the track as it is now and has the editor's player draw it. A new file each time: the player loads a file again only when its name has changed.</summary>
+    /// <summary>Gives the preview the track as it is now.</summary>
     private void RefreshPreviewNow()
     {
         _previewRefresh.Stop();
-        if (_player is not { } player)
+        if (_closed)
             return;
 
-        try
+        var box = _viewModel.SubtitleFrameSize;
+        if (_images)
         {
-            var path = _viewModel.WriteSubtitlePreview($"subtitle_editor_{++_previewRun}") ?? "";
-            player.SetSubtitleFile(path);
+            Preview.ShowPictures(_viewModel.SubtitleCues.Select(c => (c.Start + OffsetSeconds, c.End + OffsetSeconds)).OrderBy(c => c.Item1).ToList(), box);
+        }
+        else
+        {
+            var (lines, style, textScale) = _viewModel.SubtitleEditorCaptions();
+            Preview.ShowCaptions(lines, style, textScale, box);
+        }
 
-            // The player read the earlier file whole when it was given it, so that one can go; an imported file is never one of these.
-            var before = _previewFile;
-            _previewFile = path;
-            if (before.Length > 0 && before != path && Path.GetFileName(before).StartsWith("subtitle", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(before, _viewModel.SubtitleSourcePath, StringComparison.OrdinalIgnoreCase))
-            {
-                File.Delete(before);
-                if (Path.GetExtension(before).Equals(".idx", StringComparison.OrdinalIgnoreCase))
-                    File.Delete(Path.ChangeExtension(before, ".sub"));
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // The picture is a moment behind; the next change writes it again.
-        }
+        Preview.Time = Timeline.PositionSeconds;
     }
 
     private void Shutdown()
     {
+        SetPlaying(false);
         _closed = true;
         _mainSync.Stop();
         _previewRefresh.Stop();
-        _seekPace.Stop();
-        _playCheck.Stop();
-        _starting.Cancel();
-        _player?.Close();
-        _player = null;
 
         // What the debounce had not yet passed on.
         _viewModel.CommitSubtitleEdits();
@@ -431,65 +327,15 @@ public partial class SubtitleEditorWindow : Window
 
     private void Play_Click(object sender, RoutedEventArgs e)
     {
-        if (_player is not { } player)
-            return;
-
-        // What is wanted is kept here, and not read back from the player: its word on whether it is playing
-        // arrives a moment after the fact (and after a run of seeks it can be a seek behind), and a click
-        // decided on a stale word asked for the state the player was already in, which did nothing.
-        _wantPlaying = !_wantPlaying;
-        // Play with the playhead at the end of the timeline starts again from the beginning. (The editor opens
-        // where the main window's playhead is, which is often the end; the player does not call itself
-        // "ended" until it has been run into the end once, so asking it is not enough: started there, it
-        // stopped at once, and Play seemed to do nothing until it was pressed a second time.)
-        if (_wantPlaying && (player.IsEnded || AtEnd))
-        {
-            Timeline.PositionSeconds = 0;
-            player.Seek(0, exact: true);
-            UpdateTime();
-        }
-
-        (_playFrom, _playAsked) = (Timeline.PositionSeconds, DateTime.UtcNow);
-        ApplyPlaying();
-        _playCheck.Stop();
-        _playChecks = 0;
-        _playCheck.Start();
+        // Play with the playhead at the end of the timeline starts again from the beginning (the editor opens where the
+        // main window's playhead is, which is often the end).
+        if (!_playing && AtEnd)
+            MoveTo(0);
+        SetPlaying(!_playing);
     }
 
-    // Whether the playhead really is at the end of the timeline: only then is "ended" the end.
+    // Whether the playhead is at the end of the timeline, where Play starts again from the beginning.
     private bool AtEnd => Timeline.PositionSeconds >= Timeline.DurationSeconds - 0.5;
-
-    // Where the playhead was, and when, the last time Play was pressed.
-    private double _playFrom;
-    private DateTime _playAsked;
-
-    private bool _wantPlaying;
-    private int _playChecks;
-    private readonly DispatcherTimer _playCheck = new() { Interval = TimeSpan.FromMilliseconds(180) };
-
-    private void ApplyPlaying()
-    {
-        // A file still being opened is given the state when it is ready (see FileLoaded).
-        if (_player is { IsLoading: false } player && !_closed)
-            player.SetPause(!_wantPlaying);
-    }
-
-    // Looked at a few times after a click: should the player not have done as it was asked, it is asked again.
-    private void PlayCheck_Tick(object? sender, EventArgs e)
-    {
-        if (_player is not { } player || _closed || ++_playChecks > 6 || player.IsPlaying == _wantPlaying || (_wantPlaying && player.IsEnded && AtEnd))
-        {
-            _playCheck.Stop();
-            return;
-        }
-
-        // Started straight after a run of seeks, the player can report the end of the file for a moment and
-        // stop itself there, though the playhead is nowhere near the end. It is put back where the playhead
-        // was when Play was pressed, and started again.
-        if (_wantPlaying)
-            player.Seek((long)Math.Max(_playFrom * 1000, 0), exact: true);
-        ApplyPlaying();
-    }
 
     private void Previous_Click(object sender, RoutedEventArgs e) => Step(-1);
 

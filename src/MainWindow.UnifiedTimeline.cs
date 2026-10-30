@@ -83,6 +83,14 @@ public partial class MainWindow
         surface.SeamClicked += Timeline_SeamClicked;
         surface.CloseGapRequested += Timeline_CloseGapRequested;
         surface.RazorRequested += Timeline_RazorRequested;
+
+        // 5.0: clips selected together (a click let go decides what a Ctrl / Shift press on a selected clip does; a group's
+        // drag is one step of Undo), and the moment under the pointer over the ruler told as the rows' is (Instant Seek).
+        surface.BlockClicked += Timeline_BlockClicked;
+        surface.HeaderClicked += Timeline_HeaderClicked;
+        surface.Together = _viewModel.EditTogether;
+        _viewModel.ClipSelectionChanged += ClipGroup_Changed;
+        pane.Ruler.PointerSecondsChanged += surface.NotePointerOverRuler;
         RegisterTimelineChrome(pane.Ruler, pane.TimeScroll, pane.ZoomSlider);
         HookTimelineMenuKey(this);
 
@@ -263,16 +271,23 @@ public partial class MainWindow
                 rows.Add(captionRow);
         }
 
+        // The blurred background is made of the main video's frames: in its stack, beside its HUD cut-outs, masks and captions
+        // (5.0-Verify, the user's bug 4). A row of the view only: it is the sequence's setting, no clip, and nothing links it.
+        if (backgroundRow is not null && mainRow is not null)
+            Adopt(mainRow, backgroundRow);
+
         rows.AddRange(pictures.Where(p => p.Row.Parent is null).Select(p => p.Row));
-        if (backgroundRow is not null)
+        if (backgroundRow is { Parent: null })
             rows.Add(backgroundRow);
         rows.AddRange(sounds.Where(s => s.Row.Parent is null).Select(s => s.Row));
         if (mainRow is null)
             rows.AddRange(streams);
 
         // Each row's stack in its two parts, each opened by itself: its layers (the captions first, as they are drawn in
-        // front of everything, then the tracks made to go with it) and under them its sound's lanes.
+        // front of everything, then the tracks made to go with it, and last the blurred background under them all) and under
+        // them its sound's lanes.
         OrderStacks(rows);
+        MarkInFront(rows);
         _rowByTrack = byTrack;
 
         // The seams of folded dead air, on the row of the track each was folded at, with the rows that slide with each
@@ -330,7 +345,8 @@ public partial class MainWindow
             parent.Children.Add(child);
         }
 
-        // Every stack laid as its two parts, in the order they were taken in within each (a stable order, never a sort).
+        // Every stack laid as its two parts, in the order they were taken in within each (a stable order, never a sort); among
+        // the layers the captions first and the blurred background last.
         static void OrderStacks(List<TimelineRow> rows)
         {
             foreach (var row in rows)
@@ -338,7 +354,8 @@ public partial class MainWindow
                 if (row.Children.Count == 0)
                     continue;
 
-                var ordered = row.Children.OrderBy(static child => child.Stack == ChildStack.Audio ? 2 : child.Kind == TimelineRowKind.Captions ? 0 : 1).ToList();
+                var ordered = row.Children.OrderBy(static child => child.Stack == ChildStack.Audio ? 3
+                    : child.Kind == TimelineRowKind.Captions ? 0 : child.Kind == TimelineRowKind.Background ? 2 : 1).ToList();
                 row.Children.Clear();
                 row.Children.AddRange(ordered);
                 OrderStacks(row.Children);
@@ -356,6 +373,36 @@ public partial class MainWindow
 
             return false;
         }
+
+        // Which children of each stack of layers are drawn in front of their parent, by the very order the compositor draws
+        // in (5.0-Release, the user's directive 4): a track over its parent's in the stacking order (a cut-out over the
+        // video; one moved behind it, in the 3D view or by Send Backward, is under it), the captions over everything, the
+        // blurred background under everything. Open, the surface lays those in front above the parent's row.
+        void MarkInFront(List<TimelineRow> level)
+        {
+            foreach (var row in level)
+            {
+                if (row.Children.Count == 0)
+                    continue;
+
+                var parentPlace = StackPlaceOf(row);
+                foreach (var child in row.Children)
+                {
+                    child.InFront = child.Stack == ChildStack.Visual && child.Kind switch
+                    {
+                        TimelineRowKind.Captions => true,
+                        TimelineRowKind.Background => false,
+                        _ => StackPlaceOf(child) is >= 0 and var place && parentPlace >= 0 && place > parentPlace,
+                    };
+                }
+
+                MarkInFront(row.Children);
+            }
+        }
+
+        // A track's row's place in the stacking order (Document.Tracks, bottom first); -1 for a row that is no track's.
+        int StackPlaceOf(TimelineRow row) =>
+            row.Data is Layer layer && _viewModel.TrackOfRow(layer) is { } track ? _viewModel.Document.Tracks.IndexOf(track) : -1;
     }
 
     /// <summary>A track's row (a picture's, the main video's, an empty one, a sound clip's), with its clips and, while any of them is unlinked from its sound, that sound's lane in its stack.</summary>
@@ -483,13 +530,16 @@ public partial class MainWindow
             Accent = MainUnderBrush,
             Offered = RowSwitches.Hidden,
             State = background.IsHidden ? RowSwitches.Hidden : RowSwitches.None,
-            Tip = "The blurred background, under everything: shown wherever the pictures leave the frame uncovered. Click it for its blur.",
+            Tip = "The blurred background, made of the main video's frames and under everything: shown wherever the pictures leave the frame uncovered. In the main video's stack. Click it for its blur.",
         };
         BuildRowBlocks(row, scale, seconds);
         return row;
     }
 
-    /// <summary>The keys of a row and of every row in its stack, at any depth: what slides with a fold made on its track.</summary>
+    /// <summary>
+    /// The keys of a row and of every row in its stack, at any depth: what slides with a fold made on its track. Never the
+    /// blurred background's (in the main video's stack since 5.0-Verify): it lasts as long as the sequence, whatever is folded.
+    /// </summary>
     private static List<object> RowKeysOf(TimelineRow row)
     {
         var keys = new List<object>();
@@ -498,7 +548,8 @@ public partial class MainWindow
 
         void Collect(TimelineRow at)
         {
-            keys.Add(at.Key);
+            if (at.Kind != TimelineRowKind.Background)
+                keys.Add(at.Key);
             foreach (var child in at.Children)
                 Collect(child);
         }
@@ -755,8 +806,19 @@ public partial class MainWindow
 
     // A drag on the timeline ended (4.4 BugHunt): the rows are laid out again from the timeline at once, so what it drew
     // moved is what the timeline is (the edit made, refused with the model's reason in the status bar, or failed).
+    // A row's name clicked (5.0-Verify): the captions' and the background's rows are one thing each, selected by it as a
+    // click on their blocks selects them (their place, size and style, or the blur, in the inspector).
+    private void Timeline_HeaderClicked(TimelineRow row)
+    {
+        if (row.Data is Layer { IsCaptions: true } or Layer { IsBackground: true })
+            SelectClip(row.Data);
+    }
+
     private void Timeline_DragEnded()
     {
+        // What the press left to its click is decided by now (a click was told before the drag's end): a drag that moved
+        // leaves none to fire on a later click (5.0-Verify).
+        _clickGesture = null;
         _rowsStale = true;
         FlushClipRedraw();
     }
@@ -781,6 +843,11 @@ public partial class MainWindow
         };
         if (_selectedClip is null)
             _mainClipSelected = false;
+
+        // Clips selected together follow theirs the same way (5.0); where the range began, too.
+        _viewModel.RemapClipSelection();
+        _rangeAnchor = _rangeAnchor is { ClipId: var anchorId } && anchorId != Guid.Empty ? ViewOfClip(anchorId) : null;
+        _clickGesture = null;
 
         ScheduleClipRedraw();
     }
@@ -920,6 +987,11 @@ public partial class MainWindow
             case Layer { IsBackground: true } layer:
                 (background, name) = (_viewModel, layer.Name);
                 break;
+
+            // The captions (5.0-Verify): their box's place and size, Properties (their position and look) and Caption Style.
+            case Layer { IsCaptions: true } captions:
+                (picture, name) = (captions, "Captions");
+                break;
             case Layer layer when _viewModel.Layers.Contains(layer):
                 name = layer.Name;
                 if (layer.IsAudio)
@@ -941,6 +1013,10 @@ public partial class MainWindow
                 (sound, name) = (audio.Track, audio.Track.Title);
                 break;
         }
+
+        // One of clips selected together (5.0): the inspector edits it alone, and says how many more there are.
+        if (GroupHolds && _viewModel.SelectedClips.Count > 1)
+            name = string.Create(CultureInfo.InvariantCulture, $"{name} (+{_viewModel.SelectedClips.Count - 1} selected)");
 
         UnifiedTimeline.Inspect(name, picture, sound, background);
     }

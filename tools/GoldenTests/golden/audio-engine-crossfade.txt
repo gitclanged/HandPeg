@@ -1,0 +1,2 @@
+# A crossfade on one track keeps the level (the two fades sum to one), as LayOverAcrossCut lays it.
+0.25 to 7.75 s every 50 ms: the level stays 0.5 within 0.002, through the crossfade from 3.5 to 4.5 s

@@ -70,6 +70,10 @@ public partial class MainViewModel
         foreach (var lut in SequenceEffects.Where(e => e.Type == Models.Effects.EffectRegistry.Lut))
             Note(lut.GetText("file"));
 
+        // The blurred background's own cards (5.0-Release): its LUT files too, or neither renderer draws them.
+        foreach (var lut in _backgroundRow.Effects.Where(e => e.Type == Models.Effects.EffectRegistry.Lut))
+            Note(lut.GetText("file"));
+
         // Where each video layer's picture starts in its file, so the builder can seek in it (see MediaStarts).
         // And where their I-frames are, so a live graph opens each exactly at one (see SeekIndexes).
         var starts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -135,6 +139,8 @@ public partial class MainViewModel
             BlurRadius = BlurRadius,
             BlurPasses = BlurPasses,
             BackgroundDim = BackgroundDim,
+            BackgroundZoom = BackgroundZoom,
+            BackgroundEffects = _backgroundRow.EffectsBypassed ? [] : CaptureBackgroundEffects() ?? [],
             CaptionLayer = caption,
             AutoCaptions = AutoCaptions,
             CaptionsFilePath = CaptionsFilePath,
@@ -284,42 +290,74 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The filter graph Live Preview runs on the picture, for mpv's lavfi-complex; empty when the export would
-    /// not filter the picture at all (Copy), which is then what the preview shows too. It holds what is on screen
-    /// around the playhead (<paramref name="videoFromMs"/>), and says when it is to be built again while playing.
+    /// The state the export's command is made from, for <see cref="RunExportAsync"/> to try the GPU with (Start Encode and
+    /// its software retry): null when the GPU does not render exports, the command was edited by hand, or in a background
+    /// worker (which only queues).
     /// </summary>
-    /// <param name="surfaceWidth">Width of the player on screen, in screen pixels: the picture is not built larger than it is shown.</param>
-    /// <param name="audioFromMs">
-    /// Where playback starts from, for the sound of the layers to be mixed into what is heard from there on;
-    /// null while nothing is playing, and the graph then has no sound in it. See <see cref="FilterGraphBuilder.BuildLiveGraph"/>.
-    /// </param>
-    /// <param name="videoFromMs">The playhead the graph is built for: where the player is, or is about to be sent.</param>
-    /// <param name="layers">How the video layers are shown: live, or as one frame each while scrubbing.</param>
-    public LiveGraph BuildLiveFilterGraph(double surfaceWidth, double surfaceHeight, long? audioFromMs, long videoFromMs, LiveLayerMode layers, bool draftEffects = false) =>
-        FilterGraphBuilder.BuildLiveGraph(Soloed(_liveState ??= CompileExportState()), new LiveGraphRequest
-        {
-            SurfaceWidth = surfaceWidth,
-            SurfaceHeight = surfaceHeight,
-            AudioFrom = audioFromMs / 1000.0,
-            MainAudioTrack = _mediaInfo is { Audio.Count: 0 } ? -1 : 0,
-            VideoFrom = videoFromMs / 1000.0,
-            Layers = layers,
-            DecodeThreads = LiveDecodeThreads,
-            PictureIsComposed = PlaysTimelineProxy,
-            DraftEffects = draftEffects,
-        });
-
-    // The state the last live graph was built from. A live graph is built for every seek (it belongs to its
-    // moment), and the state is the same for all of them until something changes: it is gathered again only
-    // then (every change raises LiveFilterInvalidated, which drops it).
-    private SequenceExportState? _liveState;
+    private SequenceExportState? ExportStateForGpu() =>
+        !AppSettings.Current.WantsGpuExport || IsCommandManuallyEdited || _isBackgroundWorker ? null : CompileExportState();
 
     /// <summary>
-    /// Threads each video layer's decoder may use inside the player: a quarter of the processor, at least two.
-    /// The player decodes the main video on the graphics card; several layers at once would otherwise each take
-    /// every core, and fight the interface for them.
+    /// Runs an export's command (Start Encode and its software retry, RunEncodeAsync; each queued job, StartQueueAsync), 5.0:
+    /// with <see cref="AppSettings.ExportRenderer"/> on the GPU and a <paramref name="state"/> that makes this very command
+    /// (BuildExportCommand(state) is it: not edited by hand, nor changed by the hardware fallback, since), the GPU compositor
+    /// draws the frames and FFmpeg encodes them with the command's own sound, captions and subtitles (GpuExport; the user's
+    /// call, 5.0-Verify Q5: queued jobs too). An export it cannot draw, and any GPU export that fails before or while it
+    /// renders, FFmpeg's graph makes, from the beginning, with the command as it stands (a hardware encoder that fails there
+    /// is the caller's to retry in software).
     /// </summary>
-    private static readonly int LiveDecodeThreads = Math.Max(2, Environment.ProcessorCount / 4);
+    /// <param name="state">The state the command was made from (the settings' now, or a queued job's snapshot); null for FFmpeg only.</param>
+    private async Task RunExportAsync(string command, SequenceExportState? state, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
+    {
+        if (AppSettings.Current.WantsGpuExport && state is not null)
+        {
+            try
+            {
+                var built = FilterGraphBuilder.BuildExportCommand(state);
+                if (!string.Equals(built.CommandLine, command, StringComparison.Ordinal))
+                {
+                    AppLog.Write("GPU export: the command to run is not the one its state makes; FFmpeg runs it as it stands.");
+                }
+                else
+                {
+                    // The settings' own chapters list, as it stands now (the GPU command reads the same one); a queued
+                    // job reads the copy it was given when it was queued, which nothing rewrites.
+                    if (built.UsesChaptersFile && string.Equals(state.ChaptersFilePath, ChaptersFilePath, StringComparison.OrdinalIgnoreCase))
+                        WriteChaptersFile(built.UsesCutsFile);
+                    if (await GpuExport.TryRunAsync(state, progress, cancellationToken))
+                    {
+                        CrashReporter.Note("export", "rendered on the GPU compositor");
+                        return;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                AppLog.Write("GPU export failed; FFmpeg's graph makes the export instead", ex);
+                CrashReporter.Note("export", "GPU render failed, FFmpeg's graph used: " + ex.GetType().Name);
+                StatusText = "The GPU export failed: FFmpeg renders it instead...";
+                ProgressValue = 0;
+                IsProgressIndeterminate = true;
+            }
+        }
+
+        await FfmpegRunner.RunAsync(command, progress, cancellationToken, graphInFile: true);
+    }
+
+    /// <summary>
+    /// The sequence as the GPU preview engine draws and plays it (5.0): the state gathered once per change (see
+    /// <see cref="_liveState"/>), with the soloed tracks applied; the preview's own (<see cref="SequenceExportState.IsPreview"/>:
+    /// its video layers read their proxies where they asked for one).
+    /// </summary>
+    public SequenceExportState LivePreviewState() => Soloed((_liveState ??= CompileExportState()) with { IsPreview = true });
+
+    // The state the GPU engine was last given. It is the same for every scene and every seek until something changes: it
+    // is gathered again only then (every change raises LiveFilterInvalidated, which drops it).
+    private SequenceExportState? _liveState;
 
     /// <summary>Render Preview's command: a short, small encode of the given stretches of the timeline.</summary>
     private string BuildPreviewCommand(string outputPath, List<(double Start, double End)> ranges, int percent, string? captionsPath) =>
@@ -439,6 +477,7 @@ public partial class MainViewModel
                 EncoderFamily.Qsv => constant ? $"-b:v {bitrate}k -maxrate {bitrate}k" : $"-b:v {bitrate}k",
                 EncoderFamily.Amf => constant ? $"-rc cbr -b:v {bitrate}k" : $"-rc vbr_peak -b:v {bitrate}k",
                 EncoderFamily.Nvenc => constant ? $"-rc cbr -b:v {bitrate}k" : $"-rc vbr -b:v {bitrate}k",
+                EncoderFamily.MediaFoundation => MediaFoundationEncoder.BitrateArguments(bitrate, constant),
                 _ => constant ? $"-b:v {bitrate}k -maxrate {bitrate}k -bufsize {bitrate * 2}k" : $"-b:v {bitrate}k",
             });
         }
@@ -453,6 +492,7 @@ public partial class MainViewModel
                 // ICQ is asked for by "-global_quality" with no bitrate beside it, and starts at 1.
                 EncoderFamily.Qsv => QsvIcq ? $"-global_quality {Math.Max(Crf, 1)}" : $"-q:v {Crf}",
                 EncoderFamily.Amf => $"-rc cqp -qp_i {Crf} -qp_p {Crf}",
+                EncoderFamily.MediaFoundation => MediaFoundationEncoder.QualityArguments(Crf),
                 _ when encoder == "libvpx-vp9" => $"-crf {Crf} -b:v 0",
                 _ => $"-crf {Crf}",
             });
@@ -464,6 +504,8 @@ public partial class MainViewModel
             parts.Add($"-usage {VendorToken(AmfUsage)}");
         else if (VideoEncoder.Family == EncoderFamily.Qsv)
             parts.AddRange(BuildQsvArguments());
+        else if (VideoEncoder.Family == EncoderFamily.MediaFoundation)
+            parts.Add(MediaFoundationEncoder.HardwareOnlyArgument);
 
         // Hardware encoders are particular about the pixel format they are handed; 4:2:0 is the one they all take,
         // in 8 bits or, where 10-bit is ticked and the card can, in 10. A software encoder takes what the

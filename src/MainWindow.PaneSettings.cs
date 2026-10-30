@@ -102,12 +102,9 @@ public partial class MainWindow
                     Save(s => s.ShowMotionPath = on);
                     RefreshMotionPath();
                 }, "Draws the selected layer's path between its position keyframes.");
-                Choice("Layers While Scrubbing", AppSettings.ScrubLayerChoices.Select(c => (c, c)), settings.LayersWhileScrubbing,
-                    choice => Save(s => s.LayersWhileScrubbing = choice), "What the layers do while the playhead is dragged: play live, hold a still frame, or hide.");
                 break;
 
             default:
-                Toggle("Draft Scrub", settings.DraftScrubSkipHeavyEffects, on => Save(s => s.DraftScrubSkipHeavyEffects = on), "While scrubbing, the heaviest effects are left out of the preview so it keeps up; the export always has them.");
                 Toggle("Value Graph", _viewModel.ShowKeyframeGraph, on => _viewModel.ShowKeyframeGraph = on, "Draws each keyframe lane's values as a curve.");
                 Toggle("Key Changed Only", _viewModel.KeyChangedOnly, on => _viewModel.KeyChangedOnly = on, "A new keyframe is put only on the values that changed, not on every value of the layer.");
                 break;

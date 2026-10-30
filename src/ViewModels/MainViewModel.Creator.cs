@@ -4,6 +4,7 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using HandPegApp.Models;
+using HandPegApp.Models.Effects;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
 
@@ -307,13 +308,37 @@ public partial class MainViewModel
     /// <summary>Moves the sharp video up (negative) or down, as a percentage of the frame height.</summary>
     [ObservableProperty] private double _centerOffsetY;
 
-    // The blurred background: how far the blur reaches, how often it is applied, and how much it is darkened.
-    [ObservableProperty] private int _blurRadius = 20;
-    [ObservableProperty] private int _blurPasses = 2;
-    [ObservableProperty] private double _backgroundDim = -0.15;
+    // The blurred background (the main video's video-only child, BackgroundLayer): how far the blur reaches in pixels of the
+    // frame (5.0-Release: 0, sharp, to 64, continuously), how often it is applied (1 to 4), how much it is darkened, and how
+    // much it is enlarged about its middle (1 just covers the frame). Its own effects are BackgroundLayer.Effects.
+    public const double DefaultBlurRadius = 20, DefaultBackgroundDim = -0.15, MostBackgroundZoom = 4;
+    public const int DefaultBlurPasses = 2, MostBlurPasses = 4;
+
+    [ObservableProperty] private double _blurRadius = DefaultBlurRadius;
+    [ObservableProperty] private int _blurPasses = DefaultBlurPasses;
+    [ObservableProperty] private double _backgroundDim = DefaultBackgroundDim;
+    [ObservableProperty] private double _backgroundZoom = 1;
+
+    partial void OnBlurRadiusChanged(double value)
+    {
+        if (!double.IsFinite(value) || value < 0 || value > EffectRegistry.BackgroundMostRadius)
+            BlurRadius = double.IsFinite(value) ? Math.Clamp(value, 0, EffectRegistry.BackgroundMostRadius) : DefaultBlurRadius;
+    }
+
+    partial void OnBlurPassesChanged(int value)
+    {
+        if (value is < 1 or > MostBlurPasses)
+            BlurPasses = Math.Clamp(value, 1, MostBlurPasses);
+    }
+
+    partial void OnBackgroundZoomChanged(double value)
+    {
+        if (!double.IsFinite(value) || value < 1 || value > MostBackgroundZoom)
+            BackgroundZoom = double.IsFinite(value) ? Math.Clamp(value, 1, MostBackgroundZoom) : 1;
+    }
 
     [RelayCommand]
-    private void ResetBlurSettings() => (BlurRadius, BlurPasses, BackgroundDim) = (20, 2, -0.15);
+    private void ResetBlurSettings() => (BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom) = (DefaultBlurRadius, DefaultBlurPasses, DefaultBackgroundDim, 1);
 
     /// <summary>The main video back to filling the frame's width, in its middle: every clip of it (4.4: each has a place of its own).</summary>
     [RelayCommand]
@@ -935,7 +960,9 @@ public partial class MainViewModel
     /// <summary>Raised when something about the layers has changed that their time bars may have to be drawn again for.</summary>
     public event Action? TimelineChanged;
 
-    // The blurred background is the sequence's, not a clip's: its row stands for it.
+    // The blurred background (5.0-Release): the main video's video-only child in its visual stack, always behind it and
+    // everything. The sequence's, not a clip of the document: its row stands for it, and it carries its own effect stack
+    // (Look cards only); its blur and zoom are the view model's (BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom).
     private readonly Layer _backgroundRow = new() { Kind = LayerKind.Background, Name = "Background Blur" };
 
     /// <summary>The pictures, bottom first: every clip's view on the picture tracks, the main video's among them. Sounds have no place in it.</summary>
@@ -1635,8 +1662,6 @@ public partial class MainViewModel
                 return problem;
         }
 
-        var command = BuildPreviewCommand(path, ranges, settings.PreviewResolutionPercent, captionsPath);
-
         IsProgressIndeterminate = true;
         StatusText = "Rendering preview...";
         var expected = TimeSpan.FromSeconds(Math.Max(ranges.Sum(r => r.End - r.Start), 0.1));
@@ -1649,12 +1674,54 @@ public partial class MainViewModel
             }
         });
 
+        // On the GPU compositor first, as the export is (the user's call, 5.0-Verify Q5): the same frames, the sound engine's
+        // sound; FFmpeg's graph when it cannot draw this stretch, or fails at it.
+        if (await TryRenderPreviewOnGpuAsync(path, ranges[0], settings.PreviewResolutionPercent, captionsPath, progress, cancellationToken))
+        {
+            PreviewRendered?.Invoke(path);
+            return $"Preview rendered: {seconds} s from {TimeDisplay.Format(start)} at {settings.PreviewResolutionPercent}% size.";
+        }
+
+        var command = BuildPreviewCommand(path, ranges, settings.PreviewResolutionPercent, captionsPath);
         await FfmpegRunner.RunAsync(command, progress, cancellationToken, graphInFile: true);
         PreviewRendered?.Invoke(path);
         return ranges.Count > 1
             ? $"Preview rendered: {ranges.Sum(r => r.End - r.Start):0.#} s across {ranges.Count} cut segments, from {TimeDisplay.Format(start)}, at {settings.PreviewResolutionPercent}% size."
             : $"Preview rendered: {seconds} s from {TimeDisplay.Format(start)} at {settings.PreviewResolutionPercent}% size.";
     });
+
+    /// <summary>
+    /// Render Preview's stretch on the GPU compositor (GpuExport.TryRunPreviewAsync) when the GPU renders exports: true when
+    /// it was made; false when it was not tried, or could not draw it, or failed (logged), FFmpeg's graph then making it.
+    /// </summary>
+    private async Task<bool> TryRenderPreviewOnGpuAsync(string path, (double Start, double End) range, int percent, string? captionsPath,
+        IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
+    {
+        if (!AppSettings.Current.WantsGpuExport)
+            return false;
+        try
+        {
+            if (await GpuExport.TryRunPreviewAsync(CompileExportState(), path, range.Start, range.End, percent, captionsPath, progress, cancellationToken))
+            {
+                CrashReporter.Note("preview", "rendered on the GPU compositor");
+                return true;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("GPU preview failed; FFmpeg's graph renders it instead", ex);
+            CrashReporter.Note("preview", "GPU render failed, FFmpeg's graph used: " + ex.GetType().Name);
+            StatusText = "The GPU preview failed: FFmpeg renders it instead...";
+            ProgressValue = 0;
+            IsProgressIndeterminate = true;
+        }
+
+        return false;
+    }
 
     // ----- Interface settings -----
 
@@ -1675,10 +1742,32 @@ public partial class MainViewModel
     // The file the sheet up now was made of.
     private string? _spriteSource;
 
-    /// <summary>Builds the hover-preview sheet in the background. Does nothing when the setting is off.</summary>
+    // The GPU engine could not draw the sequence's own Overview Bar pictures this session: the main file's key frames stand in.
+    private bool _sourceThumbnails;
+
+    /// <summary>
+    /// The Overview Bar's pictures cannot be the sequence's (GpuProgramStrip gave up): the main file's key frames are made
+    /// instead, now and for every file opened after.
+    /// </summary>
+    public void UseSourceThumbnails()
+    {
+        _sourceThumbnails = true;
+        if (HasSource && LocalMediaPath is { Length: > 0 } path)
+            _ = GenerateSpriteSheetAsync(path);
+    }
+
+    /// <summary>
+    /// Builds the hover-preview sheet of the main file's key frames in the background: only where the GPU engine does not
+    /// draw the sequence's own (<see cref="GpuProgramStrip"/>), and not while the setting is off.
+    /// </summary>
     private async Task GenerateSpriteSheetAsync(string videoPath)
     {
         _spriteCancellation?.Cancel();
+        if (GpuProgramStrip.IsWanted && !_sourceThumbnails)
+        {
+            (SpriteSheetPath, _spriteSource) = (null, null);
+            return;
+        }
 
         // The sheet up stays until the new one is ready when it is of the same file (made again at another spacing, or the
         // file opened again): the strip along the timeline never blinks out. A sheet of another file goes at once.

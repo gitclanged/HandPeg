@@ -1,6 +1,5 @@
 using System.ComponentModel;
 using System.IO;
-using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
@@ -17,26 +16,19 @@ public partial class MainViewModel
     // clips on it like any other: one to begin with, more once it has been split, each moved, trimmed and deleted on its
     // own. Everything on the timeline is in the sequence's time.
 
-    // The length of the main video's file as the player reported it, for a file that could not be inspected.
-    private double _playerMediaSeconds;
-
-    /// <summary>How long the main video's file is, in seconds; 0 while that is not known.</summary>
-    private double MainMediaSeconds => _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : _playerMediaSeconds;
-
     /// <summary>
-    /// The player says how long what it opened is. Only needed for a file that could not be inspected: its length is
-    /// then known, and the main video is put on the timeline for it.
+    /// How long the main video's file is, in seconds: as its probe says, else (a recording never finished: its recorder
+    /// stopped mid-write, and nothing says how long it is) to one GOP past its last I-frame once they are listed; 0 while
+    /// neither is known.
     /// </summary>
-    /// <param name="isFile">Whether it is playing the main video's file as it is, not the sequence built around it.</param>
-    public void ReportPlayerDuration(double seconds, bool isFile)
-    {
-        if (_mediaInfo?.DurationSeconds > 0 || !isFile || seconds <= 0 || Math.Abs(seconds - _playerMediaSeconds) < 0.001)
-            return;
+    private double MainMediaSeconds => _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : UnfinishedFileSeconds();
 
-        _playerMediaSeconds = seconds;
-        if (!MainVideoClips().Any())
-            PlaceMainVideo();
-        GenerateCommand();
+    private double UnfinishedFileSeconds()
+    {
+        if (_mediaInfo is null || _sourceIFrames.Count < 2)
+            return 0;
+        var gop = (_sourceIFrames[^1] - _sourceIFrames[0]) / (_sourceIFrames.Count - 1);
+        return Math.Max(_sourceIFrames[^1] - _mediaInfo.ContainerStartSeconds + gop, 0);
     }
 
     // The I-frames of the main video's file, and how its clips lay when they were last put along the sequence.
@@ -77,6 +69,11 @@ public partial class MainViewModel
     private void SetSourceIFrames(List<double> iFrames)
     {
         _sourceIFrames = iFrames;
+
+        // A file with no length of its own gets its clip now that its I-frames say how long it is.
+        if (iFrames.Count > 1 && HasSource && !(_mediaInfo?.DurationSeconds > 0) && !MainVideoClips().Any())
+            PlaceMainVideo();
+
         _iFrameLayout = GetMainLayout();
         if (IsMainWholeSequence || iFrames.Count == 0)
         {
@@ -404,6 +401,9 @@ public partial class MainViewModel
 
     partial void OnKeyLayerChanged(Layer? value)
     {
+        // Another clip to work on (a selection, a layer just added): the Effects pane leaves the blurred background for it.
+        if (value is not null)
+            BackgroundSelected = false;
         OnPropertyChanged(nameof(ActiveKeyLayer));
         OnPropertyChanged(nameof(SelectedTextLayer));
         OnPropertyChanged(nameof(IsTextLayerSelected));
@@ -814,147 +814,4 @@ public partial class MainViewModel
         layer.ClearKeys();
         Log($"Cleared the keyframes of {layer.Name}");
     }
-
-
-    // ----- What the player plays -----
-
-    /// <summary>
-    /// What the player opens: the main video's file while that is the whole sequence, and otherwise the
-    /// sequence written out for it (mpv's EDL), clip after clip, so that its clock is the sequence's. Where
-    /// no clip of the main video is, the clock still needs frames to run on: stretches of a tiny black file
-    /// stand in (see <see cref="StandInClock"/>), with as many silent audio tracks as the main video has, so
-    /// that nothing of the main video is decoded where it is not on screen. Until that file has been made,
-    /// stretches of the main video's own file stand in, and Live Preview leaves their picture out.
-    ///
-    /// When the picture comes from a proxy (the composed timeline proxy, or the main video's own: see
-    /// MainViewModel.Proxies), the EDL has two streams: the first the proxy's picture, laid out the same way
-    /// (with a picture-only clock between clips), the second the sequence as above, for its sound. The player's
-    /// [vid1] is then the proxy and its [aidN] the original's tracks.
-    /// </summary>
-    public string PlayerSource
-    {
-        get
-        {
-            var path = LocalMediaPath;
-            if (!HasSource)
-                return path;
-
-            var sound = SequenceParts(path, 0, StandInClock(), withMainSound: true);
-            if (_timelineProxy is { } timeline)
-                return $"edl://!new_stream;{EdlName(timeline)};!new_stream;{sound ?? EdlName(path)}";
-
-            // The original's clips are placed by the original's time stamps; the main video's proxy has its own clock, its first
-            // frame being the original's (FFmpeg moves the time stamps when it makes one): the clips' offsets are moved by as much.
-            if (MainProxy is { } proxy && (IsMainWholeSequence || StandInClock(withSound: false) is not null))
-            {
-                var shift = (_mediaInfo?.VideoStartSeconds ?? 0) - (MediaProbe.KnownVideoStart(proxy) ?? 0);
-                var picture = IsMainWholeSequence ? EdlName(proxy) : SequenceParts(proxy, shift, StandInClock(withSound: false), withMainSound: false);
-                return $"edl://!new_stream;{picture};!new_stream;{sound ?? EdlName(path)}";
-            }
-
-            return sound is null ? path : "edl://" + sound;
-        }
-    }
-
-    private static string EdlName(string path) => $"%{Encoding.UTF8.GetByteCount(path)}%{path}";
-
-    /// <summary>
-    /// The sequence as parts of an EDL: each clip of the main video, from <paramref name="file"/> (its clip offsets
-    /// less <paramref name="origin"/>), and stand-in stretches between them; null when the main video is the whole
-    /// sequence (the file is played as it is).
-    /// </summary>
-    /// <param name="clock">The stand-in clock, when it has been made; until then the main video's own file stands in.</param>
-    private string? SequenceParts(string file, double origin, string? clock, bool withMainSound)
-    {
-        if (IsMainWholeSequence)
-            return null;
-
-        var name = EdlName(file);
-        var parts = new StringBuilder();
-        void Part(string source, double start, double length) => parts.Append(parts.Length > 0 ? ";" : "").Append(source).Append(",start=").Append(Number(start)).Append(",length=").Append(Number(length));
-
-        var (standInName, standInLength) = clock is null ? (EdlName(LocalMediaPath), MainMediaSeconds) : (EdlName(clock), ClockSeconds);
-        void StandIn(double seconds)
-        {
-            for (; seconds > 0.001; seconds -= standInLength)
-                Part(standInName, 0, Math.Min(seconds, standInLength));
-        }
-
-        var reached = 0.0;
-        foreach (var clip in GetMainClips())
-        {
-            StandIn(clip.Start - reached);
-            Part(name, Math.Max(clip.Offset - origin, 0), clip.End - clip.Start);
-            reached = clip.End;
-        }
-
-        StandIn(SequenceSeconds - reached);
-        // Nothing on the timeline at all: the file is played as it is.
-        return parts.Length > 0 ? parts.ToString() : null;
-    }
-
-    // ----- The stand-in clock -----
-    // Where the main video is not on the sequence, the player still plays something, whose frames are the clock
-    // Live Preview composes on. It used to be stretches of the main video's own file: a 1440p60 recording decoded
-    // (and copied back from the graphics card) for half an hour of nothing. It is now a black file 64 by 36
-    // pixels, at the main video's frame rate, with one silent track for each of its audio tracks so that the
-    // graph's [aidN] are there throughout; made once by FFmpeg and kept with the caches.
-
-    /// <summary>How long the clock file is: one stretch of it serves ten minutes of the sequence.</summary>
-    private const double ClockSeconds = 600;
-
-    private readonly HashSet<string> _clocksReady = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _clocksBeingMade = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// The clock file for the main video as it is, when it has been made; null while it is being made (which
-    /// this starts, and the player is given the sequence again when it is done) or when it cannot be.
-    /// </summary>
-    /// <param name="withSound">With a silent track for each of the main video's audio tracks; without, picture only (for an EDL whose sound comes from a stream of its own).</param>
-    private string? StandInClock(bool withSound = true)
-    {
-        if (_mediaInfo is not { Video: not null } info || _isBackgroundWorker)
-            return null;
-
-        var rate = info.Video.FrameRate is > 1 and < 1000 and var r ? r : 30;
-        var tracks = withSound ? info.Audio.Select(a => ClockLayout(a.Channels)).ToList() : [];
-        var layouts = string.Join("-", tracks);
-        var key = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"clock_{rate:0.###}_{(layouts.Length > 0 ? layouts : "silent")}_v1.mkv");
-        var path = Path.Combine(AppPaths.Cache, "clock", key);
-        if (_clocksReady.Contains(path))
-            return path;
-
-        if (_clocksBeingMade.Add(path))
-        {
-            _ = Task.Run(async () =>
-            {
-                var made = File.Exists(path) || await WorkScheduler.Run(new WorkSpec("Making the player's stand-in clock", WorkLane.Interactive) { Visible = false },
-                    work => FfmpegRunner.MakeClockFileAsync(path, rate, tracks, ClockSeconds, work.Token), _shutdown.Token);
-                System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
-                {
-                    _clocksBeingMade.Remove(path);
-                    if (!made)
-                        return;
-
-                    _clocksReady.Add(path);
-                    GenerateCommand();
-                });
-            });
-        }
-
-        return null;
-    }
-
-    /// <summary>The channel layout a silent track is made with, for a track of the main video with this many channels.</summary>
-    private static string ClockLayout(int channels) => channels switch
-    {
-        1 => "mono",
-        6 => "5.1",
-        8 => "7.1",
-        _ => "stereo",
-    };
-
-    /// <summary>The audio filter that goes with <see cref="PlayerSource"/>: silence where the main video is not there. Empty for none.</summary>
-    public string PlayerAudioFilter =>
-        !HasSource || IsMainWholeSequence ? "" : $"lavfi=[volume=0:enable='not({FilterGraphBuilder.BuildMainGate(Lowering.MainHeard, 0, SequenceSeconds)})']";
 }
