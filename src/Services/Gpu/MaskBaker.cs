@@ -21,7 +21,8 @@ public readonly record struct MaskRecipe(
     /// <summary>The recipe's content hash, with the file's size and last write (a mask drawn again is a new mask).</summary>
     public long ContentHash()
     {
-        var file = FileState.Get(Path);
+        // A drawn mask's key is its outlines' hash already: there is no file to ask about.
+        var file = MaskStore.IsDrawn(Path) ? default : FileState.Get(Path);
         return default(GpuHash).Add("mask").Add(Path).Add(file.Length).Add(file.WrittenUtc.Ticks).Add(FromAlpha).Add(Width).Add(Height)
             .Add(Cut.X).Add(Cut.Y).Add(Cut.Width).Add(Cut.Height).Add(Invert).Add(Grow).Add(OffsetX).Add(OffsetY).Add(BlurRadius).Value;
     }
@@ -47,18 +48,30 @@ public static class MaskBaker
     public static byte[]? Bake(in MaskRecipe recipe)
     {
         var (width, height) = (Math.Clamp(recipe.Width, 1, 16384), Math.Clamp(recipe.Height, 1, 16384));
-        if (ReadGrey(recipe.Path, recipe.FromAlpha) is not { } picture)
-            return null;
+        float[] mask;
+        if (MaskStore.IsDrawn(recipe.Path))
+        {
+            // A drawn mask (5.1-Release): its outlines filled in memory, the part under the layer at exactly the layer's size.
+            if (MaskStore.Rasterize(recipe.Path, recipe.Cut, width, height) is not { } drawn)
+                return null;
+            mask = drawn;
+        }
+        else
+        {
+            if (ReadGrey(recipe.Path, recipe.FromAlpha) is not { } picture)
+                return null;
 
-        var (grey, sourceWidth, sourceHeight) = picture;
+            var (grey, sourceWidth, sourceHeight) = picture;
 
-        // The part under the layer (crop: x and y truncated, each side at least a pixel).
-        var cutX = Math.Clamp((int)(sourceWidth * Math.Clamp(recipe.Cut.X, 0, 1)), 0, sourceWidth - 1);
-        var cutY = Math.Clamp((int)(sourceHeight * Math.Clamp(recipe.Cut.Y, 0, 1)), 0, sourceHeight - 1);
-        var cutWidth = Math.Clamp((int)(sourceWidth * Math.Clamp(recipe.Cut.Width, 0, 1)), 1, sourceWidth - cutX);
-        var cutHeight = Math.Clamp((int)(sourceHeight * Math.Clamp(recipe.Cut.Height, 0, 1)), 1, sourceHeight - cutY);
+            // The part under the layer (crop: x and y truncated, each side at least a pixel).
+            var cutX = Math.Clamp((int)(sourceWidth * Math.Clamp(recipe.Cut.X, 0, 1)), 0, sourceWidth - 1);
+            var cutY = Math.Clamp((int)(sourceHeight * Math.Clamp(recipe.Cut.Y, 0, 1)), 0, sourceHeight - 1);
+            var cutWidth = Math.Clamp((int)(sourceWidth * Math.Clamp(recipe.Cut.Width, 0, 1)), 1, sourceWidth - cutX);
+            var cutHeight = Math.Clamp((int)(sourceHeight * Math.Clamp(recipe.Cut.Height, 0, 1)), 1, sourceHeight - cutY);
 
-        var mask = Resample(grey, sourceWidth, cutX, cutY, cutWidth, cutHeight, width, height);
+            mask = Resample(grey, sourceWidth, cutX, cutY, cutWidth, cutHeight, width, height);
+        }
+
         if (recipe.Invert)
         {
             for (var i = 0; i < mask.Length; i++)

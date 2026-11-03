@@ -102,29 +102,14 @@ public partial class LayerToolDialog : Window
         return Math.Abs((double)width / height / ((double)sourceWidth / sourceHeight) - 1) < 0.03;
     }
 
-    // Draw Custom Shape: the outlines become a mask of the whole frame, drawn into the masks folder.
+    // Draw Custom Shape: the outlines become a mask of the whole frame, kept as the outlines alone (no picture file: 5.1-Release).
     private void DrawShape_Click(object sender, RoutedEventArgs e)
     {
         var window = new MaskDrawWindow(_viewModel, _layer) { Owner = this };
-        if (window.ShowDialog() != true)
+        if (window.ShowDialog() != true || MaskStore.DrawnKey(window.Shapes).Length == 0)
             return;
 
-        var (width, height) = MaskStore.SizeFor(_viewModel.SourceWidth, _viewModel.SourceHeight);
-        string? path;
-        try
-        {
-            path = MaskStore.Render(window.Shapes, width, height);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _viewModel.StatusText = $"The mask could not be drawn: {ex.Message}";
-            return;
-        }
-
-        if (path is null)
-            return;
-
-        (_layer.CustomMask, _layer.MaskPath, _layer.MaskFrame, _layer.MaskShapes) = (true, path, true, window.Shapes);
+        (_layer.CustomMask, _layer.MaskPath, _layer.MaskFrame, _layer.MaskShapes) = (true, "", true, window.Shapes);
         if (window.ForAllLayers)
             ShareMask();
     }

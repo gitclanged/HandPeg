@@ -29,8 +29,8 @@ Cutout Studio to draw your own game's HUD pieces down to the pixel and save them
 clip, so every clip can have its own; game-engine shaders (Motion Blur with a real shutter, Halation, Neon Rim, Frosted
 Glass, Shockwave, Anamorphic Lens and 3D VFX drop-ins) and a 3D Fly-In + Shockwave macro; the 3D view's Studio Stage;
 one lane per sound track of a recording; crossfade boxes, per-track heights and a seven-group right-click menu; captions
-you can place anywhere in the layer stack; native 1:1 pixel UI with its own scale; and zero-install portable zips for x64
-and ARM64 that run without .NET installed.
+you can place anywhere in the layer stack; drawn masks kept as pure outlines; native 1:1 pixel UI with its own scale; and
+6 MB portable zips for x64 and ARM64 with a one-click, no-admin .NET helper for PCs that have none.
 
 ## What it does
 - **One multi-track timeline:** video, image, text and audio layers with a live preview of the finished picture and
@@ -82,11 +82,14 @@ starting workspace, downloads the tools HandPeg uses (FFmpeg, yt-dlp and, if you
 builds tested with this version, and measures your graphics cards and their hardware encoders.
 
 - **Installer:** Windows 10 or 11 (x64) with the .NET 8 Desktop Runtime. HandPeg updates itself from the Releases page.
-- **Zero-install portable zips:** `HandPeg-<version>-win-x64-Portable.zip` and, for Windows on ARM,
-  `HandPeg-<version>-win-arm64.zip` (native ARM64, with the ARM64 builds of its engines) carry their own .NET runtime:
-  unzip and run, with nothing installed. Everything they write (settings, projects, caches, downloaded tools) stays in the
-  `portable` folder beside `HandPeg.exe`, so the whole folder can live on a USB drive. A portable copy is updated by
-  unzipping a newer one and moving the `portable` folder across.
+- **Portable zips (about 6 MB):** `HandPeg-<version>-win-x64-Portable.zip` and, for Windows on ARM,
+  `HandPeg-<version>-win-arm64-Portable.zip` (native ARM64, with the ARM64 builds of its engines). Unzip and run. On a PC
+  without .NET 8 (a work PC where you cannot install anything), double-click `Download Portable .NET (No Admin).cmd` once:
+  it downloads Microsoft's .NET 8 runtime for that build, checks Microsoft's published SHA-512 hashes, and unpacks it into
+  the folder, with no admin rights and nothing installed; `HandPeg.exe` then starts directly, from the folder alone.
+  Everything a portable copy writes (settings, projects, caches, downloaded tools) stays in the `portable` folder beside
+  `HandPeg.exe`, so the whole folder can live on a USB drive. Update it by unzipping a newer one and moving the `portable`
+  folder (and, if you ran the helper, the `shared` folder and `hostfxr.dll`) across.
 
 ## Building from source
 ```

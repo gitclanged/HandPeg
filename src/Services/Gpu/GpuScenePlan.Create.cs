@@ -735,7 +735,7 @@ public sealed partial class GpuScenePlan
 
         private void PlaceMasks(Entry entry, Layer layer, (int Width, int Height) size, (double Left, double Top, double Right, double Bottom) pictureCrop)
         {
-            var file = layer.CustomMask && layer.HasMask && layer.FxOn(EffectRegistry.Mask) ? layer.MaskPath.Trim().Trim('"') : "";
+            var file = layer.CustomMask && layer.HasMask && layer.FxOn(EffectRegistry.Mask) ? layer.MaskSource : "";
             var hasMask = file.Length > 0 && state.ExistingFiles.Contains(file);
             if (hasMask)
             {
@@ -811,7 +811,7 @@ public sealed partial class GpuScenePlan
         {
             var (x, y, w, h) = state.CenterRect;
             var covers = x <= 0 && y <= 0 && x + w >= _width && y + h >= _height;
-            var mask = main.MaskPath.Trim().Trim('"');
+            var mask = main.MaskSource;
             var opaque = main.Opacity >= 100 && !main.HasKeys(KeyProperty.Opacity) && !main.ChromaKey && !(main.CustomMask && state.ExistingFiles.Contains(mask))
                          && main.CornerRadius == 0 && !main.Feather && Math.Abs(main.Rotation % 360) < 0.05;
             return covers && opaque && !main.IsAnimated;

@@ -4,7 +4,7 @@ ok: the pieces are saved as a Game Preset (the name's slash made safe)
 ok: it is a .hpstyle in the Styles folder
 ok: tall, the video zoomed, the pieces over it, with its blurred background
 ok: its layers carry the pieces' names
-ok: its two masks are inside it: one file that works anywhere
+ok: its two masks are their outlines alone: one file that works anywhere, no picture inside
 ok: it is on the drop overlay
 ok: and in the Style Presets, on the Timeline's list too
 ok: the pieces are layers

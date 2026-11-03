@@ -186,7 +186,7 @@ public static class DogfoodTests
         var heroBox = heroView.GetOutputRect(vm.FrameWidth, vm.FrameHeight, W, H);
         var wantedWidth = (int)Math.Round(0.5 * vm.FrameWidth / 2) * 2;
         expect(Math.Abs(heroBox.Width - wantedWidth) <= 2 && Math.Abs(heroBox.X - 0.05 * vm.FrameWidth) <= 1, "in the box the preset laid it out in");
-        expect(heroView is { CustomMask: true, UsesFrameMask: false } && heroView.MaskPath.Length > 0, "shaped by its mask, cut as its picture is");
+        expect(heroView is { CustomMask: true, UsesFrameMask: false } && MaskStore.Exists(heroView.MaskSource), "shaped by its mask, cut as its picture is");
 
         // A piece narrower than a crop's least remainder: cut wider, its box as much larger, the same part of the picture in the same place.
         var icon = vm.ViewOf(pieces.First(p => p.State.Name == "Icon"))!;

@@ -1132,6 +1132,12 @@ public sealed partial class Layer : ObservableObject
     /// <summary>The mask is taken from the frame: a piece cut from the video, with a mask of the whole frame.</summary>
     public bool UsesFrameMask => MaskFrame && IsVideo;
 
+    /// <summary>
+    /// What the mask is, for whatever draws it: a drawn mask's key when the layer has outlines and no picture of its own (filled
+    /// in memory, no file: 5.1-Release), else its picture file; "" for none. See <c>MaskStore.SourceOf</c>.
+    /// </summary>
+    public string MaskSource => Services.MaskStore.SourceOf(MaskPath, MaskShapes);
+
     /// <summary>Takes the mask off and puts back every mask setting as a new layer has it.</summary>
     public void ResetMask() =>
         (CustomMask, MaskPath, MaskFrame, MaskGrow, MaskInvert, MaskShapes, MaskOffsetX, MaskOffsetY, CropLeft, CropRight, CropTop, CropBottom, CornerRadius, Feather, FeatherRadius) =

@@ -32,35 +32,21 @@ public partial class MainViewModel
     /// <summary>The pieces the Studio made earlier in this project, which it opens with and takes the place of when added again.</summary>
     public IEnumerable<Layer> CutoutLayers => Layers.Where(l => l is { IsVideo: true, IsDeleted: false, UsesFrameMask: true, CustomMask: true } && l.MaskShapes.Length > 0 && ClipOf(l) is not null);
 
-    /// <summary>The pieces as layers: each with a mask of its own drawn from its outlines, sharp, cut to its box. Null when a mask cannot be drawn.</summary>
-    private List<LayerState>? CutoutStates(IReadOnlyList<CutoutPiece> pieces)
+    /// <summary>
+    /// The pieces as layers: each with a mask of its own, its outlines alone (filled in memory where it is drawn, no picture file:
+    /// 5.1-Release), sharp, cut to its box. A piece with no outlines is left out; null when none has any.
+    /// </summary>
+    private static List<LayerState>? CutoutStates(IReadOnlyList<CutoutPiece> pieces)
     {
-        var (width, height) = MaskStore.SizeFor(SourceWidth, SourceHeight);
-        var states = new List<LayerState>(pieces.Count);
-        try
+        var states = pieces.Where(piece => MaskStore.DrawnKey(piece.Shapes).Length > 0).Select(piece => new LayerState
         {
-            foreach (var piece in pieces)
-            {
-                if (MaskStore.Render(piece.Shapes, width, height) is not { } mask)
-                    continue;
-
-                states.Add(new LayerState
-                {
-                    Name = piece.Name,
-                    Kind = LayerKind.Video,
-                    SourceX = piece.Source.X, SourceY = piece.Source.Y, SourceWidth = piece.Source.Width, SourceHeight = piece.Source.Height,
-                    PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
-                    CustomMask = true, MaskPath = mask, MaskFrame = true, MaskShapes = piece.Shapes, Feather = true, FeatherRadius = 1,
-                });
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            StatusText = $"The masks could not be drawn: {ex.Message}";
-            return null;
-        }
-
-        return states;
+            Name = piece.Name,
+            Kind = LayerKind.Video,
+            SourceX = piece.Source.X, SourceY = piece.Source.Y, SourceWidth = piece.Source.Width, SourceHeight = piece.Source.Height,
+            PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
+            CustomMask = true, MaskPath = "", MaskFrame = true, MaskShapes = piece.Shapes, Feather = true, FeatherRadius = 1,
+        }).ToList();
+        return states.Count > 0 ? states : null;
     }
 
     /// <summary>
@@ -109,7 +95,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The Studio's pieces saved as a Game Preset: a .hpstyle in the Styles folder (one file: the masks go inside it) with the tall frame,
+    /// The Studio's pieces saved as a Game Preset: a .hpstyle in the Styles folder (one file: each piece's outlines are its mask) with the tall frame,
     /// the zoomed video and its blurred background, put first on the drop overlay and shown in the Style Presets list. An
     /// existing preset of that name is replaced. Nothing on the timeline changes.
     /// </summary>

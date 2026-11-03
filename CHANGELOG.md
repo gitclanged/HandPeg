@@ -39,9 +39,15 @@ Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
   Appearance, unless you ask it to follow Windows' scaling.
 - **Arrow keys nudge** the selected layer 1 px (10 with Shift), and glide when held.
 - **Particle Disintegration (Thanos Snap)** transition on any clip.
-- **Zero-install portable copies.** `HandPeg-5.1.0-win-x64-Portable.zip` and `HandPeg-5.1.0-win-arm64.zip` carry their own
-  .NET runtime: unzip and run on a PC with nothing installed. Everything they write (settings, projects, caches,
-  downloaded tools) stays in the `portable` folder beside `HandPeg.exe`.
+- **Portable copies for any PC, about 6 MB.** `HandPeg-5.1.0-win-x64-Portable.zip` and
+  `HandPeg-5.1.0-win-arm64-Portable.zip`: unzip and run. On a PC without .NET 8 (a locked-down work PC), double-click
+  `Download Portable .NET (No Admin).cmd` once: it fetches Microsoft's own .NET 8 runtime for that build, checks it
+  against Microsoft's published hashes and puts it in the folder, with no admin rights and nothing installed. From then
+  on `HandPeg.exe` starts directly. Everything a portable copy writes (settings, projects, caches, downloaded tools)
+  stays in the `portable` folder beside `HandPeg.exe`.
+- **Masks you draw are pure outlines.** Cutout Studio pieces, Draw Custom Shape and the built-in presets keep only their
+  outlines: no mask pictures in your Masks folder, and presets and projects carry no picture data for them (the
+  built-in presets are a third of their old size). The masks are drawn from the outlines, sharp at any size.
 
 ### Under the Hood & Fixes
 - FFmpeg only encodes and muxes on the GPU path: frames are converted to NV12 on the card (62 % less data through the

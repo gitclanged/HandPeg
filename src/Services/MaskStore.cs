@@ -29,6 +29,13 @@ public static class MaskStore
     /// </summary>
     public static void Pack(LayerState layer, Dictionary<string, string> masks)
     {
+        // A drawn mask is its outlines alone: nothing is carried but them (5.1-Release).
+        if (IsDrawn(SourceOf(layer.MaskPath, layer.MaskShapes)))
+        {
+            layer.MaskPath = "";
+            return;
+        }
+
         var path = (layer.MaskPath ?? "").Trim().Trim('"');
         if (!layer.CustomMask || path.Length == 0 || !File.Exists(path))
             return;
@@ -54,6 +61,13 @@ public static class MaskStore
     /// <returns>Null, or why the mask could not be written.</returns>
     public static string? Unpack(LayerState layer, IReadOnlyDictionary<string, string> masks)
     {
+        // A picture HandPeg once drew from the layer's own outlines (an older file's shape_*.png): the outlines stand in for it.
+        if (IsDrawn(SourceOf(layer.MaskPath, layer.MaskShapes)))
+        {
+            layer.MaskPath = "";
+            return null;
+        }
+
         if (string.IsNullOrEmpty(layer.MaskPath) || !masks.TryGetValue(layer.MaskPath, out var encoded))
             return null;
 
@@ -317,7 +331,7 @@ public static class MaskStore
         string.Join(";", shapes.Where(s => s.Count >= 3).Select(s => string.Join(" ", s.Select(p =>
             string.Create(CultureInfo.InvariantCulture, $"{Math.Round(p.X, 5)},{Math.Round(p.Y, 5)}")))));
 
-    /// <summary>How large a drawn mask is made for a source of this size: at least 1920 wide and at most 3840, in the source's shape.</summary>
+    /// <summary>How large a drawn mask is made as a picture for a source of this size: at least 1920 wide and at most 3840, in the source's shape.</summary>
     public static (int Width, int Height) SizeFor(int sourceWidth, int sourceHeight)
     {
         if (sourceWidth <= 0 || sourceHeight <= 0)
@@ -327,53 +341,168 @@ public static class MaskStore
         return (width, Math.Max((int)Math.Round(width * (double)sourceHeight / sourceWidth), 2));
     }
 
+    // ----- Drawn masks: outlines only, never a file (5.1-Release, the user's call) -----
+
     /// <summary>
-    /// The picture for a mask's outlines, drawn into the masks folder if it is not there yet: white inside,
-    /// black outside, with smooth edges. Needs the UI thread. Null when there are no outlines.
+    /// The start of a drawn mask's key: a mask that is its layer's outlines alone. It is no file: the GPU engine and the hit test
+    /// fill the outlines in memory at the size they need (<see cref="Rasterize"/>), styles and projects carry only the outlines, and
+    /// only FFmpeg's fallback graph is given a picture, in the session's temp folder (<see cref="FileFor"/>).
     /// </summary>
-    public static string? Render(string shapesText, int width, int height)
+    public const string DrawnPrefix = "drawn:";
+
+    // Each drawn key's outlines (normalised text), so a key alone is enough to fill them: on any thread.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> DrawnShapes = new(StringComparer.Ordinal);
+
+    /// <summary>The key of the mask some outlines make (the same outlines, the same key); "" when they have none.</summary>
+    public static string DrawnKey(string? shapes)
     {
-        var shapes = ParseShapes(shapesText);
-        if (shapes.Count == 0)
+        var text = FormatShapes(ParseShapes(shapes));
+        if (text.Length == 0)
+            return "";
+
+        var key = DrawnPrefix + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)), 0, 8).ToLowerInvariant();
+        DrawnShapes.TryAdd(key, text);
+        return key;
+    }
+
+    /// <summary>Whether a mask source is a drawn mask's key, not a file.</summary>
+    public static bool IsDrawn(string? source) => source?.StartsWith(DrawnPrefix, StringComparison.Ordinal) == true;
+
+    /// <summary>Whether a mask file is one HandPeg drew from outlines before 5.1-Release (shape_*.png): its layer's outlines stand in for it.</summary>
+    public static bool IsGeneratedFile(string? path) =>
+        Path.GetFileName((path ?? "").Trim().Trim('"')).StartsWith("shape_", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// What a layer's mask is: its outlines (a drawn key) when it has some and names no picture of its own (or only one HandPeg
+    /// drew from them), else its picture file, trimmed; "" for none.
+    /// </summary>
+    public static string SourceOf(string? path, string? shapes)
+    {
+        var file = (path ?? "").Trim().Trim('"');
+        return (file.Length == 0 || IsGeneratedFile(file)) && DrawnKey(shapes) is { Length: > 0 } key ? key : file;
+    }
+
+    /// <summary>Whether a mask source is there to be shown: a drawn key whose outlines are known, or a file that exists.</summary>
+    public static bool Exists(string? source) =>
+        IsDrawn(source) ? DrawnShapes.ContainsKey(source!) : !string.IsNullOrEmpty(source) && FileState.Exists(source);
+
+    /// <summary>
+    /// A drawn mask filled in memory: the part of the frame <paramref name="cut"/> covers (fractions of the frame) at the size
+    /// asked, each value the share of the pixel inside the outlines (nonzero winding: overlapping outlines add up), 0..1. Pure
+    /// arithmetic, so on any thread. Null for a key whose outlines are not known.
+    /// </summary>
+    public static float[]? Rasterize(string key, (double X, double Y, double Width, double Height) cut, int width, int height)
+    {
+        if (!DrawnShapes.TryGetValue(key, out var text) || width <= 0 || height <= 0)
             return null;
 
-        var text = FormatShapes(shapes);
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{text}|{width}x{height}")), 0, 6).ToLowerInvariant();
-        var path = Path.Combine(AppPaths.Masks, $"shape_{hash}.png");
-        if (File.Exists(path))
-            return path;
-
-        // Overlapping outlines add up rather than cancel: the mask is everything inside any of them.
-        var geometry = new StreamGeometry { FillRule = FillRule.Nonzero };
-        using (var context = geometry.Open())
+        var (cutWidth, cutHeight) = (Math.Max(cut.Width, 1e-6), Math.Max(cut.Height, 1e-6));
+        var edges = new List<(double X0, double Y0, double X1, double Y1, int Up)>();
+        foreach (var shape in ParseShapes(text))
         {
-            foreach (var shape in shapes)
+            for (var i = 0; i < shape.Count; i++)
             {
-                context.BeginFigure(new Point(shape[0].X * width, shape[0].Y * height), true, true);
-                context.PolyLineTo(shape.Skip(1).Select(p => new Point(p.X * width, p.Y * height)).ToList(), true, true);
+                var (a, b) = (shape[i], shape[(i + 1) % shape.Count]);
+                var (ax, ay, bx, by) = ((a.X - cut.X) / cutWidth * width, (a.Y - cut.Y) / cutHeight * height, (b.X - cut.X) / cutWidth * width, (b.Y - cut.Y) / cutHeight * height);
+                if (ay != by)
+                    edges.Add((ax, ay, bx, by, by > ay ? 1 : -1));
             }
         }
 
-        geometry.Freeze();
-        var visual = new DrawingVisual();
-        using (var context = visual.RenderOpen())
+        // Four lines through each row of pixels; along each, the stretches inside are added exactly, to the fraction of a pixel.
+        const int Lines = 4;
+        var cover = new float[width * height];
+        var crossings = new List<(double X, int Up)>();
+        for (var y = 0; y < height; y++)
         {
-            context.DrawRectangle(Brushes.Black, null, new Rect(0, 0, width, height));
-            context.DrawGeometry(Brushes.White, null, geometry);
+            for (var line = 0; line < Lines; line++)
+            {
+                var at = y + (line + 0.5) / Lines;
+                crossings.Clear();
+                foreach (var (x0, y0, x1, y1, up) in edges)
+                {
+                    if (at < Math.Min(y0, y1) || at >= Math.Max(y0, y1))
+                        continue;
+                    crossings.Add((x0 + (at - y0) * (x1 - x0) / (y1 - y0), up));
+                }
+
+                if (crossings.Count < 2)
+                    continue;
+                crossings.Sort((p, q) => p.X.CompareTo(q.X));
+                var (winding, from) = (0, 0.0);
+                foreach (var (x, up) in crossings)
+                {
+                    var before = winding;
+                    winding += up;
+                    if (before == 0 && winding != 0)
+                        from = x;
+                    else if (before != 0 && winding == 0)
+                        AddSpan(cover, y * width, width, from, x, 1f / Lines);
+                }
+            }
         }
 
-        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(visual);
+        for (var i = 0; i < cover.Length; i++)
+            cover[i] = Math.Min(cover[i], 1f);
+        return cover;
+    }
 
-        // Grey is all a mask needs, and a quarter of the size.
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(new FormatConvertedBitmap(bitmap, PixelFormats.Gray8, null, 0)));
-        Directory.CreateDirectory(AppPaths.Masks);
-        var part = path + ".part";
-        using (var file = File.Create(part))
-            encoder.Save(file);
-        File.Move(part, path, overwrite: true);
-        return path;
+    // Adds a stretch of one row, from x = a to b (pixels, fractional), with its weight: whole pixels in full, the two ends in part.
+    private static void AddSpan(float[] cover, int row, int width, double a, double b, float weight)
+    {
+        (a, b) = (Math.Clamp(a, 0, width), Math.Clamp(b, 0, width));
+        if (b <= a)
+            return;
+
+        var (first, last) = ((int)a, (int)b);
+        if (first == last)
+        {
+            cover[row + Math.Min(first, width - 1)] += (float)(b - a) * weight;
+            return;
+        }
+
+        cover[row + first] += (float)(first + 1 - a) * weight;
+        for (var x = first + 1; x < last; x++)
+            cover[row + x] += weight;
+        if (last < width)
+            cover[row + last] += (float)(b - last) * weight;
+    }
+
+    /// <summary>
+    /// A mask source as a file, for FFmpeg's fallback graph, which reads masks as pictures: a file as it is; a drawn mask filled
+    /// at <paramref name="width"/> x <paramref name="height"/> into the session's temp folder (gone when it closes), never the
+    /// Masks folder. "" when it cannot be made.
+    /// </summary>
+    public static string FileFor(string source, int width, int height)
+    {
+        if (!IsDrawn(source))
+            return source;
+
+        var path = Path.Combine(SessionPaths.Masks, $"{source[DrawnPrefix.Length..]}_{width}x{height}.png");
+        try
+        {
+            if (File.Exists(path))
+                return path;
+            if (Rasterize(source, (0, 0, 1, 1), width, height) is not { } cover)
+                return "";
+
+            var grey = new byte[cover.Length];
+            for (var i = 0; i < grey.Length; i++)
+                grey[i] = (byte)Math.Clamp((int)MathF.Round(cover[i] * 255), 0, 255);
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(BitmapSource.Create(width, height, 96, 96, PixelFormats.Gray8, null, grey, width)));
+            Directory.CreateDirectory(SessionPaths.Masks);
+            var part = path + ".part";
+            using (var file = File.Create(part))
+                encoder.Save(file);
+            File.Move(part, path, overwrite: true);
+            return path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException)
+        {
+            AppLog.Write("A drawn mask could not be written for FFmpeg", ex);
+            return "";
+        }
     }
 
     // ----- Outlines for the built-in shapes, as fractions of a 16:9 frame -----

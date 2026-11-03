@@ -812,7 +812,7 @@ public static partial class FilterGraphBuilder
         /// or masked out. (A crop cuts the picture, which still fills its box: 4.4-BugHunt.)
         /// </summary>
         private bool IsOpaque(Layer layer) =>
-            layer.Opacity >= 100 && !layer.HasKeys(KeyProperty.Opacity) && !layer.ChromaKey && !(layer.CustomMask && Exists(layer.MaskPath.Trim().Trim('"')))
+            layer.Opacity >= 100 && !layer.HasKeys(KeyProperty.Opacity) && !layer.ChromaKey && !(layer.CustomMask && Exists(layer.MaskSource))
             && layer.CornerRadius == 0 && !layer.Feather && Math.Abs(layer.Rotation % 360) < 0.05;
 
         /// <summary>The size of the picture once it has been turned: the box its corners then reach, in even pixels.</summary>
@@ -931,11 +931,15 @@ public static partial class FilterGraphBuilder
             {
                 maskPlaced = true;
                 var p = Prefix();
-                var maskFile = layer.CustomMask && layer.HasMask && layer.FxOn(EffectRegistry.Mask) ? layer.MaskPath.Trim().Trim('"') : "";
+                var maskFile = layer.CustomMask && layer.HasMask && layer.FxOn(EffectRegistry.Mask) ? layer.MaskSource : "";
                 var hasMask = maskFile.Length > 0 && Exists(maskFile);
+
+                // A drawn mask is outlines, no file: FFmpeg reads a picture, made for it in the session's temp folder (5.1-Release).
+                var picture = hasMask && MaskStore.IsDrawn(maskFile) ? MaskStore.FileFor(maskFile, MaskStore.SizeFor(SourceWidth, SourceHeight).Width, MaskStore.SizeFor(SourceWidth, SourceHeight).Height) : maskFile;
+                hasMask &= picture.Length > 0;
                 if (hasMask)
                 {
-                    sources.Append(';').Append(BuildMaskSource(layer, maskFile, S.AlphaMasks.Contains(maskFile), width, height, 1, (SourceWidth, SourceHeight), PictureCropOf(layer)))
+                    sources.Append(';').Append(BuildMaskSource(layer, picture, S.AlphaMasks.Contains(maskFile), width, height, 1, (SourceWidth, SourceHeight), PictureCropOf(layer)))
                         .Append(StillMask).Append($"[{p}_cmask{s}]");
                     run.Add(MultiplyByStill($"{p}_cmask{s}"));
                 }

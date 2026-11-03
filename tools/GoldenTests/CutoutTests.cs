@@ -12,6 +12,7 @@ using HandPegApp;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
+using HandPegApp.Services.Gpu;
 using HandPegApp.ViewModels;
 
 namespace HandPegGoldenTests;
@@ -103,8 +104,9 @@ public static class CutoutTests
                    && layers.Count == preset.Pieces.Count, $"{preset.Name}: tall, the video zoomed, a layer per piece, the blurred background");
             Expect(layers.All(l => l is { Kind: LayerKind.Video, CustomMask: true, MaskFrame: true, Feather: true } && !string.IsNullOrEmpty(l.MaskShapes)),
                 $"{preset.Name}: every piece a masked video layer with its outlines, so the Cutout Studio opens and edits it");
-            Expect(style?.Masks?.Count == layers.Count && layers.All(l => !Path.IsPathRooted(l.MaskPath) && style.Masks.ContainsKey(l.MaskPath)),
-                $"{preset.Name}: a mask of its own per piece, inside the file");
+            Expect(style?.Masks is null && layers.All(l => l.MaskPath == "" && MaskStore.IsDrawn(MaskStore.SourceOf(l.MaskPath, l.MaskShapes)))
+                   && layers.Select(l => MaskStore.SourceOf(l.MaskPath, l.MaskShapes)).Distinct().Count() == layers.Count,
+                $"{preset.Name}: a mask of its own per piece, its outlines alone: no picture, no Base64 in the file");
             Expect(layers.All(l => l.SourceX >= 0 && l.SourceY >= 0 && l.SourceX + l.SourceWidth <= 1.0001 && l.SourceY + l.SourceHeight <= 1.0001 && l.SizeWidth > 0.05),
                 $"{preset.Name}: every piece cut from inside the frame and given a size");
             Expect(layers.All(l => MaskStore.ParseShapes(l.MaskShapes).SelectMany(s => s).All(p =>
@@ -155,6 +157,37 @@ public static class CutoutTests
         var pieces = vm.CutoutLayers.Select(l => l.Name).Order().ToList();
         Expect(pieces.SequenceEqual(["Abilities & Ammo", "Health & Name", "Killfeed"]), $"its three pieces are the clip's, and the Studio's to edit ({string.Join(", ", pieces)})");
         Expect(vm.UseVerticalResolution && Math.Abs(vm.CenterZoom - GamePresetLibrary.DefaultZoom) < 1e-6, "on a tall frame, the video zoomed");
+        Expect(vm.CutoutLayers.All(l => l.MaskPath == "" && MaskStore.IsDrawn(l.MaskSource) && MaskStore.Exists(l.MaskSource)),
+            "on the timeline each piece's mask is its outlines, there to be drawn, with no file");
+
+        // Drawn masks are filled in memory (5.1-Release): exact coverage, nonzero winding, holes, the cut, the baker, FFmpeg's temp picture.
+        static double Sum(float[] cover) => cover.Sum(v => (double)v);
+        var square = MaskStore.DrawnKey("0.25,0.25 0.75,0.25 0.75,0.75 0.25,0.75");
+        var filled = MaskStore.Rasterize(square, (0, 0, 1, 1), 8, 8)!;
+        Expect(filled[3 * 8 + 3] == 1 && filled[0] == 0 && Math.Abs(Sum(filled) - 16) < 1e-4, $"a square fills its 16 pixels exactly ({Sum(filled):0.###})");
+        var half = MaskStore.Rasterize(MaskStore.DrawnKey("0.25,0.25 0.6875,0.25 0.6875,0.75 0.25,0.75"), (0, 0, 1, 1), 8, 8)!;
+        Expect(Math.Abs(half[3 * 8 + 5] - 0.5) < 1e-4, $"an edge through the middle of a pixel covers half of it ({half[3 * 8 + 5]:0.###})");
+        var both = MaskStore.Rasterize(MaskStore.DrawnKey("0.25,0.25 0.75,0.25 0.75,0.75 0.25,0.75;0.5,0.5 1,0.5 1,1 0.5,1"), (0, 0, 1, 1), 8, 8)!;
+        Expect(Math.Abs(Sum(both) - 28) < 1e-4 && both.All(v => v <= 1), $"overlapping outlines add up, never past white ({Sum(both):0.###})");
+        var ring = MaskStore.Rasterize(MaskStore.DrawnKey("0,0 1,0 1,1 0,1;0.25,0.25 0.25,0.75 0.75,0.75 0.75,0.25"), (0, 0, 1, 1), 8, 8)!;
+        Expect(Math.Abs(Sum(ring) - 48) < 1e-4 && ring[3 * 8 + 3] == 0, $"an outline turning the other way cuts a hole ({Sum(ring):0.###})");
+        var cut = MaskStore.Rasterize(square, (0.5, 0.5, 0.5, 0.5), 4, 4)!;
+        Expect(Math.Abs(Sum(cut) - 4) < 1e-4 && cut[0] == 1 && cut[15] == 0, "a cut fills only its part of the frame, at the size asked");
+        var baked = MaskBaker.Bake(new MaskRecipe(square, false, 8, 8, (0, 0, 1, 1), false, 0, 0, 0, 0));
+        Expect(baked is { } b && b[(3 * 8 + 3) * 4] == 255 && b[0] == 0, "the GPU engine's baker fills a drawn mask with no file");
+        var forFfmpeg = MaskStore.FileFor(square, 64, 36);
+        Expect(File.Exists(forFfmpeg) && forFfmpeg.StartsWith(SessionPaths.Masks, StringComparison.OrdinalIgnoreCase),
+            "FFmpeg's fallback graph gets a picture in the session's temp folder, not the Masks folder");
+        var old = new LayerState { CustomMask = true, MaskFrame = true, MaskShapes = "0.1,0.1 0.2,0.1 0.2,0.2", MaskPath = Path.Combine(AppPaths.Masks, "shape_0123456789ab.png") };
+        var carried = new Dictionary<string, string>();
+        MaskStore.Pack(old, carried);
+        Expect(carried.Count == 0 && old.MaskPath == "", "packing a drawn mask carries nothing but its outlines, even one that named an old shape_*.png");
+        var opened = new LayerState { CustomMask = true, MaskFrame = true, MaskShapes = "0.1,0.1 0.2,0.1 0.2,0.2", MaskPath = "shape_0123456789ab_cafe.png" };
+        Expect(MaskStore.Unpack(opened, new Dictionary<string, string> { ["shape_0123456789ab_cafe.png"] = Convert.ToBase64String([1, 2, 3]) }) is null
+               && opened.MaskPath == "" && !File.Exists(Path.Combine(AppPaths.Masks, "shape_0123456789ab_cafe.png")),
+            "an older file's packed shape_*.png is never written back: the outlines stand in for it");
+        var drawnFiles = Directory.Exists(AppPaths.Masks) ? Directory.GetFiles(AppPaths.Masks, "shape_*.png").Length : 0;
+        Expect(drawnFiles == 0, $"no shape_*.png in the Masks folder after the Studio, six built-ins and a preset on a clip ({drawnFiles})");
     }
 
     private static void Studio(StringBuilder text, List<string> problems)
@@ -199,7 +232,8 @@ public static class CutoutTests
         var style = vm.ReadStyle(saved);
         Expect(style?.Layout is { Vertical: true, CenterZoom: 1.7, MainVideoIndex: 0 } && style.Blur is { Radius: 20 }, "tall, the video zoomed, the pieces over it, with its blurred background");
         Expect(style?.Layout?.Layers.Select(l => l.Name).SequenceEqual(pieces.Select(p => p.Name)) == true, "its layers carry the pieces' names");
-        Expect(style?.Masks?.Count == 2 && style.Layout!.Layers.All(l => !Path.IsPathRooted(l.MaskPath)), "its two masks are inside it: one file that works anywhere");
+        Expect(style is { Masks: null, Layout: not null } && style.Layout.Layers.All(l => l.MaskPath == "" && l.MaskShapes is { Length: > 0 }),
+            "its two masks are their outlines alone: one file that works anywhere, no picture inside");
         Expect(StyleFile.ForLaunch().Any(s => s.Name == "OW _ Test"), "it is on the drop overlay");
         Expect(vm.StylePresets.Contains("OW _ Test"), "and in the Style Presets, on the Timeline's list too");
 

@@ -496,7 +496,7 @@ public sealed partial class Layer
         switch (card.Definition?.Feature)
         {
             case nameof(ChromaKey): ChromaKey = true; break;
-            case nameof(CustomMask): CustomMask = MaskPath.Trim().Length > 0; break;
+            case nameof(CustomMask): CustomMask = MaskPath.Trim().Length > 0 || MaskShapes.Length > 0; break;
             case nameof(Shadow): Shadow = true; break;
         }
 

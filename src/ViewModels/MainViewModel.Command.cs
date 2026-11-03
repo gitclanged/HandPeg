@@ -38,8 +38,6 @@ public partial class MainViewModel
             }
         }
 
-        EnsureDrawnMasks();
-
         // A clip that is still being looked at has no size or length yet, and is not rendered.
         var stack = GetStack().Where(l => l is { IsLoading: false, IsEmptyTrack: false }).ToList();
         var caption = Layer.FromState(CaptionLayer.ToState(), SourceWidth, SourceHeight, frameWidth, frameHeight);
@@ -50,19 +48,20 @@ public partial class MainViewModel
         void Note(string? path)
         {
             var name = (path ?? "").Trim().Trim('"');
-            if (name.Length > 0 && FileState.Exists(name))
+            if (name.Length > 0 && MaskStore.Exists(name))
                 files.Add(name);
         }
 
-        // And which of the masks are read by their transparency: painted shows, see-through is cut away.
+        // And which of the masks are read by their transparency: painted shows, see-through is cut away. A drawn mask is its
+        // outlines, a key that is no file (5.1-Release): there, and never read by its transparency.
         var alphaMasks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var layer in stack.Append(caption))
         {
-            Note(layer.MaskPath);
+            var mask = layer.MaskSource;
+            Note(mask);
             foreach (var lut in layer.Effects.Where(e => e.Type == Models.Effects.EffectRegistry.Lut))
                 Note(lut.GetText("file"));
-            var mask = layer.MaskPath.Trim().Trim('"');
-            if (layer.CustomMask && files.Contains(mask) && MaskStore.UsesAlpha(mask))
+            if (layer.CustomMask && files.Contains(mask) && !MaskStore.IsDrawn(mask) && MaskStore.UsesAlpha(mask))
                 alphaMasks.Add(mask);
         }
 
@@ -589,30 +588,4 @@ public partial class MainViewModel
 
     private static string Number(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
 
-    /// <summary>
-    /// A drawn mask whose picture has gone (the masks folder was emptied, or the project came without it) is
-    /// drawn again from the outlines the layer keeps. Only on the UI thread, which is where it can be drawn.
-    /// </summary>
-    private void EnsureDrawnMasks()
-    {
-        if (System.Windows.Application.Current?.Dispatcher.CheckAccess() != true)
-            return;
-
-        foreach (var layer in Layers.Where(l => l.CustomMask && l.MaskShapes.Length > 0 && !FileState.Exists(l.MaskPath)))
-        {
-            try
-            {
-                var (width, height) = MaskStore.SizeFor(SourceWidth, SourceHeight);
-                if (MaskStore.Render(layer.MaskShapes, width, height) is { } path)
-                {
-                    FileState.Forget(path);
-                    layer.MaskPath = path;
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                AppLog.Write($"The drawn mask of {layer.Name} could not be drawn again", ex);
-            }
-        }
-    }
 }

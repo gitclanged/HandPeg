@@ -129,44 +129,34 @@ public static class GamePresetLibrary
     ];
 
     /// <summary>
-    /// A built-in as the Cutout Studio would save it: its pieces as masked video layers, the masks drawn and packed inside. Needs an STA
-    /// thread (the masks are drawn with WPF); null when a mask cannot be drawn.
+    /// A built-in as the Cutout Studio saves one: its pieces as masked video layers, each mask its outlines alone (no picture, no
+    /// Base64 inside: 5.1-Release). Pure data, on any thread.
     /// </summary>
-    public static StylePreset? Build(BuiltIn preset)
+    public static StylePreset Build(BuiltIn preset)
     {
-        var states = new List<LayerState>(preset.Pieces.Count);
-        foreach (var piece in preset.Pieces)
+        var states = preset.Pieces.Select(piece =>
         {
-            if (MaskStore.Render(piece.Shapes, (int)W, (int)H) is not { } mask)
-                return null;
-
             var source = piece.Source ?? SourceOf(piece.Shapes);
-            states.Add(new LayerState
+            return new LayerState
             {
                 Name = piece.Name,
                 Kind = LayerKind.Video,
                 SourceX = source.X, SourceY = source.Y, SourceWidth = source.Width, SourceHeight = source.Height,
                 PositionX = piece.Place?.X ?? source.X, PositionY = piece.Place?.Y ?? source.Y, SizeWidth = piece.Place?.Width ?? source.Width,
-                CustomMask = true, MaskPath = mask, MaskFrame = true, MaskShapes = piece.Shapes,
+                CustomMask = true, MaskPath = "", MaskFrame = true, MaskShapes = piece.Shapes,
                 Feather = true, FeatherRadius = piece.FeatherRadius, MaskGrow = piece.MaskGrow, CornerRadius = piece.CornerRadius,
-            });
-        }
+            };
+        }).ToList();
 
         var laidOut = preset.Pieces.Select((p, i) => (p, i)).Where(x => x.p.Place is null).Select(x => states[x.i]).ToList();
         if (laidOut.Count > 0)
             HudLibrary.LayOutVertically(laidOut, DefaultZoom);
 
-        var style = new StylePreset
+        return new StylePreset
         {
             Layout = new LayoutSection { CenterZoom = DefaultZoom, SourceAspectRatio = 1.7778, Vertical = true, MainVideoIndex = 0, Layers = states },
             Blur = new BlurSection { Radius = BlurRadius, Passes = BlurPasses, Dim = BackgroundDim, Zoom = 1 },
         };
-
-        var masks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var layer in states)
-            MaskStore.Pack(layer, masks);
-        style.Masks = masks.Count > 0 ? masks : null;
-        return style;
     }
 
     // The box round a piece's outlines, with about 8 pixels of a 1440-line frame spare for a soft edge.
@@ -180,18 +170,17 @@ public static class GamePresetLibrary
     }
 
     /// <summary>
-    /// Writes the built-ins the Styles folder has no file of, when <see cref="AppSettings.BuiltInGamePresetsVersion"/> is behind. On a
-    /// thread of its own (STA, for the masks): call it off the interface's thread. Returns the files written, newest-first order kept
-    /// by their dates (older than anything the user saves, so the user's own stay on top of the lists); empty when nothing was due.
-    /// The caller records the version on the interface's thread (<see cref="Seeded"/>).
+    /// Writes the built-ins the Styles folder has no file of, when <see cref="AppSettings.BuiltInGamePresetsVersion"/> is behind, on a
+    /// pool thread (call it off the interface's thread). Returns the files written; their dates keep the lists' order (older than
+    /// anything the user saves, so the user's own stay on top); empty when nothing was due. The caller records the version on the
+    /// interface's thread (<see cref="Seeded"/>).
     /// </summary>
     public static Task<IReadOnlyList<string>> WriteMissingAsync()
     {
         if (AppSettings.Current.BuiltInGamePresetsVersion >= Version)
             return Task.FromResult<IReadOnlyList<string>>([]);
 
-        var done = new TaskCompletionSource<IReadOnlyList<string>>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
+        return Task.Run<IReadOnlyList<string>>(() =>
         {
             var written = new List<string>();
             try
@@ -206,31 +195,21 @@ public static class GamePresetLibrary
                     var path = Path.Combine(AppPaths.Styles, All[i].FileName);
                     if (File.Exists(path))
                         continue;
-                    if (Build(All[i]) is not { } style)
-                    {
-                        AppLog.Write($"The built-in Game Preset {All[i].Name} could not be made: a mask could not be drawn");
-                        continue;
-                    }
 
                     var part = path + ".part";
-                    File.WriteAllText(part, JsonSerializer.Serialize(style, options));
+                    File.WriteAllText(part, JsonSerializer.Serialize(Build(All[i]), options));
                     File.Move(part, path, overwrite: false);
                     File.SetLastWriteTime(path, stamp.AddMinutes(-i));
                     written.Add(All[i].FileName);
                 }
-
-                done.SetResult(written);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 AppLog.Write("The built-in Game Presets could not be written", ex);
-                done.SetResult(written);
             }
-        })
-        { IsBackground = true, Name = "Built-in Game Presets", Priority = ThreadPriority.BelowNormal };
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        return done.Task;
+
+            return written;
+        });
     }
 
     /// <summary>
