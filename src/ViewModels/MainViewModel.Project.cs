@@ -670,7 +670,14 @@ public partial class MainViewModel
         }
     }
 
-    public Task LoadProjectAsync(string filePath)
+    /// <summary>A project opened, its videos' streams shown in the background (<see cref="UnpackProjectStreamsAsync"/>).</summary>
+    public async Task LoadProjectAsync(string filePath)
+    {
+        await OpenProjectFileAsync(filePath);
+        _ = UnpackProjectStreamsAsync();
+    }
+
+    private Task OpenProjectFileAsync(string filePath)
     {
         // A bundle is unpacked beside itself first, and the project in it opened (5.0-Release).
         if (filePath.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase))
@@ -784,7 +791,6 @@ public partial class MainViewModel
 
         if (!SplitAt(startSeconds, stopSeconds))
             return StatusText;
-        PendingStartMs = null;
         return null;
     }
 }

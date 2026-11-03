@@ -167,7 +167,9 @@ public sealed class EncodingPreset
 
     // Video
     public string VideoEncoder { get; set; } = "libx264";
-    public string EncoderPreset { get; set; } = "medium";
+
+    /// <summary>The encoder's speed step; empty for its own default (a hardware encoder's best, <c>MainViewModel.BestStepOf</c>; software's medium).</summary>
+    public string EncoderPreset { get; set; } = "";
     public string Tune { get; set; } = "None";
     public string Profile { get; set; } = "Auto";
     public string Level { get; set; } = "Auto";

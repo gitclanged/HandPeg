@@ -9,9 +9,10 @@ namespace HandPegApp;
 
 /// <summary>
 /// The Lightning Dial (4.4): a ring of eight slices opened at the pointer by Mouse 5 (or the key it is bound to). Its top
-/// level holds the seven categories of the settings' dial and, in the eighth slice, Settings. Resting on a category for a
-/// moment, or pushing the pointer out through the ring, swaps the slices in place for that category's seven actions, with
-/// Back in the slice opposite the one the pointer came in by. Held open, releasing the button on an action runs it and
+/// level holds the settings' eight slices (5.1-Polish, the user's directive): each an action, run with one flick (the dial
+/// HandPeg comes with is eight of them), or a category. Resting on a category for a moment, or pushing the pointer out
+/// through the ring, swaps the slices in place for that category's seven actions, with Back in the slice opposite the one
+/// the pointer came in by. Held open, releasing the button on an action runs it and
 /// releasing it in the middle cancels; a quick click leaves the dial open to be used with clicks (a click in the middle
 /// or outside, Esc, or a right-click on the top level closes it). Drawn in OnRender with cached geometry and text; hosted
 /// by the main window in a Popup (it must be drawn over the player's native window).
@@ -31,7 +32,7 @@ public sealed class LightningDialOverlay : FrameworkElement
     /// <summary>The dial's width and height (the ring and a rim round it).</summary>
     public const double DialSize = 2 * (OuterRadius + Rim);
 
-    private const int Slices = 8, SettingsSlot = 7;
+    private const int Slices = KeybindManager.DialSlices;
     private const double Rim = 6, PushReach = 72;
 
     /// <summary>How wide a slice's name may be (two lines at most): inside the slice's two spokes, at the names' radius.</summary>
@@ -83,7 +84,10 @@ public sealed class LightningDialOverlay : FrameworkElement
     /// <summary>Whether the dial is being held open (the button that opened it is still down).</summary>
     public bool IsHeld => _held;
 
-    /// <summary>Starts the dial on its top level, or, for a category's own key, on that category, held or in click mode.</summary>
+    /// <summary>
+    /// Starts the dial on its top level, or, for a slice's own key, on that slice's category (a slice that is an action: the
+    /// top level), held or in click mode.
+    /// </summary>
     public void Open(IReadOnlyList<DialCategoryState> dial, int? category, bool held)
     {
         _dial = dial;
@@ -92,7 +96,7 @@ public sealed class LightningDialOverlay : FrameworkElement
         // Where the pointer was is known with its first move over the dial (which is not under it when put where it fits).
         _openedFrom = new Point(double.NaN, double.NaN);
         _dwell.Stop();
-        if (category is { } index && index >= 0 && index < dial.Count)
+        if (category is { } index && index >= 0 && index < dial.Count && !dial[index].IsAction)
             ShowCategory(index, entry: index);
         else
             ShowTop();
@@ -140,23 +144,21 @@ public sealed class LightningDialOverlay : FrameworkElement
 
     // ----- Levels -----
 
-    // The top level: the seven categories, and Settings in the eighth slice (an action like any other: chosen, it opens the
-    // full-window Settings).
+    // The top level: each slice its action (chosen, it runs at once) or its category (5.1-Polish); one with neither is empty.
     private void ShowTop()
     {
         _level = -1;
         for (var i = 0; i < Slices; i++)
         {
-            _slots[i] = i == SettingsSlot ? new Slot(SlotKind.Action, "ui.settings", "Settings", SettingsGlyph, -1)
-                : i < _dial.Count ? new Slot(SlotKind.Category, "", _dial[i].Name, _dial[i].Glyph, i)
+            var slice = i < _dial.Count ? _dial[i] : null;
+            _slots[i] = slice is null ? default
+                : slice.IsAction ? KeybindManager.Action(slice.Action) is { } action ? new Slot(SlotKind.Action, action.Id, ShortLabel(action), action.Glyph, -1) : default
+                : slice.Actions.Exists(a => a.Length > 0) ? new Slot(SlotKind.Category, "", slice.Name, slice.Glyph, i)
                 : default;
         }
 
         Relabel();
     }
-
-    /// <summary>The Settings slice's glyph (the action's own, a cog).</summary>
-    internal static string SettingsGlyph => KeybindManager.Action("ui.settings")?.Glyph ?? "\uE713";
 
     // The category's actions fill the slices clockwise from the one the pointer came in by; Back is opposite it.
     private void ShowCategory(int category, int entry)
@@ -184,7 +186,7 @@ public sealed class LightningDialOverlay : FrameworkElement
         Relabel();
     }
 
-    // Long labels lose what the dial makes plain ("Go to Start" stays; "Lightning Dial: Category 2" becomes the category's name).
+    // Long labels lose what the dial makes plain ("Go to Start" stays; "Lightning Dial: Slice 2" becomes the slice's name).
     private string ShortLabel(KeyAction action) =>
         action.Id.StartsWith("ui.dial", StringComparison.Ordinal) && action.Id.Length == 8 && action.Id[7] - '1' is var index && index >= 0 && index < _dial.Count
             ? _dial[index].Name

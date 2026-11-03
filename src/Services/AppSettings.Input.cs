@@ -1,11 +1,16 @@
 namespace HandPegApp.Services;
 
 /// <summary>
-/// One category of the Lightning Dial (4.4): its name and glyph on the dial's top level, and the actions (KeybindManager
-/// ids, "" for an empty slice) its seven slices run.
+/// One slice of the Lightning Dial's top level (4.4; 5.1-Polish, the user's directive: a slice is an action or a category):
+/// either an action run the moment it is chosen (<see cref="Action"/>, a KeybindManager id: the dial HandPeg comes with is
+/// eight of them), or a category, its name and glyph on the top level and the actions (ids, "" for an empty slice) its
+/// seven slices run when it opens.
 /// </summary>
 public sealed class DialCategoryState
 {
+    /// <summary>The action the slice runs at once (5.1-Polish); "" for a category of <see cref="Actions"/>.</summary>
+    public string Action { get; set; } = "";
+
     public string Name { get; set; } = "";
 
     /// <summary>A Segoe MDL2 Assets glyph, as the character itself.</summary>
@@ -13,7 +18,11 @@ public sealed class DialCategoryState
 
     public List<string> Actions { get; set; } = [];
 
-    public DialCategoryState Clone() => new() { Name = Name, Glyph = Glyph, Actions = [.. Actions] };
+    /// <summary>Whether the slice runs an action at once, rather than opening a category.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsAction => Action.Length > 0;
+
+    public DialCategoryState Clone() => new() { Action = Action, Name = Name, Glyph = Glyph, Actions = [.. Actions] };
 }
 
 // Keybinds, the Lightning Dial and the Quick-Start Tour (4.4): their settings, read by KeybindManager.
@@ -45,7 +54,7 @@ public sealed partial class AppSettings
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool DevVerboseLogging { get; set; }
 
-    /// <summary>The Lightning Dial's seven categories of seven actions each; null for the dial HandPeg comes with.</summary>
+    /// <summary>The Lightning Dial's eight slices (5.1-Polish: each an action, or a category of seven); null for the dial HandPeg comes with.</summary>
     public List<DialCategoryState>? LightningDial { get; set; }
 
     /// <summary>

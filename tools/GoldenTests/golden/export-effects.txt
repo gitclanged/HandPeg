@@ -77,6 +77,6 @@ graph 1 (-vf): 25 chains, 1722 characters
  23| [ui1_mix][ui1_lm]alphamerge[ui1_mixa]
  24| [ui1_u2][ui1_mixa]overlay=0:0[stage2]
  25| [stage2]hue=h=30:enable='between(t,5,10)'
-   |   ,vignette=angle=0.628:enable='between(t,5,10)'
+   |   ,vignette=angle=0.436:enable='between(t,5,10)'
    |   ,setsar=1
    |   ,colortemperature=temperature=5000:mix=1:pl=0

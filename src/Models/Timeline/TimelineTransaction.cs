@@ -166,9 +166,6 @@ public interface ITimelineTransaction : IDisposable
     /// <summary>Whether its sound moves and trims with its picture, and how far it is slipped while it does not (seconds, later when positive; not on frames).</summary>
     void SetAudioLink(TimelineClip clip, bool linked, double slipSeconds);
 
-    /// <summary>A new look for the clip: the very object given, which nobody may change afterwards (no edit changes a look in place).</summary>
-    void SetClipState(TimelineClip clip, LayerState state);
-
     /// <summary>
     /// A track's switches, sound and name; null leaves each as it is. A locked track takes these too: locking keeps its
     /// clips where they are, not its switches.
@@ -244,6 +241,19 @@ public interface ITimelineTransaction : IDisposable
     /// one that lies under this track already.
     /// </summary>
     void SetTrackParent(TimelineTrackModel track, Guid? parentTrackId);
+
+    /// <summary>
+    /// Puts the captions right under a track's pictures in the stack (5.1-Polish, the user's Q2:
+    /// <see cref="TimelineTrackModel.CaptionsUnder"/>), or, with none, over everything. A locked track takes this too (it is
+    /// where the captions are drawn, not a change to its clips). Refused for a track not on this timeline.
+    /// </summary>
+    void SetCaptionsUnder(TimelineTrackModel? track);
+
+    /// <summary>
+    /// Gives a track's row a height of its own (<see cref="TimelineTrackModel.Height"/>), or, with null, the one Track Height
+    /// again. A locked track takes this too (it is how the track is looked at, not what it holds).
+    /// </summary>
+    void SetTrackHeight(TimelineTrackModel track, double? height);
 }
 
 internal sealed class TimelineTransaction : ITimelineTransaction
@@ -699,12 +709,6 @@ internal sealed class TimelineTransaction : ITimelineTransaction
         }
     }));
 
-    public void SetClipState(TimelineClip clip, LayerState state)
-    {
-        ArgumentNullException.ThrowIfNull(state);
-        Step(() => Change(clip, c => c.State = state));
-    }
-
     public void SetTrack(TimelineTrackModel track, bool? hidden = null, bool? muted = null, bool? soloed = null, bool? locked = null,
                          double? gainDb = null, string? name = null) => Step(() =>
     {
@@ -730,7 +734,21 @@ internal sealed class TimelineTransaction : ITimelineTransaction
             Remember(clip);
         Remember(track);
         RememberTrackOrder();
+        var at = _doc.Tracks.IndexOf(track);
         _doc.Tracks.Remove(track);
+
+        // The captions under it keep their depth (5.1-AutoHud-Part1, the user's Q4): under the next picture track down; at the
+        // bottom of the stack, under the lowest that is left. With no picture track left they are over everything.
+        if (track.CaptionsUnder)
+        {
+            track.CaptionsUnder = false;
+            var below = at <= 0 ? null : _doc.Tracks.Take(at).LastOrDefault(ShowsPictures);
+            if ((below ?? _doc.Tracks.FirstOrDefault(ShowsPictures)) is { } next)
+            {
+                Remember(next);
+                next.CaptionsUnder = true;
+            }
+        }
 
         // The tracks under it stay (4.4: a track whose last clip moved away is taken off, and theirs must not go with it):
         // they lie under its own parent track now, or under none.
@@ -809,6 +827,39 @@ internal sealed class TimelineTransaction : ITimelineTransaction
         Remember(track);
         track.ParentTrackId = parentTrackId;
         return true;
+    });
+
+    private static bool ShowsPictures(TimelineTrackModel track) => track.Kind is TimelineTrackKind.Video or TimelineTrackKind.Switch;
+
+    public void SetTrackHeight(TimelineTrackModel track, double? height) => Step(() =>
+    {
+        if (!_doc.Tracks.Contains(track))
+            throw new TimelineEditException($"{track.DisplayName} is not a track of this timeline.");
+        if (track.Height == height)
+            return false;
+
+        Remember(track);
+        track.Height = height;
+        return true;
+    });
+
+    public void SetCaptionsUnder(TimelineTrackModel? track) => Step(() =>
+    {
+        if (track is not null && !_doc.Tracks.Contains(track))
+            throw new TimelineEditException($"{track.DisplayName} is not a track of this timeline.");
+
+        var changed = false;
+        foreach (var other in _doc.Tracks)
+        {
+            var under = ReferenceEquals(other, track);
+            if (other.CaptionsUnder == under)
+                continue;
+            Remember(other);
+            other.CaptionsUnder = under;
+            changed = true;
+        }
+
+        return changed;
     });
 
     /// <summary>

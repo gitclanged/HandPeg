@@ -123,6 +123,7 @@ public static unsafe partial class CompositorWorker
                     decoders.Cache.SetBudget(budget = requested);
                 decoders.TakeHints();
                 decoders.Tidy();
+                decoders.Cache.CheckWindowsBudget(Stopwatch.GetTimestamp());
 
                 var slot = shared.TakeLatest(out var isNew);
                 ref var header = ref shared.SceneHeader(slot);
@@ -151,13 +152,17 @@ public static unsafe partial class CompositorWorker
                 control.DecodedFrames = decoders.FramesDecoded;
                 (control.Stretches, control.LateLandings, control.MissingFrames) = (decoders.Stretches, decoders.LateLandings, decoders.MissingFrames);
 
+                // What a press of play waits for after the frame on screen (GpuPreviewEngine.PlayStartReady): looked at closely while it is short of them.
+                var ahead = decoders.NextFramesReady();
+                control.PresentedAhead = ahead ? 1 : 0;
+
                 gpu.CheckAlive();
-                var woke = WaitHandle.WaitAny(waits, 100);
+                var woke = WaitHandle.WaitAny(waits, _held ? 16 : ahead || !decoders.Playing ? 100 : 4);
                 if (woke == 1)
                     return 0;
 
                 // A frame the last picture lacked was decoded (Instant Seek): the same scene again, with it.
-                if (woke == 2 && !decoders.LastFrameExact)
+                if ((woke == 2 && !decoders.LastFrameExact) || _held)
                     redraw = true;
             }
         }
@@ -253,10 +258,16 @@ public static unsafe partial class CompositorWorker
 
         gpu.Context.Flush();
 
+        // The frame commit barrier (the user's directive): this picture has videos at two moments. It goes no further: what is on
+        // screen stays, and it is drawn again as the frames it lacks arrive, or once the barrier's time is up.
+        _held = decoders.HoldsForOthers();
+        if (_held)
+            return;
+
         // Whether this frame showed every exact frame, set before its readback so a reader can check the very frame it got.
         control.PresentedExact = decoders.LastFrameExact ? 1 : 0;
         if ((header.Flags & FrameSceneHeader.FlagReadback) != 0)
-            ReadBack(shared, gpu, output, width, height, header.FrameSequenceNumber);
+            ReadBack(shared, gpu, renderer, output, width, height, header.FrameSequenceNumber, (header.Flags & FrameSceneHeader.FlagReadbackNv12) != 0);
         if ((header.Flags & FrameSceneHeader.FlagTimePasses) != 0 && (header.Flags & FrameSceneHeader.FlagWaitForTimings) != 0 && renderer.Timer.Collect())
         {
             for (var i = 0; i < 128; i++)
@@ -281,6 +292,9 @@ public static unsafe partial class CompositorWorker
         Volatile.Write(ref control.PresentedSequence, header.FrameSequenceNumber);
     }
 
+    // The last picture was held back by the frame commit barrier: it is drawn again on the worker's next turn, whatever wakes it.
+    private static bool _held;
+
     // The output generation made last (announced or not): names are never reused within a worker.
     private static int _lastGeneration;
 
@@ -292,16 +306,21 @@ public static unsafe partial class CompositorWorker
     private static nint _readbackStaging;
     private static (int Width, int Height) _readbackSize;
 
+    // NV12's two planes, drawn on the card, and the second's staging texture (the first's is _readbackStaging, in R8 while its size says so).
+    private static GpuTexture? _nv12Luma, _nv12Chroma;
+    private static nint _nv12ChromaStaging;
+    private static bool _readbackIsNv12;
+
     /// <summary>
     /// The frame just drawn into the client's readback section: copied to a staging texture, mapped (waiting for the card),
     /// written row by row, and its sequence number set last. A section too small, or not there, is skipped (logged once).
     /// </summary>
-    private static void ReadBack(CompositorSharedMemory shared, GpuDevice gpu, (GpuTexture Texture, nint KeyedMutex) output, int width, int height, long sequence)
+    private static void ReadBack(CompositorSharedMemory shared, GpuDevice gpu, SceneRenderer renderer, (GpuTexture Texture, nint KeyedMutex) output, int width, int height, long sequence, bool nv12)
     {
         ref var control = ref shared.Control;
         var generation = Volatile.Read(ref control.ReadbackGeneration);
         var capacity = Volatile.Read(ref control.ReadbackCapacity);
-        var needed = (long)width * height * 4;
+        var needed = nv12 ? CompositorProtocol.Nv12Bytes(width, height) : (long)width * height * 4;
         if (generation <= 0 || capacity < needed)
             return;
 
@@ -316,11 +335,27 @@ public static unsafe partial class CompositorWorker
                 _readbackGeneration = generation;
             }
 
-            if (_readbackStaging == 0 || _readbackSize != (width, height))
+            var (chromaWidth, chromaHeight) = ((width + 1) / 2, (height + 1) / 2);
+            if (_readbackStaging == 0 || _readbackSize != (width, height) || _readbackIsNv12 != nv12)
             {
                 Com.Release(ref _readbackStaging);
-                _readbackStaging = gpu.CreateStaging(width, height, DxgiFormat.B8G8R8A8Unorm);
-                _readbackSize = (width, height);
+                Com.Release(ref _nv12ChromaStaging);
+                _nv12Luma?.Dispose();
+                _nv12Chroma?.Dispose();
+                (_nv12Luma, _nv12Chroma) = (null, null);
+                if (nv12)
+                {
+                    _nv12Luma = gpu.CreateTexture(width, height, DxgiFormat.R8Unorm, renderTarget: true);
+                    _nv12Chroma = gpu.CreateTexture(chromaWidth, chromaHeight, DxgiFormat.R8G8Unorm, renderTarget: true);
+                    _readbackStaging = gpu.CreateStaging(width, height, DxgiFormat.R8Unorm);
+                    _nv12ChromaStaging = gpu.CreateStaging(chromaWidth, chromaHeight, DxgiFormat.R8G8Unorm);
+                }
+                else
+                {
+                    _readbackStaging = gpu.CreateStaging(width, height, DxgiFormat.B8G8R8A8Unorm);
+                }
+
+                (_readbackSize, _readbackIsNv12) = ((width, height), nv12);
             }
 
             // The output texture is shared: copied out under its keyed mutex, as every other use of it.
@@ -328,7 +363,16 @@ public static unsafe partial class CompositorWorker
                 return;
             try
             {
-                gpu.Context.CopyResource(_readbackStaging, output.Texture.Texture);
+                if (nv12)
+                {
+                    renderer.ToNv12(output.Texture, _nv12Luma!, _nv12Chroma!);
+                    gpu.Context.CopyResource(_readbackStaging, _nv12Luma!.Texture);
+                    gpu.Context.CopyResource(_nv12ChromaStaging, _nv12Chroma!.Texture);
+                }
+                else
+                {
+                    gpu.Context.CopyResource(_readbackStaging, output.Texture.Texture);
+                }
             }
             finally
             {
@@ -341,9 +385,25 @@ public static unsafe partial class CompositorWorker
             try
             {
                 into += _readbackView.PointerOffset;
-                var row = width * 4;
+                var row = nv12 ? width : width * 4;
                 for (var y = 0; y < height; y++)
                     Buffer.MemoryCopy(mapped.Data + (long)y * mapped.RowPitch, into + (long)y * row, row, row);
+                if (nv12)
+                {
+                    // The UV plane, after the Y plane, rows packed.
+                    Com.Check(gpu.Context.Map(_nv12ChromaStaging, 0, D3D11.MapRead, 0, out var chroma), "Map readback (UV)");
+                    try
+                    {
+                        var start = into + (long)width * height;
+                        var rowUv = chromaWidth * 2;
+                        for (var y = 0; y < chromaHeight; y++)
+                            Buffer.MemoryCopy(chroma.Data + (long)y * chroma.RowPitch, start + (long)y * rowUv, rowUv, rowUv);
+                    }
+                    finally
+                    {
+                        gpu.Context.Unmap(_nv12ChromaStaging, 0);
+                    }
+                }
             }
             finally
             {
@@ -351,7 +411,7 @@ public static unsafe partial class CompositorWorker
                 gpu.Context.Unmap(_readbackStaging, 0);
             }
 
-            (control.ReadbackWidth, control.ReadbackHeight, control.ReadbackRowBytes) = (width, height, width * 4);
+            (control.ReadbackWidth, control.ReadbackHeight, control.ReadbackRowBytes) = (width, height, nv12 ? width : width * 4);
             Volatile.Write(ref control.ReadbackSequence, sequence);
         }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or ArgumentException)

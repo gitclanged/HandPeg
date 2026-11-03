@@ -1,0 +1,19 @@
+# The 3D Fly-In + Shockwave Impact is keyframes and a clip: nothing locked, one step of Undo.
+ok: the macro takes an overlay
+ok: four keyframes each of X, Y and Scale
+ok: starting at the playhead, in the clip's own time
+ok: from where it was
+ok: at the impact it is twice as large
+ok: and centred across the frame
+ok: and back where it was by the end
+ok: a keyframe outside its stretch is kept
+ok: the impact is a clip of its own
+ok: starting as the layer lands, to the frame
+ok: with the Shockwave and the Camera Shake on it, to change
+ok: one clip more
+ok: Undo takes the clip away
+ok: and the keyframes, in one step
+ok: and leaves what was there
+ok: near the clip's end the beats fit what is left
+ok: ending inside the clip
+ok: an adjustment clip has no picture to fly

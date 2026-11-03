@@ -21,7 +21,7 @@ internal static class D3D11
     /// <summary>D3D11_MAP_FLAG_DO_NOT_WAIT: Map answers DXGI_ERROR_WAS_STILL_DRAWING instead of waiting for the card.</summary>
     public const uint MapFlagDoNotWait = 0x100000;
     public const uint FilterPoint = 0, FilterLinear = 0x15;
-    public const uint AddressClamp = 3, AddressBorder = 4;
+    public const uint AddressWrap = 1, AddressClamp = 3, AddressBorder = 4;
     public const uint ComparisonNever = 1;
     public const uint BlendZero = 1, BlendOne = 2, BlendSrcAlpha = 5, BlendInvSrcAlpha = 6, BlendOpAdd = 1;
     public const uint FillSolid = 3, CullNone = 1;

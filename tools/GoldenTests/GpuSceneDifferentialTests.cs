@@ -364,6 +364,7 @@ public static class GpuSceneDifferentialTests
     private static IReadOnlyList<Case> Cases(Files files) =>
     [
         PlainMain(files),
+        ChannelBalance(files),
         Rider(files),
         GameStyle(files),
         PictureInPicture(files),
@@ -383,6 +384,14 @@ public static class GpuSceneDifferentialTests
     }
 
     /// <summary>The main video split at 2 s, its second clip with keys of its own: a rider, cut whole from the same stream in its own motion.</summary>
+    // The colour sliders' red, green and blue balance (5.1-CleanupStudioAndFfmpegPurge): eq's gammas, by the compositor and by FFmpeg.
+    private static Case ChannelBalance(Files files)
+    {
+        var document = Document(W, H);
+        Track(document, TimelineTrackKind.Video).Clips.Add(Clip(files.Main, LayerKind.MainVideo, 0, 4, 0, Look(LayerKind.MainVideo, "Main", 0, 0, 1, files.Main)));
+        return new Case("colour sliders with channel balance", State(document, files, (0, 0, W, H)) with { ColorFilters = ["eq=saturation=1.1:gamma_r=1.3:gamma_g=1:gamma_b=0.8"] }, [0.5, 1.5, 3.2], 30);
+    }
+
     private static Case Rider(Files files)
     {
         var document = Document(W, H);
@@ -491,7 +500,8 @@ public static class GpuSceneDifferentialTests
         var state = State(document, files, ((W - width) / 2, (H - height) / 2, width, height)) with
         {
             BlurRadius = 9, BackgroundZoom = 1.5,
-            BackgroundEffects = [Scene.Effect(EffectRegistry.Vignette, 1, new Dictionary<string, object> { ["angle"] = 0.6 })],
+            // (In degrees on the card since 5.1-Polish: 34 is the 0.6 radians it was.)
+            BackgroundEffects = [Scene.Effect(EffectRegistry.Vignette, 1, new Dictionary<string, object> { ["angle"] = 34.0 })],
         };
         return new Case("blurred background child (radius 9, zoom 1.5, its own vignette)", state, [0.7, 2.2], 25);
     }
@@ -507,7 +517,7 @@ public static class GpuSceneDifferentialTests
         look.Effects =
         [
             Scene.Effect(EffectRegistry.Blur, 1, new Dictionary<string, object> { ["radius"] = 8.0, ["passes"] = 3.0, ["ratio"] = 2.0, ["dim"] = 10.0 }),
-            Scene.Effect(EffectRegistry.Vignette, 2, new Dictionary<string, object> { ["angle"] = 0.7, ["round"] = 0.0, ["feather"] = 60.0 }),
+            Scene.Effect(EffectRegistry.Vignette, 2, new Dictionary<string, object> { ["angle"] = 40.0, ["round"] = 0.0, ["feather"] = 60.0 }),
         ];
         Track(document, TimelineTrackKind.Video).Clips.Add(Clip(files.Main, LayerKind.MainVideo, 0, 4, 0, look));
         return new Case("advanced values (a 3-pass blur wider across, dimmed; a frame-shaped feathered vignette)", State(document, files, (0, 0, W, H)), [1.0, 3.0], 30);

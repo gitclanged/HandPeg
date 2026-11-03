@@ -137,7 +137,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Thumb">
-                        <Border Background="#50FFFFFF" BorderBrush="White" BorderThickness="1">
+                        <Border IsHitTestVisible="False" Background="#50FFFFFF" BorderBrush="White" BorderThickness="1">
                             <TextBlock Text="Center Video" Foreground="White" FontSize="11" Margin="2,0"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                         </Border>
@@ -151,7 +151,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Thumb">
-                        <Border Background="#B0C08020" BorderBrush="#FFFFC060" BorderThickness="1">
+                        <Border IsHitTestVisible="False" Background="#B0C08020" BorderBrush="#FFFFC060" BorderThickness="1">
                             <TextBlock Text="Subtitles" Foreground="White" FontSize="11" Margin="2,0"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                         </Border>
@@ -165,7 +165,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Thumb">
-                        <Border Background="#990078D7" BorderBrush="White" BorderThickness="1">
+                        <Border IsHitTestVisible="False" Background="#990078D7" BorderBrush="White" BorderThickness="1">
                             <TextBlock Text="{Binding Name}" Foreground="White" FontSize="10" Margin="2,0"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                         </Border>
@@ -184,7 +184,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Thumb">
-                        <Border Background="#01000000" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" />
+                        <Border IsHitTestVisible="False" Background="#01000000" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" />
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -381,7 +381,7 @@
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
         <Canvas x:Name="TitleProgress" Grid.ColumnSpan="3" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
-            <Rectangle x:Name="TitleProgressFill" Height="32" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.14" />
+            <Rectangle x:Name="TitleProgressFill" Height="32" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.175" />
         </Canvas>
         <TextBlock x:Name="TitleText" Text="HandPeg" Margin="14,0,12,0" VerticalAlignment="Center" FontSize="12" IsHitTestVisible="False" />
         <Border x:Name="TitleStatus" Grid.ColumnSpan="3" HorizontalAlignment="Center" Background="Transparent" Padding="12,0" Visibility="Collapsed"
@@ -492,7 +492,7 @@
                     <StackPanel x:Name="ViewsPlaybackOptions" Visibility="Collapsed" Margin="0,0,0,8">
                         <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,0,0,4" />
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="0,2"
-                                  ToolTip="Splits and in and out points move onto the main videos I-frames, which is what a stream copy needs to cut without encoding." />
+                                  ToolTip="Splits move onto the main videos I-frames, which is what a stream copy needs to cut without encoding." />
                         <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="0,2"
                                   ToolTip="Draws a thin line on the timeline at every I-frame." />
                     </StackPanel>
@@ -723,7 +723,7 @@
                 <Grid x:Name="TimelineOptionsHost" ClipToBounds="True" SizeChanged="TimelineOptionsHost_SizeChanged">
                     <StackPanel x:Name="TimelineOptionsInline" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="0"
-                                  ToolTip="Splits and in and out points move onto the main videos I-frames, which is what a stream copy needs to cut without encoding. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
+                                  ToolTip="Splits move onto the main videos I-frames, which is what a stream copy needs to cut without encoding. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
                         <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="14,0,0,0"
                                   ToolTip="Draws a thin line on the timeline at every I-frame. Settings (Timeline) can tie timeline snapping to this box." />
                     </StackPanel>
@@ -775,16 +775,6 @@
                             local:KeyTip.Action="transport.end" local:KeyTip.Text="Go to End{keys}" AutomationProperties.Name="Go to End" />
                     <ToggleButton local:OverflowStrip.Priority="45" Content="&#xE8EE;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0" IsChecked="{Binding LoopPlayback}" Visibility="{Binding PlaybackControls[Loop], Converter={StaticResource BoolToVisibility}}"
                                   ToolTip="Loop Playback: at the end, playback starts again from the beginning: of the selected clip, or of the whole sequence." AutomationProperties.Name="Loop Playback" />
-                    <Button local:OverflowStrip.Priority="35" Style="{StaticResource TextTransport}" Content="[" Margin="14,0,3,0" Command="{Binding AddStartPointCommand}" Visibility="{Binding PlaybackControls[MarkIn], Converter={StaticResource BoolToVisibility}}"
-                            local:KeyTip.Action="edit.in" local:KeyTip.Text="Add In Point{keys}: the stretch to split out begins at the playhead." AutomationProperties.Name="Add Start Point (Playback Bar)" />
-                    <Button local:OverflowStrip.Priority="35" Style="{StaticResource TextTransport}" Content="]" Command="{Binding AddStopPointCommand}" Visibility="{Binding PlaybackControls[MarkOut], Converter={StaticResource BoolToVisibility}}"
-                            local:KeyTip.Action="edit.out" local:KeyTip.Text="Add Out Point{keys}: every unlocked track is split at the in point and at the playhead, so the stretch between is clips of its own." AutomationProperties.Name="Add Stop Point (Playback Bar)" />
-                    <Button local:OverflowStrip.Priority="25" Style="{StaticResource TextTransport}" Content="&#x2190;[" Tag="GoToIn" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[GoToIn], Converter={StaticResource BoolToVisibility}}"
-                            local:KeyTip.Action="transport.goToIn" local:KeyTip.Text="Go to In Point{keys}: the in point being set, or the start of the selected clip." AutomationProperties.Name="Go to Start Point" />
-                    <Button local:OverflowStrip.Priority="25" Style="{StaticResource TextTransport}" Content="]&#x2192;" Tag="GoToOut" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[GoToOut], Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Go to Out Point: the end of the selected clip." AutomationProperties.Name="Go to Stop Point" />
-                    <Button local:OverflowStrip.Priority="25" Style="{StaticResource TextTransport}" Content="[&#x25B6;]" Tag="PlayInOut" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[PlayInOut], Converter={StaticResource BoolToVisibility}}"
-                            local:KeyTip.Action="transport.playInToOut" local:KeyTip.Text="Play In to Out{keys}: plays the selected clip (or from the in point being set to the playhead) and stops at its end." AutomationProperties.Name="Play Start to Stop" />
                     <Button local:OverflowStrip.Priority="30" Style="{StaticResource TransportButton}" Content="&#xE8C6;" Tag="Split" Click="PlaybackControl_Click"
                             local:KeyTip.Action="edit.split" local:KeyTip.Text="Split at Playhead{keys}: cuts the selected block in two at the playhead." AutomationProperties.Name="Split at Playhead (Playback Bar)">
                         <Button.Visibility>
@@ -930,6 +920,7 @@
             </Border>
             <!-- Timeline and cut controls -->
             <Border Grid.Row="2" Grid.ColumnSpan="3" x:Name="TimelinePane" Style="{StaticResource Panel}">
+                <Grid>
                 <StackPanel>
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -1061,13 +1052,17 @@
                     </Grid>
 
                     <StackPanel Orientation="Horizontal" Margin="0,10,0,0" Visibility="{Binding ShowTimelineOptionsBelow, Converter={StaticResource BoolToVisibility}}">
-                        <TextBlock Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="12,0,0,0" />
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="24,0,0,0"
-                                  ToolTip="Splits and in and out points move onto the main videos I-frames, which is what a stream copy needs to cut without encoding. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
+                                  ToolTip="Splits move onto the main videos I-frames, which is what a stream copy needs to cut without encoding. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
                         <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="16,0,0,0"
                                   ToolTip="Draws a thin line on the timeline at every I-frame. Settings (Timeline) can tie timeline snapping to this box." />
                     </StackPanel>
                 </StackPanel>
+                <!-- The bar's lower edge (5.1-Polish, the user's directive): dragged, its height; double-clicked, the usual one. Over the pane's padding. -->
+                <local:EdgeGrip x:Name="OverviewGrip" VerticalAlignment="Bottom" Margin="-12,0,-12,-10"
+                                DragStarted="OverviewGrip_DragStarted" Dragged="OverviewGrip_Dragged" ResetRequested="OverviewGrip_ResetRequested"
+                                ToolTip="Drag to make the Overview Bar taller or lower. A double-click puts its usual height back." />
+                </Grid>
             </Border>
             <!--
                 The header (the Header pane): Add Media, Layout, Project and Settings. Its shape is set where the dock manager puts it (ApplyHeaderShape): a row held against

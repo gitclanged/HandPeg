@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using HandPegApp.Controls;
 using HandPegApp.Models;
 using HandPegApp.Services;
 using Microsoft.Win32;
@@ -61,6 +62,7 @@ public partial class MediaBrowserPane : UserControl
     // A press in the list: where, on what, and whether a selection of several was kept for dragging them all.
     private Point? _pressAt;
     private MediaBrowserItem? _pressed;
+    private ModifierKeys _pressKeys;
     private bool _keepSelection;
 
     public MediaBrowserPane()
@@ -1026,6 +1028,9 @@ public partial class MediaBrowserPane : UserControl
 
     private void Picture_MouseMove(object sender, MouseEventArgs e)
     {
+        if (sender is FrameworkElement { ActualWidth: > 0, ActualHeight: > 0 } tile && e.LeftButton != MouseButtonState.Pressed)
+            TiltToward(tile, e.GetPosition(tile));
+
         // Resting on a video's tile: a drop of it is likely (5.0-Release).
         if (sender is FrameworkElement { DataContext: MediaBrowserItem { IsVideo: true } hovered })
             RestOn(hovered);
@@ -1119,10 +1124,64 @@ public partial class MediaBrowserPane : UserControl
 
     private void Picture_MouseLeave(object sender, MouseEventArgs e)
     {
+        (_tiltTo, _tiltHeld) = (default, false);
         _restTimer?.Stop();
         _restingOn = null;
         if (sender is FrameworkElement { DataContext: MediaBrowserItem item })
             (item.HoverFraction, item.HoverFrame, item.HoverText) = (double.NaN, null, "");
+    }
+
+    // ----- The tile under the pointer tilts toward it (5.1-GpuFx) -----
+
+    private TileTiltEffect? _tilt;
+    private FrameworkElement? _tiltTile;
+    private Vector _tiltTo, _tiltNow;
+    private bool _tiltHeld, _tiltRunning;
+
+    /// <summary>How far a tile leans at its edge (the perspective's share), and how much smaller it is drawn while it does, to leave its near edge room.</summary>
+    private const double TiltMost = 0.09, TiltInset = 0.05, TiltSheen = 0.16;
+
+    private void TiltToward(FrameworkElement tile, Point at)
+    {
+        if (!AppSettings.Current.EnableExtraAnimations || !TileTiltEffect.Works)
+            return;
+
+        if (!ReferenceEquals(tile, _tiltTile))
+        {
+            _tiltTile?.ClearValue(EffectProperty);
+            _tiltNow = default;
+            _tiltTile = tile;
+            tile.Effect = _tilt ??= new TileTiltEffect();
+        }
+
+        (_tiltTo, _tiltHeld) = (new Vector(at.X / tile.ActualWidth * 2 - 1, at.Y / tile.ActualHeight * 2 - 1), true);
+        if (!_tiltRunning)
+        {
+            _tiltRunning = true;
+            CompositionTarget.Rendering += TiltFrame;
+        }
+    }
+
+    // Only while a tile is leaning: at rest nothing here runs, and no tile has an effect.
+    private void TiltFrame(object? sender, EventArgs e)
+    {
+        // (The pane hidden, or a tile recycled, under a still pointer: no MouseLeave comes.)
+        if (_tiltTile is not { IsMouseOver: true, IsVisible: true })
+            (_tiltTo, _tiltHeld) = (default, false);
+
+        _tiltNow += (_tiltTo - _tiltNow) * 0.2;
+        if (!_tiltHeld && _tiltNow.LengthSquared < 0.0004)
+        {
+            _tiltRunning = false;
+            CompositionTarget.Rendering -= TiltFrame;
+            _tiltTile?.ClearValue(EffectProperty);
+            _tiltTile = null;
+            return;
+        }
+
+        var lean = Math.Min(_tiltNow.Length, 1);
+        _tilt!.Tilt = new System.Windows.Media.Media3D.Point4D(_tiltNow.X * TiltMost, _tiltNow.Y * TiltMost, lean * TiltSheen, 1 - lean * TiltInset);
+        _tilt.Sheen = new Point(_tiltNow.X * 0.5 + 0.5, _tiltNow.Y * 0.5 + 0.5);
     }
 
     private IReadOnlyList<BitmapSource>? StripOf(MediaBrowserItem item)
@@ -1221,10 +1280,12 @@ public partial class MediaBrowserPane : UserControl
         _pressed = FindItem(e.OriginalSource as DependencyObject);
         _keepSelection = false;
 
-        // A press on one of several selected files keeps them all selected, so that all of them can be dragged.
-        if (e.ClickCount == 1 && _pressed is not null && Items.SelectedItems.Count > 1 && Items.SelectedItems.Contains(_pressed) && Keyboard.Modifiers == ModifierKeys.None)
+        // A press on one of several selected files keeps them all selected, so that all of them can be dragged: with Ctrl or Shift still
+        // held from selecting them too (the list would take one away, or start the range again, on the press). What the press would have
+        // done is done on the release, when no drag came of it (Items_PreviewMouseLeftButtonUp).
+        if (e.ClickCount == 1 && _pressed is not null && Items.SelectedItems.Count > 1 && Items.SelectedItems.Contains(_pressed))
         {
-            _keepSelection = true;
+            (_keepSelection, _pressKeys) = (true, Keyboard.Modifiers);
             e.Handled = true;
         }
     }
@@ -1263,8 +1324,15 @@ public partial class MediaBrowserPane : UserControl
     {
         if (_keepSelection && _pressed is not null)
         {
-            Items.SelectedItems.Clear();
-            Items.SelectedItem = _pressed;
+            if (_pressKeys.HasFlag(ModifierKeys.Control))
+            {
+                Items.SelectedItems.Remove(_pressed);
+            }
+            else if (!_pressKeys.HasFlag(ModifierKeys.Shift))
+            {
+                Items.SelectedItems.Clear();
+                Items.SelectedItem = _pressed;
+            }
         }
 
         (_pressAt, _keepSelection) = (null, false);

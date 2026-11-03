@@ -80,13 +80,24 @@ float4 PSDenoise(VsOut i) : SV_Target
 
 // Color Grade (slot 5): eq's contrast (P0), brightness (P1), saturation (P2) and gamma (P3). eq works on luma (its
 // gamma weight 1) and scales chroma by the saturation: here the luma is replaced and the colour's distance from it scaled.
+// The sliders' channel balance (5.1-CleanupStudioAndFfmpegPurge) is eq's too: P3 then holds gamma x gamma_g, and P4 and P5 the gammas it
+// gives its Cb and Cr planes, sqrt(gamma_b / gamma_g) and sqrt(gamma_r / gamma_g), each on a plane from 0 to 1 with 0.5 for grey.
 float4 PSColorGrade(VsOut i) : SV_Target
 {
     float4 c = Unpremul(Here(i));
     float y = Luma(c.rgb);
     float v = P0 * (y - 0.5) + 0.5 + P1;
     float graded = v <= 0 ? 0 : min(pow(abs(v), 1 / max(P3, 0.01)), 1);
-    return Premul(saturate(graded + P2 * (c.rgb - y)), c.a);
+    if (P4 <= 0 && P5 <= 0)
+        return Premul(saturate(graded + P2 * (c.rgb - y)), c.a);
+
+    float cb = P2 * (c.b - y) / 1.8556 + 0.5;
+    float cr = P2 * (c.r - y) / 1.5748 + 0.5;
+    cb = cb <= 0 ? 0 : min(pow(abs(cb), 1 / max(P4, 0.01)), 1);
+    cr = cr <= 0 ? 0 : min(pow(abs(cr), 1 / max(P5, 0.01)), 1);
+    float r = graded + 1.5748 * (cr - 0.5);
+    float b = graded + 1.8556 * (cb - 0.5);
+    return Premul(saturate(float3(r, (graded - 0.2126 * r - 0.0722 * b) / 0.7152, b)), c.a);
 }
 
 // Hue (slot 18): hue's turn by P0 degrees and saturation P1, in BT.709 YCbCr: (Cb, Cr) turned and scaled, luma kept.
@@ -401,33 +412,20 @@ float4 PSBoxBlur(VsOut i) : SV_Target
     return sum / (2 * r + 1 + 2 * f);
 }
 
-// Sharpen (slot 21): cas (contrast adaptive sharpening) with strength P0, on each straight channel: the cross's and the
-// square's minimum and maximum set how far the four neighbours are pushed away, less where the contrast is already high.
+// Sharpen (slot 21, 5.1-Polish: an unsharp mask, the user's Q3): Aux is the picture box-blurred by the host (EffectRegistry's
+// SharpenBox, once across and down: FFmpeg's unsharp averages its square so), premultiplied as the input is. The BT.709 luma
+// of the straight difference is added back Strength x 2 times (P0, EffectRegistry.SharpenAmount) to the three channels
+// alike, so only the luma changes, as unsharp's la does. With a Threshold (P2, in levels of the 8-bit picture's luma: 219
+// of them from black to white), a difference under it is left alone, coming in over two levels either side (no hard step).
 float4 PSSharpen(VsOut i) : SV_Target
 {
     float4 c = Here(i);
     if (P0 < 0.005)
         return c;
 
-    float3 a = StraightAt(i.Uv, float2(-1, -1));
-    float3 b = StraightAt(i.Uv, float2(0, -1));
-    float3 cc = StraightAt(i.Uv, float2(1, -1));
-    float3 d = StraightAt(i.Uv, float2(-1, 0));
-    float3 e = StraightAt(i.Uv, float2(0, 0));
-    float3 f = StraightAt(i.Uv, float2(1, 0));
-    float3 g = StraightAt(i.Uv, float2(-1, 1));
-    float3 h = StraightAt(i.Uv, float2(0, 1));
-    float3 k = StraightAt(i.Uv, float2(1, 1));
-
-    float3 mn = min(min(min(d, e), f), min(b, h));
-    float3 mn2 = min(min(min(mn, a), cc), min(g, k));
-    float3 mx = max(max(max(d, e), f), max(b, h));
-    float3 mx2 = max(max(max(mx, a), cc), max(g, k));
-    mn += mn2;
-    mx += mx2;
-
-    float3 amp = sqrt(saturate(min(mn, 2 - mx) / max(mx, 1e-6)));
-    float3 weight = amp / -lerp(16, 4.01, saturate(P0));
-    float3 o = ((b + d + f + h) * weight + e) / (1 + 4 * weight);
-    return Premul(saturate(o), c.a);
+    float4 s = Unpremul(c);
+    float4 b = Unpremul(Aux.SampleLevel(PointClamp, i.Uv, 0));
+    float d = dot(s.rgb - b.rgb, Luma709);
+    float knee = P2 >= 0.5 ? saturate((abs(d) * 219 - P2 + 1) / 2) : 1;
+    return Premul(saturate(s.rgb + d * 2 * saturate(P0) * knee), s.a);
 }

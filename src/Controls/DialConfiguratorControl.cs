@@ -7,10 +7,11 @@ using HandPegApp.Services;
 namespace HandPegApp;
 
 /// <summary>
-/// The Lightning Dial's settings (Settings > Keybinds &amp; Lightning Dial, 4.4): its seven categories, each a name and the
-/// seven actions of its slices, clockwise from the slice the pointer comes in by. Edits a copy of the dial; the settings
-/// keep it when they are saved (<see cref="KeybindManager.ForSettings"/>). Above them, the dial's top level drawn as it
-/// opens (4.4-BugHunt): the one ring of the seven categories and Settings, following the names as they are typed.
+/// The Lightning Dial's settings (Settings > Keybinds &amp; Lightning Dial, 4.4): its eight slices (5.1-Polish), each an action
+/// run with one flick or a category (a name and the seven actions of its slices, clockwise from the slice the pointer comes
+/// in by), chosen by the slice's first box. Edits a copy of the dial; the settings keep it when they are saved
+/// (<see cref="KeybindManager.ForSettings"/>). Above them, the dial's top level drawn as it opens (4.4-BugHunt): the one
+/// ring of its slices, following the names and actions as they are chosen.
 /// </summary>
 public sealed class DialConfiguratorControl : StackPanel
 {
@@ -36,8 +37,13 @@ public sealed class DialConfiguratorControl : StackPanel
         Build();
     }
 
-    /// <summary>The dial as it is now edited (seven categories of seven slots).</summary>
+    /// <summary>The dial as it is now edited (eight slices: actions, or categories of seven slots).</summary>
     public IReadOnlyList<DialCategoryState> Dial => _dial;
+
+    // What a slice's first box offers: its own action, or a category (the choices' first, "Category...").
+    private const string CategoryChoice = "\u0001category";
+
+    private static readonly IReadOnlyList<ActionChoice> SliceChoices = [new(CategoryChoice, "Category (a ring of 7 actions)..."), .. Choices];
 
     private void Build()
     {
@@ -47,12 +53,56 @@ public sealed class DialConfiguratorControl : StackPanel
 
         for (var index = 0; index < _dial.Count; index++)
         {
+            var sliceAt = index;
             var category = _dial[index];
             var header = new DockPanel { Margin = new Thickness(0, index == 0 ? 2 : 12, 0, 4), LastChildFill = false };
             var glyph = new TextBlock { Text = category.Glyph, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 16, Width = 26, VerticalAlignment = VerticalAlignment.Center };
             glyph.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
             var number = new TextBlock { Text = $"{index + 1}.", Width = 20, VerticalAlignment = VerticalAlignment.Center };
             number.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+
+            // The slice's own action (run with one flick), or a category of its own (5.1-Polish, the user's directive).
+            var kind = new ComboBox
+            {
+                ItemsSource = SliceChoices,
+                DisplayMemberPath = nameof(ActionChoice.Label),
+                SelectedValuePath = nameof(ActionChoice.Id),
+                SelectedValue = category.IsAction ? category.Action : category.Actions.Exists(a => a.Length > 0) ? CategoryChoice : "",
+                Width = 230,
+                Margin = new Thickness(0, 0, 8, 0),
+                VerticalContentAlignment = VerticalAlignment.Center,
+            };
+            AutomationProperties.SetName(kind, $"Slice {index + 1}");
+            kind.SelectionChanged += (_, _) =>
+            {
+                var chosen = kind.SelectedValue as string ?? "";
+                if (chosen == CategoryChoice)
+                {
+                    if (!category.IsAction && category.Actions.Exists(a => a.Length > 0))
+                        return;
+                    _dial[sliceAt] = KeybindManager.CategoryFor(sliceAt);
+                }
+                else
+                {
+                    _dial[sliceAt] = chosen.Length > 0 ? KeybindManager.Leaf(chosen) : new DialCategoryState { Actions = [.. Enumerable.Repeat("", KeybindManager.DialSlots)] };
+                }
+
+                // The rest of the slice's row changes with it: made again after this choice is done.
+                Dispatcher.BeginInvoke(Build);
+            };
+
+            DockPanel.SetDock(number, Dock.Left);
+            DockPanel.SetDock(glyph, Dock.Left);
+            DockPanel.SetDock(kind, Dock.Left);
+            header.Children.Add(number);
+            header.Children.Add(glyph);
+            header.Children.Add(kind);
+            if (category.IsAction || !category.Actions.Exists(a => a.Length > 0))
+            {
+                Children.Add(header);
+                continue;
+            }
+
             var name = new TextBox { Text = category.Name, Width = 170, MaxLength = 24, VerticalContentAlignment = VerticalAlignment.Center };
             AutomationProperties.SetName(name, $"Category {index + 1} name");
             name.TextChanged += (_, _) =>
@@ -63,11 +113,7 @@ public sealed class DialConfiguratorControl : StackPanel
                     _picture?.Relabel();
                 }
             };
-            DockPanel.SetDock(number, Dock.Left);
-            DockPanel.SetDock(glyph, Dock.Left);
             DockPanel.SetDock(name, Dock.Left);
-            header.Children.Add(number);
-            header.Children.Add(glyph);
             header.Children.Add(name);
             Children.Add(header);
 
@@ -85,7 +131,11 @@ public sealed class DialConfiguratorControl : StackPanel
                     Margin = new Thickness(0, 2, 6, 2),
                 };
                 AutomationProperties.SetName(picker, $"Category {index + 1}, slice {slot + 1}");
-                picker.SelectionChanged += (_, _) => category.Actions[at] = picker.SelectedValue as string ?? "";
+                picker.SelectionChanged += (_, _) =>
+                {
+                    category.Actions[at] = picker.SelectedValue as string ?? "";
+                    _picture?.Relabel();
+                };
                 slots.Children.Add(picker);
             }
 
@@ -104,8 +154,8 @@ public sealed class DialConfiguratorControl : StackPanel
 
     /// <summary>
     /// The dial's top level as it opens, drawn by the dial's own ring (<see cref="LightningDialOverlay.DrawRing"/>): each
-    /// category's glyph and name in its slice, clockwise from the top, and Settings in the eighth. Nothing to click: it shows
-    /// what the boxes below make.
+    /// slice's glyph and name (its action's, or its category's), clockwise from the top. Nothing to click: it shows what the
+    /// boxes below make.
     /// </summary>
     private sealed class DialPicture : FrameworkElement
     {
@@ -148,15 +198,22 @@ public sealed class DialConfiguratorControl : StackPanel
                 (_edge, _spoke, _edgeBrush) = (LightningDialOverlay.RingPen(outline, 1), LightningDialOverlay.RingPen(outline, LightningDialOverlay.SpokeWidth), outline);
 
             var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+            var shown = new (string Glyph, string Name)[Slices];
             for (var i = 0; i < Slices; i++)
-                _fills[i] = i < _dial.Count || i == Slices - 1 ? face : well;
+            {
+                var slice = i < _dial.Count ? _dial[i] : null;
+                shown[i] = slice is null ? ("", "")
+                    : slice.IsAction ? KeybindManager.Action(slice.Action) is { } action ? (action.Glyph, action.Label.TrimEnd('.')) : ("", "")
+                    : slice.Actions.Exists(a => a.Length > 0) ? (slice.Glyph, slice.Name)
+                    : ("", "");
+                _fills[i] = shown[i].Name.Length > 0 ? face : well;
+            }
+
             LightningDialOverlay.DrawRing(drawing, _fills, face, _edge, _spoke);
 
             for (var i = 0; i < Slices; i++)
             {
-                var (glyph, name) = i == Slices - 1 ? (LightningDialOverlay.SettingsGlyph, "Settings")
-                    : i < _dial.Count ? (_dial[i].Glyph, _dial[i].Name)
-                    : ("", "");
+                var (glyph, name) = shown[i];
                 if (name.Length == 0)
                     continue;
 

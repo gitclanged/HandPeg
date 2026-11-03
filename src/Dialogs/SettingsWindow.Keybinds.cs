@@ -45,8 +45,8 @@ public partial class SettingsWindow
         // The dial's hint names the key that opens it as the keys are now (Mouse 5 unless it was changed).
         var keys = KeybindManager.GestureText("ui.dial");
         var opener = keys == "Mouse5" ? "The mouse's forward side button (Mouse 5)" : keys.Length > 0 ? keys : "Its key (it has none now: give it one under Keybinds)";
-        DialHint.Text = $"{opener} opens the Lightning Dial under the pointer: one ring of the seven categories and Settings. "
-            + "A category opens its seven actions in their place, with Back opposite. Choose what each category holds here.";
+        DialHint.Text = $"{opener} opens the Lightning Dial under the pointer: one ring of eight slices, each an action run with one flick "
+            + "(as it comes) or a category, which opens its seven actions in their place, with Back opposite. Choose what each slice holds here.";
 
         // The preset box (bound to KeybindPreset) changes the preset the keys are shown and edited over.
         if (FindPresetBox() is { } presets)

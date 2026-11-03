@@ -70,7 +70,7 @@ public sealed class CompositorClient : IDisposable
 
         // Read by the worker as it starts (Instant Seek's frame cache and decode lanes, and where it decodes).
         _shared.Control.CacheBudgetRequest = frameCacheBudget;
-        _shared.Control.DecodeThreadsRequest = Math.Clamp(decodeThreads, 0, 4);
+        _shared.Control.DecodeThreadsRequest = Math.Clamp(decodeThreads, 0, 8);
         _shared.Control.SoftwareDecodeRequest = softwareDecode ? 1 : 0;
         _wake = new EventWaitHandle(false, EventResetMode.AutoReset, CompositorProtocol.WakeEvent(baseName));
         _presented = new EventWaitHandle(false, EventResetMode.AutoReset, CompositorProtocol.FrameEvent(baseName));
@@ -200,8 +200,9 @@ public sealed class CompositorClient : IDisposable
 
     /// <summary>
     /// Waits up to <paramref name="milliseconds"/> for the frame of <paramref name="sequence"/> (published with
-    /// <see cref="FrameSceneHeader.FlagReadback"/>) to be read back, then copies its BGRA8 rows into <paramref name="into"/>
-    /// (at least width x height x 4). False on a timeout, or when <paramref name="into"/> is too small.
+    /// <see cref="FrameSceneHeader.FlagReadback"/>) to be read back, then copies it into <paramref name="into"/>: its BGRA8 rows
+    /// (width x height x 4), or NV12's two planes with <see cref="FrameSceneHeader.FlagReadbackNv12"/>
+    /// (<see cref="CompositorProtocol.Nv12Bytes"/>). False on a timeout, or when <paramref name="into"/> is too small.
     /// </summary>
     public bool TryReadback(long sequence, Span<byte> into, out int width, out int height, int milliseconds)
     {
@@ -219,7 +220,7 @@ public sealed class CompositorClient : IDisposable
         }
 
         (width, height) = (control.ReadbackWidth, control.ReadbackHeight);
-        var bytes = (long)width * height * 4;
+        var bytes = control.ReadbackRowBytes == width * 4 ? (long)width * height * 4 : CompositorProtocol.Nv12Bytes(width, height);
         if (bytes <= 0 || into.Length < bytes || _readbackView is not { } view || bytes > view.Capacity)
             return false;
         unsafe
@@ -246,7 +247,7 @@ public sealed class CompositorClient : IDisposable
     public int DecodeThreads
     {
         get => Volatile.Read(ref _shared.Control.DecodeThreadsRequest);
-        set => Volatile.Write(ref _shared.Control.DecodeThreadsRequest, Math.Clamp(value, 0, 4));
+        set => Volatile.Write(ref _shared.Control.DecodeThreadsRequest, Math.Clamp(value, 0, 8));
     }
 
     /// <summary>The frame cache's counters as the worker last wrote them (Settings' readout, tools\SeekBench).</summary>

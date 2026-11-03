@@ -307,8 +307,10 @@ public partial class MainViewModel
                             job.Progress = percent;
                     });
                     // Heard in the source's own time: shown through the clips that played it when the job was made (4.4).
-                    CaptionGenerator.WriteAss(CaptionProjection.ProjectWords(words, captions.Spans), captions.Style, captions.Width, captions.Height,
-                        captions.TextScale, captions.AssPath, captions.TimeOffset);
+                    // Grouped window by window (5.1-Polish): no caption runs across a cut.
+                    var lines = CaptionProjection.ProjectLines(words, captions.Spans, captions.Style);
+                    CaptionGenerator.WriteAss([.. lines.SelectMany(l => l)], captions.Style, captions.Width, captions.Height,
+                        captions.TextScale, captions.AssPath, captions.TimeOffset, lines);
                     job.CaptionsReady = true;
                 }
                 catch (OperationCanceledException)

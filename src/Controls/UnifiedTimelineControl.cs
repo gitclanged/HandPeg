@@ -55,6 +55,15 @@ public sealed class TimelineRow
     /// <summary>Its full height in DIPs (a collapsed child lane is a fifth of it, at least 8).</summary>
     public double Height { get; set; } = 56;
 
+    /// <summary>
+    /// Its lower edge dragged sizes it alone (5.1-AutoHud-Part1, the user's Q2: a track's row); otherwise that drag, like Shift +
+    /// the drag on any row, is the one Track Height's.
+    /// </summary>
+    public bool SizedAlone { get; set; }
+
+    /// <summary>It has a height of its own, so the one Track Height leaves it as it is.</summary>
+    public bool HasOwnHeight { get; set; }
+
     /// <summary>Its blocks: Left and Width in laid-out pixels (seconds times PixelsPerSecond); Top and Height within the row, or both 0 to fill it.</summary>
     public List<TimelineBlock> Blocks { get; } = [];
 
@@ -161,6 +170,9 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         public bool SecondDeck;
         public int Stacks;
         public bool Above;
+
+        // The one bar a closed sound stack is, with all that is audible of it drawn in it as one waveform (5.1-TrackEqualityAndVram).
+        public bool Summary;
 
         public readonly double Bottom => Top + Height;
 
@@ -409,6 +421,30 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     /// <summary>Alt + click on a block (without dragging it): split it there (seconds).</summary>
     public event Action<TimelineRow, TimelineBlock, double>? RazorRequested;
 
+    /// <summary>Alt + the wheel over the tracks (5.1-Polish, the user's directive): every track taller (notches up, positive) or lower.</summary>
+    public event Action<int>? TrackHeightStepped;
+
+    /// <summary>A row's lower edge in the headers pressed (5.1-Polish): a drag of the tracks' height begins.</summary>
+    public event Action? TrackHeightDragStarted;
+
+    /// <summary>
+    /// The lower edge dragged: how much taller (DIPs; negative, lower) a picture row is to be than when the drag began, so the
+    /// edge stays under the pointer (the move shared among the rows from the top down to it, which all grow with it).
+    /// </summary>
+    public event Action<double>? TrackHeightDragged;
+
+    /// <summary>A row's lower edge double-clicked (5.1-Polish): the tracks back to their usual height.</summary>
+    public event Action? TrackHeightReset;
+
+    /// <summary>A row's lower edge dragged (5.1-AutoHud-Part1, the user's Q2): the height the row is to have now, in DIPs.</summary>
+    public event Action<TimelineRow, double>? RowHeightDragged;
+
+    /// <summary>That drag was let go of (true), or taken away (false: the row goes back).</summary>
+    public event Action<TimelineRow, bool>? RowHeightDragEnded;
+
+    /// <summary>A row's own height was given up: a double-click on its lower edge, back to the one Track Height.</summary>
+    public event Action<TimelineRow>? RowHeightReset;
+
     /// <summary>The pointer moved over the time area: the moment under it (seconds), the skim line's; null when it leaves.</summary>
     public event Action<double?>? SkimChanged;
 
@@ -480,9 +516,15 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         var sequenceChanged = !sequenceSeconds.Equals(_sequenceSeconds);
         _sequenceSeconds = sequenceSeconds;
         if (PixelsPerSecond != scale || sequenceChanged)
+        {
             Invalidate();
+            PlaceLine(_playhead, _playheadSeconds, ref _playheadHeight, playhead: true);
+            PlaceLine(_skim, _skimSeconds, ref _skimHeight, playhead: false);
+        }
         else
+        {
             Slide();
+        }
     }
 
     /// <summary>The blocks changed in place (moved, selected, their sound or pictures arrived): everything is drawn again.</summary>
@@ -532,7 +574,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             return false;
 
         expansion.Target = target;
-        if (!HasStack(row, stack) || !IsVisible)
+        if (!HasStack(row, stack) || !IsVisible || !Services.AppSettings.Current.EnableExtraAnimations)
             expansion.Current = target;
 
         if (expansion.Current == 0 && expansion.Target == 0)
@@ -562,6 +604,10 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     public void AnimateFold(double atSeconds, double lengthSeconds, bool opening, IReadOnlyCollection<object>? rowKeys)
     {
         if (!IsVisible || !(lengthSeconds > 0) || !double.IsFinite(atSeconds) || !double.IsFinite(lengthSeconds))
+            return;
+
+        // The rows are already as they end: with the flair off, that is simply what is drawn (5.1-AutoHud-Part1).
+        if (!Services.AppSettings.Current.EnableExtraAnimations)
             return;
 
         _slide = new FoldSlide
@@ -633,7 +679,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     }
 
     /// <summary>Whether a block, a fade, a gain line or a J/L cut is being dragged (the host leaves the rows alone meanwhile).</summary>
-    public bool IsDragging => _drag is not null || _gainDrag is not null || _fadeDrag is not null || _splitDrag is not null;
+    public bool IsDragging => _drag is not null || _gainDrag is not null || _fadeDrag is not null || _splitDrag is not null || _crossfadeDrag is not null;
 
     // ----- Laying out -----
 
@@ -643,7 +689,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         _lanes.Clear();
         var top = 0.0;
         for (var i = 0; i < _rows.Count; i++)
-            AddLanes(_rows[i], null, 0, -1, 1, 1, false, false, false, false, ref top);
+            AddLanes(_rows[i], null, 0, -1, 1, 1, false, false, false, false, false, ref top);
 
         foreach (var lane in _lanes)
             FindGaps(lane);
@@ -702,7 +748,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     // every lane of a subtree that comes or goes so is <paramref name="fade"/> as tall as it would be, its gap with it. The
     // lanes stay in order down the control (LaneAt). <paramref name="above"/>: this row is laid above its parent's.
     private void AddLanes(TimelineRow row, TimelineRow? parent, int depth, int parentLane, double openness, double fade, bool firstChild, bool lastChild,
-        bool secondDeck, bool above, ref double top)
+        bool secondDeck, bool above, bool summary, ref double top)
     {
         if (parent is not null)
             row.Parent ??= parent;
@@ -736,7 +782,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             {
                 if (!Above(child))
                     continue;
-                AddLanes(child, row, depth + 1, PendingParent, layersOpen, fade * layersOpen, k == 0, k == aboveCount - 1, false, true, ref top);
+                AddLanes(child, row, depth + 1, PendingParent, layersOpen, fade * layersOpen, k == 0, k == aboveCount - 1, false, true, false, ref top);
                 k++;
             }
         }
@@ -745,7 +791,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         _lanes.Add(new Lane
         {
             Row = row, Depth = depth, Top = top, Height = height, Mini = mini, FirstChild = firstChild, LastChild = lastChild,
-            Parent = parentLane, SecondDeck = secondDeck, Stacks = stacks, Above = above,
+            Parent = parentLane, SecondDeck = secondDeck, Stacks = stacks, Above = above, Summary = summary,
         });
         foreach (var block in row.Blocks)
             block.IsMini = mini;
@@ -783,7 +829,14 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             var first = before < 0 || row.Children[before].Stack != child.Stack;
             var last = after >= row.Children.Count || row.Children[after].Stack != child.Stack;
             var (open, share) = Above(child) ? (0.0, fade * (1 - layersOpen)) : (Math.Min(openness, Openness(row, child.Stack)), fade);
-            AddLanes(child, row, depth + 1, index, open, share, first, last, two && child.Stack == ChildStack.Audio, false, ref top);
+
+            // A stack is never hidden (5.1-CleanupStudioAndFfmpegPurge, the user's directive): closed, it is its thin bars, a fifth of a lane
+            // each. A closed sound stack is one bar, its first lane's, with every stream that is heard: the others come only as it opens.
+            var stackOpen = Openness(row, child.Stack);
+            var oneBar = child.Stack == ChildStack.Audio && first && stackOpen < 0.999;
+            if (child.Stack == ChildStack.Audio && !first)
+                share *= stackOpen;
+            AddLanes(child, row, depth + 1, index, open, share, first, last, two && child.Stack == ChildStack.Audio, false, oneBar, ref top);
         }
     }
 

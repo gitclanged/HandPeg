@@ -13,8 +13,6 @@ namespace HandPegApp;
 public partial class MainWindow
 {
     // Play Start to Stop: the stretch being played, in milliseconds, while it is.
-    private double? _playUntilMs;
-    private double _playFromMs;
 
     /// <summary>Lists the bar's options under their headings in its settings, and keeps the player's mute and the safe margins in step.</summary>
     private void InitializePlaybackBar()
@@ -62,21 +60,6 @@ public partial class MainWindow
             case "PlayReverse":
                 Shuttle(-1);
                 break;
-            case "GoToIn" when InPointMs() is { } start:
-                _viewModel.PositionMs = start;
-                break;
-            case "GoToIn":
-                _viewModel.StatusText = $"There is no in point: set one with {Services.KeybindManager.WithGesture("[", "edit.in")}, or select a clip.";
-                break;
-            case "GoToOut" when SelectedStretch() is { } stretch:
-                _viewModel.PositionMs = stretch.To;
-                break;
-            case "GoToOut":
-                _viewModel.StatusText = "Select a clip on the timeline to go to its end.";
-                break;
-            case "PlayInOut":
-                PlayStartToStop();
-                break;
             case "Split":
                 SplitSelectedClip();
                 break;
@@ -98,9 +81,6 @@ public partial class MainWindow
     /// <summary>The stretch of the clip selected on the timeline, in milliseconds (what 4.2.0s selected cut segment was); null for none.</summary>
     private (double From, double To)? SelectedStretch() =>
         _selectedClip is Layer layer && _viewModel.ClipOf(layer) is { } clip ? (clip.Start * 1000, clip.End * 1000) : null;
-
-    /// <summary>The in point being set, or the start of the selected clip, in milliseconds.</summary>
-    private double? InPointMs() => _viewModel.PendingStartMs ?? SelectedStretch()?.From;
 
     /// <summary>
     /// Moves the playhead to the nearest edit point that way: the start or end of a clip of the main video, of a
@@ -124,47 +104,11 @@ public partial class MainWindow
             _viewModel.PositionMs = Math.Clamp(seconds, 0, sequence) * 1000;
     }
 
-    /// <summary>Plays the selected clips stretch, or from the in point being set to the playhead, and stops (or, looping, starts again) at its end.</summary>
-    private void PlayStartToStop()
-    {
-        (double From, double To)? range = SelectedStretch() is { } selected
-            ? selected
-            : _viewModel.PendingStartMs is { } start && _viewModel.PositionMs > start + 50 ? (start, _viewModel.PositionMs) : null;
-        if (range is not { } stretch)
-        {
-            _viewModel.StatusText = "Select a clip to play, or set an in point ([) and move the playhead past it.";
-            return;
-        }
-
-        (_playFromMs, _playUntilMs) = (stretch.From, stretch.To);
-        _viewModel.PositionMs = stretch.From;
-        if (!PlayerIsPlaying)
-            PlayPause_Click(this, new RoutedEventArgs());
-    }
-
     /// <summary>
-    /// While playing: Play Start to Stop stops at its end, and Loop goes back to the start (of the stretch played, of
-    /// the selected clip, or of the sequence). True when the position was dealt with.
+    /// While playing: Loop goes back to the start of the selected clip. True when the position was dealt with.
     /// </summary>
     private bool KeepPlaybackInRange(long timeMs)
     {
-        if (_playUntilMs is { } until)
-        {
-            if (timeMs < until - 15)
-                return false;
-
-            if (_viewModel.LoopPlayback)
-            {
-                PlayerSeek((long)_playFromMs);
-                return true;
-            }
-
-            _playUntilMs = null;
-            PlayerSetPause(true);
-            _viewModel.StatusText = "Played to the stop point.";
-            return true;
-        }
-
         if (_viewModel.LoopPlayback && SelectedStretch() is { } stretch && timeMs >= stretch.To - 15)
         {
             PlayerSeek((long)stretch.From);
@@ -175,15 +119,13 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Where Loop takes playback back from and to now, in seconds (the stretch played, the selected clip, else the sequence's
+    /// Where Loop takes playback back from and to now, in seconds (the selected clip, else the sequence's
     /// end to its start): the engine makes the cuts there ready before the wrap. NaN to: Loop off.
     /// </summary>
     private (double From, double To) LoopWrap()
     {
         if (!_viewModel.LoopPlayback)
             return (double.NaN, double.NaN);
-        if (_playUntilMs is { } until)
-            return (until / 1000.0, _playFromMs / 1000.0);
         return SelectedStretch() is { } stretch ? (stretch.To / 1000.0, stretch.From / 1000.0) : (double.PositiveInfinity, 0);
     }
 
@@ -193,7 +135,7 @@ public partial class MainWindow
         if (!_viewModel.LoopPlayback || _gpu is null)
             return;
 
-        var from = _playUntilMs is not null ? (long)_playFromMs : SelectedStretch() is { } stretch ? (long)stretch.From : 0;
+        var from = SelectedStretch() is { } stretch ? (long)stretch.From : 0;
         _viewModel.PositionMs = from;
         PlayerSetPause(false);
     }

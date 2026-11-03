@@ -553,6 +553,17 @@ public static partial class FilterGraphBuilder
     private Layer CaptionLayer => S.CaptionLayer;
     private bool AutoCaptions => S.AutoCaptions;
     private string CaptionsFilePath => S.CaptionsFilePath;
+
+    /// <summary>
+    /// Whether the captions are drawn among the layers (5.1-Polish, the user's Q2: under a track, Lowered.CaptionsAt), which
+    /// only the frame engine lays; otherwise they are drawn over everything, after the fades, as they always were.
+    /// </summary>
+    public bool CaptionsAmongLayers => FrameEngine && T.CaptionsAt >= 0;
+
+    // While the frame engine is built (5.1-Polish): the caption file it lays among the layers, and where its picture's clock
+    // is on that file's (a stretch of a Render Preview of several); null when the captions are not among the layers.
+    private string? _stackCaptions;
+    private double _stackCaptionsShift;
     private bool Deinterlace => S.Deinterlace;
     private bool Denoise => S.Denoise;
     private string LutPath => S.LutPath;
@@ -707,8 +718,9 @@ public static partial class FilterGraphBuilder
             // Applied once to the finished picture: the fades, and for GIF the palette (which has to come last).
             var onceFilters = copyVideo ? [] : BuildWholeVideoFilters(duration);
 
-            // Auto-captions are timed against the finished output, so they are drawn last of all.
-            if (AutoCaptions && !copyVideo)
+            // Auto-captions are timed against the finished output, so they are drawn last of all; put under a track (5.1-Polish),
+            // the frame engine lays them among the layers instead (on the output's clock too: the export's starts at 0).
+            if (AutoCaptions && !copyVideo && !CaptionsAmongLayers)
                 onceFilters.Add(BuildCaptionOverlay(CaptionsFilePath));
             var lastFilters = extension == "gif" ? new List<string> { "split[gs0][gs1];[gs0]palettegen[gp];[gs1][gp]paletteuse" } : [];
             if (!copyVideo && !animated && EncoderFormatFilters() is { } encoderFormat)
@@ -833,7 +845,16 @@ public static partial class FilterGraphBuilder
             maps.Add("-map 0:v:0");
             if (!copyVideo)
             {
-                var chain = BuildVideoFilters(labelSuffix: "", 0, SequenceSeconds);
+                _stackCaptions = AutoCaptions && CaptionsAmongLayers ? CaptionsFilePath : null;
+                List<string> chain;
+                try
+                {
+                    chain = BuildVideoFilters(labelSuffix: "", 0, SequenceSeconds);
+                }
+                finally
+                {
+                    _stackCaptions = null;
+                }
 
                 // Burned-in subtitles are placed by the main video's own time: the clock is set to it while
                 // they are drawn, wherever on the sequence the main video has been put.
@@ -949,8 +970,11 @@ public static partial class FilterGraphBuilder
 
             // What is done once, to the finished picture. The sequence's fades are each stretch's own (BuildStretchFades):
             // only where it overlaps the sequence's first or last second, on its picture and its sound alike.
+            // Captions put under a track (5.1-Polish) are laid among the layers by each stretch's frame engine, on the joined
+            // preview's clock (the stretches before it come first on it); otherwise over the finished picture.
+            var stackCaptions = captionsPath is not null && CaptionsAmongLayers ? captionsPath : null;
             var finishing = new List<string>();
-            if (captionsPath is not null)
+            if (captionsPath is not null && stackCaptions is null)
                 finishing.Add(BuildCaptionOverlay(captionsPath));
             if (GetTargetFramerate() is { } framerate)
                 finishing.Add($"fps=fps={framerate}");
@@ -1027,13 +1051,14 @@ public static partial class FilterGraphBuilder
 
                 List<string> chain;
                 _inputOrigin = origin;
+                (_stackCaptions, _stackCaptionsShift) = (stackCaptions, ranges.Take(i).Sum(r => Math.Max(r.End - r.Start, 0)));
                 try
                 {
                     chain = BuildVideoFilters(i.ToString(CultureInfo.InvariantCulture), from, to);
                 }
                 finally
                 {
-                    _inputOrigin = 0;
+                    (_inputOrigin, _stackCaptions, _stackCaptionsShift) = (0, null, 0);
                 }
 
                 if (burnFilters.Count > 0)

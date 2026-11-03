@@ -325,7 +325,7 @@ public static partial class FilterGraphBuilder
             var origin = S.MediaStarts.TryGetValue(layer.ImagePath.Trim().Trim('"'), out var videoStart) ? videoStart : 0;
             var cut = origin + into;
 
-            var chain = new List<string> { $"amovie='{EscapeFilterPath(layer.ImagePath)}'" };
+            var chain = new List<string> { $"amovie='{EscapeFilterPath(layer.ImagePath)}'{(layer.AudioStream > 0 ? $":streams='a\\:{layer.AudioStream}'" : "")}" };
             var trim = cut > 0.0005 ? $"atrim=start={Number(cut)}" : "";
             if (layer.Duration > 0.001)
                 trim = (trim.Length > 0 ? trim + ":" : "atrim=") + $"end={Number(origin + layer.MediaOffset + layer.Duration * speed)}";

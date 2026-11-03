@@ -1,4 +1,5 @@
 using HandPegApp.Models;
+using HandPegApp.Models.Effects;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
 
@@ -42,6 +43,49 @@ public static class TimelineGraphCases
         var cropExport = GraphCases.Export(cropped, cropFiles, "export-unified-crop",
             "Every clip cropped: a main video clip cropped otherwise than the first (a rider, cut from the stream by its own crop, in its own box), a piece cut from the main video with a mask of the whole frame, a picture, another file's video with a mask of its own picture, and words.");
         yield return cropExport with { Problems = [.. cropProblems, .. cropExport.Problems] };
+
+        // ----- The captions among the layers (5.1-Polish, the user's Q2) -----
+        var (among, amongProblems) = CaptionsAmongLayers();
+        var amongExport = GraphCases.Export(among, cropFiles, "export-captions-among-layers",
+            "The every-clip-cropped timeline with its captions put under Video 3 (the picture): laid by the frame engine over Video 1 and 2 and under the picture, the text and the inset, before the whole picture's look and the fades; the GPU plan's places in the same order.");
+        yield return amongExport with { Problems = [.. amongProblems, .. amongExport.Problems] };
+    }
+
+    /// <summary>
+    /// The every-clip-cropped timeline (<see cref="UnifiedCrop"/>) with auto-captions put under Video 3 (its picture): the
+    /// export's frame engine lays them among the layers (and not over the finished picture), and the GPU plan's places put
+    /// them between Video 2's piece and Video 3's picture.
+    /// </summary>
+    private static (SequenceExportState State, List<string> Problems) CaptionsAmongLayers()
+    {
+        var (state, problems) = UnifiedCrop();
+        var document = state.Timeline;
+        using (var edit = document.BeginTransaction("put the captions under the picture"))
+        {
+            edit.SetCaptionsUnder(document.Tracks[2]);
+            edit.Commit();
+        }
+
+        state = state with { AutoCaptions = true, CaptionsFilePath = "D:/media/captions.ass", FadeIn = true, OutputPath = "D:/out/captions-among-layers.mp4" };
+        if (document.CaptionsUnderTrack != document.Tracks[2])
+            problems.Add("the captions were not put under Video 3");
+
+        var command = FilterGraphBuilder.BuildExportCommand(state).CommandLine;
+        var (amongAt, pictureAt, fadeAt) = (command.IndexOf("[cap_base_st]", StringComparison.Ordinal), command.IndexOf("still.png", StringComparison.Ordinal),
+            command.IndexOf(",fade=t=in", StringComparison.Ordinal));
+        if (amongAt < 0 || command.Contains("[cap_base]", StringComparison.Ordinal))
+            problems.Add("the export's captions are not laid among the layers (or are also over the finished picture)");
+        if (amongAt >= 0 && fadeAt >= 0 && amongAt > fadeAt)
+            problems.Add("the captions among the layers come after the fades");
+
+        // The GPU plan: the captions' place is between Video 2's piece and Video 3's picture (the 3D view's order).
+        var plan = HandPegApp.Services.Gpu.GpuScenePlan.Create(state, new HandPegApp.Services.Gpu.GpuResourceBroker(null, bakeOnCallingThread: true));
+        var (piece, picture) = (document.Tracks[1].Clips[0], document.Tracks[2].Clips[0]);
+        var places = (Piece: plan.PlaceOf(HandPegApp.Services.Gpu.GpuHash.Of(piece.Id)), Captions: plan.PlaceOf(HandPegApp.Services.Gpu.GpuScenePlan.CaptionClipKey),
+            Picture: plan.PlaceOf(HandPegApp.Services.Gpu.GpuHash.Of(picture.Id)));
+        if (!(places.Piece >= 0 && places.Piece < places.Captions && places.Captions < places.Picture))
+            problems.Add($"the GPU plan's places are not piece < captions < picture ({places.Piece}, {places.Captions}, {places.Picture}; pictures at {pictureAt})");
+        return (state, problems);
     }
 
     /// <summary>

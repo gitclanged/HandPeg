@@ -94,6 +94,8 @@ public static class KeybindManager
         new("edit.redo", "Redo", Project, "\uE7A6", ["Ctrl+Y", "Ctrl+Shift+Z"], KeyActionFlags.Fixed | KeyActionFlags.Repeat | KeyActionFlags.ChangesProject),
         new("file.addMedia", "Add Media", Project, "\uE710", [], KeyActionFlags.ChangesProject),
         new("ui.settings", "Settings", Project, "\uE713", [], KeyActionFlags.ChangesProject),
+        // The Auto-Captions dialog, from anywhere (5.1-Polish: the dial HandPeg comes with has it). Unbound.
+        new("captions.generate", "Generate Auto-Captions...", Tools, "\uE7F0", [], KeyActionFlags.ChangesProject),
 
         new("transport.playPause", "Play / Pause", Transport, "\uE768", ["Space"]),
         new("transport.shuttleBack", "Shuttle Back", Transport, "\uEB9E", ["J"]),
@@ -103,7 +105,6 @@ public static class KeybindManager
         new("transport.stepForward", "Next Frame", Transport, "\uE893", ["E", "Right"], KeyActionFlags.Repeat),
         new("transport.start", "Go to Start", Transport, "\uE892", ["Home"]),
         new("transport.end", "Go to End", Transport, "\uE893", ["End"]),
-        new("transport.playInToOut", "Play In to Out", Transport, "\uE768", []),
         new("transport.prevIFrame", "Previous I-Frame", Transport, "\uE76B", [], KeyActionFlags.Repeat),
         new("transport.nextIFrame", "Next I-Frame", Transport, "\uE76C", [], KeyActionFlags.Repeat),
 
@@ -119,9 +120,6 @@ public static class KeybindManager
         new("marker.add", "Add Marker", Markers, "\uE7C1", ["C", "M"], KeyActionFlags.ChangesProject),
         new("marker.next", "Next Marker", Markers, "\uE893", ["Shift+M"], KeyActionFlags.Repeat),
         new("marker.prev", "Previous Marker", Markers, "\uE892", ["Ctrl+Shift+M"], KeyActionFlags.Repeat),
-        new("edit.in", "Set In Point", Markers, "\uE76C", ["V", "I"], KeyActionFlags.ChangesProject),
-        new("edit.out", "Set Out Point", Markers, "\uE76B", ["O"], KeyActionFlags.ChangesProject),
-        new("transport.goToIn", "Go to In Point", Markers, "\uE76C", []),
         new("transport.prevEdit", "Previous Edit Point", Markers, "\uE892", ["Z", "Up"], KeyActionFlags.Repeat),
         new("transport.nextEdit", "Next Edit Point", Markers, "\uE893", ["X", "Down"], KeyActionFlags.Repeat),
 
@@ -142,13 +140,15 @@ public static class KeybindManager
         new("key.next", "Next Keyframe", Keyframes, "\uE893", [], KeyActionFlags.Repeat),
 
         new("ui.dial", "Lightning Dial", Tools, "\uE945", ["Mouse5"], KeyActionFlags.ChangesProject),
-        new("ui.dial1", "Lightning Dial: Category 1", Tools, "\uE945", ["1"], KeyActionFlags.ChangesProject),
-        new("ui.dial2", "Lightning Dial: Category 2", Tools, "\uE945", ["2"], KeyActionFlags.ChangesProject),
-        new("ui.dial3", "Lightning Dial: Category 3", Tools, "\uE945", ["3"], KeyActionFlags.ChangesProject),
-        new("ui.dial4", "Lightning Dial: Category 4", Tools, "\uE945", ["4"], KeyActionFlags.ChangesProject),
-        new("ui.dial5", "Lightning Dial: Category 5", Tools, "\uE945", ["5"], KeyActionFlags.ChangesProject),
-        new("ui.dial6", "Lightning Dial: Category 6", Tools, "\uE945", ["6"], KeyActionFlags.ChangesProject),
-        new("ui.dial7", "Lightning Dial: Category 7", Tools, "\uE945", ["7"], KeyActionFlags.ChangesProject),
+        // A slice's own key (5.1-AutoHud-Part1, the user's Q1: a slice that holds an action runs it, one that holds a category opens on it).
+        new("ui.dial1", "Lightning Dial: Slice 1", Tools, "\uE945", ["1"], KeyActionFlags.ChangesProject),
+        new("ui.dial2", "Lightning Dial: Slice 2", Tools, "\uE945", ["2"], KeyActionFlags.ChangesProject),
+        new("ui.dial3", "Lightning Dial: Slice 3", Tools, "\uE945", ["3"], KeyActionFlags.ChangesProject),
+        new("ui.dial4", "Lightning Dial: Slice 4", Tools, "\uE945", ["4"], KeyActionFlags.ChangesProject),
+        new("ui.dial5", "Lightning Dial: Slice 5", Tools, "\uE945", ["5"], KeyActionFlags.ChangesProject),
+        new("ui.dial6", "Lightning Dial: Slice 6", Tools, "\uE945", ["6"], KeyActionFlags.ChangesProject),
+        new("ui.dial7", "Lightning Dial: Slice 7", Tools, "\uE945", ["7"], KeyActionFlags.ChangesProject),
+        new("ui.dial8", "Lightning Dial: Slice 8", Tools, "\uE945", ["8"], KeyActionFlags.ChangesProject),
         new("ui.xray", "X-Ray (Hold)", Tools, "\uE9D9", ["Tab"], KeyActionFlags.Hold),
         new("help.tour", "Quick-Start Tour", Tools, "\uE897", [], KeyActionFlags.ChangesProject),
     ];
@@ -176,8 +176,6 @@ public static class KeybindManager
             // B is the blade here, as in the track editors this preset is named after: Remove Dead Air gives it up.
             ["edit.split"] = ["B"],
             ["edit.deadAir"] = [],
-            ["transport.goToIn"] = ["Shift+I"],
-            ["transport.playInToOut"] = ["Shift+Space"],
         },
         [RazorPreset] = new()
         {
@@ -587,59 +585,113 @@ public static class KeybindManager
 
     // ----- The Lightning Dial -----
 
-    /// <summary>How many categories the dial's top level has (its eighth slice opens Settings), and how many actions each holds.</summary>
-    public const int DialCategories = 7, DialSlots = 7;
+    /// <summary>
+    /// How many slices the dial's top level has (5.1-Polish: each an action run at once, or a category), and how many actions a
+    /// category holds.
+    /// </summary>
+    public const int DialSlices = 8, DialSlots = 7;
 
     /// <summary>The dial in effect: the settings' own, or the one HandPeg comes with.</summary>
     public static IReadOnlyList<DialCategoryState> Dial => _dial ??= Normalized(AppSettings.Current.LightningDial);
 
-    /// <summary>The dial HandPeg comes with (new lists each time).</summary>
+    /// <summary>
+    /// The dial HandPeg comes with (5.1-Polish, the user's directive: eight actions, each run with one flick, and no
+    /// categories): Play / Pause, Split, Ripple Delete, Remove Dead Air, Keyframe, Auto-Captions, the 3D view, Undo. New
+    /// lists each time.
+    /// </summary>
     public static List<DialCategoryState> DefaultDial() =>
     [
-        new() { Name = "Play", Glyph = "\uE768", Actions = ["transport.playPause", "transport.shuttleBack", "transport.stop", "transport.shuttleForward", "transport.start", "transport.end", "transport.playInToOut"] },
+        Leaf("transport.playPause"), Leaf("edit.split"), Leaf("edit.rippleDelete"), Leaf("edit.deadAir"),
+        Leaf("key.toggle"), Leaf("captions.generate"), Leaf("view.exploded3d"), Leaf("edit.undo"),
+    ];
+
+    /// <summary>A slice that runs an action at once, named and drawn as the action is.</summary>
+    public static DialCategoryState Leaf(string id) =>
+        new() { Action = id, Name = ById.TryGetValue(id, out var action) ? action.Label.TrimEnd('.') : id, Glyph = ById.TryGetValue(id, out var known) ? known.Glyph : "" };
+
+    /// <summary>
+    /// The seven categories the dial came with before 5.1-Polish (its eighth slice opened Settings): what a slice made a
+    /// category in the settings starts as (<see cref="CategoryFor"/>), and how a dial saved then is told from one changed.
+    /// </summary>
+    private static List<DialCategoryState> LegacyCategories() =>
+    [
+        new() { Name = "Play", Glyph = "\uE768", Actions = ["transport.playPause", "transport.shuttleBack", "transport.stop", "transport.shuttleForward", "transport.start", "transport.end"] },
         new() { Name = "Edit", Glyph = "\uE8C6", Actions = ["edit.split", "edit.delete", "edit.rippleDelete", "edit.trimStart", "edit.trimEnd", "clip.toggleLink", "edit.deadAir"] },
-        new() { Name = "Mark", Glyph = "\uE7C1", Actions = ["marker.add", "marker.prev", "marker.next", "edit.in", "edit.out", "transport.goToIn", "transport.playInToOut"] },
+        new() { Name = "Mark", Glyph = "\uE7C1", Actions = ["marker.add", "marker.prev", "marker.next"] },
         new() { Name = "Navigate", Glyph = "\uE8A3", Actions = ["view.zoomIn", "view.zoomOut", "view.fit", "transport.prevEdit", "transport.nextEdit", "transport.prevIFrame", "transport.nextIFrame"] },
         new() { Name = "Keyframes", Glyph = "\uE823", Actions = ["key.toggle", "key.prev", "key.next", "transport.stepBack", "transport.stepForward", "", ""] },
         new() { Name = "Project", Glyph = "\uE74E", Actions = ["file.save", "file.saveAs", "file.addMedia", "edit.undo", "edit.redo", "ui.settings", "help.tour"] },
         new() { Name = "Tools", Glyph = "\uE945", Actions = ["edit.deadAir", "edit.bypassEffects", "ui.xray", "view.fit", "file.addMedia", "ui.settings", "help.tour"] },
     ];
 
-    /// <summary>A dial with exactly seven categories of seven slots, every slot an action HandPeg has (not a held one) or "".</summary>
+    /// <summary>A category for slice <paramref name="slice"/> as the settings make one (the dial's old category of that slice, or the Tools one).</summary>
+    public static DialCategoryState CategoryFor(int slice)
+    {
+        var legacy = LegacyCategories();
+        return legacy[Math.Clamp(slice, 0, legacy.Count - 1)];
+    }
+
+    /// <summary>
+    /// A dial with exactly eight slices, each an action HandPeg has (not a held one) or a category of seven slots, every slot
+    /// such an action or "". A dial saved before 5.1-Polish (seven categories, Settings in the eighth slice) keeps its
+    /// categories and Settings, unless it is the dial HandPeg came with then, untouched: that is the new one.
+    /// </summary>
     public static List<DialCategoryState> Normalized(List<DialCategoryState>? dial)
     {
         var defaults = DefaultDial();
-        if (dial is null)
+        if (dial is null || IsLegacyDefault(dial))
             return defaults;
 
-        var made = new List<DialCategoryState>(DialCategories);
-        for (var i = 0; i < DialCategories; i++)
+        // Seven categories (the shape before 5.1-Polish): Settings in the eighth slice, as it always was there.
+        List<DialCategoryState> given = dial.Count == DialSlices - 1 && dial.All(s => s is not null && string.IsNullOrEmpty(s.Action))
+            ? [.. dial, Leaf("ui.settings")]
+            : dial;
+
+        var made = new List<DialCategoryState>(DialSlices);
+        for (var i = 0; i < DialSlices; i++)
         {
-            var source = i < dial.Count && dial[i] is { } given ? given : defaults[i];
+            var source = i < given.Count && given[i] is { } slice ? slice : defaults[i];
+            if (!string.IsNullOrEmpty(source.Action))
+            {
+                made.Add(Runnable(source.Action) ? Leaf(source.Action) : new DialCategoryState { Name = "", Glyph = "", Actions = [.. Enumerable.Repeat("", DialSlots)] });
+                continue;
+            }
+
             var actions = new List<string>(DialSlots);
             for (var slot = 0; slot < DialSlots; slot++)
             {
                 var id = slot < (source.Actions?.Count ?? 0) ? source.Actions![slot] ?? "" : "";
-                actions.Add(id.Length == 0 || ById.TryGetValue(id, out var known) && !known.Has(KeyActionFlags.Continuous) ? id : "");
+                actions.Add(id.Length == 0 || Runnable(id) ? id : "");
             }
 
+            var template = CategoryFor(i);
             made.Add(new DialCategoryState
             {
-                Name = string.IsNullOrWhiteSpace(source.Name) ? defaults[i].Name : source.Name.Trim(),
-                Glyph = string.IsNullOrEmpty(source.Glyph) ? defaults[i].Glyph : source.Glyph,
+                Name = string.IsNullOrWhiteSpace(source.Name) ? template.Name : source.Name.Trim(),
+                Glyph = string.IsNullOrEmpty(source.Glyph) ? template.Glyph : source.Glyph,
                 Actions = actions,
             });
         }
 
         return made;
+
+        static bool Runnable(string id) => ById.TryGetValue(id, out var known) && !known.Has(KeyActionFlags.Continuous);
+    }
+
+    /// <summary>Whether a saved dial is the seven categories HandPeg came with before 5.1-Polish, untouched.</summary>
+    private static bool IsLegacyDefault(List<DialCategoryState> dial)
+    {
+        var legacy = LegacyCategories();
+        return dial.Count == legacy.Count && dial.Zip(legacy).All(p => p.First is { } slice && string.IsNullOrEmpty(slice.Action)
+            && slice.Name == p.Second.Name && slice.Glyph == p.Second.Glyph && (slice.Actions ?? []).SequenceEqual(p.Second.Actions));
     }
 
     /// <summary>The settings' form of a dial: null while it is the one HandPeg comes with.</summary>
     public static List<DialCategoryState>? ForSettings(IReadOnlyList<DialCategoryState> dial)
     {
         var defaults = DefaultDial();
-        var same = dial.Count == defaults.Count && dial.Zip(defaults).All(p =>
-            p.First.Name == p.Second.Name && p.First.Glyph == p.Second.Glyph && p.First.Actions.SequenceEqual(p.Second.Actions));
+        var same = dial.Count == defaults.Count && dial.Zip(defaults).All(p => p.First.Action == p.Second.Action
+            && (p.First.IsAction || (p.First.Name == p.Second.Name && p.First.Glyph == p.Second.Glyph && p.First.Actions.SequenceEqual(p.Second.Actions))));
         return same ? null : dial.Select(c => c.Clone()).ToList();
     }
 }

@@ -79,6 +79,8 @@ SamplerState LinearClamp : register(s0);
 SamplerState PointClamp : register(s1);
 // Outside the texture: transparent black.
 SamplerState LinearBorder : register(s2);
+// Tiled: the baked 3D noise (5.1-GpuFx).
+SamplerState LinearWrap : register(s3);
 
 struct VsOut
 {

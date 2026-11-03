@@ -225,6 +225,24 @@ float4 PSCompositeBlend(VsOut i) : SV_Target
     return float4(rgb, s.a + d.a * (1 - s.a));
 }
 
+// Frosted Glass (slot 24, variant 1, 5.1-GpuFx): laid down under the layer's picture, where its shape is. Aux the canvas blurred (read where the layer lands, as
+// a blend reads it). P1 the tint's share, P2..P4 its colour, P6 the light along the edge. The edge is found from the shape's slope, which also bends what is seen a
+// little, as the edge of a pane does; the border sampler makes a plain box's sides an edge too. Params4.x the strength.
+float4 PSFrostedGlass(VsOut i) : SV_Target
+{
+    float a = Input.SampleLevel(LinearBorder, i.Uv, 0).a;
+    if (a <= 0)
+        return float4(0, 0, 0, 0);
+
+    float2 e = SrcTexel * max(3 * Params.w, 1);
+    float2 slope = float2(Input.SampleLevel(LinearBorder, i.Uv + float2(e.x, 0), 0).a - Input.SampleLevel(LinearBorder, i.Uv - float2(e.x, 0), 0).a,
+                          Input.SampleLevel(LinearBorder, i.Uv + float2(0, e.y), 0).a - Input.SampleLevel(LinearBorder, i.Uv - float2(0, e.y), 0).a);
+    float2 at = (i.Position.xy + slope * 14 * Params.w) / DstSize;
+    float3 frosted = lerp(Aux.SampleLevel(LinearClamp, at, 0).rgb, float3(P2, P3, P4), saturate(P1));
+    frosted += saturate(length(slope)) * saturate(P6) * 0.6;
+    return float4(frosted, 1) * a * Params4.x * Params4.y * WipeFactor(i.Local);
+}
+
 // A drop shadow's start (4.1.1-B): the layer's outline in the shadow's colour at its opacity (Color), on a texture with
 // room round it for the blur (UvRect maps this texture onto the layer's, beyond its edges).
 float4 PSShadowSeed(VsOut i) : SV_Target
@@ -257,4 +275,34 @@ float4 PSFinal(VsOut i) : SV_Target
     if (Params4.z > 0.5)
         return c;
     return float4(saturate(c.rgb + Color.rgb * (1 - c.a)), 1);
+}
+
+// ----- An export's picture as NV12 (5.1-CleanupStudioAndFfmpegPurge) -----
+//
+// The finished frame (full-range RGB, as the player shows it) into the two planes FFmpeg is piped, a little over a third of the bytes
+// of BGRA: BT.709, limited range (16-235, 16-240), as the export's own conversion was, rounded by the render target.
+static const float3 Nv12Luma = float3(0.2126, 0.7152, 0.0722);
+
+float3 Nv12Source(int2 at)
+{
+    uint width, height;
+    Input.GetDimensions(width, height);
+    return Input.Load(int3(clamp(at, int2(0, 0), int2(width - 1, height - 1)), 0)).rgb;
+}
+
+// The Y plane, the frame's own size (R8).
+float4 PSRgbToNv12(VsOut i) : SV_Target
+{
+    float y = (16.0 + 219.0 * dot(Nv12Source(int2(i.Position.xy)), Nv12Luma)) / 255.0;
+    return float4(y, y, y, 1);
+}
+
+// The UV plane, half the size each way (R8G8). Each sample is the mean of the four pixels it covers: centred on them, where FFmpeg's own
+// scaler puts chroma, so a frame lands on the FFmpeg export's to the decibel (gpu-export, gpu-export-every-frame).
+float4 PSRgbToNv12Chroma(VsOut i) : SV_Target
+{
+    int2 at = int2(i.Position.xy) * 2;
+    float3 rgb = (Nv12Source(at) + Nv12Source(at + int2(1, 0)) + Nv12Source(at + int2(0, 1)) + Nv12Source(at + int2(1, 1))) / 4;
+    float y = dot(rgb, Nv12Luma);
+    return float4((128.0 + 224.0 * (rgb.b - y) / 1.8556) / 255.0, (128.0 + 224.0 * (rgb.r - y) / 1.5748) / 255.0, 0, 1);
 }

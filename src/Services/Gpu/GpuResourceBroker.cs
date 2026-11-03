@@ -80,7 +80,11 @@ public sealed class GpuResourceBroker : IDisposable
 
     private readonly ConcurrentQueue<Baked> _baked = new();
 
-    private readonly record struct Baked(int Id, int Serial, GpuResourceKind Kind, int Width, int Height, int Depth, byte[]? Pixels);
+    private readonly record struct Baked(int Id, int Serial, GpuResourceKind Kind, int Width, int Height, int Depth, byte[]? Pixels, Func<Baked>? NotMade = null);
+
+    // Two pictures made at a time: a drag that resizes a masked layer asks for a new size on every frame (20 of them at once, each four
+    // whole-frame arrays, were on the lane when commit ran out), and only what the newest plan uses is made when its turn comes.
+    private readonly SemaphoreSlim _makers = new(2, 2);
 
     private int _serial;
     private long _tick;
@@ -319,23 +323,38 @@ public sealed class GpuResourceBroker : IDisposable
             return new GpuResourceRef(id, serial);
         }
 
-        _ = WorkScheduler.Run(new WorkSpec("Preparing a picture for the GPU engine", WorkLane.Interactive) { Visible = false, Cancellable = false }, _ => Task.Run(() =>
-        {
-            _baked.Enqueue(Made(make) with { Id = id, Serial = serial });
-            _home?.Post(static broker => ((GpuResourceBroker)broker!).Pump(), this);
-            return true;
-        }));
+        MakeInBackground(id, serial, kind, make);
         return new GpuResourceRef(id, serial);
     }
 
-    // What a maker made, or nothing (and a line in the log) when it threw.
+    private void MakeInBackground(int id, int serial, GpuResourceKind kind, Func<Baked> make) =>
+        _ = WorkScheduler.Run(new WorkSpec("Preparing a picture for the GPU engine", WorkLane.Interactive) { Visible = false, Cancellable = false }, _ => Task.Run(async () =>
+        {
+            await _makers.WaitAsync();
+            try
+            {
+                // Asked for by a plan that has been replaced since: not made (Complete looks again, on the thread that plans).
+                var wanted = _resources[id] is { } waiting && waiting.Serial == serial && waiting.Plan == Volatile.Read(ref _plan);
+                _baked.Enqueue(wanted ? Made(make) with { Id = id, Serial = serial } : new Baked(id, serial, kind, 0, 0, 0, null, make));
+            }
+            finally
+            {
+                _makers.Release();
+            }
+
+            _home?.Post(static broker => ((GpuResourceBroker)broker!).Pump(), this);
+            return true;
+        }));
+
+    // What a maker made, or nothing (and a line in the log) when it threw; out of memory too: a picture that could not be read when Windows
+    // ran out of commit is a picture not drawn, not a fault to report (WIC's own native allocation says so, whatever the managed heap has).
     private static Baked Made(Func<Baked> make)
     {
         try
         {
             return make();
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
+        catch (Exception ex)
         {
             AppLog.Write("A texture for the GPU engine could not be made", ex);
             return default;
@@ -363,6 +382,20 @@ public sealed class GpuResourceBroker : IDisposable
         // Given to something else since it was asked for: dropped.
         if (_resources[baked.Id] is not { } slot || slot.Serial != baked.Serial)
             return false;
+
+        // Not made: its place goes back to the table, unless the newest plan came to want it after all.
+        if (baked.NotMade is { } make)
+        {
+            if (slot.Plan == _plan)
+            {
+                MakeInBackground(baked.Id, baked.Serial, baked.Kind, make);
+                return false;
+            }
+
+            _resources[baked.Id] = null;
+            _resourceIds.Remove(slot.Hash);
+            return false;
+        }
 
         if (baked.Pixels is { } pixels)
         {

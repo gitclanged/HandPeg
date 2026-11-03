@@ -537,6 +537,54 @@ public static partial class CaptionGenerator
 
         // UTF-8 with a byte order mark, which is how libass recognises the encoding.
         File.WriteAllText(path, ass.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        WriteWordsBeside(path, captions, style, scale, timeOffset);
+    }
+
+    // ----- The words beside the caption file (5.1-Polish, the user's Q2) -----
+
+    /// <summary>
+    /// The captions a caption file was written from, as the GPU engine draws them (TextRasterizer.SetCaptions): each line's
+    /// words on the file's clock, the style and the text scale. Written beside every caption file (<see cref="WordsPath"/>),
+    /// so a GPU export draws the very captions its FFmpeg graph would burn in, among its layers or over them.
+    /// </summary>
+    public sealed record CaptionWords(List<List<CaptionWord>> Lines, CaptionStyle Style, double TextScale);
+
+    /// <summary>Where the words of a caption file are written: beside it.</summary>
+    public static string WordsPath(string assPath) => assPath + ".words.json";
+
+    private static void WriteWordsBeside(string assPath, IReadOnlyList<List<CaptionWord>> lines, CaptionStyle style, double scale, double timeOffset)
+    {
+        var moved = lines.Select(line => line.Select(w => w with { Start = w.Start + timeOffset, End = w.End + timeOffset }).ToList()).ToList();
+        try
+        {
+            File.WriteAllText(WordsPath(assPath), JsonSerializer.Serialize(new CaptionWords(moved, style.Clone(), scale)), new UTF8Encoding(false));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Without it a GPU export leaves the captions to FFmpeg's libass, as before.
+            AppLog.Write("The caption file's words could not be written beside it", ex);
+        }
+    }
+
+    /// <summary>
+    /// The words a caption file was written from (<see cref="CaptionWords"/>); null when they are not beside it, are older
+    /// than it (it was written again without them), or cannot be read.
+    /// </summary>
+    public static CaptionWords? ReadWords(string assPath)
+    {
+        try
+        {
+            var words = WordsPath(assPath);
+            if (string.IsNullOrWhiteSpace(assPath) || !File.Exists(assPath) || !File.Exists(words)
+                || File.GetLastWriteTimeUtc(words) < File.GetLastWriteTimeUtc(assPath))
+                return null;
+            return JsonSerializer.Deserialize<CaptionWords>(File.ReadAllText(words)) is { Lines: not null, Style: not null } read ? read : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
+        {
+            AppLog.Write("The caption file's words could not be read", ex);
+            return null;
+        }
     }
 
     /// <summary>The words as the captions they are shown as, in a style: as many to a line as the style allows.</summary>

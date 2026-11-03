@@ -28,7 +28,6 @@ public partial class MainViewModel : ObservableObject
     [
         nameof(CommandPreview), nameof(IsCommandManuallyEdited), nameof(StatusText), nameof(SourcePath), nameof(DownloadResolution),
         nameof(PositionMs), nameof(PositionText), nameof(DurationMs), nameof(DurationText), nameof(TimelineMaximum),
-        nameof(PendingStartMs), nameof(PendingStartText),
         nameof(IFrameStatusText), nameof(Volume), nameof(EditingJob), nameof(IsEditingQueuedJob),
         nameof(SourceWidth), nameof(SourceHeight), nameof(SourceSizeText), nameof(IsCustomPixelAspectRatio),
         nameof(HardwareEncoderStatusText), nameof(AreSoftwareEncoderOptionsEnabled), nameof(IsVideoReencoded),
@@ -382,8 +381,11 @@ public partial class MainViewModel : ObservableObject
         Deinterlace = preset.Deinterlace;
         Denoise = preset.Denoise;
 
+        // A preset that names no step leaves the encoder at its own default.
         if (EncoderPresets.Contains(preset.EncoderPreset))
             EncoderPreset = preset.EncoderPreset;
+        else if (preset.EncoderPreset.Length == 0)
+            EncoderPreset = BestStepOf(VideoEncoder.Family) ?? "medium";
         Tune = Pick(Tunes, preset.Tune, NoneOption);
         Profile = Pick(Profiles, preset.Profile, AutoOption);
         Level = Pick(Levels, preset.Level, AutoOption);
@@ -532,24 +534,17 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(PositionText))]
-    [NotifyCanExecuteChangedFor(nameof(AddStopPointCommand))]
     private double _positionMs;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(DurationText))]
     [NotifyPropertyChangedFor(nameof(TimelineMaximum))]
-    [NotifyCanExecuteChangedFor(nameof(AddStartPointCommand))]
     private double _durationMs;
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(PendingStartText))]
-    [NotifyCanExecuteChangedFor(nameof(AddStopPointCommand))]
-    private double? _pendingStartMs;
 
     // On by default, together with the Copy encoders: a fresh launch is set up for lossless cutting.
     [ObservableProperty] private bool _snapToIFrames = true;
 
-    // Snapping only concerns where the playhead, the razor and the in and out points sit (on I-frames of the main
+    // Snapping only concerns where the playhead and the razor sit (on I-frames of the main
     // video, for a Copy export's cuts). Which encoders are used is a separate choice.
 
     /// <summary>I-frame timestamps of the loaded source in seconds, ascending. Filled in the background after a load.</summary>
@@ -577,11 +572,6 @@ public partial class MainViewModel : ObservableObject
 
     // Never zero, so the thumb rests at the left edge while nothing is loaded.
     public double TimelineMaximum => DurationMs > 0 ? DurationMs : 1;
-
-    /// <summary>The in point set with [ (Add Start Point), while it waits for its out point.</summary>
-    public string PendingStartText => PendingStartMs is { } start
-        ? $"In point: {TimeDisplay.Format(start / 1000)}"
-        : "No in point set";
 
     // ----- Summary -----
 
@@ -989,51 +979,13 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     [ObservableProperty] private bool _isCommandManuallyEdited;
 
-    // ----- In and out points (4.3C: split points, where 4.2.0 kept a cut list) -----
-
-    [RelayCommand(CanExecute = nameof(CanAddStartPoint))]
-    private void AddStartPoint()
-    {
-        var position = GetCutPositionMs();
-        PendingStartMs = position;
-        PositionMs = position;
-        StatusText = $"{PendingStartText}. Scrub forward and add an out point.";
-    }
-
-    private bool CanAddStartPoint() => DurationMs > 0;
-
-    /// <summary>
-    /// The out point: every clip of every unlocked track is split at the in point and here, as one step of Undo, so the
-    /// stretch between is clips of its own on each track, to be deleted (Shift+Delete closes the gap), moved or kept.
-    /// Nothing is taken out by it.
-    /// </summary>
-    [RelayCommand(CanExecute = nameof(CanAddStopPoint))]
-    private void AddStopPoint()
-    {
-        if (PendingStartMs is not { } start)
-            return;
-
-        var stop = GetCutPositionMs();
-        if (stop <= start)
-        {
-            StatusText = "The nearest I-frame is not after the in point. Scrub further forward.";
-            return;
-        }
-
-        if (!SplitAt(start / 1000, stop / 1000))
-            return;
-
-        PendingStartMs = null;
-        PositionMs = stop;
-    }
-
-    /// <summary>Splits every unlocked track at two moments, as one step of Undo (an in and an out point, or a stretch marked on the timeline).</summary>
+    /// <summary>Splits every unlocked track at two moments, as one step of Undo (a stretch marked on the timeline).</summary>
     public bool SplitAt(double from, double to)
     {
         var count = 0;
-        if (!Edit("split at an in and an out point", edit =>
+        if (!Edit("split a stretch", edit =>
             {
-                count = SplitAllAt(to, "split at an out point") + SplitAllAt(from, "split at an in point");
+                count = SplitAllAt(to, "split the end of a stretch") + SplitAllAt(from, "split the start of a stretch");
             }))
         {
             return false;
@@ -1043,32 +995,6 @@ public partial class MainViewModel : ObservableObject
             ? $"Split {count} clip{(count == 1 ? "" : "s")} at {TimeDisplay.Format(from)} and {TimeDisplay.Format(to)}: delete what lies between on every track (the gap then closes up), or keep it"
             : $"Nothing to split at {TimeDisplay.Format(from)} or {TimeDisplay.Format(to)}");
         return true;
-    }
-
-    private bool CanAddStopPoint() => PendingStartMs is { } start && PositionMs > start;
-
-    /// <summary>
-    /// The playback position to cut at: as is, or moved to the nearest I-frame when snapping.
-    /// </summary>
-    private double GetCutPositionMs()
-    {
-        if (!SnapToIFrames || IFrames.Count == 0)
-            return PositionMs;
-
-        var seconds = PositionMs / 1000;
-        var next = IFrames.BinarySearch(seconds);
-        if (next >= 0)
-            return PositionMs;
-
-        next = ~next;
-        if (next == 0)
-            return IFrames[0] * 1000;
-        if (next == IFrames.Count)
-            return IFrames[^1] * 1000;
-
-        var previous = next - 1;
-        var nearest = seconds - IFrames[previous] <= IFrames[next] - seconds ? previous : next;
-        return IFrames[nearest] * 1000;
     }
 
     // ----- Long-running operations -----
@@ -1342,6 +1268,13 @@ public partial class MainViewModel : ObservableObject
     {
         SourcePath = path;
         LoadSourceCommand.Execute(null);
+    }
+
+    /// <summary>As <see cref="LoadFile"/>, for what follows once it is open.</summary>
+    public Task LoadFileAsync(string path)
+    {
+        SourcePath = path;
+        return LoadSourceCommand.ExecuteAsync(null);
     }
 
     /// <summary>
@@ -1695,7 +1628,7 @@ public partial class MainViewModel : ObservableObject
             await RunExportAsync(command, ExportStateForGpu(), progress, cancellationToken);
             CrashReporter.Note("export", "finished");
             NotifyFinished("Encode complete", Path.GetFileName(DestinationPath.Trim().Trim('"')));
-            return "Encode complete.";
+            return _exportLeftOut.Length > 0 ? $"Encode complete. {_exportLeftOut}" : "Encode complete.";
         }
         catch (InvalidOperationException ex) when (
             ex is not FfmpegCommandException
@@ -1843,7 +1776,6 @@ public partial class MainViewModel : ObservableObject
     private void ResetForNewSource()
     {
         ForgetProjectProxies();
-        PendingStartMs = null;
         PositionMs = 0;
         DurationMs = 0;
 

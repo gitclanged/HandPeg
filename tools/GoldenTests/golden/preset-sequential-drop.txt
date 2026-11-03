@@ -1,0 +1,9 @@
+# Clips dropped together follow one another in line, each with the template.
+ok: two.mp4 is added
+ok: three.mp4 is added
+ok: all three on one track: Clip 1, Clip 2, Clip 3
+ok: each where the one before it ends
+ok: each with the preset's pieces
+ok: over its own span, which its file's length gave it
+ok: the later two's cut from their own files
+ok: the document holds together

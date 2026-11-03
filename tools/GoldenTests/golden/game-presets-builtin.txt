@@ -1,0 +1,52 @@
+# The built-in Game Presets (5.1-Release): made as the Studio makes one, written where missing and never over a file, on a clip.
+built-ins: Overwatch 2 Vertical HUD, Marvel Rivals Vertical HUD, Valorant Vertical HUD, CS2 Vertical HUD, Apex Legends Vertical HUD, The Finals Vertical HUD
+ok: six games, Overwatch 2 first
+Overwatch 2 Vertical HUD: Killfeed src 0.656,0.011 0.338x0.261 at -0.169,0.013 w 1.15 | Health & Name src 0.001,0.777 0.253x0.209 at -0.01,0.743 w 0.559 | Abilities & Ammo src 0.728,0.766 0.272x0.234 at 0.468,0.742 w 0.583
+ok: Overwatch 2 Vertical HUD: tall, the video zoomed, a layer per piece, the blurred background
+ok: Overwatch 2 Vertical HUD: every piece a masked video layer with its outlines, so the Cutout Studio opens and edits it
+ok: Overwatch 2 Vertical HUD: a mask of its own per piece, inside the file
+ok: Overwatch 2 Vertical HUD: every piece cut from inside the frame and given a size
+ok: Overwatch 2 Vertical HUD: each piece's outlines lie inside the box it is cut from
+Marvel Rivals Vertical HUD: Killfeed src 0.731,0.071 0.26x0.213 at 0.134,0.03 w 0.732 | Hero & Ammo src 0.017,0.819 0.174x0.144 at 0.03,0.824 w 0.389 | Abilities & Ultimate src 0.746,0.849 0.238x0.135 at 0.439,0.828 w 0.531
+ok: Marvel Rivals Vertical HUD: tall, the video zoomed, a layer per piece, the blurred background
+ok: Marvel Rivals Vertical HUD: every piece a masked video layer with its outlines, so the Cutout Studio opens and edits it
+ok: Marvel Rivals Vertical HUD: a mask of its own per piece, inside the file
+ok: Marvel Rivals Vertical HUD: every piece cut from inside the frame and given a size
+ok: Marvel Rivals Vertical HUD: each piece's outlines lie inside the box it is cut from
+Valorant Vertical HUD: Minimap src 0.008,0.014 0.184x0.328 at 0.09,0.03 w 0.336 | Killfeed src 0.739,0.071 0.255x0.226 at 0.446,0.059 w 0.464 | Health, Abilities & Ammo src 0.309,0.892 0.386x0.104 at 0.03,0.835 w 0.94
+ok: Valorant Vertical HUD: tall, the video zoomed, a layer per piece, the blurred background
+ok: Valorant Vertical HUD: every piece a masked video layer with its outlines, so the Cutout Studio opens and edits it
+ok: Valorant Vertical HUD: a mask of its own per piece, inside the file
+ok: Valorant Vertical HUD: every piece cut from inside the frame and given a size
+ok: Valorant Vertical HUD: each piece's outlines lie inside the box it is cut from
+CS2 Vertical HUD: Radar src 0.005,0.01 0.156x0.276 at 0.03,0.032 w 0.33 | Killfeed src 0.716,0.044 0.28x0.211 at 0.38,0.054 w 0.59 | Health & Armor src 0.007,0.925 0.227x0.074 at 0.03,0.85 w 0.49 | Ammo src 0.797,0.925 0.198x0.074 at 0.54,0.85 w 0.43
+ok: CS2 Vertical HUD: tall, the video zoomed, a layer per piece, the blurred background
+ok: CS2 Vertical HUD: every piece a masked video layer with its outlines, so the Cutout Studio opens and edits it
+ok: CS2 Vertical HUD: a mask of its own per piece, inside the file
+ok: CS2 Vertical HUD: every piece cut from inside the frame and given a size
+ok: CS2 Vertical HUD: each piece's outlines lie inside the box it is cut from
+Apex Legends Vertical HUD: Killfeed src 0.716,0.092 0.264x0.192 at 0.088,0.03 w 0.823 | Health & Items src 0.002,0.835 0.345x0.15 at 0.03,0.842 w 0.486 | Weapons & Gear src 0.67,0.876 0.309x0.108 at 0.536,0.851 w 0.434
+ok: Apex Legends Vertical HUD: tall, the video zoomed, a layer per piece, the blurred background
+ok: Apex Legends Vertical HUD: every piece a masked video layer with its outlines, so the Cutout Studio opens and edits it
+ok: Apex Legends Vertical HUD: a mask of its own per piece, inside the file
+ok: Apex Legends Vertical HUD: every piece cut from inside the frame and given a size
+ok: Apex Legends Vertical HUD: each piece's outlines lie inside the box it is cut from
+The Finals Vertical HUD: Killfeed src 0.723,0.043 0.268x0.192 at 0.082,0.03 w 0.835 | Health & Team src 0.03,0.774 0.168x0.186 at 0.03,0.799 w 0.439 | Weapon & Gadgets src 0.785,0.792 0.184x0.174 at 0.489,0.804 w 0.481
+ok: The Finals Vertical HUD: tall, the video zoomed, a layer per piece, the blurred background
+ok: The Finals Vertical HUD: every piece a masked video layer with its outlines, so the Cutout Studio opens and edits it
+ok: The Finals Vertical HUD: a mask of its own per piece, inside the file
+ok: The Finals Vertical HUD: every piece cut from inside the frame and given a size
+ok: The Finals Vertical HUD: each piece's outlines lie inside the box it is cut from
+ok: Overwatch 2: the twelve islands of the user's own mask
+ok: Overwatch 2: feathered and grown as the user's own style
+ok: five written, the one already there left alone (Overwatch 2 Vertical HUD.hpstyle, Marvel Rivals Vertical HUD.hpstyle, Valorant Vertical HUD.hpstyle, Apex Legends Vertical HUD.hpstyle, The Finals Vertical HUD.hpstyle)
+ok: a file of a built-in's name is never written over
+ok: the built-ins are older than the user's own, which stay first in the lists
+ok: the drop overlay keeps the user's own first and gets Overwatch 2 after them
+ok: both on the drop overlay
+ok: written once per version
+ok: a built-in the user deleted stays deleted
+ok: in the Style Presets, the Timeline's list
+ok: applied to a clip
+ok: its three pieces are the clip's, and the Studio's to edit (Abilities & Ammo, Health & Name, Killfeed)
+ok: on a tall frame, the video zoomed

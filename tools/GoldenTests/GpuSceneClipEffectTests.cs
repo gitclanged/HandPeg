@@ -224,7 +224,7 @@ public static class GpuSceneClipEffectTests
         Show("radius 7.5, zoom 1.5 and a Vignette of its own");
 
         var graph = FilterGraphBuilder.BuildExportCommand(vm.LivePreviewState() with { IsPreview = false, CopyVideoEncoder = false, VideoCodecArguments = "-c:v libx264" }).CommandLine;
-        foreach (var (piece, what) in new[] { ("scale=480:270:force_original_aspect_ratio=increase,crop=320:180", "its zoom"), ("boxblur=8:2", "its radius, rounded"), ("vignette=angle=0.44", "its own vignette") })
+        foreach (var (piece, what) in new[] { ("scale=480:270:force_original_aspect_ratio=increase,crop=320:180", "its zoom"), ("boxblur=8:2", "its radius, rounded"), ("vignette=angle=0.436", "its own vignette (25 degrees, 5.1-Polish)") })
         {
             var has = graph.Contains(piece, StringComparison.Ordinal);
             text.Append(CultureInfo.InvariantCulture, $"    the export's graph has {what}: {(has ? "yes" : "no")}\n");

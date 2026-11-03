@@ -113,8 +113,12 @@ public partial class MainWindow
 
         var work = WorkScheduler.Summary;
         TitleProgressFill.Width = work.IsIndeterminate ? TitleBar.ActualWidth : TitleBar.ActualWidth * Math.Clamp(work.Percent, 0, 100) / 100;
-        TitleProgressFill.Opacity = work.IsIndeterminate ? 0.07 : 0.14;
+        TitleProgressFill.Opacity = work.IsIndeterminate ? TitleProgressFaint : TitleProgressStrength;
     }
+
+    // How strongly the accent colour lies over the title bar: every theme's fill is this wash, so its contrast and saturation against
+    // the bar go with it (the user's call: a quarter stronger than the 0.14 and 0.07 of before, on all five themes).
+    private const double TitleProgressStrength = 0.175, TitleProgressFaint = 0.0875;
 
     // ----- The caption buttons -----
 
@@ -150,11 +154,11 @@ public partial class MainWindow
     internal static Thickness MaximizedFrameInset(Window window)
     {
         // The frame's size at the window's DPI: the sizing border and the padding Windows adds to it.
-        var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(window);
-        var at = (uint)Math.Round(96 * dpi.DpiScaleX);
+        var dpi = UiScale.MonitorScale(window);
+        var at = (uint)Math.Round(96 * dpi);
         var across = GetSystemMetricsForDpi(SmCxSizeFrame, at) + GetSystemMetricsForDpi(SmCxPaddedBorder, at);
         var down = GetSystemMetricsForDpi(SmCySizeFrame, at) + GetSystemMetricsForDpi(SmCxPaddedBorder, at);
-        var margin = new Thickness(across / dpi.DpiScaleX, down / dpi.DpiScaleY, across / dpi.DpiScaleX, down / dpi.DpiScaleY);
+        var margin = new Thickness(across / dpi, down / dpi, across / dpi, down / dpi);
 
         // Beside a taskbar that hides itself the window stops a pixel short of the screen's edge (OnWindowPosChanging),
         // so nothing of it reaches past that edge to be kept in.
@@ -265,9 +269,9 @@ public partial class MainWindow
         if (window == IntPtr.Zero || !TryMonitorInfo(MonitorFromWindow(window, MonitorDefaultToNearest), out var info))
             return Rect.Empty;
 
-        var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(this);
+        var dpi = UiScale.MonitorScale(this);
         var work = info.Work;
-        return new Rect(work.Left / dpi.DpiScaleX, work.Top / dpi.DpiScaleY, (work.Right - work.Left) / dpi.DpiScaleX, (work.Bottom - work.Top) / dpi.DpiScaleY);
+        return new Rect(work.Left / dpi, work.Top / dpi, (work.Right - work.Left) / dpi, (work.Bottom - work.Top) / dpi);
     }
 
     /// <summary>Maximized beside a taskbar that hides itself, the window's place is made to stop a pixel short of that edge.</summary>

@@ -155,6 +155,9 @@ public sealed partial class VideoSurface : HwndHost
                 WindowStartupLocation = WindowStartupLocation.Manual,
             };
             var made = _overlayWindow;
+
+            // Laid over the video at its size: its content takes HandPeg's UI scale (5.1-Polish), its size never.
+            Services.UiScale.SetKeepsItsSize(made, true);
             made.SourceInitialized += (_, _) =>
             {
                 var handle = new WindowInteropHelper(made).Handle;

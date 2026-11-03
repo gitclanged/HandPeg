@@ -355,9 +355,45 @@ public sealed partial class GpuPreviewEngine : IDisposable
             from = 0;
         _audio.Seek(from);
         _scrubVelocity = 0;
-        _audio.Play();
+
+        // Several videos at once: the clock waits for their first frames (PlayStartWait), so none is shown late or out of step.
+        _primingSince = _state is { } state && VideosAt(state, from) > 1 ? Stopwatch.GetTimestamp() : 0;
+        _primingScene = 0;
+        if (_primingSince == 0)
+            _audio.Play();
         _playing = true;
         Invalidate();
+    }
+
+    /// <summary>
+    /// How long, at most, playback may wait for its first frames, ms (5.1-DogfoodPolish, the user's Q1: 350 at most). One video never
+    /// waits, and neither do videos whose frames at the playhead and just after it are already decoded: see <see cref="PlayStartReady"/>.
+    /// </summary>
+    public const int PlayStartWait = 350;
+
+    // When play was pressed with several videos on screen, and the first scene drawn since (0: none yet).
+    private long _primingSince, _primingScene;
+
+    /// <summary>How many different videos are on screen at a moment of the timeline.</summary>
+    public static int VideosAt(SequenceExportState state, double at) =>
+        state.Timeline.Tracks.Where(t => !t.IsHidden).SelectMany(t => t.Clips)
+            .Where(c => c.Start <= at && c.End > at && !c.IsHidden && c.ContentKind is Models.LayerKind.MainVideo or Models.LayerKind.VideoFile)
+            .Select(c => c.SourcePath).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+
+    /// <summary>
+    /// Whether play can start: every video on screen has its frame at the playhead and the two after it, as the first scene drawn since the
+    /// press found them (the worker's PresentedExact and PresentedAhead, each one's frames looked up in the cache; idea 3 of
+    /// LATE_FRAMES_MULTI_VIDEO.md, the user's Q2, and their answer to it: the frames after it too, 5.1-DogfoodPolish Q1). The lanes being
+    /// busy says nothing: the pre-roll keeps them so, which is what used to run the wait out every time. An earlier scene's answer is about
+    /// somewhere else, so it does not count: <paramref name="scene"/> has to be presented first.
+    /// </summary>
+    /// <param name="since">When play was pressed (Stopwatch ticks).</param>
+    /// <param name="scene">The first scene drawn since; 0 while there is none.</param>
+    public static bool PlayStartReady(CompositorClient client, long since, long scene)
+    {
+        ref var control = ref client.Memory.Control;
+        return (scene > 0 && Volatile.Read(ref control.PresentedSequence) >= scene && Volatile.Read(ref control.PresentedExact) != 0 && Volatile.Read(ref control.PresentedAhead) != 0)
+            || Stopwatch.GetElapsedTime(since).TotalMilliseconds >= PlayStartWait;
     }
 
     public void Pause()
@@ -366,6 +402,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             return;
         var at = _audio.Position;
         _audio.Pause();
+        _primingSince = 0;
         _playing = false;
         Volatile.Write(ref _pausedAt, Math.Clamp(at, 0, Math.Max(SequenceSeconds, 0)));
         _audio.Seek(Volatile.Read(ref _pausedAt));
@@ -416,6 +453,12 @@ public sealed partial class GpuPreviewEngine : IDisposable
                         _refresh = 0.9 * _refresh + 0.1 * interval;
                     presentedLast = false;
 
+                    if (_primingSince != 0 && PlayStartReady(_client, _primingSince, _primingScene))
+                    {
+                        _primingSince = 0;
+                        _audio.Play();
+                    }
+
                     var plan = Volatile.Read(ref _plan);
                     var at = _audio.Position + _refresh * Math.Max(_rate, 0);
                     if (_rate >= 0 && at >= plan.SequenceSeconds - 1e-3 || _rate < 0 && at <= 0)
@@ -444,6 +487,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     Volatile.Write(ref _sceneDirty, 0);
                     _lastPlayedFrame = frame;
                     var sequence = PublishAt(plan, at, playing: true);
+                    if (_primingSince != 0 && _primingScene == 0)
+                        _primingScene = sequence;
 
                     // The cuts ahead (rewritten only when one is passed or another comes into the horizon).
                     LeaveHints(plan, at, playing: true, hints);
@@ -565,6 +610,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     // The state the plan was made from, and the plan a capture draws (the originals', never a proxy's: Export Frame).
     private SequenceExportState? _state;
     private GpuScenePlan? _capturePlan;
+    private double _captureAt = double.NaN;
 
     /// <summary>
     /// The frame at the playhead as the export makes it: the canvas's own size, no letterbox, no zoom, no 3D view, every
@@ -572,7 +618,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// (alpha meaningless). Null when it could not be read. Called on the UI thread (a plan of the originals is made
     /// there when the player's reads proxies); drawn on the pump's thread.
     /// </summary>
-    public Task<(byte[] Bgra, int Width, int Height)?> CaptureFrameAsync()
+    /// <param name="at">The moment of the sequence to draw; null for the playhead.</param>
+    public Task<(byte[] Bgra, int Width, int Height)?> CaptureFrameAsync(double? at = null)
     {
         var request = new TaskCompletionSource<(byte[], int, int)?>(TaskCreationOptions.RunContinuationsAsynchronously);
         GpuScenePlan? originals = null;
@@ -589,6 +636,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         }
 
         Volatile.Write(ref _capturePlan, originals);
+        Interlocked.Exchange(ref _captureAt, at ?? double.NaN);
         Interlocked.Exchange(ref _capture, request)?.TrySetResult(null);
         _dirty.Set();
         return request.Task;
@@ -599,7 +647,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
         try
         {
             var plan = Interlocked.Exchange(ref _capturePlan, null) ?? Volatile.Read(ref _plan);
-            var at = Math.Min(Position, Math.Max(plan.SequenceSeconds - 0.001, 0));
+            var wanted = Interlocked.Exchange(ref _captureAt, double.NaN);
+            var at = Math.Min(double.IsNaN(wanted) ? Position : Math.Max(wanted, 0), Math.Max(plan.SequenceSeconds - 0.001, 0));
             _client.ClearScene();
             ref var header = ref _client.Scene;
             var layers = MemoryMarshal.CreateSpan(ref _client.Layer(0), CompositorProtocol.MaxLayers);

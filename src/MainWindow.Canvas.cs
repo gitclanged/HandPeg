@@ -300,7 +300,7 @@ public partial class MainWindow
         // Its track's box, as every track has one (4.3D): the clip the Center controls stand for (the selected one, else the
         // one at the playhead; 4.4: each clip has a place of its own), which the box moves, sizes, turns and anchors.
         _arrangeMain = _viewModel.FrameEngine ? _viewModel.CenterTarget : null;
-        if (_viewModel.FrameEngine && !_viewModel.CenterTarget.IsHidden)
+        if (_viewModel.FrameEngine && _viewModel.IsPictureDrawn(_viewModel.CenterTarget, _viewModel.PositionMs / 1000))
         {
             var main = _viewModel.CenterTarget;
             _placeCenter = AddArrangeLayer(
@@ -413,8 +413,8 @@ public partial class MainWindow
 
     /// <summary>
     /// Each track's clip its box on the Canvas stands for, the main video's aside: the one on screen at the playhead, else its
-    /// first shown one; a hidden track has none. The views come track by track (MainViewModel.SyncViews), so one pass, and
-    /// nothing made: it is asked at every move of the playhead.
+    /// first shown one; a hidden track, or a clip hidden or see-through, has none. The views come track by track
+    /// (MainViewModel.SyncViews), so one pass, and nothing made: it is asked at every move of the playhead.
     /// </summary>
     private void CollectArrangeClips(List<Layer> into)
     {
@@ -425,7 +425,7 @@ public partial class MainWindow
         var onScreen = false;
         foreach (var layer in _viewModel.Layers)
         {
-            if (layer is not { IsAudio: false, IsEmptyTrack: false, IsMainVideo: false, IsHidden: false })
+            if (layer is not { IsAudio: false, IsEmptyTrack: false, IsMainVideo: false, IsHidden: false } || !_viewModel.IsPictureDrawn(layer, at))
                 continue;
 
             if (layer.TrackId != track)
@@ -664,11 +664,13 @@ public partial class MainWindow
         Func<(int X, int Y, int Width, int Height)> getRect, Action<double, double> move, Action<double, double> resize, Action reset, Func<double>? rotation = null,
         Layer? gizmo = null)
     {
-        var box = new Thumb
+        var box = new LayerBox
         {
+            Layer = gizmo ?? dataContext as Layer,
             Style = style,
             DataContext = dataContext,
             Cursor = Cursors.SizeAll,
+            Takes = (self, at) => LayerBox.TakesPoint(self, HeldArrangeBox, at, IsDrawnNow),
             ToolTip = gizmo is null
                 ? "Drag to move. Drag the corner handle to resize. Double-click to center."
                 : "Drag to move (it snaps to the middle and the safe margins; Alt: no snapping). The corner handle resizes about the anchor point, the round handle turns it, the gold dot is the anchor. Arrow keys nudge it a pixel (Shift: ten). Double-click to center.",
@@ -681,7 +683,20 @@ public partial class MainWindow
             moveStep.Changing();
             move(e.HorizontalChange / scale, e.VerticalChange / scale);
         };
-        box.DragCompleted += (_, _) => _layoutGuides?.ShowGuides([]);
+        var wasHeld = false;
+        box.PreviewMouseLeftButtonDown += (_, _) =>
+        {
+            _clickThrough?.Stop();
+            wasHeld = ReferenceEquals(HeldArrangeBox, box);
+        };
+        box.DragCompleted += (_, e) =>
+        {
+            _layoutGuides?.ShowGuides([]);
+
+            // As over the player: a click with no drag on the box held goes on to the next one down at that place.
+            if (wasHeld && !e.Canceled && Math.Abs(e.HorizontalChange) + Math.Abs(e.VerticalChange) < 2)
+                ClickThrough([.. LayoutCanvas.Children.OfType<LayerBox>()], box, LayoutCanvas, next => next.Focus());
+        };
 
         // Chosen with the pointer, the arrow keys nudge it (see MainWindow_PreviewKeyDown): a pixel of the output, ten with Shift.
         if (gizmo is not null)
@@ -757,6 +772,18 @@ public partial class MainWindow
         }
 
         return Place;
+    }
+
+    /// <summary>The Canvas's box a press stays with: the one last pressed (it has the arrow keys), else the selected layer's.</summary>
+    private LayerBox? HeldArrangeBox
+    {
+        get
+        {
+            if (Keyboard.FocusedElement is LayerBox focused && ReferenceEquals(focused.Parent, LayoutCanvas))
+                return focused;
+
+            return HeldLayer is { } held ? LayoutCanvas.Children.OfType<LayerBox>().FirstOrDefault(b => ReferenceEquals(b.Layer, held)) : null;
+        }
     }
 
     /// <summary>A layout box's arrow-key nudge: what it moves (its name, for Undo), and how, in pixels of the output.</summary>

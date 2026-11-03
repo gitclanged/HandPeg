@@ -211,12 +211,15 @@ public sealed partial class EffectInstance : ObservableObject
             else
             {
                 var value = GpuValue(param, clipTimeSeconds, layer);
-                Put(lanes, first, lane, param.Kind == ParamKind.Toggle ? (value >= 0.5 ? 1 : 0) : Math.Clamp(value, param.Min, param.Max));
+                Put(lanes, first, lane, param.GpuProgress ? (clipTimeSeconds - (Range?.Start ?? 0)) / Math.Clamp(value, Math.Max(param.Min, 0.001), param.Max)
+                    : param.Kind == ParamKind.Toggle ? (value >= 0.5 ? 1 : 0) : Math.Clamp(value, param.Min, param.Max) * param.GpuScale);
             }
 
             lane += param.GpuLanes;
         }
 
+        if (definition.GpuVariant != 0 && packet == definition.GpuPacketCount - 1)
+            lanes[GpuEffectPacket.Lanes - 1] = definition.GpuVariant;
         return GpuEffectPacket.From(definition.GpuSlot, lanes);
     }
 

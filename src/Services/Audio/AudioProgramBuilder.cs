@@ -181,10 +181,11 @@ internal static class AudioProgramBuilder
             });
 
             // A sound clip's file is read on its own clock from 0, as the graph reads it (a sound clip is not in MediaStarts);
-            // a video's from its first frame (MediaStarts, else what the decoder finds), as its picture is.
-            var source = new AudioSource(path, 0)
+            // a video's from its first frame (MediaStarts, else what the decoder finds), as its picture is. A stream unpacked from a video
+            // is on the video's clock: its file is in MediaStarts.
+            var source = new AudioSource(path, Math.Max(layer.AudioStream, 0))
             {
-                VideoStart = layer.IsAudio ? 0 : VideoStart(state, path),
+                VideoStart = layer.IsAudio && !state.MediaStarts.ContainsKey(path) ? 0 : VideoStart(state, path),
             };
 
             var fadeIn = Math.Clamp(layer.FadeInSeconds, 0, 60);

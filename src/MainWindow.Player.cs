@@ -263,11 +263,9 @@ public partial class MainWindow
         }
         else if (_gpu is { } gpu)
         {
-            // At the end: Play starts again from the beginning. Paused by hand: a Play Start to Stop under way is over.
+            // At the end: Play starts again from the beginning.
             if (!gpu.IsPlaying && gpu.Position >= gpu.SequenceSeconds - 0.001)
                 PlayerSeek(0);
-            if (gpu.IsPlaying)
-                _playUntilMs = null;
             GpuSetPaused(gpu, gpu.IsPlaying);
         }
         else if (_gpuGaveUp)

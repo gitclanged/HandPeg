@@ -20,6 +20,9 @@ internal sealed class GpuSceneLowering
 {
     public required double SequenceSeconds { get; init; }
 
+    /// <summary>How long a frame of the sequence lasts, in seconds (the shutter's measure, 5.1-GpuFx).</summary>
+    public double FrameSeconds { get; init; } = 1 / 30.0;
+
     /// <summary>The primary chain's clips on the sequence, crossfades laid out: the stream every piece of the main video is cut from.</summary>
     public required IReadOnlyList<MainClip> MainClips { get; init; }
 
@@ -42,6 +45,9 @@ internal sealed class GpuSceneLowering
 
     /// <summary>The pictures bottom first, the main layer at its track's place, each twin just under its video.</summary>
     public required IReadOnlyList<Layer> Stack { get; init; }
+
+    /// <summary>Where the captions are among <see cref="Stack"/> (5.1-Polish): under the layer at this index and those above; -1 over everything.</summary>
+    public required int CaptionsAt { get; init; }
 
     public required IReadOnlyList<EffectInstance> SequenceEffects { get; init; }
 
@@ -103,6 +109,7 @@ public static partial class FilterGraphBuilder
         return new GpuSceneLowering
         {
             SequenceSeconds = lowered.SequenceSeconds,
+            FrameSeconds = state.SourceFrameRate > 1 ? 1 / state.SourceFrameRate : 1 / 30.0,
             MainClips = lowered.MainClips,
             MainCrossfades = lowered.MainCrossfades,
             CenterClips = lowered.CenterClips,
@@ -113,6 +120,7 @@ public static partial class FilterGraphBuilder
             BlurTwins = lowered.BlurTwins,
             MainLayer = lowered.MainLayer,
             Stack = lowered.Stack,
+            CaptionsAt = lowered.CaptionsAt,
             SequenceEffects = lowered.SequenceEffects,
             ClipOf = clipOf,
             TrackOf = trackOf,

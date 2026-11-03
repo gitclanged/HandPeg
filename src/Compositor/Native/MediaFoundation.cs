@@ -226,6 +226,17 @@ internal static unsafe partial class Mf
         return hr;
     }
 
+    /// <summary>IMFSourceReader::ReadSample over every selected stream: <paramref name="stream"/> says whose sample it is.</summary>
+    public static int ReadSampleAny(nint reader, out uint stream, out uint flags, out long timestamp, out nint sample)
+    {
+        uint actual, f;
+        long time;
+        nint s = 0;
+        var hr = ((delegate* unmanaged<nint, uint, uint, uint*, uint*, long*, nint*, int>)Com.Table(reader)[9])(reader, AllStreams, 0, &actual, &f, &time, &s);
+        (stream, flags, timestamp, sample) = (actual, f, time, s);
+        return hr;
+    }
+
     public static int Flush(nint reader, uint stream) => ((delegate* unmanaged<nint, uint, int>)Com.Table(reader)[10])(reader, stream);
 
     /// <summary>The source's length in 100 ns units (MF_PD_DURATION), 0 when it does not say.</summary>

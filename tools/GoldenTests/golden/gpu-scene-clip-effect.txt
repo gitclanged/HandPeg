@@ -55,7 +55,7 @@ Sharpen on the second half: 5 entries
   at 6 s: 3 layer(s)
     Media [Blurred Background] box (0.0, 0.0) 320.0 x 180.0
     Media [rider] box (0.0, 0.0) 320.0 x 180.0: ColorGrade(0.5 0 1.2 1)
-    Media [inset, second half] box (160.0, 18.0) 128.0 x 72.0: BoxBlur(6 2 1 0), ColorGrade(1.1 0 0.2 1), Sharpen(1 0 0 0)
+    Media [inset, second half] box (160.0, 18.0) 128.0 x 72.0: BoxBlur(6 2 1 0), ColorGrade(1.1 0 0.2 1), Sharpen(1 2 0 0)
 
 no main video, nothing selected: the clip the panes work on is a stand-in that is no clip
 
@@ -63,12 +63,12 @@ the blurred background behind the main video at half size: 2 layer(s) at 2 s
     blurred background: radius 20, 2 passes, dim -0.15, crop (0, 0)-(1, 1)
 
 radius 7.5, zoom 1.5 and a Vignette of its own: 2 layer(s) at 2 s
-    blurred background: radius 7.5, 2 passes, dim -0.15, crop (0.167, 0.167)-(0.833, 0.833): Vignette(0.44 100 100)
+    blurred background: radius 7.5, 2 passes, dim -0.15, crop (0.167, 0.167)-(0.833, 0.833): Vignette(0.436 100 100)
     the export's graph has its zoom: yes
     the export's graph has its radius, rounded: yes
-    the export's graph has its own vignette: yes
+    the export's graph has its own vignette (25 degrees, 5.1-Polish): yes
 
 radius 0: sharp, and drawn all the same: 2 layer(s) at 2 s
-    blurred background: radius 0, 2 passes, dim -0.15, crop (0.167, 0.167)-(0.833, 0.833): Vignette(0.44 100 100)
+    blurred background: radius 0, 2 passes, dim -0.15, crop (0.167, 0.167)-(0.833, 0.833): Vignette(0.436 100 100)
 
 drawn by a real worker: the anchor's blur softens it, the second clip's contrast flattens it, the other file's saturation greys it

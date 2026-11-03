@@ -1,4 +1,4 @@
-using System.Globalization;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -12,75 +12,126 @@ using HandPegApp.ViewModels;
 namespace HandPegApp;
 
 /// <summary>
-/// Draw Custom Shape: a still of the video at the playhead, to trace HUD elements on by hand. Each click puts
-/// down a point and the lines join up; clicking the first point again (or double-clicking, or Enter) closes the
-/// shape, and the next click starts another. The shapes become one mask of the whole frame, white inside them,
-/// for the layer the window was opened from or for every layer cut from the video. The areas those layers cut
-/// out are outlined on the still, so it is plain which shape each will get. Built in code: a still, the
-/// shapes drawn over it, a line of help and a row of buttons.
+/// The Cutout Studio (5.1-CleanupStudioAndFfmpegPurge; Draw Custom Shape before it): a still of the video to trace a game's HUD on by
+/// hand, corner by corner with the polygon pen, zoomed in to 64 screen pixels a source pixel and panned at any moment, a shape half drawn or
+/// not. The shapes belong to named pieces; the pieces become layers, or are saved as a Game Preset (.hpstyle) for the drop overlay and
+/// the Style Presets, laid out on a tall frame beside the drawing. Opened from a layer it can also be that layer's mask. Built in code.
 /// </summary>
-public sealed class MaskDrawWindow : Window
+public sealed partial class MaskDrawWindow : Window
 {
+    /// <summary>The most a view magnifies: 64 screen pixels to a source pixel.</summary>
+    public const double MostZoom = 64;
+
+    /// <summary>From here up the still's pixels are drawn as hard squares.</summary>
+    public const double PixelEdgesFrom = 4;
+
+    /// <summary>From here up each source pixel gets a cell of a thin grid, and points land on its corners.</summary>
+    public const double PixelGridFrom = 16;
+
+    // The wheel's zoom for one notch (120), and how fast the view catches up with it (the time constant, seconds).
+    private const double ZoomPerNotch = 1.25, ZoomEase = 0.045;
+
+    // WASD's pan, in screen pixels a second; Shift three times that.
+    private const double KeyPanSpeed = 900;
+
+    private static readonly string[] PieceNames = ["Hero Portrait & HP", "Abilities & Weapon", "Killfeed", "Minimap", "Objective"];
+
     private readonly MainViewModel _viewModel;
     private readonly Layer _layer;
+    private readonly bool _forLayer;
 
-    // The still and the shapes are laid out in the source's own pixels, and the whole is scaled to the window.
+    // The still and the shapes are laid out in the source's own pixels; the view scales and moves them.
     private readonly double _width, _height;
     private readonly Image _still = new() { Stretch = Stretch.Fill };
     private readonly ShapeSurface _surface;
-    private readonly Viewbox _view = new() { Stretch = Stretch.Uniform };
+    private readonly Canvas _viewport = new() { ClipToBounds = true, Background = Brushes.Black };
+    private readonly Grid _picture;
+    private readonly MatrixTransform _view = new();
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock _zoomText = new() { VerticalAlignment = VerticalAlignment.Center, MinWidth = 44, Margin = new Thickness(8, 0, 8, 0), TextAlignment = TextAlignment.Right };
     private readonly string _stillPath = Path.Combine(SessionPaths.Previews, $"mask_still_{Guid.NewGuid():N}.png");
     private readonly CancellationTokenSource _closing = new();
     private readonly Button _undoButton, _redoButton;
+    private readonly StackPanel _pieceRows = new();
+    private readonly CutoutStage _stage;
+    private readonly Slider _zoomSlider = new() { Minimum = 1, Maximum = 2.5, Value = MainViewModel.CutoutDefaultZoom, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBox _presetName = new() { Margin = new Thickness(0, 4, 0, 0) };
+
+    // The named pieces, by the id their shapes carry; the ids of those that were moved by hand on the tall frame.
+    private readonly Dictionary<int, string> _names = [];
+    private readonly Dictionary<int, CutoutStage.Placed> _placed = [];
+    private readonly HashSet<int> _movedByHand = [];
+    private int _nextPiece;
+
+    // The view: screen pixels to a source pixel, and where the picture's corner lies in the viewport. A wheel moves the goal and the
+    // view eases to it about the point under the pointer.
+    private double _zoom = 1, _panX, _panY, _zoomGoal = 1;
+    private Point _zoomPoint;
+    private bool _fitted = true, _ticking;
+    private long _lastTick;
+    private readonly HashSet<Key> _panKeys = [];
+    private bool _spaceHeld;
+    private (Point From, double PanX, double PanY)? _panDrag;
 
     private static readonly FontFamily Glyphs = new("Segoe MDL2 Assets");
 
-    // Segoe MDL2 Assets: Undo (E7A7) and Redo (E7A6).
-    private static readonly string UndoGlyph = char.ConvertFromUtf32(0xE7A7), RedoGlyph = char.ConvertFromUtf32(0xE7A6);
+    // Segoe MDL2 Assets: Undo (E7A7), Redo (E7A6), Delete (E74D).
+    private static readonly string UndoGlyph = char.ConvertFromUtf32(0xE7A7), RedoGlyph = char.ConvertFromUtf32(0xE7A6), DeleteGlyph = char.ConvertFromUtf32(0xE74D);
 
-    /// <summary>The finished shapes as a mask's text (see <see cref="MaskStore"/>), once the window was confirmed.</summary>
+    /// <summary>The finished shapes as a mask's text (see <see cref="MaskStore"/>), once the window was confirmed for a layer.</summary>
     public string Shapes { get; private set; } = "";
 
     /// <summary>Whether the shapes are for every layer cut from the video, not only the one the window was opened from.</summary>
     public bool ForAllLayers { get; private set; }
 
-    public MaskDrawWindow(MainViewModel viewModel, Layer layer)
+    /// <param name="layer">The layer it is asked to mask; null opens it on the video alone, for pieces and Game Presets.</param>
+    public MaskDrawWindow(MainViewModel viewModel, Layer? layer)
     {
-        (_viewModel, _layer) = (viewModel, layer);
+        (_viewModel, _layer, _forLayer) = (viewModel, layer ?? viewModel.MainLayer, layer is not null);
         (_width, _height) = viewModel.SourceWidth > 0 && viewModel.SourceHeight > 0 ? (viewModel.SourceWidth, viewModel.SourceHeight) : (1920.0, 1080.0);
 
-        Title = $"Draw Custom Shape: {layer.Name}";
-        Width = 1180;
-        Height = 820;
-        MinWidth = 640;
-        MinHeight = 420;
+        Title = layer is null ? "Cutout Studio" : $"Cutout Studio: {layer.Name}";
+        Width = 1320;
+        Height = 860;
+        MinWidth = 900;
+        MinHeight = 520;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
         SetResourceReference(BackgroundProperty, "WindowBackgroundBrush");
         SetResourceReference(ForegroundProperty, "TextBrush");
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
 
-        // Start from the layer's own drawn shapes, or failing that from those of another piece of the same video:
-        // they are all one mask of the frame.
-        var start = layer.UsesFrameMask && layer.MaskShapes.Length > 0 ? layer.MaskShapes
-            : viewModel.Layers.FirstOrDefault(l => l.UsesFrameMask && l.CustomMask && l.MaskShapes.Length > 0)?.MaskShapes ?? "";
-        var regions = viewModel.Layers.Where(l => l.IsVideo && !l.IsDeleted)
+        var regions = viewModel.Layers.Where(l => l.IsVideo && !l.IsDeleted && !(l.UsesFrameMask && l.MaskShapes.Length > 0))
             .Select(l => (new Rect(l.SourceX * _width, l.SourceY * _height, l.SourceWidth * _width, l.SourceHeight * _height), l.Name, ReferenceEquals(l, layer)))
             .ToList();
-        _surface = new ShapeSurface(_width, _height, regions, MaskStore.ParseShapes(start).Select(s => s.Select(p => new Point(p.X * _width, p.Y * _height)).ToList()).ToList());
+        _surface = new ShapeSurface(_width, _height, regions, StartingShapes());
+        _surface.CurrentPiece = _names.Count > 0 ? _names.Keys.First() : NewPiece();
         _surface.Changed += ShowHelp;
+        _surface.Changed += RefreshPieces;
 
-        var picture = new Grid { Width = _width, Height = _height, Background = Brushes.Black };
-        picture.Children.Add(_still);
-        picture.Children.Add(_surface);
-        _view.Child = picture;
+        _picture = new Grid { Width = _width, Height = _height, Background = Brushes.Black, RenderTransform = _view, RenderTransformOrigin = new Point(0, 0) };
+        _picture.Children.Add(_still);
+        _picture.Children.Add(_surface);
+        _viewport.Children.Add(_picture);
+        _viewport.SizeChanged += (_, _) =>
+        {
+            if (_fitted)
+                Fit();
+            else
+                ApplyView();
+        };
+        _viewport.PreviewMouseWheel += Viewport_MouseWheel;
+        _viewport.PreviewMouseDown += Viewport_MouseDown;
+        _viewport.PreviewMouseMove += Viewport_MouseMove;
+        _viewport.PreviewMouseUp += Viewport_MouseUp;
+        _viewport.LostMouseCapture += (_, _) => _panDrag = null;
+        RenderOptions.SetBitmapScalingMode(_still, BitmapScalingMode.HighQuality);
 
         var help = new TextBlock
         {
-            Text = "Click around a HUD element to put down its outline, point by point. Click the first point again (or double-click, or press Enter) to close the shape, "
-                   + "then start the next. Drag a point to move it. Right-click takes back the last point, or removes the point or shape under the pointer. Backspace takes back a point, Escape drops the shape being drawn. "
-                   + "Ctrl+Z undoes, Ctrl+Y redoes.",
+            Text = "Pen: click corner by corner, as many points as you like (a live line follows; Shift keeps it to 0, 45 or 90 degrees), then click the glowing first point, double-click, or press Enter to close the shape. "
+                   + "Drag a point to move it, Alt + click or double-click an edge to add one, right-click a point to remove it. Backspace takes back a point, Escape drops the shape being drawn. Ctrl+Z undoes, Ctrl+Y redoes. "
+                   + "At any moment, a shape half drawn or not: the wheel zooms about the pointer, up to 64x; the middle button, Space + drag or W A S D pan. From 16x points land on pixel corners.",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -94,32 +145,85 @@ public sealed class MaskDrawWindow : Window
         _redoButton.Click += (_, _) => _surface.Redo();
         _surface.Changed += UpdateUndoButtons;
 
+        var tools = new StackPanel { Orientation = Orientation.Horizontal };
+        tools.Children.Add(_undoButton);
+        tools.Children.Add(_redoButton);
+        foreach (var (tool, name, tip) in new (CutoutTool, string, string)[]
+                 {
+                     (CutoutTool.Pen, "Pen", "The polygon pen: click corner by corner."),
+                     (CutoutTool.Rectangle, "Rectangle", "Drag out a rectangle: four ordinary points."),
+                     (CutoutTool.Ellipse, "Ellipse", "Drag out an ellipse: round points to drag like any others. For a round portrait or an ultimate meter."),
+                     (CutoutTool.Slant, "Slant", "Drag out a bar leaning to the right, as slanted health bars do."),
+                 })
+        {
+            var choice = new RadioButton { Content = name, ToolTip = tip, GroupName = "CutoutTool", IsChecked = tool == CutoutTool.Pen, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+            choice.Checked += (_, _) => _surface.Tool = tool;
+            tools.Children.Add(choice);
+        }
+
         var undoShape = new Button { Content = "Remove Last Shape", Padding = new Thickness(12, 4, 12, 4) };
         undoShape.Click += (_, _) => _surface.RemoveLastShape();
         var clear = new Button { Content = "Clear All", Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(6, 0, 0, 0) };
         clear.Click += (_, _) => _surface.Clear();
-        var applyOne = new Button { Content = "Apply to This Layer", Padding = new Thickness(14, 4, 14, 4), IsDefault = true };
-        applyOne.Click += (_, _) => Finish(forAll: false);
-        var applyAll = new Button
-        {
-            Content = "Apply to All Cut-out Layers",
-            Padding = new Thickness(14, 4, 14, 4),
-            Margin = new Thickness(6, 0, 0, 0),
-            ToolTip = "Every layer cut from the video gets this mask of the whole frame, and takes the part of it under its own area.",
-        };
-        applyAll.Click += (_, _) => Finish(forAll: true);
-        var cancel = new Button { Content = "Cancel", MinWidth = 88, Margin = new Thickness(6, 0, 0, 0), IsCancel = true };
+        var fit = new Button { Content = "Fit", Padding = new Thickness(12, 4, 12, 4), ToolTip = "The whole picture in the window." };
+        fit.Click += (_, _) => Fit();
+        var actualSize = new Button { Content = "100%", Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(4, 0, 0, 0), ToolTip = "One screen pixel to a source pixel." };
+        actualSize.Click += (_, _) => ZoomTo(1, new Point(_viewport.ActualWidth / 2, _viewport.ActualHeight / 2));
+        var view = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(10, 0, 0, 0) };
+        view.Children.Add(fit);
+        view.Children.Add(actualSize);
+        view.Children.Add(_zoomText);
+
+        var top = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+        DockPanel.SetDock(view, Dock.Right);
+        top.Children.Add(view);
+        top.Children.Add(tools);
 
         var buttons = new DockPanel { Margin = new Thickness(0, 10, 0, 0), LastChildFill = true };
         var right = new StackPanel { Orientation = Orientation.Horizontal };
-        right.Children.Add(applyOne);
-        if (regions.Count > 1)
-            right.Children.Add(applyAll);
+        var cancel = new Button { Content = _forLayer ? "Cancel" : "Close", MinWidth = 88, Margin = new Thickness(6, 0, 0, 0), IsCancel = true };
+        var addLayers = new Button
+        {
+            Content = "Add Pieces to Timeline",
+            Padding = new Thickness(14, 4, 14, 4),
+            ToolTip = "Lays the video out tall with its blurred background and adds each named piece as a layer over it, as drawn here. Pieces added before are replaced. One step of Undo; every piece stays an ordinary layer.",
+        };
+        addLayers.Click += (_, _) =>
+        {
+            _surface.CloseShape();
+            if (Pieces() is { Count: > 0 } pieces)
+            {
+                _viewModel.AddCutoutPieces(pieces, _zoomSlider.Value);
+                DialogResult = false;
+            }
+            else
+            {
+                _status.Text = "Draw at least one shape first.";
+            }
+        };
+        right.Children.Add(addLayers);
+        if (_forLayer)
+        {
+            var applyOne = new Button { Content = "Apply to This Layer", Padding = new Thickness(14, 4, 14, 4), Margin = new Thickness(6, 0, 0, 0) };
+            applyOne.Click += (_, _) => Finish(forAll: false);
+            right.Children.Add(applyOne);
+            if (regions.Count > 1)
+            {
+                var applyAll = new Button
+                {
+                    Content = "Apply to All Cut-out Layers",
+                    Padding = new Thickness(14, 4, 14, 4),
+                    Margin = new Thickness(6, 0, 0, 0),
+                    ToolTip = "Every layer cut from the video gets this mask of the whole frame, and takes the part of it under its own area.",
+                };
+                applyAll.Click += (_, _) => Finish(forAll: true);
+                right.Children.Add(applyAll);
+            }
+        }
+
         right.Children.Add(cancel);
         DockPanel.SetDock(right, Dock.Right);
         var left = new StackPanel { Orientation = Orientation.Horizontal };
-        left.Children.Add(_undoButton);
-        left.Children.Add(_redoButton);
         left.Children.Add(undoShape);
         left.Children.Add(clear);
         DockPanel.SetDock(left, Dock.Left);
@@ -128,27 +232,440 @@ public sealed class MaskDrawWindow : Window
         buttons.Children.Add(left);
         buttons.Children.Add(_status);
 
+        _stage = new CutoutStage(_width, _height) { Height = 300, Margin = new Thickness(0, 6, 0, 6) };
+        _stage.Moved += PieceMoved;
+        _zoomSlider.ValueChanged += (_, _) => RefreshPieces();
+        ToolTipService.SetToolTip(_zoomSlider, "How far the main video is zoomed on the tall frame. Its sides are what the pieces bring back.");
+        var pane = PiecesPane();
+        DockPanel.SetDock(pane, Dock.Right);
+
         var root = new DockPanel { Margin = new Thickness(14) };
         DockPanel.SetDock(help, Dock.Top);
+        DockPanel.SetDock(top, Dock.Top);
         DockPanel.SetDock(buttons, Dock.Bottom);
         root.Children.Add(help);
+        root.Children.Add(top);
         root.Children.Add(buttons);
-        root.Children.Add(new Border { Child = _view, Background = Brushes.Black });
+        root.Children.Add(pane);
+        root.Children.Add(new Border { Child = _viewport, Background = Brushes.Black });
         Content = root;
 
         PreviewKeyDown += Window_PreviewKeyDown;
-        SizeChanged += (_, _) => _surface.InvalidateVisual();
-        Loaded += async (_, _) => await LoadStillAsync();
+        PreviewKeyUp += Window_PreviewKeyUp;
+        Deactivated += (_, _) => LetGoOfKeys();
+        Loaded += async (_, _) =>
+        {
+            Fit();
+            _surface.Focus();
+            await LoadStillAsync();
+        };
         Closed += (_, _) =>
         {
             _closing.Cancel();
+            StopTicking();
             SourceStill.Delete(_stillPath);
         };
         ShowHelp();
+        RefreshPieces();
     }
+
+    private void LetGoOfKeys()
+    {
+        _panKeys.Clear();
+        _spaceHeld = false;
+    }
+
+    // ----- The pieces -----
+
+    // What it starts from. From a layer: its own drawn shapes, or failing that those of another piece of the same video (one mask of the
+    // frame). Opened on the video alone: the pieces the Studio made earlier, each with its name.
+    private List<(int Owner, List<Point> Points)> StartingShapes()
+    {
+        var start = new List<(int, List<Point>)>();
+        void Take(int piece, string text) =>
+            start.AddRange(MaskStore.ParseShapes(text).Select(s => (piece, s.Select(p => new Point(p.X * _width, p.Y * _height)).ToList())));
+
+        if (_forLayer)
+        {
+            var text = _layer.UsesFrameMask && _layer.MaskShapes.Length > 0 ? _layer.MaskShapes
+                : _layer.IsVideo ? _viewModel.Layers.FirstOrDefault(l => l.UsesFrameMask && l.CustomMask && l.MaskShapes.Length > 0)?.MaskShapes ?? "" : "";
+            if (text.Length > 0)
+                Take(NewPiece(_layer.Name), text);
+            return start;
+        }
+
+        foreach (var group in _viewModel.CutoutLayers.GroupBy(l => l.MaskShapes))
+        {
+            var piece = NewPiece(group.First().Name);
+            Take(piece, group.Key);
+            _placed[piece] = new CutoutStage.Placed
+            {
+                Id = piece,
+                Source = default,
+                Outlines = [],
+                X = group.First().PositionX,
+                Y = group.First().PositionY,
+                Width = group.First().SizeWidth,
+            };
+            _movedByHand.Add(piece);
+        }
+
+        return start;
+    }
+
+    private int NewPiece(string? name = null)
+    {
+        var piece = ++_nextPiece;
+        _names[piece] = name ?? (piece <= PieceNames.Length ? PieceNames[piece - 1] : $"Piece {piece}");
+        return piece;
+    }
+
+    private StackPanel PiecesPane()
+    {
+        var pane = new StackPanel { Width = 270, Margin = new Thickness(10, 0, 0, 0) };
+        pane.Children.Add(new TextBlock { Text = "Cutout Pieces", FontWeight = FontWeights.SemiBold });
+        var hint = new TextBlock { Text = "New shapes go to the piece selected. Each piece becomes one layer.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 4) };
+        hint.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+        pane.Children.Add(hint);
+        pane.Children.Add(new ScrollViewer { Content = _pieceRows, MaxHeight = 150, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        var add = new Button { Content = "New Piece", Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(0, 4, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+        add.Click += (_, _) =>
+        {
+            _surface.CloseShape();
+            _surface.CurrentPiece = NewPiece();
+            RefreshPieces();
+        };
+        pane.Children.Add(add);
+
+        var zoomRow = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
+        var zoomLabel = new TextBlock { Text = "Video Zoom", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+        DockPanel.SetDock(zoomLabel, Dock.Left);
+        var zoomValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center, MinWidth = 40, TextAlignment = TextAlignment.Right };
+        void ShowZoom() => zoomValue.Text = System.FormattableString.Invariant($"{_zoomSlider.Value * 100:0} %");
+        _zoomSlider.ValueChanged += (_, _) => ShowZoom();
+        ShowZoom();
+        DockPanel.SetDock(zoomValue, Dock.Right);
+        zoomRow.Children.Add(zoomLabel);
+        zoomRow.Children.Add(zoomValue);
+        zoomRow.Children.Add(_zoomSlider);
+        pane.Children.Add(zoomRow);
+        pane.Children.Add(_stage);
+
+        pane.Children.Add(new TextBlock { Text = "Game Preset Name", Margin = new Thickness(0, 4, 0, 0) });
+        pane.Children.Add(_presetName);
+        var save = new Button { Content = "Save as Game Preset", Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 6, 0, 0) };
+        save.ToolTip = "Saves the pieces as a style preset in the Styles folder, its masks inside it: it shows on the drag-and-drop overlay and in the Style Presets. Nothing on the timeline changes.";
+        save.Click += (_, _) =>
+        {
+            _surface.CloseShape();
+            var problem = _viewModel.SaveCutoutPreset(_presetName.Text, Pieces(), _zoomSlider.Value);
+            _status.Text = problem ?? $"Game Preset \"{_presetName.Text.Trim()}\" saved: drop a video on it, or pick it from the Style Presets.";
+        };
+        pane.Children.Add(save);
+        return pane;
+    }
+
+    // A piece moved on the tall frame: the stage holds the very object it moves, so nothing is made again under the drag. A double-click
+    // (no X left) gives it back to the automatic layout.
+    private void PieceMoved(int piece)
+    {
+        if (_placed.TryGetValue(piece, out var placed) && double.IsNaN(placed.X))
+        {
+            _movedByHand.Remove(piece);
+            RefreshPieces();
+        }
+        else
+        {
+            _movedByHand.Add(piece);
+        }
+    }
+
+    // The pieces with shapes, in the order they were made, as the layout and the view model want them. Their place on the tall frame:
+    // laid out above and below the video by HudLibrary, but for those moved by hand.
+    private List<CutoutPiece> Pieces()
+    {
+        var pieces = new List<(int Id, Rect Source, List<List<Point>> Outlines)>();
+        foreach (var id in _names.Keys)
+        {
+            var outlines = new List<List<Point>>();
+            for (var s = 0; s < _surface.Finished.Count; s++)
+            {
+                if (_surface.Owners[s] == id)
+                    outlines.Add(_surface.Finished[s].Select(p => new Point(p.X / _width, p.Y / _height)).ToList());
+            }
+
+            if (outlines.Count == 0)
+                continue;
+
+            var (left, top) = (outlines.Min(o => o.Min(p => p.X)), outlines.Min(o => o.Min(p => p.Y)));
+            var (right, bottom) = (outlines.Max(o => o.Max(p => p.X)), outlines.Max(o => o.Max(p => p.Y)));
+            pieces.Add((id, new Rect(left, top, Math.Max(right - left, 1e-4), Math.Max(bottom - top, 1e-4)), outlines));
+        }
+
+        var key = System.Globalization.CultureInfo.InvariantCulture;
+        var automatic = pieces.Where(p => !_movedByHand.Contains(p.Id))
+            .Select(p => new LayerState { Name = p.Id.ToString(key), SourceX = p.Source.X, SourceY = p.Source.Y, SourceWidth = p.Source.Width, SourceHeight = p.Source.Height }).ToList();
+        HudLibrary.LayOutVertically(automatic, _zoomSlider.Value);
+
+        var result = new List<CutoutPiece>(pieces.Count);
+        var seen = new List<CutoutStage.Placed>(pieces.Count);
+        foreach (var (id, source, outlines) in pieces)
+        {
+            var (x, y, width) = (0.0, 0.0, 0.25);
+            if (automatic.FirstOrDefault(a => a.Name == id.ToString(key)) is { } laid)
+                (x, y, width) = (laid.PositionX, laid.PositionY, laid.SizeWidth);
+            else if (_placed.TryGetValue(id, out var kept))
+                (x, y, width) = (kept.X, kept.Y, kept.Width);
+
+            var placed = new CutoutStage.Placed { Id = id, Source = source, Outlines = outlines, X = x, Y = y, Width = width };
+            _placed[id] = placed;
+            seen.Add(placed);
+            result.Add(new CutoutPiece(_names[id].Trim().Length > 0 ? _names[id].Trim() : $"Piece {id}", MaskStore.FormatShapes(outlines), source, x, y, width));
+        }
+
+        _stage.Show(seen, _still.Source as BitmapSource, _zoomSlider.Value);
+        return result;
+    }
+
+    // The rows of the piece list and the tall frame. Rows come and go with the pieces; a name being typed keeps its box.
+    private void RefreshPieces()
+    {
+        // An undo can bring back the shapes of a piece that was removed.
+        foreach (var id in _surface.Owners)
+            _names.TryAdd(id, $"Piece {id}");
+        Pieces();
+        _stage.Selected = _surface.CurrentPiece;
+
+        var shown = _pieceRows.Children.OfType<FrameworkElement>().Select(row => (int)row.Tag).ToList();
+        if (!shown.SequenceEqual(_names.Keys))
+        {
+            _pieceRows.Children.Clear();
+            foreach (var (id, name) in _names)
+                _pieceRows.Children.Add(PieceRow(id, name));
+        }
+
+        foreach (var row in _pieceRows.Children.OfType<Border>())
+        {
+            var id = (int)row.Tag;
+            row.BorderBrush = id == _surface.CurrentPiece ? ShapeSurface.LineOf(id) : Brushes.Transparent;
+            if (row.Child is DockPanel panel && panel.Children[0] is TextBlock count)
+            {
+                var shapes = _surface.Owners.Count(o => o == id);
+                count.Text = shapes == 1 ? "1 shape" : $"{shapes} shapes";
+            }
+        }
+    }
+
+    private Border PieceRow(int id, string name)
+    {
+        var count = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0), MinWidth = 46, FontSize = 11 };
+        count.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+        DockPanel.SetDock(count, Dock.Right);
+        var remove = new Button { Content = DeleteGlyph, FontFamily = Glyphs, FontSize = 11, Padding = new Thickness(5, 2, 5, 2), Margin = new Thickness(4, 0, 0, 0), ToolTip = "Remove this piece and its shapes. Ctrl+Z brings the shapes back." };
+        remove.Click += (_, _) =>
+        {
+            _surface.RemovePiece(id);
+            _names.Remove(id);
+            if (_surface.CurrentPiece == id)
+                _surface.CurrentPiece = _names.Count > 0 ? _names.Keys.Last() : NewPiece();
+            RefreshPieces();
+        };
+        DockPanel.SetDock(remove, Dock.Right);
+        var swatch = new System.Windows.Shapes.Rectangle { Width = 10, Height = 10, Fill = ShapeSurface.LineOf(id), Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+        DockPanel.SetDock(swatch, Dock.Left);
+        var named = new TextBox { Text = name, MinWidth = 90, VerticalContentAlignment = VerticalAlignment.Center, ToolTip = "This piece's name: the layer's, on the Timeline and in the Game Preset." };
+        System.Windows.Automation.AutomationProperties.SetName(named, "Piece Name");
+        named.TextChanged += (_, _) => _names[id] = named.Text;
+        named.GotKeyboardFocus += (_, _) => Select(id);
+
+        var panel = new DockPanel();
+        panel.Children.Add(count);
+        panel.Children.Add(remove);
+        panel.Children.Add(swatch);
+        panel.Children.Add(named);
+        var row = new Border { Tag = id, Child = panel, BorderThickness = new Thickness(1), Padding = new Thickness(3), Margin = new Thickness(0, 1, 0, 1), CornerRadius = new CornerRadius(3), Background = Brushes.Transparent };
+        row.PreviewMouseLeftButtonDown += (_, _) => Select(id);
+        return row;
+
+        void Select(int piece)
+        {
+            if (_surface.CurrentPiece == piece)
+                return;
+
+            _surface.CloseShape();
+            _surface.CurrentPiece = piece;
+            _surface.InvalidateVisual();
+            RefreshPieces();
+        }
+    }
+
+    // ----- The view -----
+
+    private double Fitted => Math.Min(_viewport.ActualWidth / _width, _viewport.ActualHeight / _height);
+
+    // The least a view magnifies: the whole picture, or a screen pixel to a source pixel for a video smaller than the window.
+    private double LeastZoom => Math.Min(Fitted > 0 ? Fitted : 1, 1);
+
+    private void Fit()
+    {
+        if (_viewport.ActualWidth <= 0 || _viewport.ActualHeight <= 0)
+            return;
+
+        _fitted = true;
+        StopTicking();
+        _zoom = _zoomGoal = Fitted;
+        ApplyView();
+    }
+
+    private void ZoomTo(double zoom, Point at)
+    {
+        _fitted = false;
+        _zoomGoal = Math.Clamp(zoom, LeastZoom, MostZoom);
+        _zoomPoint = at;
+        if (AppSettings.Current.EnableExtraAnimations)
+        {
+            StartTicking();
+        }
+        else
+        {
+            SetZoom(_zoomGoal);
+            ApplyView();
+        }
+    }
+
+    // The zoom set, with the point of the picture under the zoom's point staying under it.
+    private void SetZoom(double zoom)
+    {
+        var (sourceX, sourceY) = ((_zoomPoint.X - _panX) / _zoom, (_zoomPoint.Y - _panY) / _zoom);
+        _zoom = zoom;
+        (_panX, _panY) = (_zoomPoint.X - sourceX * zoom, _zoomPoint.Y - sourceY * zoom);
+    }
+
+    private void ApplyView()
+    {
+        // The picture is never lost: smaller than the viewport it sits in the middle, larger it always covers it.
+        var (wide, tall) = (_width * _zoom, _height * _zoom);
+        var (viewWidth, viewHeight) = (_viewport.ActualWidth, _viewport.ActualHeight);
+        _panX = wide <= viewWidth ? (viewWidth - wide) / 2 : Math.Clamp(_panX, viewWidth - wide, 0);
+        _panY = tall <= viewHeight ? (viewHeight - tall) / 2 : Math.Clamp(_panY, viewHeight - tall, 0);
+        _view.Matrix = new Matrix(_zoom, 0, 0, _zoom, _panX, _panY);
+
+        RenderOptions.SetBitmapScalingMode(_still, _zoom >= PixelEdgesFrom ? BitmapScalingMode.NearestNeighbor : BitmapScalingMode.HighQuality);
+        var seen = new Rect(-_panX / _zoom, -_panY / _zoom, Math.Max(viewWidth, 0) / _zoom, Math.Max(viewHeight, 0) / _zoom);
+        _surface.ViewChanged(_zoom >= PixelGridFrom ? 1 : null, seen);
+        _zoomText.Text = System.FormattableString.Invariant($"{_zoom:0.##}x");
+    }
+
+    private void StartTicking()
+    {
+        if (_ticking)
+            return;
+
+        _lastTick = Stopwatch.GetTimestamp();
+        _ticking = true;
+        CompositionTarget.Rendering += Tick;
+    }
+
+    private void StopTicking()
+    {
+        if (!_ticking)
+            return;
+
+        _ticking = false;
+        CompositionTarget.Rendering -= Tick;
+    }
+
+    // Each refresh while the view is moving: the wheel's zoom eased in, WASD's pan.
+    private void Tick(object? sender, EventArgs e)
+    {
+        var now = Stopwatch.GetTimestamp();
+        var seconds = Math.Min((now - _lastTick) / (double)Stopwatch.Frequency, 0.1);
+        _lastTick = now;
+
+        var moved = false;
+        if (Math.Abs(_zoom / _zoomGoal - 1) > 0.001)
+        {
+            SetZoom(_zoom * Math.Pow(_zoomGoal / _zoom, 1 - Math.Exp(-seconds / ZoomEase)));
+            moved = true;
+        }
+        else if (_zoom != _zoomGoal)
+        {
+            SetZoom(_zoomGoal);
+            moved = true;
+        }
+
+        if (_panKeys.Count > 0)
+        {
+            var step = KeyPanSpeed * seconds * (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 3 : 1);
+            _panX += (_panKeys.Contains(Key.A) ? step : 0) - (_panKeys.Contains(Key.D) ? step : 0);
+            _panY += (_panKeys.Contains(Key.W) ? step : 0) - (_panKeys.Contains(Key.S) ? step : 0);
+            _fitted = false;
+            moved = true;
+        }
+
+        if (moved)
+            ApplyView();
+        else
+            StopTicking();
+    }
+
+    private void Viewport_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        ZoomTo(_zoomGoal * Math.Pow(ZoomPerNotch, e.Delta / 120.0), e.GetPosition(_viewport));
+        e.Handled = true;
+    }
+
+    // The middle button, or Space + the left: a pan, the press never reaching the shapes, so a shape being drawn is left as it is.
+    private void Viewport_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Middle || (e.ChangedButton == MouseButton.Left && _spaceHeld))
+        {
+            _panDrag = (e.GetPosition(_viewport), _panX, _panY);
+            _fitted = false;
+            _viewport.CaptureMouse();
+            Cursor = Cursors.SizeAll;
+            e.Handled = true;
+        }
+    }
+
+    private void Viewport_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_panDrag is not { } drag)
+            return;
+
+        var at = e.GetPosition(_viewport);
+        (_panX, _panY) = (drag.PanX + at.X - drag.From.X, drag.PanY + at.Y - drag.From.Y);
+        ApplyView();
+        e.Handled = true;
+    }
+
+    private void Viewport_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_panDrag is null)
+            return;
+
+        _panDrag = null;
+        _viewport.ReleaseMouseCapture();
+        Cursor = null;
+        e.Handled = true;
+    }
+
+    // ----- Keys -----
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // A name being typed keeps its letters, its Space and its own Ctrl+Z; Enter or Escape goes back to drawing.
+        if (Keyboard.FocusedElement is TextBox)
+        {
+            if (e.Key is Key.Enter or Key.Escape)
+            {
+                _surface.Focus();
+                e.Handled = true;
+            }
+
+            return;
+        }
+
         switch (e.Key)
         {
             // Undo: Ctrl+Z. Redo: Ctrl+Y or Ctrl+Shift+Z.
@@ -173,7 +690,24 @@ public sealed class MaskDrawWindow : Window
                 _surface.DropShape();
                 e.Handled = true;
                 break;
+            case Key.Space:
+                _spaceHeld = true;
+                e.Handled = true;
+                break;
+            case Key.W or Key.A or Key.S or Key.D when (Keyboard.Modifiers & ~ModifierKeys.Shift) == 0:
+                _panKeys.Add(e.Key);
+                StartTicking();
+                e.Handled = true;
+                break;
         }
+    }
+
+    private void Window_PreviewKeyUp(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Space)
+            _spaceHeld = false;
+        else
+            _panKeys.Remove(e.Key);
     }
 
     private void UpdateUndoButtons() => (_undoButton.IsEnabled, _redoButton.IsEnabled) = (_surface.CanUndo, _surface.CanRedo);
@@ -187,7 +721,7 @@ public sealed class MaskDrawWindow : Window
     }
 
     private void ShowHelp() => _status.Text = _surface.IsDrawing
-        ? $"Drawing: {_surface.PointsInShape} point{(_surface.PointsInShape == 1 ? "" : "s")}. Click the first point to close the shape."
+        ? $"Drawing: {_surface.PointsInShape} point{(_surface.PointsInShape == 1 ? "" : "s")}. Click the glowing first point to close the shape."
         : $"{_surface.ShapeCount} shape{(_surface.ShapeCount == 1 ? "" : "s")}.";
 
     /// <summary>The source's frame at the playhead, as it is in the file (the areas layers cut out are measured on it).</summary>
@@ -203,8 +737,9 @@ public sealed class MaskDrawWindow : Window
         _status.Text = "Taking a still of the video at the playhead...";
         try
         {
-            _still.Source = await SourceStill.TakeAsync(source, _viewModel.PositionMs / 1000, _stillPath, _closing.Token);
+            _still.Source = await SourceStill.TakeAsync(source, _viewModel.FileSecondsAt(_viewModel.PositionMs / 1000), _stillPath, _closing.Token);
             ShowHelp();
+            RefreshPieces();
         }
         catch (OperationCanceledException)
         {
@@ -212,7 +747,7 @@ public sealed class MaskDrawWindow : Window
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
-            AppLog.Write("Draw Custom Shape: the still could not be taken", ex);
+            AppLog.Write("Cutout Studio: the still could not be taken", ex);
             _status.Text = $"The still could not be taken ({ex.Message}): shapes can still be drawn on the blank frame.";
         }
     }
@@ -229,340 +764,5 @@ public sealed class MaskDrawWindow : Window
         Shapes = MaskStore.FormatShapes(_surface.Finished.Select(s => (IReadOnlyList<Point>)s.Select(p => new Point(p.X / _width, p.Y / _height)).ToList()));
         ForAllLayers = forAll;
         DialogResult = true;
-    }
-
-    /// <summary>
-    /// The shapes over the still, and what the pointer does to them. Drawn in <see cref="OnRender"/>, in the
-    /// source's pixels; lines and handles are sized by how far the window has scaled it, so they stay thin.
-    /// </summary>
-    private sealed class ShapeSurface : FrameworkElement
-    {
-        private readonly double _width, _height;
-        private readonly List<(Rect Area, string Name, bool IsThis)> _regions;
-        private readonly List<List<Point>> _shapes;
-        private List<Point>? _drawing;
-        private Point? _pointer;
-        private (int Shape, int Point)? _dragging;
-
-        private static readonly Brush ShapeFill = Frozen(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
-        private static readonly Brush ShapeLine = Frozen(Color.FromRgb(0x3D, 0xD6, 0xF5));
-        private static readonly Brush DrawingLine = Frozen(Color.FromRgb(0xFF, 0x8A, 0x3D));
-        private static readonly Brush RegionLine = Frozen(Color.FromArgb(0xC0, 0xFF, 0xD0, 0x40));
-        private static readonly Brush LabelBack = Frozen(Color.FromArgb(0xB0, 0, 0, 0));
-
-        public event Action? Changed;
-
-        public ShapeSurface(double width, double height, List<(Rect, string, bool)> regions, List<List<Point>> shapes)
-        {
-            (_width, _height, _regions, _shapes) = (width, height, regions, shapes);
-            (Width, Height) = (width, height);
-            Cursor = Cursors.Cross;
-            Focusable = true;
-        }
-
-        public bool IsDrawing => _drawing is { Count: > 0 };
-        public int PointsInShape => _drawing?.Count ?? 0;
-        public int ShapeCount => _shapes.Count;
-        public IReadOnlyList<List<Point>> Finished => _shapes;
-
-        // ----- Undo (4.3E) -----
-        // Before each change, the shapes as they were (the finished ones and the one being drawn): a point put down, a shape
-        // closed or dropped, a point taken back, a point or shape removed, Clear All, one step each; a point dragged, one step
-        // for the drag. The window is modal and works on a copy, kept only when it is confirmed: these steps are its own.
-        private const int UndoDepth = 100;
-        private readonly List<Drawn> _undo = [], _redo = [];
-        private bool _dragKept;
-
-        private sealed record Drawn(List<List<Point>> Shapes, List<Point>? Drawing);
-
-        public bool CanUndo => _undo.Count > 0;
-        public bool CanRedo => _redo.Count > 0;
-
-        private Drawn Capture() => new(_shapes.Select(s => s.ToList()).ToList(), _drawing?.ToList());
-
-        private void Remember()
-        {
-            _undo.Add(Capture());
-            if (_undo.Count > UndoDepth)
-                _undo.RemoveAt(0);
-            _redo.Clear();
-        }
-
-        public void Undo() => Step(_undo, _redo);
-
-        public void Redo() => Step(_redo, _undo);
-
-        private void Step(List<Drawn> from, List<Drawn> to)
-        {
-            // Not while a point is held: the drag would go on moving a point of shapes that are gone.
-            if (from.Count == 0 || _dragging is not null)
-                return;
-
-            to.Add(Capture());
-            var state = from[^1];
-            from.RemoveAt(from.Count - 1);
-            _shapes.Clear();
-            _shapes.AddRange(state.Shapes);
-            _drawing = state.Drawing;
-            Redraw();
-        }
-
-        // How many of the source's pixels one pixel on screen is.
-        private double OnePixel
-        {
-            get
-            {
-                var scale = Window.GetWindow(this) is { } window && window.IsAncestorOf(this)
-                    ? TransformToAncestor(window).TransformBounds(new Rect(0, 0, 1, 1)).Width
-                    : 1;
-                return scale > 0 ? 1 / scale : 1;
-            }
-        }
-
-        public void CloseShape() => CloseShape(remember: true);
-
-        private void CloseShape(bool remember)
-        {
-            if (remember && _drawing is not null)
-                Remember();
-            if (_drawing is { Count: >= 3 })
-                _shapes.Add(_drawing);
-            _drawing = null;
-            Redraw();
-        }
-
-        public void DropShape()
-        {
-            if (_drawing is not null)
-                Remember();
-            _drawing = null;
-            Redraw();
-        }
-
-        public void TakeBackPoint()
-        {
-            if (_drawing is { Count: > 0 })
-            {
-                Remember();
-                _drawing.RemoveAt(_drawing.Count - 1);
-                if (_drawing.Count == 0)
-                    _drawing = null;
-            }
-
-            Redraw();
-        }
-
-        public void RemoveLastShape()
-        {
-            if (IsDrawing || _shapes.Count > 0)
-                Remember();
-            if (IsDrawing)
-                _drawing = null;
-            else if (_shapes.Count > 0)
-                _shapes.RemoveAt(_shapes.Count - 1);
-            Redraw();
-        }
-
-        public void Clear()
-        {
-            if (_drawing is not null || _shapes.Count > 0)
-                Remember();
-            (_drawing, _dragging) = (null, null);
-            _shapes.Clear();
-            Redraw();
-        }
-
-        private void Redraw()
-        {
-            InvalidateVisual();
-            Changed?.Invoke();
-        }
-
-        private Point Clamp(Point point) => new(Math.Clamp(point.X, 0, _width), Math.Clamp(point.Y, 0, _height));
-
-        // The point of a finished shape under the pointer, within a few pixels on screen.
-        private (int Shape, int Point)? PointAt(Point at)
-        {
-            var reach = 7 * OnePixel;
-            for (var s = _shapes.Count - 1; s >= 0; s--)
-            {
-                for (var p = 0; p < _shapes[s].Count; p++)
-                {
-                    if ((_shapes[s][p] - at).Length <= reach)
-                        return (s, p);
-                }
-            }
-
-            return null;
-        }
-
-        private int ShapeAt(Point at)
-        {
-            for (var s = _shapes.Count - 1; s >= 0; s--)
-            {
-                if (Outline(_shapes[s], true).FillContains(at))
-                    return s;
-            }
-
-            return -1;
-        }
-
-        protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
-        {
-            Focus();
-            var at = Clamp(e.GetPosition(this));
-            e.Handled = true;
-
-            // A double-click closes the shape: its first click has already put a point down, which is kept.
-            if (e.ClickCount == 2 && _drawing is { Count: >= 3 })
-            {
-                Remember();
-                if (_drawing.Count >= 4 && (_drawing[^1] - at).Length <= 7 * OnePixel)
-                    _drawing.RemoveAt(_drawing.Count - 1);
-                CloseShape(remember: false);
-                return;
-            }
-
-            if (_drawing is null && PointAt(at) is { } point)
-            {
-                (_dragging, _dragKept) = (point, false);
-                CaptureMouse();
-                return;
-            }
-
-            if (_drawing is { Count: >= 3 } && (_drawing[0] - at).Length <= 9 * OnePixel)
-            {
-                CloseShape();
-                return;
-            }
-
-            Remember();
-            (_drawing ??= []).Add(at);
-            Redraw();
-        }
-
-        protected override void OnMouseMove(MouseEventArgs e)
-        {
-            var at = Clamp(e.GetPosition(this));
-            _pointer = at;
-            if (_dragging is { } dragging && e.LeftButton == MouseButtonState.Pressed && _shapes[dragging.Shape][dragging.Point] != at)
-            {
-                // The drag's one step, as the point first moves.
-                if (!_dragKept)
-                {
-                    _dragKept = true;
-                    Remember();
-                }
-
-                _shapes[dragging.Shape][dragging.Point] = at;
-            }
-
-            InvalidateVisual();
-        }
-
-        protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
-        {
-            if (_dragging is not null)
-            {
-                _dragging = null;
-                ReleaseMouseCapture();
-                Redraw();
-            }
-        }
-
-        protected override void OnMouseLeave(MouseEventArgs e)
-        {
-            _pointer = null;
-            InvalidateVisual();
-        }
-
-        protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
-        {
-            var at = Clamp(e.GetPosition(this));
-            e.Handled = true;
-            if (IsDrawing)
-            {
-                TakeBackPoint();
-                return;
-            }
-
-            // A point of a finished shape goes; a shape left with fewer than three goes with it. Elsewhere inside a shape, the shape goes.
-            if (PointAt(at) is { } point)
-            {
-                Remember();
-                _shapes[point.Shape].RemoveAt(point.Point);
-                if (_shapes[point.Shape].Count < 3)
-                    _shapes.RemoveAt(point.Shape);
-            }
-            else if (ShapeAt(at) is var shape and >= 0)
-            {
-                Remember();
-                _shapes.RemoveAt(shape);
-            }
-
-            Redraw();
-        }
-
-        private static StreamGeometry Outline(IReadOnlyList<Point> points, bool closed)
-        {
-            var geometry = new StreamGeometry();
-            using (var context = geometry.Open())
-            {
-                context.BeginFigure(points[0], closed, closed);
-                context.PolyLineTo(points.Skip(1).ToList(), true, true);
-            }
-
-            geometry.Freeze();
-            return geometry;
-        }
-
-        protected override void OnRender(DrawingContext dc)
-        {
-            var px = OnePixel;
-            dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, _width, _height));
-
-            // The areas the layers cut out of the video: this layer's solid, the others dashed.
-            foreach (var (area, name, isThis) in _regions)
-            {
-                var pen = new Pen(RegionLine, (isThis ? 2.5 : 1.5) * px) { DashStyle = isThis ? DashStyles.Solid : DashStyles.Dash };
-                dc.DrawRectangle(null, pen, area);
-                var label = new FormattedText(name, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 11 * px, Brushes.White, 1);
-                var where = new Point(area.X + 3 * px, Math.Max(area.Y - label.Height - 2 * px, 0));
-                dc.DrawRectangle(LabelBack, null, new Rect(where.X - 2 * px, where.Y, label.Width + 4 * px, label.Height));
-                dc.DrawText(label, where);
-            }
-
-            var line = new Pen(ShapeLine, 1.5 * px);
-            var handle = 3.5 * px;
-            foreach (var shape in _shapes)
-            {
-                dc.DrawGeometry(ShapeFill, line, Outline(shape, true));
-                foreach (var point in shape)
-                    dc.DrawRectangle(ShapeLine, null, new Rect(point.X - handle, point.Y - handle, handle * 2, handle * 2));
-            }
-
-            if (_drawing is { Count: > 0 } drawing)
-            {
-                var drawPen = new Pen(DrawingLine, 2 * px);
-                if (drawing.Count > 1)
-                    dc.DrawGeometry(null, drawPen, Outline(drawing, false));
-                if (_pointer is { } pointer)
-                    dc.DrawLine(new Pen(DrawingLine, 1.2 * px) { DashStyle = DashStyles.Dash }, drawing[^1], pointer);
-
-                foreach (var point in drawing)
-                    dc.DrawRectangle(DrawingLine, null, new Rect(point.X - handle, point.Y - handle, handle * 2, handle * 2));
-
-                // The first point is where the shape closes: larger, and ringed while the pointer is near enough to close it.
-                var near = drawing.Count >= 3 && _pointer is { } p && (drawing[0] - p).Length <= 9 * px;
-                dc.DrawEllipse(near ? DrawingLine : null, new Pen(DrawingLine, 2 * px), drawing[0], 6 * px, 6 * px);
-            }
-        }
-
-        private static SolidColorBrush Frozen(Color color)
-        {
-            var brush = new SolidColorBrush(color);
-            brush.Freeze();
-            return brush;
-        }
     }
 }

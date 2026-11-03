@@ -90,7 +90,7 @@ public partial class MainViewModel
     /// its own). Nor before the user has touched anything at all.
     /// </summary>
     private bool LookStepsShut =>
-        _inputGesture == 0 || _isBackgroundWorker || _syncingViews || _applyingKeys || _recordingKey || _copyingToTrack || _placingMain
+        _inputGesture == 0 || _isBackgroundWorker || _syncingViews || _applyingKeys || _recordingKey || _settingQuietly || _placingMain
         || _showingTarget || _takingCrop || _commandDeferrals > 0 || _lookStepsHeld > 0 || _openEdit is not null || Layer.IsEchoing
         || IsRestoringTimeline;
 

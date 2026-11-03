@@ -37,6 +37,10 @@ public static class TimelineDocumentTests
             "# A model fuzz (4.4-BugHunt): 10,000 seeded random edits, undos and redos on seven tracks with children, captions and folds: no throw but a refusal, a refusal changes nothing, no problem after an edit, Undo's copies untouched.", Fuzz);
         yield return Case("timeline-split-keys",
             "# A clip split between two keyframes (4.3D): each half keeps its own keys, a key on the cut with the value there, and its part of the curve, for every easing.", SplitKeys);
+        yield return Case("timeline-track-heights-and-captions",
+            "# A track's own height (5.1-AutoHud-Part1, Q2) kept in the file and undone with a rollback; the captions under a deleted track go under the next picture track down (Q4), never onto a sound track.", TrackHeightsAndCaptions);
+        yield return Case("timeline-stream-lanes",
+            "# A video's streams on lanes under its track (5.1-TrackEqualityAndVram): children of its clip, they go with its splits, moves, trims and deletes; each keeps its stream.", StreamLanes);
         yield return Case("timeline-children",
             "# Children (4.4): a talk's HUD cut-out on the track under it and a key on another track go with its splits, trims, moves, ripples, deletes and folds; refusals and rollbacks change nothing.", Children);
     }
@@ -751,6 +755,109 @@ public static class TimelineDocumentTests
     }
 
     // ----- Children (4.4) -----
+
+    private static void StreamLanes(StringBuilder text, List<string> problems)
+    {
+        var document = new TimelineDocument { Width = 1920, Height = 1080, FrameRate = FrameRate.Fps30 };
+        TimelineTrackModel video;
+        TimelineClip clip;
+        var lanes = new List<TimelineTrackModel>();
+        using (var setup = document.BeginTransaction("Set up"))
+        {
+            video = setup.InsertTrack(0, TimelineTrackKind.Video);
+            clip = setup.PlaceClip(video, new TimelineClip { SourcePath = "D:/media/game.mkv", AudioStreamIndex = -1, End = 10, SourceDuration = 60 });
+            for (var stream = 0; stream < 3; stream++)
+            {
+                var lane = setup.InsertTrack(document.Tracks.Count, TimelineTrackKind.Audio, $"Stream {stream + 1}");
+                setup.SetTrackParent(lane, video.Id);
+                setup.PlaceClip(lane, new TimelineClip { ContentKind = LayerKind.Audio, SourcePath = "D:/media/game.mkv", AudioStreamIndex = stream, End = 10, SourceDuration = 60, ParentClipId = clip.Id });
+                lanes.Add(lane);
+            }
+
+            setup.Commit();
+        }
+
+        using (var split = document.BeginTransaction("Split"))
+        {
+            split.SplitClipAt(clip, 4);
+            split.Commit();
+        }
+
+        Line(text, $"split at 4 s: {string.Join(", ", lanes.Select(l => $"a:{l.Clips[0].AudioStreamIndex} in {l.Clips.Count} parts"))}");
+        Expect(problems, lanes.All(l => l.Clips.Count == 2 && Math.Abs(l.Clips[0].End - 4) < 1e-6), "a split of the video splits every lane with it");
+        Expect(problems, lanes.Select((l, i) => l.Clips.All(c => c.AudioStreamIndex == i)).All(same => same), "and both parts keep their stream");
+
+        using (var trim = document.BeginTransaction("Trim"))
+        {
+            trim.TrimClipEnd(clip, 3);
+            trim.Commit();
+        }
+
+        Line(text, $"first part trimmed to 3 s: lanes end at {string.Join(", ", lanes.Select(l => l.Clips[0].End.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)))}");
+        Expect(problems, lanes.All(l => Math.Abs(l.Clips[0].End - 3) < 1e-6), "a trim of the video trims every lane with it");
+
+        using (var delete = document.BeginTransaction("Delete"))
+        {
+            delete.DeleteClip(clip);
+            delete.Commit();
+        }
+
+        Expect(problems, lanes.All(l => l.Clips.Count == 1), "a delete takes its part of every lane with it");
+    }
+
+    private static void TrackHeightsAndCaptions(StringBuilder text, List<string> problems)
+    {
+        var options = (JsonSerializerOptions)typeof(ProjectStore).GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var doc = new TimelineDocument { FrameRate = FrameRate.Fps25 };
+        TimelineTrackModel v1, v2, a1, v3;
+        using (var tx = doc.BeginTransaction("Set up"))
+        {
+            (v1, v2, a1, v3) = (tx.InsertTrack(0, TimelineTrackKind.Video), tx.InsertTrack(1, TimelineTrackKind.Video), tx.InsertTrack(2, TimelineTrackKind.Audio), tx.InsertTrack(3, TimelineTrackKind.Video));
+            tx.Commit();
+        }
+
+        string? Under() => doc.CaptionsUnderTrack?.DisplayName;
+        void Edit(Action<ITimelineTransaction> change)
+        {
+            using var tx = doc.BeginTransaction("Edit");
+            change(tx);
+            tx.Commit();
+        }
+
+        Edit(tx => tx.SetTrackHeight(v2, 90));
+        Line(text, $"Video 2's own height: {N(v2.Height ?? 0)}; Video 1's: {(v1.Height is null ? "the one Track Height" : "its own")}");
+        var saved = JsonSerializer.Serialize(doc, options);
+        Expect(problems, saved.Contains("\"height\": 90", StringComparison.OrdinalIgnoreCase) || saved.Contains("\"height\":90", StringComparison.OrdinalIgnoreCase), "the height is in the file");
+        var back = JsonSerializer.Deserialize<TimelineDocument>(saved, options)!;
+        Expect(problems, back.Tracks[1].Height == 90 && back.Tracks[0].Height is null, "the height comes back from the file, and a track without one has none");
+        Expect(problems, doc.Clone().Tracks[1].Height == 90, "a copy keeps it");
+
+        using (var tx = doc.BeginTransaction("Dropped"))
+            tx.SetTrackHeight(v2, 110);
+        Expect(problems, v2.Height == 90, "a rollback puts the height back");
+
+        Edit(tx => tx.SetTrackHeight(v2, null));
+        Expect(problems, v2.Height is null, "back to the one Track Height");
+
+        Edit(tx => tx.SetCaptionsUnder(v3));
+        Line(text, $"The captions under {Under()}");
+        using (var tx = doc.BeginTransaction("Dropped"))
+            tx.RemoveTrack(v3);
+        Expect(problems, doc.CaptionsUnderTrack == v3 && doc.Tracks.Contains(v3), "a rollback puts the track and the captions back");
+
+        Edit(tx => tx.RemoveTrack(v3));
+        Line(text, $"Its track deleted: under {Under()}");
+        Expect(problems, doc.CaptionsUnderTrack == v2, "the next picture track down, past the sound track");
+
+        Edit(tx => tx.SetCaptionsUnder(v1));
+        Edit(tx => tx.RemoveTrack(v1));
+        Line(text, $"The bottom track deleted: under {Under()}");
+        Expect(problems, doc.CaptionsUnderTrack == v2, "at the bottom of the stack: under the lowest that is left");
+
+        Edit(tx => tx.RemoveTrack(v2));
+        Line(text, $"The last picture track deleted: {Under() ?? "over everything"}");
+        Expect(problems, doc.CaptionsUnderTrack is null && !a1.CaptionsUnder, "with no picture track left, over everything: never on a sound track");
+    }
 
     private static void Children(StringBuilder text, List<string> problems)
     {

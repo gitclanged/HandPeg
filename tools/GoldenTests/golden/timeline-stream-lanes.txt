@@ -1,0 +1,3 @@
+# A video's streams on lanes under its track (5.1-TrackEqualityAndVram): children of its clip, they go with its splits, moves, trims and deletes; each keeps its stream.
+split at 4 s: a:0 in 2 parts, a:1 in 2 parts, a:2 in 2 parts
+first part trimmed to 3 s: lanes end at 3, 3, 3

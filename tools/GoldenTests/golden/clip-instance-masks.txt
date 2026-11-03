@@ -1,0 +1,10 @@
+# A mask, a matte and an effect are one clip's alone: never its track's, never its file's.
+ok: a mask on a clip: the next clip on its track has none
+ok: its invert, grow and offset: nor the next clip on its track
+ok: its key, edges and opacity: nor the next clip on its track
+ok: a mask on a clip: a copy of its file on another track has none
+ok: its invert, grow and offset: nor a copy of its file on another track
+ok: its key, edges and opacity: nor a copy of its file on another track
+ok: the look written into its clip has the mask
+ok: the other clips' looks do not
+ok: taking something off the next clip leaves this one's

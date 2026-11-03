@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using System.Windows.Media;
 using HandPegApp.Services;
@@ -17,6 +18,8 @@ public static class WaveformTests
     {
         yield return Case("waveform-mips",
             "# WaveformData's mip pyramid (4.4): RangeOf, Range and Envelope against a brute-force min/max over seeded random peaks.", Mips);
+        yield return Case("deadair-from-peaks",
+            "# Remove Dead Air's silences from the peaks in memory (5.1-CleanupStudioAndFfmpegPurge), and the peaks read natively, each track in one pass, from a WAV.", DeadAir);
     }
 
     private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
@@ -37,6 +40,84 @@ public static class WaveformTests
 
     private static void Line(StringBuilder text, FormattableString line) =>
         text.Append(line.ToString(CultureInfo.InvariantCulture)).Append('\n');
+
+    private static void DeadAir(StringBuilder text, List<string> problems)
+    {
+        // 80 pairs a second: loud, 2 s under the level, loud, 0.5 s under it (too short at 1 s), loud, then under it to the end.
+        const double rate = Waveforms.PeaksPerSecond;
+        var count = (int)(20 * rate);
+        var (lows, highs) = (new float[count], new float[count]);
+        for (var i = 0; i < count; i++)
+        {
+            var at = i / rate;
+            var quiet = at is >= 3 and < 5 or >= 8 and < 8.5 or >= 15;
+            var level = quiet ? 0.005f : 0.4f;
+            (lows[i], highs[i]) = (-level, level);
+        }
+
+        var data = new WaveformData(lows, highs, Brushes.Gray);
+        var found = data.Silences(-35, 1, 20.25);
+        foreach (var (start, end) in found)
+            Line(text, $"silence {start:0.000} to {end:0.000}");
+        Expect(found.Count == 2 && Math.Abs(found[0].Start - 3) < 0.02 && Math.Abs(found[0].End - 5) < 0.02 && Math.Abs(found[1].Start - 15) < 0.02 && found[1].End == 20.25,
+            "the 2 s and the closing silence are found, the 0.5 s is not, and the last runs to the file's end");
+        Expect(data.Silences(-60, 1, 20.25).Count == 0, "at -60 dB nothing here is quiet enough");
+
+        var clock = Stopwatch.StartNew();
+        var hour = new WaveformData(new float[288_000], new float[288_000], Brushes.Gray);
+        _ = hour.Silences(-35, 1, 3600);
+        Console.WriteLine(FormattableString.Invariant($"  (an hour's scan took {clock.Elapsed.TotalMilliseconds:0.00} ms)"));
+
+        // The peaks themselves, by Media Foundation: a WAV of 6 s at 44.1 kHz, a tone with a silent 2 s in the middle.
+        var folder = Path.Combine(Path.GetTempPath(), $"handpeg-peaks-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var wav = Path.Combine(folder, "tone.wav");
+            WriteWav(wav, 44100, 6, t => t is >= 2 and < 4 ? 0 : 0.5 * Math.Sin(2 * Math.PI * 440 * t));
+            var peaks = Task.Run(() => Waveforms.PeaksOfAsync(wav, 0, CancellationToken.None)).GetAwaiter().GetResult();
+            Expect(peaks is not null, "the WAV's peaks are read");
+            if (peaks is not null)
+            {
+                var silences = peaks.Silences(-35, 1, 6);
+                foreach (var (start, end) in silences)
+                    Line(text, $"read from a WAV: {peaks.Seconds:0.00} s of peaks, silence {start:0.00} to {end:0.00}");
+                Expect(Math.Abs(peaks.Seconds - 6) < 0.05 && silences.Count == 1 && Math.Abs(silences[0].Start - 2) < 0.03 && Math.Abs(silences[0].End - 4) < 0.03,
+                    "the WAV's silence lies where it was written");
+            }
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+
+        void Expect(bool holds, string what)
+        {
+            Line(text, $"{(holds ? "ok" : "NOT")}: {what}");
+            if (!holds)
+                problems.Add(what);
+        }
+    }
+
+    private static void WriteWav(string path, int rate, double seconds, Func<double, double> value)
+    {
+        var frames = (int)(rate * seconds);
+        using var file = new BinaryWriter(File.Create(path));
+        file.Write("RIFF"u8);
+        file.Write(36 + frames * 2);
+        file.Write("WAVEfmt "u8);
+        file.Write(16);
+        file.Write((short)1);
+        file.Write((short)1);
+        file.Write(rate);
+        file.Write(rate * 2);
+        file.Write((short)2);
+        file.Write((short)16);
+        file.Write("data"u8);
+        file.Write(frames * 2);
+        for (var i = 0; i < frames; i++)
+            file.Write((short)(value(i / (double)rate) * 32767));
+    }
 
     private static void Mips(StringBuilder text, List<string> problems)
     {

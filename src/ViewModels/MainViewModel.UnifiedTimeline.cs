@@ -105,25 +105,6 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>
-    /// Mutes the sound of every clip on a row's track, or lets it be heard again (the mute on its header; their pictures
-    /// stay). One step of Undo for the whole track. A row that stands for no track's clips has its own switch set.
-    /// </summary>
-    public void SetTrackSoundMuted(Layer row, bool muted)
-    {
-        if (TrackOfRow(row) is not { Clips.Count: > 0 } track)
-        {
-            row.IsMuted = muted;
-            return;
-        }
-
-        Edit(muted ? $"mute the sound of {row.Name}" : $"unmute the sound of {row.Name}", edit =>
-        {
-            foreach (var clip in track.Clips)
-                edit.SetClipFlags(clip, muted: muted);
-        });
-    }
-
     /// <summary>Whether a row's track is locked (never moved, trimmed or cut by an edit); false for the stand-ins.</summary>
     public bool IsRowLocked(Layer row) => TrackOfRow(row)?.IsLocked == true;
 

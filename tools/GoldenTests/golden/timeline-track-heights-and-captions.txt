@@ -1,0 +1,6 @@
+# A track's own height (5.1-AutoHud-Part1, Q2) kept in the file and undone with a rollback; the captions under a deleted track go under the next picture track down (Q4), never onto a sound track.
+Video 2's own height: 90; Video 1's: the one Track Height
+The captions under Video 3
+Its track deleted: under Video 2
+The bottom track deleted: under Video 1
+The last picture track deleted: over everything

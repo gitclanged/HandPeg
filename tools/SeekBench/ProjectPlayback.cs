@@ -66,7 +66,7 @@ internal static class ProjectPlayback
             $"{Path.GetFileName(project)}: {plan.SequenceSeconds:0.000} s at {fps:0.##} fps, {plan.CanvasWidth} x {plan.CanvasHeight}; {cuts.Count} cuts in {from:0.000}..{from + seconds:0.000} s; hints: {mode}; refresh {refresh:0} Hz"));
         Console.WriteLine("Cuts: " + string.Join(", ", cuts.Select(c => c.ToString("0.000", CultureInfo.InvariantCulture))));
 
-        var player = new Player(client, plan, fps, refresh, mode) { Trace = Array.IndexOf(args, "--trace") >= 0 };
+        var player = new Player(client, plan, fps, refresh, mode) { Trace = Array.IndexOf(args, "--trace") >= 0, Videos = GpuPreviewEngine.VideosAt(state, from) };
         var report = new StringBuilder();
         var totals = (Frames: 0, Late: 0, LateAtCuts: 0);
         for (var run = 1; run <= runs; run++)
@@ -148,6 +148,9 @@ internal static class ProjectPlayback
         /// <summary>Every late frame and every hint written, on the console (--trace).</summary>
         public bool Trace { get; init; }
 
+        /// <summary>How many videos are on screen at the start: with more than one, the engine waits for their first frames before its clock starts.</summary>
+        public int Videos { get; init; }
+
         private long Publish(double at, bool playing)
         {
             client.ClearScene();
@@ -217,6 +220,20 @@ internal static class ProjectPlayback
             {
                 Console.WriteLine(FormattableString.Invariant(
                     $"  rested {restMs} ms: decoded {Volatile.Read(ref control.DecodedFrames)}, seeks {Volatile.Read(ref control.DecoderSeeks)}, opens {Volatile.Read(ref control.DecoderOpens)}, cached {Volatile.Read(ref control.CachedFrames)}, busy lanes {Volatile.Read(ref control.BusyDecodeThreads)}"));
+            }
+
+            // The engine's press of play: with several videos, the clock waits for their first frames (GpuPreviewEngine.PlayStartWait).
+            if (Videos > 1)
+            {
+                var priming = Stopwatch.GetTimestamp();
+                Hint(from, playing: true);
+                var sequence = Publish(from + 1 / refresh, playing: true);
+                while (Volatile.Read(ref control.PresentedSequence) < sequence && Stopwatch.GetElapsedTime(priming).TotalMilliseconds < GpuPreviewEngine.PlayStartWait)
+                    Thread.Sleep(1);
+                while (!GpuPreviewEngine.PlayStartReady(client, priming, sequence))
+                    Thread.Sleep(1);
+                if (Trace)
+                    Console.WriteLine(FormattableString.Invariant($"  play waited {Stopwatch.GetElapsedTime(priming).TotalMilliseconds:0} ms for {Videos} videos"));
             }
 
             var decodedBefore = Volatile.Read(ref control.DecodedFrames);

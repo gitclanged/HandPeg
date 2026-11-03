@@ -204,7 +204,7 @@ public sealed class MaskLayersWindow : Window
 
         try
         {
-            _still.Source = await SourceStill.TakeAsync(source, _viewModel.PositionMs / 1000, _stillPath, _closing.Token);
+            _still.Source = await SourceStill.TakeAsync(source, _viewModel.FileSecondsAt(_viewModel.PositionMs / 1000), _stillPath, _closing.Token);
         }
         catch (OperationCanceledException)
         {

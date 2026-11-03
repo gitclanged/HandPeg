@@ -92,12 +92,41 @@ public enum GpuShaderSlot
     BoxBlur = 20,
     Sharpen = 21,
 
+    // Pass 5.1-GpuFx: drawn by the compositor alone (EffectDefinition.GpuOnly; Motion.hlsl, Light.hlsl, Vfx.hlsl).
+
+    /// <summary>Optical flow between frames, and sub-frames of the layer's own moves: a real shutter.</summary>
+    MotionBlur = 22,
+
+    /// <summary>A dual-Kawase glow in linear light, its halo tinted as film's halation is.</summary>
+    HalationGlow = 23,
+
+    /// <summary>A variant in the last lane: 0 the Neon Rim Light (from a distance field of the layer's shape), 1 Frosted Glass (the canvas under it, blurred).</summary>
+    RimGlass = 24,
+
+    /// <summary>A variant in the last lane: 0 the Impact Shockwave (a ripple and a camera shake), 1 the Anamorphic Lens (streaks, barrel and colour fringe).</summary>
+    ShockwaveLens = 25,
+
+    /// <summary>A raymarched fireball through a baked 3D noise (two packets).</summary>
+    Explosion = 26,
+
+    /// <summary>Sparks and debris in 3D, drawn as particles (two packets).</summary>
+    Sparks = 27,
+
+    /// <summary>Anime impact and speed lines (two packets).</summary>
+    AnimeLines = 28,
+
+    /// <summary>A variant in the last lane of the second packet: 0 the Energy Shield, 1 the Saber Glow (two packets).</summary>
+    EnergyField = 29,
+
     // Transitions (TransitionStyles.GpuSlot): a block of their own.
     TransitionDissolve = 64,
     TransitionWipe = 65,
     TransitionSlide = 66,
     TransitionZoom = 67,
     TransitionBlurDissolve = 68,
+
+    /// <summary>The Thanos Snap (ParticleSnap.hlsl): the picture breaks into embers on a wind.</summary>
+    TransitionParticleSnap = 69,
 }
 
 /// <summary>
@@ -162,6 +191,18 @@ public sealed record EffectParam(
     /// <summary>A deeper control: the Effects pane shows it in the card's folded Advanced section, under the main ones (5.0-Release).</summary>
     public bool IsAdvanced { get; init; }
 
+    /// <summary>
+    /// What a number's lane in a <see cref="GpuEffectPacket"/> is multiplied by (5.1-Polish): the card shows one unit, the
+    /// shader takes another (the Vignette's degrees as radians). 1 for the most, whose shader takes the card's own value.
+    /// </summary>
+    public double GpuScale { get; init; } = 1;
+
+    /// <summary>
+    /// Its lane is how far through it the card is, not the value (5.1-GpuFx: an effect that runs by itself, its value how many seconds it takes): the seconds
+    /// since its clip began (or its Range did) over the value, unclamped, so a shader knows before and after as well.
+    /// </summary>
+    public bool GpuProgress { get; init; }
+
     public int Decimals => Step >= 1 ? 0 : Step >= 0.1 ? 1 : Step >= 0.01 ? 2 : 3;
 
     /// <summary>
@@ -211,6 +252,18 @@ public sealed record EffectDefinition(
 
     /// <summary>Its shader in the v5.0 compositor; <see cref="GpuShaderSlot.None"/> for an effect that has none yet.</summary>
     public GpuShaderSlot GpuSlot { get; init; }
+
+    /// <summary>What tells apart two effects of one slot (5.1-GpuFx): sent in the last lane of its last packet, which its parameters leave free.</summary>
+    public int GpuVariant { get; init; }
+
+    /// <summary>
+    /// Drawn by the compositor alone, with no FFmpeg filter to fall back on (the roadmap's Law 4): an export FFmpeg has to make leaves it out, and says so
+    /// (<c>GpuExport.LeftOutByFfmpeg</c>).
+    /// </summary>
+    public bool GpuOnly { get; init; }
+
+    /// <summary>A clip takes one card of it (5.1-GpuFx: what is drawn as the layer is laid on).</summary>
+    public bool Once { get; init; }
 
     /// <summary>The lanes its parameters take, in their order (<see cref="EffectParam.GpuLanes"/>).</summary>
     /// <remarks>Counted by index: it is asked for on every packet, and an enumerator of the list would be a new object each time.</remarks>
@@ -370,7 +423,7 @@ public static partial class EffectRegistry
     public static IReadOnlyList<EffectDefinition> All => [.. Definitions.Values];
 
     /// <summary>The categories, in the order the Add Effect menus list them (the Effects pane's, a track's); any other after them.</summary>
-    private static readonly string[] Categories = ["Color", "Detail", "Blur", "Look", "Transform", "Key", "Matte", "Composite"];
+    private static readonly string[] Categories = ["Color", "Detail", "Blur", "Look", "3D VFX", "Transform", "Key", "Matte", "Composite"];
 
     /// <summary>Where a category comes in the Add Effect menus.</summary>
     public static int CategoryRank(string category) => Array.IndexOf(Categories, category) is var i and >= 0 ? i : Categories.Length;
@@ -504,17 +557,24 @@ public static partial class EffectRegistry
             GpuSlot = GpuShaderSlot.BoxBlur, Description = "Softens the picture (a box blur run twice, or as many times as its Passes).",
         });
 
+        // An unsharp mask (5.1-Polish, the user's Q3): its Strength on the card, its Radius and Threshold in the Advanced fold.
         Register(new(Sharpen, "Sharpen", "Detail", EffectZone.Look,
-            [new("strength", "Strength", Min: 0, Max: 1) { Starting = 0.6 }], EffectCost.Amber,
-            (_, fx) => fx.Get("strength") < 0.005 ? null : [$"cas=strength={N(Math.Clamp(fx.Get("strength"), 0, 1))}"])
+            [
+                new("strength", "Strength", Min: 0, Max: 1) { Starting = 0.6, Tip = "How much of the detail is added back: 1 adds twice the difference between the picture and its blur." },
+                new("radius", "Radius", Min: 1, Max: SharpenMostRadius, Default: SharpenDefaultRadius, Step: 1, Unit: "px")
+                    { IsAdvanced = true, Tip = "How wide the detail it sharpens is: its blur reaches so many pixels of a 1080-wide frame each way (scaled to the frame being made). Small for fine detail, larger for a bolder look." },
+                new("threshold", "Threshold", Min: 0, Max: 64, Default: 0, Step: 1)
+                    { IsAdvanced = true, Tip = "Differences in brightness smaller than this (in levels of 255) are left as they are, so flat areas and noise are not sharpened." },
+            ], EffectCost.Amber, CompileSharpen)
         {
-            GpuSlot = GpuShaderSlot.Sharpen, Description = "Contrast-adaptive sharpening: crisper edges without halos.",
+            GpuSlot = GpuShaderSlot.Sharpen, Description = "An unsharp mask: the detail of the picture made stronger, with a radius and a threshold of its own.",
         });
 
         Register(new(Vignette, "Vignette", "Look", EffectZone.Look,
             [
-                new("angle", "Strength", Min: 0, Max: 1.5, Default: Math.PI / 5, Animation: ParamAnimation.Expression)
-                    { Starting = 0.44, Tip = "The lens angle, in radians (0.44 is 25 degrees): larger darkens more of the corners." },
+                // In degrees on the card (5.1-Polish, the user's Q5); FFmpeg's vignette and PSVignette take radians (GpuScale).
+                new("angle", "Strength", Min: 10, Max: 90, Default: 25, Step: 1, Unit: "°", Animation: ParamAnimation.Expression)
+                    { GpuScale = Math.PI / 180, Tip = "The lens angle, in degrees: larger darkens more of the corners." },
                 new("round", "Roundness", Min: 0, Max: 100, Default: 100, Step: 1, Unit: "%")
                     { IsAdvanced = true, Tip = "100 % a circle; less, towards the frame's own shape (an ellipse as wide as the picture)." },
                 new("feather", "Feather", Min: 5, Max: 100, Default: 100, Step: 1, Unit: "%")
@@ -623,7 +683,8 @@ public static partial class EffectRegistry
                 new("distance", "Distance", Min: 0, Max: 100, Default: LayerState.DefaultShadowDistance, Step: 1, Unit: "px") { Bind = nameof(Layer.ShadowDistance) },
                 new("angle", "Angle", Min: 0, Max: 360, Default: LayerState.DefaultShadowAngle, Step: 1, Unit: "\u00B0") { Bind = nameof(Layer.ShadowAngle), IsAdvanced = true },
                 new("softness", "Softness", Min: 0, Max: 50, Default: LayerState.DefaultShadowSoftness, Step: 1, Unit: "px") { Bind = nameof(Layer.ShadowSoftness), IsAdvanced = true },
-                new("opacity", "Shadow Opacity", Min: 0, Max: 1, Default: 0.5) { Bind = nameof(Layer.ShadowOpacity), IsAdvanced = true },
+                // Above the fold with the Distance (5.1-Polish, the user's Q4); Angle, Softness and Color in the Advanced fold.
+                new("opacity", "Shadow Opacity", Min: 0, Max: 1, Default: 0.5) { Bind = nameof(Layer.ShadowOpacity) },
                 new("color", "Shadow Color", ParamKind.Color) { Bind = nameof(Layer.ShadowColor), TextDefault = "#000000", IsAdvanced = true },
             ], EffectCost.Amber)
         {
@@ -644,6 +705,8 @@ public static partial class EffectRegistry
         {
             GpuSlot = GpuShaderSlot.BlendMode, Description = "How the layer's colours mix with the picture under it. Any mode but Normal works in RGB over the whole frame.",
         });
+
+        RegisterGpuFx();
     }
 
     // ----- Blur and Vignette (5.0-Release: their Advanced values) -----
@@ -702,6 +765,7 @@ public static partial class EffectRegistry
     /// </summary>
     private static IReadOnlyList<string>? CompileVignette(EffectCompileContext context, EffectInstance fx)
     {
+        // The card's angle is in degrees (5.1-Polish, the user's Q5): FFmpeg's in radians, keys and all.
         var animated = fx.HasKeys("angle");
         if (fx.Get("angle") < 0.005 && !animated)
             return null;
@@ -712,15 +776,68 @@ public static partial class EffectRegistry
         {
             // (The keyframes' expression names the clock t, as every filter's does, and nothing else is a lone t in it.)
             var angle = animated
-                ? $"clip({Regex.Replace(context.KeyExpression(fx.GetKeys("angle"), context.ClipStart), @"\bt\b", "T")},0,{N(1.5708)})"
-                : context.Initial(fx, "angle", 0, 1.5708);
+                ? $"clip(({Regex.Replace(context.KeyExpression(fx.GetKeys("angle"), context.ClipStart), @"\bt\b", "T")})*PI/180,0,{N(1.5708)})"
+                : N(Math.Clamp(Math.Clamp(fx.Get("angle"), 0, 90) * Math.PI / 180, 0, 1.5708));
             var d = $"hypot(X-W/2,(Y-H/2)*{N(aspect)})/hypot(W/2,H/2)";
             var factor = $"if(gt({d},1),0,pow(cos({angle}*clip(({d}-{N(1 - feather)})/{N(feather)},0,1)),4))";
             return ["format=yuva444p", $"geq=lum='p(X,Y)*{factor}':cb='(p(X,Y)-128)*{factor}+128':cr='(p(X,Y)-128)*{factor}+128':a='alpha(X,Y)'"];
         }
 
         var shape = Math.Abs(aspect - 1) < 1e-4 ? "" : $":aspect={N(aspect)}";
-        return [$"vignette=angle={context.Value(fx, "angle", 0, 1.5708)}{shape}{(animated ? ":eval=frame" : "")}"];
+        var radians = animated
+            ? $"'clip(({context.KeyExpression(fx.GetKeys("angle"), context.ClipStart)})*PI/180,0,{N(1.5708)})'"
+            : N(Math.Clamp(Math.Clamp(fx.Get("angle"), 0, 90) * Math.PI / 180, 0, 1.5708));
+        return [$"vignette=angle={radians}{shape}{(animated ? ":eval=frame" : "")}"];
+    }
+
+    // ----- Sharpen (5.1-Polish, the user's Q3: an unsharp mask) -----
+
+    /// <summary>Sharpen's widest Radius on the card, and the one it starts with (unsharp's own 5 x 5 square on a 1080-wide frame).</summary>
+    public const double SharpenMostRadius = 8, SharpenDefaultRadius = 2;
+
+    /// <summary>What the difference is multiplied by at Strength 1 (unsharp's amount; 0.6, the card's start, is 1.2).</summary>
+    public const double SharpenAmount = 2;
+
+    /// <summary>
+    /// Sharpen: the picture plus Strength x <see cref="SharpenAmount"/> times its difference from a box blur of it (a square
+    /// of <see cref="SharpenBox"/>), on the luma alone. With no Threshold that is FFmpeg's unsharp (its la; its square is the
+    /// box); with one, the same made by hand in 16 bits, where a difference smaller than the threshold (levels of 255,
+    /// 256 to the 16-bit level) is left as it was, coming in over two levels either side of it (no hard step): the box by
+    /// boxblur (luma only, one pass), the rest by blend's expression. PSSharpen draws the same.
+    /// </summary>
+    private static IReadOnlyList<string>? CompileSharpen(EffectCompileContext context, EffectInstance fx)
+    {
+        var strength = Math.Clamp(fx.Get("strength"), 0, 1);
+        if (strength < 0.005)
+            return null;
+        var radius = SharpenBox(fx.Get("radius"), context.FrameWidth, context.Width, context.Height);
+        if (radius < 1)
+            return null;
+
+        var amount = N(SharpenAmount * strength);
+        var threshold = Math.Clamp(fx.Get("threshold"), 0, 64);
+        if (threshold < 0.5)
+            return [$"unsharp=lx={2 * radius + 1}:ly={2 * radius + 1}:la={amount}"];
+
+        var name = context.InstanceName;
+        return
+        [
+            "format=yuv444p16le",
+            $"split[{name}_sa][{name}_sb];[{name}_sb]boxblur=luma_radius={radius}:luma_power=1:chroma_radius=0:chroma_power=0[{name}_sc];"
+            + $"[{name}_sa][{name}_sc]blend=c0_expr='clip(A+(A-B)*{amount}*clip((abs(A-B)/256-{N(threshold)}+1)/2,0,1),0,65535)':c1_expr=A:c2_expr=A",
+        ];
+    }
+
+    /// <summary>
+    /// Sharpen's box radius in pixels of the picture: its Radius (in pixels of a 1080-wide frame, at most
+    /// <see cref="SharpenMostRadius"/>) scaled to <paramref name="frameWidth"/>, at least 1, and held to unsharp's widest square
+    /// (23: a radius of 11) and to what a picture this size allows (0 when it is too small for any).
+    /// </summary>
+    public static int SharpenBox(double radius, int frameWidth, int width, int height)
+    {
+        radius = double.IsFinite(radius) && radius > 0 ? Math.Min(radius, SharpenMostRadius) : SharpenDefaultRadius;
+        var limit = Math.Min(Math.Min(width, height) / 4 - 1, 11);
+        return limit < 1 ? 0 : Math.Clamp((int)Math.Round(radius * Math.Max(frameWidth, 1) / 1080.0, MidpointRounding.AwayFromZero), 1, limit);
     }
 
     /// <summary>

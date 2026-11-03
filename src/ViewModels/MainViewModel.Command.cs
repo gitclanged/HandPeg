@@ -345,7 +345,32 @@ public partial class MainViewModel
             }
         }
 
+        SayWhatFfmpegLeavesOut(state);
         await FfmpegRunner.RunAsync(command, progress, cancellationToken, graphInFile: true);
+    }
+
+    /// <summary>What the last export FFmpeg made left out (5.1-GpuFx); "" for nothing.</summary>
+    private string _exportLeftOut = "";
+
+    // An export FFmpeg's graph makes cannot draw the effects that are shaders alone: never left out silently.
+    private void SayWhatFfmpegLeavesOut(SequenceExportState? state)
+    {
+        _exportLeftOut = "";
+        try
+        {
+            if (state is null && _isBackgroundWorker)
+                return;
+            if (GpuExport.LeftOutByFfmpeg(state ?? CompileExportState()) is not { Count: > 0 } names)
+                return;
+
+            _exportLeftOut = $"This export went through FFmpeg, which cannot draw {string.Join(", ", names)}: they are not in the file. Export on the GPU to keep them.";
+            StatusText = _exportLeftOut;
+            AppLog.Write($"FFmpeg's export leaves out what only the GPU draws: {string.Join(", ", names)}");
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Could not check what FFmpeg's export leaves out", ex);
+        }
     }
 
     /// <summary>

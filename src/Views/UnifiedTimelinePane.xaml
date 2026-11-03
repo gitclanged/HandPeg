@@ -192,9 +192,9 @@
                                         Visibility="{Binding IsVideo, Converter={StaticResource BoolToVisibility}}"
                                         Command="{Binding DataContext.DrawTargetCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}"
                                         ToolTip="Drag a rectangle on the video to mark what this layer shows." />
-                                <Button Content="Properties..." Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="Properties" Click="Tool_Click"
+                                <Button Content="Effects" Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="Properties" Click="Tool_Click"
                                         Visibility="{Binding HasStyle, Converter={StaticResource BoolToVisibility}}"
-                                        ToolTip="Opacity, rounded corners, soft edges and a drop shadow; for pictures and videos, a chroma key and a custom mask." />
+                                        ToolTip="Opacity, rounded corners, soft edges and a drop shadow; for pictures and videos, a chroma key and a custom mask: this clip's cards in the Effects pane." />
                                 <Button Content="Caption Style..." Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="CaptionStyle" Click="Tool_Click"
                                         Visibility="{Binding IsCaptions, Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="Caption Style"
                                         ToolTip="The captions' font, size, colors, outline, words per line and animation." />
@@ -207,7 +207,7 @@
                                 <TextBox Style="{StaticResource ValueBox}" Width="46" Margin="4,0,0,0" Text="{Binding BlurRadius, StringFormat={}{0:0.#}}" AutomationProperties.Name="Background Blur Radius Value"
                                          local:NumericInput.Default="20" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="0" local:NumericInput.Maximum="64" />
                                 <Button Content="More..." Padding="7,1" Margin="6,0,0,0" VerticalAlignment="Center" Tag="BlurSettings" Click="Tool_Click"
-                                        ToolTip="Its zoom, blur passes and how much it is darkened. Its own effects (colour, a LUT, a vignette) are in the Effects pane while its row is selected." />
+                                        ToolTip="Its zoom, blur passes and how much it is darkened, on its card in the Effects pane, with its own effects (colour, a LUT, a vignette)." />
                             </StackPanel>
                             <StackPanel x:Name="SoundGroup" Orientation="Horizontal" Visibility="Collapsed">
                                 <!-- Gain and filters work on decoded sound: not on a track that is copied as it is (or dropped). -->
@@ -276,6 +276,18 @@
                                     ToolTip="Words: a title or a label. Its words, font and colors are set under Text Settings while it is selected." />
                             <Button Content="Adjustment Layer" Tag="Adjustment" Click="AddLayerItem_Click"
                                     ToolTip="A clip with no picture: its effects (Effects pane) work on everything under it while it lasts. Narrow its rectangle in the Canvas to limit them to a part of the frame." />
+                            <Button Content="3D Explosion" Tag="builtin.vfx.explosion" Click="AddLayerItem_Click"
+                                    ToolTip="A raymarched fireball at the playhead, on an adjustment clip of its own: it lights the video under it. Its card is in the Effects pane." />
+                            <Button Content="3D Sparks &amp; Debris" Tag="builtin.vfx.sparks" Click="AddLayerItem_Click"
+                                    ToolTip="Sparks and tumbling debris flying out at the playhead, on an adjustment clip of their own." />
+                            <Button Content="Anime Lines" Tag="builtin.vfx.animelines" Click="AddLayerItem_Click"
+                                    ToolTip="Impact or speed lines at the playhead, on an adjustment clip of their own." />
+                            <Button Content="Energy Shield" Tag="builtin.vfx.shield" Click="AddLayerItem_Click"
+                                    ToolTip="A dome of hexagons at the playhead, on an adjustment clip of its own." />
+                            <Button Content="Saber Glow" Tag="builtin.vfx.saber" Click="AddLayerItem_Click"
+                                    ToolTip="A blade of light at the playhead, on an adjustment clip of its own: keyframe its ends to swing it." />
+                            <Button Content="Impact Shockwave" Tag="builtin.gpu.shockwave" Click="AddLayerItem_Click"
+                                    ToolTip="A ring of bent air and a camera shake at the playhead, on an adjustment clip of its own." />
                             <Button Content="Region of Main Video" Tag="Region" Click="AddLayerItem_Click"
                                     ToolTip="A piece of the source video (a minimap, an ammo counter) lifted onto the frame. Mark it with Draw Target." />
                             <Button Content="HUD Layers from a Mask..." Tag="MaskLayers" Click="AddLayerItem_Click"
@@ -387,12 +399,7 @@
                                       AutomationProperties.Name="Link A/V" local:KeyTip.Text="Link Audio and Video: linked, sound follows its picture and is cut with it. Unlinked, a sound can be dragged on its own; linking again offers to snap it back. {key:clip.toggleLink|Link / Unlink A/V on a clip's menu} links or unlinks the selected clip alone." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="20" Content="&#xE8D6;" IsChecked="{Binding ShowLinkedAudio}"
                                       AutomationProperties.Name="Show Linked Audio" ToolTip="Show Linked Audio: draws the sound that belongs to a picture in the lower part of its block (the main video's own audio on its clips, a video layer's on its clips)." />
-                        <Button Content="[" FontFamily="Consolas" FontWeight="Bold" FontSize="13" Padding="9,3" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="50" Command="{Binding AddStartPointCommand}"
-                                AutomationProperties.Name="Add In Point" local:KeyTip.Action="edit.in" local:KeyTip.Text="Add In Point{keys}: the stretch to split out begins at the playhead." />
-                        <Button Content="]" FontFamily="Consolas" FontWeight="Bold" FontSize="13" Padding="9,3" Margin="0,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="50" Command="{Binding AddStopPointCommand}"
-                                AutomationProperties.Name="Add Out Point" local:KeyTip.Action="edit.out" local:KeyTip.Text="Add Out Point{keys}: every unlocked track is split at the in point and at the playhead, so the stretch between is clips of its own." />
                         <!-- Where the in point being set is (or that none is), beside its buttons. -->
-                        <TextBlock local:OverflowStrip.Priority="48" Text="{Binding PendingStartText}" Style="{StaticResource TimeText}" Margin="3,0,6,0" FontSize="11" VerticalAlignment="Center" />
                         <!-- The tracks' height (each layer's row), with the other layer tools (5.0-Verify: one row along the bottom). -->
                         <StackPanel local:OverflowStrip.Priority="65" Orientation="Horizontal" Margin="6,0,6,0" VerticalAlignment="Center" Background="Transparent"
                                     ToolTip="Track height: how tall each track's row is.">
@@ -404,8 +411,11 @@
                                 AutomationProperties.Name="Split or Trim at Timecode..." ToolTip="Split or Trim at Timecode: type the time to split the selected clip at (or the main video, with nothing selected), or to trim its start or end to. The I-frames either side of the time are offered." />
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="45" Content="&#xE74F;" Tag="DeadAir" Click="Tool_Click" IsEnabled="{Binding HasSource}"
                                 AutomationProperties.Name="Remove Dead Air..." local:KeyTip.Action="edit.deadAir" local:KeyTip.Text="Remove Dead Air{keys}: finds the silences (or the gaps between captions) of the selected track (a video layer, an audio track, or otherwise the main video) and marks or folds them out." />
-                        <Button Content="HUD Masks" Padding="9,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="40" Tag="HudMasks" Click="Tool_Click" IsEnabled="{Binding IsVideoReencoded}"
-                                AutomationProperties.Name="HUD Masks" ToolTip="Takes a game's HUD apart into layers (killfeed, health, abilities, ultimate), all sharing one mask traced round the game's HUD, so each can be moved on its own." />
+                        <Button Content="Cutout Studio" Padding="9,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="40" Tag="CutoutStudio" Click="Tool_Click" IsEnabled="{Binding IsVideoReencoded}"
+                                AutomationProperties.Name="Cutout Studio" ToolTip="Trace a game's HUD by hand on a still of the video, zoomed in to the very pixels, name the pieces, and add them as layers or save them as a Game Preset to drop videos on." />
+                        <ComboBox Width="150" Margin="3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="38" ItemsSource="{Binding StylePresets}" SelectedItem="{Binding SelectedStylePreset}"
+                                  DropDownOpened="GamePresets_DropDownOpened" IsEnabled="{Binding IsVideoReencoded}" AutomationProperties.Name="Game Presets"
+                                  ToolTip="The Game Presets and style presets in the Styles folder. Choosing one applies it to this video: its cut-out pieces, its layout, its colour and blur." />
                         <!-- The recycle bin: deleted clips wait here, and are put back from here (its list opens under it, BinPopup). -->
                         <ToggleButton x:Name="BinButton" Padding="7,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="35" AutomationProperties.Name="Recycle Bin"
                                       ToolTip="Recycle Bin: the clips that were deleted from the timeline. Nothing of them is rendered; any of them can be put back where it was.">
@@ -458,13 +468,16 @@
                     <Button Style="{StaticResource ZoomTool}" Content="&#xE71F;" Tag="ZoomOut" Click="Tool_Click"
                             AutomationProperties.Name="Zoom Timeline Out" local:KeyTip.Action="view.zoomOut"
                             local:KeyTip.Text="Zoom out{keys}: the tracks show more of the sequence. Holding {key:nav.back|the zoom-out key} zooms out smoothly about the pointer, and so does the wheel over the ruler." />
-                    <Slider x:Name="ZoomSlider" Width="56" Margin="4,0" VerticalAlignment="Center" Minimum="0" Maximum="1" SmallChange="0.02" LargeChange="0.1"
+                    <Slider x:Name="ZoomSlider" Width="44" Margin="4,0" VerticalAlignment="Center" Minimum="0" Maximum="1" SmallChange="0.02" LargeChange="0.1"
                             AutomationProperties.Name="Timeline Zoom" ToolTip="Timeline zoom: left shows the whole sequence, right a fraction of a second across." />
                     <Button Style="{StaticResource ZoomTool}" Content="&#xE8A3;" Tag="ZoomIn" Click="Tool_Click"
                             AutomationProperties.Name="Zoom Timeline In" local:KeyTip.Action="view.zoomIn"
                             local:KeyTip.Text="Zoom in{keys}: the tracks show less of the sequence, larger. Holding {key:nav.forward|the zoom-in key} zooms in smoothly about the pointer, and so does the wheel over the ruler." />
                     <Button Style="{StaticResource ZoomTool}" Content="&#xE9A6;" Margin="3,0,0,0" Tag="ZoomFit" Click="Tool_Click"
                             AutomationProperties.Name="Fit Timeline" local:KeyTip.Action="view.fit" local:KeyTip.Text="Fit{keys}: the tracks show the whole sequence, with room after its end to drop clips into." />
+                    <!-- The tracks' height (5.1-Polish, the user's directive): dragged up or down, the wheel, a double-click for the usual one. -->
+                    <local:TrackHeightPill Margin="5,0,0,0" VerticalAlignment="Center" Value="{Binding LayerTrackHeight}"
+                                           ToolTip="Track height: drag up for taller tracks, down for lower ones (or use the wheel here, or Alt + the wheel over the tracks, or drag a track's lower edge in its header). A double-click puts the usual height back." />
                 </StackPanel>
                 <local:TimelineRuler x:Name="Ruler" Background="{DynamicResource InsetBrush}" BorderBrush="{DynamicResource WellBorderBrush}" BorderThickness="{DynamicResource WellEdgeThickness}"
                                      LowerBorderBrush="{DynamicResource WellBorderLowerBrush}" Cursor="Hand" ClipToBounds="True" Margin="0,0,0,2"

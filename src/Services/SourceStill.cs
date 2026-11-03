@@ -7,14 +7,20 @@ namespace HandPegApp.Services;
 /// <summary>One frame of the source, as it is in the file: what HUD areas and masks are measured on.</summary>
 public static class SourceStill
 {
-    /// <summary>Writes the frame at a moment of a video to a picture file and reads it back, frozen for any thread.</summary>
+    /// <summary>
+    /// Writes the frame at a moment of a video to a picture file and reads it back, frozen for any thread: the thumbnail compositor's
+    /// exact frame at the video's own size (5.1-CleanupStudioAndFfmpegPurge), FFmpeg's only for what that cannot draw.
+    /// </summary>
     public static async Task<BitmapImage> TakeAsync(string source, double seconds, string pngPath, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(pngPath)!);
-        var ffmpeg = DependencyUpdater.IsFfmpegOverridden ? $"\"{DependencyUpdater.FfmpegPath}\"" : "ffmpeg";
-        var at = Math.Max(seconds, 0).ToString("0.###", CultureInfo.InvariantCulture);
-        await FfmpegRunner.RunAsync($"{ffmpeg} -hide_banner -y -ss {at} -i \"{source}\" -frames:v 1 -update 1 \"{pngPath}\"",
-            new Progress<FfmpegProgress>(), cancellationToken);
+        if (!await GpuFilmstrips.TryStillAsync(source, pngPath, Math.Max(seconds, 0), null, onAKeyFrame: false, cancellationToken))
+        {
+            var ffmpeg = DependencyUpdater.IsFfmpegOverridden ? $"\"{DependencyUpdater.FfmpegPath}\"" : "ffmpeg";
+            var at = Math.Max(seconds, 0).ToString("0.###", CultureInfo.InvariantCulture);
+            await FfmpegRunner.RunAsync($"{ffmpeg} -hide_banner -y -ss {at} -i \"{source}\" -frames:v 1 -update 1 \"{pngPath}\"",
+                new Progress<FfmpegProgress>(), cancellationToken);
+        }
 
         var still = new BitmapImage();
         still.BeginInit();

@@ -1,0 +1,10 @@
+# What the plan tells the worker: where a layer is as the shutter opens and closes, only for a layer with the card.
+ok: with no card, no shutter is written
+ok: with the card, a keyframed layer has its shutter's places
+ok: the shutter sweeps half a frame of its move
+ok: either side of where it is at the frame
+ok: and its source's moment a frame ago
+ok: a layer that does not move has no sub-frames to draw
+ok: the first frame after a cut measures no motion across it
+ok: the frames after it do
+ok: the fastest a clip runs is still motion, not a cut

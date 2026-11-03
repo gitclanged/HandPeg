@@ -1,0 +1,13 @@
+# Hardware encoders start at their slowest, best step; a choice made stands.
+ok: NVENC's best is p7
+ok: AMF's is quality
+ok: QSV's is veryslow
+ok: software has no such default
+ok: software starts at medium
+ok: QSV starts at veryslow, though it has a medium too
+ok: a step chosen by hand stands
+ok: NVENC starts at p7
+ok: AMF starts at quality
+ok: back on software it has one of its own steps
+ok: a preset that names no step leaves it to the encoder
+ok: and the in and out points are gone from the key bindings

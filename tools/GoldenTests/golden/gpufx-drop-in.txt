@@ -1,0 +1,10 @@
+# One click makes an adjustment clip with the card on it: nothing locked, one step of Undo.
+ok: the Explosion lands as an adjustment clip
+ok: at the playhead
+ok: as long as it runs
+ok: with its card on it, to tune
+ok: one clip more
+ok: Undo takes it away in one step
+ok: what stays on gets five seconds
+ok: a name not in the registry adds nothing
+ok: every drop-in can go on an adjustment clip

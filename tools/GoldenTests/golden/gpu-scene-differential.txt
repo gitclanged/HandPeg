@@ -1,5 +1,6 @@
 # The GPU scene (GpuScenePlan) against the FFmpeg export graph of the same timeline, at sampled moments (PSNR, dB).
   plain main video: 3 moments, each at least 42 dB of luma (2 x 2 blocks)
+  colour sliders with channel balance: 3 moments, each at least 30 dB of luma (2 x 2 blocks)
   rider with its own keys: 3 moments, each at least 22 dB of luma (2 x 2 blocks)
   game style (HUD cut-out, blurred background): 2 moments, each at least 27 dB of luma (2 x 2 blocks)
   picture in picture (crop, turn, opacity keys): 2 moments, each at least 26 dB of luma (2 x 2 blocks)

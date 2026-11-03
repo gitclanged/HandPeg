@@ -1,0 +1,13 @@
+# A clip landing on a template's track takes it: its base look and place, and pieces of its own.
+ok: the preset goes on the main video's clip
+ok: which has the preset's pieces
+ok: a clip dragged onto the template's track lands after the base clip
+ok: on its track
+ok: with pieces of its own over its own span
+ok: cut from its own file
+ok: the base clip keeps its own
+ok: and takes the base clip's size
+ok: and its blur fill
+ok: the document holds together
+ok: a clip dragged onto a plain track lands
+ok: and takes nobody's mask or look

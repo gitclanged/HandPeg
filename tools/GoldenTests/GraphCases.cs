@@ -38,6 +38,7 @@ public static class GraphCases
         yield return Export(EffectsScene(), "export-effects", "Effect cards in every zone: a grade with keyframes, a blur over part of the clip, a flip, a chroma key, rounded and soft edges, a shadow, a blend mode; an adjustment layer; the Sequence Output's own effects.");
         yield return Export(KeyframesScene(), "export-keyframes", "Keyframes on place, size, turn and opacity with every kind of easing (closed form, pieced, a custom Bezier), about an anchor point off the middle.");
         yield return Export(TransitionsScene(), "export-transitions", "Fades in and out in each family of style: dissolve, wipe, slide, zoom, blur dissolve; the main video fading too.");
+        yield return Export(ParticleSnapScene(), "export-particle-snap", "The Thanos Snap as a filter graph writes it, without the card: grains going in the card's sweep, in place.");
         yield return Export(CrossfadeScene(), "export-crossfade", "A crossfade between two clips of one track (laid over each other across the cut) and one across tracks (the lower keeps its picture).");
         yield return Export(HardwareScene(tenBit: false), "export-hardware", "A hardware encoder (h264_nvenc) on an odd-sized 4:4:4 screen recording: the picture ends cropped to even sides and converted to yuv420p with full chroma filtering.");
         yield return Export(HardwareScene(tenBit: true), "export-hardware-10bit", "The same with 10-bit on (hevc_nvenc): the tail ends in p010le.");
@@ -139,6 +140,14 @@ public static class GraphCases
         (picture.FadeInSeconds, picture.FadeInStyle, picture.FadeOutSeconds, picture.FadeOutStyle) = (0.8, TransitionStyle.SlideRight, 1, TransitionStyle.Zoom);
         var words = scene.AddText(3, "Title", 2, 6, (0.3, 0.1, 0.4));
         (words.FadeInSeconds, words.FadeInStyle, words.FadeOutSeconds, words.FadeOutStyle) = (1.2, TransitionStyle.BlurDissolve, 0.6, TransitionStyle.WipeDown);
+        return scene;
+    }
+
+    private static Scene ParticleSnapScene()
+    {
+        var scene = new Scene("transition-particle-snap") { Main = MainVideo, MainClip = (0, 0, 60) }.WithMainAudio(1);
+        var clip = scene.AddVideo(1, Clip2 with { HasAudio = false }, start: 5, duration: 10, offset: 1, place: (0.05, 0.05, 0.4));
+        (clip.FadeInSeconds, clip.FadeInStyle, clip.FadeOutSeconds, clip.FadeOutStyle) = (1, TransitionStyle.ParticleSnap, 1.5, TransitionStyle.ParticleSnap);
         return scene;
     }
 

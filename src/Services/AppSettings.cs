@@ -484,9 +484,6 @@ public sealed partial class AppSettings
     /// <summary>Every video that is opened starts as a vertical one: a tall frame with the picture across its middle.</summary>
     public bool DefaultVerticalVideo { get; set; }
 
-    /// <summary>Which of the style presets HandPeg comes with have been written to the Styles folder; they are written once.</summary>
-    public int BuiltInStylesVersion { get; set; }
-
     /// <summary>
     /// Hardware video decoding in the GPU preview: the graphics card decodes the preview's video (Media Foundation on the
     /// compositor's Direct3D 11 device) as well as drawing it. Off, the processor decodes: for a driver whose decoder shows

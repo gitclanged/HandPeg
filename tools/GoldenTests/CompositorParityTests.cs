@@ -20,7 +20,7 @@ namespace HandPegGoldenTests;
 /// device and after a crash; and every slot's GPU time at 1080p. Measured numbers go to the console, never into the
 /// golden file (they differ per machine).
 /// </summary>
-public static class CompositorParityTests
+public static partial class CompositorParityTests
 {
     private const int W = 256, H = 144, Tolerance = 3;
 
@@ -35,11 +35,15 @@ public static class CompositorParityTests
             var harness = new Harness(client, reader, text, problems);
             harness.Effects();
             harness.Composite();
+            harness.GpuFx();
             harness.Exploded();
             harness.ExplodedDetail();
+            harness.StudioStage();
             harness.Loupe();
+            harness.Nv12();
             harness.Decode();
             harness.Timing();
+            harness.TimingFx();
             harness.Recovery();
         }
         catch (Exception ex)
@@ -50,9 +54,45 @@ public static class CompositorParityTests
         yield return new GraphResult("compositor-parity", text.ToString(), problems, 0);
     }
 
-    private sealed class Harness(CompositorClient client, CompositorFrameReader reader, StringBuilder text, List<string> problems)
+    private sealed partial class Harness(CompositorClient client, CompositorFrameReader reader, StringBuilder text, List<string> problems)
     {
         private void Line(FormattableString line) => text.Append(line.ToString(CultureInfo.InvariantCulture)).Append('\n');
+
+        // ----- The export's readback -----
+
+        /// <summary>FlagReadbackNv12 (5.1-CleanupStudioAndFfmpegPurge): solid frames against BT.709 limited range, by the book, plane by plane.</summary>
+        public void Nv12()
+        {
+            const int width = 64, height = 36;
+            client.EnsureReadback(width * height * 4L);
+            var pixels = new byte[CompositorProtocol.Nv12Bytes(width, height)];
+            (float R, float G, float B, string Name)[] colours =
+                [(1, 1, 1, "white"), (0, 0, 0, "black"), (1, 0, 0, "red"), (0, 1, 0, "green"), (0, 0, 1, "blue"), (0.5f, 0.25f, 0.75f, "violet")];
+            var worst = 0.0;
+            foreach (var (r, g, b, name) in colours)
+            {
+                Begin(width, height, FrameSceneHeader.FlagExactFrames | FrameSceneHeader.FlagReadback | FrameSceneHeader.FlagReadbackNv12);
+                ref var scene = ref client.Scene;
+                (scene.OutputWidth, scene.OutputHeight) = (width, height);
+                (scene.BackgroundR, scene.BackgroundG, scene.BackgroundB) = (r, g, b);
+                if (!client.TryReadback(client.Publish(), pixels, out var gotWidth, out var gotHeight, 5000) || (gotWidth, gotHeight) != (width, height))
+                {
+                    problems.Add($"nv12: {name} did not come back");
+                    continue;
+                }
+
+                var luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                var (y, u, v) = (16 + 219 * luma, 128 + 224 * (b - luma) / 1.8556, 128 + 224 * (r - luma) / 1.5748);
+                var at = (width * height) + 2 * ((height / 2 / 2) * (width / 2) + width / 4);
+                var away = Math.Max(Math.Abs(pixels[height / 2 * width + width / 2] - y), Math.Max(Math.Abs(pixels[at] - u), Math.Abs(pixels[at + 1] - v)));
+                worst = Math.Max(worst, away);
+                if (away > 1.5)
+                    problems.Add(FormattableString.Invariant($"nv12: {name} is {pixels[height / 2 * width + width / 2]}, {pixels[at]}, {pixels[at + 1]}, not {y:0.0}, {u:0.0}, {v:0.0}"));
+            }
+
+            Line($"  NV12 readback: {colours.Length} colours within 1.5 of BT.709 limited range");
+            Console.WriteLine(FormattableString.Invariant($"  (NV12's worst difference from the book {worst:0.00})"));
+        }
 
         // ----- Scenes -----
 
@@ -190,6 +230,7 @@ public static class CompositorParityTests
             One("flip horizontally (2)", 1, new(GpuShaderSlot.Flip, 1, 0, 0, 0, 0, 0, 0, 0), input => Flip(input, [1, 0], pass));
             One("flip vertically (2)", 1, new(GpuShaderSlot.Flip, 0, 1, 0, 0, 0, 0, 0, 0), input => Flip(input, [0, 1], pass));
             One("denoise (4)", 3, new(GpuShaderSlot.Denoise, 6, 0, 0, 0, 0, 0, 0, 0), input => Denoise(input, [6], pass));
+            One("color grade, channel balance (5)", 1, new(GpuShaderSlot.ColorGrade, 1.1f, 0.02f, 1.2f, 0.9f, 1.1f, 0.92f, 0, 0), input => ColorGrade(input, [1.1f, 0.02f, 1.2f, 0.9f, 1.1f, 0.92f], pass));
             One("color grade (5)", 1, new(GpuShaderSlot.ColorGrade, 1.3f, 0.05f, 1.4f, 0.9f, 0, 0, 0, 0), input => ColorGrade(input, [1.3f, 0.05f, 1.4f, 0.9f], pass));
 
             // Color Balance is two packets in a row.
@@ -225,7 +266,14 @@ public static class CompositorParityTests
             var (across, down) = EffectRegistry.BlurSizes(20, 2, 3, W, W, H);
             One("blur, 3 passes, wider across, dimmed (20)", 2, new(GpuShaderSlot.BoxBlur, 20, 3, 2, 10, 0, 0, 0, 0),
                 input => Dim(Separable(input, across, down, (i, p) => BoxBlur(i, [20], p), pass, 3), -0.1f * 256 / 219));
-            One("sharpen (21)", 2, new(GpuShaderSlot.Sharpen, 0.7f, 0, 0, 0, 0, 0, 0, 0), input => Sharpen(input, [0.7f], pass));
+            // Sharpen (5.1-Polish, the user's Q3): an unsharp mask, its box the host's (SharpenBox) for its radius on this frame,
+            // the blur kept in half floats as the GPU keeps it; then wider, with a threshold.
+            var sharpBox = EffectRegistry.SharpenBox(EffectRegistry.SharpenDefaultRadius, W, W, H);
+            One("sharpen (21)", 2, new(GpuShaderSlot.Sharpen, 0.7f, 0, 0, 0, 0, 0, 0, 0),
+                input => Sharpen(input, Separable(input, sharpBox, (i, p) => BoxBlur(i, [sharpBox], p), pass, 1), [0.7f], pass));
+            var wideBox = EffectRegistry.SharpenBox(8, W, W, H);
+            One("sharpen, radius 8, threshold 6 (21)", 2, new(GpuShaderSlot.Sharpen, 0.9f, 8, 6, 0, 0, 0, 0, 0),
+                input => Sharpen(input, Separable(input, wideBox, (i, p) => BoxBlur(i, [wideBox], p), pass, 1), [0.9f, 8, 6], pass));
 
             // Textures handed over: a LUT, a mask, a curve.
             const int n = 17;
@@ -319,6 +367,35 @@ public static class CompositorParityTests
                 input => Scale(input, 0.4f));
             Case("wipe to the right, half way (65)", 1, (ref GpuLayerDescriptor l) => Add(ref l, new(GpuShaderSlot.TransitionWipe, 0.5f, 1, 0, 0.5f, 1, 0, 0, 0)),
                 input => Wiped(input, 0.5f));
+
+            // The Thanos Snap (69), which no reference draws: what it must always do. Whole at its start, gone at its end, the same frame
+            // for the same moment, and going steadily.
+            GpuEffectPacket Snap(float through, bool fadingIn = false) => new(GpuShaderSlot.TransitionParticleSnap, 1 - through, 0, 0, through, fadingIn ? 1 : 0, 0, 0, 0);
+            Case("thanos snap, at its start the picture (69)", 3, (ref GpuLayerDescriptor l) => Add(ref l, Snap(0)), input => input);
+            Case("thanos snap, at its end nothing", 3, (ref GpuLayerDescriptor l) => Add(ref l, Snap(1)), input => Scale(input, 0));
+            Case("thanos snap coming on, at its end the picture", 3, (ref GpuLayerDescriptor l) => Add(ref l, Snap(1, fadingIn: true)), input => input);
+            var drawn = new[] { 0.25f, 0.5f, 0.75f }.Select(through =>
+            {
+                Begin();
+                Add(ref Layer(0, GpuSourceKind.TestPattern, 3), Snap(through));
+                return Render($"thanos snap at {through}");
+            }).ToList();
+            Begin();
+            Add(ref Layer(0, GpuSourceKind.TestPattern, 3), Snap(0.5f));
+            var again = Render("thanos snap again");
+            if (drawn.Any(d => d is null) || again is null)
+            {
+                problems.Add("thanos snap: a frame did not come");
+            }
+            else
+            {
+                var left = drawn.Select(d => d!.Rgba.Where((_, i) => i % 4 == 3).Average()).ToList();
+                Line($"  thanos snap: {left[0]:0.00} of its picture left a quarter of the way, {left[1]:0.00} half way, {left[2]:0.00} three quarters");
+                if (!(left[0] > left[1] && left[1] > left[2] && left[0] < 1 && left[2] > 0))
+                    problems.Add($"thanos snap: it must go steadily ({left[0]:0.00}, {left[1]:0.00}, {left[2]:0.00})");
+                if (!again.Rgba.SequenceEqual(drawn[1]!.Rgba))
+                    problems.Add("thanos snap: one moment must always draw the same frame");
+            }
 
             // A slide half way in from the left (P1 = 1, coming on: it comes from the side it travels away from): carried
             // Beyond = -(0 + 256) - 2 = -258 pixels times the half not yet shown, so 129 px left of its place.
@@ -872,6 +949,7 @@ public static class CompositorParityTests
                 Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the decode checks were not run");
                 Line($"  frame-exact seeks, forward and back");
                 Line($"  BT.709 colour within 4/255");
+                Line($"  motion blur: the flow of a real clip, by its own speed (22)");
                 return;
             }
 
@@ -903,6 +981,7 @@ public static class CompositorParityTests
                 problems.Add($"decode seeks: {string.Join("; ", wrong)}");
 
             InstantSeek();
+            MotionBlurOnVideo(ffmpeg, folder);
 
             Begin();
             ref var swatch = ref Layer(0, GpuSourceKind.Media);

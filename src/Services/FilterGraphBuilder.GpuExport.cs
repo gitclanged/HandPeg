@@ -110,8 +110,29 @@ public readonly record struct GpuExportTiming(long CanvasNumerator, long CanvasD
 /// <param name="UsesChaptersFile">The command reads its chapters from <see cref="SequenceExportState.ChaptersFilePath"/>, as the FFmpeg export's does.</param>
 public sealed record GpuExportCommand(string Executable, IReadOnlyList<string> Arguments, int Width, int Height, GpuExportTiming Timing, bool UsesChaptersFile)
 {
+    /// <summary>
+    /// The compositor draws the sequence's fades (5.1-Polish, so the captions over them are the preview's): not FFmpeg after
+    /// it. False while the source's subtitles are burned in by FFmpeg, which lie under the fades.
+    /// </summary>
+    public bool FadesOnGpu { get; init; }
+
+    /// <summary>
+    /// The compositor draws the captions (5.1-Polish, the user's Q2: through its stack, where the preview draws them), from
+    /// the words beside their caption file (CaptionGenerator.ReadWords); FFmpeg's libass does not.
+    /// </summary>
+    public bool CaptionsOnGpu { get; init; }
+
+    /// <summary>
+    /// The pixels piped (5.1-CleanupStudioAndFfmpegPurge): NV12, converted on the card, for every encoder that takes YUV;
+    /// the compositor's RGB as it is for one that takes RGB.
+    /// </summary>
+    public string PipeFormat { get; init; } = FilterGraphBuilder.GpuPipePixelFormat;
+
+    /// <summary>Whether the frames are read back as NV12 (FlagReadbackNv12).</summary>
+    public bool PipesNv12 => PipeFormat == FilterGraphBuilder.GpuPipePixelFormat;
+
     /// <summary>The bytes of one piped frame.</summary>
-    public long FrameBytes => (long)Width * Height * 4;
+    public long FrameBytes => PipesNv12 ? CompositorProtocol.Nv12Bytes(Width, Height) : (long)Width * Height * 4;
 
     /// <summary>The command as one line (the log, the golden test): each argument quoted where it has to be.</summary>
     public string CommandLine => Executable + " " + string.Join(" ", Arguments.Select(a => a.Length == 0 || a.Any(c => c is ' ' or '"' or '\t') ? $"\"{a.Replace("\"", "\\\"", StringComparison.Ordinal)}\"" : a));
@@ -119,8 +140,20 @@ public sealed record GpuExportCommand(string Executable, IReadOnlyList<string> A
 
 public static partial class FilterGraphBuilder
 {
-    /// <summary>The piped frames' pixels: the compositor's BGRA readback, its alpha ignored (the finished picture is opaque).</summary>
-    public const string GpuPipePixelFormat = "bgr0";
+    /// <summary>The piped frames' pixels: 4:2:0 BT.709, limited range, converted on the card (5.1-CleanupStudioAndFfmpegPurge: 62 % fewer bytes than BGRA).</summary>
+    public const string GpuPipePixelFormat = "nv12";
+
+    /// <summary>The pixels piped for an encoder that takes RGB: the compositor's BGRA readback, its alpha ignored (the finished picture is opaque).</summary>
+    public const string GpuPipeRgbFormat = "bgr0";
+
+    /// <summary>The raw sound <see cref="BuildGpuExportCommand(SequenceExportState, bool, string?, out string)"/> reads, and AudioMixer renders: f32le, this rate, stereo.</summary>
+    public const int GpuSoundRate = 48000;
+
+    /// <summary>
+    /// Why an export's sound cannot be the sound engine's render (AudioMixer.Render), which is what is heard while editing: what it
+    /// has no part in, and FFmpeg's graph then makes as it always has. Null when it can.
+    /// </summary>
+    public static string? GpuSoundWhyNot(SequenceExportState state) => new Pass(state).GpuSoundWhyNot();
 
     /// <summary>The largest frame the compositor renders on a side (its output textures are clamped to it).</summary>
     public const int GpuLargestSide = 8192;
@@ -129,9 +162,23 @@ public static partial class FilterGraphBuilder
     /// The export's command with the picture taken from FFmpeg's standard input (frames the GPU compositor drew of the
     /// sequence) instead of the composition graph: everything else as <see cref="BuildExportCommand"/> writes it. Null
     /// (and why, in plain words) when the export cannot be made that way: a Copy export, a GIF or WebP, a deinterlaced or
-    /// tone-mapped picture, a main video of no known length, the source's subtitles burned into a spliced main video.
+    /// tone-mapped picture, a main video of no known length, the source's subtitles burned into a spliced main video, captions
+    /// among the layers the compositor cannot draw.
     /// </summary>
-    public static GpuExportCommand? BuildGpuExportCommand(SequenceExportState state, out string whyNot)
+    public static GpuExportCommand? BuildGpuExportCommand(SequenceExportState state, out string whyNot) => BuildGpuExportCommand(state, captionsOnGpu: false, null, out whyNot);
+
+    /// <summary><see cref="BuildGpuExportCommand(SequenceExportState, bool, string?, out string)"/> with the sound FFmpeg's graph makes.</summary>
+    public static GpuExportCommand? BuildGpuExportCommand(SequenceExportState state, bool captionsOnGpu, out string whyNot) => BuildGpuExportCommand(state, captionsOnGpu, null, out whyNot);
+
+    /// <summary>
+    /// <see cref="BuildGpuExportCommand(SequenceExportState, out string)"/>, the compositor drawing the captions too when
+    /// <paramref name="captionsOnGpu"/> (their words are there to draw them from: 5.1-Polish, the user's Q2). The compositor
+    /// draws the fades whenever the source's subtitles are not burned in (FFmpeg's, which lie under them); captions it does
+    /// not draw are burned in over everything by FFmpeg, as before, and captions put among the layers it cannot draw make the
+    /// export FFmpeg's. With <paramref name="soundPath"/> the sound graph and the sound's maps give way to that file, the sound
+    /// engine's render of the program (f32le, <see cref="GpuSoundRate"/>, stereo, from the first frame): FFmpeg only encodes it.
+    /// </summary>
+    public static GpuExportCommand? BuildGpuExportCommand(SequenceExportState state, bool captionsOnGpu, string? soundPath, out string whyNot)
     {
         // No OpenCL device and no hardware decoding of the first input: its picture is never decoded (the composed picture
         // is the GPU's), and nothing left in the command blurs. The sound's graph and every input stay the same.
@@ -152,6 +199,15 @@ public static partial class FilterGraphBuilder
         if (timing.OutputFrames <= 0)
         {
             whyNot = "the sequence is empty";
+            return null;
+        }
+
+        var fadesOnGpu = state.BurnedSubtitleStreams.Count == 0;
+        var gpuCaptions = state.AutoCaptions && captionsOnGpu && fadesOnGpu;
+        if (state.AutoCaptions && pass.CaptionsAmongLayers && !gpuCaptions)
+        {
+            whyNot = fadesOnGpu ? "the captions are among the layers, and their words could not be read for the compositor"
+                : "the captions are among the layers, and the source's subtitles are burned in by FFmpeg";
             return null;
         }
 
@@ -183,7 +239,8 @@ public static partial class FilterGraphBuilder
 
         // The piped picture: the composition's chain gives way to the finishing steps, the first input's picture to the pipe's.
         var (width, height) = (state.Timeline.Width, state.Timeline.Height);
-        var finishing = pass.GpuFinishing(format);
+        var pipe = format is null || IsYuvFormat(format) ? GpuPipePixelFormat : GpuPipeRgbFormat;
+        var finishing = pass.GpuFinishing(format, fades: !fadesOnGpu, captions: state.AutoCaptions && !gpuCaptions, nv12: pipe == GpuPipePixelFormat);
         if (filters >= 0 && filters + 1 < arguments.Count)
         {
             arguments[filters + 1] = finishing;
@@ -200,14 +257,56 @@ public static partial class FilterGraphBuilder
         arguments[picture + 1] = string.Create(CultureInfo.InvariantCulture, $"{inputs}:v:0");
         arguments.InsertRange(lastInput + 2,
         [
-            "-f", "rawvideo", "-pix_fmt", GpuPipePixelFormat,
+            "-f", "rawvideo", "-pix_fmt", pipe,
             "-video_size", string.Create(CultureInfo.InvariantCulture, $"{width}x{height}"),
             "-framerate", timing.OutputRate,
             "-i", "pipe:0",
         ]);
+        if (soundPath is not null && !UseRenderedSound(arguments, soundPath, inputs + 1))
+        {
+            whyNot = "the export's command has sound the sound engine's render cannot replace";
+            return null;
+        }
 
         whyNot = "";
-        return new GpuExportCommand(ffmpeg.Trim('"'), arguments, width, height, timing, pass.UsesChaptersFile);
+        return new GpuExportCommand(ffmpeg.Trim('"'), arguments, width, height, timing, pass.UsesChaptersFile) { FadesOnGpu = fadesOnGpu, CaptionsOnGpu = gpuCaptions, PipeFormat = pipe };
+    }
+
+    // The command's sound (its graph, its sound maps) replaced by a file the sound engine rendered, input number soundInput, encoded as
+    // the command says. The graph is the sound's alone once the picture is piped: anything else in it and nothing is changed.
+    private static bool UseRenderedSound(List<string> arguments, string soundPath, int soundInput)
+    {
+        var graph = arguments.IndexOf("-filter_complex");
+        if (graph >= 0)
+        {
+            if (graph + 1 >= arguments.Count || arguments[graph + 1].Contains(":v", StringComparison.Ordinal))
+                return false;
+            arguments.RemoveRange(graph, 2);
+        }
+
+        var mapped = false;
+        for (var i = arguments.Count - 2; i >= 0; i--)
+        {
+            if (arguments[i] != "-map" || !(arguments[i + 1].StartsWith('[') || arguments[i + 1].Contains(":a", StringComparison.Ordinal)))
+                continue;
+
+            if (mapped)
+            {
+                arguments.RemoveRange(i, 2);
+            }
+            else
+            {
+                arguments[i + 1] = string.Create(CultureInfo.InvariantCulture, $"{soundInput}:a:0");
+                mapped = true;
+            }
+        }
+
+        if (!mapped)
+            return false;
+
+        var last = arguments.LastIndexOf("-i");
+        arguments.InsertRange(last + 2, ["-f", "f32le", "-ar", GpuSoundRate.ToString(CultureInfo.InvariantCulture), "-ch_layout", "stereo", "-i", soundPath]);
+        return true;
     }
 
     /// <summary>
@@ -220,8 +319,13 @@ public static partial class FilterGraphBuilder
     /// preview places.
     /// </summary>
     /// <param name="soundPath">The stretch's sound (f32le, 48 kHz, stereo, from the first piped frame), or null for none.</param>
+    /// <param name="captionsOnGpu">
+    /// The compositor draws the captions (5.1-Polish: their words are there to draw them from); otherwise FFmpeg burns them in
+    /// over the piped frames, and captions among the layers make the preview FFmpeg's. The fades are the compositor's.
+    /// </param>
     public static GpuExportCommand? BuildGpuPreviewCommand(
-        SequenceExportState state, string outputPath, double fromSeconds, double toSeconds, int percent, string? captionsPath, string? soundPath, out string whyNot)
+        SequenceExportState state, string outputPath, double fromSeconds, double toSeconds, int percent, string? captionsPath, string? soundPath, out string whyNot,
+        bool captionsOnGpu = false)
     {
         var piped = state with { OpenClBlur = false, HardwareDecodeArguments = "" };
         var pass = new Pass(piped);
@@ -251,6 +355,13 @@ public static partial class FilterGraphBuilder
             return null;
         }
 
+        var gpuCaptions = captionsPath is not null && captionsOnGpu;
+        if (captionsPath is not null && pass.CaptionsAmongLayers && !gpuCaptions)
+        {
+            whyNot = "the captions are among the layers, and their words could not be read for the compositor";
+            return null;
+        }
+
         var (width, height) = (state.Timeline.Width, state.Timeline.Height);
         var arguments = new List<string>
         {
@@ -268,14 +379,14 @@ public static partial class FilterGraphBuilder
 
         // The captions were made for the stretch from its start; the first piped frame is the first canvas frame at or after it.
         var late = timing.CanvasSeconds(timing.FirstCanvasFrame) - fromSeconds;
-        arguments.AddRange(["-vf", pass.GpuPreviewFinishing(captionsPath, fromSeconds + late, late, Math.Min(toSeconds, pass.SequenceLength), percent)]);
+        arguments.AddRange(["-vf", pass.GpuPreviewFinishing(gpuCaptions ? null : captionsPath, late, percent)]);
         arguments.AddRange(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "24"]);
         if (soundPath is not null)
             arguments.AddRange(["-c:a", "aac", "-b:a", "128k"]);
         arguments.AddRange(["-movflags", "+faststart", outputPath]);
 
         whyNot = "";
-        return new GpuExportCommand(piped.FfmpegExecutable.Trim('"'), arguments, width, height, timing, UsesChaptersFile: false);
+        return new GpuExportCommand(piped.FfmpegExecutable.Trim('"'), arguments, width, height, timing, UsesChaptersFile: false) { FadesOnGpu = true, CaptionsOnGpu = gpuCaptions };
     }
 
     /// <summary>Where an option is followed by a value (both whole arguments); -1 when it is not.</summary>
@@ -330,6 +441,23 @@ public static partial class FilterGraphBuilder
 
     private sealed partial class Pass
     {
+        /// <summary>See <see cref="FilterGraphBuilder.GpuSoundWhyNot"/>.</summary>
+        public string? GpuSoundWhyNot()
+        {
+            var tracks = GetOutputAudioTracks();
+            if (tracks.Count == 0)
+                return "the export has no sound track";
+            if (NormalizeAudio)
+                return "loudness normalization is FFmpeg's (it holds seconds back, so editing never hears it)";
+            if (DuckAudio)
+                return "the old one-box ducking of presets is FFmpeg's";
+            if (tracks.Count > 1 && !MergeAudioTracks)
+                return "the sound is kept as several tracks, and the sound engine renders one mix";
+            if (tracks.Any(t => t.IsPassthrough))
+                return "a track is copied as it is, which only FFmpeg can do";
+            return tracks.Any(t => t.Channels > 2) ? "the sound engine mixes to stereo, and a track has more channels" : null;
+        }
+
         /// <summary>Why the export cannot take its picture from the GPU compositor, as far as the graph goes; null when it can.</summary>
         public string? GpuExportWhyNot()
         {
@@ -362,22 +490,21 @@ public static partial class FilterGraphBuilder
         public double SequenceLength => SequenceSeconds;
 
         /// <summary>
-        /// Render Preview's finishing on the piped frames (BuildPreviewCommand's, after the compositor): into 4:2:0 BT.709 as
-        /// the export's (GpuFinishing), square pixels, the sequence's fades where the stretch overlaps them (BuildStretchFades:
-        /// its first frame is <paramref name="first"/> on the sequence, and it ends at <paramref name="to"/>; the sound
-        /// engine's render fades the same moments), the stretch's captions (made from its start, <paramref name="late"/>
-        /// seconds before the first frame: the clock is set back for them), the preview's size, yuv420p.
+        /// Render Preview's finishing on the piped frames (BuildPreviewCommand's, after the compositor): 4:2:0 BT.709 already, as
+        /// the export's (GpuFinishing), square pixels, the stretch's captions when FFmpeg burns them in (made from its start,
+        /// <paramref name="late"/> seconds before the first frame: the clock is set back for them), the preview's size,
+        /// yuv420p. The sequence's fades where the stretch overlaps them are the compositor's (5.1-Polish: its plan draws them
+        /// at their moments on the sequence, where BuildStretchFades puts them; the sound engine's render fades the same
+        /// moments), under the captions, as the preview has them.
         /// </summary>
-        public string GpuPreviewFinishing(string? captionsPath, double first, double late, double to, int percent)
+        public string GpuPreviewFinishing(string? captionsPath, double late, int percent)
         {
             var chain = new List<string>
             {
-                "scale=out_color_matrix=bt709:out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int",
-                "format=yuv420p",
                 "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+                "format=yuv420p",
                 "setsar=1",
             };
-            chain.AddRange(BuildStretchFades(first, to, sound: false));
             if (captionsPath is not null)
             {
                 var shifted = late > 0.0005;
@@ -408,21 +535,22 @@ public static partial class FilterGraphBuilder
         }
 
         /// <summary>
-        /// What the export does to its picture once it is composed, for the piped frames: into the encoder's 4:2:0 BT.709
-        /// (the graph composes in yuv420p; the compositor's frames are full-range RGB, converted once here with full chroma
-        /// filtering and tagged), square pixels, then as BuildFfmpegCommand has them: the source's burned subtitles on the
-        /// main video's own clock, the fades over everything, the auto-captions, the hardware encoder's own format. No fps
+        /// What the export does to its picture once it is composed, for the piped frames: tagged as the 4:2:0 BT.709 the card
+        /// converted them to (5.1-CleanupStudioAndFfmpegPurge; RGB piped, for an encoder that takes it, is left to FFmpeg's conversion),
+        /// square pixels, then as BuildFfmpegCommand has them: the source's burned subtitles on the
+        /// main video's own clock, the fades over everything (unless the compositor drew them: <paramref name="fades"/> false),
+        /// the auto-captions (unless it drew them: <paramref name="captions"/> false), the hardware encoder's own format. No fps
         /// filter: the frames piped are already those it would keep (GpuExportTiming).
         /// </summary>
         /// <param name="encoderFormat">The -pix_fmt the command gives the encoder, if any: an RGB one is left to FFmpeg's own conversion.</param>
-        public string GpuFinishing(string? encoderFormat)
+        /// <param name="nv12">The frames are piped as NV12.</param>
+        public string GpuFinishing(string? encoderFormat, bool fades, bool captions, bool nv12)
         {
             var chain = new List<string>();
-            if (encoderFormat is null || IsYuvFormat(encoderFormat))
+            if (nv12)
             {
-                chain.Add("scale=out_color_matrix=bt709:out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int");
-                chain.Add("format=yuv420p");
                 chain.Add("setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709");
+                chain.Add("format=yuv420p");
             }
 
             chain.Add("setsar=1");
@@ -440,8 +568,9 @@ public static partial class FilterGraphBuilder
                 chain.AddRange(burn);
             }
 
-            chain.AddRange(BuildWholeVideoFilters(GetOutputDuration()));
-            if (AutoCaptions)
+            if (fades)
+                chain.AddRange(BuildWholeVideoFilters(GetOutputDuration()));
+            if (captions && AutoCaptions)
                 chain.Add(BuildCaptionOverlay(CaptionsFilePath));
             if (EncoderFormatFilters() is { } format)
                 chain.Add(format);

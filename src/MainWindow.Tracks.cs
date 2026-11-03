@@ -464,6 +464,11 @@ public partial class MainWindow
                         _viewModel.SetClipFade(live, fadeIn, fadeSeconds);
                 },
                 CrossfadeIn = clip.TransitionIn > 0.01 && _viewModel.ClipBefore(clip) is not null ? clip.TransitionIn : 0,
+                CrossfadeEdit = seconds =>
+                {
+                    if (LiveClip(clip) is { } live)
+                        _viewModel.SetCrossfade(live, seconds);
+                },
 
                 // Dragged up or down onto another row: onto that track (an empty one, or one of its kind with room).
                 CanMoveTo = clip.IsAudio ? null : (target, at) =>
@@ -867,6 +872,14 @@ public partial class MainWindow
         LetGoOfDrag();
         var at = _viewModel.PositionMs / 1000;
         CrashReporter.Note("timeline", string.Create(CultureInfo.InvariantCulture, $"split at {at:0.000} s"));
+
+        // The captions selected: the caption under the playhead is split at its word there (5.1-Polish), not refused.
+        if (_selectedClip is Layer { IsCaptions: true })
+        {
+            SplitCaptionAt(at);
+            return;
+        }
+
         if (NotAClip(_selectedClip, "split") is { } refusal)
         {
             _viewModel.StatusText = refusal;
@@ -932,6 +945,15 @@ public partial class MainWindow
     /// </summary>
     private void DeleteSelectedClip()
     {
+        // A crossfade's box selected: Delete takes it away, and leaves its clips.
+        if (UnifiedTimeline.Surface.SelectedCrossfade is Layer faded)
+        {
+            UnifiedTimeline.Surface.SelectedCrossfade = null;
+            if (LiveClip(faded) is { } live)
+                _viewModel.SetCrossfade(live, 0);
+            return;
+        }
+
         LetGoOfDrag();
         if (GroupHolds)
         {
@@ -1041,9 +1063,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A track row's menu (a Layer: a video, picture or sound track, the main video's, the caption row, the background): the
-    /// track's own modifiers, where its clip sits on the frame, the clip the menu is about (split, trim, fades, speed, its
-    /// sound), the track's order and link, its visibility, what its sound is listened to for, and deleting.
+    /// A track row's menu (a Layer: a video, picture or sound track, the main video's, the caption row, the background), in the
+    /// order of an edit (5.1-DogfoodPolish, the user's overhaul): Cut &amp; Edit first and flat, then one submenu for each thing a clip has
+    /// (its transform, its Game Preset, its effects, its sound, its time), the Smart Tools flat again, and what is the track's last.
     /// </summary>
     private void FillLayerMenu(ItemsControl menu, Layer layer, object? clicked)
     {
@@ -1059,6 +1081,12 @@ public partial class MainWindow
         void Add(string header, Action action, bool enabled = true, string? tip = null, string? gesture = null) =>
             AddTrackItem(menu, header, action, enabled, tip, gesture);
         void Separate() => AddSeparator(menu);
+        void Keep(MenuItem submenu)
+        {
+            TidySeparators(submenu, 0);
+            if (submenu.Items.Count > 0)
+                menu.Items.Add(submenu);
+        }
 
         // One of clips selected together (5.0): what is done to all of them comes first, each one step of Undo.
         if (GroupHolds && _viewModel.IsInClipGroup(clip))
@@ -1091,72 +1119,28 @@ public partial class MainWindow
             Separate();
         }
 
-        // The track's own modifiers, and an effect on the clip (or the blurred background) with its visible starting values.
-        if (layer.HasFilters)
-        {
-            Add("Filters...", () => OpenLayerTool(layer, LayerTool.Filters));
-            Add("Position & Transform...", () => OpenLayerTool(layer, LayerTool.Transform));
-        }
-        if ((layer.HasFilters || layer.IsBackground) && AddEffectMenu(layer.IsBackground ? layer : clip) is { } addEffect)
-            menu.Items.Add(addEffect);
-        if (layer.HasMask)
-            Add(layer is { IsVideo: true, CustomMask: true } ? "Edit Mask..." : "Add Mask...", () => OpenLayerTool(layer, LayerTool.Mask));
-        // The caption row's are its Caption Position & Look..., above.
-        if (layer is { HasStyle: true, IsCaptions: false })
-            Add("Properties...", () => ShowLayerProperties(layer));
-        if (layer.IsBackground)
-            Add("Blur Settings...", () => BlurSettings_Click(this, new RoutedEventArgs()));
-        if (layer.IsVideo)
-            Add("Draw Target", () => _viewModel.DrawTargetCommand.Execute(layer));
-        if (layer is { UsesFrameMask: true, CustomMask: true } && File.Exists(layer.MaskPath.Trim().Trim('"')))
-            Add("Add More Pieces of This Mask...", () => AddLayersFromMask(layer.MaskPath.Trim().Trim('"')));
+        var editable = layer.IsRemovable || layer.IsMainVideo;
 
-        // Where the clip sits on the frame (4.4: each clip's own): fitted or filling, given to the rest of its track, and the
-        // blurred copy of itself that can fill the frame around it.
-        if (clip is { HasPlacement: true, IsCaptions: false } && _viewModel.ClipOf(clip) is not null)
-        {
-            Separate();
-            Add("Fit to Frame", () => _viewModel.FitClipToFrame(clip, fill: false),
-                tip: "Sizes the clip so that the whole picture shows, touching the frame on one side, and puts its middle on the frame's.");
-            Add("Fill Frame", () => _viewModel.FitClipToFrame(clip, fill: true),
-                tip: "Sizes the clip to cover the whole frame, what reaches past it off its edges, and puts its middle on the frame's.");
-            if (clips.Count > 1)
-            {
-                Add("Apply Placement to All Clips on Track", () => _viewModel.ApplyPlacementToTrack(clip),
-                    tip: $"Gives every other clip on this track the place of {clip.Name}: its corner, size and shape, its turn and anchor, and its crop. Their looks, timing and keyframes stay theirs.");
-            }
-
-            if (clip.IsMainVideo || clip.IsVideoFile)
-            {
-                var blur = new MenuItem
-                {
-                    Header = "Blur Fill Background",
-                    IsCheckable = true,
-                    IsChecked = _viewModel.IsBlurFilled(clip),
-                    ToolTip = clip.IsMainVideo
-                        ? "Fills the frame around this clip with the blurred background (Blur Settings on the background's row). Unticked, what is under it shows."
-                        : "Fills the frame around this clip with a blurred copy of itself, under it. It costs one more decoder while it plays.",
-                };
-                blur.Click += (_, _) =>
-                {
-                    RunGuarded("Blur Fill Background", () => _viewModel.SetBlurFill(clip, blur.IsChecked));
-                    ScheduleClipRedraw();
-                };
-                menu.Items.Add(blur);
-            }
-        }
-
+        // ----- Cut & Edit -----
         if (layer.HasTiming)
         {
-            Separate();
             Add("Split at Playhead", () => _viewModel.SplitLayer(clip, at), gesture: "edit.split");
-            Add("Trim Start to Playhead", () => _viewModel.TrimClip(clip, start: true, at), gesture: "edit.trimStart");
-            Add("Trim End to Playhead", () => _viewModel.TrimClip(clip, start: false, at), gesture: "edit.trimEnd");
-            Add("Split or Trim at Timecode...", () => SplitTrimByTimecode(clip));
             Add("Ripple Delete", () => _viewModel.RippleDelete(clip), gesture: "edit.rippleDelete");
+        }
 
-            // Silences Split & Mark folded out at its cuts (4.3D): each put back where it was, what follows sliding on; and
-            // (4.4 BugHunt) each stretch put back over the clip folded out again, what follows sliding back.
+        if (editable)
+        {
+            if (clips.Count > 1)
+                Add("Delete", () => DeleteMenuClip(clip), gesture: "edit.delete");
+            else
+                Add("Delete", () => _viewModel.RemoveTrack(layer), gesture: "edit.delete");
+            Add("Duplicate Clip", () => _viewModel.DuplicateLayer(layer));
+        }
+
+        // Silences Split & Mark folded out at its cuts (4.3D): each put back where it was, what follows sliding on; and
+        // (4.4 BugHunt) each stretch put back over the clip folded out again, what follows sliding back.
+        if (layer.HasTiming)
+        {
             foreach (var fold in _viewModel.FoldsAt(clip))
             {
                 Add(string.Create(CultureInfo.InvariantCulture, $"Restore Folded Silence ({fold.Length:0.##} s) at Its {(fold.AtEnd ? "End" : "Start")}"),
@@ -1172,56 +1156,143 @@ public partial class MainWindow
 
             if (_viewModel.FoldCount is > 1 and var folds)
                 Add(string.Create(CultureInfo.InvariantCulture, $"Restore All {folds} Folded Silences"), () => AnimatedFoldChange(_viewModel.UnfoldAll));
+        }
+
+        Separate();
+
+        // ----- Transform, Sizing & Position -----
+        if (clip is { HasPlacement: true, IsCaptions: false } && _viewModel.ClipOf(clip) is not null)
+            menu.Items.Add(TransformMenu(clip, clips.Count));
+
+        // ----- Game Presets & Cutout Studio -----
+        var presets = new MenuItem { Header = "Game Presets & Cutout Studio" };
+        var isVideoClip = clip.IsMainVideo || clip.IsVideoFile;
+        if (_viewModel.GamePresetTargets([clip]).Count > 0)
+            presets.Items.Add(GamePresetMenu(clip));
+        if (layer.HasMask)
+        {
+            AddTrackItem(presets, "Open Cutout & Mask Studio...", () => OpenMaskTool(clip), tip: "The shape this clip alone is cut to: drawn by hand to the pixel, chosen from a file, or one of the ready shapes.");
+        }
+
+        if (layer.IsVideo)
+            AddTrackItem(presets, "Draw Target", () => _viewModel.DrawTargetCommand.Execute(layer));
+        if (layer is { UsesFrameMask: true, CustomMask: true } && File.Exists(layer.MaskPath.Trim().Trim('"')))
+            AddTrackItem(presets, "Add More Pieces of This Mask...", () => AddLayersFromMask(layer.MaskPath.Trim().Trim('"')));
+        if (isVideoClip && _viewModel.ClipOf(clip) is not null)
+        {
+            var blur = new MenuItem
+            {
+                Header = "Background Blur Fill",
+                IsCheckable = true,
+                IsChecked = _viewModel.IsBlurFilled(clip),
+                ToolTip = clip.IsMainVideo
+                    ? "Fills the frame around this clip with the blurred background (the Background Blur card, with the background's row selected). Unticked, what is under it shows."
+                    : "Fills the frame around this clip with a blurred copy of itself, under it. It costs one more decoder while it plays.",
+            };
+            blur.Click += (_, _) =>
+            {
+                RunGuarded("Background Blur Fill", () => _viewModel.SetBlurFill(clip, blur.IsChecked));
+                ScheduleClipRedraw();
+            };
+            presets.Items.Add(blur);
+        }
+
+        Keep(presets);
+
+        // ----- Effects & Transitions -----
+        var effects = new MenuItem { Header = "Effects & Transitions" };
+        if ((layer.HasFilters || layer.IsBackground) && AddEffectMenu(layer.IsBackground ? layer : clip) is { } addEffect)
+            effects.Items.Add(addEffect);
+        if (layer.HasFilters)
+            AddTrackItem(effects, "Filters...", () => OpenLayerTool(layer, LayerTool.Filters));
+        if (layer.IsBackground)
+            AddTrackItem(effects, "Background Blur...", ShowBackgroundBlurCard, tip: "Its radius, zoom, passes and dimming, on its card in the Effects pane.");
+        else if (layer is { HasStyle: true, IsCaptions: false })
+            AddTrackItem(effects, "Show in Effects Pane", () => ShowInEffectsPane(clip), tip: "Opacity, rounded corners, soft edges, a drop shadow, a chroma key: each a card in the Effects pane.");
+
+        if (layer.HasFilters || layer.IsBackground)
+        {
+            AddSeparator(effects);
+            AddTrackItem(effects, "Copy Effects", () =>
+            {
+                SelectForMenu(clip);
+                EffectsView.CopyEffects();
+            });
+            AddTrackItem(effects, "Paste Effects", () =>
+            {
+                SelectForMenu(clip);
+                EffectsView.PasteCopiedEffects();
+            }, EffectsView.HasCopiedEffects);
+        }
+
+        if (layer.HasTiming)
+        {
+            AddSeparator(effects);
+
+            // Its own fades, over whatever is under it (the handles at its top corners), and a crossfade with a clip on
+            // another track that it overlaps.
+            AddFadeSubmenus(effects, clip);
 
             // The cuts it shares with the clips before and after it on its track: a crossfade across either.
             var transition = AppSettings.Current.DefaultTransitionSeconds;
             if (_viewModel.ClipBefore(clip) is { } previous)
             {
                 if (clip.TransitionIn > 0)
-                    Add(string.Create(CultureInfo.InvariantCulture, $"Remove Crossfade from {previous.Name} ({clip.TransitionIn:0.##} s)"), () => _viewModel.SetCrossfade(clip, 0));
+                    AddTrackItem(effects, string.Create(CultureInfo.InvariantCulture, $"Remove Crossfade from {previous.Name} ({clip.TransitionIn:0.##} s)"), () => _viewModel.SetCrossfade(clip, 0));
                 else
-                    Add(string.Create(CultureInfo.InvariantCulture, $"Crossfade from {previous.Name} ({transition:0.##} s)"), () => _viewModel.SetCrossfade(clip, transition));
+                    AddTrackItem(effects, string.Create(CultureInfo.InvariantCulture, $"Crossfade from {previous.Name} ({transition:0.##} s)"), () => _viewModel.SetCrossfade(clip, transition));
             }
 
             if (clips.FirstOrDefault(c => ReferenceEquals(_viewModel.ClipBefore(c), clip)) is { } following)
             {
                 if (following.TransitionIn > 0)
-                    Add(string.Create(CultureInfo.InvariantCulture, $"Remove Crossfade into {following.Name} ({following.TransitionIn:0.##} s)"), () => _viewModel.SetCrossfade(following, 0));
+                    AddTrackItem(effects, string.Create(CultureInfo.InvariantCulture, $"Remove Crossfade into {following.Name} ({following.TransitionIn:0.##} s)"), () => _viewModel.SetCrossfade(following, 0));
                 else
-                    Add(string.Create(CultureInfo.InvariantCulture, $"Crossfade into {following.Name} ({transition:0.##} s)"), () => _viewModel.SetCrossfade(following, transition));
-            }
-
-            // Its own fades, over whatever is under it (the handles at its top corners), and a crossfade with a clip on
-            // another track that it overlaps.
-            AddFadeSubmenus(menu, clip);
-            if (layer.IsMainVideo)
-            {
-                // The main video's own: back to one clip of the whole file at the start, and its place on the frame.
-                Add("Restore Whole Main Video", () => _viewModel.ResetMainTiming(),
-                    clips.Count > 1 || clip.StartTime > 0.001 || clip.MediaOffset > 0.001,
-                    "Puts the main video back as one clip of its whole file, at the start of the timeline.");
-                Add("Reset Position and Zoom", () => _viewModel.ResetCenterVideoCommand.Execute(null),
-                    tip: "Puts every clip of the main video back in the middle of the frame, unzoomed.");
-            }
-            else
-            {
-                Add("Extend to Whole Sequence", () => _viewModel.ShowThroughout(clip),
-                    clip.StartTime > 0.001 || clip.StartTime + clip.Duration < _viewModel.SequenceSeconds - 0.001,
-                    clip.IsAudio ? "Plays the sound from the start of the sequence to its end." : "Shows the clip from the start of the sequence to its end.");
+                    AddTrackItem(effects, string.Create(CultureInfo.InvariantCulture, $"Crossfade into {following.Name} ({transition:0.##} s)"), () => _viewModel.SetCrossfade(following, transition));
             }
         }
 
         if (clip.IsAnimated)
         {
-            Separate();
-            Add("Clear Keyframes", () => _viewModel.ClearKeys(clip));
+            AddSeparator(effects);
+            AddTrackItem(effects, "Clear Keyframes", () => _viewModel.ClearKeys(clip));
         }
+
+        Keep(effects);
+
+        // ----- Audio & Voice -----
+        // How loud the clip is, the track's filters, the clip's link to its picture (J and L cuts, slips), and what the track's sound
+        // does when someone is speaking. (None of it on a video-only child, 5.0-Release: the blurred background, a HUD cut-out or a mask's piece.)
+        var audio = new MenuItem { Header = "Audio & Voice" };
+        var linkable = !clip.IsAudio && _viewModel.ClipOf(clip) is { HasSound: true };
+        if (!layer.IsVideoOnlyChild && !clip.IsVideoOnlyChild && (layer.CarriesSound || clip.CarriesSound || linkable))
+        {
+            if (clip.CarriesSound)
+                audio.Items.Add(GainMenu(clip.GainDb, gain => _viewModel.SetClipGain(clip, gain)));
+            if (layer.CarriesSound)
+                AddTrackItem(audio, "Audio Filters...", () => OpenAudioFilters(layer));
+            if (linkable)
+                AddLinkItem(audio, clip, _viewModel.ClipOf(clip) is { AudioLinked: true });
+            if (layer.CarriesSound)
+                AddDuckingItems(audio, layer, layer.AutoDuck, layer.IsVoice);
+        }
+
+        // Every video track is equal (the user's directive): all of its sound on lanes of their own.
+        if (editable && (layer.IsMainVideo || clip.IsVideoFile) && _viewModel.CanUnpackStreams(clip))
+        {
+            AddTrackItem(audio, "Unpack Audio Streams", () => _ = _viewModel.UnpackAudioStreamsAsync(clip), true,
+                "Gives each audio stream of this file (game, desktop, microphone) a lane of its own in the track's audio stack, with its own mute, gain, filters and voice switch. One step of Undo.");
+        }
+
+        Keep(audio);
+
+        // ----- Speed & Time -----
+        var time = new MenuItem { Header = "Speed & Time" };
 
         // How fast the clip runs: a few usual speeds, the one it has ticked. Anything between is typed into its Speed box.
         if (clip.HasSpeed)
         {
-            Separate();
-            var speeds = new MenuItem { Header = string.Create(CultureInfo.InvariantCulture, $"Speed ({clip.Speed:0.##}x)") };
+            var speeds = new MenuItem { Header = string.Create(CultureInfo.InvariantCulture, $"Clip Speed ({clip.Speed:0.##}x)") };
             foreach (var speed in new[] { 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4, 10 })
             {
                 var item = new MenuItem
@@ -1237,14 +1308,34 @@ public partial class MainWindow
                 speeds.Items.Add(item);
             }
 
-            menu.Items.Add(speeds);
+            time.Items.Add(speeds);
+        }
+
+        if (layer.HasTiming)
+        {
+            AddTrackItem(time, "Split / Trim by Timecode...", () => SplitTrimByTimecode(clip));
+            AddTrackItem(time, "Trim Start to Playhead", () => _viewModel.TrimClip(clip, start: true, at), gesture: "edit.trimStart");
+            AddTrackItem(time, "Trim End to Playhead", () => _viewModel.TrimClip(clip, start: false, at), gesture: "edit.trimEnd");
+            if (layer.IsMainVideo)
+            {
+                // The main video's own: back to one clip of the whole file at the start.
+                AddTrackItem(time, "Restore Whole Main Video", () => _viewModel.ResetMainTiming(),
+                    clips.Count > 1 || clip.StartTime > 0.001 || clip.MediaOffset > 0.001,
+                    "Puts the main video back as one clip of its whole file, at the start of the timeline.");
+            }
+            else
+            {
+                AddTrackItem(time, "Extend to Whole Sequence", () => _viewModel.ShowThroughout(clip),
+                    clip.StartTime > 0.001 || clip.StartTime + clip.Duration < _viewModel.SequenceSeconds - 0.001,
+                    clip.IsAudio ? "Plays the sound from the start of the sequence to its end." : "Shows the clip from the start of the sequence to its end.");
+            }
         }
 
         // A proxy of the clip's file, on demand (5.0D, see ProxyCache), offered only where it helps (5.0-Verify, the user's Q6):
         // a long-GOP video layer the preview cannot decode fast, a clip that has it on, or Shift held as the menu opens.
         if ((clip.IsVideoFile || clip.IsMainVideo) && _viewModel.OptimizeIsUseful(clip, Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)))
         {
-            Separate();
+            AddSeparator(time);
             var optimized = clip.ProxyChoice == ProxyChoice.Make;
             var optimize = new MenuItem
             {
@@ -1252,73 +1343,202 @@ public partial class MainWindow
                 ToolTip = $"{_viewModel.ProxyStatus(clip)}. Makes a small proxy of this clip's file (its I-frames close together: Settings, Proxies), in the background, which the GPU preview plays in its place, so that seeking and scrubbing a recording whose I-frames are far apart cost little where the graphics card cannot decode it fast. Exports always read the original.",
             };
             optimize.Click += (_, _) => RunGuarded("a clip's proxy", () => _viewModel.SetProxyChoice(clip, optimized ? ProxyChoice.Auto : ProxyChoice.Make));
-            menu.Items.Add(optimize);
+            time.Items.Add(optimize);
         }
 
-        // Its sound: how loud the clip is, the track's filters, the clip's link to its picture (J and L cuts, slips), and what
-        // the track's sound does when someone is speaking.
-        // (None of it on a video-only child, 5.0-Release: the blurred background, a HUD cut-out or a mask's piece.)
-        var linkable = !clip.IsAudio && _viewModel.ClipOf(clip) is { HasSound: true };
-        if (!layer.IsVideoOnlyChild && !clip.IsVideoOnlyChild && (layer.CarriesSound || clip.CarriesSound || linkable))
+        Keep(time);
+        Separate();
+
+        // ----- Smart Tools -----
+        if (editable && layer is { HasFilters: true, IsAdjustment: false, IsBackground: false })
+            Add("3D Fly-In + Shockwave Impact", () => _viewModel.FlyInWithShockwave(clip), _viewModel.HasSource,
+                "From the playhead the clip flies out to the middle of the frame, lands with a shockwave and a camera shake, and glides back. It is all keyframes on the clip and an Impact clip: change anything. One step of Undo.");
+
+        if (editable)
         {
-            Separate();
-            if (clip.CarriesSound)
-                menu.Items.Add(GainMenu(clip.GainDb, gain => _viewModel.SetClipGain(clip, gain)));
-            if (layer.CarriesSound)
-                Add("Audio Filters...", () => OpenAudioFilters(layer));
-            if (linkable)
-                AddLinkItem(menu, clip, _viewModel.ClipOf(clip) is { AudioLinked: true });
-            if (layer.CarriesSound)
-                AddDuckingItems(menu, layer, layer.AutoDuck, layer.IsVoice);
+            // What its sound is listened to for: the captions (the main video's through its file's tracks, as they are set; a clip
+            // with sound through its own file) and the silences.
+            if (layer.IsMainVideo)
+            {
+                Add("Generate Auto-Captions...", () => GenerateCaptionsFrom(null), _viewModel.HasSource);
+                AddCaptionsSubmenu(menu, layer, null);
+            }
+            else if (clip.CarriesSound)
+            {
+                Add("Generate Auto-Captions...", () => GenerateCaptionsFrom(clip), _viewModel.HasSource);
+                AddCaptionsSubmenu(menu, clip, () => _viewModel.UseLayerAudioForCaptions(clip));
+            }
+            else if (clip.IsVideoFile && _viewModel.CaptionStreamsOf(clip) is { Count: > 0 })
+            {
+                Add("Generate Auto-Captions...", () => GenerateCaptionsFrom(clip), _viewModel.HasSource);
+                AddCaptionsSubmenu(menu, clip, null);
+            }
+
+            // Remove Dead Air on every track of video or sound (4.3E). A clip with sound of its own is listened to and cut
+            // itself; the main video listens to its file's sound and cuts every unlocked track, the pieces cut from it among
+            // them; a picture cut from the main video, or a video with no sound, has none of its own to listen to.
+            if (clip.CarriesSound && !layer.IsMainVideo)
+            {
+                Add("Remove Dead Air...", () => RunDeadAir(clip), _viewModel.HasSource,
+                    "Finds the silences in this clip's own sound (or the gaps between its captioned words) and cuts them out of it: Split & Mark folds them out of its track (each can be put back from the clip's menu), or they are deleted.");
+            }
+            else if (layer.IsMainVideo)
+            {
+                Add("Remove Dead Air...", () => RunDeadAir(null), _viewModel.HasSource,
+                    "Finds the silences in the main video's sound (its Voice track when one is marked, else its first: right-click another of its audio tracks to listen to that one) and cuts them out of every unlocked track at once, the HUD pieces and other layers with it.");
+            }
+            else if (layer.IsVideo || layer.IsVideoFile)
+            {
+                menu.Items.Add(DeadAirWithoutSound(layer));
+            }
         }
 
         Separate();
+
+        // ----- What is the track's -----
+        var track = new MenuItem { Header = "Track" };
         if (layer.CanReorder && !layer.IsAudio)
         {
-            Add("Bring Forward", () => _viewModel.MoveLayerUpCommand.Execute(layer), tip: "Moves this track one place towards the front: it is drawn over the track above it now.");
-            Add("Send Backward", () => _viewModel.MoveLayerDownCommand.Execute(layer), tip: "Moves this track one place towards the back: it is drawn under the track below it now.");
+            AddTrackItem(track, "Bring Forward", () => _viewModel.MoveLayerUpCommand.Execute(layer), tip: "Moves this track one place towards the front: it is drawn over the track above it now.");
+            AddTrackItem(track, "Send Backward", () => _viewModel.MoveLayerDownCommand.Execute(layer), tip: "Moves this track one place towards the back: it is drawn under the track below it now.");
         }
 
-        AddUnlinkItem(menu, clip, clips[0]);
-
-        Separate();
-        if (layer.IsRemovable || layer.IsMainVideo || layer.IsBackground)
-            Add(layer.IsHidden ? "Show" : layer.IsAudio ? "Mute" : "Hide", () => _viewModel.ToggleHidden(layer));
-        if (!layer.IsRemovable && !layer.IsMainVideo)
-            return;
-
-        Add("Duplicate", () => _viewModel.DuplicateLayer(layer));
-
-        // What its sound is listened to for: the captions (the main video's through its file's tracks, as they are set; a clip
-        // with sound through its own file) and the silences.
-        if (layer.IsMainVideo)
-            AddCaptionsSubmenu(menu, null, null);
-        else if (clip.CarriesSound)
-            AddCaptionsSubmenu(menu, clip, () => _viewModel.UseLayerAudioForCaptions(clip));
-
-        // Remove Dead Air on every track of video or sound (4.3E). A clip with sound of its own is listened to and cut
-        // itself; the main video listens to its file's sound and cuts every unlocked track, the pieces cut from it among
-        // them; a picture cut from the main video, or a video with no sound, has none of its own to listen to.
-        if (clip.CarriesSound && !layer.IsMainVideo)
+        AddUnlinkItem(track, clip, clips[0]);
+        if (editable || layer.IsBackground)
+            AddTrackItem(track, layer.IsHidden ? "Show" : layer.IsAudio ? "Mute" : "Hide", () => _viewModel.ToggleHidden(layer));
+        if (editable && clips.Count > 1)
         {
-            Add("Remove Dead Air...", () => RunDeadAir(clip), _viewModel.HasSource,
-                "Finds the silences in this clip's own sound (or the gaps between its captioned words) and cuts them out of it: Split & Mark folds them out of its track (each can be put back from the clip's menu), or they are deleted.");
-        }
-        else if (layer.IsMainVideo)
-        {
-            Add("Remove Dead Air...", () => RunDeadAir(null), _viewModel.HasSource,
-                "Finds the silences in the main video's sound (its Voice track when one is marked, else its first: right-click another of its audio tracks to listen to that one) and cuts them out of every unlocked track at once, the HUD pieces and other layers with it.");
-        }
-        else if (layer.IsVideo || layer.IsVideoFile)
-        {
-            menu.Items.Add(DeadAirWithoutSound(layer));
+            AddSeparator(track);
+            AddTrackItem(track, "Delete Track", () => _viewModel.RemoveTrack(layer), tip: $"Deletes the whole track, its {clips.Count} clips with it (Undo brings them back).");
         }
 
-        Separate();
-        if (clips.Count > 1)
-            Add("Delete Clip", () => DeleteMenuClip(clip), gesture: "edit.delete");
-        Add("Delete Track", () => _viewModel.RemoveTrack(layer),
-            tip: clips.Count > 1 ? $"Deletes the whole track, its {clips.Count} clips with it (Undo brings them back)." : null);
+        Keep(track);
+    }
+
+    /// <summary>
+    /// Transform, Sizing &amp; Position: every number of where a clip sits, typed in place, and the one-click placements. The same values the
+    /// Timeline's inspector strip and the Canvas set; each change one step of Undo, this clip's alone.
+    /// </summary>
+    private MenuItem TransformMenu(Layer clip, int clipsOnTrack)
+    {
+        var menu = new MenuItem { Header = "Transform, Sizing & Position" };
+        void Number(string label, Func<double> read, Action<double> write) =>
+            AddNumberRow(menu, label, read, write, $"change {label.ToLowerInvariant()} of {clip.Name}");
+
+        Number(clip.IsMainVideo ? "Zoom %" : "Width %", () => clip.SizePercent, v => clip.SizePercent = (int)Math.Round(v));
+        if (clip.IsRemovable)
+        {
+            Number("Height %", () => clip.SizeHeightPercent, v =>
+            {
+                clip.LockAspectRatio = false;
+                clip.SizeHeightPercent = (int)Math.Round(v);
+            });
+        }
+
+        Number("Position X %", () => clip.PositionXPercent, v => clip.PositionXPercent = v);
+        Number("Position Y %", () => clip.PositionYPercent, v => clip.PositionYPercent = v);
+        if (clip.HasFilters)
+            Number("Rotation \u00B0", () => clip.Rotation, v => clip.Rotation = v);
+
+        var crop = new MenuItem { Header = "Crop" };
+        void Edge(string label, Func<double> read, Action<double> write) =>
+            AddNumberRow(crop, label, read, write, $"crop {clip.Name}");
+        Edge("Left %", () => clip.CropLeftPercent, v => clip.CropLeftPercent = v);
+        Edge("Right %", () => clip.CropRightPercent, v => clip.CropRightPercent = v);
+        Edge("Top %", () => clip.CropTopPercent, v => clip.CropTopPercent = v);
+        Edge("Bottom %", () => clip.CropBottomPercent, v => clip.CropBottomPercent = v);
+        menu.Items.Add(crop);
+
+        AddSeparator(menu);
+        AddTrackItem(menu, "Fit to Frame", () => _viewModel.FitClipToFrame(clip, fill: false),
+            tip: "Sizes the clip so that the whole picture shows, touching the frame on one side, and puts its middle on the frame's.");
+        AddTrackItem(menu, "Fill Frame", () => _viewModel.FitClipToFrame(clip, fill: true),
+            tip: "Sizes the clip to cover the whole frame, what reaches past it off its edges, and puts its middle on the frame's.");
+        AddTrackItem(menu, "Center in Frame", () => _viewModel.CenterClipOnFrame(clip), tip: "Puts the clip's middle on the frame's; its size stays.");
+        AddTrackItem(menu, "Reset Transform", () => _viewModel.ResetClipTransform(clip), tip: "This clip back as a new clip starts: sized to the frame, in its middle, not turned, nothing cropped.");
+        if (clip.IsMainVideo)
+        {
+            AddTrackItem(menu, "Reset Every Main Clip", () => _viewModel.ResetCenterVideoCommand.Execute(null),
+                tip: "Puts every clip of the main video back in the middle of the frame, unzoomed.");
+        }
+
+        if (clipsOnTrack > 1)
+        {
+            AddTrackItem(menu, "Apply Transform to Track", () => _viewModel.ApplyPlacementToTrack(clip),
+                tip: $"Gives every other clip on this track the place of {clip.Name}: its corner, size and shape, its turn and anchor, and its crop. Their looks, timing and keyframes stay theirs.");
+        }
+
+        return menu;
+    }
+
+    /// <summary>A number typed in a menu: taken on Enter or when the box is left, as one step of Undo; the menu stays open for the next.</summary>
+    private void AddNumberRow(ItemsControl menu, string label, Func<double> read, Action<double> write, string step)
+    {
+        static string Shown(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+        var box = new TextBox { Text = Shown(read()), Width = 64, Padding = new Thickness(4, 2, 4, 2), VerticalAlignment = VerticalAlignment.Center };
+        System.Windows.Automation.AutomationProperties.SetName(box, label);
+        void Take()
+        {
+            if (double.TryParse(box.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && double.IsFinite(value) && Math.Abs(value - read()) > 1e-6)
+            {
+                RunGuarded(step, () =>
+                {
+                    _viewModel.Checkpoint(step);
+                    write(value);
+                });
+                ScheduleClipRedraw();
+            }
+
+            box.Text = Shown(read());
+        }
+
+        box.LostKeyboardFocus += (_, _) => Take();
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                Take();
+                box.SelectAll();
+                e.Handled = true;
+            }
+        };
+
+        var line = new DockPanel { LastChildFill = false };
+        line.Children.Add(new TextBlock { Text = label, Width = 96, VerticalAlignment = VerticalAlignment.Center });
+        line.Children.Add(box);
+        menu.Items.Add(new MenuItem { Header = line, StaysOpenOnClick = true });
+    }
+
+    /// <summary>Apply Game Preset: every saved preset, put on this clip alone (or the clips selected with it), each with pieces of its own over its own span.</summary>
+    private MenuItem GamePresetMenu(Layer clip)
+    {
+        _viewModel.RefreshStylePresets();
+        var menu = new MenuItem { Header = "Apply Game Preset" };
+        foreach (var name in _viewModel.StylePresets)
+        {
+            AddTrackItem(menu, name, () =>
+            {
+                _viewModel.ApplyGamePreset(GroupHolds && _viewModel.IsInClipGroup(clip) ? _viewModel.SelectedClips.ToList() : [clip], name);
+            });
+        }
+
+        if (menu.Items.Count == 0)
+            menu.Items.Add(new MenuItem { Header = "None Saved Yet: Make One in the Cutout Studio", IsEnabled = false });
+        return menu;
+    }
+
+    /// <summary>A clip's cards in the Effects pane: it is selected, and the pane shown.</summary>
+    private void ShowInEffectsPane(Layer clip)
+    {
+        SelectForMenu(clip);
+        _viewModel.ShowEffectsPane = true;
+    }
+
+    /// <summary>The blurred background's card, pinned in the Effects pane, is where it is set (5.1-DogfoodPolish: no dialog of its own).</summary>
+    private void ShowBackgroundBlurCard()
+    {
+        SelectClip(_viewModel.BackgroundLayer);
+        _viewModel.ShowEffectsPane = true;
     }
 
     /// <summary>
@@ -1371,7 +1591,29 @@ public partial class MainWindow
         AddRenameItem(menu, track.Title, RenameWithUndo(track.Title, name => track.Title = name), menu.Items.Count);
         AddSeparator(menu);
 
-        menu.Items.Add(GainMenu(track.GainDb, gain => SetTrackGain(track, gain)));
+        // The part of it that was clicked: the razor at the playhead, and that part silenced or played again, as Split and
+        // Delete do.
+        if (clicked is not null)
+        {
+            AddTrackItem(menu, "Split at Playhead", () =>
+            {
+                SelectForMenu(clicked);
+                SplitSelectedClip();
+            }, gesture: "edit.split");
+            if (clicked.Piece is { } piece)
+            {
+                AddTrackItem(menu, piece.Muted ? "Restore Part" : "Silence Part", () =>
+                {
+                    SelectForMenu(clicked);
+                    DeleteSelectedClip();
+                }, gesture: "edit.delete", tip: piece.Muted ? "This part of the track plays again." : "This part of the track is silenced; the rest plays on.");
+            }
+
+            AddSeparator(menu);
+        }
+
+        var audio = new MenuItem { Header = "Audio & Voice" };
+        audio.Items.Add(GainMenu(track.GainDb, gain => SetTrackGain(track, gain)));
         var mute = new MenuItem
         {
             Header = "Mute",
@@ -1388,33 +1630,15 @@ public partial class MainWindow
             });
             ScheduleClipRedraw();
         };
-        menu.Items.Add(mute);
-        AddTrackItem(menu, "Audio Filters...", () => OpenAudioFilters(track));
-        AddSeparator(menu);
-        AddDuckingItems(menu, track, track.AutoDuck, track.IsVoice);
-
-        // The part of it that was clicked: the razor at the playhead, and that part silenced or played again, as Split and
-        // Delete do.
-        if (clicked is not null)
-        {
-            AddSeparator(menu);
-            AddTrackItem(menu, "Split at Playhead", () =>
-            {
-                SelectForMenu(clicked);
-                SplitSelectedClip();
-            }, gesture: "edit.split");
-            if (clicked.Piece is { } piece)
-            {
-                AddTrackItem(menu, piece.Muted ? "Restore Part" : "Silence Part", () =>
-                {
-                    SelectForMenu(clicked);
-                    DeleteSelectedClip();
-                }, gesture: "edit.delete", tip: piece.Muted ? "This part of the track plays again." : "This part of the track is silenced; the rest plays on.");
-            }
-        }
+        audio.Items.Add(mute);
+        AddTrackItem(audio, "Audio Filters...", () => OpenAudioFilters(track));
+        AddSeparator(audio);
+        AddDuckingItems(audio, track, track.AutoDuck, track.IsVoice);
+        menu.Items.Add(audio);
 
         // What this track's sound is listened to for (4.3E): the captions, and the silences cut out of the main video.
         AddSeparator(menu);
+        AddTrackItem(menu, "Generate Auto-Captions...", () => GenerateCaptionsFrom(track), _viewModel.HasSource);
         AddCaptionsSubmenu(menu, track, () => _viewModel.UseTrackForCaptions(track));
         AddTrackItem(menu, "Remove Dead Air...", () => RunDeadAir(track), _viewModel.HasSource,
             "Finds the silences in this track and cuts them out of the main video, from every unlocked track at once: listening to the microphone's track finds the pauses in the speech.");
@@ -1792,15 +2016,13 @@ public partial class MainWindow
             menu.Items.Insert(at + 1, new Separator());
     }
 
+    /// <summary>The shape a clip alone is cut to: its mask dialog, with the Cutout Studio's pen behind Draw Custom Shape.</summary>
+    private void OpenMaskTool(Layer clip) => OpenLayerTool(clip, LayerTool.Mask);
+
     /// <summary>Opens one of a track's modifier dialogs. What it changes can be undone as one step.</summary>
     private void OpenLayerTool(Layer layer, LayerTool tool)
     {
-        _viewModel.Checkpoint(tool switch
-        {
-            LayerTool.Filters => $"change the filters of {layer.Name}",
-            LayerTool.Transform => $"move or turn {layer.Name}",
-            _ => $"change the mask of {layer.Name}",
-        });
+        _viewModel.Checkpoint(tool == LayerTool.Filters ? $"change the filters of {layer.Name}" : $"change the mask of {layer.Name}");
 
         var visit = _viewModel.UndoMark;
         var dialog = new LayerToolDialog(layer, _viewModel, tool) { Owner = this };

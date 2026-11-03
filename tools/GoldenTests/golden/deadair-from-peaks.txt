@@ -1,0 +1,8 @@
+# Remove Dead Air's silences from the peaks in memory (5.1-CleanupStudioAndFfmpegPurge), and the peaks read natively, each track in one pass, from a WAV.
+silence 3.000 to 5.000
+silence 15.000 to 20.250
+ok: the 2 s and the closing silence are found, the 0.5 s is not, and the last runs to the file's end
+ok: at -60 dB nothing here is quiet enough
+ok: the WAV's peaks are read
+read from a WAV: 6.00 s of peaks, silence 2.00 to 4.00
+ok: the WAV's silence lies where it was written

@@ -20,7 +20,7 @@ namespace HandPegGoldenTests;
 /// passes in RGBA16F, so round it with ToHalf too.
 /// </para>
 /// </summary>
-internal static class CompositorReference
+internal static partial class CompositorReference
 {
     /// <summary>A picture of float RGBA, row-major, four floats a pixel: premultiplied, unless said otherwise.</summary>
     public sealed class RefImage
@@ -254,7 +254,15 @@ internal static class CompositorReference
             var luma = Luma(rgb);
             var v = l[0] * (luma - 0.5f) + 0.5f + l[1];
             var graded = v <= 0 ? 0 : MathF.Min(MathF.Pow(MathF.Abs(v), 1 / MathF.Max(l[3], 0.01f)), 1);
-            return Premul(Sat(new Vector3(graded) + l[2] * (rgb - new Vector3(luma))), c.W);
+            if (l[4] <= 0 && l[5] <= 0)
+                return Premul(Sat(new Vector3(graded) + l[2] * (rgb - new Vector3(luma))), c.W);
+
+            // The channel balance: eq's gammas on its Cb and Cr planes (P4, P5).
+            static float Plane(float value, float gamma) => value <= 0 ? 0 : MathF.Min(MathF.Pow(MathF.Abs(value), 1 / MathF.Max(gamma, 0.01f)), 1);
+            var cb = Plane(l[2] * (rgb.Z - luma) / 1.8556f + 0.5f, l[4]);
+            var cr = Plane(l[2] * (rgb.X - luma) / 1.5748f + 0.5f, l[5]);
+            var (red, blue) = (graded + 1.5748f * (cr - 0.5f), graded + 1.8556f * (cb - 0.5f));
+            return Premul(Sat(new Vector3(red, (graded - 0.2126f * red - 0.0722f * blue) / 0.7152f, blue)), c.W);
         });
     }
 
@@ -593,38 +601,26 @@ internal static class CompositorReference
         return Premul(Sat(Rgb(c) + new Vector3(amount)), c.W);
     });
 
-    /// <summary>PSSharpen (slot 21): cas with strength P0, on each straight channel.</summary>
-    public static RefImage Sharpen(RefImage input, ReadOnlySpan<float> p, RefPass pass)
+    /// <summary>
+    /// PSSharpen (slot 21, 5.1-Polish: an unsharp mask): <paramref name="blurred"/> is the host's box blur of the input (its
+    /// Aux: <see cref="BoxBlur"/> once across and down by EffectRegistry.SharpenBox); the BT.709 luma of the straight
+    /// difference added back Strength x 2 (P0) to the three channels alike, a difference under the Threshold (P2, levels of 219)
+    /// left alone (over a knee two levels wide).
+    /// </summary>
+    public static RefImage Sharpen(RefImage input, RefImage blurred, ReadOnlySpan<float> p, RefPass pass)
     {
         var l = Lanes(p);
-        var strength = -Lerp(16f, 4.01f, Sat(l[0]));
         return Map(input, (x, y) =>
         {
             var c = input.Get(x, y);
             if (l[0] < 0.005f)
                 return c;
 
-            var a = StraightAt(input, x - 1, y - 1);
-            var b = StraightAt(input, x, y - 1);
-            var cc = StraightAt(input, x + 1, y - 1);
-            var d = StraightAt(input, x - 1, y);
-            var e = StraightAt(input, x, y);
-            var f = StraightAt(input, x + 1, y);
-            var g = StraightAt(input, x - 1, y + 1);
-            var h = StraightAt(input, x, y + 1);
-            var k = StraightAt(input, x + 1, y + 1);
-
-            var mn = Vector3.Min(Vector3.Min(Vector3.Min(d, e), f), Vector3.Min(b, h));
-            var mn2 = Vector3.Min(Vector3.Min(Vector3.Min(mn, a), cc), Vector3.Min(g, k));
-            var mx = Vector3.Max(Vector3.Max(Vector3.Max(d, e), f), Vector3.Max(b, h));
-            var mx2 = Vector3.Max(Vector3.Max(Vector3.Max(mx, a), cc), Vector3.Max(g, k));
-            mn += mn2;
-            mx += mx2;
-
-            var amp = Vector3.SquareRoot(Sat(Vector3.Min(mn, new Vector3(2) - mx) / Vector3.Max(mx, new Vector3(1e-6f))));
-            var weight = amp / strength;
-            var o = ((b + d + f + h) * weight + e) / (Vector3.One + 4 * weight);
-            return Premul(Sat(o), c.W);
+            var s = Unpremul(c);
+            var b = Unpremul(blurred.Get(x, y));
+            var d = Luma(Rgb(s) - Rgb(b));
+            var knee = l[2] >= 0.5f ? Sat((MathF.Abs(d) * 219 - l[2] + 1) / 2) : 1;
+            return Premul(Sat(Rgb(s) + new Vector3(d * 2 * Sat(l[0]) * knee)), s.W);
         });
     }
 }

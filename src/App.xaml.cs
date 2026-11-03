@@ -22,8 +22,11 @@ public partial class App : Application
         // The lanes for background work, the jobs its tools run in, and this thread's place among the processors.
         Services.WorkScheduler.Attach(Dispatcher);
 
-        // No menu beeps from any window, and no accessibility-hotkey prompts while HandPeg is the active application (5.0-Release).
-        Services.QuietKeys.Follow(this);
+        // No menu beeps from any window (5.0-Release); Windows' accessibility settings are left alone (5.1-AutoHud-Part1).
+        Services.QuietKeys.Follow();
+
+        // Every window at the monitor's own pixels unless Windows' scaling is followed (5.1-Polish, the user's directive).
+        Services.UiScale.Follow();
 
         // Before any window is made, so that the first thing drawn already has the theme and the Windows accent colour.
         Services.ThemeManager.Follow(this);
@@ -55,7 +58,6 @@ public partial class App : Application
     {
         Services.CrashReporter.Note("app", "exit");
         Services.Notifier.Dispose();
-        Services.QuietKeys.Restore();
 
         // An update that was downloaded but not restarted into goes in once this process has gone.
         Services.AppUpdater.ApplyOnExit();

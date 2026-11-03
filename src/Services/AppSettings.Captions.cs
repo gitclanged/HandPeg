@@ -5,7 +5,7 @@ public sealed partial class AppSettings
 {
     public const string DeadAirFromAudio = "audio", DeadAirFromCaptions = "captions";
 
-    /// <summary>What Remove Dead Air can listen for: silence in the sound (by its loudness), or the gaps between captioned words.</summary>
+    /// <summary>What Remove Dead Air can go by: silence in the sound (by its loudness), or the gaps between captioned words.</summary>
     public static IReadOnlyList<string> DeadAirSources { get; } = [DeadAirFromAudio, DeadAirFromCaptions];
 
     /// <summary>

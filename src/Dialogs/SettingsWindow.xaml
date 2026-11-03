@@ -300,6 +300,19 @@
                                 Value="{Binding ScrollbarThickness}" ValueChanged="ScrollbarSlider_ValueChanged" AutomationProperties.Name="Scrollbar Thickness" />
                         <TextBlock Text="{Binding Value, ElementName=ScrollbarSlider, StringFormat={}{0:0} px}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
+                    <CheckBox Content="Follow Windows display scaling (off = crisp native 1:1 pixel UI)" IsChecked="{Binding FollowWindowsDpiScaling}" Margin="0,2"
+                              AutomationProperties.Name="Follow Windows Display Scaling"
+                              ToolTip="Off (as HandPeg comes): on a monitor Windows scales to 125 %, 150 % or more, HandPeg is drawn at the monitor's own pixels, 1:1, so the timeline, the player and the panes have that much more room. On: HandPeg is drawn as large as Windows scales every program. Either way the UI Scale below is applied on top. Applied when you press Save." />
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="HandPeg's own scale, on top of the setting above: from 75 % (smaller, more room) to 150 % (larger). 100 % is as it is drawn. Applied when you press Save.">
+                        <TextBlock Text="UI Scale:" Style="{StaticResource FieldLabel}" />
+                        <Slider x:Name="UiScaleSlider" Width="200" Minimum="75" Maximum="150" TickFrequency="5" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding UiScalePercent}" AutomationProperties.Name="UI Scale" local:NumericInput.Default="100" />
+                        <TextBlock Text="{Binding Value, ElementName=UiScaleSlider, StringFormat={}{0:0} %}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <CheckBox Content="Extra animations &amp; GPU visual flair" IsChecked="{Binding EnableExtraAnimations}" Margin="0,2"
+                              AutomationProperties.Name="Extra Animations and GPU Visual Flair"
+                              ToolTip="On (as HandPeg comes): the Timeline's stacks and folds slide into place, and the GPU's flourishes play. Off: everything snaps to where it is going at once. Applied when you press Save." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Double-Click Resets To:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="ResetBox" MinWidth="190" Margin="0" SelectedItem="{Binding DoubleClickResetsTo}" AutomationProperties.Name="Double-Click Resets To"
@@ -812,7 +825,7 @@
                         <TextBlock Text="Frame Cache (MB):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="70" Text="{Binding GpuFrameCacheMb, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="GPU Frame Cache"
                                  local:NumericInput.Default="0" local:NumericInput.DragStep="2" local:NumericInput.Minimum="-1" local:NumericInput.Maximum="65536" local:NumericInput.Decimals="0"
-                                 ToolTip="How much video memory Instant Seek may keep decoded frames in, in megabytes. 0 is Auto: an eighth of the compositor card's own memory, at most 3 GB. -1 turns it off: every frame is decoded when it is shown (only the few on screen are kept). Windows' own budget for HandPeg always caps it, so the cache shrinks at once when a game needs the memory. Applies as soon as you press Save." />
+                                 ToolTip="How much video memory Instant Seek may keep decoded frames in, in megabytes. 0 is Auto: with the card free, half of what is free on it, at most 12 GB, always leaving a good margin (a third of the card, at most 8 GB); with a game using the card, an eighth of it, at most 3 GB. -1 turns it off: every frame is decoded when it is shown (only the few on screen are kept). Windows' own budget for HandPeg always caps it, so the cache shrinks at once when a game needs the memory. Applies as soon as you press Save." />
                         <TextBlock x:Name="GpuCacheUsage" Style="{StaticResource FieldLabel}" Margin="16,0,12,0" Foreground="{DynamicResource MutedTextBrush}" />
                         <Button x:Name="ClearGpuCacheButton" Content="Clear" Padding="12,3" Click="ClearGpuFrameCache_Click" AutomationProperties.Name="Clear GPU Frame Cache"
                                 ToolTip="Lets go of every frame the cache holds now: its video memory goes back at once. Frames are decoded again as they are shown." />
@@ -1198,7 +1211,7 @@
                 <StackPanel>
                     <TextBlock Text="Lightning Dial" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock x:Name="DialHint" Style="{StaticResource Hint}"
-                               Text="The mouse's forward side button (Mouse 5) opens the Lightning Dial under the pointer: one ring of the seven categories and Settings. A category opens its seven actions in their place, with Back opposite. Choose what each category holds here." />
+                               Text="The mouse's forward side button (Mouse 5) opens the Lightning Dial under the pointer: one ring of eight slices, each an action run with one flick (as it comes) or a category, which opens its seven actions in their place, with Back opposite. Choose what each slice holds here." />
                     <ContentControl x:Name="DialHost" Focusable="False" />
 
                     <TextBlock Text="Keybinds" Style="{StaticResource SectionTitle}" />

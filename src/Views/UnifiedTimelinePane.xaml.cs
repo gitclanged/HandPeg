@@ -139,6 +139,9 @@ public partial class UnifiedTimelinePane : UserControl
 
     private void Tool_Click(object sender, RoutedEventArgs e) => ToolClick?.Invoke(sender, e);
 
+    // The Styles folder read again as the list opens: a Game Preset saved a moment ago is in it.
+    private void GamePresets_DropDownOpened(object? sender, EventArgs e) => (DataContext as ViewModels.MainViewModel)?.RefreshStylePresets();
+
     /// <summary>
     /// Shows the values of what is selected in the inspector under the tracks: a picture clip's (<paramref name="picture"/>,
     /// a Layer), a sound's (<paramref name="sound"/>: an audio track of the main file, or a clip that carries sound), the

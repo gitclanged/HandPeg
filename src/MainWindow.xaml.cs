@@ -118,6 +118,11 @@ public partial class MainWindow : Window
         StartupTrace.Mark("MainWindow: view model made, InitializeComponent");
         var building = System.Diagnostics.Stopwatch.StartNew();
         InitializeComponent();
+
+        // HandPeg's own UI scale before the first layout (5.1-Polish): the monitor's own pixels, unless Windows' scaling is
+        // followed. The window keeps the size Windows gives it; its content is laid out at the scale.
+        UiScale.SetKeepsItsSize(this, true);
+        UiScale.BeforeFirstLayout(this);
         var built = building.ElapsedMilliseconds;
         StartupTrace.Mark("MainWindow: InitializeComponent done");
         DataContext = _viewModel;
@@ -265,6 +270,8 @@ public partial class MainWindow : Window
         Notifier.Said += (title, message) => Dispatcher.BeginInvoke(() => _viewModel.StatusText = $"{title}: {message}");
 
         _viewModel.LiveFilterInvalidated += ScheduleLiveFilter;
+        _viewModel.IsTimelineDragHeld = () => TimelineDragHeld;
+        _viewModel.TimelineSelection = SelectedGroup;
 
         // The timeline's rows follow the layers, and anything about a layer that changes (the main videos clips are layers: 4.3C).
         _viewModel.LiveFilterInvalidated += ScheduleClipRedraw;
@@ -339,7 +346,6 @@ public partial class MainWindow : Window
             // itself is made with the pane.
             Dispatcher.BeginInvoke(UnifiedTimeline.RealizeTools, System.Windows.Threading.DispatcherPriority.ContextIdle);
 
-            StyleLibrary.EnsureBuiltIns();
 
             // No window opens over the program at launch any more: it starts straight into its workspace. What
             // the launch window offered is offered while a file is dragged in instead, and its targets are made
@@ -360,6 +366,23 @@ public partial class MainWindow : Window
                 YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize,
                     AppSettings.Current.KeepDownloadsUsedByProjects ? YtDlpDownloader.FoldersUsedByProjects([ProjectStore.Folder], []) : null);
             }), _windowClosing.Token);
+
+            // The built-in Game Presets (5.1-Release, the user's call): written at idle where the Styles folder has none of their
+            // names, once per version, never over a file. Lists that read the folder show them from then on.
+            if (AppSettings.Current.BuiltInGamePresetsVersion < GamePresetLibrary.Version)
+            {
+                _ = WorkScheduler.Run(new WorkSpec("Writing the built-in Game Presets", WorkLane.Idle) { Visible = false, Cancellable = false }, async _ =>
+                {
+                    var written = await GamePresetLibrary.WriteMissingAsync();
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        GamePresetLibrary.Seeded();
+                        if (written.Count > 0)
+                            _viewModel.RefreshStylePresets();
+                    });
+                }, _windowClosing.Token);
+            }
+
             StartupTrace.Mark("ContentRendered work done");
             Dispatcher.BeginInvoke(() =>
             {
@@ -688,14 +711,8 @@ public partial class MainWindow : Window
 
         // A layout box chosen with the pointer: the arrow keys nudge it, a pixel of the output (ten with Shift). One undo
         // step for a run of nudges.
-        if (focused is Thumb { Tag: LayoutNudge nudge } && e.Key is Key.Left or Key.Right or Key.Up or Key.Down
-            && Keyboard.Modifiers is ModifierKeys.None or ModifierKeys.Shift)
+        if (e.Key is Key.Left or Key.Right or Key.Up or Key.Down && Keyboard.Modifiers is ModifierKeys.None or ModifierKeys.Shift && TakeNudge(e.Key, focused, e.IsRepeat))
         {
-            var step = Keyboard.Modifiers == ModifierKeys.Shift ? 10 : 1;
-            if (Environment.TickCount64 - _nudgedAt > 1000)
-                _viewModel.Checkpoint($"nudge {nudge.Name}");
-            _nudgedAt = Environment.TickCount64;
-            nudge.Move(e.Key switch { Key.Left => -step, Key.Right => step, _ => 0 }, e.Key switch { Key.Up => -step, Key.Down => step, _ => 0 });
             e.Handled = true;
             return;
         }
@@ -1117,6 +1134,21 @@ public partial class MainWindow : Window
     // ----- Saving: Ctrl+S, Ctrl+Shift+S, and the autosave -----
 
     /// <summary>Save: to the file the project already has; without one, Save As.</summary>
+    /// <summary>Save As and a first save: HandPeg's own Project Manager, its name box in hand (the user's directive), not the system's file picker.</summary>
+    private void OpenProjectManagerToSave()
+    {
+        var dialog = new ProjectManagerWindow(_viewModel, focusName: true) { Owner = this };
+        if (dialog.ShowDialog() != true)
+            return;
+
+        if (dialog.NewProjectRequested)
+            StartNewProject();
+        else if (dialog.BundleRequested)
+            SaveProjectAs(bundle: true);
+        else if (dialog.ProjectToLoad is { } project)
+            _ = _viewModel.LoadProjectAsync(project);
+    }
+
     private void SaveProject()
     {
         if (!_viewModel.HasSource)
@@ -1134,6 +1166,12 @@ public partial class MainWindow : Window
     /// </summary>
     private void SaveProjectAs(bool bundle = false)
     {
+        if (!bundle)
+        {
+            OpenProjectManagerToSave();
+            return;
+        }
+
         if (!_viewModel.HasSource)
         {
             _viewModel.StatusText = "There is nothing to save yet: load a video first.";
@@ -1210,6 +1248,7 @@ public partial class MainWindow : Window
         {
             _viewModel.OnSettingsSaved();
             _gpu?.ApplyAudioSettings(AppSettings.Current);
+            UiScale.ApplyAll();
             if (_dock.IsRealized(ExportId))
                 FillExportSection();
         }
@@ -1256,7 +1295,7 @@ public partial class MainWindow : Window
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(MainViewModel.DurationMs) or nameof(MainViewModel.PendingStartMs))
+        if (e.PropertyName is nameof(MainViewModel.DurationMs))
             RedrawSegments();
 
         if (e.PropertyName is nameof(MainViewModel.SoloTrack) or nameof(MainViewModel.SoloedTracks))
@@ -1382,12 +1421,9 @@ public partial class MainWindow : Window
         if (duration <= 0 || width <= 0)
             return;
 
-        // A stretch being marked by a right-drag (split at both its ends when it is let go), the in point set with [, the markers.
+        // A stretch being marked by a right-drag (split at both its ends when it is let go), the markers.
         if (_rangeDragStartMs is { } dragStart)
             AddShade(Math.Min(dragStart, _rangeDragEndMs), Math.Max(dragStart, _rangeDragEndMs), RangeDragBrush);
-
-        if (_viewModel.PendingStartMs is { } pendingStart)
-            AddStripMark(pendingStart / duration * width, 2, Brushes.OrangeRed);
 
         DrawTimelineMarkers();
     }
@@ -1554,19 +1590,6 @@ public partial class MainWindow : Window
     }
 
     private void ClearLut_Click(object sender, RoutedEventArgs e) => _viewModel.LutPath = "";
-
-    private void HudMasks_Click(object sender, RoutedEventArgs e)
-    {
-        // Offered the way the frame is now: a tall frame gets the tall layout.
-        var dialog = new HudMasksDialog { Owner = this, Vertical = _viewModel.FrameHeight > _viewModel.FrameWidth };
-        if (dialog.ShowDialog() != true)
-            return;
-
-        if (dialog.UseOwnMask)
-            AddLayersFromMask();
-        else if (dialog.Game is { } game)
-            _viewModel.AddHudLayers(game, dialog.Vertical);
-    }
 
     // ----- Keyframes: the pane, and the buttons of the bottom bar -----
 
@@ -1894,6 +1917,7 @@ public partial class MainWindow : Window
             case "Image": AddImage_Click(sender, e); break;
             case "Text": _viewModel.AddTextLayerCommand.Execute(null); break;
             case "Adjustment": _viewModel.AddAdjustmentLayerCommand.Execute(null); break;
+            case string vfx when vfx.StartsWith("builtin.", StringComparison.Ordinal): _viewModel.AddVfxClip(vfx); break;
             case "Region": _viewModel.AddLayerCommand.Execute(null); break;
             case "MaskLayers": AddLayersFromMask(); break;
             case "Audio": AddAudio_Click(sender, e); break;
@@ -2008,7 +2032,7 @@ public partial class MainWindow : Window
 
     private VoiceoverStudioDialog? _voiceoverStudio;
 
-    /// <summary>A layer's Properties dialog: what is changed in it is one step of Undo.</summary>
+    /// <summary>The caption box's look (it is no clip, so it has no cards in the Effects pane): what is changed in it is one step of Undo.</summary>
     private void ShowLayerProperties(Layer layer)
     {
         _viewModel.Checkpoint($"change the look of {layer.Name}");
@@ -2029,7 +2053,7 @@ public partial class MainWindow : Window
         if (PlayerIsPlaying)
             PlayerSetPause(true);
 
-        new FramePreviewDialog(_viewModel) { Owner = this }.ShowDialog();
+        new FramePreviewDialog(_viewModel, _gpu is { } engine ? at => engine.CaptureFrameAsync(at) : null) { Owner = this }.ShowDialog();
     }
 
     // ----- Layout files -----
@@ -2305,24 +2329,6 @@ public partial class MainWindow : Window
     }
 
     // ----- Frame & Layer Engine dialogs -----
-
-    /// <summary>
-    /// The blurred background's settings. What is changed in the dialog is one step of Undo (4.4: the blur is in the step; the
-    /// dialog's own Ctrl+Z works within the visit), and none when nothing was.
-    /// </summary>
-    private void BlurSettings_Click(object sender, RoutedEventArgs e)
-    {
-        _viewModel.Checkpoint("change the background blur");
-        var visit = _viewModel.UndoMark;
-        new BlurSettingsDialog { Owner = this, DataContext = _viewModel }.ShowDialog();
-        _viewModel.DropStepIfUnchanged(visit);
-    }
-
-    private void LayerProperties_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is FrameworkElement { DataContext: Layer element })
-            ShowLayerProperties(element);
-    }
 
     // The eye on a layer's row: its whole track is hidden or shown (as Hide / Show on its menu).
     private void LayerVisibility_Click(object sender, RoutedEventArgs e)

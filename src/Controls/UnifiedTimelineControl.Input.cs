@@ -137,6 +137,14 @@ public sealed partial class UnifiedTimelineControl
     private BlockDrag? _drag;
     private SplitDrag? _splitDrag;
 
+    // A row's lower edge dragged (5.1-Polish): where the pointer was pressed, and how many rows grow with the setting from the
+    // top down to that edge (the move is shared among them, so the edge follows the pointer). With a row (5.1-AutoHud-Part1,
+    // the user's Q2): that row alone, from the height it had.
+    private (double FromY, int Rows, TimelineRow? Row, double FromHeight)? _heightDrag;
+
+    // How near (DIPs) a row's lower edge in the headers is taken for the edge, and how many notches of the wheel are one step.
+    private const double HeightEdgeReach = 3;
+
     // A gain line being dragged: the row, the block, the pointer and the values where it started.
     private (TimelineRow Row, TimelineBlock Block, Point From, (double GainDb, double FadeIn, double FadeOut) Start)? _gainDrag;
 
@@ -236,6 +244,28 @@ public sealed partial class UnifiedTimelineControl
         var index = LaneAt(laid.Y);
         if (point.X < _headerWidth)
         {
+            // A row's lower edge (5.1-AutoHud-Part1, the user's Q2): that track's height, dragged; double-clicked, back to the
+            // one Track Height. With Shift, or on a row that is no track's: the one Track Height itself (5.1-Polish).
+            if (HeightEdgeAt(laid.Y) is >= 0 and var edge)
+            {
+                var sizedRow = _lanes[edge].Row;
+                var alone = sizedRow.SizedAlone && !Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+                if (e.ClickCount == 2)
+                {
+                    if (alone)
+                        Raise(() => RowHeightReset?.Invoke(sizedRow));
+                    else
+                        Raise(() => TrackHeightReset?.Invoke());
+                    return;
+                }
+
+                _heightDrag = (point.Y, RowsGrowingDownTo(edge), alone ? sizedRow : null, sizedRow.Height);
+                CaptureMouse();
+                if (!alone)
+                    Raise(() => TrackHeightDragStarted?.Invoke());
+                return;
+            }
+
             if (index >= 0)
                 HeaderPressed(index, new Point(point.X, laid.Y), e);
             return;
@@ -249,6 +279,33 @@ public sealed partial class UnifiedTimelineControl
 
         var lane = _lanes[index];
         var row = lane.Row;
+
+        // A crossfade's box: its button takes it away, its edges size it, the rest selects it (Delete then takes it away).
+        if (CrossfadeAt(lane, laid) is { } crossfade)
+        {
+            switch (crossfade.Part)
+            {
+                case CrossfadePart.Remove:
+                    SelectedCrossfade = null;
+                    Raise(() => crossfade.Block.CrossfadeEdit?.Invoke(0));
+                    return;
+                case CrossfadePart.Edge when crossfade.Block.CrossfadeEdit is not null && CaptureMouse():
+                    _crossfadeDrag = (row, crossfade.Block, crossfade.Block.CrossfadeIn);
+                    BeginDrag();
+                    return;
+                case CrossfadePart.Inside:
+                    SelectedCrossfade = crossfade.Block.Clip;
+                    Invalidate();
+                    return;
+            }
+        }
+
+        if (SelectedCrossfade is not null)
+        {
+            SelectedCrossfade = null;
+            Invalidate();
+        }
+
         if (RevealAt(lane, laid) is >= 0 and var reveal && !OnFadeHandle(index, laid))
         {
             var mark = row.Reveals[reveal];
@@ -358,6 +415,47 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
+    private enum CrossfadePart { Inside, Edge, Remove }
+
+    // The crossfade box a point is in, and which part of it; null for none. A crossfade is drawn on a lane in full only.
+    private (TimelineBlock Block, CrossfadePart Part)? CrossfadeAt(in Lane lane, Point at)
+    {
+        var scale = PixelsPerSecond;
+        if (!lane.Detailed || scale <= 0)
+            return null;
+
+        foreach (var block in lane.Row.Blocks)
+        {
+            if (block.CrossfadeIn <= 0.01)
+                continue;
+
+            var box = CrossfadeBox(lane, block, scale, 0);
+            if (!Rect.Inflate(box, 3, 0).Contains(at))
+                continue;
+            if (CrossfadeRemove(box) is { IsEmpty: false } remove && Rect.Inflate(remove, 1, 1).Contains(at))
+                return (block, CrossfadePart.Remove);
+            return (block, Math.Min(Math.Abs(at.X - box.Left), Math.Abs(at.X - box.Right)) <= 4 ? CrossfadePart.Edge : CrossfadePart.Inside);
+        }
+
+        return null;
+    }
+
+    // A crossfade's edge dragged: its row, its block and how long it was. The box grows from its cut, both ways alike.
+    private (TimelineRow Row, TimelineBlock Block, double Start)? _crossfadeDrag;
+
+    /// <summary>The clip whose crossfade is selected (a click on its box): Delete takes it away.</summary>
+    public object? SelectedCrossfade { get; set; }
+
+    private void FollowCrossfade((TimelineRow Row, TimelineBlock Block, double Start) drag, Point laid)
+    {
+        var scale = PixelsPerSecond;
+        if (scale <= 0)
+            return;
+
+        drag.Block.CrossfadeIn = Math.Max(2 * Math.Abs(laid.X - drag.Block.Left) / scale, 0.04);
+        Invalidate();
+    }
+
     // A block pressed that started no drag, its row and where it was pressed (laid out): let go there, a click (BlockClicked).
     private (TimelineRow Row, TimelineBlock Block, Point At)? _clickOnly;
 
@@ -434,6 +532,7 @@ public sealed partial class UnifiedTimelineControl
         // click and dropped), from where it is if it is still moving.
         if (ChevronAt(lane, at) is { } stack)
         {
+            // Its bars or open: a stack is never hidden (the user's directive).
             SetExpanded(row, stack, !IsExpanded(row, stack));
         }
         else if (SwitchAt(lane, at) is { } flag)
@@ -1091,7 +1190,7 @@ public sealed partial class UnifiedTimelineControl
         var lanes = lane.ChevronCount < 2 ? "its lanes"
             : stack == ChildStack.Audio ? "its sound's lanes (the unlinked sound, the file's audio streams)"
             : "its layers' lanes (the HUD cut-outs and masks, the captions)";
-        return open ? $"Fold {lanes} into a mini-stack" : $"Open {lanes} to their full height";
+        return open ? $"Fold {lanes} to thin bars" : $"Open {lanes} to their full height";
     }
 
     /// <summary>The stretch put back whose Hide pill a point is on (an index into the row's reveals); -1 for none.</summary>
@@ -1149,6 +1248,16 @@ public sealed partial class UnifiedTimelineControl
 
         NotePointer(point);
 
+        if (_heightDrag is { } height)
+        {
+            var moved = point.Y - height.FromY;
+            if (height.Row is { } alone)
+                Raise(() => RowHeightDragged?.Invoke(alone, height.FromHeight + moved));
+            else
+                Raise(() => TrackHeightDragged?.Invoke(moved / Math.Max(height.Rows, 1)));
+            return;
+        }
+
         var laid = Laid(point);
         if (_splitDrag is { } split)
         {
@@ -1159,6 +1268,12 @@ public sealed partial class UnifiedTimelineControl
         if (_fadeDrag is { } fadeDrag)
         {
             FollowFade(fadeDrag, laid);
+            return;
+        }
+
+        if (_crossfadeDrag is { } crossfadeDrag)
+        {
+            FollowCrossfade(crossfadeDrag, laid);
             return;
         }
 
@@ -1375,6 +1490,14 @@ public sealed partial class UnifiedTimelineControl
 
             var header = _lanes[index];
             var at = new Point(point.X, laid.Y);
+            if (HeightEdgeAt(laid.Y) >= 0)
+            {
+                Cursor = Cursors.SizeNS;
+                if (TipFor(header.Row, 30))
+                    ToolTip = "Drag to make every track taller or lower (Alt + the wheel over the tracks does too). A double-click puts them back to their usual height.";
+                return;
+            }
+
             if (ChevronAt(header, at) is { } stack)
             {
                 Cursor = Cursors.Hand;
@@ -1407,6 +1530,23 @@ public sealed partial class UnifiedTimelineControl
         }
 
         var lane = _lanes[index];
+        if (CrossfadeAt(lane, laid) is { } crossfade)
+        {
+            Hover(null, null);
+            Cursor = crossfade.Part == CrossfadePart.Edge ? Cursors.SizeWE : crossfade.Part == CrossfadePart.Remove ? Cursors.Hand : Cursors.Arrow;
+            if (TipFor(lane.Row, 40 + (int)crossfade.Part))
+            {
+                ToolTip = crossfade.Part switch
+                {
+                    CrossfadePart.Edge => "Drag to make the crossfade longer or shorter.",
+                    CrossfadePart.Remove => "Remove this crossfade.",
+                    _ => "A crossfade: drag its edges to size it, click it and press Delete to take it away.",
+                };
+            }
+
+            return;
+        }
+
         var row = lane.Row;
         var scale = PixelsPerSecond;
         if (RevealAt(lane, laid) is >= 0 and var reveal && !OnFadeHandle(index, laid))
@@ -1738,6 +1878,17 @@ public sealed partial class UnifiedTimelineControl
     // refused (the model says why) or failed.
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
+        if (_heightDrag is { } heightDrag)
+        {
+            _heightDrag = null;
+            if (IsMouseCaptured)
+                ReleaseMouseCapture();
+            e.Handled = true;
+            if (heightDrag.Row is { } sized)
+                Raise(() => RowHeightDragEnded?.Invoke(sized, true));
+            return;
+        }
+
         _autoScroll.Stop();
         if (_splitDrag is { } split)
         {
@@ -1751,6 +1902,27 @@ public sealed partial class UnifiedTimelineControl
             }
             finally
             {
+                EndDrag();
+            }
+
+            return;
+        }
+
+        if (_crossfadeDrag is { } crossfadeDrag)
+        {
+            _crossfadeDrag = null;
+            ReleaseMouseCapture();
+            e.Handled = true;
+            var done = true;
+            try
+            {
+                if (crossfadeDrag.Block.CrossfadeIn != crossfadeDrag.Start && crossfadeDrag.Block.CrossfadeEdit is { } crossfadeEdit)
+                    done = Raise(() => crossfadeEdit(crossfadeDrag.Block.CrossfadeIn));
+            }
+            finally
+            {
+                if (!done)
+                    crossfadeDrag.Block.CrossfadeIn = crossfadeDrag.Start;
                 EndDrag();
             }
 
@@ -1947,6 +2119,9 @@ public sealed partial class UnifiedTimelineControl
         base.OnLostMouseCapture(e);
         _panFrom = null;
         _clickOnly = null;
+        if (_heightDrag is { Row: { } sized })
+            Raise(() => RowHeightDragEnded?.Invoke(sized, false));
+        _heightDrag = null;
         if (IsDragging)
             Revert();
     }
@@ -1956,7 +2131,9 @@ public sealed partial class UnifiedTimelineControl
     private void Revert()
     {
         _autoScroll.Stop();
-        if (_fadeDrag is { } fadeDrag)
+        if (_crossfadeDrag is { } crossfadeDrag)
+            crossfadeDrag.Block.CrossfadeIn = crossfadeDrag.Start;
+        else if (_fadeDrag is { } fadeDrag)
             PutBackFade(fadeDrag);
         else if (_gainDrag is { } gainDrag)
             gainDrag.Block.Gain = gainDrag.Start;
@@ -1967,6 +2144,7 @@ public sealed partial class UnifiedTimelineControl
         _fadeDrag = null;
         _gainDrag = null;
         _splitDrag = null;
+        _crossfadeDrag = null;
         EndDrag();
     }
 
@@ -1989,11 +2167,53 @@ public sealed partial class UnifiedTimelineControl
             drag.Block.Gain = gain with { FadeIn = drag.Start.In, FadeOut = drag.Start.Out };
     }
 
+    // ----- The tracks' height (5.1-Polish, the user's directive) -----
+
+    /// <summary>The lane whose lower edge is at <paramref name="laidY"/> (within <see cref="HeightEdgeReach"/>): a picture's or a sound's row shown in full; -1 for none.</summary>
+    private int HeightEdgeAt(double laidY)
+    {
+        foreach (var candidate in (ReadOnlySpan<int>)[LaneAt(laidY), LaneAt(laidY - HeightEdgeReach - LaneGap)])
+        {
+            if (candidate < 0)
+                continue;
+            var lane = _lanes[candidate];
+            if (!lane.Mini && lane.Row.Kind is TimelineRowKind.Video or TimelineRowKind.Audio && Math.Abs(laidY - lane.Bottom) <= HeightEdgeReach)
+                return candidate;
+        }
+
+        return -1;
+    }
+
+    /// <summary>How many rows that grow with the tracks' height lie from the top down to lane <paramref name="index"/>, itself included.</summary>
+    private int RowsGrowingDownTo(int index)
+    {
+        var rows = 0;
+        for (var i = 0; i <= index && i < _lanes.Count; i++)
+        {
+            if (!_lanes[i].Mini && !_lanes[i].Row.HasOwnHeight && _lanes[i].Row.Kind is TimelineRowKind.Video or TimelineRowKind.Audio)
+                rows++;
+        }
+
+        return Math.Max(rows, 1);
+    }
+
     // ----- The wheel and the middle button -----
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
+        // Always answered here (5.1-DogfoodPolish, the user's bug: the wheel with the left button held), and it works under a drag.
+        e.Handled = true;
         var modifiers = Keyboard.Modifiers;
+
+        // Alt + the wheel (5.1-Polish, the user's directive): every track taller (a notch up) or lower.
+        if (modifiers.HasFlag(ModifierKeys.Alt))
+        {
+            var notches = (int)Math.Round(e.Delta / 120.0);
+            var steps = notches != 0 ? notches : Math.Sign(e.Delta);
+            Raise(() => TrackHeightStepped?.Invoke(steps));
+            return;
+        }
+
         if (modifiers.HasFlag(ModifierKeys.Control))
         {
             ZoomRequested?.Invoke(Math.Pow(1.25, e.Delta / 120.0), Math.Max(e.GetPosition(this).X - _headerWidth, 0));
@@ -2004,17 +2224,40 @@ public sealed partial class UnifiedTimelineControl
         }
         else
         {
-            // A plain wheel scrolls the rows; when they all fit, it is left to what holds the control.
-            var before = _verticalOffset;
-            VerticalOffset = before - e.Delta / 120.0 * WheelStep;
-            if (_verticalOffset == before)
-            {
-                base.OnMouseWheel(e);
-                return;
-            }
+            VerticalOffset = _verticalOffset - e.Delta / 120.0 * WheelStep;
         }
 
-        e.Handled = true;
+        FollowHeldDrag();
+    }
+
+    /// <summary>The view moved under a drag held still: what is dragged goes on from where the pointer is over the view now.</summary>
+    private void FollowHeldDrag()
+    {
+        if (!IsDragging)
+            return;
+
+        var laid = Laid(Mouse.GetPosition(this));
+        if (_splitDrag is { } split)
+        {
+            FollowSplit(split, laid);
+        }
+        else if (_fadeDrag is { } fade)
+        {
+            FollowFade(fade, laid);
+        }
+        else if (_crossfadeDrag is { } crossfade)
+        {
+            FollowCrossfade(crossfade, laid);
+        }
+        else if (_gainDrag is { } gain)
+        {
+            FollowGain(gain, laid);
+        }
+        else if (_drag is { } drag)
+        {
+            _lastPointer = laid;
+            Follow(drag, laid, pointerMoved: false);
+        }
     }
 
     protected override void OnMouseDown(MouseButtonEventArgs e)

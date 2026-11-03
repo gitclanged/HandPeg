@@ -46,7 +46,8 @@ public sealed partial class UnifiedTimelineControl
     private static readonly Brush FadeHandleFill = Solid(255, 0xF2, 0xF2, 0xF2);
     private static readonly Pen FadeHandleOutline = Frozen(new Pen(Solid(200, 0, 0, 0), 1));
     private static readonly Brush ReadoutFill = Solid(230, 24, 24, 24);
-    private static readonly Brush CrossfadeFill = Solid(170, 0x4F, 0xC3, 0xF7);
+    private static readonly Brush CrossfadeFill = Solid(84, 0x4F, 0xC3, 0xF7);
+    private static readonly Brush CrossfadeButton = Solid(210, 0x1B, 0x4F, 0x72);
     private static readonly Pen CrossfadeLine = Frozen(new Pen(Solid(235, 255, 255, 255), 1.2));
     private static readonly Pen SelectedOutline = Frozen(new Pen(Brushes.White, 1.5));
     private static readonly Brush LabelShade = Solid(150, 0, 0, 0);
@@ -157,6 +158,10 @@ public sealed partial class UnifiedTimelineControl
 
         using (var drawing = _content.RenderOpen())
         {
+            // Under the last track: the same dark well, down to the toolbar, however few tracks there are.
+            if (width > 0 && ActualHeight > _extent)
+                drawing.DrawRectangle(_inset, null, new Rect(_renderedFrom - _originX, _extent, _renderedTo - _renderedFrom, ActualHeight - _extent));
+
             if (width > 0 && _lanes.Count > 0)
             {
                 var (from, to) = (_renderedFrom - _originX, _renderedTo - _originX);
@@ -165,6 +170,9 @@ public sealed partial class UnifiedTimelineControl
                 // drawn beside the headers, where they stay).
                 foreach (var lane in _lanes)
                 {
+                    if (lane.Height < 0.5)
+                        continue;
+
                     drawing.DrawRectangle(_inset, null, new Rect(from, lane.Top, to - from, lane.Height));
                     if (_edgeWidth > 0 && lane.Height > 2 * _edgeWidth)
                     {
@@ -252,6 +260,10 @@ public sealed partial class UnifiedTimelineControl
 
     private void DrawLane(DrawingContext drawing, in Lane lane, double from, double to, DpiScale dpi, Shift? shift, Transform? move)
     {
+        // A stack hidden takes no height, and is nothing to draw.
+        if (lane.Height < 0.5)
+            return;
+
         var row = lane.Row;
         var scale = PixelsPerSecond;
         if (row.Kind == TimelineRowKind.Empty)
@@ -300,9 +312,27 @@ public sealed partial class UnifiedTimelineControl
             DrawBlock(drawing, lane, block, rect, rect.Left, null, from, to, dpi);
         }
 
+        // The one bar a closed sound stack is: every stream that is not muted, in one waveform.
+        if (lane.Summary && lane.Parent >= 0 && scale > 0)
+        {
+            foreach (var sibling in _lanes[lane.Parent].Row.Children)
+            {
+                if (sibling.Stack != ChildStack.Audio || (sibling.State & RowSwitches.Muted) != 0)
+                    continue;
+
+                foreach (var block in sibling.Blocks)
+                {
+                    var rect = BlockRect(lane, block, _originX);
+                    if (rect.Right < from || rect.Left > to || (block.SoundWindow ?? WindowOf(block, rect.Width, scale)) is not { } sound)
+                        continue;
+                    DrawWave(drawing, sound, rect.Left, new Rect(rect.Left, rect.Top + 1, rect.Width, Math.Max(rect.Height - 2, 1)), from, to, scale, 0.7, dpi.DpiScaleX);
+                }
+            }
+        }
+
         if (lane.Detailed && scale > 0)
         {
-            // A crossfade across a cut: a pill over the two blocks, as long as the crossfade and centred on the cut.
+            // A crossfade across a cut: a box over the two blocks, as long as the crossfade and centred on the cut.
             foreach (var block in row.Blocks)
             {
                 if (block.CrossfadeIn <= 0.01 || IsDragged(block))
@@ -310,7 +340,7 @@ public sealed partial class UnifiedTimelineControl
 
                 var slid = SlidOf(shift, block.Left);
                 if (slid != Slid.Wiped)
-                    DrawCrossfade(drawing, lane, block, scale, slid == Slid.Moved ? _originX - dx : _originX);
+                    DrawCrossfade(drawing, lane, block, scale, slid == Slid.Moved ? _originX - dx : _originX, dpi.PixelsPerDip);
             }
         }
 
@@ -443,7 +473,10 @@ public sealed partial class UnifiedTimelineControl
         var scale = PixelsPerSecond;
         var detailed = lane.Detailed;
         var (lead, tail) = splitNow ?? block.AudioSplit ?? (0.0, 0.0);
-        var wave = block.SoundWindow ?? WindowOf(block, rect.Width, scale);
+        // A video's block shows its pictures alone (the user's directive): its sound is in its audio stack, and the summary bar's is drawn
+        // over all its blocks by DrawLane. With no stack to hear it in (a file of one stream), its waveform is on the clip (the user's Q1).
+        var hasSoundStack = (lane.Stacks & StackBit(ChildStack.Audio)) != 0;
+        var wave = lane.Row.Kind == TimelineRowKind.Video && hasSoundStack || lane.Summary ? null : block.SoundWindow ?? WindowOf(block, rect.Width, scale);
         var split = detailed && scale > 0 && (lead != 0 || tail != 0);
 
         // A J/L cut: where the sound reaches out past the picture, a tab of the block's colour under its lower part.
@@ -832,17 +865,58 @@ public sealed partial class UnifiedTimelineControl
         drawing.DrawText(text, new Point(box.Left + 3, box.Top + 0.5));
     }
 
-    /// <summary>A pill across the cut a crossfade spans, with a cross in it: as long as the crossfade, centred on the cut.</summary>
-    private static void DrawCrossfade(DrawingContext drawing, in Lane lane, TimelineBlock block, double scale, double originX)
+    // A crossfade's box: from half of it before its cut to half after, the lane's whole height.
+    private static Rect CrossfadeBox(in Lane lane, TimelineBlock block, double scale, double originX)
     {
         var rect = BlockRect(lane, block, originX);
         var half = block.CrossfadeIn * scale / 2;
-        var height = Math.Min(Math.Max(rect.Height * 0.42, 8), 16);
-        var pill = new Rect(rect.Left - half, rect.Top + (rect.Height - height) / 2, Math.Max(half * 2, 6), height);
-        drawing.DrawRoundedRectangle(CrossfadeFill, null, pill, height / 2, height / 2);
-        var inset = Math.Min(height / 2, pill.Width / 2);
-        drawing.DrawLine(CrossfadeLine, new Point(pill.Left + inset, pill.Top + 2), new Point(pill.Right - inset, pill.Bottom - 2));
-        drawing.DrawLine(CrossfadeLine, new Point(pill.Left + inset, pill.Bottom - 2), new Point(pill.Right - inset, pill.Top + 2));
+        return new Rect(rect.Left - half, rect.Top, Math.Max(half * 2, 6), rect.Height);
+    }
+
+    // Its remove button: at the box's top middle, where the box has room for it.
+    private static Rect CrossfadeRemove(Rect box) =>
+        box.Width >= 18 && box.Height >= 22 ? new Rect(box.Left + box.Width / 2 - 7, box.Top + 2, 14, 14) : Rect.Empty;
+
+    /// <summary>
+    /// A crossfade as the industry draws it (the user's directive): a shaded box the full height of the track across the cut, its two edges
+    /// grips, its two equal-power curves crossing in the middle, and a button to take it away.
+    /// </summary>
+    private void DrawCrossfade(DrawingContext drawing, in Lane lane, TimelineBlock block, double scale, double originX, double pixelsPerDip)
+    {
+        var box = CrossfadeBox(lane, block, scale, originX);
+        var selected = ReferenceEquals(SelectedCrossfade, block.Clip);
+        drawing.DrawRectangle(CrossfadeFill, selected ? SelectedOutline : null, box);
+        drawing.DrawLine(CrossfadeLine, new Point(box.Left + 0.5, box.Top), new Point(box.Left + 0.5, box.Bottom));
+        drawing.DrawLine(CrossfadeLine, new Point(box.Right - 0.5, box.Top), new Point(box.Right - 0.5, box.Bottom));
+
+        const int steps = 14;
+        var curves = new StreamGeometry();
+        using (var context = curves.Open())
+        {
+            foreach (var rising in new[] { true, false })
+            {
+                for (var i = 0; i <= steps; i++)
+                {
+                    var through = (double)i / steps;
+                    var level = rising ? Math.Sin(through * Math.PI / 2) : Math.Cos(through * Math.PI / 2);
+                    var point = new Point(box.Left + through * box.Width, box.Bottom - 2 - level * (box.Height - 4));
+                    if (i == 0)
+                        context.BeginFigure(point, false, false);
+                    else
+                        context.LineTo(point, true, false);
+                }
+            }
+        }
+
+        curves.Freeze();
+        drawing.DrawGeometry(null, CrossfadeLine, curves);
+
+        if (CrossfadeRemove(box) is { IsEmpty: false } remove)
+        {
+            drawing.DrawEllipse(CrossfadeButton, null, new Point(remove.Left + 7, remove.Top + 7), 7, 7);
+            drawing.DrawLine(CrossfadeLine, new Point(remove.Left + 4.5, remove.Top + 4.5), new Point(remove.Right - 4.5, remove.Bottom - 4.5));
+            drawing.DrawLine(CrossfadeLine, new Point(remove.Left + 4.5, remove.Bottom - 4.5), new Point(remove.Right - 4.5, remove.Top + 4.5));
+        }
     }
 
     // The pill a click closes a gap with: in the gap's middle, two arrows pointing in (what follows closes up).
@@ -1003,6 +1077,9 @@ public sealed partial class UnifiedTimelineControl
         {
             var lane = _lanes[i];
             var row = lane.Row;
+            if (lane.Height < 0.5)
+                continue;
+
             drawing.DrawRectangle(lane.Depth == 0 ? _card : _panel, null, new Rect(0, lane.Top, width, lane.Height));
             if (AccentOf(i) is { } accent)
                 drawing.DrawRectangle(accent, null, new Rect(0, lane.Top, 3, lane.Height));
@@ -1232,7 +1309,7 @@ public sealed partial class UnifiedTimelineControl
             DrawBlock(drawing, lane, block, rect, contentLeft, null, from, to, dpi);
             DrawLabel(drawing, block, rect, from, dpi.PixelsPerDip);
             if (block.CrossfadeIn > 0.01 && scale > 0)
-                DrawCrossfade(drawing, lane, block, scale, _originX);
+                DrawCrossfade(drawing, lane, block, scale, _originX, dpi.PixelsPerDip);
             if (away)
                 drawing.Pop();
             if (!drag.FamilyFits)

@@ -1,0 +1,8 @@
+# The frame cache leaves Windows' commit a margin: the crash of 2026-11-01, by its own numbers.
+ok: with a game running, a 12 GB cache is more than Windows can spare
+ok: held to what it may keep, an eighth of the limit stays free for everything else
+ok: with nothing else running the 12 GB cache has all its room
+ok: with less left than the margin, it may hold nothing beyond its least
+ok: a small limit keeps at least 3 GB free
+ok: a large one at most 8 GB
+ok: Windows says how much is left, within its limit

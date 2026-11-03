@@ -159,6 +159,51 @@ public readonly struct ExplodedCamera
         return place * ViewProjection;
     }
 
+    /// <summary>The Studio Stage's floor (5.1-GpuFx): a quad's corner to clip space, lying flat at height <paramref name="y"/> from <paramref name="x"/>, <paramref name="z"/>, so wide and deep.</summary>
+    public Matrix4x4 FloorMatrix(float x, float z, float width, float depth, float y)
+    {
+        var place = new Matrix4x4(
+            width, 0, 0, 0,
+            0, 0, depth, 0,
+            0, 0, 1, 0,
+            x, y, z, 1);
+        return place * ViewProjection;
+    }
+
+    /// <summary>A plane of the stack, unturned, mirrored in a floor at world height <paramref name="floorY"/>: its reflection.</summary>
+    public Matrix4x4 MirroredPlaneMatrix(float x, float y, float width, float height, float z, float floorY)
+    {
+        var place = new Matrix4x4(
+            width, 0, 0, 0,
+            0, height, 0, 0,
+            0, 0, 1, 0,
+            x, y, z, 1);
+        var mirror = new Matrix4x4(
+            1, 0, 0, 0,
+            0, -1, 0, 0,
+            0, 0, 1, 0,
+            0, 2 * floorY, 0, 1);
+        return place * mirror * ViewProjection;
+    }
+
+    /// <summary>A hairline between two world points: a quad's corner to clip space, facing the camera, about <paramref name="pixels"/> output pixels wide at its middle.</summary>
+    public Matrix4x4 LineMatrix(Vector3 from, Vector3 to, float pixels)
+    {
+        var way = to - from;
+        var side = Vector3.Cross(way, Back);
+        var length = side.Length();
+        side = length > 1e-5f ? side / length : Right;
+        var middle = (from + to) / 2;
+        var across = side * (pixels * Vector3.Dot(Position - middle, Back) / Focal);
+        var origin = from - across / 2;
+        var place = new Matrix4x4(
+            way.X, way.Y, way.Z, 0,
+            across.X, across.Y, across.Z, 0,
+            0, 0, 1, 0,
+            origin.X, origin.Y, origin.Z, 1);
+        return place * ViewProjection;
+    }
+
     /// <summary>Where a world point is on the output; false when it is not in front of the camera.</summary>
     public bool TryProject(Vector3 world, out Vector2 screen)
     {

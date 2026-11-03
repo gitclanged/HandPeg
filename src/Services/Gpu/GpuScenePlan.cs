@@ -73,6 +73,9 @@ public sealed partial class GpuScenePlan
     /// <summary>How long the sequence is, in seconds (the lowering's).</summary>
     public double SequenceSeconds { get; }
 
+    /// <summary>How long a frame of it lasts, in seconds: the shutter's measure (5.1-GpuFx).</summary>
+    public double FrameSeconds { get; private init; } = 1 / 30.0;
+
     /// <summary>The sequence's frame, in its own pixels: the layers' boxes are in these.</summary>
     public int CanvasWidth { get; }
 
@@ -308,26 +311,43 @@ public sealed partial class GpuScenePlan
             return;
         _resources.Pump();
 
-        // (Both are at the top of the stack: the walk stops at the first entry that is neither.)
+        // (The captions may be among the layers since 5.1-Polish: found once, wherever they are.)
+        if (CaptionEntry is { Captions: { } captions } && captions.PrepareAround(sequenceSeconds))
+            _resources.Changed();
         for (var i = _entries.Length - 1; i >= 0; i--)
         {
             var entry = _entries[i];
-            if (entry.Kind == EntryKind.Caption)
-            {
-                if (entry.Captions?.PrepareAround(sequenceSeconds) == true)
-                    _resources.Changed();
-            }
-            else if (entry.Kind == EntryKind.PictureSubtitles)
+            if (entry.Kind == EntryKind.PictureSubtitles)
             {
                 if (entry.Pictures?.Prepare(_resources, sequenceSeconds) == true)
                     _resources.Changed();
             }
-            else
+            else if (entry.Kind != EntryKind.Caption)
             {
                 break;
             }
         }
     }
+
+    /// <summary>The captions' layer's key (<see cref="GpuLayerDescriptor.ClipKey"/>): what the 3D view knows their plane by.</summary>
+    public static readonly long CaptionClipKey = default(GpuHash).Add("captions").Value;
+
+    /// <summary>The captions' entry, wherever it is in the stack (5.1-Polish: among the layers, or over everything); null for none.</summary>
+    private Entry? CaptionEntry => _captionEntry ??= Array.Find(_entries, static e => e.Kind == EntryKind.Caption) ?? NoCaptions;
+
+    private Entry? _captionEntry;
+    private static readonly Entry NoCaptions = new() { Kind = EntryKind.Caption };
+
+    /// <summary>Whether the plan draws captions.</summary>
+    public bool HasCaptions => CaptionEntry is { Captions: not null };
+
+    /// <summary>
+    /// For an export (its render thread, which then owns the plan's tables: GpuExport, 5.1-Polish): draws every caption on
+    /// from <paramref name="fromSeconds"/> to <paramref name="toSeconds"/> that is not drawn yet, with no budget. True when the
+    /// caption on at <paramref name="fromSeconds"/> (if one is) is drawn and handed over, so the frame there shows it.
+    /// </summary>
+    public bool PrepareCaptions(double fromSeconds, double toSeconds) =>
+        CaptionEntry is not { Captions: { } captions } || captions.PrepareFor(fromSeconds, toSeconds);
 
     /// <summary>Every entry that is on at the moment, written bottom first; their descriptions too when asked.</summary>
     private int Walk(double t, Span<GpuLayerDescriptor> layers, Span<GpuLayerInfo> infos)
@@ -490,6 +510,7 @@ public sealed partial class GpuScenePlan
                 d.Flags |= GpuLayerDescriptor.FlagAdjustment;
                 AddLook(e, t - e.KeyStart, ref d);
                 AddFades(e.Fades, t, ref d);
+                SequenceShutter(e, t, ref d);
                 return d.EffectCount > 0 ? 1 : 0;
 
             case EntryKind.Background or EntryKind.Twin:
@@ -540,6 +561,7 @@ public sealed partial class GpuScenePlan
                 // The Sequence Output's own effects: their keys and ranges are in seconds of the sequence.
                 for (var k = 0; k < e.Look.Length; k++)
                     AddCard(e, e.Look[k], t, null, ref d);
+                SequenceShutter(e, t, ref d);
                 return d.EffectCount > 0 ? 1 : 0;
 
             case EntryKind.Fade:
@@ -578,6 +600,7 @@ public sealed partial class GpuScenePlan
         Media(ref d, e, source, media);
         Place(e, t, ref d);
         AddEffects(e, t - e.KeyStart, ref d);
+        Shutter(e, t, ref d);
         Span<Fade> fades = stackalloc Fade[2];
         AddFades(fades[..CenterFades(_chain.Center[at], fades, dissolve: false)], t, ref d);
         if (d.Opacity <= 0.0005f)
@@ -664,6 +687,61 @@ public sealed partial class GpuScenePlan
         d.BlendMode = e.BlendMode;
         AddEffects(e, t - e.KeyStart, ref d);
         AddFades(e.Fades, t, ref d);
+        Shutter(e, t, ref d);
+    }
+
+    /// <summary>How many frames of its file a clip can pass in one of the sequence's: past the fastest a clip runs, what lies between two frames is a cut or a loop's wrap.</summary>
+    private const double MostShutterSpeed = Layer.FastestSpeed + 1;
+
+    /// <summary>A Motion Blur card of an entry's Look; null for none. Walked by index: asked for on every frame.</summary>
+    private static EffectInstance? MotionCard(Entry e)
+    {
+        for (var k = 0; k < e.Look.Length; k++)
+        {
+            if (e.Look[k].Definition is { GpuSlot: GpuShaderSlot.MotionBlur })
+                return e.Look[k];
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// What a Motion Blur card needs to know of a picture at a moment (5.1-GpuFx): where its layer is as the shutter opens and closes, when that is anywhere else, and the moment of
+    /// its file a sequence frame ago, so a speed ramp blurs by its own speed. Only for a layer with the card: every other layer's descriptor stays as it was.
+    /// </summary>
+    private void Shutter(Entry e, double t, ref GpuLayerDescriptor d)
+    {
+        if (MotionCard(e) is not { Enabled: true } card || card.EvaluateGpuPacket(t - e.KeyStart, e.Layer) is not { Slot: GpuShaderSlot.MotionBlur } packet)
+            return;
+
+        // Across a cut or a loop's wrap the moment a frame ago is another shot: no motion to speak of, however fast it looks. (A ramp's own speed is well within this.)
+        if (MediaOf(e, t - FrameSeconds, out var source, out var before) && source == d.SourceId && Math.Abs(d.MediaSeconds - before) <= FrameSeconds * MostShutterSpeed)
+        {
+            d.PreviousMoment = before;
+            d.Flags |= GpuLayerDescriptor.FlagPreviousMoment;
+        }
+
+        if (packet.P3 < 0.5f || e.KeysX is null && e.KeysY is null && e.KeysScale is null && e.KeysRotation is null)
+            return;
+
+        var half = Math.Clamp(packet.P0, 0, 720) / 360 * FrameSeconds / 2;
+        var (from, to) = (BoxAt(e, t - half), BoxAt(e, t + half));
+        if (from == to)
+            return;
+
+        (d.ShutterFromX, d.ShutterFromY, d.ShutterFromWidth, d.ShutterFromHeight, d.ShutterFromRotation) = from;
+        (d.ShutterToX, d.ShutterToY, d.ShutterToWidth, d.ShutterToHeight, d.ShutterToRotation) = to;
+        d.Flags |= GpuLayerDescriptor.FlagShutterPlace;
+    }
+
+    /// <summary>An adjustment layer's or the finished picture's shutter: the moment of the sequence a frame ago, which tells its next frame from a jump (SceneRenderer.CanvasFlow).</summary>
+    private void SequenceShutter(Entry e, double t, ref GpuLayerDescriptor d)
+    {
+        if (MotionCard(e) is { Enabled: true })
+        {
+            d.PreviousMoment = t - FrameSeconds;
+            d.Flags |= GpuLayerDescriptor.FlagPreviousMoment;
+        }
     }
 
     /// <summary>
@@ -673,6 +751,14 @@ public sealed partial class GpuScenePlan
     /// Opacity keys (or as set).
     /// </summary>
     private void Place(Entry e, double t, ref GpuLayerDescriptor d)
+    {
+        (d.X, d.Y, d.Width, d.Height, d.Rotation) = BoxAt(e, t);
+        (d.AnchorX, d.AnchorY) = (e.AnchorX, e.AnchorY);
+        d.Opacity = OpacityAt(e, t);
+    }
+
+    /// <summary>A layer's box and turn at a moment (<see cref="Place"/>).</summary>
+    private (float X, float Y, float Width, float Height, float Rotation) BoxAt(Entry e, double t)
     {
         var at = t - e.KeyStart;
         double width = e.W, height = e.H;
@@ -684,10 +770,8 @@ public sealed partial class GpuScenePlan
 
         var x = e.KeysX is { } keysX ? EasingCurves.ValueAt(keysX, at) * CanvasWidth : e.KeysScale is null ? e.X : e.X + e.AnchorX * (e.W - width);
         var y = e.KeysY is { } keysY ? EasingCurves.ValueAt(keysY, at) * CanvasHeight : e.KeysScale is null ? e.Y : e.Y + e.AnchorY * (e.H - height);
-        (d.X, d.Y, d.Width, d.Height) = ((float)x, (float)y, (float)width, (float)height);
-        (d.AnchorX, d.AnchorY) = (e.AnchorX, e.AnchorY);
-        d.Rotation = !e.Turns ? 0 : e.KeysRotation is { } turn ? (float)EasingCurves.ValueAt(turn, at) : e.Rotation;
-        d.Opacity = OpacityAt(e, t);
+        var turn = !e.Turns ? 0 : e.KeysRotation is { } keys ? (float)EasingCurves.ValueAt(keys, at) : e.Rotation;
+        return ((float)x, (float)y, (float)width, (float)height, turn);
     }
 
     private static float OpacityAt(Entry e, double t) =>
@@ -745,6 +829,8 @@ public sealed partial class GpuScenePlan
 
         if (e.Shadow is { } shadow)
             AddCard(e, shadow, clipTime, e.Layer, ref d);
+        for (var k = 0; k < e.LaidOn.Length; k++)
+            AddCard(e, e.LaidOn[k], clipTime, e.Layer, ref d);
     }
 
     private void AddLook(Entry e, double clipTime, ref GpuLayerDescriptor d)

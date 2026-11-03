@@ -966,6 +966,15 @@ public partial class EffectsPane : UserControl
         menu.IsOpen = true;
     }
 
+    /// <summary>Whether Paste Effects has anything to put down (a clip's menu asks).</summary>
+    public bool HasCopiedEffects => _clipboard is { Count: > 0 };
+
+    /// <summary>Copies the stack of the clip the pane shows (a clip's menu, which selects it first).</summary>
+    public void CopyEffects() => CopyStack();
+
+    /// <summary>Puts what was copied on the clip the pane shows, or the clips selected with it (a clip's menu).</summary>
+    public void PasteCopiedEffects() => PasteEffects(toTrack: false);
+
     private List<EffectState> CaptureStack() => _stack is null ? [] : [.. _stack.Select(c => _layer?.CaptureCard(c) ?? c.ToState())];
 
     private void CopyStack()
@@ -1257,8 +1266,21 @@ public partial class EffectsPane : UserControl
 
     private void AddOwner_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (!AddHost.IsMouseOver)
+        if (!AddHost.IsMouseOver && !AddFlyoutPanel.IsMouseOver && !IsInFlyout(e.OriginalSource as DependencyObject))
             CloseAdd();
+    }
+
+    // A press in the flyout reaches the window all the same (5.1-TrackEqualityAndVram, the user's directive): a popup's events route on
+    // through the popup's parent, so the window hears them first, and closing here took the button away before its Click.
+    private bool IsInFlyout(DependencyObject? source)
+    {
+        for (var at = source; at is not null; at = at is Visual ? VisualTreeHelper.GetParent(at) ?? LogicalTreeHelper.GetParent(at) : LogicalTreeHelper.GetParent(at))
+        {
+            if (ReferenceEquals(at, AddFlyoutPanel))
+                return true;
+        }
+
+        return false;
     }
 
     private void AddOwner_Deactivated(object? sender, EventArgs e)

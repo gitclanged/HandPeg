@@ -24,7 +24,7 @@ namespace HandPegApp;
 /// </summary>
 public partial class MainWindow
 {
-    private readonly List<(Thumb Box, Layer Clip, Action Place)> _playerBoxes = [];
+    private readonly List<(LayerBox Box, Layer Clip, Action Place)> _playerBoxes = [];
     private readonly List<(Layer Layer, PropertyChangedEventHandler Handler)> _playerSubscriptions = [];
     private Adorner? _playerGizmo;
     private Rect _playerFrame;
@@ -169,7 +169,7 @@ public partial class MainWindow
             ?
             [
                 .. _viewModel.Layers.Where(l => l is { IsAudio: false, IsEmptyTrack: false, IsHidden: false, IsCaptions: false } && l.IsPicture)
-                    .Where(l => l.GetSpan(total) is var (start, end) && at >= start - 0.0005 && at < end)
+                    .Where(l => l.GetSpan(total) is var (start, end) && at >= start - 0.0005 && at < end && _viewModel.IsPictureDrawn(l, at))
                     .GroupBy(l => l.TrackId).Select(t => t.First()),
             ]
             : [];
@@ -208,19 +208,24 @@ public partial class MainWindow
 
     private void AddPlayerBox(Layer clip)
     {
-        var box = new Thumb
+        var box = new LayerBox
         {
+            Layer = clip,
             Style = (Style)FindResource("PlayerLayerThumb"),
             Cursor = Cursors.SizeAll,
-            ToolTip = $"{clip.Name}: click to select it; drag to move it (Alt: no snapping). Double-click to center it.",
+            ToolTip = $"{clip.Name}: click to select it; drag to move it (Alt: no snapping). Double-click to center it. Selected, a click with no drag picks the layer under it.",
+            Takes = (self, at) => LayerBox.TakesPoint(self, HeldPlayerBox, at, IsDrawnNow),
         };
         System.Windows.Automation.AutomationProperties.SetName(box, $"{clip.Name} on the video");
 
         // A press selects the layer; the same press drags it.
+        var wasHeld = false;
         box.PreviewMouseLeftButtonDown += (_, _) =>
         {
+            _clickThrough?.Stop();
+            wasHeld = ReferenceEquals(HeldPlayerBox, box);
             _playerOutlineHidden = false;
-            if (!ReferenceEquals(PlayerSelected, clip))
+            if (!ReferenceEquals(PlayerSelected, clip) || HeldLayer is null)
                 SelectClip(clip);
             else
                 UpdatePlayerSelection();
@@ -232,6 +237,12 @@ public partial class MainWindow
         {
             moveStep.Changing();
             MoveTrackLayer(clip, e.HorizontalChange / _playerScale, e.VerticalChange / _playerScale, _playerFrame, null);
+        };
+        box.DragCompleted += (_, e) =>
+        {
+            // A click with no drag on the selected layer, on a place other layers show too: the next one down is what was meant.
+            if (wasHeld && !e.Canceled && Math.Abs(e.HorizontalChange) + Math.Abs(e.VerticalChange) < 2)
+                ClickThrough([.. _playerBoxes.Select(b => b.Box)], box, PlayerLayoutCanvas, next => SelectClip(next.Layer));
         };
         box.MouseDoubleClick += (_, e) =>
         {
@@ -264,6 +275,56 @@ public partial class MainWindow
         PropertyChangedEventHandler handler = (_, _) => Place();
         clip.PropertyChanged += handler;
         _playerSubscriptions.Add((clip, handler));
+    }
+
+    /// <summary>
+    /// The layer a press inside its box stays with, on the player and on the Canvas: what the user has selected and can see of it. With
+    /// nothing selected (the panes then show a clip by default), no box holds on to anything.
+    /// </summary>
+    private Layer? HeldLayer => !_playerOutlineHidden && (_selectedClip is Layer || _mainClipSelected) ? PlayerSelected : null;
+
+    private LayerBox? HeldPlayerBox
+    {
+        get
+        {
+            if (HeldLayer is not { } held)
+                return null;
+
+            foreach (var (box, clip, _) in _playerBoxes)
+            {
+                if (ReferenceEquals(clip, held))
+                    return box;
+            }
+
+            return null;
+        }
+    }
+
+    // Whether a layer's picture is drawn at the playhead: what is not cannot be clicked or dragged.
+    private bool IsDrawnNow(Layer layer) => _viewModel.IsPictureDrawn(layer, _viewModel.PositionMs / 1000);
+
+    private System.Windows.Threading.DispatcherTimer? _clickThrough;
+
+    // How long a click waits before it passes to the layer under it: the second press of a double-click (center it) is the box's own.
+    private static readonly TimeSpan ClickThroughWait = TimeSpan.FromMilliseconds(300);
+
+    /// <summary>After a click with no drag on the selected box: the next box down there is chosen, unless that click turns out to be half a double-click.</summary>
+    /// <param name="boxes">The surface's boxes, bottom first.</param>
+    private void ClickThrough(IReadOnlyList<LayerBox> boxes, LayerBox from, FrameworkElement surface, Action<LayerBox> choose)
+    {
+        if (LayerBox.NextDown(boxes, from, surface, Mouse.GetPosition(surface), IsDrawnNow) is not { } box)
+            return;
+
+        _clickThrough?.Stop();
+        _clickThrough = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Input) { Interval = ClickThroughWait };
+        var timer = _clickThrough;
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (box.IsVisible)
+                choose(box);
+        };
+        timer.Start();
     }
 
     /// <summary>Outlines the selected layer's box and gives it the handles; every other box is left see-through.</summary>

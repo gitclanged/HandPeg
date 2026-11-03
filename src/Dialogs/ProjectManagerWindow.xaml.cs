@@ -54,14 +54,33 @@ public partial class ProjectManagerWindow : Window
     // How tall the pictures are decoded: the list's picture is 72 pixels tall, at up to twice that on a high-DPI screen.
     private const int PictureHeight = 144;
 
-    public ProjectManagerWindow(MainViewModel viewModel)
+    /// <param name="focusName">Opened to save (Ctrl+S on a new project, Save As): the name box has the keyboard, its text chosen.</param>
+    public ProjectManagerWindow(MainViewModel viewModel, bool focusName = false)
     {
         InitializeComponent();
         _viewModel = viewModel;
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
 
-        if (viewModel.HasSource)
+        if (viewModel.CurrentProjectPath.Length > 0)
+            NameBox.Text = Path.GetFileNameWithoutExtension(viewModel.CurrentProjectPath);
+        else if (viewModel.HasSource)
             NameBox.Text = Path.GetFileNameWithoutExtension(viewModel.LocalMediaPath);
+        if (focusName)
+        {
+            _closeOnSave = true;
+            Loaded += (_, _) =>
+            {
+                NameBox.Focus();
+                NameBox.SelectAll();
+            };
+            NameBox.KeyDown += (_, e) =>
+            {
+                if (e.Key != System.Windows.Input.Key.Enter)
+                    return;
+                e.Handled = true;
+                Save_Click(NameBox, new RoutedEventArgs());
+            };
+        }
 
         PreviewsBox.IsChecked = AppSettings.Current.ShowProjectPreviews;
         RefreshList();
@@ -77,6 +96,9 @@ public partial class ProjectManagerWindow : Window
 
     /// <summary>The project the user chose to open, for the main window to load once this one has closed.</summary>
     public string? ProjectToLoad { get; private set; }
+
+    // Opened to save: a project saved is what it was opened for.
+    private readonly bool _closeOnSave;
 
     /// <summary>+ New Project was chosen: the main window empties the session (asking about unsaved changes first).</summary>
     public bool NewProjectRequested { get; private set; }
@@ -261,6 +283,12 @@ public partial class ProjectManagerWindow : Window
         }
 
         MessageText.Text = _viewModel.SaveProject(NameBox.Text);
+        if (_closeOnSave && MessageText.Text.StartsWith("Project saved", StringComparison.Ordinal))
+        {
+            Close();
+            return;
+        }
+
         RefreshList();
     }
 

@@ -338,8 +338,11 @@ public sealed class TimelineBlock
     /// <summary>What letting go of a dragged fade handle does: the fade in (true) or out, and its new length in seconds.</summary>
     public Action<bool, double>? FadeEdit { get; init; }
 
-    /// <summary>A crossfade from the block before it on its bar, in seconds: drawn as a pill across their cut, centred on it.</summary>
-    public double CrossfadeIn { get; init; }
+    /// <summary>A crossfade from the block before it on its bar, in seconds: drawn as a box across their cut, centred on it.</summary>
+    public double CrossfadeIn { get; set; }
+
+    /// <summary>What letting go of a crossfade's dragged edge does (its new length, seconds), and its remove button (0). Null for one that cannot be changed here.</summary>
+    public Action<double>? CrossfadeEdit { get; init; }
 
     /// <summary>How many pixels a second of its file takes on the bar (its speed taken in), for a slip and for fades; 0 for none.</summary>
     public double PixelsPerMediaSecond { get; init; }

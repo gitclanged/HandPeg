@@ -268,13 +268,33 @@ public partial class MainWindow
         {
             case StyleFile style:
                 _dropClock = System.Diagnostics.Stopwatch.StartNew();
-                _ = TimeStyleDropAsync(_viewModel.LoadFileWithStyleAsync(source, style.Path), _dropClock);
+                _ = TimeStyleDropAsync(OpenWithStyleAsync(source, style.Path, link is null ? InLineAfterFirst(e.Data) : []), _dropClock);
                 break;
 
             case SquishPreset squish:
                 _ = SquishDroppedAsync(source, squish);
                 break;
         }
+    }
+
+    /// <summary>The first file opened with a style, and those dropped with it after it, in line, each with the style's template (5.1-DogfoodPolish).</summary>
+    private async Task OpenWithStyleAsync(string first, string style, string[] rest)
+    {
+        await _viewModel.LoadFileWithStyleAsync(first, style);
+        await FollowMainVideoAsync(rest);
+    }
+
+    /// <summary>The pictures a drag carries after its first file: what follows it in line when it is opened. Sounds and projects are no such thing.</summary>
+    private static string[] InLineAfterFirst(IDataObject data) =>
+        data.GetData(DataFormats.FileDrop) is string[] { Length: > 1 } files
+            ? files.Skip(1).Where(f => !f.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) && MediaBrowserItem.KindOf(f) != MediaBrowserKind.Audio).ToArray()
+            : [];
+
+    /// <summary>Files put after the main video just opened, one after another on its track: Clip 1, Clip 2, Clip 3.</summary>
+    private async Task FollowMainVideoAsync(string[] files)
+    {
+        if (files.Length > 0 && _viewModel.HasSource)
+            await AddDroppedLayersAsync(files, _viewModel.DurationMs / 1000, _viewModel.MainLayer, inLine: true);
     }
 
     /// <summary>How long a drop on a style took to open its file with the style (the log; the Overview Bar's sheet adds its own line).</summary>
@@ -472,6 +492,17 @@ public partial class MainWindow
             return;
         }
 
+        // Several files with nothing open: the first is opened and the others follow it, in line.
+        if (!_viewModel.HasSource && !_viewModel.IsBusy && InLineAfterFirst(e.Data) is { Length: > 0 } rest)
+        {
+            DropLater("a drop of several files", async () =>
+            {
+                await _viewModel.LoadFileAsync(file);
+                await FollowMainVideoAsync(rest);
+            });
+            return;
+        }
+
         // The dialog must not open inside the drop itself: Explorer waits, frozen, until the drop handler returns.
         Dispatcher.BeginInvoke(() => LoadDroppedFile(file));
     }
@@ -547,10 +578,13 @@ public partial class MainWindow
     /// room: MainViewModel.PlaceClip); on the main video's row it takes the main video's place. Several videos dropped
     /// at once follow each other on one track, end to end, from the moment dropped on (a Sequence Drop); stacked
     /// (<paramref name="stack"/>, 4.4: a Stack Drop), each goes on a track of its own just above the one before, all at that
-    /// moment. Background work is held back until they are on it and filled in (4.3E: each video's probe is urgent, never
-    /// behind the media browser's posters and strips), and whether the files are there is asked away from the interface.
+    /// moment. A clip dropped onto a track with a template takes that template, with pieces of its own over its own span
+    /// (5.1-DogfoodPolish, <see cref="MainViewModel.InheritTemplate"/>). Background work is held back until they are on it and filled
+    /// in (4.3E: each video's probe is urgent, never behind the media browser's posters and strips), and whether the files are there
+    /// is asked away from the interface.
     /// </summary>
-    private async Task AddDroppedLayersAsync(string[] files, double seconds, Layer? row, bool stack = false)
+    /// <param name="inLine">The first goes onto the row's track too, whatever Settings say.</param>
+    private async Task AddDroppedLayersAsync(string[] files, double seconds, Layer? row, bool stack = false, bool inLine = false)
     {
         using var hold = WorkScheduler.HoldBackground();
         Activate();
@@ -562,7 +596,8 @@ public partial class MainWindow
 
         var existing = await Task.Run(() => files.Where(File.Exists).ToArray());
         var (added, at, videos) = (0, seconds, existing.Count(f => !ImageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant())));
-        var follows = false;
+        var follows = inLine;
+        var droppedOn = row;
         foreach (var file in existing)
         {
             if (ImageExtensions.Contains(Path.GetExtension(file).ToLowerInvariant()))
@@ -572,10 +607,11 @@ public partial class MainWindow
                 continue;
             }
 
-            if (await _viewModel.AddVideoClipAsync(file, at, row, playOnce: videos > 1, follows: follows) is not { } clip)
+            if (await _viewModel.AddVideoClipAsync(file, at, row, playOnce: videos > 1 || inLine, follows: follows) is not { } clip)
                 continue;
 
             added++;
+            _viewModel.InheritTemplate(clip, droppedOn, at);
 
             // Stacked, the next video goes beside this one's track, at the same moment: there is no room on its track, so
             // it gets a track of its own just above. Otherwise it goes on the same track, where this one ends.
@@ -630,6 +666,4 @@ public sealed record DropTargetItem(string Name, string IconData, object Target)
 {
     /// <summary>A card with a header: a style.</summary>
     public const string StyleIcon = "M 3,5 H 23 V 21 H 3 Z M 3,10 H 23 M 7,14 H 15 M 7,17 H 12";
-
-
 }

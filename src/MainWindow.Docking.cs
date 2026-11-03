@@ -189,6 +189,17 @@ public partial class MainWindow
         }
     }
 
+    // The Overview Bar's lower edge (5.1-Polish, the user's directive: OverviewGrip): its height setting when the drag began.
+    private double _overviewHeightAtDrag;
+
+    private void OverviewGrip_DragStarted() => _overviewHeightAtDrag = _viewModel.MasterTimelineHeight;
+
+    /// <summary>The Overview Bar's lower edge dragged: its height setting, four pixels a step (TimelineAreaHeight), within its presets' range.</summary>
+    private void OverviewGrip_Dragged(double pixels) =>
+        _viewModel.MasterTimelineHeight = Math.Clamp(_overviewHeightAtDrag + Math.Round(pixels / 4), ViewModels.MainViewModel.CompactMasterTimeline, ViewModels.MainViewModel.TallMasterTimeline);
+
+    private void OverviewGrip_ResetRequested() => _viewModel.MasterTimelineHeight = AppSettings.DefaultMasterTimelineHeight;
+
     /// <summary>The border beside the overview bar, Ctrl-dragged: the bar's height setting, four pixels a step.</summary>
     private void ResizeMasterTimeline(double pixels)
     {

@@ -61,6 +61,9 @@ public static class Program
         results.Add(GraphCases.GpuAvInvariant());
         results.AddRange(CaptionTests.All());
         results.AddRange(WaveformTests.All());
+        results.AddRange(CutoutTests.All());
+        results.AddRange(DogfoodTests.All());
+        results.AddRange(GpuFxTests.All());
         results.AddRange(PeMachineTests.All());
         results.AddRange(MediaFoundationTests.All());
         results.AddRange(AudioEngineTests.All());

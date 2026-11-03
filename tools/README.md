@@ -19,14 +19,11 @@ Bring HandPeg to the front with an Alt key tap before `SetForegroundWindow` (Win
 **Close HandPeg before `dotnet build`**: a running copy locks `HandPeg.dll`, the copy fails, and the next
 launch runs the old build (watch for MSB3026/MSB3027 in the build output).
 
-## hud_mask_check.py
-
-`python tools/hud_mask_check.py src/Services/HudLibrary.cs <outdir>` draws each game's outlines from
-`HudLibrary.cs` into a 1280 x 720 grey picture, to overlay on a screenshot with FFmpeg and check the tracing.
-
 ## GoldenTests.ps1 (golden-file tests of the graphs, the project format and the runner)
 
 `pwsh -NoProfile -File tools\GoldenTests.ps1 [-Update] [-Filter <part of a name>] [-NoBuild]`
+
+SeekBench on a long project: always give `--from <s> --seconds <s>`: it runs in real time, so `MULTI VIDEO TEST` alone (6,703 s) would take hours. `--trace` prints every late frame with the lanes, seeks and render time, `--rest <ms>` is the pause before play. It clears the frame cache before each run: its numbers are cold-cache.
 
 Builds `tools\GoldenTests` (a console program referencing the app's build, so it tests the very code HandPeg runs)
 once, then runs it; the tests themselves take under 2 s (about 1.3 s of it the timeline model's 30,000 splits and

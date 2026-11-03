@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Shapes;
 using HandPegApp.Models;
 using HandPegApp.Services;
 using HandPegApp.Services.Gpu;
@@ -29,14 +30,16 @@ namespace HandPegApp;
 //   beyond another track's plane, its track moves past that track (MoveLayerUp / MoveLayerDown, the Layers' own reorder),
 //   all of it one undo step (EditTogether), and the Timeline's rows show it at once (5.0-Release: a cut-out moved behind
 //   its video is laid under its row when its stack is open, in front above it). Each track has its own place in the stack
-//   (GpuScenePlan.PlaceLayers), so the planes keep theirs while layers come and go.
+//   (GpuScenePlan.PlaceLayers), so the planes keep theirs while layers come and go. The captions' plane (5.1-Polish, the
+//   user's Q2) is picked, moved and resized as their box is, and lifted past a track's plane they go over it or under it
+//   (MoveExplodedCaptions: the track's CaptionsUnder), drawn there by the preview and by every export.
 // - The right button (or the middle; Alt + middle from the flat player) orbits, from anywhere; the wheel moves the camera
 //   in and out; Ctrl + the wheel selects the layer in front of or behind the selected one, in the stack's order (its plane
 //   and badge in the accent); a double-click on the empty space puts the camera back; Esc, the panel's close button or the
 //   toggle leaves.
 public partial class MainWindow
 {
-    private enum ExplodedDragKind { None, Orbit, Move, Depth, Resize }
+    private enum ExplodedDragKind { None, Orbit, Move, Depth, Resize, AlongX, AlongY }
 
     // Degrees of turn per DIP dragged; the wheel's step (a notch in); DIPs per place in the stack when its depth cannot be
     // seen (looking straight at it); W A S D's turn, degrees per second.
@@ -89,6 +92,10 @@ public partial class MainWindow
     /// Into the 3D view (the camera swings out of the flat picture) or out of it (back into the flat picture, the overlays of
     /// the flat player coming back once it is there). Only on the GPU engine, with a video open.
     /// </summary>
+    // When the 3D view was left, and how long its layer may wait for a flat picture.
+    private long _explodedLeftAt;
+    private const long ExplodedWayBackMs = 900;
+
     private void SetExplodedView(bool on)
     {
         if (on == _explodedUi)
@@ -135,6 +142,7 @@ public partial class MainWindow
         {
             EndExplodedDrag(cancelled: true);
             _explodedUi = false;
+            _explodedLeftAt = Environment.TickCount64;
             _gpu?.SetExploded(false);
 
             // The panel and the badges go now; the layer keeps taking presses until the picture is flat again (OnExplodedFrame),
@@ -223,8 +231,9 @@ public partial class MainWindow
 
     private void ExplodedClose_Click(object sender, RoutedEventArgs e) => SetExplodedView(false);
 
-    /// <summary>The clip selected (the timeline's selection) as the engine's key; 0 none.</summary>
-    private long SelectedExplodedKey() => _selectedClip is Layer { ClipId: var id } && id != Guid.Empty ? GpuHash.Of(id) : 0;
+    /// <summary>The clip selected (the timeline's selection) as the engine's key (the captions' own, selected); 0 none.</summary>
+    private long SelectedExplodedKey() => _selectedClip is Layer { IsCaptions: true } ? GpuScenePlan.CaptionClipKey
+        : _selectedClip is Layer { ClipId: var id } && id != Guid.Empty ? GpuHash.Of(id) : 0;
 
     // ----- Every frame while the 3D view is up -----
 
@@ -239,7 +248,9 @@ public partial class MainWindow
             engine = _gpu;
         }
 
-        if (engine is null || !_explodedUi && !engine.IsDrawingExploded)
+        // Paused, the engine may have no frame to tell by: the way back ends all the same, or the flat player's boxes under this
+        // layer take no press (5.1-TrackEqualityAndVram, the user's directive).
+        if (engine is null || !_explodedUi && (!engine.IsDrawingExploded || Environment.TickCount64 - _explodedLeftAt > ExplodedWayBackMs))
         {
             HideExplodedLayer();
             return;
@@ -375,6 +386,102 @@ public partial class MainWindow
         {
             handle.Visibility = Visibility.Collapsed;
         }
+
+        PlaceExplodedGizmo(camera, toX, toY);
+    }
+
+    // ----- The Studio Stage's 3-axis gizmo (5.1-GpuFx) -----
+
+    // Across in red, down the picture in green, through the stack in blue. Drawn in vector (Section 1), on the selected plane; a press on an arrow moves along it alone.
+    private (Line Shaft, Polygon Head)[]? _gizmoAxes;
+    private readonly Point[] _gizmoTips = new Point[3];
+    private Point _gizmoMiddle;
+    private bool _gizmoShown;
+
+    /// <summary>The arrows' length, as a share of the canvas's shorter side; how near (DIPs) a press must be to take one.</summary>
+    private const float GizmoLength = 0.14f;
+    private const double GizmoReach = 8;
+
+    private static readonly SolidColorBrush[] GizmoColors = [FrozenBrush(Color.FromRgb(0xFF, 0x4D, 0x5E)), FrozenBrush(Color.FromRgb(0x45, 0xE0, 0x7A)), FrozenBrush(Color.FromRgb(0x4D, 0x9D, 0xFF))];
+
+    private (Line Shaft, Polygon Head)[] MakeExplodedGizmo()
+    {
+        var axes = new (Line Shaft, Polygon Head)[3];
+        for (var axis = 0; axis < 3; axis++)
+        {
+            var shaft = new Line { Stroke = GizmoColors[axis], StrokeThickness = 2, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
+            var head = new Polygon { Fill = GizmoColors[axis], IsHitTestVisible = false, Visibility = Visibility.Collapsed, Points = [default, default, default] };
+            Panel.SetZIndex(shaft, 3);
+            Panel.SetZIndex(head, 3);
+            ExplodedBadges.Children.Add(shaft);
+            ExplodedBadges.Children.Add(head);
+            axes[axis] = (shaft, head);
+        }
+
+        return axes;
+    }
+
+    /// <summary>The arrows at the selected plane's middle, from the scene drawn last. None without Extra Animations: the plain view is as it was.</summary>
+    private void PlaceExplodedGizmo(in ExplodedCamera camera, double toX, double toY)
+    {
+        var axes = _gizmoAxes ??= MakeExplodedGizmo();
+        _gizmoShown = false;
+        if (AppSettings.Current.EnableExtraAnimations && _gpu is { } engine && SelectedExplodedHandle(engine, out var plane, out _))
+        {
+            var z = camera.DepthOf(plane.ZDepth);
+            var middle = ExplodedCamera.BoxPoint(plane.X, plane.Y, plane.Width, plane.Height, plane.Rotation, plane.AnchorX, plane.AnchorY, 0.5f, 0.5f);
+            var length = Math.Min(camera.CanvasWidth, camera.CanvasHeight) * GizmoLength;
+            var from = camera.Project(middle.X, middle.Y, z);
+            Span<Vector2> tips = [camera.Project(middle.X + length, middle.Y, z), camera.Project(middle.X, middle.Y - length, z), camera.Project(middle.X, middle.Y, z + length)];
+            if (float.IsFinite(from.X) && float.IsFinite(from.Y))
+            {
+                _gizmoMiddle = new Point(from.X * toX, from.Y * toY);
+                _gizmoShown = true;
+                for (var axis = 0; axis < 3; axis++)
+                {
+                    var (shaft, head) = axes[axis];
+                    var tip = float.IsFinite(tips[axis].X) && float.IsFinite(tips[axis].Y) ? new Point(tips[axis].X * toX, tips[axis].Y * toY) : _gizmoMiddle;
+                    _gizmoTips[axis] = tip;
+                    var way = tip - _gizmoMiddle;
+                    var shown = way.Length >= 6;
+                    shaft.Visibility = head.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+                    if (!shown)
+                        continue;
+
+                    way.Normalize();
+                    var side = new Vector(-way.Y, way.X) * 4.5;
+                    var back = tip - way * 11;
+                    (shaft.X1, shaft.Y1, shaft.X2, shaft.Y2) = (_gizmoMiddle.X, _gizmoMiddle.Y, back.X, back.Y);
+                    (head.Points[0], head.Points[1], head.Points[2]) = (tip, back + side, back - side);
+                    shaft.Opacity = head.Opacity = camera.Amount;
+                }
+
+                return;
+            }
+        }
+
+        foreach (var (shaft, head) in axes)
+            shaft.Visibility = head.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>Which arrow a point is on (0 across, 1 down, 2 through the stack), the nearest within reach; -1 for none.</summary>
+    private int ExplodedAxisAt(Point at)
+    {
+        var (best, nearest) = (-1, GizmoReach);
+        for (var axis = 0; _gizmoShown && axis < 3; axis++)
+        {
+            var way = _gizmoTips[axis] - _gizmoMiddle;
+            var length = way.LengthSquared;
+            if (length < 36)
+                continue;
+
+            var along = Math.Clamp(((at - _gizmoMiddle) * way) / length, 0, 1);
+            var distance = (at - (_gizmoMiddle + way * along)).Length;
+            if (distance < nearest)
+                (best, nearest) = (axis, distance);
+        }
+
+        return best;
     }
 
     private Border? _explodedHandle;
@@ -532,6 +639,18 @@ public partial class MainWindow
                 return;
             }
 
+            // An arrow of the gizmo: along it alone.
+            if (!TimelineDragHeld && e.ClickCount == 1 && ExplodedAxisAt(at) is >= 0 and var axis
+                && SelectedExplodedHandle(engine, out var held, out _) && ExplodedViewOf(held) is { } heldView)
+            {
+                var pressed = ExplodedOutputPoint(at, _explodedScene.OutputWidth, _explodedScene.OutputHeight);
+                if (_explodedScene.Camera.HitPlane(pressed.X, pressed.Y, _explodedScene.Camera.DepthOf(held.ZDepth), out var onHeld))
+                {
+                    BeginExplodedPlaneDrag(held, heldView, onHeld, axis == 2 ? ExplodedDragKind.Depth : axis == 0 ? ExplodedDragKind.AlongX : ExplodedDragKind.AlongY, $"move {heldView.Name}", at);
+                    return;
+                }
+            }
+
             if (!PickExplodedPlane(engine, at, out var plane, out var view, out var hit))
             {
                 // The empty space: a double-click puts the camera back; a press there does nothing else (the left button
@@ -600,7 +719,7 @@ public partial class MainWindow
                     var moved = at - _explodedLast;
                     engine.Orbit(-moved.X * ExplodedOrbitPerDip, moved.Y * ExplodedOrbitPerDip);
                     break;
-                case ExplodedDragKind.Move:
+                case ExplodedDragKind.Move or ExplodedDragKind.AlongX or ExplodedDragKind.AlongY:
                     MoveExplodedPlane(at);
                     break;
                 case ExplodedDragKind.Resize:
@@ -842,9 +961,14 @@ public partial class MainWindow
         ResizeTrackLayer(view, local.X * (double)frameWidth / camera.CanvasWidth, local.Y * (double)frameHeight / camera.CanvasHeight);
     }
 
-    /// <summary>The clip view a plane is the picture of (from its clip's id); null for one that is no clip's (the whole picture, the captions).</summary>
+    /// <summary>
+    /// The clip view a plane is the picture of (from its clip's id), or the caption box for the captions' plane (5.1-Polish);
+    /// null for one that is neither (the whole picture's look, the fades, the subtitle pictures).
+    /// </summary>
     private Layer? ExplodedViewOf(in ExplodedPlane plane)
     {
+        if (plane.ClipKey == GpuScenePlan.CaptionClipKey)
+            return _viewModel.CaptionLayer;
         if (ExplodedInfoOf(plane) is not { ClipId.Length: > 0 } info || !Guid.TryParse(info.ClipId, out var id)
             || _viewModel.Document.FindClip(id) is not { } clip)
             return null;
@@ -864,6 +988,10 @@ public partial class MainWindow
 
         var moved = onPlane - _explodedHit;
         _explodedHit = onPlane;
+        if (_explodedDrag == ExplodedDragKind.AlongX)
+            moved.Y = 0;
+        else if (_explodedDrag == ExplodedDragKind.AlongY)
+            moved.X = 0;
         if (moved == Vector2.Zero || !float.IsFinite(moved.X) || !float.IsFinite(moved.Y))
             return;
 
@@ -909,6 +1037,12 @@ public partial class MainWindow
     /// </summary>
     private void MoveExplodedTrack()
     {
+        if (_explodedView is { IsCaptions: true } && Math.Abs(_explodedLift) >= 0.5)
+        {
+            MoveExplodedCaptions();
+            return;
+        }
+
         if (_explodedView is not { } view || Math.Abs(_explodedLift) < 0.5 || _viewModel.ClipOf(view) is not { } model
             || _viewModel.Document.TrackOf(model) is not { } track)
             return;
@@ -969,5 +1103,47 @@ public partial class MainWindow
         _viewModel.StatusText = moved
             ? $"{name} moved {(forward ? "in front of" : "behind")} {targetName}: its track is there in the stack now. Ctrl+Z puts it back."
             : $"{name} could not be moved in the stack.";
+    }
+    /// <summary>
+    /// The captions' plane let go after a lift through the stack (5.1-Polish, the user's Q2): past another track's plane,
+    /// the captions go over the farthest one passed (lifted forward) or under it (back), one undo step; short of any, nothing
+    /// changes. They are drawn there by the preview and by every export.
+    /// </summary>
+    private void MoveExplodedCaptions()
+    {
+        var (from, to, forward) = (_explodedPlane.ZDepth, _explodedPlane.ZDepth + _explodedLift, _explodedLift > 0);
+        if (_gpu is { } engine)
+            engine.TryGetExplodedScene(_explodedScene);
+        var scene = _explodedScene;
+        TakeExplodedInfos(scene);
+
+        Models.Timeline.TimelineTrackModel? target = null;
+        string? targetName = null;
+        var farthest = from;
+        for (var k = 0; k < scene.Count; k++)
+        {
+            ref readonly var plane = ref scene.Planes[k];
+            if (plane.ClipKey == GpuScenePlan.CaptionClipKey || plane.BlurFillOnly || ExplodedViewOf(plane) is not { IsCaptions: false } other
+                || _viewModel.ClipOf(other) is not { } clip || _viewModel.Document.TrackOf(clip) is not { } track || _viewModel.CaptionPlaceOf(track) < 0)
+                continue;
+
+            var depth = plane.ZDepth;
+            var passed = forward ? depth > from && depth < to && depth > farthest : depth < from && depth > to && depth < farthest;
+            if (passed)
+                (target, targetName, farthest) = (track, other.Name, depth);
+        }
+
+        if (target is null)
+        {
+            _viewModel.StatusText = "The captions stay where they are in the stack: drag them past another layer's plane to put them over or under it.";
+            return;
+        }
+
+        var moved = forward
+            ? _viewModel.PutCaptionsAt(_viewModel.CaptionPlaceOf(target) + 1, $"bring the captions in front of {targetName}")
+            : _viewModel.PutCaptionsUnder(target, $"send the captions behind {targetName}");
+        _viewModel.StatusText = moved
+            ? $"The captions are {(forward ? "in front of" : "behind")} {targetName} now: the preview and every export draw them there. Ctrl+Z puts them back."
+            : "The captions could not be moved in the stack.";
     }
 }

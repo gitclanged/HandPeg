@@ -30,6 +30,9 @@ public enum TransitionStyle
 
     /// <summary>A dissolve that comes in out of a blur (or goes out into one).</summary>
     BlurDissolve,
+
+    /// <summary>The Thanos Snap: the picture breaks into embers on a wind (or gathers itself out of them).</summary>
+    ParticleSnap,
 }
 
 /// <summary>What each <see cref="TransitionStyle"/> is called, which way it goes, and the curve its fade follows.</summary>
@@ -49,6 +52,7 @@ public static class TransitionStyles
         TransitionStyle.SlideDown => "Slide Down",
         TransitionStyle.Zoom => "Zoom (Scale Pop)",
         TransitionStyle.BlurDissolve => "Blur Dissolve",
+        TransitionStyle.ParticleSnap => "Particle Disintegration (Thanos Snap)",
         _ => "Dissolve",
     };
 
@@ -69,11 +73,11 @@ public static class TransitionStyles
     /// <summary>
     /// The curve a fade of this style follows, as how much of the clip is there (0 to 1) against how far through the fade
     /// the clock is: a dissolve evenly; a wipe easing in and out; a slide arriving gently (and leaving as gently as it
-    /// starts); a zoom with a little overshoot. The same curve on the timeline and in the graph (EasingCurves).
+    /// starts); a zoom with a little overshoot; the Thanos Snap evenly. The same curve on the timeline and in the graph (EasingCurves).
     /// </summary>
     public static EasingType Easing(TransitionStyle style) => style switch
     {
-        TransitionStyle.Dissolve or TransitionStyle.BlurDissolve => EasingType.Linear,
+        TransitionStyle.Dissolve or TransitionStyle.BlurDissolve or TransitionStyle.ParticleSnap => EasingType.Linear,
         TransitionStyle.Zoom => EasingType.Back,
         _ when IsSlide(style) => EasingType.EaseOut,
         _ => EasingType.EaseInOut,
@@ -84,6 +88,7 @@ public static class TransitionStyles
     {
         TransitionStyle.Zoom => GpuShaderSlot.TransitionZoom,
         TransitionStyle.BlurDissolve => GpuShaderSlot.TransitionBlurDissolve,
+        TransitionStyle.ParticleSnap => GpuShaderSlot.TransitionParticleSnap,
         _ when IsWipe(style) => GpuShaderSlot.TransitionWipe,
         _ when IsSlide(style) => GpuShaderSlot.TransitionSlide,
         _ => GpuShaderSlot.TransitionDissolve,
@@ -100,6 +105,16 @@ public static class TransitionStyles
         var shown = EasingCurves.Evaluate(fadingIn ? through : 1 - through, new Keyframe(0, 0, Easing(style)));
         var (x, y) = Direction(style);
         return new(GpuSlot(style), (float)shown, x, y, (float)through, fadingIn ? 1 : 0, 0, 0, 0);
+    }
+
+    /// <summary>
+    /// The Thanos Snap as a filter graph's <c>geq</c> writes it (the export without the card): 1 where a grain of <paramref name="grain"/>
+    /// pixels is still there at <paramref name="shown"/>, in the card's sweep from the side the wind blows to. In place: no embers fly.
+    /// </summary>
+    public static string SnapGrains(string grain, string shown)
+    {
+        var hash = $"(sin(floor(X/{grain})*12.9898+floor(Y/{grain})*78.233)*43758.5453)";
+        return $"lt(0.58*(1.34-X/W*0.86-(1-Y/H)*0.5)+0.42*({hash}-floor({hash})),{shown})";
     }
 
     private static readonly Dictionary<TransitionStyle, Geometry> Icons = [];
@@ -156,6 +171,17 @@ public static class TransitionStyles
                 foreach (var (x, y, sx, sy) in new[] { (0.5, 0.5, 1, 1), (15.5, 0.5, -1, 1), (0.5, 11.5, 1, -1), (15.5, 11.5, -1, -1) })
                     Shape(false, false, new(x + 4 * sx, y), new(x, y), new(x, y + 3.5 * sy));
                 Shape(true, true, new(6, 4.5), new(10, 4.5), new(10, 7.5), new(6, 7.5));
+            }
+            else if (style == TransitionStyle.ParticleSnap)
+            {
+                // A block breaking up: whole at the left, grains flying off up and to the right.
+                Shape(true, true, new(0.5, 3), new(6.5, 3), new(6.5, 11.5), new(0.5, 11.5));
+                foreach (var (x, y, r) in new[] { (9.0, 8.5, 1.1), (9.5, 4.5, 0.9), (12.0, 6.0, 0.8), (12.5, 2.5, 0.7), (15.0, 1.5, 0.5) })
+                {
+                    context.BeginFigure(new Point(x - r, y), true, true);
+                    context.ArcTo(new Point(x + r, y), new Size(r, r), 0, false, SweepDirection.Clockwise, false, false);
+                    context.ArcTo(new Point(x - r, y), new Size(r, r), 0, false, SweepDirection.Clockwise, false, false);
+                }
             }
             else if (style == TransitionStyle.BlurDissolve)
             {

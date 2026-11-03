@@ -1,3 +1,4 @@
+using System.IO;
 using System.Globalization;
 using HandPegApp.Models;
 
@@ -509,6 +510,31 @@ public sealed class AudioMixer : IDisposable
             mixer.Prime(frame);
             mixer.FeedInline(frame, frames);
             mixer.Mix(interleavedStereo.Slice((int)(frame * 2), frames * 2), frame, frames);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="Render"/> of a long program into a stream as it goes (interleaved stereo floats, little-endian as the processor keeps
+    /// them), one mixer from end to end: an hour of it is 1.3 GB, which no array holds.
+    /// </summary>
+    public static void RenderTo(AudioProgram program, double fromSeconds, long frames, int sampleRate, Stream output, Action<double>? progress, CancellationToken token)
+    {
+        const int block = 4800, reportEvery = 100;
+        using var mixer = new AudioMixer(sampleRate, block, threaded: false);
+        mixer.SetProgram(program);
+        mixer.SetLine(0, fromSeconds, 1, jump: true);
+        var buffer = new float[block * 2];
+        var blocks = 0;
+        for (long frame = 0; frame < frames; frame += block)
+        {
+            token.ThrowIfCancellationRequested();
+            var count = (int)Math.Min(block, frames - frame);
+            mixer.Prime(frame);
+            mixer.FeedInline(frame, count);
+            mixer.Mix(buffer.AsSpan(0, count * 2), frame, count);
+            output.Write(System.Runtime.InteropServices.MemoryMarshal.AsBytes(buffer.AsSpan(0, count * 2)));
+            if (++blocks % reportEvery == 0)
+                progress?.Invoke((double)frame / Math.Max(frames, 1));
         }
     }
 

@@ -278,6 +278,9 @@ public partial class SettingsWindow : Window
     {
         InitializeComponent();
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
+
+        // Laid over the editor at its size (CoverWindow): its content takes HandPeg's UI scale, its size never.
+        UiScale.SetKeepsItsSize(this, true);
         _viewModel = viewModel;
         DataContext = _settings;
 
@@ -327,7 +330,7 @@ public partial class SettingsWindow : Window
 
         // About: which HandPeg this is, and whether it is a copy that can update itself.
         AboutText.Text = $"Version {AppUpdater.CurrentVersion}  ·  " + (AppPaths.IsSelfContained
-            ? "self-contained copy: it keeps everything beside the program, and is updated by replacing its folder."
+            ? "self-contained copy: it keeps everything in its own folder, and is updated by replacing that folder."
             : "updates itself from its GitHub releases when it was put in by the installer: a newer one is offered at startup, and downloaded when you press Update.");
         RepositoryLink.NavigateUri = new Uri(AppSettings.HandPegRepositoryUrl);
         RepositoryLink.Inlines.Add(AppSettings.HandPegRepositoryUrl);

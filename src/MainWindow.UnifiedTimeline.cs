@@ -20,18 +20,50 @@ namespace HandPegApp;
 // The selection (_selectedClip) is the window's, shared with the Canvas, the Keyframes pane and the playback bar.
 public partial class MainWindow
 {
-    // How tall rows are: pictures and sounds by the one Track Height (1 to 50, LayerTrackHeight: the pane's slider and its
-    // Pane Settings), a sound's row a little lower than a picture's; the captions and the background are thin, having
-    // little to show.
+    // How tall rows are: pictures and sounds by the one Track Height (1 to 50, LayerTrackHeight: the pane's height pill and
+    // slider, Alt + the wheel over the tracks, Shift + a row's lower edge dragged in the headers, and its Pane Settings), a
+    // picture's from 32 to 120 px (5.1-Polish, the user's directive), a sound's a little lower; a track's row can have a
+    // height of its own (its lower edge dragged, TimelineTrackModel.Height, the user's Q2); the captions and the background
+    // are thin, having little to show.
     private const double CaptionRowHeight = 30;
     private const double BackgroundRowHeight = 26;
+    private const double LowestPictureRow = 32, TallestPictureRow = 120, LowestSoundRow = 28, TallestSoundRow = 92;
+
+    /// <summary>The Track Height HandPeg starts with (a double-click on a row's lower edge, or on the height pill, puts it back).</summary>
+    private const double UsualTrackHeight = 25;
+
+    // How many steps of the Track Height one notch of Alt + the wheel is, and the setting when a row's edge drag began.
+    private const int TrackHeightStepsPerNotch = 2;
+    private double _trackHeightAtDrag;
+
+    // A track's row being sized by its lower edge: its key and the height it has until the drag is let go of (the edit).
+    private (object Key, double Height)? _rowHeightDrag;
 
     private static readonly object CaptionsRowKey = "captions";
     private static readonly object BackgroundRowKey = "background";
 
-    private double PictureRowHeight => Math.Round(28 + 1.6 * Math.Clamp(_viewModel.LayerTrackHeight, 1, 50));
+    private double PictureRowHeight => RowHeightAt(LowestPictureRow, TallestPictureRow);
 
-    private double SoundRowHeight => Math.Round(24 + 1.2 * Math.Clamp(_viewModel.LayerTrackHeight, 1, 50));
+    private double SoundRowHeight => RowHeightAt(LowestSoundRow, TallestSoundRow);
+
+    private double RowHeightAt(double lowest, double tallest) => Math.Round(lowest + (Math.Clamp(_viewModel.LayerTrackHeight, 1, 50) - 1) * (tallest - lowest) / 49);
+
+    /// <summary>How tall a track's row is: what its lower edge is being dragged to, its own height, or the one Track Height.</summary>
+    private double RowHeightOf(object key, TimelineTrackModel? track, TimelineRowKind kind)
+    {
+        var (lowest, tallest, shared) = kind == TimelineRowKind.Audio
+            ? (LowestSoundRow, TallestSoundRow, SoundRowHeight)
+            : (LowestPictureRow, TallestPictureRow, PictureRowHeight);
+        var own = _rowHeightDrag is { } drag && Equals(drag.Key, key) ? drag.Height : track?.Height;
+        return own is { } height ? Math.Round(Math.Clamp(height, lowest, tallest)) : shared;
+    }
+
+    /// <summary>The track of a row its own height is kept on (the row of a track, never a lane of its stack that shows the same layer).</summary>
+    private TimelineTrackModel? HeightTrackOf(TimelineRow row) =>
+        row.Data is Layer layer && Equals(row.Key, layer.TrackId) ? _viewModel.TrackOfRow(layer) : null;
+
+    /// <summary>Steps of the Track Height a picture row's height changes by for so many DIPs.</summary>
+    private static double TrackHeightSteps(double pixels) => pixels * 49 / (TallestPictureRow - LowestPictureRow);
 
     // Rows are being made (a change of scale while they are is not another reason to make them).
     private bool _rebuildingRows;
@@ -84,6 +116,32 @@ public partial class MainWindow
         surface.CloseGapRequested += Timeline_CloseGapRequested;
         surface.RazorRequested += Timeline_RazorRequested;
 
+        // The tracks' height from the surface (5.1-Polish): Alt + the wheel, and a row's lower edge dragged or double-clicked.
+        surface.TrackHeightStepped += notches => _viewModel.LayerTrackHeight = Math.Clamp(_viewModel.LayerTrackHeight + notches * TrackHeightStepsPerNotch, 1, 50);
+        surface.TrackHeightDragStarted += () => _trackHeightAtDrag = _viewModel.LayerTrackHeight;
+        surface.TrackHeightDragged += pixels => _viewModel.LayerTrackHeight = Math.Clamp(_trackHeightAtDrag + TrackHeightSteps(pixels), 1, 50);
+        surface.TrackHeightReset += () => _viewModel.LayerTrackHeight = UsualTrackHeight;
+
+        // One track's height (5.1-AutoHud-Part1, the user's Q2): drawn as it is dragged, one step of Undo when it is let go of.
+        surface.RowHeightDragged += (row, height) =>
+        {
+            _rowHeightDrag = (row.Key, height);
+            ScheduleClipRedraw();
+        };
+        surface.RowHeightDragEnded += (row, kept) =>
+        {
+            var height = _rowHeightDrag is { } drag ? RowHeightOf(drag.Key, null, row.Kind) : (double?)null;
+            _rowHeightDrag = null;
+            if (kept && height is not null && HeightTrackOf(row) is { } track)
+                _viewModel.SetTrackHeight(track, height);
+            ScheduleClipRedraw();
+        };
+        surface.RowHeightReset += row =>
+        {
+            if (HeightTrackOf(row) is { } track)
+                _viewModel.SetTrackHeight(track, null);
+        };
+
         // 5.0: clips selected together (a click let go decides what a Ctrl / Shift press on a selected clip does; a group's
         // drag is one step of Undo), and the moment under the pointer over the ruler told as the rows' is (Instant Seek).
         surface.BlockClicked += Timeline_BlockClicked;
@@ -129,6 +187,7 @@ public partial class MainWindow
     /// <summary>Gives the surface the shared view (a minute's room while nothing is open, as the ruler shows); its scale follows from it.</summary>
     private void ShowViewOnSurface()
     {
+        ClampView();
         var span = ViewSpan;
         UnifiedTimeline.Surface.SetView(_viewStart, span > 0 ? span : EmptyRulerSeconds, _viewModel.DurationMs / 1000);
     }
@@ -260,13 +319,18 @@ public partial class MainWindow
 
         // The captions follow the sound they were heard in: in the stack of its track (the main video's, for the main file's),
         // among its layers (4.4 BugHunt: beside the HUD cut-outs and masks, never among its sound's lanes).
+        // Strict order (the user's directive): that is where they are drawn, right over that track; drawn anywhere else, their row is
+        // where they are drawn, under the track over them, or at the very top over everything.
+        TimelineRow? overCaptions = null;
         if (captionRow is not null)
         {
             var anchor = _viewModel.CaptionsFollowMainFile ? mainRow
                 : _viewModel.CaptionAnchorTrackId is { } anchorId ? byTrack.GetValueOrDefault(anchorId)
                 : null;
-            if (anchor is not null)
+            if (anchor is not null && _viewModel.CaptionsAreOverTheirTrack)
                 Adopt(anchor, captionRow);
+            else if (_viewModel.Document.CaptionsUnderTrack is { } over && byTrack.TryGetValue(over.Id, out var overRow))
+                overCaptions = overRow;
             else
                 rows.Add(captionRow);
         }
@@ -277,6 +341,14 @@ public partial class MainWindow
             Adopt(mainRow, backgroundRow);
 
         rows.AddRange(pictures.Where(p => p.Row.Parent is null).Select(p => p.Row));
+        if (overCaptions is not null)
+        {
+            var top = overCaptions;
+            while (top.Parent is { } up)
+                top = up;
+            rows.Insert(rows.IndexOf(top) + 1, captionRow!);
+        }
+
         if (backgroundRow is { Parent: null })
             rows.Add(backgroundRow);
         rows.AddRange(sounds.Where(s => s.Row.Parent is null).Select(s => s.Row));
@@ -416,7 +488,9 @@ public partial class MainWindow
             Data = layer,
             Kind = kind,
             Name = track is { Name.Length: > 0 } ? track.Name : layer.Name,
-            Height = kind == TimelineRowKind.Audio ? SoundRowHeight : PictureRowHeight,
+            Height = RowHeightOf(layer.TrackId, track, kind),
+            SizedAlone = track is not null,
+            HasOwnHeight = track?.Height is not null || (_rowHeightDrag is { } drag && Equals(drag.Key, layer.TrackId)),
             Accent = layer.IsMainVideo ? MainClipBrush : layer.IsAudio ? SoundClipBrush : LayerClipBrush,
             Tip = layer.IsEmptyTrack ? "An empty track: drop videos and pictures onto it." : null,
 
@@ -440,10 +514,11 @@ public partial class MainWindow
                 state |= layer.IsHidden ? RowSwitches.Hidden : 0;
             }
 
-            if (layer is { IsVideoFile: true, HasAudio: true })
+            // The master mute: on every video track's header, all of its sound at once (the user's directive).
+            if (layer.IsVideoFile || layer.IsMainVideo)
             {
                 offered |= RowSwitches.Muted;
-                state |= layer.IsMuted ? RowSwitches.Muted : 0;
+                state |= _viewModel.IsRowSoundMuted(layer) ? RowSwitches.Muted : 0;
             }
         }
 
@@ -634,8 +709,8 @@ public partial class MainWindow
                 _viewModel.ToggleHidden(layer);
                 break;
             case (Layer layer, RowSwitches.Muted):
-                // Every clip of the track at once, in one step of Undo.
-                var mute = !layer.IsMuted;
+                // All the track is heard by at once, in one step of Undo.
+                var mute = !_viewModel.IsRowSoundMuted(layer);
                 _viewModel.SetTrackSoundMuted(layer, mute);
                 _viewModel.StatusText = mute ? $"The sound of {layer.Name} is muted; its picture stays." : $"The sound of {layer.Name} is heard again.";
                 break;
@@ -821,6 +896,7 @@ public partial class MainWindow
         _clickGesture = null;
         _rowsStale = true;
         FlushClipRedraw();
+        TakeOwedZoom();
     }
 
     // An undo, a redo or a project put a timeline in place (4.4 BugHunt): a drag still held is let go (nothing it drew is
@@ -877,6 +953,11 @@ public partial class MainWindow
             case AudioClip audio:
                 _viewModel.SplitAudio(audio.Track, seconds);
                 break;
+
+            // A caption block (5.1-Polish, the user's directive): its words are split at the word under the click.
+            case SubtitleRef:
+                SplitCaptionAt(seconds);
+                return;
             default:
                 ScheduleClipRedraw();
                 return;
@@ -892,6 +973,13 @@ public partial class MainWindow
     /// Every button of the timeline pane: what it does, by its Tag (the pane's title row, corners, inspector, bin and Add
     /// Layer kinds). A fault in it is a status line and a note in the log (4.4 BugHunt), never an exception that ends the app.
     /// </summary>
+    /// <summary>The Cutout Studio on the video, for pieces and Game Presets.</summary>
+    private void OpenCutoutStudio()
+    {
+        if (_viewModel.HasSource)
+            new MaskDrawWindow(_viewModel, null) { Owner = this }.ShowDialog();
+    }
+
     private void TimelineTool_Click(object sender, RoutedEventArgs e)
     {
         var tag = (sender as FrameworkElement)?.Tag as string;
@@ -911,7 +999,7 @@ public partial class MainWindow
             case "LinkAudio": LinkAudio_Click(sender, e); break;
             case "Timecode": ManualCut_Click(sender, e); break;
             case "DeadAir": RemoveDeadAir_Click(sender, e); break;
-            case "HudMasks": HudMasks_Click(sender, e); break;
+            case "CutoutStudio": OpenCutoutStudio(); break;
             case "PreviousKey": PreviousKeyframe_Click(sender, e); break;
             case "ToggleKey": ToggleKeyframe_Click(sender, e); break;
             case "NextKey": NextKeyframe_Click(sender, e); break;
@@ -921,8 +1009,8 @@ public partial class MainWindow
             case "PlayPause": PlayPause_Click(sender, e); break;
 
             // The inspector's: they act on what their group shows (the button's DataContext).
-            case "Properties": LayerProperties_Click(sender, e); break;
-            case "BlurSettings": BlurSettings_Click(sender, e); break;
+            case "Properties" when sender is FrameworkElement { DataContext: Layer element }: ShowInEffectsPane(element); break;
+            case "BlurSettings": ShowBackgroundBlurCard(); break;
             case "TrackFilters": TrackFilters_Click(sender, e); break;
 
             // The recycle bin's, and Text Settings' colours.
@@ -931,6 +1019,7 @@ public partial class MainWindow
             case "Font" or "Outline": TextColor_Click(sender, e); break;
 
             // Add Layer's kinds (the flyout has closed itself).
+            case "builtin.vfx.explosion" or "builtin.vfx.sparks" or "builtin.vfx.animelines" or "builtin.vfx.shield" or "builtin.vfx.saber" or "builtin.gpu.shockwave":
             case "Empty" or "Video" or "Image" or "Text" or "Adjustment" or "Region" or "MaskLayers" or "Audio" or "Voiceover"
                 or "Captions" or "ImportSubtitles" or "EditCaptions" or "CaptionStyle":
                 AddLayerMenu_Click(sender, e);

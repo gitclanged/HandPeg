@@ -60,10 +60,13 @@ internal sealed class CachedFrame
 /// <summary>
 /// Every frame the decoders produce, kept in video memory (Instant Seek, Pass 5.0-AudioAnd3D): a frame stepped back to, a
 /// scrub that passes over a stretch again, a seek into anything decoded once costs no decode at all. Frames of one source
-/// are kept in time order (binary search). The budget is the client's (<see cref="Services.ControlBlock.CacheBudgetRequest"/>,
-/// automatic: an eighth of the card's own memory, at most 3 GB) and never more than what Windows lets this process have
-/// beside everything else it holds (IDXGIAdapter3::QueryVideoMemoryInfo, asked twice a second): when a game starts, the
-/// cache shrinks at once. Beyond the budget, the frames farthest from every moment of interest (the frames shown, the
+/// are kept in time order (binary search). The budget is the client's (<see cref="Services.ControlBlock.CacheBudgetRequest"/>).
+/// Automatic, it is game-aware (5.1-TrackEqualityAndVram, the user's directive): with the card free, half of the memory Windows offers
+/// beyond what this process holds otherwise, at most 12 GB, always leaving a margin free (a third of the card, at most 8 GB: on a 24 GB
+/// card about 11 GB of cache and 8 GB untouched); with something else eating the card (Windows' budget for this process well under
+/// the card's size: a game), the small cache of old, an eighth of the card, at most 3 GB. Whichever it is, never more than what
+/// Windows lets this process have beside everything else it holds (IDXGIAdapter3::QueryVideoMemoryInfo, asked twice a second): when a
+/// game starts, the cache shrinks at once. Beyond the budget, the frames farthest from every moment of interest (the frames shown, the
 /// hints, the pre-roll) go first, key frames last, and the held stretches (the first frames of the cuts ahead of the
 /// playhead, 5.0-Release) after everything else. Textures are reused by size and format.
 /// <para>Threads: the decode lanes insert, the renderer looks up and pins; one lock, held for microseconds.</para>
@@ -73,6 +76,18 @@ internal sealed unsafe class FrameCache : IDisposable
     private const long MaxAutoBudget = 3L << 30;
     private const long MinBudget = 96L << 20;
     private const long WindowsHeadroom = 256L << 20;
+
+    // The super-cache: the most it takes, the least margin it leaves, the most that margin need be, and the share of Windows' budget
+    // for this process below which something else is taken to be eating the card.
+    private const long MaxSuperBudget = 12L << 30;
+    private const long LeastMargin = 1L << 30, MostMargin = 8L << 30;
+    private const double FreeCardShare = 0.7;
+
+    // Video memory is charged to Windows' commit (RAM + page file) as well as to the card (5.1-DogfoodPolish: a 12 GB cache, a game and
+    // a 4 GB page file ran a 52 GB limit out on a 24 GB card; the worker, then the editor's own windows, died of it). The least commit
+    // the cache leaves everything else, as a share of the limit.
+    private const long LeastCommitLeft = 3L << 30, MostCommitLeft = 8L << 30;
+    private const int CommitShare = 8;
 
     private readonly GpuDevice _gpu;
     private readonly object _gate = new();
@@ -85,6 +100,11 @@ internal sealed unsafe class FrameCache : IDisposable
     private long _requested;
     private long _budget;
     private long _windowsRoom = long.MaxValue;
+    private long _commitRoom = long.MaxValue;
+
+    // What Windows offers beyond what this process holds otherwise, as last asked; 0 until it has been asked.
+    private long _freeOnCard;
+    private bool _cardBusy;
     private long _bytes;
     private long _freeBytes;
     private long _use;
@@ -146,23 +166,51 @@ internal sealed unsafe class FrameCache : IDisposable
         }
     }
 
-    /// <summary>Asks Windows how much video memory it lets this process use, at most twice a second; shrinks the cache when that fell.</summary>
+    /// <summary>What the cache may hold of Windows' commit: what it holds now plus what is left, less the margin it leaves everything else.</summary>
+    /// <param name="held">What the cache holds now, which it could give back.</param>
+    /// <param name="commitLeft">The commit Windows has left, bytes.</param>
+    /// <param name="commitLimit">Its limit: RAM and page file.</param>
+    public static long CommitRoom(long held, long commitLeft, long commitLimit) =>
+        Math.Max(held + commitLeft - Math.Clamp(commitLimit / CommitShare, LeastCommitLeft, MostCommitLeft), 0);
+
+    /// <summary>
+    /// Asks Windows how much video memory it lets this process use, and how much commit is left, at most twice a second; shrinks the cache
+    /// when either fell. The worker's every turn asks, drawing or not: a game started while the editor sits paused is what it is there for.
+    /// </summary>
     public void CheckWindowsBudget(long nowTicks)
     {
-        if (_adapter3 == 0 || nowTicks < Volatile.Read(ref _nextBudgetCheck))
+        if (nowTicks < Volatile.Read(ref _nextBudgetCheck))
             return;
         Volatile.Write(ref _nextBudgetCheck, nowTicks + System.Diagnostics.Stopwatch.Frequency / 2);
-        if (!Dxgi.QueryVideoMemory(_adapter3, out var info))
+        CheckCommit();
+        if (_adapter3 == 0 || !Dxgi.QueryVideoMemory(_adapter3, out var info))
             return;
 
         // What the cache may hold: Windows' budget less everything else this process uses, less some room to spare.
         var others = (long)info.CurrentUsage - Volatile.Read(ref _bytes) - Volatile.Read(ref _freeBytes);
         var room = Math.Max((long)info.Budget - Math.Max(others, 0) - WindowsHeadroom, 0);
+        var busy = _dedicated > 0 && (long)info.Budget < _dedicated * FreeCardShare;
+        var free = Math.Max((long)info.Budget - Math.Max(others, 0), 0);
         lock (_gate)
         {
-            if (Math.Abs(room - _windowsRoom) < (16L << 20))
+            if (Math.Abs(room - _windowsRoom) < (16L << 20) && busy == _cardBusy && Math.Abs(free - _freeOnCard) < (64L << 20))
                 return;
-            _windowsRoom = room;
+            (_windowsRoom, _cardBusy, _freeOnCard) = (room, busy, free);
+            SetBudgetLocked();
+        }
+    }
+
+    private void CheckCommit()
+    {
+        if (!SystemCommit.TryRead(out var left, out var limit))
+            return;
+
+        lock (_gate)
+        {
+            var room = CommitRoom(_bytes + _freeBytes, left, limit);
+            if (Math.Abs(room - _commitRoom) < (64L << 20))
+                return;
+            _commitRoom = room;
             SetBudgetLocked();
         }
     }
@@ -175,8 +223,9 @@ internal sealed unsafe class FrameCache : IDisposable
         var wanted = _disabled ? MinBudget
             : requested > 0 ? requested
             : _gpu.IsWarp || _dedicated < (512L << 20) ? 512L << 20
-            : Math.Min(_dedicated / 8, MaxAutoBudget);
-        _budget = Math.Max(Math.Min(wanted, _windowsRoom), MinBudget);
+            : _cardBusy || _freeOnCard == 0 ? Math.Min(_dedicated / 8, MaxAutoBudget)
+            : Math.Max(Math.Min(_dedicated / 8, MaxAutoBudget), Math.Min(Math.Min(_freeOnCard / 2, MaxSuperBudget), _freeOnCard - Math.Clamp(_dedicated / 3, LeastMargin, MostMargin)));
+        _budget = Math.Max(Math.Min(Math.Min(wanted, _windowsRoom), _commitRoom), MinBudget);
         TrimLocked();
     }
 
@@ -344,6 +393,26 @@ internal sealed unsafe class FrameCache : IDisposable
             if (at + 1 < list.Count && list[at + 1].Time < later - 1e-6)
                 return;
             list[at].Until = later;
+        }
+    }
+
+    /// <summary>
+    /// The frame decoded just before <paramref name="frame"/>, pinned (what motion is measured against, 5.1-GpuFx); null when none is held within
+    /// <paramref name="maxGap"/> seconds. Only what is there: nothing is decoded for it, so a shutter never makes a frame late.
+    /// </summary>
+    public CachedFrame? Before(CachedFrame frame, double maxGap)
+    {
+        lock (_gate)
+        {
+            if (!_bySource.TryGetValue(frame.Source, out var list) || list.Count == 0)
+                return null;
+            var at = IndexAtOrBefore(list, frame.Time + 1e-6);
+            if (at < 1 || !ReferenceEquals(list[at], frame) || frame.Time - list[at - 1].Time > maxGap)
+                return null;
+            var before = list[at - 1];
+            before.Pins++;
+            before.LastUsed = ++_use;
+            return before;
         }
     }
 
@@ -662,5 +731,29 @@ internal sealed unsafe class FrameCache : IDisposable
         }
 
         Com.Release(ref _adapter3);
+    }
+}
+
+/// <summary>What Windows has left of its commit limit (RAM + page file).</summary>
+internal static partial class SystemCommit
+{
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct MemoryStatus
+    {
+        public uint Length, MemoryLoad;
+        public ulong TotalPhysical, AvailablePhysical, TotalPageFile, AvailablePageFile, TotalVirtual, AvailableVirtual, AvailableExtendedVirtual;
+    }
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static partial bool GlobalMemoryStatusEx(ref MemoryStatus status);
+
+    /// <summary>The commit left and its limit, bytes; false when Windows does not say.</summary>
+    public static bool TryRead(out long left, out long limit)
+    {
+        var status = new MemoryStatus { Length = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MemoryStatus>() };
+        var read = GlobalMemoryStatusEx(ref status) && status.TotalPageFile > 0;
+        (left, limit) = read ? ((long)status.AvailablePageFile, (long)status.TotalPageFile) : (0, 0);
+        return read;
     }
 }

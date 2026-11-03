@@ -130,6 +130,13 @@ public static partial class FilterGraphBuilder
         /// <summary>The pictures in stacking order, bottom first: the main layer at its track's place among them. Prepared for their crossfades.</summary>
         public required IReadOnlyList<Layer> Stack { get; init; }
 
+        /// <summary>
+        /// Where the captions are drawn among the pictures (5.1-Polish, the user's Q2): under the layer of <see cref="Stack"/> at
+        /// this index and every one above it (<see cref="Stack"/>'s count: over all of them, under the whole picture's look
+        /// and fades); -1 over everything, the fades too (no track is <see cref="TimelineTrackModel.CaptionsUnder"/>).
+        /// </summary>
+        public required int CaptionsAt { get; init; }
+
         /// <summary>The sounds of the clips that are heard, the primary chain's aside: video clips that carry any, and sound clips.</summary>
         public required IReadOnlyList<Layer> LayerAudio { get; init; }
 
@@ -321,9 +328,13 @@ public static partial class FilterGraphBuilder
         var mainLayer = MainLayerOf(anchor, primaryTrack, anchor is null ? null : LookOf(anchor, primaryTrack!), state, document, media);
 
         // The pictures bottom first, the main layer with its track (before that track's other clips: none of them is on with it).
+        // The captions go under the pictures of the track they are put under (5.1-Polish), whatever it shows.
         var stack = new List<Layer>();
+        var captionsAt = -1;
         foreach (var track in document.Tracks)
         {
+            if (track.CaptionsUnder && captionsAt < 0)
+                captionsAt = stack.Count;
             if (!ShowsPictures(track) && track.Kind != TimelineTrackKind.Adjustment)
                 continue;
             if (ReferenceEquals(track, primaryTrack) && center.Count > 0)
@@ -351,6 +362,10 @@ public static partial class FilterGraphBuilder
                     var twin = BlurTwinOf(layer, state, document);
                     stack.Insert(at, twin);
                     twins.Add(twin);
+
+                    // A twin under the captions' place moves it up; one of the first layer over it stays over the captions.
+                    if (captionsAt >= 0 && at < captionsAt)
+                        captionsAt++;
                 }
             }
         }
@@ -391,6 +406,7 @@ public static partial class FilterGraphBuilder
                                        && Math.Abs(mainEnd - media) < 0.02 && sequenceSeconds - mainEnd < 0.02))),
             MainLayer = mainLayer,
             Stack = stack,
+            CaptionsAt = captionsAt,
             LayerAudio = sounds,
             SequenceEffects = document.SequenceEffectsBypassed ? [] : [.. document.SequenceEffects.Select(EffectInstance.FromState)],
         };
@@ -411,12 +427,12 @@ public static partial class FilterGraphBuilder
         && Math.Abs(clip.Speed - 1) < 0.0005 && clip.SourcePath is { } path && string.Equals(Clean(path), primary, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Whether a clip's sound reaches the output: it has some, from its file's first audio stream (another stream of a file
-    /// is not read yet: the primary file's streams are the output's tracks, SequenceExportState.AudioTracks, and a later
-    /// pass maps any file's streams onto them), and neither it nor its track is switched off or silenced.
+    /// Whether a clip's sound reaches the output: it has some, from whichever stream of its file it plays (the primary file's streams
+    /// are the output's tracks, SequenceExportState.AudioTracks; any other file's are mixed in, each a sound clip of its own), and
+    /// neither it nor its track is switched off or silenced.
     /// </summary>
     private static bool IsHeard(TimelineClip clip, TimelineTrackModel track) =>
-        clip.HasSound && clip.AudioStreamIndex <= 0 && !clip.IsHidden && !clip.IsMuted && !track.IsMuted;
+        clip.HasSound && !clip.IsHidden && !clip.IsMuted && !track.IsMuted;
 
     /// <summary>A clip that is only a sound (a sound clip, or any clip on a sound track) and is not heard.</summary>
     private static bool IsSilentSound(TimelineClip clip, TimelineTrackModel track) =>
@@ -625,7 +641,7 @@ public static partial class FilterGraphBuilder
         (made.FadeInSeconds, made.FadeOutSeconds, made.FadeInStyle, made.FadeOutStyle) = (clip.FadeInSeconds, clip.FadeOutSeconds, clip.FadeInStyle, clip.FadeOutStyle);
         made.TransitionIn = clip.TransitionIn;
         made.IsHidden = clip.IsHidden || (track.IsHidden && track.Kind != TimelineTrackKind.Audio);
-        (made.IsSoundMuted, made.HasAudio) = (clip.IsMuted || track.IsMuted, clip.HasSound);
+        (made.IsSoundMuted, made.HasAudio, made.AudioStream) = (clip.IsMuted || track.IsMuted, clip.HasSound, Math.Max(clip.AudioStreamIndex, 0));
         made.AudioOffset = clip.AudioLinked || kind == LayerKind.Audio ? 0 : clip.AudioSlipSeconds;
         made.AudioGainDb = clip.GainDb + track.GainDb;
         made.AutoDuck = look.AutoDuck || track.DuckAgainstVoice;

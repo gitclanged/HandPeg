@@ -106,7 +106,24 @@ public partial class MainViewModel
     /// <summary>The clip a view is the view of; null for one that is none (a stand-in: the caption box, the background, an empty track).</summary>
     public TimelineClip? ClipOf(Layer? view) => view is { ClipId: var id } && id != Guid.Empty ? Document.FindClip(id) : null;
 
+    /// <summary>
+    /// Whether a layer's picture is drawn at a moment: never a clip hidden, on a hidden track (a view says only its own switch, the main
+    /// video's excepted), or see-through there. What is not drawn cannot be clicked or dragged, in the player or on the Canvas.
+    /// </summary>
+    public bool IsPictureDrawn(Layer layer, double seconds)
+    {
+        if (layer.IsHidden || (ClipOf(layer) is { } clip && (clip.IsHidden || Document.TrackOf(clip) is { IsHidden: true })))
+            return false;
+
+        // Opacity is in percent: 0.1 is one thousandth of the picture.
+        return layer.Evaluate(KeyProperty.Opacity, seconds - layer.StartTime) > 0.1;
+    }
+
     /// <summary>The track a row stands for: its clip's, or the empty track's; null for the stand-ins.</summary>
+    /// <summary>Gives a track's row a height of its own on the Timeline, or the one Track Height again with null (one step of Undo; saved with the project).</summary>
+    public void SetTrackHeight(TimelineTrackModel track, double? height) =>
+        Edit(height is null ? $"reset the height of {track.DisplayName}" : $"resize {track.DisplayName}", edit => edit.SetTrackHeight(track, height));
+
     public TimelineTrackModel? TrackOfRow(Layer? row) =>
         row is not null && _tracksByNumber.TryGetValue(row.TrackId, out var track) && Document.Tracks.Contains(track) ? track : null;
 
@@ -410,6 +427,7 @@ public partial class MainViewModel
                 // Its keys moved by an edit (a trim of its start, a split, a speed), or an older look put back, or a place
                 // given to it (4.4: its place, crop and blur fill are its own, so an edit or an undo step can change them).
                 view.ApplyLook(clip.State);
+                view.ApplySource(clip.State);
                 view.ApplyPlace(clip.State);
                 view.ApplyTiming(clip.State);
                 _taken[clip.Id] = clip.State;
@@ -972,29 +990,32 @@ public partial class MainViewModel
         _mainLookToCome = MainVideoClips().Any() || look is null ? null : TimelineTransaction.CopyOf(look);
         foreach (var (track, clip) in MainVideoClips().ToList())
         {
-            if (ViewOf(clip) is not { } view)
-                continue;
-
-            _syncingViews = true;
-            try
-            {
-                // Its crop is the clip's own (4.4), as its place is: a look takes neither (a preset's crop is put on its own, ApplyPresetCrop).
-                var crop = (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom);
-                view.ApplyLook(look);
-                (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom) = crop;
-                TakeClip(view, clip, track);
-            }
-            finally
-            {
-                _syncingViews = false;
-            }
-
-            _staleLooks.Add(view);
+            if (ViewOf(clip) is { } view)
+                TakeLook(view, clip, track, look);
         }
 
         // A style's or a preset's: every clip of the main video takes the Center controls it set.
         PlaceMainViews(all: true);
         ShowCenterTarget();
+    }
+
+    /// <summary>A look put on one clip, which keeps its own timing, switches and crop (a preset's crop is put on its own, ApplyPresetCrop).</summary>
+    private void TakeLook(Layer view, TimelineClip clip, TimelineTrackModel track, LayerState? look)
+    {
+        _syncingViews = true;
+        try
+        {
+            var crop = (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom);
+            view.ApplyLook(look);
+            (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom) = crop;
+            TakeClip(view, clip, track);
+        }
+        finally
+        {
+            _syncingViews = false;
+        }
+
+        _staleLooks.Add(view);
     }
 
     /// <summary>What the main video's clips are called: its file's name, or "Main Video".</summary>

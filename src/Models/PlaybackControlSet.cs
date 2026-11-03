@@ -39,11 +39,6 @@ public sealed class PlaybackControlSet : ObservableObject
             new("NextEdit", "Next Edit Point", "Transport", "Jump on to the nearest start or end of a clip or cut segment."),
             new("JumpEnd", "Go to End", "Transport", "Jump to the last frame of the sequence (End)."),
             new("Loop", "Loop Playback", "Transport", "Playback starts again from the beginning at the end: of the selected cut segment, or of the whole sequence."),
-            new("MarkIn", "Add Start Point  [", "Cut segments", "A new cut segment begins at the playhead (I)."),
-            new("MarkOut", "Add Stop Point  ]", "Cut segments", "The segment begun with the start point ends at the playhead (O)."),
-            new("GoToIn", "Go to Start Point", "Cut segments", "Jump to the start point being set, or the start of the selected cut segment."),
-            new("GoToOut", "Go to Stop Point", "Cut segments", "Jump to the end of the selected cut segment."),
-            new("PlayInOut", "Play Start to Stop", "Cut segments", "Plays the selected cut segment (or from the start point being set to the playhead) and stops at its end."),
             new("Split", "Split at Playhead", "Cut segments", "Cuts the selected block in two at the playhead (S)."),
             new("AddMarker", "Add Marker", "Markers", "Puts a marker at the playhead (M). Markers can become the export's chapters."),
             new("PrevMarker", "Previous Marker", "Markers", "Jump back to the marker before the playhead (Ctrl+Shift+M)."),
@@ -81,7 +76,7 @@ public sealed class PlaybackControlSet : ObservableObject
 
     // What the bar starts with.
     private static readonly string[] Defaults =
-        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "LivePreview", "RenderPreview", "Reload", "Volume", "Speed", "MarkIn", "MarkOut", "AddMarker", "EditOnVideo", "Exploded3D"];
+        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "LivePreview", "RenderPreview", "Reload", "Volume", "Speed", "AddMarker", "EditOnVideo", "Exploded3D"];
 
     // The saved list's version (its last name, "@2"), and the controls each version brought: a list saved before a control
     // existed shows it once (5.0-Verify, the user's Q4: the 3D Exploded View on bars saved before 5.0); after that, the

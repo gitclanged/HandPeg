@@ -307,6 +307,8 @@ public sealed partial class GpuPreviewEngine
             }
 
             header.ViewMode = 1;
+            if (AppSettings.Current.EnableExtraAnimations)
+                header.Flags |= FrameSceneHeader.FlagStudioStage;
             header.CameraYaw = (float)_drawnYaw;
             header.CameraPitch = (float)_drawnPitch;
             header.CameraZoom = (float)_drawnZoom;

@@ -37,22 +37,29 @@ public partial class AutoCaptionsDialog : Window
         InitializeComponent();
         _viewModel = viewModel;
 
-        // Every sound the timeline can make captions from: the main video's tracks, each sound clip's file once, the voiceover.
+        // A track's or a clip's own menu: all of its audio streams, and nothing else (the user's directive). Otherwise every sound the
+        // timeline can make captions from: the main video's tracks, each sound clip's file and stream once, the voiceover.
         var items = new List<SourceItem>();
-        if (viewModel.HasSource)
+        var scoped = viewModel.CaptionStreamsOf(requested);
+        if (scoped is { Count: > 0 })
+        {
+            items.AddRange(scoped.Select(Item));
+        }
+        else if (viewModel.HasSource)
         {
             foreach (var track in viewModel.AudioTracks)
                 items.Add(Item(new CaptionSource(CaptionSourceKind.MainFile, viewModel.LocalMediaPath, track.Index)));
         }
 
-        foreach (var clip in viewModel.Layers.Where(l => l is { CarriesSound: true, IsMainVideo: false }).DistinctBy(l => l.ImagePath, StringComparer.OrdinalIgnoreCase))
+        if (scoped is not { Count: > 0 })
         {
-            if (viewModel.ResolveCaptionSource(clip) is { Kind: CaptionSourceKind.Clip } source)
+            var sounds = viewModel.Layers.Where(l => l is { CarriesSound: true, IsMainVideo: false }).Select(l => viewModel.ResolveCaptionSource(l)).OfType<CaptionSource>();
+            foreach (var source in sounds.Where(s => s.Kind == CaptionSourceKind.Clip).DistinctBy(s => (s.Path.ToUpperInvariant(), s.Stream)))
                 items.Add(Item(source));
-        }
 
-        if (viewModel.HasVoiceover)
-            items.Add(Item(new CaptionSource(CaptionSourceKind.Voiceover, viewModel.VoiceoverPath, 0)));
+            if (viewModel.HasVoiceover)
+                items.Add(Item(new CaptionSource(CaptionSourceKind.Voiceover, viewModel.VoiceoverPath, 0)));
+        }
 
         // What is set now (or asked for) comes first among equals; a separate file chosen before is offered as it was.
         var current = viewModel.ResolveCaptionSource(requested);
@@ -61,7 +68,8 @@ public partial class AutoCaptionsDialog : Window
         items.Add(new SourceItem("Separate Audio File...", null));
 
         SourceBox.ItemsSource = items;
-        SourceBox.SelectedItem = items.FirstOrDefault(i => i.Source is { } s && s.SameAs(current) && (s.Kind != CaptionSourceKind.MainFile || s.Stream == current!.Stream))
+        SourceBox.SelectedItem = items.FirstOrDefault(i => i.Source is { } s && s.SameAs(current) && s.Stream == current!.Stream)
+                                 ?? items.FirstOrDefault(i => i.Source is { } s && s.SameAs(current))
                                  ?? items.FirstOrDefault(i => i.Source is not null);
 
         ModelBox.ItemsSource = viewModel.WhisperModelChoices;

@@ -14,8 +14,8 @@ internal sealed unsafe class GpuDevice : IDisposable
     private nint _device1;
     private nint _context;
     private nint _constants;
-    private nint _linearClamp, _pointClamp, _linearBorder;
-    private nint _premultipliedOver, _rasterizer;
+    private nint _linearClamp, _pointClamp, _linearBorder, _linearWrap;
+    private nint _premultipliedOver, _additive, _rasterizer;
 
     public D3D11Device Device => new(_device);
 
@@ -37,6 +37,9 @@ internal sealed unsafe class GpuDevice : IDisposable
 
     /// <summary>The processor's software renderer: no hardware to decode with.</summary>
     public bool IsWarp { get; private set; }
+
+    /// <summary>The card's own memory, in bytes (0 for WARP or when it is not known): the 3D view's plane budget grows with it (5.1-Polish, the user's Q8).</summary>
+    public long DedicatedVideoMemory { get; private set; }
 
     public TexturePool Textures { get; }
 
@@ -126,6 +129,7 @@ internal sealed unsafe class GpuDevice : IDisposable
                 AdapterName = Dxgi.Name(desc);
                 VendorId = desc.VendorId;
                 IsWarp |= (desc.Flags & AdapterDesc1.FlagSoftware) != 0;
+                DedicatedVideoMemory = IsWarp ? 0 : (long)desc.DedicatedVideoMemory;
                 if (AdapterIndex < 0 && !IsWarp)
                     AdapterIndex = IndexOf(factory, desc.Luid);
                 Com.Release(ref used);
@@ -176,6 +180,7 @@ internal sealed unsafe class GpuDevice : IDisposable
         _linearClamp = device.CreateSamplerState(Sampler(D3D11.FilterLinear, D3D11.AddressClamp));
         _pointClamp = device.CreateSamplerState(Sampler(D3D11.FilterPoint, D3D11.AddressClamp));
         _linearBorder = device.CreateSamplerState(Sampler(D3D11.FilterLinear, D3D11.AddressBorder));
+        _linearWrap = device.CreateSamplerState(Sampler(D3D11.FilterLinear, D3D11.AddressWrap));
 
         // Premultiplied "over": source + destination * (1 - source alpha), for colour and alpha alike.
         var blend = default(BlendDesc);
@@ -191,6 +196,12 @@ internal sealed unsafe class GpuDevice : IDisposable
             WriteMask = 0xF,
         };
         _premultipliedOver = device.CreateBlendState(blend);
+
+        // Added (sub-frames of a layer summed by a shutter, particles of light): source + destination, for colour and alpha alike.
+        var added = blend;
+        added.Targets[0].DestBlend = D3D11.BlendOne;
+        added.Targets[0].DestBlendAlpha = D3D11.BlendOne;
+        _additive = device.CreateBlendState(added);
 
         // The scissor is on: every pass sets it, to its whole target or (a layer laid on the player's letterboxed canvas) the picture.
         _rasterizer = device.CreateRasterizerState(new RasterizerDesc { FillMode = D3D11.FillSolid, CullMode = D3D11.CullNone, DepthClipEnable = 1, ScissorEnable = 1 });
@@ -211,8 +222,8 @@ internal sealed unsafe class GpuDevice : IDisposable
     public void BindCommon()
     {
         var context = Context;
-        var samplers = stackalloc nint[3] { _linearClamp, _pointClamp, _linearBorder };
-        context.PSSetSamplers(0, 3, samplers);
+        var samplers = stackalloc nint[4] { _linearClamp, _pointClamp, _linearBorder, _linearWrap };
+        context.PSSetSamplers(0, 4, samplers);
         context.PSSetConstantBuffers(0, _constants);
         context.VSSetConstantBuffers(0, _constants);
         context.RSSetState(_rasterizer);
@@ -221,6 +232,9 @@ internal sealed unsafe class GpuDevice : IDisposable
 
     /// <summary>Premultiplied "over" (true), or writing straight over what is there (false).</summary>
     public void SetBlend(bool over) => Context.OMSetBlendState(over ? _premultipliedOver : 0);
+
+    /// <summary>The next draw is added to what is there.</summary>
+    public void SetAdditive() => Context.OMSetBlendState(_additive);
 
     /// <summary>Writes the pass constants (a dynamic buffer, discarded each time: the driver renames it, no stall).</summary>
     public void SetConstants(in PassConstants constants)
@@ -281,7 +295,9 @@ internal sealed unsafe class GpuDevice : IDisposable
         if (_context != 0)
             Context.ClearState();
         Com.Release(ref _rasterizer);
+        Com.Release(ref _additive);
         Com.Release(ref _premultipliedOver);
+        Com.Release(ref _linearWrap);
         Com.Release(ref _linearBorder);
         Com.Release(ref _pointClamp);
         Com.Release(ref _linearClamp);

@@ -115,6 +115,100 @@ public partial class MainViewModel
     [RelayCommand]
     private void ResetCaptionLayer() => SetCaptionLayer(null);
 
+    // ----- The captions' place in the stack (5.1-Polish, the user's Q2) -----
+
+    /// <summary>The tracks the captions can be put under: those with pictures (or an adjustment's), bottom first.</summary>
+    private List<TimelineTrackModel> CaptionPlaces() => [.. Document.Tracks.Where(t => t.Kind is not (TimelineTrackKind.Audio or TimelineTrackKind.Subtitle))];
+
+    /// <summary>
+    /// Where the captions are in the stack: under the picture track at this index (<see cref="CaptionPlaces"/>, the bottom 0),
+    /// or, at their count, over everything (the fades too), where they always were.
+    /// </summary>
+    public int CaptionsPlace
+    {
+        get
+        {
+            var places = CaptionPlaces();
+            var at = Document.CaptionsUnderTrack is { } under ? places.IndexOf(under) : -1;
+            return at < 0 ? places.Count : at;
+        }
+    }
+
+    // ----- Strict order (5.1-TrackEqualityAndVram, the user's directive): the timeline's order top to bottom is the stack's -----
+
+    // The next track up from a track and all under it: what captions drawn right over them lie beneath; null for none.
+    private TimelineTrackModel? TrackAboveFamilyOf(TimelineTrackModel track)
+    {
+        var family = new HashSet<Guid> { track.Id };
+        for (var grew = true; grew;)
+        {
+            grew = false;
+            foreach (var other in Document.Tracks)
+                grew |= other.ParentTrackId is { } parent && family.Contains(parent) && family.Add(other.Id);
+        }
+
+        var places = CaptionPlaces();
+        var last = places.FindLastIndex(t => family.Contains(t.Id));
+        return last >= 0 && last + 1 < places.Count ? places[last + 1] : null;
+    }
+
+    /// <summary>Captions just made go right over the track they were heard on: as their row sits on the timeline, so they are drawn. No step of Undo: the one that made them.</summary>
+    private void PlaceCaptionsOverTheirTrack()
+    {
+        if (CaptionAnchorTrackId is not { } id || Document.Tracks.Find(t => t.Id == id) is not { } anchor)
+            return;
+
+        var above = TrackAboveFamilyOf(anchor);
+        if (!ReferenceEquals(above, Document.CaptionsUnderTrack))
+            Edit("place the captions over their track", edit => edit.SetCaptionsUnder(above), undoable: false);
+    }
+
+    /// <summary>Whether the captions are drawn right over the track they follow: their row is then that track's child; moved anywhere else, their row goes where they are drawn.</summary>
+    public bool CaptionsAreOverTheirTrack =>
+        CaptionAnchorTrackId is { } id && Document.Tracks.Find(t => t.Id == id) is { } anchor && ReferenceEquals(TrackAboveFamilyOf(anchor), Document.CaptionsUnderTrack);
+
+    /// <summary>A track's place among those the captions can be put under (<see cref="CaptionsPlace"/>); -1 for one they cannot (a sound's).</summary>
+    public int CaptionPlaceOf(TimelineTrackModel track) => CaptionPlaces().IndexOf(track);
+
+    /// <summary>Whether the captions are over everything (no track has them under it).</summary>
+    public bool CaptionsOnTop => CaptionsPlace >= CaptionPlaces().Count;
+
+    /// <summary>
+    /// Puts the captions under the picture track at <paramref name="place"/> (<see cref="CaptionsPlace"/>; the count or more:
+    /// over everything), one undo step. False when they are there already, or the edit was refused.
+    /// </summary>
+    public bool PutCaptionsAt(int place, string label)
+    {
+        var places = CaptionPlaces();
+        place = Math.Clamp(place, 0, places.Count);
+        var track = place < places.Count ? places[place] : null;
+        if (ReferenceEquals(track, Document.CaptionsUnderTrack) || (track is null && Document.CaptionsUnderTrack is null))
+            return false;
+        return Edit(label, edit => edit.SetCaptionsUnder(track));
+    }
+
+    /// <summary>Puts the captions right under a track (null: over everything), as the 3D view's lift does: one undo step.</summary>
+    public bool PutCaptionsUnder(TimelineTrackModel? track, string label) =>
+        track is null ? PutCaptionsAt(int.MaxValue, label) : CaptionPlaces().IndexOf(track) is >= 0 and var at && PutCaptionsAt(at, label);
+
+    /// <summary>The captions a track forward (towards the front, <paramref name="step"/> 1) or back (-1) in the stack.</summary>
+    public bool MoveCaptionsInStack(int step)
+    {
+        var moved = PutCaptionsAt(CaptionsPlace + Math.Sign(step), step > 0 ? "bring the captions forward" : "send the captions back");
+        StatusText = moved ? CaptionsPlaceText()
+            : step > 0 ? "The captions are in front of everything already." : "The captions are behind every track already.";
+        return moved;
+    }
+
+    /// <summary>Where the captions are in the stack, in words (the status line, the captions' menu).</summary>
+    public string CaptionsPlaceText()
+    {
+        var places = CaptionPlaces();
+        var place = CaptionsPlace;
+        return place >= places.Count ? "The captions are over everything, as they always were."
+            : $"The captions are under {places[place].DisplayName} and everything over it, over {(place > 0 ? places[place - 1].DisplayName : "the background")}.";
+    }
+
     /// <summary>The layout pane has something to show with the engine on, or with captions to place.</summary>
     public bool CanEditLayout => FrameEngine || AutoCaptions;
 
@@ -317,7 +411,7 @@ public partial class MainViewModel
         if (words is null)
             return problem;
 
-        _generatedCaptions = CaptionGenerator.Lines(CaptionProjection.ProjectWords(words, CaptionSpans(source)), CaptionStyle);
+        _generatedCaptions = CaptionProjection.ProjectLines(words, CaptionSpans(source), CaptionStyle);
         TimelineChanged?.Invoke();
         return null;
     }
@@ -430,6 +524,8 @@ public partial class MainViewModel
                 return new CaptionSource(CaptionSourceKind.MainFile, LocalMediaPath, track.Index);
             case Layer { CarriesSound: true, IsMainVideo: false } clip when ClipOf(clip) is { } model:
                 return new CaptionSource(CaptionSourceKind.Clip, clip.ImagePath, Math.Max(model.AudioStreamIndex, 0));
+            case Layer { IsMainVideo: false } row when CaptionStreamsOf(row) is { Count: > 0 } streams:
+                return streams[0];
         }
 
         if (CaptionUseVoiceover)
@@ -465,7 +561,7 @@ public partial class MainViewModel
     {
         CaptionSourceKind.MainFile => source.Stream < 0 ? "The main video"
             : $"The main video: {AudioTracks.FirstOrDefault(t => t.Index == source.Stream)?.Title ?? $"audio track {source.Stream + 1}"}",
-        CaptionSourceKind.Clip => $"Sound clip: {Path.GetFileName(source.Path)}",
+        CaptionSourceKind.Clip => CaptionLaneOf(source) is { Name.Length: > 0 } lane ? $"{Path.GetFileName(source.Path)}: {lane.Name}" : $"Sound clip: {Path.GetFileName(source.Path)}",
         CaptionSourceKind.External => $"External audio file: {Path.GetFileName(source.Path)}",
         _ => "Recorded voiceover",
     };
@@ -479,10 +575,10 @@ public partial class MainViewModel
         _ => HasVoiceover,
     };
 
-    /// <summary>The clips, other than the main video's, that play a source's file with sound.</summary>
+    /// <summary>The clips, other than the main video's, that play a source's file with sound, from its stream (a file's streams on lanes of their own play at one moment each: one is the source).</summary>
     private IEnumerable<(TimelineTrackModel Track, TimelineClip Clip)> CaptionClips(CaptionSource source) =>
         Document.Tracks.SelectMany(t => t.Clips.Where(c => c.ContentKind != LayerKind.MainVideo && c.HasSound
-            && string.Equals(c.SourcePath, source.Path, StringComparison.OrdinalIgnoreCase)).Select(c => (t, c)));
+            && string.Equals(c.SourcePath, source.Path, StringComparison.OrdinalIgnoreCase) && Math.Max(c.AudioStreamIndex, 0) == Math.Max(source.Stream, 0)).Select(c => (t, c)));
 
     /// <summary>
     /// Every window of the timeline that plays a source, in order (4.4): the main video's clips for the main file (its
@@ -552,7 +648,8 @@ public partial class MainViewModel
     public Guid? CaptionAnchorTrackId => _captionAnchorSource switch
     {
         { Kind: CaptionSourceKind.MainFile } => MainVideoClips().Select(m => (Guid?)m.Track.Id).FirstOrDefault(),
-        { Kind: CaptionSourceKind.Clip } source => CaptionClips(source).OrderBy(c => c.Clip.Start).Select(c => (Guid?)c.Track.Id).FirstOrDefault(),
+        // (A stream's lane speaks for the video's track it is under: the captions go in that one's stack.)
+        { Kind: CaptionSourceKind.Clip } source => CaptionClips(source).OrderBy(c => c.Clip.Start).Select(c => (Guid?)(c.Track.Kind == TimelineTrackKind.Audio ? c.Track.ParentTrackId ?? c.Track.Id : c.Track.Id)).FirstOrDefault(),
         _ => null,
     };
 
@@ -589,7 +686,7 @@ public partial class MainViewModel
             return problem;
 
         // Heard in the source's time; shown through every clip that plays it, on the sequence's clock.
-        var lines = CaptionGenerator.Lines(CaptionProjection.ProjectWords(words, CaptionSpans(source)), CaptionStyle);
+        var lines = CaptionProjection.ProjectLines(words, CaptionSpans(source), CaptionStyle);
         var output = CaptionProjection.ToOutputClock(lines, ranges, timeOffset);
         WriteCaptionFile(output.SelectMany(l => l).ToList(), output, assPath, 0);
         StatusText = $"Captions: {output.Sum(l => l.Count)} word{(output.Sum(l => l.Count) == 1 ? "" : "s")} written.";

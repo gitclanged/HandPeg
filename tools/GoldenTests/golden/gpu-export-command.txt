@@ -2,11 +2,11 @@
 
 the whole timeline, fades, auto-captions:
   320 x 180, 120 frames at 30/1 (120 on the canvas), chapters file: False
-  ffmpeg -hide_banner -y -i D:/media/main.mp4 -f rawvideo -pix_fmt bgr0 -video_size 320x180 -framerate 30/1 -i pipe:0 -filter_complex anullsrc=r=48000:cl=stereo:d=4[aedit0];[aedit0]afade=t=in:st=0:d=1,afade=t=out:st=3:d=1[an0] -map 1:v:0 -map [an0] -vf scale=out_color_matrix=bt709:out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,setsar=1,fade=t=in:st=0:d=1,fade=t=out:st=3:d=1,null[cap_base];color=c=black@0:s=288x36:r=30,format=rgba,ass='D\:/media/captions.ass':alpha=1[cap_layer];[cap_base][cap_layer]overlay=16:126:shortest=1 -c:v libx264 -preset medium -crf 18 -metadata:s:a:0 "title=Track 1" -c:a:0 aac -b:a:0 160k -map_chapters -1 D:/media/out.mkv
+  ffmpeg -hide_banner -y -i D:/media/main.mp4 -f rawvideo -pix_fmt nv12 -video_size 320x180 -framerate 30/1 -i pipe:0 -filter_complex [0:a:0]asplit=2[aedit0_c0][aedit0_c1];[aedit0_c0]atrim=start=0:end=2.5,asetpts=PTS-STARTPTS[aedit0_p0];[aedit0_c1]atrim=start=2.5:end=4,asetpts=PTS-STARTPTS,adelay=2500:all=1[aedit0_p1];[aedit0_p0][aedit0_p1]amix=inputs=2:normalize=0:dropout_transition=0,asetpts=N/SR/TB[aedit0];[aedit0]afade=t=in:st=0:d=1,afade=t=out:st=3:d=1[an0] -map 1:v:0 -map [an0] -vf setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p,setsar=1,null[cap_base];color=c=black@0:s=288x36:r=30,format=rgba,ass='D\:/media/captions.ass':alpha=1[cap_layer];[cap_base][cap_layer]overlay=16:126:shortest=1 -c:v libx264 -preset medium -crf 18 -metadata:s:a:0 "title=Track 1" -c:a:0 aac -b:a:0 160k -map_chapters -1 D:/media/out.mkv
 
 one whole clip, NVENC, burned subtitles, chapters, 24 fps:
   320 x 180, 120 frames at 24/1 (150 on the canvas), chapters file: True
-  ffmpeg -hide_banner -y -i D:/media/main.mp4 -i D:/media/chapters.txt -f rawvideo -pix_fmt bgr0 -video_size 320x180 -framerate 24/1 -i pipe:0 -map 2:v:0 -map 0:a:0? -vf scale=out_color_matrix=bt709:out_range=tv:flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,setsar=1,subtitles='D\:/media/main.mp4':si=0,crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0,scale=flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p -c:v h264_nvenc -preset p5 -rc vbr -cq 21 -b:v 0 -pix_fmt yuv420p -metadata:s:a:0 "title=Track 1" -c:a:0 aac -b:a:0 160k -map_chapters 1 D:/media/out.mp4
+  ffmpeg -hide_banner -y -i D:/media/main.mp4 -i D:/media/chapters.txt -f rawvideo -pix_fmt nv12 -video_size 320x180 -framerate 24/1 -i pipe:0 -map 2:v:0 -map 0:a:0? -vf setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p,setsar=1,subtitles='D\:/media/main.mp4':si=0,crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0,scale=flags=bicubic+accurate_rnd+full_chroma_int,format=yuv420p -c:v h264_nvenc -preset p5 -rc vbr -cq 21 -b:v 0 -pix_fmt yuv420p -metadata:s:a:0 "title=Track 1" -c:a:0 aac -b:a:0 160k -map_chapters 1 D:/media/out.mp4
 
 refused:
   Copy: a Copy export keeps the file's own picture
@@ -15,7 +15,14 @@ refused:
   tone-mapped: tone mapping to SDR is FFmpeg's (the compositor has none yet)
   burned subtitles on a spliced main video: the source's subtitles are burned into a main video in several clips, on its own frames
   no known length: the main video's length is not known, so FFmpeg's canvas takes its clock from it
-  channel balance: the colour sliders' red, green and blue balance is FFmpeg's (the compositor has none yet)
+
+the sound rendered by the engine:
+  ffmpeg -hide_banner -y -i D:/media/main.mp4 -f rawvideo -pix_fmt nv12 -video_size 320x180 -framerate 30/1 -i pipe:0 -f f32le -ar 48000 -ch_layout stereo -i D:/session/sound.f32 -map 1:v:0 -map 2:a:0
+  as it stands: the engine's
+  normalized: loudness normalization is FFmpeg's (it holds seconds back, so editing never hears it)
+  no sound: the export has no sound track
+  several tracks kept: the sound is kept as several tracks, and the sound engine renders one mix
+  a copied track: a track is copied as it is, which only FFmpeg can do
 
 frames (canvas rate, its length, export rate: canvas frames, export frames, the first export frames' canvas frames):
   30/1, 4 s, the same: 120 canvas, 120 out (30/1): 0 1 2 3 4 5 6 7 8 9 10 11

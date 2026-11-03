@@ -31,6 +31,7 @@ public sealed partial class DockGuide : Window
 
     public DockGuide(Brush accent)
     {
+        Services.UiScale.SetKeepsItsSize(this, true);
         (WindowStyle, AllowsTransparency, Background, ShowInTaskbar, ShowActivated, Topmost, ResizeMode) =
             (WindowStyle.None, true, Brushes.Transparent, false, false, true, ResizeMode.NoResize);
         var fill = accent.Clone();
@@ -97,6 +98,7 @@ public sealed partial class SideWindow : Window
 
     public SideWindow(Window main)
     {
+        Services.UiScale.SetKeepsItsSize(this, true);
         Owner = main;
         Title = "HandPeg: Side Window";
         (Width, Height, MinWidth, MinHeight) = (720, 720, 320, 240);

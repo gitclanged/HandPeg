@@ -89,6 +89,9 @@ public sealed partial class GpuScenePlan
         public EffectInstance[] Look = [];
         public MatteStep[] Matte = [];
         public EffectInstance? Shadow;
+
+        // What is drawn as it is laid on, with no FFmpeg behind it (5.1-GpuFx: the Neon Rim Light, Frosted Glass).
+        public EffectInstance[] LaidOn = [];
         public GpuEffectPacket Edges;
         public GpuEffectPacket[] Packets = [];
         public GpuResourceRef Lut = GpuResourceRef.None, Curve = GpuResourceRef.None, Mask = GpuResourceRef.None, MaskStandIn = GpuResourceRef.None;
@@ -287,14 +290,22 @@ public sealed partial class GpuScenePlan
             if (_primary >= 0 && blurClips.Count > 0)
                 entries.Add(Background());
 
+            // The captions among the layers when they are put under a track (5.1-Polish, the user's Q2: FilterGraphBuilder's
+            // CaptionsAt, the same place the export's graph lays them), else over everything as they always were.
+            var captionsAt = state.AutoCaptions ? _low.CaptionsAt : -1;
             for (var n = 0; n < _low.Stack.Count; n++)
             {
+                if (n == captionsAt)
+                    entries.Add(Captions());
                 if (Picture(_low.Stack[n]) is not { } entry)
                     continue;
                 if (entry.Kind == EntryKind.Center && n == 0 && CoversWhenOn(_low.Stack[n]))
                     chain.CoveringCenter = entry;
                 entries.Add(entry);
             }
+
+            if (captionsAt >= _low.Stack.Count)
+                entries.Add(Captions());
 
             // The whole finished picture: the denoise, the LUT and the colour sliders, then the Sequence Output's own effects.
             if (Whole() is { } whole)
@@ -305,8 +316,8 @@ public sealed partial class GpuScenePlan
                 entries.Add(new Entry { Kind = EntryKind.Fade, FadesIn = state.FadeIn, FadesOut = state.FadeOut, Name = "Fade", ClipKey = FadeKey });
             if (state.PictureSubtitles is { Cues.Count: > 0 } pictureTrack)
                 entries.Add(PictureSubtitlesEntry(pictureTrack, state, _width, _height, _primary >= 0));
-            if (state.AutoCaptions && Captions() is { } captions)
-                entries.Add(captions);
+            if (state.AutoCaptions && captionsAt < 0)
+                entries.Add(Captions());
 
             foreach (var entry in entries)
             {
@@ -316,6 +327,7 @@ public sealed partial class GpuScenePlan
 
             return new GpuScenePlan(_width, _height, _low.SequenceSeconds, [.. entries], chain, resources)
             {
+                FrameSeconds = _low.FrameSeconds,
                 PrimarySource = _primary,
                 PrimaryPathHash = _primary >= 0 ? resources.PathHashOf(_primary) : 0,
                 SourceWidth = Math.Max(state.SourceWidth, 2),
@@ -323,7 +335,7 @@ public sealed partial class GpuScenePlan
             };
         }
 
-        private static readonly long FadeKey = default(GpuHash).Add("fade").Value, CaptionKey = default(GpuHash).Add("captions").Value,
+        private static readonly long FadeKey = default(GpuHash).Add("fade").Value, CaptionKey = CaptionClipKey,
             WholeKey = default(GpuHash).Add("whole").Value, BackgroundKey = default(GpuHash).Add("background").Value;
 
         private static MainClip[] Sorted(IReadOnlyList<MainClip> clips)
@@ -566,6 +578,8 @@ public sealed partial class GpuScenePlan
             entry.Look = Look(entry, layer);
             if (layer.Shadow && layer.FxOn(EffectRegistry.Shadow))
                 entry.Shadow = layer.Find(EffectRegistry.Shadow) is { Enabled: true } card ? card : new EffectInstance { Type = EffectRegistry.Shadow };
+            if (!layer.EffectsBypassed)
+                entry.LaidOn = [.. layer.Effects.Where(c => c.Enabled && c.Definition is { Zone: EffectZone.Composite, GpuOnly: true })];
             entry.Fades = Fades(layer, adjustment: false);
         }
 
@@ -778,7 +792,7 @@ public sealed partial class GpuScenePlan
             var (start, end) = layer.GetSpan(_low.SequenceSeconds);
             var length = end - start;
             var fades = new List<Fade>(2);
-            TransitionStyle Style(TransitionStyle style) => adjustment && (TransitionStyles.IsSlide(style) || style == TransitionStyle.Zoom) ? TransitionStyle.Dissolve : style;
+            TransitionStyle Style(TransitionStyle style) => adjustment && (TransitionStyles.IsSlide(style) || style is TransitionStyle.Zoom or TransitionStyle.ParticleSnap) ? TransitionStyle.Dissolve : style;
 
             var fadeIn = Math.Min(layer.FadeInSeconds, length);
             if (!layer.PictureFadeInOff && fadeIn > 0.01)
@@ -825,7 +839,7 @@ public sealed partial class GpuScenePlan
             }
 
             foreach (var filter in state.ColorFilters)
-                ColorFilter(filter, packets);
+                ColorFilter(filter, packets, _width);
 
             entry.Packets = [.. packets];
             return entry.Packets.Length > 0 ? entry : null;
@@ -839,8 +853,12 @@ public sealed partial class GpuScenePlan
             return entry.Look.Length > 0 ? entry : null;
         }
 
-        /// <summary>One of the colour sliders' filters (MainViewModel.BuildColorFilters writes eq, hue and cas) as its GPU packet.</summary>
-        private static void ColorFilter(string filter, List<GpuEffectPacket> packets)
+        /// <summary>
+        /// One of the colour sliders' filters (MainViewModel.BuildColorFilters writes eq, hue and unsharp) as its GPU packet: the
+        /// sharpening's square (unsharp's lx, in pixels of the export's frame, <paramref name="frameWidth"/> wide) as the Sharpen
+        /// card's radius, which is given in pixels of a 1080-wide frame.
+        /// </summary>
+        private static void ColorFilter(string filter, List<GpuEffectPacket> packets, int frameWidth)
         {
             var equals = filter.IndexOf('=');
             if (equals <= 0)
@@ -858,15 +876,18 @@ public sealed partial class GpuScenePlan
             switch (filter[..equals])
             {
                 case "eq":
-                    packets.Add(new GpuEffectPacket(GpuShaderSlot.ColorGrade, (float)Get("contrast", 1), (float)Get("brightness", 0), (float)Get("saturation", 1), (float)Get("gamma", 1), 0, 0, 0, 0));
-                    if (Math.Abs(Get("gamma_r", 1) - 1) > 0.005 || Math.Abs(Get("gamma_g", 1) - 1) > 0.005 || Math.Abs(Get("gamma_b", 1) - 1) > 0.005)
-                        TellOnce(4, "The colour sliders' red, green and blue balance is not drawn by the GPU engine yet: the export does it.");
+                    // The channel balance as eq has it: green goes to luma's gamma, red and blue to the chroma planes' (none: their lanes stay 0).
+                    var (red, green, blue) = (Get("gamma_r", 1), Get("gamma_g", 1), Get("gamma_b", 1));
+                    var balanced = Math.Abs(red - 1) > 0.005 || Math.Abs(green - 1) > 0.005 || Math.Abs(blue - 1) > 0.005;
+                    packets.Add(new GpuEffectPacket(GpuShaderSlot.ColorGrade, (float)Get("contrast", 1), (float)Get("brightness", 0), (float)Get("saturation", 1), (float)(Get("gamma", 1) * green),
+                        balanced ? (float)Math.Sqrt(blue / green) : 0, balanced ? (float)Math.Sqrt(red / green) : 0, 0, 0));
                     break;
                 case "hue":
                     packets.Add(new GpuEffectPacket(GpuShaderSlot.HueSaturation, (float)Get("h", 0), (float)Get("s", 1), 0, 0, 0, 0, 0, 0));
                     break;
-                case "cas":
-                    packets.Add(new GpuEffectPacket(GpuShaderSlot.Sharpen, (float)Get("strength", 0), 0, 0, 0, 0, 0, 0, 0));
+                case "unsharp":
+                    var radius = (Get("lx", 5) - 1) / 2 * 1080.0 / Math.Max(frameWidth, 1);
+                    packets.Add(new GpuEffectPacket(GpuShaderSlot.Sharpen, (float)(Get("la", 0) / EffectRegistry.SharpenAmount), (float)radius, 0, 0, 0, 0, 0, 0));
                     break;
             }
         }

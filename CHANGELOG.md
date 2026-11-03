@@ -3,6 +3,58 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.1.0 — Pixel-Zoom Cutout Studio, Game-Engine Shaders & 3D Studio Stage
+
+### User-Facing Highlights
+- **Built-in Game Presets are back.** Overwatch 2 (traced from a hand-made HUD mask and laid out as a hand-made vertical
+  style), Marvel Rivals, Valorant, CS2, Apex Legends and The Finals land in your Styles folder on first start: on the drop
+  overlay, in the Timeline's preset list and in a clip's Apply Game Preset menu. Each is an ordinary preset made exactly as
+  the Cutout Studio makes one, so you can open its pieces in the Studio and redraw them for your own HUD settings. HandPeg
+  never deletes or overwrites a style file.
+- **The Cutout Studio.** Draw your own game's HUD pieces on a still of your recording: a polygon pen (Shift for 0/45/90
+  degrees, drag any point, Alt + click to insert, right-click to remove), rectangle, ellipse and slant helpers, and zoom
+  from the whole picture down to 64x about the pointer, with sharp pixels from 4x and a pixel grid from 16x. Arrange the
+  named pieces on a 9:16 stage, then add them to the Timeline or save them as a Game Preset.
+- **A Game Preset belongs to a clip.** Apply one to the 2nd or 10th clip, or to clips of another file: each gets its own
+  HUD pieces over its own span. A clip dropped onto a preset's track takes that preset; several files dropped together
+  each get it, one after another.
+- **Game-engine shaders.** Motion Blur with a real shutter (optical flow for what moves inside the video, true sub-frames
+  for keyframed moves), Film Halation & Glow, Neon Rim Light and Frosted Glass that follow a clip's real shape, Impact
+  Shockwave, Anamorphic Lens, and a new 3D VFX group (3D Explosion, Sparks & Debris, Anime Lines, Energy Shield, Saber
+  Glow) that drops in at the playhead and lights the video under it.
+- **3D Fly-In + Shockwave Impact** on a clip's Smart Tools menu: the clip flies in, lands with a shockwave and camera
+  shake, and glides back, all as ordinary keyframes and an adjustment clip you can edit (one step of Undo).
+- **The 3D view's Studio Stage:** a mirror floor reflecting the stack, guide rails, the picture's own colour as the room's
+  light, and a red/green/blue gizmo to move the selected layer along one axis. Media pane tiles lean toward the pointer.
+- **Every video track is equal.** A recording with several sound tracks gets one lane per stream under its clip, with a
+  master mute on every video track's header; Auto-Captions on a track listen to that track's streams only.
+- **The Timeline:** child stacks are thin bars until you open them; crossfades are full-height boxes you can drag longer
+  or shorter and delete; a track's lower edge in the headers sets that track's own height; the right-click menu is seven
+  groups in one fixed order, with typed Width, Height, X, Y, Rotation and Crop boxes under Transform.
+- **Captions have a place in the stack:** over everything by default, or under any track you choose (Shift-lift their
+  plane in the 3D view, or use their menu). Splitting a caption block splits its words, and no caption runs across a cut.
+- **The Lightning Dial is eight actions** out of the box (Play/Pause, Split, Ripple Delete, Remove Dead Air, Keyframe,
+  Auto-Captions, 3D View, Undo), and keys 1-8 run them at once.
+- **Sharper on your monitor:** HandPeg draws at native 1:1 pixels with its own UI Scale (75-150 %) in Settings >
+  Appearance, unless you ask it to follow Windows' scaling.
+- **Arrow keys nudge** the selected layer 1 px (10 with Shift), and glide when held.
+- **Particle Disintegration (Thanos Snap)** transition on any clip.
+- **Zero-install portable copies.** `HandPeg-5.1.0-win-x64-Portable.zip` and `HandPeg-5.1.0-win-arm64.zip` carry their own
+  .NET runtime: unzip and run on a PC with nothing installed. Everything they write (settings, projects, caches,
+  downloaded tools) stays in the `portable` folder beside `HandPeg.exe`.
+
+### Under the Hood & Fixes
+- FFmpeg only encodes and muxes on the GPU path: frames are converted to NV12 on the card (62 % less data through the
+  pipe), export sound is rendered by HandPeg's own mixer, waveforms and dead-air detection read peaks natively (an hour
+  scans in about 2 ms), and posters, stills and Frame Preview come from the GPU engine.
+- Fixed a crash when a game and HandPeg together ran out of Windows' commit limit: the frame cache now stays under what
+  Windows has left, not only under the card's memory.
+- Faster seeks on projects with several videos: more decode lanes, a short frame barrier after a seek, and a cache
+  budget that shrinks when a game needs the card.
+- In and out points are gone: Split (`F`) is the one way to cut. The heuristic Auto-HUD is gone; HUDs are Game Presets.
+- Clicking a picture on the player never picks a clip on a hidden track, and a click goes through to the clip below.
+- Encoders default to their best quality step.
+
 ## HandPeg v5.0.0 — The Native GPU Engine & 3D Layer Stack
 
 ### User-Facing Highlights

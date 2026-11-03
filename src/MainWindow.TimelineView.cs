@@ -81,15 +81,35 @@ public partial class MainWindow
     /// <summary>Zooms by a factor (above 1 is closer) about a point of the bars, given as a fraction of their width: what is there stays there.</summary>
     private void ZoomTimeline(double factor, double atFraction)
     {
-        // Never while something is dragged on the timeline (the wheel, the keys, the buttons): the drag goes on at the
-        // scale it began at, and lands where it is drawn.
+        // Never while something is dragged on the timeline (the wheel, the keys, the buttons): the drag goes on at the scale
+        // it began at, and lands where it is drawn (a clip's commit works in the pixels of the rows it was dragged on). What is
+        // asked for meanwhile is done as it is let go (Timeline_DragEnded).
         var span = ViewSpan;
-        if (span <= 0 || UnifiedTimeline.Surface.IsDragging)
+        if (span <= 0)
             return;
+
+        if (UnifiedTimeline.Surface.IsDragging)
+        {
+            _zoomOwed = ((_zoomOwed?.Factor ?? 1) * factor, atFraction);
+            return;
+        }
 
         var under = _viewStart + atFraction * span;
         var next = span / factor;
         SetView(under - atFraction * next, next);
+    }
+
+    // A zoom asked for under a drag, done when it is let go.
+    private (double Factor, double AtFraction)? _zoomOwed;
+
+    /// <summary>The zoom a drag held back, now that it is over.</summary>
+    private void TakeOwedZoom()
+    {
+        if (_zoomOwed is { } owed)
+        {
+            _zoomOwed = null;
+            ZoomTimeline(owed.Factor, owed.AtFraction);
+        }
     }
 
     /// <summary>Zooms about the playhead while it is in view, and about the middle otherwise.</summary>
@@ -131,8 +151,6 @@ public partial class MainWindow
     /// <summary>Keeps the view inside the timeline, and shows it: the tracks (laid out again only when the scale changed), the ruler, the scroll bar, the zoom, the Keyframes pane.</summary>
     private void ApplyTimelineView(bool announce = true)
     {
-        ClampView();
-        ShowTimelineView();
         UpdateTimelineChrome();
         UpdateMasterStretch();
         DrawKeyTimeline();
@@ -158,10 +176,14 @@ public partial class MainWindow
         _viewStart = Math.Clamp(_viewStart, 0, Math.Max(extent - ViewSpan, 0));
     }
 
-    /// <summary>Brings the rulers, the scrollbars and the zoom sliders up to date with the view.</summary>
+    /// <summary>
+    /// Brings the surface, the rulers, the scrollbars and the zoom sliders up to date with the view, all from one view: a sequence that got
+    /// shorter (a crossfade, a ripple) moves the view, and the ruler moved without the tracks until the next scroll (5.1-DogfoodPolish).
+    /// </summary>
     private void UpdateTimelineChrome()
     {
         ClampView();
+        ShowTimelineView();
         var (extent, span, sequence) = (TimelineExtent, ViewSpan, _viewModel.DurationMs / 1000);
         _showingView = true;
         try

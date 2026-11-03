@@ -155,6 +155,9 @@ public sealed partial class Layer : ObservableObject
 
     public bool IsVideoFile => Kind == LayerKind.VideoFile;
 
+    /// <summary>Which audio stream of its file a lowered clip is heard from.</summary>
+    public int AudioStream { get; set; }
+
     /// <summary>A picture or a video that comes from a file of its own, not from the main video.</summary>
     public bool IsFile => IsImage || IsVideoFile;
 
@@ -201,7 +204,7 @@ public sealed partial class Layer : ObservableObject
     public bool HasFilters => IsPicture && !IsCaptions;
 
     // Tracks: a row of the timeline. A layer is one clip on its track; splitting it makes a second clip on the
-    // same track. What a track looks like (where it sits, its style, its filters) is the same for all its clips.
+    // same track. Everything a clip looks like is its own (5.1-DogfoodPolish): place, mask, matte, key and effects alike.
 
     /// <summary>Which track the clip is on. Clips with the same number share a row.</summary>
     [ObservableProperty] private int _trackId;
@@ -217,25 +220,6 @@ public sealed partial class Layer : ObservableObject
     /// the view then follows. Null for a layer that is no clip's, which changes its own speed (<see cref="SetSpeed"/>).
     /// </summary>
     public Action<Layer, double>? SpeedEditor { get; set; }
-
-    /// <summary>
-    /// What belongs to one clip alone, and is not copied to the others on its track when it changes. The file a
-    /// clip plays is its own too: clips of different files can follow each other on one track. So is where it is on the
-    /// frame (4.4): its corner, size and shape, its turn and anchor, its crop and its blur fill ("Apply Placement to All
-    /// Clips on Track" gives one clip's to the others).
-    /// </summary>
-    public static bool IsClipProperty(string? name) => name is nameof(PositionX) or nameof(PositionY) or nameof(SizeWidth) or nameof(SizeHeight)
-        or nameof(LockAspectRatio) or nameof(Rotation) or nameof(AnchorX) or nameof(AnchorY) or nameof(CropLeft) or nameof(CropRight)
-        or nameof(CropTop) or nameof(CropBottom) or nameof(CropLeftPercent) or nameof(CropRightPercent) or nameof(CropTopPercent)
-        or nameof(CropBottomPercent) or nameof(BlurFill)
-        or nameof(StartTime) or nameof(Duration) or nameof(MediaOffset) or nameof(IsHidden)
-        or nameof(ImagePath) or nameof(ImageWidth) or nameof(ImageHeight) or nameof(HasAudio) or nameof(AudioCodec) or nameof(AudioChannels)
-        or nameof(IsLoading) or nameof(Title) or nameof(Action) or nameof(IsMuted) or nameof(GainDb) or nameof(ProxyChoice)
-        or nameof(AudioOffset) or nameof(Name) or nameof(TrackId) or nameof(PositionXPercent) or nameof(PositionYPercent) or nameof(SizePercent)
-        or nameof(SizeHeightPercent) or nameof(IsFreeHeight) or nameof(HasFilterChanges) or KeysChanged or nameof(AnchorXPercent) or nameof(AnchorYPercent)
-        or nameof(AnimatesX) or nameof(AnimatesY) or nameof(AnimatesScale) or nameof(AnimatesRotation) or nameof(AnimatesOpacity) or nameof(IsAnimated) or nameof(IsDeleted) or nameof(Waveform) or nameof(Filmstrip) or nameof(MediaDuration) or nameof(Speed) or nameof(ClipSpeed)
-        or EffectsChanged or nameof(EffectsBypassed) or nameof(FadeInSeconds) or nameof(FadeOutSeconds) or nameof(TransitionIn)
-        or nameof(FadeInStyle) or nameof(FadeOutStyle);
 
     // When the layer is on screen, in seconds of the source's own time.
 
@@ -1318,6 +1302,7 @@ public sealed partial class Layer : ObservableObject
 
     public LayerState ToState() => new()
     {
+        AudioStream = AudioStream,
         Name = Name,
         Kind = Kind,
         ImagePath = ImagePath,
@@ -1437,8 +1422,12 @@ public sealed partial class Layer : ObservableObject
         LoadEffects(state);
     }
 
+    /// <summary>Takes where a piece is in the source, from a state written over the clip's.</summary>
+    public void ApplySource(LayerState state) =>
+        (SourceX, SourceY, SourceWidth, SourceHeight) = (state.SourceX, state.SourceY, state.SourceWidth, state.SourceHeight);
+
     /// <summary>
-    /// Takes what places a saved layer on the frame and is its clip's own (4.4, <see cref="IsClipProperty"/>): its corner,
+    /// Takes what places a saved layer on the frame: its corner,
     /// size and shape, its turn and anchor, its crop and its blur fill. Its corner goes where the state says, however the
     /// layer grows when it is sized.
     /// </summary>
@@ -1508,6 +1497,7 @@ public sealed partial class Layer : ObservableObject
             StartTime = Math.Max(state.StartTime, 0),
             Duration = Math.Max(state.Duration, 0),
             MediaOffset = Math.Max(state.MediaOffset, 0),
+            AudioStream = state.AudioStream,
             Speed = ReadSpeed(state.Speed),
             IsHidden = state.IsHidden,
             ProxyChoice = state.ProxyChoice,
@@ -1682,6 +1672,10 @@ public sealed class LayerState
     public bool IsEmptyTrack { get; set; }
     public bool IsDeleted { get; set; }
     public bool HasAudio { get; set; }
+
+    /// <summary>Which audio stream of its file a lowered clip is heard from (TimelineClip.AudioStreamIndex): the document says, so it is never saved here.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int AudioStream { get; set; }
     public double AudioOffset { get; set; }
 
     public int TrackId { get; set; }

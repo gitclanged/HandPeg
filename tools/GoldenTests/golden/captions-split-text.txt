@@ -1,0 +1,22 @@
+# Splitting a caption block (5.1-Polish, the user's directive): its words split at the word under the cut, never trimmed; anchored captions written back as two; no caption across a cut.
+the caption:
+  0-2 "one two three four" breaks [0.25, 0.5, 0.75]
+split at 0.9 s (inside "two"):
+  0-1 "one two" breaks [0.5]
+  1-2 "three four" breaks [0.5]
+split at 1.7 s (inside the last word):
+  0-1.5 "one two three" breaks [0.333333, 0.666667]
+  1.5-2 "four" breaks []
+split at 10.2 s, no boundaries (by letters):
+  10-11 "aa" breaks []
+  11-12 "bb" breaks []
+anchored, shown through a clip from 5 s:
+  6-8 "hello there my friends" breaks [0.25, 0.5, 0.75]
+written back (in the source's time):
+  1-2 "hello there" breaks []
+  2-3 "my friends" breaks []
+shown again:
+  6-7 "hello there" breaks [0.5]
+  7-8 "my friends" breaks [0.5]
+grouped over the cut as one: a b c d
+grouped window by window: a b | c d

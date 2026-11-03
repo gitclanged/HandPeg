@@ -226,6 +226,63 @@ public static class GpuFilmstripTests
             var clip = Path.Combine(folder, "long-gop.mp4");
             Run(ffmpeg, $"-f lavfi -i \"testsrc2=s=640x360:r=30:d=40\" -c:v libx264 -preset ultrafast -g 300 -keyint_min 300 -sc_threshold 0 -bf 2 -pix_fmt yuv420p -y \"{clip}\"");
 
+            // One frame (5.1-CleanupStudioAndFfmpegPurge): the Cutout Studio's still, the exact frame at the video's own size, against
+            // FFmpeg's of the same moment (the clip's clock runs on every frame, so the wrong frame shows); and a poster, small, on a key frame.
+            var (still, truth, poster) = (Path.Combine(folder, "still.png"), Path.Combine(folder, "still-ffmpeg.png"), Path.Combine(folder, "poster.jpg"));
+            if (!Task.Run(() => GpuFilmstrips.TryStillAsync(clip, still, 17.5, null, onAKeyFrame: false, CancellationToken.None)).GetAwaiter().GetResult())
+            {
+                problems.Add("the compositor's still was not made");
+            }
+            else
+            {
+                Run(ffmpeg, $"-ss 17.5 -i \"{clip}\" -frames:v 1 -update 1 -y \"{truth}\"");
+                static (byte[] Pixels, int Width, int Height) Load(string path)
+                {
+                    using var file = File.OpenRead(path);
+                    var frame = BitmapDecoder.Create(file, BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad).Frames[0];
+                    var pixels = new byte[frame.PixelWidth * frame.PixelHeight * 4];
+                    new FormatConvertedBitmap(frame, System.Windows.Media.PixelFormats.Bgr32, null, 0).CopyPixels(pixels, frame.PixelWidth * 4, 0);
+                    return (pixels, frame.PixelWidth, frame.PixelHeight);
+                }
+
+                var (ours, theirs) = (Load(still), Load(truth));
+                if ((ours.Width, ours.Height) != (640, 360) || (theirs.Width, theirs.Height) != (640, 360))
+                {
+                    problems.Add($"the stills are {ours.Width} x {ours.Height} and {theirs.Width} x {theirs.Height}, not the video's 640 x 360");
+                }
+                else
+                {
+                    // The clip is untagged, so the two read its colours by different matrices: what counts is which of FFmpeg's frames it is nearest.
+                    double Away(byte[] other)
+                    {
+                        var total = 0L;
+                        for (var i = 0; i < ours.Pixels.Length; i++)
+                            total += i % 4 == 3 ? 0 : Math.Abs(ours.Pixels[i] - other[i]);
+                        return total / (ours.Pixels.Length * 0.75);
+                    }
+
+                    var (before, after) = (Path.Combine(folder, "still-before.png"), Path.Combine(folder, "still-after.png"));
+                    Run(ffmpeg, $"-ss 17.4333 -i \"{clip}\" -frames:v 1 -update 1 -y \"{before}\"");
+                    Run(ffmpeg, $"-ss 17.5667 -i \"{clip}\" -frames:v 1 -update 1 -y \"{after}\"");
+                    var (exact, earlier, later) = (Away(theirs.Pixels), Away(Load(before).Pixels), Away(Load(after).Pixels));
+                    Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        the compositor's still: {exact:0.00}/255 from FFmpeg's frame at the moment, {earlier:0.00} from two before, {later:0.00} from two after"));
+                    if (exact >= earlier || exact >= later)
+                        problems.Add(string.Create(CultureInfo.InvariantCulture, $"the compositor's still is not the frame asked for ({exact:0.00} from it, {earlier:0.00} and {later:0.00} from its neighbours)"));
+                }
+            }
+
+            if (!Task.Run(() => GpuFilmstrips.TryStillAsync(clip, poster, 17.5, 144, onAKeyFrame: true, CancellationToken.None)).GetAwaiter().GetResult())
+            {
+                problems.Add("the compositor's poster was not made");
+            }
+            else
+            {
+                using var file = File.OpenRead(poster);
+                var frame = BitmapDecoder.Create(file, BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad).Frames[0];
+                if ((frame.PixelWidth, frame.PixelHeight) != (256, 144))
+                    problems.Add($"the poster is {frame.PixelWidth} x {frame.PixelHeight}, not 256 x 144");
+            }
+
             const int Frames = 8, Height = 54;
             const string ByFfmpeg = "ffmpeg", ByGpu = "gpu";
             var made = new Dictionary<string, (int Width, int Height, double Ms)>();

@@ -64,10 +64,11 @@ public static partial class Waveforms
     /// tracks and their mix was five readings of the file. Those kept in the cache are not made again.
     /// </summary>
     /// <returns>One picture for each request, in order; null for one that could not be made.</returns>
-    public static async Task<ImageSource?[]> RenderManyAsync(string mediaPath, IReadOnlyList<WaveformRequest> requests, CancellationToken cancellationToken)
+    /// <param name="lane">The reading's lane: Background, but for what the user is waiting on.</param>
+    public static async Task<ImageSource?[]> RenderManyAsync(string mediaPath, IReadOnlyList<WaveformRequest> requests, CancellationToken cancellationToken, WorkLane lane = WorkLane.Background)
     {
         var pictures = new ImageSource?[requests.Count];
-        if (!File.Exists(DependencyUpdater.FfmpegPath) || !File.Exists(mediaPath))
+        if (!File.Exists(mediaPath))
             return pictures;
 
         // Read before, for this file as it is and these tracks: the peaks are taken from the cache.
@@ -87,11 +88,75 @@ public static partial class Waveforms
 
         // The reading itself is background work (see WorkScheduler): asked for twice, it is done once.
         var key = $"wave|{mediaPath}|{string.Join(",", wanted.Select(i => requests[i].CacheKind))}";
-        return await WorkScheduler.Run(new WorkSpec($"Waveforms of {Path.GetFileName(mediaPath)}", WorkLane.Background) { Key = key },
+        return await WorkScheduler.Run(new WorkSpec($"Waveforms of {Path.GetFileName(mediaPath)}", lane) { Key = key },
             work => DecodeAsync(work.Token), cancellationToken);
 
         async Task<ImageSource?[]> DecodeAsync(CancellationToken cancellationToken)
         {
+            // In this process first (Waveforms.Native.cs): each track once, in one reading of the file, on a thread that keeps out of the way.
+            var distinct = wanted.SelectMany(i => requests[i].Tracks).Distinct().ToList();
+            var native = distinct.Select(_ => new PeakReader()).ToArray();
+            try
+            {
+                var read = await Task.Factory.StartNew(() =>
+                {
+                    Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+                    try
+                    {
+                        return ReadPeaksNatively(mediaPath, distinct, native, cancellationToken);
+                    }
+                    finally
+                    {
+                        Thread.CurrentThread.Priority = ThreadPriority.Normal;
+                    }
+                }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+                if (read)
+                {
+                    foreach (var one in native)
+                        one.Finish();
+                    foreach (var w in wanted)
+                    {
+                        // Several tracks together: their outlines added up, which is the most their mix can reach (and exactly it where only one sounds).
+                        var request = requests[w];
+                        float[]? lows = null, highs = null;
+                        foreach (var track in request.Tracks)
+                        {
+                            if (native[distinct.IndexOf(track)].TakePeaks() is not var (trackLows, trackHighs))
+                                continue;
+                            if (lows is null)
+                            {
+                                (lows, highs) = (trackLows, trackHighs);
+                                continue;
+                            }
+
+                            if (trackLows.Length > lows.Length)
+                                (lows, highs, trackLows, trackHighs) = (trackLows, trackHighs, lows, highs!);
+                            for (var i = 0; i < trackLows.Length; i++)
+                                (lows[i], highs![i]) = (Math.Max(lows[i] + trackLows[i], -1), Math.Min(highs[i] + trackHighs[i], 1));
+                        }
+
+                        if (lows is null || highs is null)
+                            continue;
+
+                        var (keptLows, keptHighs) = (lows, highs);
+                        PreviewCache.Timeline.Write(mediaPath, request.CacheKind, ".peaks", stream => WritePeaks(stream, keptLows, keptHighs));
+                        pictures[w] = Picture(request, new WaveformData(lows, highs, BrushOf(request.Color)));
+                    }
+
+                    if (wanted.All(w => pictures[w] is not null))
+                        return pictures;
+                }
+            }
+            finally
+            {
+                foreach (var one in native)
+                    one.Dispose();
+            }
+
+            if (!File.Exists(DependencyUpdater.FfmpegPath))
+                return pictures;
+
             // Each track goes to as many waveforms as want it: split where that is more than one.
             var uses = wanted.SelectMany(i => requests[i].Tracks).GroupBy(t => t).ToDictionary(g => g.Key, g => g.Count());
             var taken = uses.Keys.ToDictionary(t => t, _ => 0);
@@ -739,6 +804,45 @@ public static partial class Notifier
 /// </summary>
 public sealed class WaveformData
 {
+    /// <summary>
+    /// The stretches quieter than a level for long enough: Remove Dead Air's silences, from the peaks in memory (5.1-CleanupStudioAndFfmpegPurge:
+    /// under a millisecond for an hour of sound, where FFmpeg's silencedetect read the whole file), each pair's two peaks both under the
+    /// level. To a pair's length, 12.5 ms. A silence running to the end is closed at <paramref name="duration"/>.
+    /// </summary>
+    /// <param name="noiseDb">Anything quieter than this counts as silence.</param>
+    /// <param name="minimumSeconds">Shorter pauses are ignored.</param>
+    public List<(double Start, double End)> Silences(double noiseDb, double minimumSeconds, double duration)
+    {
+        var level = (float)Math.Pow(10, noiseDb / 20);
+        var found = new List<(double Start, double End)>();
+        var from = -1;
+        var (lows, highs) = (_lows[0], _highs[0]);
+        void Close(double at)
+        {
+            var start = from / PairsPerSecond;
+            if (from >= 0 && at - start >= minimumSeconds)
+                found.Add((start, at));
+        }
+
+        for (var i = 0; i < highs.Length; i++)
+        {
+            var silent = highs[i] < level && lows[i] > -level;
+            if (silent && from < 0)
+            {
+                from = i;
+            }
+            else if (!silent && from >= 0)
+            {
+                Close(i / PairsPerSecond);
+                from = -1;
+            }
+        }
+
+        if (from >= 0)
+            Close(Math.Max(duration, highs.Length / PairsPerSecond));
+        return found;
+    }
+
     /// <summary>How many pairs of one level are folded into one pair of the next; the levels are 1:1, 1:8, 1:64 and 1:512.</summary>
     public const int MipFactor = 8, MipLevels = 4;
 

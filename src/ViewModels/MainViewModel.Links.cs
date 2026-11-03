@@ -1,12 +1,13 @@
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
+using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
 // ----- Links, places and blur fills of clips, for the timeline's rows and menus (4.4) -----
 // A track can be a child of another (its mini-stack: a style's HUD cut-outs under the main video's track), and a clip a child
 // of the clip it lies over; edits of the parent carry its children along (TimelineTransaction). A clip's place, crop and
-// blur fill are its own (Layer.IsClipProperty): these give one clip's place to its track, fit a clip to the frame, and set
+// blur fill are its own, as all of its look is: these give one clip's place to its track, fit a clip to the frame, and set
 // its blur fill, each as one step of Undo.
 public partial class MainViewModel
 {
@@ -110,7 +111,7 @@ public partial class MainViewModel
         var placement = _placedFor.TryGetValue(source, out var placed) ? placed : (MainPlacement?)null;
         using (DeferCommand())
         {
-            (_copyingToTrack, _placingMain) = (true, true);
+            (_settingQuietly, _placingMain) = (true, true);
             try
             {
                 foreach (var other in others)
@@ -133,7 +134,7 @@ public partial class MainViewModel
             }
             finally
             {
-                (_copyingToTrack, _placingMain) = (false, false);
+                (_settingQuietly, _placingMain) = (false, false);
             }
 
             // The Center controls and the Crop boxes show what their clip has now.
@@ -143,6 +144,57 @@ public partial class MainViewModel
         }
 
         StatusText = $"Every clip on {source.Name}'s track has its place now. Ctrl+Z puts theirs back.";
+    }
+
+    /// <summary>Puts a clip's middle on the frame's; its size stays. One step of Undo.</summary>
+    public void CenterClipOnFrame(Layer clip)
+    {
+        if (ClipOf(clip) is null || FrameWidth <= 0 || FrameHeight <= 0)
+            return;
+
+        Checkpoint($"center {clip.Name}");
+        if (clip.IsMainVideo)
+        {
+            PlaceMainClip(clip, KeptPlaceOf(clip).Zoom);
+            return;
+        }
+
+        var (_, _, width, height) = clip.GetOutputRect(FrameWidth, FrameHeight, SourceWidth, SourceHeight);
+        (clip.PositionX, clip.PositionY) = ((FrameWidth - width) / 2.0 / FrameWidth, (FrameHeight - height) / 2.0 / FrameHeight);
+    }
+
+    /// <summary>A clip back as a new clip starts: sized to the frame in its middle, not turned, nothing cropped. This clip alone. One step of Undo.</summary>
+    public void ResetClipTransform(Layer clip)
+    {
+        if (ClipOf(clip) is null)
+            return;
+
+        Checkpoint($"reset the transform of {clip.Name}");
+        clip.ResetTransform();
+        (clip.CropLeft, clip.CropTop, clip.CropRight, clip.CropBottom) = (0, 0, 0, 0);
+        if (clip.IsMainVideo)
+            PlaceMainClip(clip, 1);
+        else
+            FitToFrame(clip, AppSettings.Current.NewClipsFill);
+    }
+
+    // One clip of the main video in the middle of the frame at a zoom; the Center controls show what it has now.
+    private void PlaceMainClip(Layer clip, double zoom)
+    {
+        var placing = _placingMain;
+        _placingMain = true;
+        try
+        {
+            WriteMainPlace(clip, zoom, 0, 0);
+        }
+        finally
+        {
+            _placingMain = placing;
+        }
+
+        _centerShown = null;
+        ShowCenterTarget();
+        GenerateCommand();
     }
 
     /// <summary>

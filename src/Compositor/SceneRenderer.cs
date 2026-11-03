@@ -166,7 +166,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         var opacity = Math.Clamp(layer.Opacity, 0, 1);
         var blendMode = layer.BlendMode;
         var dissolve = 1f;
-        GpuEffectPacket? shadow = null, wipe = null, slide = null, zoom = null, blurDissolve = null;
+        GpuEffectPacket? shadow = null, wipe = null, slide = null, zoom = null, blurDissolve = null, snap = null, rim = null, glass = null, shutter = null;
         var effects = layer.Effects;
         var count = Math.Clamp(layer.EffectCount, 0, CompositorProtocol.MaxEffectsPerLayer);
         for (var k = 0; k < count; k++)
@@ -201,6 +201,18 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                     blurDissolve = packet;
                     dissolve *= Math.Clamp(packet.P0, 0, 1);
                     break;
+                case GpuShaderSlot.TransitionParticleSnap:
+                    snap = packet;
+                    break;
+                case GpuShaderSlot.RimGlass when packet.P7 > 0.5f:
+                    glass = packet;
+                    break;
+                case GpuShaderSlot.RimGlass:
+                    rim = packet;
+                    break;
+                case GpuShaderSlot.MotionBlur when packet.P3 >= 0.5f && packet.P4 >= 0.5f && (layer.Flags & GpuLayerDescriptor.FlagShutterPlace) != 0:
+                    shutter = packet;
+                    break;
             }
         }
 
@@ -209,7 +221,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         if (_alone)
         {
             (opacity, dissolve, blendMode) = (1, 1, 0);
-            (shadow, wipe, slide, zoom, blurDissolve) = (null, null, null, null, null);
+            (shadow, wipe, slide, zoom, blurDissolve, snap, rim, glass, shutter) = (null, null, null, null, null, null, null, null, null);
         }
 
         if (opacity * dissolve <= 0.0005f)
@@ -234,7 +246,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         {
             var packet = effects[k];
             var second = k + 1 < count && effects[k + 1].Slot == packet.Slot ? effects[k + 1] : default;
-            if (packet.Slot == GpuShaderSlot.ColorBalance && second.Slot == packet.Slot)
+            if (Paired(packet.Slot) && second.Slot == packet.Slot)
                 k++;
             work = RunEffect(layer, packet, second, work);
         }
@@ -266,15 +278,45 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             box = (cx - box.W * factor / 2, cy - box.H * factor / 2, box.W * factor, box.H * factor);
         }
 
-        // Under it: its blurred background, then its shadow.
+        // Under it: its blurred background, then its shadow (going as a snapped picture goes).
+        var under = opacity * dissolve * (snap is { } snapping ? Math.Clamp(snapping.P0, 0, 1) : 1);
         if (layer.BlurFillRadius > 0 && !adjustment && !_alone)
-            DrawBlurFill(layer, opacity * dissolve, withLook: false);
+            DrawBlurFill(layer, under, withLook: false);
         if (shadow is { } shading)
-            DrawShadow(layer, shading, work, box, opacity * dissolve, wipe);
+            DrawShadow(layer, shading, work, box, under, wipe);
+
+        // The Thanos Snap: its embers fly outside its box, so the box grows to hold them (about the same point of the picture).
+        var (anchorX, anchorY) = (layer.AnchorX, layer.AnchorY);
+        if (snap is { } snapped)
+            (work, box, anchorX, anchorY) = ParticleSnap(layer, snapped, work, box);
+
+        // Frosted Glass (5.1-GpuFx): the canvas under its shape, blurred, before what stays of its picture; the Neon Rim on the picture, with room for its glow; the
+        // shutter last, over all of that: sub-frames of the picture as it is laid on.
+        var rotation = layer.Rotation;
+        var share = 1f;
+        if (glass is { } frost)
+        {
+            DrawFrostedGlass(frost, work, box, rotation, anchorX, anchorY, opacity * dissolve, wipe);
+            share = Math.Clamp(frost.P5, 0, 1);
+        }
+
+        if (rim is { } lit)
+            (work, box, anchorX, anchorY) = NeonRim(lit, work, box, anchorX, anchorY, share);
+        else
+            opacity *= share;
+
+        if (opacity * dissolve <= 0.0005f)
+            return;
+
+        if (shutter is { } open)
+        {
+            (work, box, anchorX, anchorY, rotation) = Shutter(layer, open, work, box, anchorX, anchorY, wipe);
+            wipe = null;
+        }
 
         // Zone 4: laid on.
         var constants = default(PassConstants);
-        constants.Transform = Matrix4.Box(box.X, box.Y, box.W, box.H, layer.Rotation, layer.AnchorX, layer.AnchorY, _outWidth, _outHeight);
+        constants.Transform = Matrix4.Box(box.X, box.Y, box.W, box.H, rotation, anchorX, anchorY, _outWidth, _outHeight);
         constants.WholeUv();
         constants.Params4 = new Vector4(opacity, dissolve, Math.Clamp(blendMode, 0, 7), (float)_time);
         SetWipe(ref constants, wipe, box);
@@ -294,6 +336,42 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             _timer.End();
         }
     }
+
+    /// <summary>
+    /// The Thanos Snap (slot 69, ParticleSnap.hlsl): the working picture drawn into a larger one with room round it for the embers, and
+    /// the box grown to match.
+    /// </summary>
+    private (GpuTexture Work, (float X, float Y, float W, float H) Box, float AnchorX, float AnchorY) ParticleSnap(
+        in GpuLayerDescriptor layer, GpuEffectPacket snap, GpuTexture work, (float X, float Y, float W, float H) box)
+    {
+        if (!_shaders.Has("PSParticleSnap"))
+            return (work, box, layer.AnchorX, layer.AnchorY);
+
+        var (roomX, roomY) = ((int)MathF.Ceiling(work.Width * SnapRoom), (int)MathF.Ceiling(work.Height * SnapRoom));
+        var longest = Math.Max(work.Width, work.Height);
+        (roomX, roomY) = (Math.Max(roomX, (int)(longest * SnapRoom / 2)), Math.Max(roomY, (int)(longest * SnapRoom / 2)));
+        var output = _gpu.Textures.Rent(work.Width + 2 * roomX, work.Height + 2 * roomY);
+        var constants = default(PassConstants);
+        constants.Packet = snap;
+        constants.Params = new Vector4(_pxScale1080, 0, 0, _pixelScale);
+        constants.Params2 = new Vector4((float)roomX / output.Width, (float)roomY / output.Height, (float)work.Width / output.Width, (float)work.Height / output.Height);
+        constants.Params3 = new Vector4(work.Width, work.Height, 0, 0);
+        constants.Params4 = new Vector4(1, 1, 0, (float)_time);
+        constants.WholeUv();
+        _timer.Begin((int)GpuShaderSlot.TransitionParticleSnap);
+        Draw("PSParticleSnap", work, output.Rtv, output.Width, output.Height, ref constants, blend: false);
+        _timer.End();
+
+        var (perX, perY) = (box.W / work.Width, box.H / work.Height);
+        var grown = (box.X - roomX * perX, box.Y - roomY * perY, output.Width * perX, output.Height * perY);
+        var anchorX = (roomX + layer.AnchorX * work.Width) / output.Width;
+        var anchorY = (roomY + layer.AnchorY * work.Height) / output.Height;
+        _gpu.Textures.Return(work);
+        return (output, grown, anchorX, anchorY);
+    }
+
+    // The room round a snapped picture for its embers, as a share of its size each way.
+    private const float SnapRoom = 0.3f;
 
     /// <summary>How far a slide must carry the box to be wholly off the frame (FilterGraphBuilder.Video.cs WithTransitions).</summary>
     private static float Beyond(float toward, float at, float size, float frame) => toward > 0 ? frame - at + 2 : -(at + size) - 2;
@@ -348,20 +426,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                         _layerStep = double.IsFinite(frame.Until) && frame.Until > frame.Time ? frame.Until - frame.Time : 0;
                     if (cover)
                         uv = Cover(uv, frame.Width, frame.Height, target.Width, target.Height);
-                    SetYuv(ref constants, frame.Matrix, frame.FullRange);
-                    constants.U0 = uv.X;
-                    constants.V0 = uv.Y;
-                    constants.U1 = uv.Z;
-                    constants.V1 = uv.W;
-                    constants.Params2 = new Vector4(frame.Width, frame.Height, frame.Width / 2, frame.Height / 2);
-                    constants.Params3 = new Vector4((uv.Z - uv.X) * frame.Width / target.Width, (uv.W - uv.Y) * frame.Height / target.Height, 0, 0);
-                    var planes = stackalloc nint[2] { frame.LumaSrv, frame.ChromaSrv };
-                    _gpu.Context.PSSetShaderResources(3, 2, planes);
-                    _timer.Begin(0);
-                    Draw("PSYuvSource", null, target.Rtv, target.Width, target.Height, ref constants, blend: false);
-                    _timer.End();
-                    var none = stackalloc nint[2];
-                    _gpu.Context.PSSetShaderResources(3, 2, none);
+                    DrawFrame(frame, target, uv);
                     return true;
                 }
 
@@ -405,6 +470,27 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             default:
                 return false;
         }
+    }
+
+    /// <summary>The part <paramref name="uv"/> names of a decoded frame, into a target.</summary>
+    private void DrawFrame(CachedFrame frame, GpuTexture target, Vector4 uv)
+    {
+        var constants = default(PassConstants);
+        constants.Params4 = new Vector4(1, 1, 0, (float)_time);
+        SetYuv(ref constants, frame.Matrix, frame.FullRange);
+        constants.U0 = uv.X;
+        constants.V0 = uv.Y;
+        constants.U1 = uv.Z;
+        constants.V1 = uv.W;
+        constants.Params2 = new Vector4(frame.Width, frame.Height, frame.Width / 2, frame.Height / 2);
+        constants.Params3 = new Vector4((uv.Z - uv.X) * frame.Width / target.Width, (uv.W - uv.Y) * frame.Height / target.Height, 0, 0);
+        var planes = stackalloc nint[2] { frame.LumaSrv, frame.ChromaSrv };
+        _gpu.Context.PSSetShaderResources(3, 2, planes);
+        _timer.Begin(0);
+        Draw("PSYuvSource", null, target.Rtv, target.Width, target.Height, ref constants, blend: false);
+        _timer.End();
+        var none = stackalloc nint[2];
+        _gpu.Context.PSSetShaderResources(3, 2, none);
     }
 
     /// <summary>A part of a picture cut further, about its middle, to the shape of the target (cover: no bars).</summary>
@@ -578,7 +664,34 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                 }
 
             case GpuShaderSlot.Sharpen:
-                return packet.P0 < 0.005f ? work : Effect("PSSharpen", packet, default, work);
+                {
+                    // An unsharp mask (5.1-Polish, the user's Q3): the picture box-blurred into a texture of its own (EffectRegistry's
+                    // SharpenBox, once across and down: unsharp's square), then PSSharpen with it as Aux. The Radius is P1 (0 in a
+                    // packet made by hand: the card's default), the Threshold P2.
+                    if (packet.P0 < 0.005f || !_shaders.Has("PSSharpen") || !_shaders.Has("PSBoxBlur"))
+                        return work;
+                    var frameWidth = (int)MathF.Round(_pxScale1080 * 1080);
+                    var radius = EffectRegistry.SharpenBox(packet.P1 > 0 ? packet.P1 : EffectRegistry.SharpenDefaultRadius, frameWidth, work.Width, work.Height);
+                    if (radius < 1)
+                        return work;
+
+                    var blurred = BlurCopy(work, radius, (int)GpuShaderSlot.Sharpen);
+                    var sharpened = Effect("PSSharpen", packet, default, work, aux: blurred.Srv);
+                    _gpu.Textures.Return(blurred);
+                    return sharpened;
+                }
+
+            case GpuShaderSlot.MotionBlur:
+                return MotionBlur(layer, packet, work);
+
+            case GpuShaderSlot.HalationGlow:
+                return Glow(packet, work);
+
+            case GpuShaderSlot.ShockwaveLens:
+                return Lens(packet, work);
+
+            case GpuShaderSlot.Explosion or GpuShaderSlot.Sparks or GpuShaderSlot.AnimeLines or GpuShaderSlot.EnergyField:
+                return Generated(packet, second, work);
 
             default:
                 // Composite-stage packets (handled when the layer is laid on), reserved slots, a plugin's unknown slot.
@@ -675,6 +788,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     /// <summary>Histories of layers not drawn for two seconds' worth of frames go.</summary>
     private void ForgetOldHistories()
     {
+        if (_frame % 60 == 0)
+            ForgetOldFlows();
         if (_histories.Count == 0 || _frame % 60 != 0)
             return;
         foreach (var key in _histories.Where(p => _frame - p.Value.LastFrame > 120).Select(p => p.Key).ToList())
@@ -800,6 +915,34 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         return work;
     }
 
+    /// <summary>
+    /// A box blur of a texture into a new one (<paramref name="radius"/> texels, across then down, once: PSBoxBlur's two
+    /// passes), the texture itself kept: what an unsharp mask takes its difference from.
+    /// </summary>
+    private GpuTexture BlurCopy(GpuTexture source, int radius, int timedAs)
+    {
+        var packet = new GpuEffectPacket(GpuShaderSlot.BoxBlur, radius, 0, 0, 0, 0, 0, 0, 0);
+        GpuTexture? across = null;
+        for (var direction = 0; direction < 2; direction++)
+        {
+            var input = across ?? source;
+            var output = _gpu.Textures.Rent(source.Width, source.Height);
+            var constants = default(PassConstants);
+            constants.Packet = packet;
+            constants.Params = new Vector4(_pxScale1080, direction, Math.Min(radius, 64), _pixelScale);
+            constants.Params4 = new Vector4(1, 1, 0, (float)_time);
+            constants.WholeUv();
+            _timer.Begin(timedAs);
+            Draw("PSBoxBlur", input, output.Rtv, output.Width, output.Height, ref constants, blend: false);
+            _timer.End();
+            if (across is not null)
+                _gpu.Textures.Return(across);
+            across = output;
+        }
+
+        return across!;
+    }
+
     private GpuTexture Blur(GpuTexture work, int radius, int iterations, int timedAs) =>
         Separable("PSBoxBlur", new GpuEffectPacket(GpuShaderSlot.BoxBlur, radius, 0, 0, 0, 0, 0, 0, 0), work, Math.Min(radius, 64), iterations, timedAs);
 
@@ -910,7 +1053,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             {
                 var packet = effects[k];
                 var second = k + 1 < count && effects[k + 1].Slot == packet.Slot ? effects[k + 1] : default;
-                if (packet.Slot == GpuShaderSlot.ColorBalance && second.Slot == packet.Slot)
+                if (Paired(packet.Slot) && second.Slot == packet.Slot)
                     k++;
                 work = RunEffect(layer, packet, second, work);
             }
@@ -955,6 +1098,15 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         Submit("VSFull", shader, input?.Srv ?? 0, aux, lut, target, width, height, ref constants, blend, vertices: 3, clipToFrame: false);
     }
 
+    /// <summary>A finished frame as NV12's two planes (FlagReadbackNv12): each is a render target of its own, read back by the worker.</summary>
+    public void ToNv12(GpuTexture picture, GpuTexture luma, GpuTexture chroma)
+    {
+        var constants = default(PassConstants);
+        constants.WholeUv();
+        Draw("PSRgbToNv12", picture, luma.Rtv, luma.Width, luma.Height, ref constants, blend: false);
+        Draw("PSRgbToNv12Chroma", picture, chroma.Rtv, chroma.Width, chroma.Height, ref constants, blend: false);
+    }
+
     /// <summary>A placed quad (VSQuad) onto the canvas, kept within the frame (letterboxed: never over the bars).</summary>
     private void Quad(string shader, GpuTexture input, nint target, ref PassConstants constants, bool blend, nint aux = 0)
     {
@@ -962,7 +1114,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         Submit("VSQuad", shader, input.Srv, aux, 0, target, _outWidth, _outHeight, ref constants, blend, vertices: 4, clipToFrame: _letterbox);
     }
 
-    private void Submit(string vertex, string pixel, nint input, nint aux, nint lut, nint target, int width, int height, ref PassConstants constants, bool blend, uint vertices, bool clipToFrame)
+    private void Submit(string vertex, string pixel, nint input, nint aux, nint lut, nint target, int width, int height, ref PassConstants constants, bool blend, uint vertices, bool clipToFrame, bool additive = false)
     {
         var context = _gpu.Context;
         _gpu.SetConstants(constants);
@@ -983,7 +1135,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         context.IASetPrimitiveTopology(vertices == 4 ? D3D11.TopologyTriangleStrip : D3D11.TopologyTriangleList);
         context.VSSetShader(_shaders[vertex]);
         context.PSSetShader(_shaders[pixel]);
-        _gpu.SetBlend(blend);
+        if (additive)
+            _gpu.SetAdditive();
+        else
+            _gpu.SetBlend(blend);
         context.Draw(vertices, 0);
 
         // Let go of the inputs and the target, so the next pass may write into either.
@@ -1000,6 +1155,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         _blank?.Dispose();
         DisposeExploded();
         DisposeLoupe();
+        DisposeFx();
         foreach (var history in _histories.Values)
             history.Dispose();
         _histories.Clear();

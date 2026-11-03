@@ -97,6 +97,7 @@ public partial class MainWindow
             ["edit.redo"] = (always, () => RunUndo(redo: true)),
             ["file.addMedia"] = (always, () => AddMedia_Click(AddMediaButton, new RoutedEventArgs())),
             ["ui.settings"] = (always, () => OpenSettings()),
+            ["captions.generate"] = (source, () => GenerateCaptionsFrom(null)),
 
             ["transport.playPause"] = (always, () => PlayPause_Click(this, new RoutedEventArgs())),
             // The transport keys of every editor: J back, K stop, L forward; J or L again goes faster.
@@ -107,10 +108,8 @@ public partial class MainWindow
             ["transport.stepForward"] = (always, () => StepFrames(1)),
             ["transport.start"] = (source, () => _viewModel.PositionMs = 0),
             ["transport.end"] = (source, () => _viewModel.PositionMs = _viewModel.DurationMs),
-            ["transport.playInToOut"] = (source, PlayStartToStop),
             ["transport.prevIFrame"] = (source, () => JumpToIFrame(-1)),
             ["transport.nextIFrame"] = (source, () => JumpToIFrame(1)),
-            ["transport.goToIn"] = (() => _viewModel.HasSource && _viewModel.PendingStartMs is not null, () => _viewModel.PositionMs = _viewModel.PendingStartMs ?? _viewModel.PositionMs),
             ["transport.prevEdit"] = (source, () => GoToEditPoint(forward: false)),
             ["transport.nextEdit"] = (source, () => GoToEditPoint(forward: true)),
 
@@ -127,8 +126,6 @@ public partial class MainWindow
             ["marker.add"] = (source, () => _viewModel.AddMarker()),
             ["marker.next"] = (source, () => _viewModel.GoToMarker(forward: true)),
             ["marker.prev"] = (source, () => _viewModel.GoToMarker(forward: false)),
-            ["edit.in"] = (() => _viewModel.AddStartPointCommand.CanExecute(null), () => _viewModel.AddStartPointCommand.Execute(null)),
-            ["edit.out"] = (() => _viewModel.AddStopPointCommand.CanExecute(null), () => _viewModel.AddStopPointCommand.Execute(null)),
 
             // The time bars: = and - zoom about the playhead, \ shows the whole timeline again.
             ["view.zoomIn"] = (source, () => ZoomAboutPlayhead(1.6)),
@@ -146,13 +143,31 @@ public partial class MainWindow
             ["help.tour"] = (always, () => StartQuickStartTour()),
         };
 
-        for (var i = 0; i < KeybindManager.DialCategories; i++)
+        for (var i = 0; i < KeybindManager.DialSlices; i++)
         {
-            var category = i;
-            actions["ui.dial" + (i + 1).ToString(CultureInfo.InvariantCulture)] = (always, () => OpenLightningDial(held: false, category, over: null));
+            var slice = i;
+            actions["ui.dial" + (i + 1).ToString(CultureInfo.InvariantCulture)] = (() => CanRunDialSlice(slice), () => RunDialSlice(slice));
         }
 
         return actions;
+    }
+
+    /// <summary>The action a slice of the dial holds, or null for a category or an empty slice.</summary>
+    private static string? DialSliceAction(int slice) =>
+        KeybindManager.Dial is var dial && slice < dial.Count && dial[slice].IsAction ? dial[slice].Action : null;
+
+    private bool CanRunDialSlice(int slice) => DialSliceAction(slice) is not { } id || CanRunAction(id);
+
+    /// <summary>
+    /// A slice's own key (5.1-AutoHud-Part1, the user's Q1: the number keys are a hotbar of eight): a slice that holds an
+    /// action runs it at once, a slice that holds a category opens the dial on it.
+    /// </summary>
+    private void RunDialSlice(int slice)
+    {
+        if (DialSliceAction(slice) is { } id)
+            RunAction(id);
+        else
+            OpenLightningDial(held: false, slice, over: null);
     }
 
     /// <summary>Runs an action by its id (a shortcut, a mouse button, the dial): false when it cannot run now.</summary>
@@ -1276,8 +1291,8 @@ public partial class MainWindow
         static string Keys(string id, string otherwise) => KeybindManager.GestureText(id) is { Length: > 0 } keys ? keys : otherwise;
         var dial = Keys("ui.dial", "");
         var dialText = dial == "Mouse5" ? "the mouse's forward side button (Mouse 5)" : dial.Length > 0 ? dial : "its key (set it in Settings)";
-        var (first, last) = (Keys("ui.dial1", ""), Keys("ui.dial7", ""));
-        var categories = first.Length > 0 && last.Length > 0 ? $" ({first} to {last} open its categories at once)" : "";
+        var (first, last) = (Keys("ui.dial1", ""), Keys("ui.dial8", ""));
+        var slices = first.Length > 0 && last.Length > 0 ? $" ({first} to {last} run its eight slices at once)" : "";
         var xray = Keys("ui.xray", "");
 
         return
@@ -1298,7 +1313,7 @@ public partial class MainWindow
                 + "its settings here for you to change.",
                 () => LayoutPane.IsVisible ? LayoutPane : EffectsPanePanel),
             new("Your Keys and the Lightning Dial",
-                $"Settings holds every shortcut and the Lightning Dial: press {dialText} anywhere for a ring of actions under the pointer{categories}."
+                $"Settings holds every shortcut and the Lightning Dial: press {dialText} anywhere for a ring of actions under the pointer{slices}."
                 + (xray.Length > 0 ? $" {xray} for X-Ray, a look at every pane and what the editor is doing." : "")
                 + " You can see this tour again from Settings.",
                 () => SettingsHost),

@@ -19,6 +19,8 @@ public static class CaptionTests
             "# Word ends (4.4): silence skipping's gap rule, a segment's last word held to its length, captions split at 0.35 s gaps, and the caption file's ends.", WordEnds);
         yield return Case("captions-projection-folds",
             "# Anchored captions (4.4): projected through clip windows, a fold taken out and put back, speed, a J cut, a duplicate, and edits written back.", Projection);
+        yield return Case("captions-split-text",
+            "# Splitting a caption block (5.1-Polish, the user's directive): its words split at the word under the cut, never trimmed; anchored captions written back as two; no caption across a cut.", SplitText);
         yield return Case("deadair-caption-gaps",
             "# Remove Dead Air by the captions (4.4): the gaps between words, the minimum gap, and the pads before and after each word.", DeadAirGaps);
     }
@@ -61,6 +63,78 @@ public static class CaptionTests
         Line(text, $"{title}:");
         foreach (var cue in cues)
             Line(text, $"  {N(cue.Start)}-{N(cue.End)} \"{cue.Text}\" breaks [{string.Join(", ", (cue.Breaks ?? []).Select(N))}]");
+    }
+
+    // ----- Splitting a caption's words (5.1-Polish) -----
+
+    private static void SplitText(StringBuilder text, List<string> problems)
+    {
+        // "one two three four" over 2 s, a word every half second (boundaries at a quarter, a half and three quarters).
+        var cue = new SubtitleCueState(0, 2, "one two three four", [0.25, 0.5, 0.75]);
+        Cues(text, "the caption", [cue]);
+
+        // Inside "two" (0.5-1.0): the words said before the cut stay, the rest go, cut where "three" begins.
+        if (CaptionProjection.SplitAtWord(cue, 0.9) is { } inTwo)
+        {
+            Cues(text, "split at 0.9 s (inside \"two\")", [inTwo.First, inTwo.Second]);
+            Expect(problems, inTwo.First.Text == "one two" && inTwo.Second.Text == "three four", "the words before the cut stay, the rest are the second caption");
+            Expect(problems, Math.Abs(inTwo.First.End - 1) < 1e-9 && Math.Abs(inTwo.Second.Start - 1) < 1e-9, "the cut is where the second caption's first word begins");
+            Expect(problems, inTwo.First.Breaks is [var b1] && Math.Abs(b1 - 0.5) < 1e-9 && inTwo.Second.Breaks is [var b2] && Math.Abs(b2 - 0.5) < 1e-9,
+                "each word keeps its moment (the boundaries of each half)");
+        }
+        else
+        {
+            problems.Add("a caption of four words was not split at 0.9 s");
+        }
+
+        // Inside the last word: it goes alone (a caption keeps a word on each side).
+        var inLast = CaptionProjection.SplitAtWord(cue, 1.7);
+        Cues(text, "split at 1.7 s (inside the last word)", inLast is { } last ? [last.First, last.Second] : []);
+        Expect(problems, inLast is { First.Text: "one two three", Second.Text: "four" }, "inside the last word, the last word goes alone");
+
+        // Words without boundaries share the time by their letters.
+        var plain = new SubtitleCueState(10, 12, "aa bb");
+        var byLetters = CaptionProjection.SplitAtWord(plain, 10.2);
+        Cues(text, "split at 10.2 s, no boundaries (by letters)", byLetters is { } letters ? [letters.First, letters.Second] : []);
+        Expect(problems, byLetters is { First.Text: "aa", Second.Text: "bb" } split && Math.Abs(split.First.End - 11) < 1e-9, "a caption without boundaries splits where its letters say");
+
+        Expect(problems, CaptionProjection.SplitAtWord(new SubtitleCueState(0, 1, "alone"), 0.5) is null, "one word is not split");
+        Expect(problems, CaptionProjection.SplitAtWord(cue, 0) is null && CaptionProjection.SplitAtWord(cue, 2.5) is null, "a moment outside the caption splits nothing");
+
+        // An anchored caption (its words' own times in the source), shown through one clip from 5 s: split there, it is
+        // written back into the source's time as two captions, and shown as two again.
+        var anchor = new SubtitleCueState(1, 3, "hello there my friends") { Words = [1, 1.4, 1.5, 1.9, 2.0, 2.4, 2.5, 3.0] };
+        CaptionSpan[] clip = [new(5, 15, 0, 1)];
+        var shown = CaptionProjection.Project([anchor], clip);
+        Cues(text, "anchored, shown through a clip from 5 s", shown);
+        if (shown is [var projected] && CaptionProjection.SplitAtWord(projected, 6.7) is { } halves)
+        {
+            var second = halves.Second with { Projected = false, Piece = null };
+            var (anchors, loose) = CaptionProjection.WriteBack([anchor], clip, [halves.First with { Piece = projected.Piece }, second]);
+            Cues(text, "written back (in the source's time)", anchors);
+            var again = CaptionProjection.Project(anchors, clip);
+            Cues(text, "shown again", again);
+            Expect(problems, anchors.Count == 2 && loose.Count == 0, "the split caption is two anchors in the source's time");
+            Expect(problems, again.Select(c => c.Text).SequenceEqual(["hello there", "my friends"]), "shown again, the two halves are what was split");
+            Expect(problems, again.Count == 2 && Math.Abs(again[1].Start - 7) < 1e-6, "the second half starts where its first word is heard (2 s into the source, 7 s on the timeline)");
+        }
+        else
+        {
+            problems.Add("the anchored caption was not shown as one cue, or was not split");
+        }
+
+        // Words grouped window by window: a clip split at 2 s (two windows of the same source back to back) splits the caption
+        // the words would have made across it.
+        // (Said without a pause across the cut: only the cut can part them.)
+        var words = new List<CaptionWord> { new("a", 1.2, 1.55), new("b", 1.65, 1.95), new("c", 2.05, 2.4), new("d", 2.5, 2.8) };
+        var style = new CaptionStyle { MaxWordsPerLine = 5 };
+        CaptionSpan[] cut = [new(0, 2, 0, 1), new(2, 4, 2, 1)];
+        var whole = CaptionGenerator.Lines(CaptionProjection.ProjectWords(words, cut), style);
+        var apart = CaptionProjection.ProjectLines(words, cut, style);
+        Line(text, $"grouped over the cut as one: {string.Join(" | ", whole.Select(l => string.Join(" ", l.Select(w => w.Text))))}");
+        Line(text, $"grouped window by window: {string.Join(" | ", apart.Select(l => string.Join(" ", l.Select(w => w.Text))))}");
+        Expect(problems, whole.Count == 1, "said without a pause, the words would have been one caption across the cut");
+        Expect(problems, apart.Count == 2 && apart[0].Count == 2 && apart[1].Count == 2, "no caption runs across a cut");
     }
 
     // ----- Word ends -----

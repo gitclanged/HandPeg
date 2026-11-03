@@ -254,7 +254,7 @@ public sealed partial class Layer
             EffectZone.Composite => HasStyle && !IsCaptions,
             _ => false,
         };
-        return allowed && (ignorePresent || definition.Feature is null && definition.Type != EffectRegistry.BlendMode || Find(definition.Type) is null);
+        return allowed && (ignorePresent || definition.Feature is null && definition.Type != EffectRegistry.BlendMode && !definition.Once || Find(definition.Type) is null);
     }
 
     /// <summary>

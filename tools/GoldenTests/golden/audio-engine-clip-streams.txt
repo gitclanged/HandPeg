@@ -1,0 +1,2 @@
+# Every video's streams on any track (5.1-TrackEqualityAndVram, the user's directive): a sound clip plays the stream it names, in the player's mix and in the export, each exactly FFmpeg's 0:a:N and unlike the others.
+a clip of stream a:N of another file: correlation over 0.99 with FFmpeg's 0:a:N, in the engine's mix and the export's

@@ -20,7 +20,9 @@ public sealed class GpuExportException(string message, Exception? inner = null) 
 /// <summary>
 /// The GPU export (Pass 5.0-AudioAnd3D): the compositor that draws the player renders every frame of the export, and
 /// FFmpeg encodes them, with the export's own command for everything else (<see cref="FilterGraphBuilder.BuildGpuExportCommand"/>:
-/// the same inputs, the same sound graph and encoders, captions and burned subtitles by libass, chapters, soft subtitles).
+/// the same inputs, the same sound graph and encoders, burned subtitles by libass, chapters, soft subtitles). Since 5.1-Polish
+/// (the user's Q2) the compositor draws the fades and the captions too, where the preview draws them (among the layers, or
+/// over everything), from the words the caption file was written from; captions it cannot read are FFmpeg's, over everything.
 /// <see cref="FilterGraphBuilder"/>'s graph stays the bit-exact CPU path and the golden reference; this is the fast one.
 /// <list type="bullet">
 /// <item><b>Its own compositor.</b> A worker of its own (and a standby beside it, so a TDR mid-export is taken over and
@@ -29,7 +31,7 @@ public sealed class GpuExportException(string message, Exception? inner = null) 
 /// left alone.</item>
 /// <item><b>Exact frames.</b> Each scene asks the worker for every media layer's exact frame
 /// (<see cref="FrameSceneHeader.FlagExactFrames"/>), stretched over the export's frame (no letterbox), read back
-/// (<see cref="FrameSceneHeader.FlagReadback"/>, BGRA) and checked: a frame drawn with a stand-in, more layers than a scene
+/// (<see cref="FrameSceneHeader.FlagReadback"/>, NV12 converted on the card) and checked: a frame drawn with a stand-in, more layers than a scene
 /// holds, or a video the worker cannot decode (each is drawn once alone over magenta first) gives the export to FFmpeg.</item>
 /// <item><b>Pipelined.</b> One thread renders (publish, wait, copy the readback out, publish the next at once); FFmpeg's
 /// standard input is written from the other buffer meanwhile. Two buffers of one frame each; the canvas frames the
@@ -66,6 +68,9 @@ public sealed class GpuExport : IDisposable
     public const double FrameHair = 0.0005;
 
     private const int Buffers = 2;
+
+    /// <summary>How far ahead of each frame its captions are drawn (5.1-Polish), seconds: those behind are let go as the table fills.</summary>
+    private const double CaptionLookaheadSeconds = 2;
 
     // The clip key of a source's probe (each source's its own).
     private const long ProbeKey = 0x5052_4F42_0000_0000;
@@ -108,12 +113,14 @@ public sealed class GpuExport : IDisposable
     /// <summary>
     /// Why an export cannot be drawn by the GPU compositor, in plain words (for the log); null when it can. The graph's
     /// reasons (<see cref="FilterGraphBuilder.BuildGpuExportCommand"/>) and the plan's: an effect without a shader, a second
-    /// LUT or Curves card on a layer (the descriptor has one of each), a kind of layer the plan does not draw, the colour
-    /// sliders' channel balance, more files or textures than the compositor's tables hold.
+    /// LUT or Curves card on a layer (the descriptor has one of each), a kind of layer the plan does not draw, more files or
+    /// textures than the compositor's tables hold.
     /// </summary>
-    public static string? WhyNot(SequenceExportState state)
+    public static string? WhyNot(SequenceExportState state) => WhyNot(state, CaptionsOf(state));
+
+    private static string? WhyNot(SequenceExportState state, CaptionGenerator.CaptionWords? captions)
     {
-        if (FilterGraphBuilder.BuildGpuExportCommand(state, out var reason) is null)
+        if (FilterGraphBuilder.BuildGpuExportCommand(state, captions is not null, out var reason) is null)
             return reason;
 
         var lowered = FilterGraphBuilder.LowerForGpu(state);
@@ -142,17 +149,39 @@ public sealed class GpuExport : IDisposable
         // The blurred background's own cards (5.0-Release), judged as a clip's are.
         if (CardsWhyNot("the blurred background", state.BackgroundEffects.Select(EffectInstance.FromState), ref textures) is { } background)
             return background;
-        foreach (var filter in state.ColorFilters)
-        {
-            if (ChannelBalanced(filter))
-                return "the colour sliders' red, green and blue balance is FFmpeg's (the compositor has none yet)";
-        }
-
         if (files.Count + 1 > CompositorProtocol.MaxSources)
             return string.Create(CultureInfo.InvariantCulture, $"{files.Count} video files are more than the compositor's source table holds ({CompositorProtocol.MaxSources - 1})");
         if (textures > CompositorProtocol.MaxResources - 4)
             return string.Create(CultureInfo.InvariantCulture, $"some {textures} pictures, titles, masks and colour tables are more than the compositor's resource table holds");
         return null;
+    }
+
+    /// <summary>
+    /// The cards FFmpeg's graph cannot draw (5.1-GpuFx: no filter string stands for a shader), by name: what an export it makes leaves out, to be said aloud. Empty when
+    /// there are none.
+    /// </summary>
+    public static IReadOnlyList<string> LeftOutByFfmpeg(SequenceExportState state)
+    {
+        var names = new SortedSet<string>(StringComparer.Ordinal);
+        void Look(IEnumerable<EffectInstance> cards)
+        {
+            foreach (var card in cards)
+            {
+                if (card is { Enabled: true, Definition: { GpuOnly: true } definition })
+                    names.Add(definition.Name);
+            }
+        }
+
+        var lowered = FilterGraphBuilder.LowerForGpu(state);
+        foreach (var layer in lowered.Stack)
+        {
+            if (!layer.EffectsBypassed)
+                Look(layer.Effects);
+        }
+
+        Look(lowered.SequenceEffects);
+        Look(state.BackgroundEffects.Select(EffectInstance.FromState));
+        return [.. names];
     }
 
     /// <summary>A stack of effect cards the compositor cannot draw as FFmpeg does: a card with no shader, two LUTs or two Curves. Counts the textures it needs.</summary>
@@ -173,24 +202,6 @@ public sealed class GpuExport : IDisposable
 
         textures += luts + curves;
         return null;
-    }
-
-    /// <summary>Whether one of the colour sliders' filters (eq) sets a channel's own gamma, which the compositor's grade does not have.</summary>
-    private static bool ChannelBalanced(string filter)
-    {
-        if (!filter.StartsWith("eq=", StringComparison.Ordinal))
-            return false;
-        foreach (var option in filter[3..].Split(':'))
-        {
-            var at = option.IndexOf('=');
-            if (at > 0 && option[..at] is "gamma_r" or "gamma_g" or "gamma_b"
-                && double.TryParse(option[(at + 1)..], NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && Math.Abs(value - 1) > 0.005)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /// <summary>
@@ -230,20 +241,43 @@ public sealed class GpuExport : IDisposable
     /// (fades and captions left to FFmpeg, which draws them on the piped frames as the graph does), and the readback
     /// section. Takes <paramref name="client"/> over when it returns an export; null (and why) when it cannot.
     /// </summary>
-    public static GpuExport? Prepare(SequenceExportState state, CompositorClient client, out string whyNot) =>
-        FilterGraphBuilder.BuildGpuExportCommand(state, out whyNot) is { } command ? Prepare(state, command, client, out whyNot) : null;
+    public static GpuExport? Prepare(SequenceExportState state, CompositorClient client, out string whyNot)
+    {
+        var captions = CaptionsOf(state);
+        return FilterGraphBuilder.BuildGpuExportCommand(state, captions is not null, out whyNot) is { } command ? Prepare(state, command, client, out whyNot, captions) : null;
+    }
+
+    /// <summary>The words an export's captions are drawn from (beside its caption file, CaptionGenerator.ReadWords); null for none, or none to read.</summary>
+    private static CaptionGenerator.CaptionWords? CaptionsOf(SequenceExportState state) =>
+        state.AutoCaptions ? CaptionGenerator.ReadWords(state.CaptionsFilePath) : null;
 
     /// <summary>
     /// <see cref="Prepare(SequenceExportState, CompositorClient, out string)"/> for a command already made: the export's, or
     /// Render Preview's (<see cref="FilterGraphBuilder.BuildGpuPreviewCommand"/>), whose timing is a stretch of the sequence.
+    /// The plan draws what the command leaves to the compositor (5.1-Polish): the fades, and the captions from
+    /// <paramref name="captions"/> (their words on their file's clock, which is <paramref name="captionsShift"/> seconds before
+    /// the sequence's: a Render Preview's stretch's start).
     /// </summary>
-    public static GpuExport? Prepare(SequenceExportState state, GpuExportCommand command, CompositorClient client, out string whyNot)
+    public static GpuExport? Prepare(SequenceExportState state, GpuExportCommand command, CompositorClient client, out string whyNot,
+        CaptionGenerator.CaptionWords? captions = null, double captionsShift = 0)
     {
         GpuResourceBroker? broker = null;
         try
         {
             broker = new GpuResourceBroker(client, bakeOnCallingThread: true);
-            var plan = GpuScenePlan.Create(state with { FadeIn = false, FadeOut = false, AutoCaptions = false }, broker);
+            var drawsCaptions = command.CaptionsOnGpu && captions is not null && state.AutoCaptions;
+            if (drawsCaptions)
+            {
+                var lines = captions!.Lines.Select(line => (IReadOnlyList<CaptionWord>)line.Select(w => w with { Start = w.Start + captionsShift, End = w.End + captionsShift }).ToList()).ToList();
+                broker.Text.SetCaptions(lines, captions.Style, captions.TextScale);
+            }
+
+            var plan = GpuScenePlan.Create(state with
+            {
+                FadeIn = command.FadesOnGpu && state.FadeIn,
+                FadeOut = command.FadesOnGpu && state.FadeOut,
+                AutoCaptions = drawsCaptions,
+            }, broker);
             if (ReferenceEquals(plan, GpuScenePlan.Empty))
             {
                 whyNot = "the GPU scene could not be planned (the log says why)";
@@ -258,7 +292,8 @@ public sealed class GpuExport : IDisposable
                 return null;
             }
 
-            client.EnsureReadback(command.FrameBytes);
+            // Room for BGRA whatever is piped: each source's probe comes back in it.
+            client.EnsureReadback((long)command.Width * command.Height * 4);
             whyNot = "";
             return new GpuExport(client, broker, plan, command);
         }
@@ -292,15 +327,33 @@ public sealed class GpuExport : IDisposable
             return false;
         }
 
-        // Back on the caller's thread (the UI's): the scene is planned there.
-        var export = Prepare(state, client, out why);
-        if (export is null)
+        // The sound first, by the engine that plays it (FFmpeg only encodes it), where that is the export's sound: off this thread, it decodes.
+        var soundPath = await RenderSoundAsync(state, progress, cancellationToken);
+        try
         {
-            client.Dispose();
-            AppLog.Write($"GPU export: FFmpeg's graph renders this export ({why}).");
-            return false;
+            // Back on the caller's thread (the UI's): the scene is planned there.
+            var captions = CaptionsOf(state);
+            var export = FilterGraphBuilder.BuildGpuExportCommand(state, captions is not null, soundPath, out why) is { } command ? Prepare(state, command, client, out why, captions) : null;
+            if (export is null)
+            {
+                client.Dispose();
+                AppLog.Write($"GPU export: FFmpeg's graph renders this export ({why}).");
+                return false;
+            }
+
+            await RunPreparedAsync(export, client, progress, cancellationToken);
+        }
+        finally
+        {
+            DeleteSound(soundPath);
         }
 
+        return true;
+    }
+
+    // The export itself, once it is planned.
+    private static async Task RunPreparedAsync(GpuExport export, CompositorClient client, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
+    {
         using (export)
         {
             var timing = export.Command.Timing;
@@ -312,8 +365,75 @@ public sealed class GpuExport : IDisposable
             AppLog.Write(string.Create(CultureInfo.InvariantCulture,
                 $"GPU export: {export.FramesPiped} frames in {clock.Elapsed.TotalSeconds:0.0} s ({export.FramesPiped / Math.Max(clock.Elapsed.TotalSeconds, 0.001):0.0} a second)"));
         }
+    }
 
-        return true;
+    /// <summary>
+    /// The export's sound rendered by the sound engine into a raw file, exactly as long as the frames piped; null when FFmpeg's graph
+    /// makes it (GpuSoundWhyNot, a filter the engine does not have, nothing to hear, or the render failed: the log says which).
+    /// </summary>
+    private static async Task<string?> RenderSoundAsync(SequenceExportState state, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
+    {
+        if (FilterGraphBuilder.GpuSoundWhyNot(state) is { } reason)
+        {
+            AppLog.Write($"GPU export: FFmpeg's graph makes the sound ({reason}).");
+            return null;
+        }
+
+        if (FilterGraphBuilder.BuildGpuExportCommand(state, out _) is not { } bare)
+            return null;
+
+        var program = AudioProgram.Build(state);
+        if (program.Strips.Count == 0)
+        {
+            AppLog.Write("GPU export: FFmpeg's graph makes the silent sound.");
+            return null;
+        }
+
+        if (program.Strips.SelectMany(s => s.Unsupported).FirstOrDefault() is { } filter)
+        {
+            AppLog.Write($"GPU export: FFmpeg's graph makes the sound (the sound engine has no {filter} filter).");
+            return null;
+        }
+
+        var frames = (long)Math.Round(bare.Timing.OutputSeconds(bare.Timing.OutputFrames) * FilterGraphBuilder.GpuSoundRate);
+        Directory.CreateDirectory(SessionPaths.Previews);
+        var path = Path.Combine(SessionPaths.Previews, $"export_sound_{Guid.NewGuid():N}.f32");
+        try
+        {
+            progress.Report(new FfmpegProgress("Rendering the sound...", null, null));
+            var clock = Stopwatch.StartNew();
+            await Task.Run(() =>
+            {
+                using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20);
+                AudioMixer.RenderTo(program, 0, frames, FilterGraphBuilder.GpuSoundRate, file, null, cancellationToken);
+            }, cancellationToken);
+            AppLog.Write(string.Create(CultureInfo.InvariantCulture, $"GPU export: {frames / (double)FilterGraphBuilder.GpuSoundRate:0.0} s of sound rendered in {clock.Elapsed.TotalSeconds:0.0} s."));
+            return path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        {
+            AppLog.Write("GPU export: the sound could not be rendered; FFmpeg's graph makes it", ex);
+            DeleteSound(path);
+            return null;
+        }
+        catch
+        {
+            DeleteSound(path);
+            throw;
+        }
+    }
+
+    private static void DeleteSound(string? path)
+    {
+        try
+        {
+            if (path is not null)
+                File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Still open: it is in the session's previews folder, which goes when HandPeg closes.
+        }
     }
 
     /// <summary>
@@ -327,8 +447,9 @@ public sealed class GpuExport : IDisposable
     public static async Task<bool> TryRunPreviewAsync(SequenceExportState state, string outputPath, double fromSeconds, double toSeconds, int percent,
         string? captionsPath, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
     {
-        if (WhyNot(state) is { } reason
-            || FilterGraphBuilder.BuildGpuPreviewCommand(state, outputPath, fromSeconds, toSeconds, percent, captionsPath, null, out reason) is not { } bare)
+        var captions = captionsPath is not null ? CaptionGenerator.ReadWords(captionsPath) : null;
+        if (WhyNot(state, captions) is { } reason
+            || FilterGraphBuilder.BuildGpuPreviewCommand(state, outputPath, fromSeconds, toSeconds, percent, captionsPath, null, out reason, captions is not null) is not { } bare)
         {
             AppLog.Write($"GPU preview: FFmpeg's graph renders this preview ({reason}).");
             return false;
@@ -347,7 +468,7 @@ public sealed class GpuExport : IDisposable
                 await Task.Run(() => WriteSound(program, start, frames, soundPath), cancellationToken);
 
             var command = soundPath is null ? bare
-                : FilterGraphBuilder.BuildGpuPreviewCommand(state, outputPath, fromSeconds, toSeconds, percent, captionsPath, soundPath, out reason);
+                : FilterGraphBuilder.BuildGpuPreviewCommand(state, outputPath, fromSeconds, toSeconds, percent, captionsPath, soundPath, out reason, captions is not null);
             if (command is null)
             {
                 AppLog.Write($"GPU preview: FFmpeg's graph renders this preview ({reason}).");
@@ -362,8 +483,9 @@ public sealed class GpuExport : IDisposable
                 return false;
             }
 
-            // Back on the caller's thread (the UI's): the scene is planned there.
-            var export = Prepare(state, command, client, out why);
+            // Back on the caller's thread (the UI's): the scene is planned there. The preview's captions were made for the
+            // stretch from its start.
+            var export = Prepare(state, command, client, out why, captions, fromSeconds);
             if (export is null)
             {
                 client.Dispose();
@@ -426,7 +548,9 @@ public sealed class GpuExport : IDisposable
 
         using var abort = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _abort = abort;
+        // STA (5.1-Polish): the captions are drawn by WPF on this thread as the export reaches them, the broker's from here on.
         _renderer = new Thread(Render) { Name = "GPU export", IsBackground = true };
+        _renderer.SetApartmentState(ApartmentState.STA);
         _renderer.Start();
         try
         {
@@ -663,6 +787,11 @@ public sealed class GpuExport : IDisposable
             {
             }
         }
+        finally
+        {
+            // WPF made a dispatcher for this thread if it drew captions here: it ends with the thread.
+            System.Windows.Threading.Dispatcher.FromThread(Thread.CurrentThread)?.InvokeShutdown();
+        }
     }
 
     /// <summary>How many output frames, from <paramref name="slot"/> on, show canvas frame <paramref name="frame"/> (more than one where the export's rate is above the canvas's).</summary>
@@ -689,6 +818,12 @@ public sealed class GpuExport : IDisposable
 
         var layers = MemoryMarshal.CreateSpan(ref _client.Layer(0), CompositorProtocol.MaxLayers);
         var seconds = Command.Timing.CanvasSeconds(wanted.Frame);
+
+        // The captions the next moments show, drawn before the frame is (5.1-Polish): a caption that cannot be drawn (no room
+        // in the resource table, or no words) gives the export to FFmpeg rather than leave it out of a frame.
+        if (_plan.HasCaptions && !_plan.PrepareCaptions(seconds + FrameHair, seconds + CaptionLookaheadSeconds))
+            throw new GpuExportException(string.Create(CultureInfo.InvariantCulture, $"The caption at {seconds:0.000} s could not be drawn for the GPU export."));
+
         var count = _plan.Evaluate(seconds + FrameHair, ref header, layers);
         if (count >= CompositorProtocol.MaxLayers)
             throw new GpuExportException(string.Create(CultureInfo.InvariantCulture, $"At {seconds:0.000} s more layers are on at once than a GPU scene holds ({CompositorProtocol.MaxLayers})."));
@@ -700,7 +835,7 @@ public sealed class GpuExport : IDisposable
 
         header.IsPlaying = 1; // the worker decodes ahead of a playing scene (its play-ahead): the export moves on as playback does
         (header.OutputWidth, header.OutputHeight) = (Command.Width, Command.Height);
-        header.Flags |= FrameSceneHeader.FlagExactFrames | (wanted.Source == -2 ? 0 : FrameSceneHeader.FlagReadback);
+        header.Flags |= FrameSceneHeader.FlagExactFrames | (wanted.Source == -2 ? 0 : FrameSceneHeader.FlagReadback | (Command.PipesNv12 ? FrameSceneHeader.FlagReadbackNv12 : 0));
         LeaveHints(seconds);
         return _client.Publish();
     }
@@ -812,11 +947,14 @@ public sealed class GpuExport : IDisposable
             }
         }
 
+        byte[]? looked = null;
         foreach (var probe in probes)
         {
             var wanted = new Wanted(0, probe.SourceId, probe.MediaSeconds);
-            Read(Publish(wanted), wanted, _buffers[0], token);
-            if (Magenta(_buffers[0], Command.Width, Command.Height))
+            // BGRA, whatever is piped: a probe is looked at, not encoded.
+            looked ??= GC.AllocateUninitializedArray<byte>(Command.Width * Command.Height * 4);
+            Read(Publish(wanted), wanted, looked, token);
+            if (Magenta(looked, Command.Width, Command.Height))
             {
                 throw new GpuExportException(string.Create(CultureInfo.InvariantCulture,
                     $"The GPU compositor cannot decode a video of the export (source {probe.SourceId} at {probe.MediaSeconds:0.000} s: {_client.Message})."));

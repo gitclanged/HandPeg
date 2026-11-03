@@ -735,13 +735,14 @@ public partial class MainViewModel
 
             Checkpoint("generate captions");
             SetSubtitleTrack([], "", false, 0, source, anchors);
+            PlaceCaptionsOverTheirTrack();
             return SubtitleCues.Count == 0
                 ? $"Made {anchors.Count} captions from {DescribeCaptionSource(source)}, but none of it plays on the timeline now."
                 : $"Made {anchors.Count} captions from {DescribeCaptionSource(source)}: they follow its clips, can be edited, and are drawn from now on.";
         }
 
         // The voiceover and an external recording are on the timeline's clock, where they are heard.
-        var cues = CaptionGenerator.Lines(CaptionProjection.ProjectWords(words, CaptionSpans(source)), CaptionStyle).Select(line =>
+        var cues = CaptionProjection.ProjectLines(words, CaptionSpans(source), CaptionStyle).Select(line =>
         {
             var (start, end) = (line[0].Start, Math.Max(line[^1].End, line[0].Start + 0.1));
             var cue = new SubtitleCue { Start = start, End = end, Text = string.Join(" ", line.Select(w => w.Text.Trim())) };
@@ -809,6 +810,35 @@ public partial class MainViewModel
         SubtitleCues.Insert(SubtitleCues.IndexOf(cue) + 1, second);
         NotifySubtitlesChanged();
         return second;
+    }
+
+    /// <summary>
+    /// Splits the caption under a moment of the sequence in two at its word there (5.1-Polish, the user's directive: the razor,
+    /// Split at Playhead and the captions' menu split a caption block's words, CaptionProjection.SplitAtWord): one step of
+    /// Undo. An anchored caption is written back into its source's time as two, so it follows its clips as two from then on.
+    /// Returns what to say on the status line.
+    /// </summary>
+    public string SplitCaptionAt(double sequenceSeconds)
+    {
+        if (SubtitlesAreImages || !HasTextCues)
+            return "There are no caption words to split: generate captions, or import a subtitle file, first.";
+
+        var onCue = sequenceSeconds - SubtitleOffsetSeconds;
+        var cue = SubtitleCues.FirstOrDefault(c => onCue > c.Start && onCue < c.End);
+        if (cue is null)
+            return "No caption is under the playhead to split.";
+        if (CaptionProjection.SplitAtWord(StateOf(cue), onCue) is not { } halves)
+            return $"\"{cue.Text.ReplaceLineEndings(" ")}\" is one word: there is nothing to split it between.";
+
+        CheckpointSubtitles("split a caption");
+        (cue.Start, cue.End, cue.Text, cue.WordBreaks) = (halves.First.Start, halves.First.End, halves.First.Text, halves.First.Breaks);
+        var second = new SubtitleCue { Start = halves.Second.Start, End = halves.Second.End, Text = halves.Second.Text, WordBreaks = halves.Second.Breaks };
+        SubtitleCues.Insert(SubtitleCues.IndexOf(cue) + 1, second);
+
+        // An anchored caption goes back into its source's time as two now, so the next projection shows the two.
+        WriteBackCaptions();
+        NotifySubtitlesChanged();
+        return $"Split the caption: \"{halves.First.Text}\" | \"{halves.Second.Text}\". Ctrl+Z puts it back.";
     }
 
     /// <summary>Takes one word out of a cue; the words beside it share its time. False for a cue's only word.</summary>

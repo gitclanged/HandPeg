@@ -26,9 +26,12 @@ public static class CompositorProtocol
 
     /// <summary>
     /// Raised only by an incompatible change; a worker of another version refuses the mapping (2: Instant Seek's hints and
-    /// counters, 5.0-AudioAnd3D; 3: hints of 32 bytes with a stretch and a moment, at 3584, 5.0-Release).
+    /// counters, 5.0-AudioAnd3D; 3: hints of 32 bytes with a stretch and a moment, at 3584, 5.0-Release; 4: NV12 readbacks, 5.1; 6: a layer's shutter, 5.1-GpuFx).
     /// </summary>
-    public const int Version = 3;
+    public const int Version = 6;
+
+    /// <summary>The bytes of a frame in NV12: its Y plane, then its interleaved UV plane, half the size each way (rounded up), rows packed.</summary>
+    public static long Nv12Bytes(int width, int height) => (long)width * height + 2L * ((width + 1) / 2) * ((height + 1) / 2);
 
     public const int MaxLayers = 64;
     public const int MaxEffectsPerLayer = 16;
@@ -243,7 +246,10 @@ public struct ControlBlock
     /// <summary>1 when every media layer of the frame presented last showed its exact frame; 0 when one showed the nearest it had.</summary>
     [FieldOffset(3092)] public int PresentedExact;
 
-    // 3096..3479: free (protocol 2's hints).
+    /// <summary>1 when, besides that, the next frames of every video of that picture are decoded (DecoderPool.NextFramesReady); written on every turn of the worker.</summary>
+    [FieldOffset(3096)] public int PresentedAhead;
+
+    // 3100..3479: free (protocol 2's hints).
 
     // 3480..: the cache's counters (diagnostics, tools\SeekBench): exact frames found, frames not there yet, presents
     // made with a stand-in, frames and bytes held, the budget in force, how long the last exact frame took after it was
@@ -429,8 +435,15 @@ public struct FrameSceneHeader
     /// Bit 5 (<see cref="FlagReadback"/>): the frame drawn is also written into the client's readback section (BGRA8, its
     /// output's size) and <see cref="ControlBlock.ReadbackSequence"/> set: GPU exports and filmstrips. A readback, never on
     /// the player's path.
+    /// Bit 6 (<see cref="FlagReadbackNv12"/>, with bit 5): the frame is read back as NV12, converted on the card (exports: 62 % fewer bytes
+    /// to read back and to pipe); <see cref="ControlBlock.ReadbackRowBytes"/> is then its width, which says so.
     /// </summary>
-    public const int FlagTimePasses = 1, FlagWaitForTimings = 2, FlagRawOutput = 4, FlagExactFrames = 8, FlagLetterbox = 16, FlagReadback = 32;
+    /// <summary>
+    /// Bit 7 (<see cref="FlagStudioStage"/>, 5.1-GpuFx): the 3D exploded view stands on the Studio Stage (its obsidian floor and reflections, depth guides and
+    /// the picture's ambient light): the editor's Extra Animations setting. Without it the view is the plain one.
+    /// </summary>
+    public const int FlagTimePasses = 1, FlagWaitForTimings = 2, FlagRawOutput = 4, FlagExactFrames = 8, FlagLetterbox = 16, FlagReadback = 32, FlagReadbackNv12 = 64,
+        FlagStudioStage = 128;
 }
 
 /// <summary>
@@ -514,14 +527,35 @@ public struct GpuLayerDescriptor
     [FieldOffset(140)] public int EffectCount;
     [FieldOffset(144)] public EffectPackets Effects;
 
+    // ----- The shutter (5.1-GpuFx, the Motion Blur card): where the layer is as the shutter opens and closes, and the moment of its source a frame ago -----
+
+    /// <summary>The box and turn as the shutter opens (<see cref="FlagShutterPlace"/>): sub-frames of the layer are laid along the way to the closing one.</summary>
+    [FieldOffset(720)] public float ShutterFromX;
+    [FieldOffset(724)] public float ShutterFromY;
+    [FieldOffset(728)] public float ShutterFromWidth;
+    [FieldOffset(732)] public float ShutterFromHeight;
+    [FieldOffset(736)] public float ShutterFromRotation;
+    [FieldOffset(740)] public float ShutterToX;
+    [FieldOffset(744)] public float ShutterToY;
+    [FieldOffset(748)] public float ShutterToWidth;
+    [FieldOffset(752)] public float ShutterToHeight;
+    [FieldOffset(756)] public float ShutterToRotation;
+
+    /// <summary>
+    /// With <see cref="FlagPreviousMoment"/>: a media layer's moment of its file one sequence frame ago (so a speed ramp's motion is its own), or an adjustment
+    /// layer's moment of the sequence one frame ago (what tells its next frame from a jump).
+    /// </summary>
+    [FieldOffset(760)] public double PreviousMoment;
+
     /// <summary>
     /// Bit 2 (<see cref="FlagBlurFillOnly"/>): only the layer's blurred background is drawn, over the whole frame (the
     /// primary chain's background and the blur twins, at their own place in the stack, as FFmpeg makes them). Bit 3
     /// (<see cref="FlagSelected"/>): the clip selected in the editor (outlined in the 3D exploded view). Bit 4
     /// (<see cref="FlagSelectedTrack"/>, 5.0-Release): another clip of the selected clip's track, playing while it is not
-    /// (its plane keeps a fainter outline, so the selected layer's plane never blinks across its cuts).
+    /// (its plane keeps a fainter outline, so the selected layer's plane never blinks across its cuts). Bits 5 and 6 (5.1-GpuFx): the shutter's lanes
+    /// above are set (<see cref="FlagShutterPlace"/>, <see cref="FlagPreviousMoment"/>).
     /// </summary>
-    public const int FlagVisible = 1, FlagAdjustment = 2, FlagBlurFillOnly = 4, FlagSelected = 8, FlagSelectedTrack = 16;
+    public const int FlagVisible = 1, FlagAdjustment = 2, FlagBlurFillOnly = 4, FlagSelected = 8, FlagSelectedTrack = 16, FlagShutterPlace = 32, FlagPreviousMoment = 64;
 }
 
 /// <summary>The 16 packets of a layer, 36 bytes each (<see cref="GpuEffectPacket.SizeInBytes"/>), back to back.</summary>

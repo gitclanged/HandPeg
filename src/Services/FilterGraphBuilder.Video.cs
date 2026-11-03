@@ -422,11 +422,32 @@ public static partial class FilterGraphBuilder
                 graph.Append($"[bg{s}];[base{s}][bg{s}]overlay=0:0{mainEnding}{Enabled(blurAll ? mainGate : FilterGraphBuilder.BuildMainGate(blurClips, from, to))}");
             }
 
+            // The captions among the layers (5.1-Polish, the user's Q2): under the first layer shown at or over their place
+            // in the stack (Lowered.CaptionsAt), on the picture built so far, at the canvas's rate.
+            var captionsAt = -1;
+            if (_stackCaptions is not null && T.CaptionsAt >= 0)
+            {
+                captionsAt = stack.Count;
+                for (var n = 0; n < stack.Count && captionsAt == stack.Count; n++)
+                {
+                    for (var k = T.CaptionsAt; k < T.Stack.Count; k++)
+                    {
+                        if (ReferenceEquals(T.Stack[k], stack[n]))
+                        {
+                            captionsAt = n;
+                            break;
+                        }
+                    }
+                }
+            }
+
             // The layers, each on the picture built so far. The running picture is labelled between steps;
             // after the last one it is left open, so the rest of the chain continues from it.
             for (var n = 0; n < stack.Count; n++)
             {
                 var (layer, motion) = (stack[n], motions[n]);
+                if (n == captionsAt)
+                    graph.Append(',').Append(BuildCaptionOverlay(_stackCaptions!, $"_st{s}", _stackCaptionsShift, CanvasRate));
 
                 // An adjustment layer has no picture: its effects work on the picture built so far, while it lasts.
                 if (layer.IsAdjustment)
@@ -552,6 +573,10 @@ public static partial class FilterGraphBuilder
                 else
                     graph.Append($";[{under}][{top}]overlay={At(0, 0)}{ending}");
             }
+
+            // Put under a track with nothing shown over them: over every layer, under the whole picture's look and fades.
+            if (captionsAt == stack.Count)
+                graph.Append(',').Append(BuildCaptionOverlay(_stackCaptions!, $"_st{s}", _stackCaptionsShift, CanvasRate));
 
             return ReturnBuilder(graph);
         }
@@ -1670,6 +1695,12 @@ public static partial class FilterGraphBuilder
                         : $"clip(({along}-({size}+{Number(feather)})*(1-{q}))/{Number(feather)}+1,0,1)";
                     onAlpha.Add((factor, fade));
                 }
+                else if (fade.Style == TransitionStyle.ParticleSnap)
+                {
+                    // The Thanos Snap without the card: its grains in the sweep and at the moment the card lets them go, in place
+                    // (no embers fly: a filter graph has no way to move a grain). The hash and the sweep are ParticleSnap.hlsl's idea.
+                    onAlpha.Add((TransitionStyles.SnapGrains(Number(Math.Max(Math.Round(Math.Max(width, height) * 0.006), 2)), fade.Shown("T")), fade));
+                }
                 else if (Dissolves(fade) is { } dissolve && dissolve.Start < 0)
                 {
                     onAlpha.Add(($"({dissolve.Shown("T")})", dissolve));
@@ -1744,15 +1775,20 @@ public static partial class FilterGraphBuilder
         /// what lets the captions be placed, sized and styled like any other layer: translucent, with rounded
         /// or soft edges (the same mask a picture gets) and a drop shadow (the words' own outline, in black).
         /// </summary>
-        private string BuildCaptionOverlay(string assPath)
+        /// <param name="s">Makes its labels unique (5.1-Polish: a frame engine's, among the layers); none over the finished picture.</param>
+        /// <param name="clockShift">Where its picture's clock is on the caption file's (a later stretch of a joined preview).</param>
+        /// <param name="rate">Its canvas's rate: the frame engine's among the layers; the export's (else the source's) over the finished picture.</param>
+        private string BuildCaptionOverlay(string assPath, string s = "", double clockShift = 0, string? rate = null)
         {
             var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
             var (x, y, width, height) = CaptionLayer.GetOutputRect(frameWidth, frameHeight, 0, 0);
             (width, height) = (Math.Max(width, 16), Math.Max(height, 16));
-            var rate = GetTargetFramerate() ?? Number(SourceFrameRate);
+            rate ??= GetTargetFramerate() ?? Number(SourceFrameRate);
             var opacity = Math.Clamp(CaptionLayer.Opacity, 0, 100) / 100.0;
 
-            var layer = $"color=c=black@0:s={width}x{height}:r={rate},format=rgba,{CaptionFilter(assPath)}:alpha=1";
+            var shifted = clockShift > 0.0005;
+            var layer = $"color=c=black@0:s={width}x{height}:r={rate},format=rgba{(shifted ? $",setpts=PTS+{Number(clockShift)}/TB" : "")},"
+                        + $"{CaptionFilter(assPath)}:alpha=1{(shifted ? ",setpts=PTS-STARTPTS" : "")}";
             if (BuildLayerMask(CaptionLayer, width, height, 1) is { } mask)
                 layer += $",format=gbrap,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{mask}{(opacity < 1 ? "*" + Number(opacity) : "")}'";
             else if (opacity < 1)
@@ -1762,19 +1798,19 @@ public static partial class FilterGraphBuilder
             var maskPath = CaptionLayer.MaskPath.Trim().Trim('"');
             if (CaptionLayer.CustomMask && Exists(maskPath))
             {
-                layer += $",format=yuva420p,split[cap_pic][cap_a_in];[cap_a_in]alphaextract[cap_a0];"
-                         + $"movie='{EscapeFilterPath(maskPath)}',{MaskReader(S.AlphaMasks.Contains(maskPath))},scale={width}:{height}{StillMask}[cap_mask];"
-                         + $"[cap_a0]{MultiplyByStill("cap_mask")}[cap_a1];[cap_pic][cap_a1]alphamerge";
+                layer += $",format=yuva420p,split[cap_pic{s}][cap_a_in{s}];[cap_a_in{s}]alphaextract[cap_a0{s}];"
+                         + $"movie='{EscapeFilterPath(maskPath)}',{MaskReader(S.AlphaMasks.Contains(maskPath))},scale={width}:{height}{StillMask}[cap_mask{s}];"
+                         + $"[cap_a0{s}]{MultiplyByStill("cap_mask" + s)}[cap_a1{s}];[cap_pic{s}][cap_a1{s}]alphamerge";
             }
 
             if (!CaptionLayer.Shadow)
-                return $"null[cap_base];{layer}[cap_layer];[cap_base][cap_layer]overlay={x}:{y}:shortest=1";
+                return $"null[cap_base{s}];{layer}[cap_layer{s}];[cap_base{s}][cap_layer{s}]overlay={x}:{y}:shortest=1";
 
             var (shadowChain, shadowX, shadowY) = ShadowOf(CaptionLayer);
-            return $"null[cap_base];{layer},split[cap_layer][cap_shadow_in];"
-                   + $"[cap_shadow_in]{shadowChain}[cap_shadow];"
-                   + $"[cap_base][cap_shadow]overlay={x + shadowX}:{y + shadowY}:shortest=1[cap_shaded];"
-                   + $"[cap_shaded][cap_layer]overlay={x}:{y}:shortest=1";
+            return $"null[cap_base{s}];{layer},split[cap_layer{s}][cap_shadow_in{s}];"
+                   + $"[cap_shadow_in{s}]{shadowChain}[cap_shadow{s}];"
+                   + $"[cap_base{s}][cap_shadow{s}]overlay={x + shadowX}:{y + shadowY}:shortest=1[cap_shaded{s}];"
+                   + $"[cap_shaded{s}][cap_layer{s}]overlay={x}:{y}:shortest=1";
         }
     }
 }

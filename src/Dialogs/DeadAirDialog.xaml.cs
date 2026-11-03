@@ -42,9 +42,9 @@ public partial class DeadAirDialog : Window
         if (AudioGrid is null || CaptionsGrid is null || AudioHint is null)
             return;
 
-        var byCaptions = Source == ViewModels.DeadAirSource.Captions;
-        AudioGrid.Visibility = AudioHint.Visibility = byCaptions ? Visibility.Collapsed : Visibility.Visible;
-        CaptionsGrid.Visibility = byCaptions ? Visibility.Visible : Visibility.Collapsed;
+        var by = Source;
+        AudioGrid.Visibility = AudioHint.Visibility = by == ViewModels.DeadAirSource.Audio ? Visibility.Visible : Visibility.Collapsed;
+        CaptionsGrid.Visibility = by == ViewModels.DeadAirSource.Captions ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>A one-click preset: the values of both ways at once, which can then be changed by hand.</summary>
@@ -77,7 +77,11 @@ public partial class DeadAirDialog : Window
     {
         var settings = AppSettings.Current;
         (settings.DeadAirThresholdDb, settings.DeadAirMinSeconds) = (ThresholdSlider.Value, Math.Round(DurationSlider.Value, 1));
-        settings.DeadAirSource = Source == ViewModels.DeadAirSource.Captions ? AppSettings.DeadAirFromCaptions : AppSettings.DeadAirFromAudio;
+        settings.DeadAirSource = Source switch
+        {
+            ViewModels.DeadAirSource.Captions => AppSettings.DeadAirFromCaptions,
+            _ => AppSettings.DeadAirFromAudio,
+        };
         (settings.DeadAirCaptionMinGapSeconds, settings.DeadAirCaptionPadBeforeSeconds, settings.DeadAirCaptionPadAfterSeconds) =
             (Math.Round(MinGapSlider.Value, 2), Math.Round(PadBeforeSlider.Value, 3), Math.Round(PadAfterSlider.Value, 3));
         try

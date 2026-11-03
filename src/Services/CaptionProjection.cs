@@ -93,6 +93,53 @@ public static class CaptionProjection
         return shown;
     }
 
+    /// <summary>
+    /// Words heard in the source's time grouped into captions as the timeline shows them (5.1-Polish, the user's directive:
+    /// a caption is never carried across a cut): each window's words grouped on their own (CaptionGenerator.Lines), so a
+    /// split of the clip they are heard through splits the caption there too; then all of them in order. No windows: the
+    /// words as they are, grouped.
+    /// </summary>
+    public static List<List<CaptionWord>> ProjectLines(IReadOnlyList<CaptionWord> words, IReadOnlyList<CaptionSpan>? spans, CaptionStyle style)
+    {
+        if (spans is null || spans.Count == 0)
+            return CaptionGenerator.Lines(words, style);
+
+        var lines = new List<List<CaptionWord>>();
+        foreach (var span in spans)
+            lines.AddRange(CaptionGenerator.Lines(ProjectWords(words, [span]), style));
+        lines.Sort((a, b) => a[0].Start.CompareTo(b[0].Start));
+        return lines;
+    }
+
+    /// <summary>
+    /// A caption split in two at the word under a moment (5.1-Polish, the user's directive: splitting a caption block splits
+    /// its words, never trims them). The words said before <paramref name="at"/> stay in the first; those from the first
+    /// word that begins at or after it on (the last word alone when none does) are the second; each word keeps its moment,
+    /// and the cut is where the second's first word begins. Its word boundaries (<see cref="SubtitleCueState.Breaks"/>; by
+    /// their letters when it has none) say where each word is. Null for a caption of fewer than two words, or a moment
+    /// outside it.
+    /// </summary>
+    public static (SubtitleCueState First, SubtitleCueState Second)? SplitAtWord(SubtitleCueState cue, double at)
+    {
+        var words = SplitWords(cue.Text);
+        var length = cue.End - cue.Start;
+        if (words.Length < 2 || !(length > 0) || !(at > cue.Start) || !(at < cue.End))
+            return null;
+
+        var breaks = ValidBreaks(cue.Breaks, words);
+        var kept = 1;
+        while (kept < words.Length && cue.Start + length * breaks[kept - 1] < at)
+            kept++;
+        kept = Math.Min(kept, words.Length - 1);
+
+        var share = breaks[kept - 1];
+        var cut = cue.Start + length * share;
+        double[]? firstBreaks = kept > 1 ? [.. breaks[..(kept - 1)].Select(b => b / share)] : null;
+        double[]? secondBreaks = words.Length - kept > 1 ? [.. breaks[kept..].Select(b => (b - share) / (1 - share))] : null;
+        return (new SubtitleCueState(cue.Start, cut, string.Join(" ", words[..kept]), firstBreaks),
+                new SubtitleCueState(cut, cue.End, string.Join(" ", words[kept..]), secondBreaks));
+    }
+
     /// <summary>Captions grouped from words heard in the source's time (CaptionGenerator.Lines), as anchors: each with its words' own times.</summary>
     public static List<SubtitleCueState> Anchor(IReadOnlyList<List<CaptionWord>> lines)
     {

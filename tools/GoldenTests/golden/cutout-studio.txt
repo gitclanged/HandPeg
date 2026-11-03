@@ -1,0 +1,22 @@
+# The Cutout Studio on a real view model: its window, zoomed to the pixels; pieces to a Game Preset, and to the timeline; what is not drawn.
+ok: a Game Preset wants a name
+ok: the pieces are saved as a Game Preset (the name's slash made safe)
+ok: it is a .hpstyle in the Styles folder
+ok: tall, the video zoomed, the pieces over it, with its blurred background
+ok: its layers carry the pieces' names
+ok: its two masks are inside it: one file that works anywhere
+ok: it is on the drop overlay
+ok: and in the Style Presets, on the Timeline's list too
+ok: the pieces are layers
+ok: on a tall frame, the video zoomed
+ok: each a child of the main video's track
+ok: and over it, as the preset's stage shows them
+ok: added again they take the place of those made before
+ok: two adds, two steps of Undo, and they are gone
+ok: a layer on a shown track is drawn
+ok: on a hidden track it is not, though its view says it is not hidden
+ok: nor when it is wholly see-through
+ok: it opens fitted to the window
+ok: it opens on the pieces made earlier, each under its name, and its name can be typed
+ok: the wheel goes up to 64x, and no further (64x)
+ok: and back down to the whole picture, and no further (0.52x)

@@ -93,7 +93,6 @@ public static partial class GpuExportTests
                          ("tone-mapped", full with { TonemapToSdr = true }),
                          ("burned subtitles on a spliced main video", full with { BurnedSubtitleStreams = [0] }),
                          ("no known length", full with { MainMediaSeconds = 0 }),
-                         ("channel balance", full with { ColorFilters = ["eq=gamma_r=1.2:gamma_g=1:gamma_b=0.9"] }),
                      })
             {
                 var reason = GpuExport.WhyNot(state);
@@ -104,6 +103,36 @@ public static partial class GpuExportTests
 
             if (GpuExport.WhyNot(full) is { } refused)
                 problems.Add($"the GPU export refused the whole timeline: {refused}");
+            if (GpuExport.WhyNot(full with { ColorFilters = ["eq=gamma_r=1.2:gamma_g=1:gamma_b=0.9"] }) is { } balance)
+                problems.Add($"the GPU export refused the colour sliders' channel balance: {balance}");
+
+            // The sound by the sound engine (5.1-CleanupStudioAndFfmpegPurge): the graph and its maps give way to the rendered file; FFmpeg only encodes it.
+            text.Append("\nthe sound rendered by the engine:\n");
+            if (FilterGraphBuilder.BuildGpuExportCommand(full, false, "D:/session/sound.f32", out var noSound) is { } rendered)
+            {
+                text.Append("  ").Append(rendered.CommandLine.Split(" -vf ")[0]).Append('\n');
+                if (rendered.Arguments.Contains("-filter_complex"))
+                    problems.Add("the rendered sound left FFmpeg's sound graph in the command");
+            }
+            else
+            {
+                problems.Add($"the rendered sound was refused: {noSound}");
+            }
+
+            text.Append(CultureInfo.InvariantCulture, $"  as it stands: {FilterGraphBuilder.GpuSoundWhyNot(full) ?? "the engine's"}\n");
+            foreach (var (name, state) in new (string, SequenceExportState)[]
+                     {
+                         ("normalized", full with { NormalizeAudio = true }),
+                         ("no sound", full with { AudioTracks = [] }),
+                         ("several tracks kept", full with { AudioTracks = [Track("aac", "160k"), Track("aac", "160k")], MergeAudioTracks = false }),
+                         ("a copied track", full with { AudioTracks = [Track("aac", "160k") with { IsPassthrough = true }] }),
+                     })
+            {
+                var reason = FilterGraphBuilder.GpuSoundWhyNot(state);
+                text.Append(CultureInfo.InvariantCulture, $"  {name}: {reason ?? "(the engine's: wrong)"}\n");
+                if (reason is null)
+                    problems.Add($"the sound engine took a sound it cannot make ({name})");
+            }
 
             // The frames each pair of rates pipes, against FFmpeg's own counting.
             text.Append("\nframes (canvas rate, its length, export rate: canvas frames, export frames, the first export frames' canvas frames):\n");
@@ -441,6 +470,41 @@ public static partial class GpuExportTests
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        {variant.Name}: the GPU export took {clock.Elapsed.TotalSeconds:0.00} s, {export.FramesPiped} frames piped"));
 
         Compare(ffmpeg, variant.Name, state.OutputPath, gpuState.OutputPath, export.Command.Timing.OutputFrames, problems);
+
+        // The whole way, as the view model goes (once): the sound the sound engine's, FFmpeg only encoding it.
+        if (variant.Framerate is null)
+            RenderedSound(ffmpeg, folder, state, problems);
+    }
+
+    /// <summary>The export with its sound rendered by AudioMixer, against FFmpeg's graph's: as long, and the same sound.</summary>
+    private static void RenderedSound(string ffmpeg, string folder, SequenceExportState state, List<string> problems)
+    {
+        const double loudestDifference = -40;
+        var native = state with { OutputPath = Path.Combine(folder, "gpu-rendered-sound.mkv") };
+        if (!OnThisThread(() => GpuExport.TryRunAsync(native, new Progress<FfmpegProgress>(), CancellationToken.None)))
+        {
+            problems.Add("the rendered sound: the export did not run");
+            return;
+        }
+
+        var (theirs, ours) = (Read(ffmpeg, state.OutputPath, Sound), Read(ffmpeg, native.OutputPath, Sound));
+        if (Math.Abs(theirs.Length - ours.Length) > 4 * 1024)
+            problems.Add($"the rendered sound is {ours.Length / 4} sample frames, FFmpeg's {theirs.Length / 4}");
+
+        var (signal, difference) = (0.0, 0.0);
+        for (var i = 0; i + 1 < Math.Min(theirs.Length, ours.Length); i += 2)
+        {
+            var (a, b) = ((double)BitConverter.ToInt16(theirs, i), (double)BitConverter.ToInt16(ours, i));
+            signal += a * a;
+            difference += (a - b) * (a - b);
+        }
+
+        var db = 10 * Math.Log10(Math.Max(difference, 1e-9) / Math.Max(signal, 1e-9));
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        the rendered sound: {db:0.0} dB from FFmpeg's graph's"));
+        if (signal <= 0)
+            problems.Add("the rendered sound's reference is silent: nothing was compared");
+        if (db > loudestDifference)
+            problems.Add(string.Create(CultureInfo.InvariantCulture, $"the rendered sound is {db:0.0} dB from FFmpeg's graph's"));
     }
 
     private static void Compare(string ffmpeg, string name, string reference, string gpu, long expectedFrames, List<string> problems)
@@ -555,7 +619,7 @@ public static partial class GpuExportTests
             throw new InvalidOperationException($"FFmpeg failed: {errors}");
     }
 
-    private static string? FindFfmpeg()
+    internal static string? FindFfmpeg()
     {
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         foreach (var candidate in new[] { Path.Combine(local, "HandPeg-Data", "deps", "ffmpeg", "ffmpeg.exe"), Path.Combine(local, "HandPeg", "deps", "ffmpeg", "ffmpeg.exe") })
@@ -616,7 +680,7 @@ public static partial class GpuExportTests
 
     private static TimelineClip Clip(string file, LayerKind kind, double start, double end, double offset, LayerState look) => new()
     {
-        ContentKind = kind, SourcePath = file, Start = start, End = end, MediaOffset = offset, SourceDuration = 5, State = look,
+        ContentKind = kind, SourcePath = file, AudioStreamIndex = kind == LayerKind.MainVideo ? 0 : -1, Start = start, End = end, MediaOffset = offset, SourceDuration = 5, State = look,
     };
 
     private static ExportAudioTrack Track(string codec, string bitrate) =>

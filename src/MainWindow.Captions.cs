@@ -13,7 +13,7 @@ public partial class MainWindow
 {
     /// <summary>
     /// Remove Dead Air on what is given: a video layer or a sound clip, an audio track, or (null) the main video. The dialog
-    /// asks how (by the sound's silences or by the gaps between captioned words, 4.4) and whether to mark or delete.
+    /// asks how (by the sound's silences, or the gaps between captioned words, 4.4) and whether to mark or delete.
     /// </summary>
     internal void RunDeadAir(object? target)
     {
@@ -40,13 +40,13 @@ public partial class MainWindow
     /// </summary>
     internal void GenerateCaptionsFrom(object? target)
     {
-        if (target is Layer { CarriesSound: false } silent)
+        if (target is Layer { CarriesSound: false } silent && _viewModel.CaptionStreamsOf(target) is not { Count: > 0 })
         {
             _viewModel.StatusText = $"{silent.Name} has no sound to make captions from.";
             return;
         }
 
-        if (!_viewModel.HasSource)
+        if (!_viewModel.HasSource && target is null)
         {
             _viewModel.StatusText = "Load a video first: there is nothing to make captions from.";
             return;
@@ -94,6 +94,18 @@ public partial class MainWindow
             "The caption box as a layer: its opacity, corners, soft edges and drop shadow. Move and size it on the Canvas.");
         Add("Restore Caption Position", () => _viewModel.ResetCaptionLayerCommand.Execute(null), true,
             "Puts the caption box back where it starts: across the lower part of the frame.");
+
+        // Where the captions are in the stack (5.1-Polish, the user's Q2): under a track, or over everything. The 3D view's lift
+        // (Shift + drag their plane) does the same.
+        var onTop = _viewModel.CaptionsOnTop;
+        Add("Bring Captions Forward", () => _viewModel.MoveCaptionsInStack(1), hasSource && !onTop,
+            $"Puts the captions over the next track up (over everything from the top one). {_viewModel.CaptionsPlaceText()}");
+        Add("Send Captions Back", () => _viewModel.MoveCaptionsInStack(-1), hasSource && _viewModel.CaptionsPlace > 0,
+            $"Puts the captions under the next track down: a HUD or a picture over them covers them, in the preview and in every export. {_viewModel.CaptionsPlaceText()}");
+        Add("Captions Over Everything", () => _viewModel.PutCaptionsAt(int.MaxValue, "put the captions over everything"), hasSource && !onTop,
+            "Puts the captions back over every layer and the fades, where they start.");
+        Add("Split Caption at Playhead", () => SplitCaptionAt(_viewModel.PositionMs / 1000), hasSource && _viewModel.HasTextCues,
+            "Splits the caption under the playhead in two at the word there: the words said before it stay, the rest are a caption of their own.");
         menu.Items.Add(new Separator());
         Add("Delete Subtitle Track", () => _viewModel.ClearSubtitlesCommand.Execute(null), _viewModel.HasSubtitleCues,
             "Deletes the subtitle track and the captions on it (Undo brings them back). Captions are then transcribed again when the video is exported.");
@@ -105,6 +117,17 @@ public partial class MainWindow
             item.Click += (_, _) => action();
             menu.Items.Add(item);
         }
+    }
+
+    /// <summary>
+    /// Splits the caption under a moment in two at its word there (5.1-Polish: Split at Playhead with the captions selected,
+    /// the razor on a caption block, the captions' menu), and lays the rows out again.
+    /// </summary>
+    private void SplitCaptionAt(double seconds)
+    {
+        _viewModel.StatusText = _viewModel.SplitCaptionAt(seconds);
+        Services.CrashReporter.Note("timeline", "split a caption");
+        ScheduleClipRedraw();
     }
 
     /// <summary>Import Subtitles: reads a subtitle file in as the subtitle track.</summary>

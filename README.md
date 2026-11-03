@@ -14,28 +14,36 @@ of taking the editor down. It plays, scrubs and exports the edit frame-exact, wi
 FFmpeg encodes, and stays the export's fallback. The window paints its first, final frame in under half a second, and
 HandPeg idles well under 200 MB of memory.
 
-![The HandPeg v5.0.0 editor: a 30 fps recording in the Overwatch vertical style, rapid cuts on one Timeline, the Overview Bar drawn from the finished sequence](docs/screenshots/workspace-v5.0.png)
+![The HandPeg v5.1.0 editor: a 60 fps Overwatch 2 recording dropped on the built-in Overwatch 2 Vertical HUD preset, its HUD pieces cut out over the blurred background](docs/screenshots/workspace-v5.1.png)
 
-![The 3D Exploded View: the layer stack fanned out in depth, each layer at its full source resolution, the selected one outlined](docs/screenshots/exploded-3d-v5.0.png)
+![The Cutout Studio: a game's HUD pieces drawn on a still of the recording, zoomed down to the pixel grid, with the 9:16 stage to arrange them](docs/screenshots/cutout-studio-v5.1.png)
 
-![Settings > Export & Hardware: every graphics card measured and given the jobs it is best at](docs/screenshots/hardware-benchmark-v5.0.png)
+![Game-engine shaders: a 3D Explosion dropped in at the playhead, its card in the Effects pane, over a clip with a 3D Fly-In and its Impact clip](docs/screenshots/gpufx-v5.1.png)
 
-![The full-window Settings screen with its live preview stage](docs/screenshots/settings-v5.0.png)
+![The 3D view's Studio Stage: the layer stack over a mirror floor with depth rails, the selected HUD piece outlined](docs/screenshots/exploded-stage-v5.1.png)
 
-**New in v5.0.0:** the native GPU engine for preview and export; Instant Seek (exact frames on every click and scrub, no
-proxies); playback that stays smooth across rapid back-to-back cuts; zero-lag hover pre-loading on every timeline; the 3D
-Exploded View of the layer stack, in step with the Timeline; the magnifier loupe for edges; the Overview Bar drawn from
-the finished sequence; the blurred background as a layer of its own with a smooth radius, zoom and any effect; effects
-that show at once with an Advanced section for their deeper settings; project bundles (.hpb) that carry a project with
-its media; and no more Windows beeps while you edit.
+![The full-window Settings screen with its live preview stage](docs/screenshots/settings-v5.1.png)
+
+**New in v5.1.0:** built-in Game Presets for Overwatch 2, Marvel Rivals, Valorant, CS2, Apex Legends and The Finals; the
+Cutout Studio to draw your own game's HUD pieces down to the pixel and save them as a preset; presets that belong to a
+clip, so every clip can have its own; game-engine shaders (Motion Blur with a real shutter, Halation, Neon Rim, Frosted
+Glass, Shockwave, Anamorphic Lens and 3D VFX drop-ins) and a 3D Fly-In + Shockwave macro; the 3D view's Studio Stage;
+one lane per sound track of a recording; crossfade boxes, per-track heights and a seven-group right-click menu; captions
+you can place anywhere in the layer stack; native 1:1 pixel UI with its own scale; and zero-install portable zips for x64
+and ARM64 that run without .NET installed.
 
 ## What it does
 - **One multi-track timeline:** video, image, text and audio layers with a live preview of the finished picture and
   sound. Trim any clip from either edge (Shift for frame-by-frame without snapping, Ctrl to ripple), crossfade
   neighbouring clips on one track, split or trim at an exact timecode from a clip's menu. Splitting a keyframed clip
   keeps both halves' motion exactly, and cuts are just split points: what is on the timeline is what renders.
-- **Game styles in one drop:** drop a gameplay video on a game's style and get a tall frame, the HUD pieces cut out with
-  the game's mask, and a blurred background, all made from your video, even after you split or restyle its pieces.
+- **Game Presets in one drop:** drop a gameplay video on a game's preset and get a tall frame, the HUD pieces cut out with
+  their own masks, and a blurred background, all made from your video. Six games come built in; draw your own in the
+  Cutout Studio (polygon pen, rectangle, ellipse and slant, zoom to 64x with a pixel grid) and save it as a preset. A
+  preset belongs to a clip: put a different one on every clip, and clips dropped onto a preset's track take it.
+- **Game-engine shaders:** Motion Blur with a real shutter, Film Halation & Glow, Neon Rim Light and Frosted Glass that
+  follow a clip's shape, Impact Shockwave, Anamorphic Lens, and 3D VFX (explosions, sparks, anime lines, shields, sabers)
+  that drop in at the playhead and light what is under them, all drawn by HLSL on your graphics card.
 - **A GPU engine that keeps up:** the preview is composited on your graphics card from frames decoded in its memory, with
   Instant Seek (a frame cache under Windows' own memory budget, pre-decoding round the playhead, under the pointer, ahead
   of a scrub and at every cut coming up), so long recordings with rapid cuts play and scrub at once, with the sound in
@@ -68,12 +76,17 @@ its media; and no more Windows beeps while you edit.
   paths, user names or words from your media. Nothing is sent anywhere.
 
 ## Getting started
-Download the installer (`HandPeg-win-Setup.exe`) or the portable zip from the
+Download the installer (`HandPeg-win-Setup.exe`) or a portable zip from the
 [Releases page](https://github.com/gitclanged/HandPeg/releases). The first-run wizard lets you pick a theme and a
 starting workspace, downloads the tools HandPeg uses (FFmpeg, yt-dlp and, if you want captions, whisper.cpp), pinned to
-builds tested with this version, and measures your graphics cards and their hardware encoders. HandPeg updates itself from the same
-page. It needs Windows 10 or 11 (x64) and the .NET 8 Desktop Runtime. On Windows on ARM, use the ARM64 portable zip: it
-runs natively and downloads the ARM64 builds of its engines.
+builds tested with this version, and measures your graphics cards and their hardware encoders.
+
+- **Installer:** Windows 10 or 11 (x64) with the .NET 8 Desktop Runtime. HandPeg updates itself from the Releases page.
+- **Zero-install portable zips:** `HandPeg-<version>-win-x64-Portable.zip` and, for Windows on ARM,
+  `HandPeg-<version>-win-arm64.zip` (native ARM64, with the ARM64 builds of its engines) carry their own .NET runtime:
+  unzip and run, with nothing installed. Everything they write (settings, projects, caches, downloaded tools) stays in the
+  `portable` folder beside `HandPeg.exe`, so the whole folder can live on a USB drive. A portable copy is updated by
+  unzipping a newer one and moving the `portable` folder across.
 
 ## Building from source
 ```

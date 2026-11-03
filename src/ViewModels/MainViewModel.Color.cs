@@ -74,9 +74,10 @@ public partial class MainViewModel
         if (Math.Abs(hue) >= 0.05)
             filters.Add($"hue=h={Number(hue)}");
 
+        // The Sharpen card's unsharp mask (5.1-Polish) at its own radius on the export's picture: unsharp's 5 x 5 square.
         var sharpen = Math.Clamp(SharpenStrength, 0, 1);
         if (IsChanged(sharpen, 0))
-            filters.Add($"cas=strength={Number(sharpen)}");
+            filters.Add($"unsharp=lx=5:ly=5:la={Number(Models.Effects.EffectRegistry.SharpenAmount * sharpen)}");
 
         return filters;
 
@@ -326,6 +327,16 @@ public partial class MainViewModel
         if (_listingStyles || value is null || ReadStyle(Path.Combine(AppPaths.Styles, value + ".hpstyle")) is not { } style)
             return;
 
+        // With clips selected on the Timeline it goes on them alone, and the list lets go of it, so that it can be chosen again for the next clip.
+        if (TimelineSelection?.Invoke() is { Count: > 0 } selected && GamePresetTargets(selected).Count > 0)
+        {
+            ApplyGamePreset(selected, value);
+            _listingStyles = true;
+            SelectedStylePreset = null;
+            _listingStyles = false;
+            return;
+        }
+
         // A style is layers: the Layer Engine is what shows them.
         FrameEngine = true;
         ApplyStyle(style, layout: true, color: true, blur: true, subtitles: true);
@@ -443,11 +454,7 @@ public partial class MainViewModel
 
         if (blur && preset.Blur is { } background)
         {
-            BlurRadius = Math.Clamp(background.Radius, 0, Models.Effects.EffectRegistry.BackgroundMostRadius);
-            BlurPasses = Math.Clamp(background.Passes, 1, MostBlurPasses);
-            BackgroundDim = Math.Clamp(background.Dim, -0.5, 0);
-            BackgroundZoom = Math.Clamp(background.Zoom, 1, MostBackgroundZoom);
-            SetBackgroundEffects(background.Effects, background.EffectsBypassed);
+            TakeBlur(background);
             applied.Add("blur settings");
         }
 
@@ -468,6 +475,16 @@ public partial class MainViewModel
         Log(applied.Count > 0 ? $"Applied style preset: {string.Join(", ", applied)}" : "Nothing was imported");
         if (GetLayoutAspectWarning() is { } warning)
             StatusText += " " + warning;
+    }
+
+    /// <summary>A preset's settings for the sequence's one blur.</summary>
+    private void TakeBlur(BlurSection background)
+    {
+        BlurRadius = Math.Clamp(background.Radius, 0, Models.Effects.EffectRegistry.BackgroundMostRadius);
+        BlurPasses = Math.Clamp(background.Passes, 1, MostBlurPasses);
+        BackgroundDim = Math.Clamp(background.Dim, -0.5, 0);
+        BackgroundZoom = Math.Clamp(background.Zoom, 1, MostBackgroundZoom);
+        SetBackgroundEffects(background.Effects, background.EffectsBypassed);
     }
 
     // ----- The shape of video a layout was made on -----

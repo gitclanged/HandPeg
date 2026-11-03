@@ -241,6 +241,38 @@ public sealed class TextRasterizer
         return drew;
     }
 
+    /// <summary>
+    /// For an export (5.1-Polish, the user's Q2: the captions through the GPU stack; on the thread that owns the broker then,
+    /// an STA one): draws every caption on between <paramref name="fromSeconds"/> and <paramref name="toSeconds"/> that is not
+    /// drawn yet, however long that takes, and keeps those drawn (the rest are let go as the table fills). True when the
+    /// caption on at <paramref name="fromSeconds"/>, if one is, is drawn and handed over.
+    /// </summary>
+    internal bool PrepareFor(double fromSeconds, double toSeconds)
+    {
+        var cues = Volatile.Read(ref _cues);
+        for (var i = Math.Max(Find(cues, fromSeconds), 0); i < cues.Length && cues[i].From <= toSeconds; i++)
+        {
+            var cue = cues[i];
+            if (cue.To < fromSeconds)
+                continue;
+
+            if (cue.Raster is { } drawn)
+            {
+                if (_broker.StateOf(drawn.Still) is GpuResourceState.Ready or GpuResourceState.Pending)
+                {
+                    _broker.Touch(drawn.Still, pinned: false);
+                    continue;
+                }
+
+                cue.Raster = null;
+            }
+
+            cue.Raster = DrawCue(cue);
+        }
+
+        return CueAt(fromSeconds) is not { } now || now.Raster is { } raster && _broker.StateOf(raster.Still) == GpuResourceState.Ready;
+    }
+
     /// <summary>How far either side of the playhead captions are drawn ahead, in seconds.</summary>
     public const double PrepareWindowSeconds = 10;
 

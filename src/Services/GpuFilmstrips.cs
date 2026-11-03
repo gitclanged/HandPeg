@@ -269,6 +269,50 @@ public static class GpuFilmstrips
             return false;
         }
 
+        return await RunAsync(sheet, videoPath, token);
+    }
+
+    /// <summary>
+    /// One frame of a video into <paramref name="imagePath"/> (a PNG by its extension, else a JPEG), through the same compositor as the
+    /// strips: a poster, a still to trace a HUD on. False, and nothing written, when it is not drawn this way: FFmpeg then makes it.
+    /// </summary>
+    /// <param name="atSeconds">The moment, on the container's clock (as FFmpeg's -ss before -i has it).</param>
+    /// <param name="height">How tall it is made; null for the video's own size.</param>
+    /// <param name="onAKeyFrame">The key frame nearest the moment is good enough, and much quicker to reach (a poster): else the exact frame.</param>
+    public static async Task<bool> TryStillAsync(string videoPath, string imagePath, double atSeconds, int? height, bool onAKeyFrame, CancellationToken token)
+    {
+        if (!IsWanted || FfmpegOnly.ContainsKey(videoPath))
+            return false;
+
+        Sheet sheet;
+        try
+        {
+            if (await MediaProbe.ProbeAsync(videoPath, token, onAKeyFrame ? WorkLane.Background : WorkLane.Interactive) is not { Video: { Width: > 0, Height: > 0 } video } info)
+                return false;
+
+            var containerStart = MediaProbe.KnownContainerStart(videoPath) ?? info.ContainerStartSeconds;
+            var videoStart = MediaProbe.KnownVideoStart(videoPath) ?? info.VideoStartSeconds;
+            var moment = Math.Max(atSeconds + containerStart - videoStart, 0);
+            var complete = KnownIFrames(videoPath) is { Length: > 0 } listed ? ToWorker(listed, videoStart) : null;
+            if (onAKeyFrame && complete is not null)
+                moment = SnapToKeyFrames([moment], complete, Math.Max(info.DurationSeconds, 1), 0)[0];
+
+            var tall = height is { } asked ? FrameHeight(asked) : video.Height;
+            var wide = height is null ? video.Width : FrameWidth(video.Width, video.Height, tall);
+            sheet = new Sheet(videoPath, imagePath, new StripLayout(1, wide, tall, 1), [moment], complete, token);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            AppLog.Write($"A still of {Path.GetFileName(videoPath)} is not drawn by the GPU compositor", ex);
+            return false;
+        }
+
+        return await RunAsync(sheet, videoPath, token);
+    }
+
+    // A sheet through the queue, a few decoding sessions at a time.
+    private static async Task<bool> RunAsync(Sheet sheet, string videoPath, CancellationToken token)
+    {
         // A few decoding sessions at a time on the card, whatever asked for them (see WorkScheduler.GpuDecodeGate).
         await WorkScheduler.GpuDecodeGate.WaitAsync(token);
         Result result;

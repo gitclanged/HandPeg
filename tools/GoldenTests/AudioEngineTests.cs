@@ -39,6 +39,7 @@ public static class AudioEngineTests
             yield return Case("audio-engine-ffmpeg-parity", "# Against HandPeg's FFmpeg (when installed): each processing filter, and an AAC file's start (its priming dropped where FFmpeg drops it).", (t, p) => FfmpegParity(files, t, p));
             yield return Case("audio-engine-stream-order", "# The main file's sound tracks by FFmpeg's numbers (0:a:N, what the export maps), three in an MP4 (FFmpeg decodes it: Media Foundation's order of MP4 tracks is its own) and in a Matroska file (OBS's recordings).", (t, p) => StreamOrder(files, t, p));
             yield return Case("audio-engine-export-track-scope", "# A main track's own processing is that track's sound alone (5.0-Verify Q1): the engine's mix against the FFmpeg export's sound of one timeline.", (t, p) => ExportTrackScope(files, t, p));
+            yield return Case("audio-engine-clip-streams", "# Every video's streams on any track (5.1-TrackEqualityAndVram, the user's directive): a sound clip plays the stream it names, in the player's mix and in the export, each exactly FFmpeg's 0:a:N and unlike the others.", (t, p) => ClipStreams(files, t, p));
             yield return Case("audio-engine-container-starts", "# Media time from the first video frame in every container (5.0-Verify: an MPEG-TS layer's sound was 2.1 s early): the engine's sound against the export's, MP4, Matroska, MPEG-TS, M2TS and MPEG-PS made by HandPeg's FFmpeg with a non-zero start.", (t, p) => ContainerStarts(files, t, p));
             yield return Case("preview-sequence-fades", "# Render Preview's stretches and the sequence's fades (5.0-Verify): faded only where a stretch overlaps the sequence's first or last second, on the sequence's clock, picture and sound alike (the sound engine's render fades the same moments); before, every preview's picture faded in from black at its start.", PreviewFades);
         }
@@ -607,13 +608,16 @@ public static class AudioEngineTests
             text.Append(CultureInfo.InvariantCulture, $"\n{name}:\n");
             if (ranges.Length == 1)
             {
+                // Since 5.1-Polish the compositor draws the sequence's fades (its plan, at their moments on the sequence, under
+                // the captions as the player has them): the command's picture has none of its own; the sound engine's render
+                // (outside the command) fades the sound.
                 var gpu = FilterGraphBuilder.BuildGpuPreviewCommand(state, "D:/session/preview.mp4", ranges[0].Item1, ranges[0].Item2, 50, null, "D:/session/preview.f32", out var why);
                 var line = gpu is null ? "refused: " + why : Fades(gpu.CommandLine);
-                text.Append("  GPU: ").Append(line.Length == 0 ? "no fade" : line).Append('\n');
+                text.Append("  GPU: ").Append(gpu is { FadesOnGpu: true } ? "the compositor's" : "FFmpeg's").Append(", in the command: ").Append(line.Length == 0 ? "no fade" : line).Append('\n');
                 if (gpu is null)
                     problems.Add($"{name}: the GPU preview refused it ({why})");
-                else if (gpu.CommandLine.Contains("fade=t=in") != overlapsIn || gpu.CommandLine.Contains("fade=t=out") != overlapsOut)
-                    problems.Add($"{name}: the GPU preview's fades are not where the stretch overlaps the sequence's");
+                else if (!gpu.FadesOnGpu || gpu.CommandLine.Contains("fade=t="))
+                    problems.Add($"{name}: the GPU preview's fades are not the compositor's alone");
             }
 
             var ffmpeg = FilterGraphBuilder.BuildPreviewCommand(state, "D:/session/preview.mp4", ranges.ToList(), 50, null);
@@ -723,6 +727,81 @@ public static class AudioEngineTests
                         problems.Add(string.Create(CultureInfo.InvariantCulture, $"{container}: a:{n} sounds like FFmpeg's a:{k} (correlation {correlation:0.000})"));
                 }
             }
+        }
+    }
+
+    /// <summary>A file of three streams as a video on a track of its own would have them: one sound clip a stream, over a main video with none.</summary>
+    private static void ClipStreams(Files files, StringBuilder text, List<string> problems)
+    {
+        const double seconds = 3;
+        const int width = 320, height = 180;
+        Line(text, $"a clip of stream a:N of another file: correlation over 0.99 with FFmpeg's 0:a:N, in the engine's mix and the export's");
+        if (FindFfmpeg() is not { } ffmpeg)
+        {
+            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): a clip's streams were not checked");
+            return;
+        }
+
+        var configured = AppSettings.Current.FfmpegPath;
+        AppSettings.Current.FfmpegPath = ffmpeg;
+        try
+        {
+            var main = Path.Combine(files.Folder, "streams-main.mkv");
+            var added = Path.Combine(files.Folder, "streams-added.mkv");
+            RunFfmpeg(ffmpeg, string.Create(CultureInfo.InvariantCulture, $"-f lavfi -i \"testsrc=s={width}x{height}:r=30:d={seconds}\" -f lavfi -i \"anullsrc=r=48000:cl=stereo\" -t {seconds} -c:v libx264 -preset veryfast -c:a aac -y \"{main}\""));
+            RunFfmpeg(ffmpeg, string.Create(CultureInfo.InvariantCulture,
+                $"-f lavfi -i \"testsrc=s={width}x{height}:r=30:d={seconds}\" -i \"{files.Music}\" -i \"{files.Tone}\" -i \"{files.Noise}\" -map 0:v -map 1:a -map 2:a -map 3:a -t {seconds} -c:v libx264 -preset veryfast -c:a aac -b:a 256k -y \"{added}\""));
+            var theirs = Enumerable.Range(0, 3).Select(n => FfmpegStream(ffmpeg, added, n, seconds)).ToArray();
+
+            for (var stream = 0; stream < 3; stream++)
+            {
+                var document = new TimelineDocument { Width = width, Height = height, FrameRate = FrameRate.Fps30 };
+                var clip = MainClip(main, 0, seconds, 0);
+                (clip.SourceDuration, clip.State.MediaDuration, clip.State.ImageWidth, clip.State.ImageHeight) = (seconds, seconds, width, height);
+                Track(document, TimelineTrackKind.Video).Clips.Add(clip);
+                var sound = SoundClip(added, 0, seconds, 0);
+                (sound.AudioStreamIndex, sound.SourceDuration) = (stream, seconds);
+                Track(document, TimelineTrackKind.Audio).Clips.Add(sound);
+
+                var output = Path.Combine(files.Folder, $"streams-export{stream}.mkv");
+                var state = State(document) with
+                {
+                    SourceWidth = width,
+                    SourceHeight = height,
+                    RequestedSize = (width, height),
+                    OutputSize = (width, height),
+                    CenterRect = (0, 0, width, height),
+                    LocalMediaPath = main,
+                    HasSource = true,
+                    MainMediaSeconds = seconds,
+                    FfmpegExecutable = $"\"{ffmpeg}\"",
+                    VideoCodecArguments = "-c:v ffv1 -pix_fmt yuv420p",
+                    Container = "mkv",
+                    OutputPath = output,
+                    MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [main] = 0, [added] = 0 },
+                    CaptionLayer = Layer.FromState(new LayerState { Kind = LayerKind.Captions, Name = "Subtitles", SizeWidth = 0.9, SizeHeight = 0.2 }, width, height, width, height),
+                    AudioTracks = [new ExportAudioTrack(0, "Main", "pcm_s16le", "", false, false, false, false, false, false, [], [])],
+                };
+
+                var ours = Render(state, 0, seconds);
+                var command = FilterGraphBuilder.BuildExportCommand(state);
+                Task.Run(() => FfmpegRunner.RunAsync(command.CommandLine, new Progress<FfmpegProgress>(), CancellationToken.None, graphInFile: true)).GetAwaiter().GetResult();
+                var exported = FfmpegStream(ffmpeg, output, 0, seconds);
+                for (var k = 0; k < 3; k++)
+                {
+                    var (_, heard) = Lag(ours, theirs[k], (int)(0.2 * Rate), (int)(2 * Rate), 1500);
+                    var (_, written) = Lag(exported, theirs[k], (int)(0.2 * Rate), (int)(2 * Rate), 1500);
+                    Note($"clip stream a:{stream} against FFmpeg's a:{k}: heard {heard:0.0000}, exported {written:0.0000}");
+                    if (k == stream && (heard < 0.99 || written < 0.99))
+                        problems.Add(string.Create(CultureInfo.InvariantCulture, $"a clip of a:{stream} is not that stream: heard {heard:0.000}, exported {written:0.000}"));
+                    if (k != stream && (heard > 0.5 || written > 0.5))
+                        problems.Add(string.Create(CultureInfo.InvariantCulture, $"a clip of a:{stream} sounds like a:{k}: heard {heard:0.000}, exported {written:0.000}"));
+                }
+            }
+        }
+        finally
+        {
+            AppSettings.Current.FfmpegPath = configured;
         }
     }
 

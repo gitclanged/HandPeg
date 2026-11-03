@@ -12,9 +12,9 @@
     <RootNamespace>HandPegApp</RootNamespace>
     <Product>HandPeg</Product>
     <AssemblyTitle>HandPeg</AssemblyTitle>
-    <Version>5.0.0</Version>
-    <AssemblyVersion>5.0.0.0</AssemblyVersion>
-    <FileVersion>5.0.0.0</FileVersion>
+    <Version>5.1.0</Version>
+    <AssemblyVersion>5.1.0.0</AssemblyVersion>
+    <FileVersion>5.1.0.0</FileVersion>
 
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>
@@ -56,12 +56,6 @@
       generated Main. Living in src\, it is one by default (only a root App.xaml defaults to the application definition).
   -->
 
-  <!-- Mask pictures shipped for the built-in HUD presets (HudGame.BundledMask), read with GetManifestResourceStream. -->
-  <ItemGroup>
-    <EmbeddedResource Include="src\Resources\overwatch_hud_mask.png" LogicalName="HandPegApp.Masks.overwatch_hud_mask.png" />
-    <EmbeddedResource Include="src\Resources\overwatch_vertical_style.json" LogicalName="HandPegApp.Styles.overwatch_vertical_style.json" />
-  </ItemGroup>
-
   <!--
       Published and packed output, when it is made inside the project folder; and the developer tools, which live
       beside the program without being part of it (tools\, each a project of its own).
@@ -84,6 +78,10 @@
     <HlslSource Include="src\Compositor\Shaders\*.hlsl" />
     <HlslHeader Include="src\Compositor\Shaders\*.hlsli" />
     <None Remove="src\Compositor\Shaders\**" />
+
+    <!-- WPF's own pixel shaders (5.1-GpuFx: the Media pane's tilt): ps_2_0, entry point main, embedded as HandPegApp.Shaders.<name>.ps. -->
+    <WpfEffectSource Include="src\Controls\*.fx" />
+    <None Remove="src\Controls\*.fx" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -93,6 +91,7 @@
   <UsingTask TaskName="CompileHlsl" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
       <Sources ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <WpfEffects ParameterType="Microsoft.Build.Framework.ITaskItem[]" />
       <OutputDirectory ParameterType="System.String" Required="true" />
     </ParameterGroup>
     <Task>
@@ -105,6 +104,7 @@ using System.Text.RegularExpressions;
 public class CompileHlsl : Microsoft.Build.Utilities.Task
 {
     [Microsoft.Build.Framework.Required] public Microsoft.Build.Framework.ITaskItem[] Sources { get; set; }
+    public Microsoft.Build.Framework.ITaskItem[] WpfEffects { get; set; }
     [Microsoft.Build.Framework.Required] public string OutputDirectory { get; set; }
 
     [DllImport("d3dcompiler_47.dll", CharSet = CharSet.Unicode)]
@@ -137,6 +137,24 @@ public class CompileHlsl : Microsoft.Build.Utilities.Task
             File.Delete(stale);
 
         var ok = true;
+        foreach (var effect in WpfEffects ?? new Microsoft.Build.Framework.ITaskItem[0])
+        {
+            // ps_2_0 for WPF: its older syntax, so not strict; warnings as errors all the same.
+            var path = effect.GetMetadata("FullPath");
+            IntPtr code, errors;
+            var hr = D3DCompileFromFile(path, IntPtr.Zero, include, "main", "ps_2_0", (1u << 15) | (1u << 18), 0, out code, out errors);
+            if (hr < 0)
+            {
+                ok = false;
+                var text = errors != IntPtr.Zero ? System.Text.Encoding.ASCII.GetString(Bytes(errors)).TrimEnd('\0', '\r', '\n') : hr.ToString("X8");
+                Log.LogError("HLSL", "HLSL0003", null, path, 0, 0, 0, 0, "main (ps_2_0): {0}", text);
+                continue;
+            }
+
+            File.WriteAllBytes(Path.Combine(OutputDirectory, Path.GetFileNameWithoutExtension(path) + ".ps"), Bytes(code));
+            Marshal.Release(code);
+        }
+
         foreach (var source in Sources)
         {
             var path = source.GetMetadata("FullPath");
@@ -176,14 +194,14 @@ public class CompileHlsl : Microsoft.Build.Utilities.Task
     </Task>
   </UsingTask>
 
-  <Target Name="CompileShaders" BeforeTargets="BeforeBuild" Inputs="@(HlslSource);@(HlslHeader)" Outputs="$(HlslOutput)shaders.stamp">
-    <CompileHlsl Sources="@(HlslSource)" OutputDirectory="$(HlslOutput)" />
+  <Target Name="CompileShaders" BeforeTargets="BeforeBuild" Inputs="@(HlslSource);@(HlslHeader);@(WpfEffectSource)" Outputs="$(HlslOutput)shaders.stamp">
+    <CompileHlsl Sources="@(HlslSource)" WpfEffects="@(WpfEffectSource)" OutputDirectory="$(HlslOutput)" />
     <Touch Files="$(HlslOutput)shaders.stamp" AlwaysCreate="true" />
   </Target>
 
   <Target Name="EmbedShaders" AfterTargets="CompileShaders" BeforeTargets="BeforeBuild">
     <ItemGroup>
-      <_CompiledShader Include="$(HlslOutput)*.cso" />
+      <_CompiledShader Include="$(HlslOutput)*.cso;$(HlslOutput)*.ps" />
       <EmbeddedResource Include="@(_CompiledShader)" LogicalName="HandPegApp.Shaders.%(Filename)%(Extension)" />
     </ItemGroup>
   </Target>

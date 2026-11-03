@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Media.Imaging;
+using System.Windows.Media;
 using System.Windows.Threading;
 using HandPegApp.Models;
 using HandPegApp.Services;
@@ -23,6 +24,7 @@ public partial class FramePreviewDialog : Window
     private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(300);
 
     private readonly MainViewModel _viewModel;
+    private readonly Func<double, Task<(byte[] Bgra, int Width, int Height)?>>? _capture;
     private readonly DispatcherTimer _debounce;
     private readonly CancellationTokenSource _closing = new();
 
@@ -32,11 +34,16 @@ public partial class FramePreviewDialog : Window
     private bool _isRendering;
     private bool _renderWanted;
 
-    public FramePreviewDialog(MainViewModel viewModel)
+    /// <param name="capture">
+    /// A moment of the sequence drawn by the GPU engine and read back (5.1-CleanupStudioAndFfmpegPurge): the whole finished frame, grade and all. Null, or
+    /// when it gives nothing, FFmpeg renders the source's frame with the grade instead.
+    /// </param>
+    public FramePreviewDialog(MainViewModel viewModel, Func<double, Task<(byte[] Bgra, int Width, int Height)?>>? capture = null)
     {
         InitializeComponent();
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
         _viewModel = viewModel;
+        _capture = capture;
         DataContext = viewModel;
 
         _debounce = new DispatcherTimer { Interval = DebounceDelay };
@@ -112,8 +119,14 @@ public partial class FramePreviewDialog : Window
 
                 // Just short of the end at most: there is no frame to take at the very end of a file.
                 var seconds = Math.Clamp(PositionSlider.Value, 0, Math.Max(PositionSlider.Maximum - 200, 0)) / 1000;
-                var command = _viewModel.BuildFramePreviewCommand(seconds, _framePath, HistogramBox.IsChecked == true);
                 StatusText.Text = "Rendering...";
+                if (await ShowCapturedAsync(seconds))
+                {
+                    StatusText.Text = $"Frame at {TimeDisplay.Format(seconds)}";
+                    continue;
+                }
+
+                var command = _viewModel.BuildFramePreviewCommand(seconds, _framePath, HistogramBox.IsChecked == true);
 
                 try
                 {
@@ -137,6 +150,65 @@ public partial class FramePreviewDialog : Window
         finally
         {
             _isRendering = false;
+        }
+    }
+
+    /// <summary>The frame from the GPU engine, with the histogram drawn on it when asked for. False when it gave none.</summary>
+    private async Task<bool> ShowCapturedAsync(double seconds)
+    {
+        if (_capture is null || await _capture(seconds) is not { } frame || frame.Width <= 0 || frame.Height <= 0)
+            return false;
+
+        var (bgra, width, height) = frame;
+        if (HistogramBox.IsChecked == true)
+            DrawHistogram(bgra, width, height);
+        var picture = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgr32, null, bgra, width * 4);
+        picture.Freeze();
+        FrameImage.Source = picture;
+        return true;
+    }
+
+    /// <summary>
+    /// The frame's red, green and blue levels as three overlaid curves in its lower right corner, a fifth of it wide and never smaller
+    /// than the 256 levels: measured on the finished picture, so it shows what the sliders have done.
+    /// </summary>
+    internal static void DrawHistogram(byte[] bgra, int width, int height)
+    {
+        var counts = new int[3, 256];
+        for (var i = 0; i + 3 < bgra.Length; i += 4)
+        {
+            counts[0, bgra[i]]++;
+            counts[1, bgra[i + 1]]++;
+            counts[2, bgra[i + 2]]++;
+        }
+
+        // The tallest level but black and white, which a letterbox or a white sky would leave everything else flat under.
+        var tallest = 1;
+        for (var channel = 0; channel < 3; channel++)
+        {
+            for (var level = 1; level < 255; level++)
+                tallest = Math.Max(tallest, counts[channel, level]);
+        }
+
+        var (wide, tall) = (Math.Min(Math.Max(width / 5, 256), width), Math.Min(Math.Max(height / 5, 100), height));
+        var margin = Math.Max(width / 100, 10);
+        var (left, top) = (Math.Max(width - wide - margin, 0), Math.Max(height - tall - margin, 0));
+        for (var x = 0; x < wide; x++)
+        {
+            var level = x * 256 / wide;
+            var (at, bars) = (0, new int[3]);
+            for (var channel = 0; channel < 3; channel++)
+                bars[channel] = Math.Min(counts[channel, level] * tall / tallest, tall);
+            for (var y = 0; y < tall; y++)
+            {
+                at = ((top + tall - 1 - y) * width + left + x) * 4;
+                for (var channel = 0; channel < 3; channel++)
+                {
+                    // A dark ground under the three; each channel lit where its curve reaches.
+                    var dim = bgra[at + channel] / 4;
+                    bgra[at + channel] = (byte)(y < bars[channel] ? Math.Min(dim + 200, 255) : dim);
+                }
+            }
         }
     }
 

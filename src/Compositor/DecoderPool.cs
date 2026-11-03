@@ -33,6 +33,19 @@ internal sealed class DecoderPool : IDisposable
     private const int MostPerSource = 4;
 
     /// <summary>
+    /// How many videos seek at once by themselves (5.1-TrackEqualityAndVram, the user's directive): a lane is a thread that sleeps until
+    /// there is a frame to decode, so several tracks chase a seek side by side rather than taking turns; and the most asked for.
+    /// </summary>
+    private const int AutoLanes = 6, MostLanes = 8;
+
+    /// <summary>
+    /// How long a seek's picture may wait for all its videos, ms (the frame commit barrier, the user's directive): with two videos or more on
+    /// screen, a picture with one at the new moment and another still at an old one is not shown: the last whole picture stays
+    /// until they are all there, or this long has passed. One video needs none of it: its nearest frame at once is Instant Seek.
+    /// </summary>
+    private const double SeekBarrierMs = 80;
+
+    /// <summary>
     /// How many decoders of one source the cuts ahead may have (5.0-Release): one reading what is shown, one parked at each
     /// cut within the horizon that reads it (a quick-cut sequence of one recording has three or four in 3 s).
     /// </summary>
@@ -52,7 +65,7 @@ internal sealed class DecoderPool : IDisposable
     /// lane reads while the frame is drawn and read back. Short: an export never steps back, and a third of a second of a
     /// 420 fps 1440p recording would not fit its cache (frames it is about to need would be let go and decoded again).
     /// </summary>
-    private const double ExactKeepBehind = 0.05, ExactPlayAhead = 0.1;
+    private const double ExactKeepBehind = 0.1, ExactPlayAhead = 0.1;
 
     /// <summary>How far a container's time stamps may be from the moments of its frames, seconds (Matroska's millisecond clock).</summary>
     private const double StampHair = 0.002;
@@ -91,7 +104,7 @@ internal sealed class DecoderPool : IDisposable
         _cache = new FrameCache(gpu);
         _cache.SetBudget(Volatile.Read(ref shared.Control.CacheBudgetRequest));
         var requested = Volatile.Read(ref shared.Control.DecodeThreadsRequest);
-        var lanes = requested > 0 ? Math.Min(requested, 4) : gpu.IsWarp ? 1 : 2;
+        var lanes = requested > 0 ? Math.Min(requested, MostLanes) : gpu.IsWarp ? 1 : Math.Clamp(Environment.ProcessorCount / 2, 2, AutoLanes);
         _laneBusySince = new long[lanes];
         for (var i = 0; i < lanes; i++)
         {
@@ -163,8 +176,25 @@ internal sealed class DecoderPool : IDisposable
     {
         _frame = frame;
         _exactOnly = exactOnly;
+
+        // How many videos the last picture showed: each gets its share of the room, and a lane of its own for what can wait.
+        var (videos, seen) = (0, 0UL);
+        foreach (var (serial, _) in _resolvedNow)
+        {
+            var bit = 1UL << (serial & 63);
+            videos += (seen & bit) == 0 ? 1 : 0;
+            seen |= bit;
+        }
+
+        _videosShown = Math.Max(videos, 1);
         _resolvedNow.Clear();
         SyncSources();
+
+        // Settling: paused, or just jumped while playing. A picture of several videos then waits for them all (HoldsForOthers).
+        var jumped = !double.IsNaN(_lastPlayhead) && Math.Abs(playhead - _lastPlayhead) > SeekJump;
+        _settling = !exactOnly && (!playing || jumped || (_settling && !LastFrameExact));
+        if (LastFrameExact || jumped)
+            _barrierFrom = 0;
 
         // A jump of the playhead (a seek, a click) or a start or stop of playback makes the frames of the old moment stale.
         lock (_gate)
@@ -179,6 +209,87 @@ internal sealed class DecoderPool : IDisposable
         (_lastWasPlaying, _lastPlayhead) = (playing, playhead);
         LastFrameExact = true;
         _cache.CheckWindowsBudget(Stopwatch.GetTimestamp());
+    }
+
+    // A move of the playhead that is no frame's step, seconds; whether what is on screen is settling after one; when it began waiting.
+    private const double SeekJump = 0.25;
+    private bool _settling;
+    private long _barrierFrom;
+
+    /// <summary>
+    /// Whether the picture just resolved should not be shown yet: it is a settling picture of two videos or more, some not at their frame
+    /// yet, and the barrier's time is not up. The frames it waits for wake the worker (<see cref="FramesArrived"/>), which draws it again.
+    /// </summary>
+    public bool HoldsForOthers()
+    {
+        if (LastFrameExact || !_settling || _exactOnly)
+            return false;
+
+        var (first, several) = (-1, false);
+        foreach (var (serial, _) in _resolvedNow)
+        {
+            several |= first >= 0 && serial != first;
+            first = first < 0 ? serial : first;
+        }
+
+        if (!several)
+            return false;
+
+        var now = Stopwatch.GetTimestamp();
+        if (_barrierFrom == 0)
+            _barrierFrom = now;
+        return (now - _barrierFrom) * 1000.0 / Stopwatch.Frequency < SeekBarrierMs;
+    }
+
+    // How many frames after the one on screen a press of play wants decoded (5.1-DogfoodPolish, the user's Q1).
+    private const int PlayStartAhead = 2;
+
+    /// <summary>Whether the picture drawn last was drawn playing.</summary>
+    public bool Playing => _lastWasPlaying;
+
+    /// <summary>
+    /// Whether every video of the picture drawn last has its next frames decoded too (one video never waits for them: true). A file that
+    /// ends sooner has none to wait for. The worker's thread, which is the one that fills what it reads.
+    /// </summary>
+    public bool NextFramesReady()
+    {
+        var (first, several) = (-1, false);
+        foreach (var (serial, _) in _resolvedNow)
+        {
+            several |= first >= 0 && serial != first;
+            first = first < 0 ? serial : first;
+        }
+
+        if (!several)
+            return true;
+
+        foreach (var (serial, at) in _resolvedNow)
+        {
+            SourceState? source = null;
+            lock (_gate)
+            {
+                foreach (var known in _sources.Values)
+                {
+                    if (known.Serial == serial)
+                    {
+                        source = known;
+                        break;
+                    }
+                }
+            }
+
+            if (source is null or { Failed: true })
+                continue;
+
+            var frame = source.FrameDuration > 0 ? source.FrameDuration : 1 / 30.0;
+            var to = at + frame * PlayStartAhead;
+            if (source.Duration > 0 && to >= source.Duration - frame)
+                continue;
+            if (!_cache.Covers(serial, at, to))
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -265,6 +376,18 @@ internal sealed class DecoderPool : IDisposable
         if (exact is not null)
             _pinned.Add(exact);
         return exact;
+    }
+
+    /// <summary>
+    /// The frame before <paramref name="frame"/> when the cache holds it (a shutter's measure of motion, 5.1-GpuFx), pinned until <see cref="EndFrame"/>. No demand
+    /// is made, so nothing waits for it; an export keeps that much behind it (<see cref="ExactKeepBehind"/>), so it finds it on all but a clip's first frame.
+    /// </summary>
+    public CachedFrame? FrameBefore(CachedFrame frame)
+    {
+        var before = _cache.Before(frame, ExactKeepBehind);
+        if (before is not null)
+            _pinned.Add(before);
+        return before;
     }
 
     /// <summary>
@@ -393,8 +516,12 @@ internal sealed class DecoderPool : IDisposable
                     if (source is null)
                         continue;
                     // Held to what the cache can keep of this source (a third of the stretch before, two after).
-                    var stretch = Fit(source, PreRollBefore + PreRollAfter, PreRollShare);
-                    var (before, after) = (stretch * PreRollBefore / (PreRollBefore + PreRollAfter), stretch * PreRollAfter / (PreRollBefore + PreRollAfter));
+                    // A large cache keeps a wider neighbourhood (the super-cache), up to four times as far each way.
+                    // Several videos share the room: five each taking its share would only take each other's frames away.
+                    var stretch = Fit(source, (PreRollBefore + PreRollAfter) * Math.Clamp(_cache.BudgetBytes / (double)(3L << 30), 1, 4), PreRollShare / _videosShown);
+                    // Several videos: nearly all of it ahead. A stretch is read from its start, and what play needs first would otherwise come last.
+                    var behind = _videosShown > 1 ? 0.1 : PreRollBefore / (PreRollBefore + PreRollAfter);
+                    var (before, after) = (stretch * behind, stretch * (1 - behind));
                     var from = Math.Max(memory.Media - before, 0);
                     var to = source.Duration > 0 ? Math.Min(memory.Media + after, source.Duration) : memory.Media + after;
 
@@ -953,6 +1080,20 @@ internal sealed class DecoderPool : IDisposable
         }
     }
 
+    /// <summary>How many lanes work that can wait may take at once: two, or one for each video on screen.</summary>
+    private int BackgroundLanes => Math.Clamp(_videosShown, 2, Math.Max(_lanes.Count - 1, 2));
+
+    private int _videosShown = 1;
+
+    // How many lanes are on work that can wait (under the lock).
+    private int BackgroundBusy()
+    {
+        var busy = 0;
+        foreach (var demand in _demands)
+            busy += demand.Lane >= 0 && !demand.Done && demand.Kind is DemandKind.PreRoll or DemandKind.Hover or DemandKind.Hinted ? 1 : 0;
+        return busy;
+    }
+
     /// <summary>The most urgent demand to work now, not one passed over in this pick (under the lock).</summary>
     private Demand? MostUrgent(long pick)
     {
@@ -983,6 +1124,11 @@ internal sealed class DecoderPool : IDisposable
             // card's decoder is one, and a second stream on it halves the chase (SeekBench: cold seeks a third slower with
             // the pre-roll beside them). Playing, a cut ahead is not held up by one late frame.
             if ((demand.Kind is DemandKind.PreRoll or DemandKind.Hover || demand.HintKind == GpuSeekHintKind.CutEntry && !_lastWasPlaying) && VisibleBeingDecoded())
+                continue;
+
+            // The lanes beyond two are for frames due on screen (5.1-TrackEqualityAndVram): a card's decoder is one, and work that
+            // can wait must not take them from a frame that cannot (SeekBench: 6 lanes and a wider pre-roll made 1 frame in 1000 late).
+            if (demand.Kind is DemandKind.PreRoll or DemandKind.Hover or DemandKind.Hinted && BackgroundBusy() >= BackgroundLanes)
                 continue;
             best = demand;
         }
@@ -1412,13 +1558,17 @@ internal sealed class DecoderPool : IDisposable
 
                 // The frame before this one was the one wanted and the cache no longer has it (it was read but not kept, or
                 // let go of since): sought again. One still there would have been joined to this one (CloseGap): a hole.
-                if (!double.IsNaN(before) && before <= target + 1e-6 && !_cache.Has(source.Serial, before) && refetches++ < 2)
+                var passedIt = !double.IsNaN(before) && before <= target + 1e-6 && !_cache.Has(source.Serial, before);
+                if (passedIt && refetches++ < (_exactOnly ? 5 : 2))
                 {
                     decoder.SeekTo(target);
                     continue;
                 }
 
-                if (_cache.StretchBack(source.Serial, time, target, decoder.FrameDuration * 2.5))
+                // An export never takes the next frame for one it passed: that frame exists, and the picture would be a frame
+                // out. It stays missing, the export fails on it, and FFmpeg makes it (the once-in-many-runs "held over" of
+                // gpu-export-every-frame, 5.1-TrackEqualityAndVram).
+                if (!(_exactOnly && passedIt) && _cache.StretchBack(source.Serial, time, target, decoder.FrameDuration * 2.5))
                 {
                     Interlocked.Increment(ref _stretches);
                 }

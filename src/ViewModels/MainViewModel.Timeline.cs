@@ -578,7 +578,14 @@ public partial class MainViewModel
             return;
         }
 
-        if (Edit($"change the speed of {clip.Name}", edit => edit.SetClipSpeed(model, speed), undoable: TakesUndoStep(clip, nameof(Layer.Speed))))
+        // Its streams' lanes and the pieces cut from it are its own file at the same moment: they run at its speed, or they drift off it.
+        var family = Document.Tracks.SelectMany(t => t.Clips).Where(c => c.ParentClipId == model.Id && c.PlaysFile && string.Equals(c.SourcePath, model.SourcePath, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (Edit($"change the speed of {clip.Name}", edit =>
+            {
+                edit.SetClipSpeed(model, speed);
+                foreach (var child in family)
+                    edit.SetClipSpeed(child, speed);
+            }, undoable: TakesUndoStep(clip, nameof(Layer.Speed))))
             Log(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Set speed of {clip.Name} to {model.Speed:0.##}x: it now runs {TimeDisplay.Format(model.Start)} to {TimeDisplay.Format(model.End)}"));
         else
             OnViewSpeedRefused(clip);
@@ -859,11 +866,14 @@ public partial class MainViewModel
 
         // The picture of a file is made once in a session, however often its clips are split, undone and
         // put back: every one of those makes new clips, and none of them a new picture.
+        // (A stream's lane shows that stream of its file.)
         var path = layer.ImagePath;
-        if (!_layerWaveforms.TryGetValue(path, out var drawing))
+        var stream = Math.Max(ClipOf(layer)?.AudioStreamIndex ?? 0, 0);
+        var key = stream == 0 ? path : $"{path}|a{stream}";
+        if (!_layerWaveforms.TryGetValue(key, out var drawing))
         {
-            _layerWaveforms[path] = drawing = Waveforms.RenderAsync(
-                path, [0], Path.Combine(WaveformFolder, $"layer_{Guid.NewGuid():N}.png"), 1200, 60, "white", PictureToken(path));
+            _layerWaveforms[key] = drawing = Waveforms.RenderAsync(
+                path, [stream], Path.Combine(WaveformFolder, $"layer_{Guid.NewGuid():N}.png"), 1200, 60, "white", PictureToken(path));
         }
 
         try
@@ -873,7 +883,7 @@ public partial class MainViewModel
         catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             // Not kept: the next clip of this file may have better luck.
-            _layerWaveforms.Remove(path);
+            _layerWaveforms.Remove(key);
         }
     }
 

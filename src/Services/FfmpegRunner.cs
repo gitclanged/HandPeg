@@ -394,13 +394,16 @@ public static partial class FfmpegRunner
 
     /// <summary>
     /// One frame of a video as a JPEG <paramref name="height"/> pixels tall: a media browser tile's poster, before its strip
-    /// is made (4.2D). A seek on the input (to the I-frame before <paramref name="atSeconds"/>, then decoded up to it) and
-    /// one frame decoded by the processor: far quicker than a strip, and than opening a decoder on the card for one frame.
+    /// is made (4.2D). The thumbnail compositor's (5.1-CleanupStudioAndFfmpegPurge: decoded on the card, the key frame nearest the
+    /// moment, GpuFilmstrips); FFmpeg only for what that cannot draw.
     /// </summary>
     public static Task<bool> GeneratePosterFrameAsync(string videoPath, string imagePath, double atSeconds, int height, CancellationToken cancellationToken,
         WorkLane lane = WorkLane.Interactive) =>
         Task.Run(() => WorkScheduler.Run(new WorkSpec($"Poster of {Path.GetFileName(videoPath)}", lane) { Key = $"poster|{videoPath}|{height}|{imagePath}" }, async work =>
         {
+            if (await GpuFilmstrips.TryStillAsync(videoPath, imagePath, atSeconds, height, onAKeyFrame: true, work.Token))
+                return true;
+
             if (!File.Exists(DependencyUpdater.FfmpegPath))
                 return false;
 
@@ -499,54 +502,6 @@ public static partial class FfmpegRunner
 
         var reason = said.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault();
         return reason ?? $"exit code {result.ExitCode}, and no picture was written";
-    }
-
-    [GeneratedRegex(@"silence_start: (-?\d+(?:\.\d+)?)")]
-    private static partial Regex SilenceStartRegex();
-
-    [GeneratedRegex(@"silence_end: (-?\d+(?:\.\d+)?)")]
-    private static partial Regex SilenceEndRegex();
-
-    /// <summary>
-    /// The silent stretches of the first audio track, found with the silencedetect filter.
-    /// </summary>
-    /// <param name="noiseDb">Anything quieter than this counts as silence.</param>
-    /// <param name="minimumSeconds">Shorter pauses are ignored.</param>
-    /// <param name="duration">Length of the file, to close a silence that runs to the very end.</param>
-    /// <param name="trackIndex">Which of the file's audio tracks to listen to, counted from 0.</param>
-    public static async Task<List<(double Start, double End)>> DetectSilenceAsync(
-        string path, int trackIndex, double noiseDb, double minimumSeconds, double duration, CancellationToken cancellationToken)
-    {
-        if (!File.Exists(DependencyUpdater.FfmpegPath))
-            throw new InvalidOperationException("FFmpeg is not installed. Install it from Settings first.");
-
-        var filter = string.Create(CultureInfo.InvariantCulture, $"silencedetect=noise={noiseDb}dB:d={minimumSeconds}");
-        var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
-            .WithArguments(["-hide_banner", "-nostats", "-i", path, "-map", $"0:a:{Math.Max(trackIndex, 0)}", "-af", filter, "-f", "null", "-"])
-            .WithValidation(CommandResultValidation.None), cancellationToken);
-        if (result.ExitCode != 0)
-            throw new InvalidOperationException($"FFmpeg could not analyse the audio (exit code {result.ExitCode}).");
-
-        // The filter reports on stderr: a start line, then later an end line.
-        var silences = new List<(double Start, double End)>();
-        double? start = null;
-        foreach (var line in result.StandardError.Split('\n'))
-        {
-            if (SilenceStartRegex().Match(line) is { Success: true } startMatch)
-            {
-                start = Math.Max(double.Parse(startMatch.Groups[1].Value, CultureInfo.InvariantCulture), 0);
-            }
-            else if (start is { } from && SilenceEndRegex().Match(line) is { Success: true } endMatch)
-            {
-                silences.Add((from, double.Parse(endMatch.Groups[1].Value, CultureInfo.InvariantCulture)));
-                start = null;
-            }
-        }
-
-        if (start is { } open && duration > open)
-            silences.Add((open, duration));
-
-        return silences;
     }
 
     /// <summary>

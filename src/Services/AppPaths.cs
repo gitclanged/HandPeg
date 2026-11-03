@@ -30,14 +30,21 @@ public static class AppPaths
     /// <summary>The same, asked for on the command line.</summary>
     public const string PortableArgument = "--portable";
 
-    // The program's own folder, when this copy is self-contained; null otherwise. Found first: the rest follows from it.
+    /// <summary>
+    /// A folder of this name beside the program makes the copy self-contained too, and holds all of it: the zero-install
+    /// portable zips (5.1-Release, the user's call) ship it empty, so that everything the copy writes stays in the unzipped folder.
+    /// </summary>
+    public const string PortableFolder = "portable";
+
+    // Where a self-contained copy keeps what it writes (the "portable" folder, or else the program's own folder); null for
+    // any other copy. Found first: the rest follows from it.
     private static readonly string? LocalRoot = FindLocalRoot();
 
     /// <summary>
-    /// True for a self-contained copy (portable.txt beside the program, or --portable). Its tools are in
-    /// "deps" and its working files in "temp", both beside the program, and everything else under "data":
-    /// settings, presets, projects, caches, logs. Nothing of it is in %AppData%, %LocalAppData% or %TEMP%,
-    /// and it neither looks for updates nor reads the registry for the Windows theme.
+    /// True for a self-contained copy (a "portable" folder or portable.txt beside the program, or --portable). Its tools
+    /// are in "deps" and its working files in "temp", and everything else under "data": settings, presets, projects,
+    /// caches, logs; all three in the "portable" folder when there is one, else beside the program. Nothing of it is in
+    /// %AppData%, %LocalAppData% or %TEMP%, and it neither looks for updates nor reads the registry for the Windows theme.
     /// </summary>
     public static bool IsSelfContained => LocalRoot is not null;
 
@@ -46,6 +53,10 @@ public static class AppPaths
         try
         {
             var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
+            var portable = Path.Combine(folder, PortableFolder);
+            if (Directory.Exists(portable))
+                return portable;
+
             return File.Exists(Path.Combine(folder, PortableSentinel))
                    || Environment.GetCommandLineArgs().Skip(1).Any(a => a.Equals(PortableArgument, StringComparison.OrdinalIgnoreCase))
                 ? folder

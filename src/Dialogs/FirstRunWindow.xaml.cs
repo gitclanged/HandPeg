@@ -420,6 +420,8 @@ public partial class FirstRunWindow : Window
         if (!settings.FirstRunComplete)
             settings.ApplyEditorDefaults();
         settings.DefaultVideoEncoder = EncoderBox.SelectedItem is EncoderOption encoder ? encoder.Name : "";
+        if (EncoderBox.SelectedItem is EncoderOption { Family: var family } && ViewModels.MainViewModel.BestStepOf(family) is { } best)
+            settings.DefaultEncoderPreset = best;
         settings.PromptToSaveOnExit = PromptBox.IsChecked == true;
         settings.SendCrashReports = CrashReportsBox.IsChecked == true;
         (settings.DefaultAudioEncoder, settings.DefaultAudioBitrate) = (AudioEncoderBox.SelectedItem as string ?? "aac", AudioBitrateBox.SelectedItem as string ?? "192k");

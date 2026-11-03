@@ -73,10 +73,25 @@ public sealed class TimelineTrackModel
     public Guid? ParentTrackId { get; set; }
 
     /// <summary>
-    /// What its clips share, as a track did in 4.2.0: every value of a layer that <see cref="Layer.IsClipProperty"/> does not
-    /// name (where they sit on the frame and their size, crop, look, filters, key, mask, edges, shadow). Each clip's
-    /// <see cref="TimelineClip.State"/> holds what is its own. Its timing fields are not used. Null: none, and each clip's
-    /// State holds everything.
+    /// The captions are drawn right under this track's pictures (5.1-Polish, the user's Q2: their place in the stack, set by
+    /// lifting their plane in the 3D view or from their menu), over every track under it; on no track they are over
+    /// everything, the fades too, as they always were. One track at most (<see cref="ITimelineTransaction.SetCaptionsUnder"/>);
+    /// when this track is deleted they go under the next picture track down, keeping their depth (5.1-AutoHud-Part1, the
+    /// user's Q4; <see cref="ITimelineTransaction.RemoveTrack"/>). Left out of the file while false.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool CaptionsUnder { get; set; }
+
+    /// <summary>
+    /// Its row's own height on the Timeline in DIPs (5.1-AutoHud-Part1, the user's Q2: its lower edge dragged in the headers),
+    /// or null to go with the one Track Height. Left out of the file while null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? Height { get; set; }
+
+    /// <summary>
+    /// What its clips shared in 4.2.0 (only an old document's: since 5.1-DogfoodPolish every clip's <see cref="TimelineClip.State"/> holds
+    /// all of its look and nothing makes this). Its timing fields are not used. Null: none, and each clip's State holds everything.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LayerState? TrackLook { get; set; }
@@ -175,7 +190,7 @@ public sealed class TimelineTrackModel
         (Id, TrackNumber, Name, Kind) = (from.Id, from.TrackNumber, from.Name, from.Kind);
         (IsHidden, IsMuted, IsSoloed, IsLocked) = (from.IsHidden, from.IsMuted, from.IsSoloed, from.IsLocked);
         (GainDb, DuckAgainstVoice, DuckAmountDb, AudioFilters, TrackLook) = (from.GainDb, from.DuckAgainstVoice, from.DuckAmountDb, from.AudioFilters, from.TrackLook);
-        ParentTrackId = from.ParentTrackId;
+        (ParentTrackId, CaptionsUnder, Height) = (from.ParentTrackId, from.CaptionsUnder, from.Height);
     }
 }
 
@@ -286,7 +301,7 @@ public sealed class TimelineClip
     /// <summary>
     /// Its look, as a layer is saved, so everything a <see cref="Layer"/> and an <see cref="EffectInstance"/> do works on it
     /// unchanged: its name, keyframes (seconds from the clip's start; they may lie before it or past it, so a motion
-    /// carries across a cut), effect stack and the rest of what <see cref="Layer.IsClipProperty"/> names, and, when its
+    /// carries across a cut), effect stack and the rest of what is its own, and, when its
     /// track has no <see cref="TimelineTrackModel.TrackLook"/>, everything else too (place on the frame, crop, mask...).
     /// Its timing, fades, gain, visibility and proxy fields are not used: the clip's own above are. An edit that
     /// changes it puts a changed copy here; it never changes the one that is here.
@@ -482,6 +497,10 @@ public sealed class TimelineDocument
     public IReadOnlyList<TimelineTrackModel> AudioTracks => TracksOf(TimelineTrackKind.Audio);
 
     public IReadOnlyList<TimelineTrackModel> TracksOf(TimelineTrackKind kind) => Tracks.Where(t => t.Kind == kind).ToList();
+
+    /// <summary>The track the captions are drawn right under (<see cref="TimelineTrackModel.CaptionsUnder"/>), or null: over everything.</summary>
+    [JsonIgnore]
+    public TimelineTrackModel? CaptionsUnderTrack => Tracks.FirstOrDefault(t => t.CaptionsUnder);
 
     /// <summary>
     /// How long the sequence is: where the last clip ends, its sound included (an L-cut lasts past its picture, and so does
