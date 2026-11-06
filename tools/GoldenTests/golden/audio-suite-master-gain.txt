@@ -1,0 +1,4 @@
+# The Sequence's master gain (5.2B): +6 dB multiplies every sample by 10^(6/20), 0 dB multiplies nothing.
++6 dB: every sample the plain one times 10^(6/20) = 1.9953, to the bit
+0 dB (within a hundredth of a decibel): a factor of 1, the very samples
+held to +12 dB

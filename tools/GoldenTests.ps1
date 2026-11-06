@@ -1,5 +1,5 @@
 param([switch]$Update, [string]$Filter, [switch]$NoBuild, [string]$Configuration = 'Debug')
-# HandPeg's golden-file tests (tools\GoldenTests): what FilterGraphBuilder writes for each fixture, the .hproj format's
+# HandPeg's golden-file tests (tools\GoldenTests): the export made of each fixture (its encode, GPU scenes, sound), the .hproj format's
 # reading and writing, and how FfmpegRunner hands a command to FFmpeg, compared with the files in tools\GoldenTests\golden,
 # plus the checks made by code (the A/V invariant, the project round trip, the quoting round trip).
 #

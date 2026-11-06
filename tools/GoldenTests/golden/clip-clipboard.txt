@@ -1,0 +1,20 @@
+# Ctrl+C / Ctrl+V / Ctrl+D / Ctrl+Alt+V: whole families pasted at the playhead, duplicated after themselves, attributes pasted, each one step of Undo.
+ok: a Game Preset saved
+ok: a clip with two Cutouts
+ok: Ctrl+C copies the clip
+ok: Ctrl+V pastes it at the playhead
+ok: a new clip at 10 s, as long, on the track it came from
+ok: with its own two Cutouts over its span
+ok: on lanes under its track
+ok: three clips more, nothing else
+ok: one Undo takes the paste away
+ok: Ctrl+D duplicates it
+ok: right after itself, 4 to 8 s, with its Cutouts
+ok: two clips of two tracks copied
+ok: and pasted at 30 s
+ok: both start at 30 s (they started together)
+ok: a turned and tilted clip copied
+ok: its transform pasted onto the main video
+ok: its place, turn and tilt are the copied clip's
+ok: and nothing else came with them
+ok: one Undo takes them back

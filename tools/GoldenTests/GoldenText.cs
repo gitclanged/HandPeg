@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text;
+using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
+using HandPegApp.Services.Audio;
 
 namespace HandPegGoldenTests;
 
@@ -73,13 +75,29 @@ public static class GoldenText
         if (fonts.Length == 0)
             return text;
 
-        // As the graph writes a path inside quotes (FilterGraphBuilder.EscapeFilterPath), and as it is.
+        // As the graph writes a path inside quotes (as FFmpeg reads a filter option: a hand-edited command's graph), and as it is.
         var escaped = fonts.Replace('\\', '/').Replace(":", @"\:");
         return text.Replace(escaped, "<fonts>", StringComparison.OrdinalIgnoreCase).Replace(fonts, "<fonts>", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>A number as the golden files write one: invariant, at most six decimals.</summary>
     public static string Num(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// A sound strip's key as the golden files write it (5.2-AuditB): a track strip's key names its track by its id, which is new
+    /// for every run ("track:{id}" then its pair and role), so it is written as the track's place in the Sequence and its name.
+    /// </summary>
+    public static string StripKey(AudioStrip strip, TimelineDocument document)
+    {
+        const string Prefix = "track:";
+        var key = strip.Key;
+        if (!key.StartsWith(Prefix, StringComparison.Ordinal) || key.Length < Prefix.Length + 32
+            || !Guid.TryParseExact(key.AsSpan(Prefix.Length, 32), "N", out var id))
+            return key;
+
+        var index = document.Tracks.FindIndex(t => t.Id == id);
+        return index < 0 ? key : string.Create(CultureInfo.InvariantCulture, $"track {index} ({document.Tracks[index].DisplayName}){key[(Prefix.Length + 32)..]}");
+    }
 }
 
 /// <summary>A line diff of a golden file and what the code makes now, with a little context around each change.</summary>

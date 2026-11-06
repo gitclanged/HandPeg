@@ -14,7 +14,7 @@ public partial class MainViewModel
     /// <summary>Player volume, 0 to 100.</summary>
     [ObservableProperty] private int _volume = 100;
 
-    /// <summary>Frame rate of the loaded source, for HH:MM:SS:FF timecodes. 30 when it is not known.</summary>
+    /// <summary>Frame rate of the file last opened (the rate an empty Sequence takes from it). 30 when it is not known.</summary>
     public double SourceFrameRate => _mediaInfo?.Video?.FrameRate is > 0 and var rate ? rate : 30;
 
     /// <summary>The Dimensions, Filters, Video and Audio tabs as a preset.</summary>
@@ -27,8 +27,8 @@ public partial class MainViewModel
         OutputWidth = OutputWidth,
         OutputHeight = OutputHeight,
         KeepAspectRatio = KeepAspectRatio,
-        // The sequence's crop and place, its main video's first clip's (4.4: each clip has its own, which a project keeps in
-        // its timeline; a preset, and HandPeg 4.3, take these).
+        // The crop and place of the clip a preset takes its layout from (TemplateBase; 4.4: each clip has its own, which a project
+        // keeps in its timeline; a preset, and HandPeg before 5.2, take these).
         CropPercent = SequenceCropPercent(),
         PixelAspectRatio = PixelAspectRatio,
         CustomPixelAspectRatio = CustomPixelAspectRatio,
@@ -61,21 +61,19 @@ public partial class MainViewModel
         AudioChannels = AudioChannels == AudioChannelChoice.Stereo ? null : AudioChannels,
         MergeAudioTracks = MergeAudioTracks,
         NormalizeAudio = NormalizeAudio,
-        DuckAudio = DuckAudio,
         DuckAmountDb = DuckAmountDb,
-        FrameEngine = FrameEngine,
-        CenterZoom = SequencePlace().Zoom,
-        // The layout, for a preset (a project's are its timeline, and ProjectStore leaves these out): every clip but the
-        // main video's as a template, the main video's look, and how many pictures lie under it.
+        CenterZoom = TemplatePlace().Zoom,
+        // The layout, for a preset (a project's are its timeline, and ProjectStore leaves these out): the first video clip's
+        // template (5.2-AuditB: its pieces, its look, how many pieces lie under it, its place as the old Center values).
         Layers = TemplateLayers(),
-        MainLayer = MainLayer.ToState(),
+        MainLayer = TemplateBase()?.ToState(),
         BackgroundHidden = _backgroundRow.IsHidden,
         MainVideoIndex = TemplateMainIndex(),
         LayoutSourceAspectRatio = GetLayoutSourceAspect(),
         AutoCaptions = AutoCaptions,
         CaptionStyle = CaptionStyle.Clone(),
-        CenterOffsetX = SequencePlace().OffsetX,
-        CenterOffsetY = SequencePlace().OffsetY,
+        CenterOffsetX = TemplatePlace().OffsetX,
+        CenterOffsetY = TemplatePlace().OffsetY,
         UseVerticalResolution = UseVerticalResolution,
         BlurRadius = BlurRadius,
         BlurPasses = BlurPasses,
@@ -107,19 +105,58 @@ public partial class MainViewModel
         TargetFileSize = AppSettings.Current.SaveTargetSizeInPresets ? TargetFileSize : "",
     };
 
-    /// <summary>The timeline's clips but the main video's, each with its track's number and its timing, as a preset carries a layout.</summary>
-    private List<LayerState> TemplateLayers() =>
-        Layers.Where(l => !l.IsMainVideo && !l.IsEmptyTrack && ClipOf(l) is not null).Select(l => l.ToState()).ToList();
+    /// <summary>
+    /// The clip a saved layout is taken from (5.2-AuditB: a preset's or a style's template is one clip's): the first top-level video
+    /// clip, the lowest track's; with <paramref name="selected"/> (a style saved by hand), the selected video clip first. Null while
+    /// there is none. (A preset is part of a project's fingerprint: what it is taken from never follows the selection.)
+    /// </summary>
+    private Layer? TemplateBase(bool selected = false) => selected ? TemplateTargets().FirstOrDefault() ?? FirstVideoView() : FirstVideoView();
 
-    /// <summary>How many of a preset's layout's pictures lie under the main video (all of them when it has no clip).</summary>
-    private int TemplateMainIndex()
+    /// <summary>The clip's template as a layout saves it: its pieces, those under its track first, each from where it starts on the clip.</summary>
+    private List<TemplatePiece> TemplatePieces(bool selected = false) =>
+        TemplateBase(selected) is { } view && ClipOf(view) is { } clip && TemplateFrom(clip) is { } template ? [.. template.Pieces] : [];
+
+    /// <summary>The template's pieces as a layout carries them (5.2-AuditB: the clip's, not every clip of the timeline).</summary>
+    private List<LayerState> TemplateLayers(bool selected = false) => TemplatePieces(selected).ConvertAll(SavedPiece);
+
+    /// <summary>How many of a layout's pieces lie under its clip's track.</summary>
+    private int TemplateMainIndex(bool selected = false) => TemplatePieces(selected).Count(p => p.Under);
+
+    /// <summary>
+    /// The place of the clip a layout is taken from as the old Center values (5.2-AuditB): its width as the zoom, its middle's distance
+    /// from the frame's as the offsets (percentages of the frame); a whole-width middle while there is none.
+    /// </summary>
+    private (double Zoom, double OffsetX, double OffsetY) TemplatePlace(bool selected = false)
     {
-        var pictures = Layers.Where(l => !l.IsAudio && !l.IsEmptyTrack && ClipOf(l) is not null).ToList();
-        var main = pictures.FindIndex(l => l.IsMainVideo);
-        return main < 0 ? pictures.Count : pictures.Take(main).Count(l => !l.IsMainVideo);
+        if (TemplateBase(selected) is not { } view || FrameWidth <= 0 || FrameHeight <= 0)
+            return (1, 0, 0);
+
+        var (x, y, width, height) = view.GetOutputRect(FrameWidth, FrameHeight, SourceWidth, SourceHeight);
+        return (view.SizeWidth, ((x + width / 2.0) / FrameWidth - 0.5) * 100, ((y + height / 2.0) / FrameHeight - 0.5) * 100);
     }
 
-    /// <summary>What is set track by track: action, codec, bitrate, title, gain and processing.</summary>
+    /// <summary>
+    /// A clip's piece as a layout saves it: from where it starts on its clip, for how long (0: the whole clip); a piece cut from the
+    /// clip's own file as a cut-out of "the video" (LayerKind.Video: the part of the picture its crop keeps, its box as it is), so a
+    /// layout puts it on a clip of any file (FileCutoutOf makes it again).
+    /// </summary>
+    private static LayerState SavedPiece(TemplatePiece piece)
+    {
+        var state = TimelineTransaction.CopyOf(piece.State);
+        (state.StartTime, state.Duration) = (piece.Offset, piece.Length);
+        if (piece.FollowsBase && state.Kind == LayerKind.VideoFile)
+        {
+            var (left, top, right, bottom) = Layer.HeldCrop(state);
+            state.Kind = LayerKind.Video;
+            (state.SourceX, state.SourceY, state.SourceWidth, state.SourceHeight) = (left, top, 1 - left - right, 1 - top - bottom);
+            (state.CropLeft, state.CropTop, state.CropRight, state.CropBottom) = (0, 0, 0, 0);
+            (state.ImagePath, state.ImageWidth, state.ImageHeight, state.MediaOffset, state.MediaDuration) = ("", 0, 0, 0, 0);
+        }
+
+        return state;
+    }
+
+    /// <summary>What is set track by track: action, codec, bitrate and title (5.2-AuditB: the mixing is the Sub-Lanes', neutral here).</summary>
     private List<AudioTrackState> CaptureAudioTracks() =>
         AudioTracks.Select(t => new AudioTrackState(t.Index, t.Action, t.Codec, t.Bitrate, t.Title, t.GainDb, t.Filters.IsActive ? t.Filters.Clone() : null,
             t.OffsetSeconds, t.Pieces.Count > 0 ? [.. t.Pieces] : null, t.AutoDuck, t.IsVoice)).ToList();
@@ -154,14 +191,14 @@ public partial class MainViewModel
             SubtitleTracks = SubtitleTracks.Select(t => new SubtitleTrackState(t.Index, t.Action)).ToList(),
             CaptionAudioPath = CaptionAudioPath,
             CaptionUseExternalAudio = CaptionUseExternalAudio,
-            CaptionAudioTrackIndex = CaptionAudioTrack?.Index ?? 0,
+            CaptionAudioTrackIndex = ResolveCaptionSource() is { Kind: CaptionSourceKind.Clip, Stream: >= 0 } listened && SameFile(listened.Path, OpenedFile) ? listened.Stream : 0,
             Deleted = RecycleBin.Select(i => i.Clip with { Clip = CopyOfClip(i.Clip.Clip) }).ToList(),
             ManualCommand = IsCommandManuallyEdited ? CommandPreview : null,
         };
     }
 
     /// <summary>
-    /// A state's timeline as it is opened: a copy of its own; the main video's clips playing the file this session opened
+    /// A state's timeline as it is opened: a copy of its own; the clips of the file it opened playing the file this session opened
     /// (a link's download may lie at another path now); and, for a file put together by hand, its tracks' clips in order of
     /// their starts and each id once (what the timeline's searches rely on). What is still wrong with it is written to the log.
     /// </summary>
@@ -176,7 +213,7 @@ public partial class MainViewModel
             {
                 if (!ids.Add(clip.Id))
                     clip.Id = Guid.NewGuid();
-                if (clip.ContentKind == LayerKind.MainVideo && !string.Equals(state.LocalMediaPath, LocalMediaPath, StringComparison.OrdinalIgnoreCase)
+                if (!string.IsNullOrEmpty(state.LocalMediaPath) && !string.Equals(state.LocalMediaPath, LocalMediaPath, StringComparison.OrdinalIgnoreCase)
                     && string.Equals(clip.SourcePath, state.LocalMediaPath, StringComparison.OrdinalIgnoreCase))
                 {
                     clip.SourcePath = LocalMediaPath;
@@ -185,7 +222,8 @@ public partial class MainViewModel
         }
 
         // A project from before each clip of the main video had a crop of its own (4.3) kept one for the whole sequence in its
-        // settings: its clips take it, when none of them has one (4.4). A look is never changed in place: each gets a copy.
+        // settings: its clips take it, when none of them has one (4.4), before they are converted (ConvertLegacy). A look is
+        // never changed in place: each gets a copy.
         var (left, top, right, bottom) = PresetCropPercent(state.Settings);
         if (left + top + right + bottom > 0)
         {
@@ -207,30 +245,96 @@ public partial class MainViewModel
         return timeline;
     }
 
-    /// <summary>The sequence's crop as percentages (left, top, right, bottom): its main video's first clip's (GetCropFractions).</summary>
+    /// <summary>The crop a preset carries, as percentages (left, top, right, bottom): the clip its layout is taken from's (TemplateBase), the Crop boxes' while there is none.</summary>
     private double[] SequenceCropPercent()
     {
-        var (left, top, right, bottom) = GetCropFractions();
+        var (left, top, right, bottom) = TemplateBase() is { } view ? CropOf(view) : BoxCrop();
         return [Math.Round(left * 100, 2), Math.Round(top * 100, 2), Math.Round(right * 100, 2), Math.Round(bottom * 100, 2)];
     }
 
-    /// <summary>The sequence's place of its main video (zoom and offsets): its first clip's (GetCenterRect's), the Center controls' while that is the clip they stand for.</summary>
-    private (double Zoom, double OffsetX, double OffsetY) SequencePlace() =>
-        AnchorMainView() is { } anchor && !ReferenceEquals(anchor, CenterTarget) ? KeptPlaceOf(anchor) : (CenterZoom, CenterOffsetX, CenterOffsetY);
+    /// <summary>
+    /// Whether there is something worth saving or queueing: a file opened, or any clip on the timeline (5.2-AuditB: a Sequence of
+    /// dropped files is a project too). Told again whenever the document changes (NoteDocumentShape).
+    /// </summary>
+    public bool HasSource => !string.IsNullOrWhiteSpace(LocalMediaPath) || Document.Tracks.Any(t => t.Clips.Count > 0);
 
-    /// <summary>Whether a source is loaded, so there is something worth saving or queueing.</summary>
-    public bool HasSource => !string.IsNullOrWhiteSpace(LocalMediaPath);
+    /// <summary>
+    /// What made the project opened last one of 5.1's shape, which was converted as it was opened ("19 clips of the main video and 57
+    /// cut-outs of it": ProjectStore.OldShapeOf, ConvertLegacy), or null when it was of the current shape. Read by the window (which then
+    /// writes it over its file, <see cref="SavesConvertedProjects"/>) and by the harnesses, which say so.
+    /// </summary>
+    public string? ConvertedFrom { get; private set; }
 
-    /// <summary>Loads the state's source and puts every setting back. Runs as a normal busy operation.</summary>
+    /// <summary>
+    /// Whether a project converted as it is opened is written over its own file at once, under the same name (5.2E, the
+    /// user's answer: the 5.1 file is not kept). Set by the window only: the harnesses (SeekBench, AvSync) open the same projects to read them,
+    /// and leave every file as it was.
+    /// </summary>
+    public bool SavesConvertedProjects { get; set; }
+
+    /// <summary>
+    /// A project's timeline from before 5.2-AuditB converted, once, as it is opened (LegacyMainVideo.Migrate): its main video's
+    /// clips made clips of their file in the boxes they were drawn in, its cut-outs of it pieces of them on their clocks, its
+    /// streams' mixing (the live output tracks', taken from the project just before) put on Sub-Lanes and then set back to neutral,
+    /// its bin with it. Whether anything was converted (its undo history is then not taken up).
+    /// </summary>
+    private bool ConvertLegacy(TimelineDocument timeline, ProjectState state)
+    {
+        if (!LegacyMainVideo.Needs(timeline) && !ProjectStore.HoldsOldKinds(timeline, state.Deleted))
+            return false;
+
+        var context = new LegacyMainVideoContext
+        {
+            PrimaryPath = LocalMediaPath,
+            SourceWidth = SourceWidth,
+            SourceHeight = SourceHeight,
+            MediaSeconds = MainMediaSeconds,
+            SourceHasNoVideo = _mediaInfo is { Video: null },
+            BackgroundHidden = state.Settings.BackgroundHidden,
+            CenterRect = null,
+            Streams = AudioTracks,
+            Bin = state.Deleted,
+        };
+
+        // The frame the old boxes were laid in: the old natural size (the main video's, cut by its first clip's crop) through the
+        // project's own Resolution & Cropping, as the old view model made it.
+        var (frameWidth, frameHeight) = FrameSizeFor(LegacyMainVideo.NaturalSizeOf(timeline, context));
+        LegacyMainVideo.Migrate(timeline, context with { FrameWidth = frameWidth, FrameHeight = frameHeight });
+        AppLog.Write($"The project's main video was converted to clips of its file (5.2-AuditB), on a {frameWidth} x {frameHeight} frame");
+        return true;
+    }
+
+    /// <summary>
+    /// Loads the state's source and puts every setting back. Runs as a normal busy operation. A state of the shape before
+    /// 5.2-AuditB (a 5.1 project) is converted on the way (<see cref="ConvertLegacy"/>, <see cref="ConvertedFrom"/>); a queued job or
+    /// an undo step is of this version's own making.
+    /// </summary>
     public Task RestoreStateAsync(ProjectState state, string doneMessage) => RunOperationAsync("Opening a project", WorkLane.Interactive, async cancellationToken =>
     {
+        // What makes it a project of 5.1's shape, read before anything of it changes (null for one of this version's).
+        var oldShape = ProjectStore.OldShapeOf(state.Timeline, state.Deleted, state.Subtitles);
+        ConvertedFrom = null;
+
+        // Its own thumbnail is the last one taken (a project's file carries one; a queued job none), until a save draws a new one.
+        TakeUpThumbnail(state.ThumbnailJpeg);
         SourcePath = state.SourcePath;
         DownloadResolution = Pick(DownloadResolutions, state.DownloadResolution, "Best");
         DownloadSubtitles = state.DownloadSubtitles;
 
-        var (loaded, message) = await LoadMediaAsync(state.SourcePath, state.LocalMediaPath, applyAutomation: false, cancellationToken);
-        if (!loaded)
-            return message;
+        // The file it opened, probed first (its streams are the output tracks, and what converting a project of 5.1 reads), and not
+        // put on the timeline: the project's timeline is its own. A project of dropped files alone opened none.
+        if (!string.IsNullOrWhiteSpace(state.SourcePath) || !string.IsNullOrWhiteSpace(state.LocalMediaPath))
+        {
+            var (loaded, message) = await LoadMediaAsync(state.SourcePath, state.LocalMediaPath, applyAutomation: false, cancellationToken, place: false);
+            if (!loaded)
+                return message;
+        }
+        else
+        {
+            ResetForNewSource();
+            LocalMediaPath = "";
+            SetMediaInfo(null);
+        }
 
         SnapToIFrames = state.SnapToIFrames;
         if (Containers.Contains(state.Container))
@@ -239,6 +343,9 @@ public partial class MainViewModel
         ChapterMarkers = state.ChapterMarkers;
         ChaptersAtCuts = state.ChaptersAtCuts;
         ChaptersAtMarkers = state.ChaptersAtMarkers;
+
+        // (Captions anchored to the old main video follow its file's clips.)
+        LegacyMainVideo.MigrateCaptions(state.Subtitles, LocalMediaPath);
         ApplySubtitles(state.Subtitles);
 
         // The project's settings, without a layout of their own: its timeline is its own, put in place after them (a
@@ -247,20 +354,26 @@ public partial class MainViewModel
         ApplyPreset(state.Settings, withLayout: false);
         _backgroundRow.IsHidden = state.Settings.BackgroundHidden;
 
+        // Its output tracks (queue jobs and projects saved before presets carried the tracks keep them here), with what a project
+        // of 5.1 mixed its main video's streams with: the conversion takes that onto Sub-Lanes, before the timeline is put in place.
+        ApplyAudioTrackStates(state.AudioTracks, legacyMixing: oldShape is not null);
+        var timeline = TimelineToOpen(state);
+        var converted = ConvertLegacy(timeline, state) || oldShape is not null;
+        if (converted)
+        {
+            ConvertedFrom = oldShape ?? "clips of the main video";
+            AppLog.Write($"Opened a project of the shape before 5.2 ({ConvertedFrom}): converted as it was opened");
+        }
+
         // The timeline and what goes with it are put in place as one restore (4.4-BugHunt): nothing it sets going takes an
         // undo step or makes an edit, and the captions are projected once, at its end, through the project's own timeline.
         using (BeginRestore())
         {
-            InstallDocument(TimelineToOpen(state));
-            TakeMainFile(_mediaInfo);
+            InstallDocument(timeline);
             SetBin(state.Deleted);
             TargetFileSize = state.TargetFileSize;
             CaptionAudioPath = state.CaptionAudioPath ?? "";
             CaptionUseExternalAudio = state.CaptionUseExternalAudio ?? CaptionAudioPath.Length > 0;
-            CaptionAudioTrack = AudioTracks.FirstOrDefault(t => t.Index == state.CaptionAudioTrackIndex) ?? AudioTracks.FirstOrDefault();
-
-            // Queue jobs and projects saved before presets carried the tracks keep them here.
-            ApplyAudioTrackStates(state.AudioTracks);
 
             foreach (var saved in state.SubtitleTracks)
             {
@@ -279,7 +392,7 @@ public partial class MainViewModel
             CommandPreview = manualCommand;
 
         // The undo history the project carries (4.4-BugHunt; none for a queued job): Ctrl+Z goes on where its save left it.
-        TakeUpHistory(state);
+        TakeUpHistory(state, converted);
         MarkSaved();
         return GetLayoutAspectWarning() is { } warning ? $"{doneMessage}. {warning}" : doneMessage;
     });
@@ -316,6 +429,7 @@ public partial class MainViewModel
 
             if (string.IsNullOrWhiteSpace(preset.Name))
                 preset.Name = Path.GetFileNameWithoutExtension(path);
+
             var existing = Presets.ToList().FindIndex(p => p.Name.Equals(preset.Name, StringComparison.OrdinalIgnoreCase));
             if (existing >= 0)
                 Presets[existing] = preset;
@@ -350,10 +464,12 @@ public partial class MainViewModel
         try
         {
             RecentProjects.Clear();
-            if (Directory.Exists(ProjectStore.Folder))
+            // Fully portable projects (5.2A) too, each in a folder of its own name.
+            foreach (var file in ProjectStore.ProjectFiles().OrderByDescending(f => f.LastWriteTime).Take(25))
             {
-                foreach (var file in new DirectoryInfo(ProjectStore.Folder).EnumerateFiles("*" + ProjectStore.Extension).OrderByDescending(f => f.LastWriteTime).Take(25))
-                    RecentProjects.Add(Path.GetFileNameWithoutExtension(file.Name));
+                var name = Path.GetFileNameWithoutExtension(file.Name);
+                if (!RecentProjects.Contains(name))
+                    RecentProjects.Add(name);
             }
 
             SelectedProject = current is not null && RecentProjects.Contains(current) ? current : null;
@@ -399,7 +515,7 @@ public partial class MainViewModel
     /// <summary>The Layers and Audio lists are too narrow for a row to hold its controls and a time bar of any use: the controls are in a flyout from each row instead.</summary>
     [ObservableProperty] private bool _compactTrackControls;
 
-    /// <summary>The master timeline is stretched and scrolled with the layer and audio time bars when they are zoomed; off, it always shows the whole sequence.</summary>
+    /// <summary>The Sequence Overview Scrubber is stretched and scrolled with the timeline's time bars when they are zoomed; off, it always shows the whole sequence.</summary>
     [ObservableProperty] private bool _syncMasterTimeline;
 
     /// <summary>The file the open project was last saved to or opened from; empty for work that has never been saved.</summary>
@@ -439,6 +555,7 @@ public partial class MainViewModel
         }
 
         ForgetHistory();
+        TakeUpThumbnail(null);
         MarkSaved();
         SessionCleared?.Invoke();
         Log("New project: nothing is open. Drop a video on the player, or use Add Media, to start.");
@@ -447,9 +564,9 @@ public partial class MainViewModel
 
     /// <summary>
     /// + New Project: everything a project carries that is not an encoding setting, back as HandPeg starts. The frame
-    /// tall or wide as Settings says every video starts (DefaultVerticalVideo) and the source's size, the sharp video centred, the blur, crop, grade, LUT and Sequence Output effects
-    /// neutral, the main video's own look and place in the stack, captions off in the default style and box, no
-    /// voiceover, nothing soloed, no overlay drawing on the player.
+    /// tall or wide as Settings says every video starts (DefaultVerticalVideo) and the Sequence's own size, the blur fill, crop, grade,
+    /// LUT and Sequence Output effects neutral, no layout waiting for a video, captions off in the default style and box, no voiceover,
+    /// no overlay drawing on the player.
     /// </summary>
     private void ResetProjectLook()
     {
@@ -464,19 +581,14 @@ public partial class MainViewModel
             _syncingDimensions = false;
         }
 
-        // Tall, the engine is what fits the picture into the frame (as the Vertical Video switch does).
-        if (UseVerticalResolution)
-            FrameEngine = true;
-
         (PixelAspectRatio, CustomPixelAspectRatio) = (SameAsSource, "");
         (IsInteractiveCropActive, DrawTargetLayer, IsArrangeActive) = (false, null, false);
         ResetCrop();
-        ResetCenterVideo();
         ResetBlurSettings();
         _backgroundRow.IsHidden = false;
         SetBackgroundEffects(null, false);
         _layoutSourceAspect = 0;
-        _mainLookToCome = null;
+        _templateToCome = null;
 
         ResetColor();
         LutPath = "";
@@ -495,8 +607,6 @@ public partial class MainViewModel
 
         SetMarkers(null);
         Document.Markers = [];
-        _soloed.Clear();
-        ApplySolo();
         AudioLinked = true;
     }
 
@@ -507,6 +617,14 @@ public partial class MainViewModel
     /// </summary>
     public string SaveProjectTo(string path)
     {
+        // Ctrl+S on the open project, with fully portable saves on (5.2A): a folder that holds its media. Save As to a file chosen by hand
+        // writes that file as it is.
+        if (AppSettings.Current.FullyPortableProjectSave && string.Equals(path, CurrentProjectPath, StringComparison.OrdinalIgnoreCase)
+            && !Path.GetFileNameWithoutExtension(path).EndsWith(ProjectStore.AutosaveSuffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return SavePortable(Path.GetFileNameWithoutExtension(path), path);
+        }
+
         try
         {
             ProjectStore.SaveTo(CaptureStateForSave(Path.GetFileNameWithoutExtension(path)), path);
@@ -558,9 +676,11 @@ public partial class MainViewModel
         });
         try
         {
-            var (files, missing) = await WorkScheduler.Run(new WorkSpec($"Saving the bundle {name}", WorkLane.Interactive),
-                work => Task.Run(() => ProjectBundle.Pack(state, path, progress, work.Token)), _shutdown.Token);
+            var trim = AppSettings.Current.TrimLongVodsOnBundle;
+            var (files, missing, trimmed) = await WorkScheduler.Run(new WorkSpec($"Saving the bundle {name}", WorkLane.Interactive),
+                work => Task.Run(() => ProjectBundle.Pack(state, path, progress, work.Token, trim)), _shutdown.Token);
             StatusText = $"Bundle saved: {path} ({files} file{(files == 1 ? "" : "s")} inside"
+                         + (trimmed > 0 ? $"; {trimmed} long recording{(trimmed == 1 ? "" : "s")} trimmed to what the Sequence uses, with 5 s to spare" : "")
                          + (missing > 0 ? $"; {missing} the project names {(missing == 1 ? "is" : "are")} not on this PC and stayed out)" : ")");
         }
         catch (OperationCanceledException)
@@ -648,9 +768,59 @@ public partial class MainViewModel
         }
     }
 
+    /// <summary>
+    /// A manual save as a fully portable project (5.2A, Settings: Fully portable project saves): Projects\Name\Name.hproj with every file it
+    /// reads in media\ beside it (hard-linked on the same drive, copied in the background from another), named there by relative paths; or,
+    /// when the open project is a portable folder already (carried to a USB drive, say), there. A line for the status bar.
+    /// </summary>
+    private string SavePortable(string name, string currentPath)
+    {
+        try
+        {
+            var path = PortableProject.IsPortableFolder(currentPath) && File.Exists(currentPath) ? currentPath : PortableProject.PathFor(name.Trim());
+            var state = CaptureStateForSave(Path.GetFileNameWithoutExtension(path));
+            var outcome = PortableProject.Save(state, path);
+            CrashReporter.KeepOut(CrashSummaries.FilesIn(state).Append(path));
+            CurrentProjectPath = path;
+            DevFlightRecorder.Record("project", "path " + path);
+            MarkSaved();
+            RefreshRecentProjects(Path.GetFileNameWithoutExtension(path));
+            _ = OfferToKeepDownloadsAsync();
+            if (outcome.Copying > 0)
+                _ = TellCopiedAsync(outcome);
+
+            var missing = outcome.Missing > 0 ? $"; {outcome.Missing} named file{(outcome.Missing == 1 ? " is" : "s are")} not on this PC" : "";
+            return StatusText = outcome.Copying > 0
+                ? $"Project saved: {Path.GetFileNameWithoutExtension(path)}, a portable folder: {outcome.InPlace} file{(outcome.InPlace == 1 ? "" : "s")} in its media folder, {outcome.Copying} being copied there from another drive{missing}."
+                : $"Project saved: {Path.GetFileNameWithoutExtension(path)}, a portable folder with all {outcome.InPlace} of its files in its media folder{missing}.";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            return StatusText = $"Could not save the project: {ex.Message}";
+        }
+    }
+
+    // The background copies of a portable save, told when they are done.
+    private async Task TellCopiedAsync(PortableProject.Outcome outcome)
+    {
+        try
+        {
+            await outcome.Copies;
+            StatusText = $"{Path.GetFileNameWithoutExtension(outcome.Path)}: its media folder is complete; the project now names every copy there.";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write("Portable project: the background copies failed", ex);
+        }
+    }
+
     /// <summary>Saves the current state as a project and returns a line for the status bar.</summary>
     public string SaveProject(string name)
     {
+        // Fully portable saves (5.2A): a folder of its own, its media with it.
+        if (AppSettings.Current.FullyPortableProjectSave)
+            return SavePortable(name, "");
+
         try
         {
             var state = CaptureStateForSave(name.Trim());
@@ -668,6 +838,84 @@ public partial class MainViewModel
         {
             return StatusText = $"Could not save the project: {ex.Message}";
         }
+    }
+
+    // ----- The project's thumbnail (Pass 5.2D, Services/ProjectThumbnail.cs) -----
+    // Every save carries a small picture of the Sequence at the playhead, drawn by the window's GPU engine (CaptureThumbnail). The saves
+    // are made on the window's thread and most of them at once (they return a status line), so a save waits for a fresh picture a moment
+    // at most (ThumbnailWaitMs) and otherwise takes the last one taken; a picture finished after that is kept for the next save. The
+    // capture is drawn on the engine's pump and encoded on the thread pool: nothing of it needs the window's thread the save is holding.
+
+    // The last thumbnail taken (or the opened project's own), when it was taken (Environment.TickCount64), the capture being drawn and
+    // when it was asked for, and which project they are of: bumped as another is opened, so a late picture of the last one is let go.
+    private byte[]? _thumbnail;
+    private long _thumbnailTakenAt;
+    private Task<byte[]?>? _thumbnailCapture;
+    private long _thumbnailAskedAt;
+    private int _thumbnailGeneration;
+
+    /// <summary>How long a save waits for a fresh thumbnail, ms: the engine draws one from its frame cache in a few frames.</summary>
+    private const int ThumbnailWaitMs = 300;
+
+    /// <summary>A thumbnail this young is a save's as it is (the downloads' re-save right after a save), ms.</summary>
+    private const long ThumbnailFreshMs = 1000;
+
+    /// <summary>A capture still not done after this long is given up on and asked for again (the engine stopped with it), ms.</summary>
+    private const long ThumbnailStaleMs = 10_000;
+
+    /// <summary>
+    /// The thumbnail a save writes (window's thread): a fresh one when the engine draws it within <see cref="ThumbnailWaitMs"/>, else
+    /// the last one taken. None for a view model with no window (no <see cref="CaptureThumbnail"/>).
+    /// </summary>
+    private byte[]? ThumbnailForSave()
+    {
+        if (CaptureThumbnail is not { } capture || _isBackgroundWorker)
+            return null;
+
+        var last = Volatile.Read(ref _thumbnail);
+        var now = Environment.TickCount64;
+        if (last is not null && now - Volatile.Read(ref _thumbnailTakenAt) < ThumbnailFreshMs)
+            return last;
+
+        if (_thumbnailCapture is not { IsCompleted: false } running || now - _thumbnailAskedAt > ThumbnailStaleMs)
+        {
+            running = _thumbnailCapture = KeepThumbnail(capture(), _thumbnailGeneration);
+            _thumbnailAskedAt = now;
+        }
+
+        try
+        {
+            if (running.Wait(ThumbnailWaitMs) && running.Result is { Length: > 0 } fresh)
+                return fresh;
+        }
+        catch (AggregateException ex)
+        {
+            AppLog.Write("Project thumbnail: the capture failed", ex.InnerException ?? ex);
+        }
+
+        return Volatile.Read(ref _thumbnail);
+    }
+
+    /// <summary>A capture, its picture kept for the saves after it as it comes (on the thread it comes on), unless another project was opened meanwhile.</summary>
+    private async Task<byte[]?> KeepThumbnail(Task<byte[]?> capture, int generation)
+    {
+        var jpeg = await capture.ConfigureAwait(false);
+        if (jpeg is { Length: > 0 } && generation == Volatile.Read(ref _thumbnailGeneration))
+        {
+            Volatile.Write(ref _thumbnail, jpeg);
+            Volatile.Write(ref _thumbnailTakenAt, Environment.TickCount64);
+        }
+
+        return jpeg;
+    }
+
+    /// <summary>Another project opened, or a new one started: its own thumbnail (none for a new one) is the last one taken, and a capture of the one before is let go.</summary>
+    private void TakeUpThumbnail(byte[]? thumbnail)
+    {
+        Interlocked.Increment(ref _thumbnailGeneration);
+        _thumbnailCapture = null;
+        Volatile.Write(ref _thumbnailTakenAt, 0L);
+        Volatile.Write(ref _thumbnail, thumbnail is { Length: > 0 } ? thumbnail : null);
     }
 
     /// <summary>A project opened, its videos' streams shown in the background (<see cref="UnpackProjectStreamsAsync"/>).</summary>
@@ -690,6 +938,8 @@ public partial class MainViewModel
             CrashReporter.KeepOut(filePath);
             try
             {
+                // A project of the shape before 5.2-AuditB (a main video, HandPeg 5.1) is read as it is and converted as it is put in
+                // place (RestoreStateAsync, ConvertLegacy); the window then writes it over its file (WriteBackConverted).
                 state = ProjectStore.Load(filePath);
             }
             catch (NewerProjectFormatException newer)
@@ -731,7 +981,47 @@ public partial class MainViewModel
 
         EditingJob = null;
         RefreshRecentProjects(name);
-        return OpenShowingCaptionsAsync(state, $"{opened}: {name}");
+        return OpenThenWriteBackAsync(state, $"{opened}: {name}", CurrentProjectPath, ProjectStore.PeekHeader(filePath)?.WrittenBy);
+    }
+
+    /// <summary>
+    /// The project put in place (<see cref="OpenShowingCaptionsAsync"/>); one converted from 5.1's shape as it was (<see cref="ConvertedFrom"/>)
+    /// is then written over its own file, when the window asks for that (<see cref="SavesConvertedProjects"/>) and the project has a file
+    /// Save writes to (<paramref name="path"/>: not an autosave, not a newer format's).
+    /// </summary>
+    /// <param name="writtenBy">The HandPeg the file says wrote it ("HandPeg 5.1.0"), for the status line.</param>
+    private async Task OpenThenWriteBackAsync(ProjectState state, string doneMessage, string path, string? writtenBy)
+    {
+        await OpenShowingCaptionsAsync(state, doneMessage);
+        if (ConvertedFrom is { } shape && SavesConvertedProjects && !_isBackgroundWorker && path.Length > 0
+            && string.Equals(path, CurrentProjectPath, StringComparison.OrdinalIgnoreCase))
+        {
+            WriteBackConverted(path, $"{writtenBy ?? "a HandPeg from before 5.2"} ({shape})");
+        }
+    }
+
+    /// <summary>
+    /// A project converted from 5.1's shape as it was opened, written over its own file in this version's shape, under the same name
+    /// (5.2E, the user's answer: the old file is not kept beside it). Written whole beside it and moved over it
+    /// (ProjectStore.SaveTo), so the file is either the 5.1 project or the converted one, never half of each; a failure leaves the
+    /// 5.1 file as it was, and Save writes the converted project later. Always ProjectStore.SaveTo, even with fully portable saves on:
+    /// the converted project replaces that very file. A line for the status bar.
+    /// </summary>
+    private string WriteBackConverted(string path, string from)
+    {
+        var name = Path.GetFileNameWithoutExtension(path);
+        try
+        {
+            ProjectStore.SaveTo(CaptureStateForSave(name), path);
+            MarkSaved();
+            AppLog.Write($"The converted project was written over its file in 5.2's shape: {path} (was {from})");
+            return StatusText = $"Project loaded and converted from {from}; saved over its file in this version's shape: {name}";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            AppLog.Write($"The converted project could not be written over its file: {path}", ex);
+            return StatusText = $"Project loaded and converted from {from}, but it could not be saved over its file ({ex.Message}): Save writes it.";
+        }
     }
 
     /// <summary>
@@ -766,31 +1056,6 @@ public partial class MainViewModel
         return index >= 0 ? IFrames[index] : null;
     }
 
-    /// <summary>
-    /// A stretch marked by hand (a right-drag along the timeline, or typed in): every unlocked track is split at its start
-    /// and its end (4.3C: what 4.2.0 made a cut segment of), so it can be deleted, moved or kept on its own. With snapping
-    /// on it grows to the surrounding I-frames ("prefer longer"). Returns an error message, or null on success.
-    /// </summary>
-    public string? AddManualSegment(double startSeconds, double stopSeconds)
-    {
-        if (SnapToIFrames && IFrames.Count > 0)
-        {
-            // Half a frame of slack: a timecode cannot name an I-frame's timestamp more exactly than that.
-            var tolerance = 0.5 / SourceFrameRate;
-            startSeconds = GetIFrameFloor(startSeconds, tolerance) ?? startSeconds;
-            stopSeconds = GetIFrameCeiling(stopSeconds, tolerance) ?? stopSeconds;
-        }
-
-        var duration = SequenceSeconds;
-        if (duration > 0)
-            stopSeconds = Math.Min(stopSeconds, duration);
-        if (stopSeconds <= startSeconds)
-            return "The stop point has to come after the start point.";
-        if (duration > 0 && startSeconds >= duration)
-            return "The start point is past the end of the video.";
-
-        if (!SplitAt(startSeconds, stopSeconds))
-            return StatusText;
-        return null;
-    }
+    // (A stretch marked by a right-drag along the Sequence Overview Scrubber, every track split at both its ends, went with the
+    // cut list's last remnant in 5.2-Arm64AndNpu: a clip is split by the razor, or at a timecode typed in.)
 }

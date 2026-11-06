@@ -2,7 +2,7 @@
 ok: the Explosion lands as an adjustment clip
 ok: at the playhead
 ok: as long as it runs
-ok: with its card on it, to tune
+ok: with its effect on it, to tune
 ok: one clip more
 ok: Undo takes it away in one step
 ok: what stays on gets five seconds

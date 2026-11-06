@@ -19,12 +19,18 @@ namespace HandPegApp.Compositor;
 /// driver with a chroma or stride fault shows here);</item>
 /// <item>each card's bus: a frame read back and one uploaded (MB/s); with two cards, decoding on the second and handing
 /// the frames to the first, against decoding on the first;</item>
-/// <item>the four roles that follows from it.</item>
+/// <item>the four roles that follows from it;</item>
+/// <item>(5.2-Arm64AndNpu) whether each card shares the computer's memory, the codecs Media Foundation decodes here and those the
+/// compositor's FFmpeg fallback decodes instead (HandPeg.exe --hw-benchmark &lt;clip&gt; --ffmpeg &lt;path&gt;: its decoders asked
+/// for), and the NPUs (DXCore), nothing measured on them yet.</item>
 /// </list>
 /// </summary>
 public static unsafe class HardwareBenchmark
 {
     public const string Argument = "--hw-benchmark";
+
+    // The FFmpeg the app uses (--ffmpeg), for the codecs its fallback decodes; empty when none was given.
+    private static string _ffmpeg = "";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly double[] SeekPoints = [0.37, 1.13, 0.71, 1.41, 0.05, 0.93];
@@ -37,6 +43,7 @@ public static unsafe class HardwareBenchmark
     {
         _ = CompositorWorker.SetErrorMode(0x0001 | 0x0002);
         var clip = args.Length > 1 ? args[1] : "";
+        _ffmpeg = CompositorWorker.OptionValue(args, CompositorWorker.FfmpegOption);
         _out = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
         var exitCode = 0;
         var thread = new Thread(() => exitCode = Measure(clip)) { Name = "Benchmark" };
@@ -56,7 +63,16 @@ public static unsafe class HardwareBenchmark
             _ = Com.CoInitializeEx(0, Com.CoInitMultithreaded);
             result.Adapters = EnumerateAdapters();
             result.Fingerprint = GpuAdapters.Fingerprint;
-            Report("adapters", -1, 0.1, $"{result.Adapters.Count} graphics card(s)", result);
+            result.Npus = [.. NpuAdapters.Enumerate().Select(n => new HardwareBenchmarkNpu
+            {
+                Name = n.Name, Vendor = n.Vendor, VendorId = n.VendorId, DeviceId = n.DeviceId, DriverVersion = n.DriverVersion,
+                SharedSystemMemoryMb = n.SharedMemoryMb, GenericMl = n.GenericMl, UsedFor = NpuAdapters.UsedFor,
+            })];
+            result.MediaFoundationDecodeCodecs = MediaFoundationDecoders();
+            result.FfmpegFallbackCodecs = FfmpegFallbackCodecs(result.MediaFoundationDecodeCodecs);
+            Report("adapters", -1, 0.1, result.Npus.Count > 0
+                ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{result.Adapters.Count} graphics card(s), {result.Npus.Count} NPU(s)")
+                : $"{result.Adapters.Count} graphics card(s)", result);
             if (!File.Exists(clip))
                 throw new FileNotFoundException("The benchmark clip is missing.", clip);
 
@@ -137,7 +153,7 @@ public static unsafe class HardwareBenchmark
 
     // ----- The cards -----
 
-    private static List<HardwareBenchmarkAdapter> EnumerateAdapters()
+    internal static List<HardwareBenchmarkAdapter> EnumerateAdapters()
     {
         var adapters = new List<HardwareBenchmarkAdapter>();
         var factory = Dxgi.CreateFactory();
@@ -162,6 +178,7 @@ public static unsafe class HardwareBenchmark
                         Luid = desc.Luid,
                         DedicatedVideoMemoryMb = (long)(desc.DedicatedVideoMemory / (1024 * 1024)),
                         SharedSystemMemoryMb = (long)(desc.SharedSystemMemory / (1024 * 1024)),
+                        UnifiedMemory = MemoryTier.IsUnifiedMemory(DxCore.IsIntegratedCard(desc.Luid), (long)desc.DedicatedVideoMemory, (long)desc.SharedSystemMemory),
                         Vendor = desc.VendorId switch { 0x1002 => "AMD", 0x8086 => "Intel", 0x10DE => "NVIDIA", 0x5143 or 0x4D4F4351 => "Qualcomm", 0x1414 => "Microsoft", _ => $"0x{desc.VendorId:X4}" },
                     };
                     entry.DecodeCodecs = DecodeProfiles(adapter);
@@ -260,19 +277,11 @@ public static unsafe class HardwareBenchmark
                 foreach (var (subtype, codec) in new[] { (MfGuids.H264, "H.264"), (MfGuids.Hevc, "HEVC"), (MfGuids.Av1, "AV1") })
                 {
                     var output = new MftRegisterTypeInfo { MajorType = MfGuids.Video, Subtype = subtype };
-                    nint* activates;
-                    uint count;
-                    if (Mf.MFTEnum2(MfGuids.VideoEncoderCategory, Mf.EnumHardware | Mf.EnumSortAndFilter, null, &output, attributes, &activates, &count) < 0)
-                        continue;
-                    if (count > 0 && !adapter.EncodeCodecs.Contains(codec))
-                        adapter.EncodeCodecs.Add(codec);
-                    for (var i = 0; i < count; i++)
+                    if (CountMfts(MfGuids.VideoEncoderCategory, Mf.EnumHardware | Mf.EnumSortAndFilter, null, &output, attributes) > 0
+                        && !adapter.EncodeCodecs.Contains(codec))
                     {
-                        var activate = activates[i];
-                        Com.Release(ref activate);
+                        adapter.EncodeCodecs.Add(codec);
                     }
-
-                    Com.CoTaskMemFree((nint)activates);
                 }
             }
             catch (GpuException)
@@ -284,6 +293,126 @@ public static unsafe class HardwareBenchmark
                 Com.Release(ref attributes);
             }
         }
+    }
+
+    private static readonly (Guid Subtype, string Codec)[] DecodedCodecs =
+        [(MfGuids.H264, "H.264"), (MfGuids.Hevc, "HEVC"), (MfGuids.Vp9, "VP9"), (MfGuids.Av1, "AV1")];
+
+    /// <summary>
+    /// The codecs Media Foundation has a decoder for (MFTEnumEx over every kind: the card's, the processor's, the Store's
+    /// extensions): what the compositor's decoders can open without FFmpeg. A card's own decoder profiles (DecodeProfiles) are
+    /// not enough: Windows reaches the card's HEVC decoder only through the HEVC Video Extensions.
+    /// </summary>
+    internal static List<string> MediaFoundationDecoders()
+    {
+        var codecs = new List<string>();
+        try
+        {
+            MediaFoundation.Start();
+        }
+        catch (Exception ex) when (ex is GpuException or DllNotFoundException or EntryPointNotFoundException)
+        {
+            return codecs;
+        }
+
+        foreach (var (subtype, codec) in DecodedCodecs)
+        {
+            if (CountDecoders(subtype) > 0)
+                codecs.Add(codec);
+        }
+
+        return codecs;
+    }
+
+    /// <summary>How many Media Foundation decoders of every kind take <paramref name="subtype"/> (-1 when the call fails). Media Foundation started.</summary>
+    internal static int CountDecoders(Guid subtype)
+    {
+        var input = new MftRegisterTypeInfo { MajorType = MfGuids.Video, Subtype = subtype };
+        return CountMfts(MfGuids.VideoDecoderCategory, Mf.EnumAll | Mf.EnumSortAndFilter, &input, null, 0);
+    }
+
+    /// <summary>
+    /// How many transforms MFTEnumEx (no <paramref name="attributes"/>) or MFTEnum2 lists, each let go and the array freed; -1 when the
+    /// call fails. The array is null and the count 0 before each call, and only an array the call gave is freed. Before, a local
+    /// declared in the loop kept the array freed on the pass before, and was freed again by a pass whose call left it as it was: a
+    /// heap corruption (0xC0000374) in the hardware benchmark every time on a Windows 11 IoT LTSC PC (no HEVC, VP9 or AV1 decoder), gone
+    /// with this (5.2E). Windows on ARM's MFTEnumEx nulls the pointer when it finds nothing.
+    /// </summary>
+    private static int CountMfts(Guid category, uint flags, MftRegisterTypeInfo* input, MftRegisterTypeInfo* output, nint attributes)
+    {
+        nint* activates = null;
+        uint count = 0;
+        var result = attributes == 0
+            ? Mf.MFTEnumEx(category, flags, input, output, &activates, &count)
+            : Mf.MFTEnum2(category, flags, input, output, attributes, &activates, &count);
+        if (activates is null)
+            return result < 0 ? -1 : 0;
+
+        for (var i = 0; i < count; i++)
+        {
+            var activate = activates[i];
+            Com.Release(ref activate);
+        }
+
+        Com.CoTaskMemFree((nint)activates);
+        return result < 0 ? -1 : (int)count;
+    }
+
+    // FFmpeg's decoders for each codec (ffmpeg -decoders): its own, and dav1d for AV1 (FFmpeg's own AV1 decoder needs a card).
+    private static readonly (string Codec, string[] Decoders)[] FfmpegDecoders =
+        [("H.264", new[] { "h264" }), ("HEVC", new[] { "hevc" }), ("VP9", new[] { "vp9", "libvpx-vp9" }), ("AV1", new[] { "libdav1d", "libaom-av1" })];
+
+    /// <summary>
+    /// The codecs Media Foundation has no decoder for that the compositor's FFmpeg fallback decodes (FfmpegVideoDecoder), as the
+    /// FFmpeg the app uses lists its decoders; empty when none was given, it is not there, or it will not say.
+    /// </summary>
+    private static List<string> FfmpegFallbackCodecs(List<string> mediaFoundation)
+    {
+        var codecs = new List<string>();
+        if (_ffmpeg.Length == 0 || !File.Exists(_ffmpeg))
+            return codecs;
+
+        string listed;
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo(_ffmpeg, "-hide_banner -decoders")
+            {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            });
+            if (process is null)
+                return codecs;
+            JobObjects.Assign(process.Id, ProcessClass.Foreground, efficiencyMode: false);
+            var errors = process.StandardError.ReadToEndAsync();
+            listed = process.StandardOutput.ReadToEnd();
+            if (!process.WaitForExit(10_000))
+            {
+                process.Kill();
+                return codecs;
+            }
+
+            _ = errors.Wait(1000);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException or AggregateException)
+        {
+            return codecs;
+        }
+
+        // One decoder a line: " V....D hevc   HEVC (High Efficiency Video Coding)".
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var line in listed.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var parts = line.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && parts[0].Length == 6 && parts[0][0] == 'V')
+                names.Add(parts[1]);
+        }
+
+        foreach (var (codec, decoders) in FfmpegDecoders)
+        {
+            if (!mediaFoundation.Contains(codec) && decoders.Any(names.Contains))
+                codecs.Add(codec);
+        }
+
+        return codecs;
     }
 
     // ----- Decoding -----

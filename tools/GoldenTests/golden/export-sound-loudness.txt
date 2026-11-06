@@ -1,0 +1,8 @@
+# The loudness meter (BS.1770-4) the export normalizes by: reference tones at their known loudness, gating, the peak.
+  997 Hz at 0 dBFS in one channel: -3.01 LUFS (-3.01); at -20 dBFS in both: -20.00 (-20.00); in a surround channel: -21.52 (-21.50); in the LFE: nothing; half silence: -20.17
+ok: a full-scale tone in one channel is -3.01 LUFS
+ok: a -20 dBFS tone in both is -20 LUFS
+ok: a surround channel weighs 1.41 (+1.5 dB)
+ok: the LFE is left out
+ok: silence is gated out (the three blocks across the edge count, as BS.1770 counts them: -20.17)
+ok: the sample peak

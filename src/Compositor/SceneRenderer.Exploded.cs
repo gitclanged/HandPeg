@@ -114,10 +114,6 @@ internal sealed unsafe partial class SceneRenderer
 
         var amount = camera.Amount;
         _gpu.Context.ClearRenderTargetView(_view3D.Rtv, 0, 0, 0, raw ? 0 : 1);
-
-        // The Studio Stage (5.1-GpuFx), the editor's Extra Animations setting: never on the way into or out of the flat picture's first steps, nothing to see there.
-        var stage = !raw && (header.Flags & FrameSceneHeader.FlagStudioStage) != 0 && amount > 0.01f;
-        _stageLight = stage ? AmbientLight() : 0;
         if (!raw)
             DrawBackdrop(amount, outputWidth, outputHeight);
 
@@ -125,10 +121,10 @@ internal sealed unsafe partial class SceneRenderer
         // spread every plane is the same distance away, and the stack is drawn as the flat picture is).
         var count = SortPlanes(layers, camera);
         LayOutPlanes(layers, count, canvasWidth, canvasHeight, fit);
-        var floor = stage ? FloorOf(camera) : float.NaN;
-        var lightPlane = stage ? LightPlane(count) : -1;
-        if (stage)
-            DrawStage(layers, camera, floor, amount, outputWidth, outputHeight);
+
+        // The depth rails (5.2): never on the way into or out of the flat picture's first steps, nothing to see there.
+        if (!raw && (header.Flags & FrameSceneHeader.FlagDepthRails) != 0 && amount > 0.01f)
+            DrawDepthRails(layers, camera, amount, outputWidth, outputHeight);
         DrawCanvasFrame(layers, camera, header, amount, outputWidth, outputHeight);
 
         var (canvas, canvasCopy) = (_canvas, _canvasCopy);
@@ -144,23 +140,25 @@ internal sealed unsafe partial class SceneRenderer
                     continue;
                 }
 
-                // The layer alone, onto a clear plane of its own: the flat path's canvas is this plane while it draws.
+                // The layer alone, onto a clear plane of its own: the flat path's canvas is this plane while it draws. A tilted layer
+                // is drawn flat onto it, and its plane is tilted instead (5.2B, the user's Q4: TiltsInDepth).
                 var plane = _planeLayouts[n];
                 var target = plane.Empty ? null : plane.Blends ? _gpu.Textures.Rent(plane.TexelsX, plane.TexelsY) : _planeTarget;
-                if (target is not null)
+                if (target is not null && TiltsInDepth(layer))
+                {
+                    var flat = layer;
+                    (flat.TiltX, flat.TiltY) = (0, 0);
+                    DrawAlone(flat, plane, target, canvasWidth, canvasHeight);
+                }
+                else if (target is not null)
+                {
                     DrawAlone(layer, plane, target, canvasWidth, canvasHeight);
+                }
 
                 // Whatever a pass of the layer's own left bound, the planes' passes start from the frame's common state (the
                 // outline reads the border sampler and the shared constants): nothing an effect does reaches the outline.
                 _gpu.BindCommon();
-                if (stage && target is not null)
-                {
-                    if (n == lightPlane)
-                        GatherAmbient(target, plane);
-                    DrawReflection(target, plane, camera, z, floor, amount, outputWidth, outputHeight);
-                }
-
-                DrawPlane(target, plane, camera, z, amount, outputWidth, outputHeight);
+                DrawPlane(target, plane, layer, camera, z, amount, outputWidth, outputHeight);
 
                 // Amber round the clip selected, fainter round another clip of its track playing while it is not (its plane
                 // never blinks off at a cut), else cyan round a mask's or a key's silhouette.
@@ -169,7 +167,7 @@ internal sealed unsafe partial class SceneRenderer
                     : (layer.Flags & GpuLayerDescriptor.FlagSelectedTrack) != 0 ? SelectedOutline with { W = SelectedOutline.W * SelectedTrackStrength }
                     : HasMatte(layer) ? MaskOutline : default;
                 if (target is not null && outline.W > 0)
-                    DrawOutline(target, plane, camera, z, outline, amount, outputWidth, outputHeight);
+                    DrawOutline(target, plane, layer, camera, z, outline, amount, outputWidth, outputHeight);
 
                 // The layer selected (a click, or Ctrl + the wheel through the stack) also gets its box in the accent, so
                 // which one a drag will move is never in doubt (5.0-Verify, the user's bug 5).
@@ -388,7 +386,7 @@ internal sealed unsafe partial class SceneRenderer
                 return (0, 0, canvasWidth, canvasHeight);
             if (packet.Slot == GpuShaderSlot.DropShadow)
                 reach = Math.Max(reach, Math.Clamp(packet.P0, 0, 100) + 2 * Math.Clamp(packet.P2, 0, 50) + 2);
-            if (packet.Slot == GpuShaderSlot.RimGlass && packet.P7 < 0.5f)
+            if (packet.Slot == GpuShaderSlot.RimGlass && packet.P7 < 0.5f && !GpuEffectPacket.IsPulsePacket(packet))
                 reach = Math.Max(reach, Math.Max(packet.P3, 0) / 2 + Math.Max(packet.P4, 0) * 1.5f + 2);
         }
 
@@ -586,66 +584,16 @@ internal sealed unsafe partial class SceneRenderer
         var constants = default(PassConstants);
         constants.Color = new Vector4(0.085f * amount, 0.09f * amount, 0.105f * amount, 1);
         constants.Params3 = new Vector4(0.025f * amount, 0.027f * amount, 0.033f * amount, 1);
-        constants.Params2 = new Vector4(_stageLight != 0 ? 0.3f * amount : 0, 0, 0, 0);
         constants.WholeUv();
-        Draw("PSExplodedBackdrop", null, _view3D!.Rtv, outputWidth, outputHeight, ref constants, blend: false, aux: _stageLight);
+        Draw("PSExplodedBackdrop", null, _view3D!.Rtv, outputWidth, outputHeight, ref constants, blend: false);
     }
 
-    // ----- The Studio Stage (5.1-GpuFx) -----
-
-    // The light's texel (and the one it is eased from), and the view of the one to read this frame (0: the plain view).
-    private GpuTexture? _ambient, _ambientNext;
-    private nint _stageLight;
-    private bool _ambientFresh;
-
-    /// <summary>The floor is this far under the canvas's lower edge, as a share of its height.</summary>
-    private const float FloorDrop = 0.06f;
-
-    /// <summary>How far the floor runs round the stack, in canvases.</summary>
-    private const float FloorReach = 3.2f;
-
-    private nint AmbientLight()
-    {
-        _ambient ??= _gpu.CreateTexture(1, 1, DxgiFormat.R16G16B16A16Float, renderTarget: true);
-        _ambientNext ??= _gpu.CreateTexture(1, 1, DxgiFormat.R16G16B16A16Float, renderTarget: true);
-        return _ambient.Srv;
-    }
-
-    /// <summary>The plane the light is taken from: the largest, nearest the back of those as large, which is nearly always the picture.</summary>
-    private int LightPlane(int count)
-    {
-        var (best, largest) = (-1, 0f);
-        for (var n = 0; n < count; n++)
-        {
-            if (!_planeLayouts[n].Empty && _planeLayouts[n].W * _planeLayouts[n].H > largest * 1.05f)
-                (best, largest) = (n, _planeLayouts[n].W * _planeLayouts[n].H);
-        }
-
-        return best;
-    }
-
-    /// <summary>The light eased toward this plane's main colour: a tenth of the way a frame while it plays, so a cut does not flash the room; faster paused, where few frames are drawn; at once the first time.</summary>
-    private void GatherAmbient(GpuTexture target, in PlaneLayout plane)
-    {
-        var constants = default(PassConstants);
-        constants.Color = new Vector4(0, 0, 0, !_ambientFresh ? 1 : _playing ? 0.1f : 0.3f);
-        constants.Params3 = new Vector4(plane.TexelsX / (float)target.Width, plane.TexelsY / (float)target.Height, 0, 0);
-        constants.WholeUv();
-        Draw("PSAmbientGather", target, _ambientNext!.Rtv, 1, 1, ref constants, blend: false, aux: _ambient!.Srv);
-        (_ambient, _ambientNext) = (_ambientNext, _ambient);
-        _stageLight = _ambient.Srv;
-        _ambientFresh = true;
-    }
-
-    /// <summary>Where the floor lies (world y): under the canvas, or under a plane hung lower; NaN (no floor) when the camera is under it.</summary>
-    private static float FloorOf(in ExplodedCamera camera)
-    {
-        var floor = camera.CanvasHeight * (1 + FloorDrop);
-        return camera.Position.Y < floor ? floor : float.NaN;
-    }
-
-    /// <summary>The floor, and the guides running back through the stack from the canvas's corners.</summary>
-    private void DrawStage(ReadOnlySpan<GpuLayerDescriptor> layers, in ExplodedCamera camera, float floor, float amount, int outputWidth, int outputHeight)
+    /// <summary>
+    /// The depth rails (5.2): four hairlines running back through the stack from the canvas's corners, so how deep the stack
+    /// goes reads at a glance. Four quads; nothing is read back and no plane is drawn twice (the 5.1 Studio Stage's mirror
+    /// floor, reflections and gathered light are gone: Pass 5.2-HotfixAndDeBloat).
+    /// </summary>
+    private void DrawDepthRails(ReadOnlySpan<GpuLayerDescriptor> layers, in ExplodedCamera camera, float amount, int outputWidth, int outputHeight)
     {
         var (near, far) = (0f, 0f);
         foreach (ref readonly var layer in layers)
@@ -657,20 +605,6 @@ internal sealed unsafe partial class SceneRenderer
         }
 
         far -= camera.Spread * 0.5f;
-        if (float.IsFinite(floor))
-        {
-            var (width, depth) = (camera.CanvasWidth * FloorReach, camera.CanvasWidth * FloorReach);
-            var (x, z) = (camera.CanvasWidth / 2f - width / 2, (near + far) / 2 - depth / 2);
-            var constants = default(PassConstants);
-            constants.Transform = Matrix(camera.FloorMatrix(x, z, width, depth, floor));
-            constants.WholeUv();
-            constants.Color = new Vector4(0.012f, 0.013f, 0.016f, amount * 0.96f);
-            constants.Params2 = new Vector4(24, 24, 0.35f, 0);
-            constants.Params3 = new Vector4(1 - MathF.Abs(camera.Back.Y), 0, 0, 0);
-            constants.Params4 = new Vector4(1, 1, 0, (float)_time);
-            StagePlane("PSExplodedFloor", null, ref constants, outputWidth, outputHeight);
-        }
-
         if (near - far < 1)
             return;
 
@@ -684,35 +618,8 @@ internal sealed unsafe partial class SceneRenderer
             var from = new System.Numerics.Vector3(x, y, far - camera.Spread * 0.5f);
             var to = new System.Numerics.Vector3(x, y, near + camera.Spread * 0.5f);
             guide.Transform = Matrix(camera.LineMatrix(from, to, 2.5f));
-            StagePlane("PSExplodedLine", null, ref guide, outputWidth, outputHeight);
+            Plane("PSExplodedLine", null, ref guide, outputWidth, outputHeight);
         }
-    }
-
-    /// <summary>A plane's mirror image in the floor, drawn with the plane so the painter's order keeps them both right.</summary>
-    private void DrawReflection(GpuTexture target, in PlaneLayout plane, in ExplodedCamera camera, float z, float floor, float amount, int outputWidth, int outputHeight)
-    {
-        if (!float.IsFinite(floor))
-            return;
-
-        var (width, height) = ((float)target.Width, (float)target.Height);
-        var constants = default(PassConstants);
-        constants.Transform = Matrix(camera.MirroredPlaneMatrix(0, 0, camera.CanvasWidth, camera.CanvasHeight, z, floor));
-        (constants.U0, constants.V0) = (-plane.OriginX / width, -plane.OriginY / height);
-        (constants.U1, constants.V1) = ((camera.CanvasWidth * plane.Scale - plane.OriginX) / width, (camera.CanvasHeight * plane.Scale - plane.OriginY) / height);
-        constants.Params2 = new Vector4(0.55f, 0.32f * amount, 0, 0);
-        constants.Params3 = new Vector4(plane.TexelsX / width, plane.TexelsY / height, 0, 0);
-        constants.Params4 = new Vector4(1, 1, 0, (float)_time);
-        StagePlane("PSExplodedReflection", target, ref constants, outputWidth, outputHeight);
-    }
-
-    /// <summary><see cref="Plane"/> with the stage's light bound.</summary>
-    private void StagePlane(string shader, GpuTexture? input, ref PassConstants constants, int outputWidth, int outputHeight)
-    {
-        if (input is not null)
-            constants.Sizes(input.Width, input.Height, outputWidth, outputHeight);
-        else
-            constants.Sizes(outputWidth, outputHeight, outputWidth, outputHeight);
-        Submit("VSExploded", shader, input?.Srv ?? 0, _stageLight, 0, _view3D!.Rtv, outputWidth, outputHeight, ref constants, blend: true, vertices: 4, clipToFrame: false);
     }
 
     /// <summary>
@@ -747,10 +654,10 @@ internal sealed unsafe partial class SceneRenderer
     /// onto its part of the canvas; none for an empty plane), and a hairline round the canvas (by how far the view is out of
     /// the flat picture).
     /// </summary>
-    private void DrawPlane(GpuTexture? target, in PlaneLayout plane, in ExplodedCamera camera, float z, float amount, int outputWidth, int outputHeight)
+    private void DrawPlane(GpuTexture? target, in PlaneLayout plane, in GpuLayerDescriptor layer, in ExplodedCamera camera, float z, float amount, int outputWidth, int outputHeight)
     {
         var constants = default(PassConstants);
-        constants.Transform = Matrix(camera.PlaneMatrix(0, 0, camera.CanvasWidth, camera.CanvasHeight, 0, 0.5f, 0.5f, z));
+        constants.Transform = Matrix(OnPlane(camera, layer, 0, 0, camera.CanvasWidth, camera.CanvasHeight, z));
         if (target is not null)
         {
             var (width, height) = ((float)target.Width, (float)target.Height);
@@ -765,13 +672,10 @@ internal sealed unsafe partial class SceneRenderer
         }
 
         constants.Color = new Vector4(0.8f, 0.86f, 1f, 0.22f * amount);
-        constants.Params2 = new Vector4(1, _stageLight != 0 ? 0.4f * amount : 0, 0, 0);
+        constants.Params2 = new Vector4(1, 0, 0, 0);
         constants.Params4 = new Vector4(1, 1, 0, (float)_time);
         _timer.Begin((int)GpuShaderSlot.TransformComposite);
-        if (_stageLight != 0)
-            StagePlane("PSExplodedPlane", target, ref constants, outputWidth, outputHeight);
-        else
-            Plane("PSExplodedPlane", target, ref constants, outputWidth, outputHeight);
+        Plane("PSExplodedPlane", target, ref constants, outputWidth, outputHeight);
         _timer.End();
     }
 
@@ -779,7 +683,8 @@ internal sealed unsafe partial class SceneRenderer
     /// The neon outline round a plane's silhouette: on its picture's part of the canvas grown by 2 % of the canvas's width
     /// each way, so the glow has room outside it (and only there: the rest of the canvas has no edge to show).
     /// </summary>
-    private void DrawOutline(GpuTexture target, in PlaneLayout plane, in ExplodedCamera camera, float z, Vector4 color, float amount, int outputWidth, int outputHeight)
+    private void DrawOutline(GpuTexture target, in PlaneLayout plane, in GpuLayerDescriptor layer, in ExplodedCamera camera, float z, Vector4 color, float amount,
+        int outputWidth, int outputHeight)
     {
         var scale = Math.Max(plane.Scale, 1e-4f);
         var room = 0.02f * camera.CanvasWidth;
@@ -788,7 +693,7 @@ internal sealed unsafe partial class SceneRenderer
         var (width, height, texels) = ((float)target.Width, (float)target.Height, room * scale);
 
         var constants = default(PassConstants);
-        constants.Transform = Matrix(camera.PlaneMatrix(x, y, w, h, 0, 0.5f, 0.5f, z));
+        constants.Transform = Matrix(OnPlane(camera, layer, x, y, w, h, z));
         (constants.U0, constants.V0) = (-texels / width, -texels / height);
         (constants.U1, constants.V1) = ((plane.TexelsX + texels) / width, (plane.TexelsY + texels) / height);
         constants.Params3 = new Vector4(plane.TexelsX / width, plane.TexelsY / height, 0, 0);
@@ -802,7 +707,7 @@ internal sealed unsafe partial class SceneRenderer
     private void DrawGlass(in GpuLayerDescriptor layer, in ExplodedCamera camera, float z, float amount, int outputWidth, int outputHeight)
     {
         var constants = default(PassConstants);
-        constants.Transform = Matrix(camera.PlaneMatrix(layer.X, layer.Y, layer.Width, layer.Height, layer.Rotation, layer.AnchorX, layer.AnchorY, z));
+        constants.Transform = Matrix(BoxOnPlane(camera, layer, z));
         constants.WholeUv();
         constants.Color = new Vector4(0.55f, 0.78f, 1f, 0.08f * amount);
         constants.Params2 = new Vector4(1.25f, 0, 0, 0);
@@ -816,7 +721,7 @@ internal sealed unsafe partial class SceneRenderer
     private void DrawSelectedBox(in GpuLayerDescriptor layer, in ExplodedCamera camera, float z, float amount, int outputWidth, int outputHeight)
     {
         var constants = default(PassConstants);
-        constants.Transform = Matrix(camera.PlaneMatrix(layer.X, layer.Y, layer.Width, layer.Height, layer.Rotation, layer.AnchorX, layer.AnchorY, z));
+        constants.Transform = Matrix(BoxOnPlane(camera, layer, z));
         constants.WholeUv();
         constants.Color = SelectedOutline with { W = 0.06f * amount };
         constants.Params2 = new Vector4(2.5f, 0, 0, 0);
@@ -824,6 +729,30 @@ internal sealed unsafe partial class SceneRenderer
         constants.Params4 = new Vector4(1, 1, 0, (float)_time);
         Plane("PSExplodedFrame", null, ref constants, outputWidth, outputHeight);
     }
+
+    /// <summary>
+    /// Whether a layer's plane is turned out of the stack (5.2B, the user's Q4): a tilted layer (its Pitch and Yaw, GpuLayerDescriptor.TiltX
+    /// and TiltY) is drawn flat onto its plane, and the plane is tilted about the layer's anchor as its box is in the flat picture, seen by the
+    /// 3D view's own camera. A blurred background covers the frame whatever its clip does, so a layer that draws one keeps its picture's flat
+    /// perspective on an upright plane, as before.
+    /// </summary>
+    internal static bool TiltsInDepth(in GpuLayerDescriptor layer) =>
+        (layer.TiltX != 0 || layer.TiltY != 0) && (layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) == 0 && layer.BlurFillRadius <= 0;
+
+    /// <summary>A part of the canvas (canvas pixels) at a plane's depth: upright, or turned with its layer's plane about the layer's anchor.</summary>
+    private static System.Numerics.Matrix4x4 OnPlane(in ExplodedCamera camera, in GpuLayerDescriptor layer, float x, float y, float w, float h, float z)
+    {
+        if (!TiltsInDepth(layer) || w == 0 || h == 0)
+            return camera.PlaneMatrix(x, y, w, h, 0, 0.5f, 0.5f, z);
+
+        var (pivotX, pivotY) = (layer.X + layer.AnchorX * layer.Width, layer.Y + layer.AnchorY * layer.Height);
+        return camera.PlaneMatrix(x, y, w, h, 0, (pivotX - x) / w, (pivotY - y) / h, z, layer.TiltX, layer.TiltY);
+    }
+
+    /// <summary>A layer's own box on its plane, turned about its anchor, and tilted with the plane when that is (<see cref="TiltsInDepth"/>).</summary>
+    private static System.Numerics.Matrix4x4 BoxOnPlane(in ExplodedCamera camera, in GpuLayerDescriptor layer, float z) => TiltsInDepth(layer)
+        ? camera.PlaneMatrix(layer.X, layer.Y, layer.Width, layer.Height, layer.Rotation, layer.AnchorX, layer.AnchorY, z, layer.TiltX, layer.TiltY)
+        : camera.PlaneMatrix(layer.X, layer.Y, layer.Width, layer.Height, layer.Rotation, layer.AnchorX, layer.AnchorY, z);
 
     /// <summary>A quad placed in perspective (VSExploded) over the 3D picture, premultiplied over; the input in t0.</summary>
     private void Plane(string shader, GpuTexture? input, ref PassConstants constants, int outputWidth, int outputHeight)
@@ -851,9 +780,6 @@ internal sealed unsafe partial class SceneRenderer
         _view3D = null;
         _planeTarget?.Dispose();
         _planeTarget = null;
-        _ambient?.Dispose();
-        _ambientNext?.Dispose();
-        (_ambient, _ambientNext, _ambientFresh, _stageLight) = (null, null, false, 0);
         (_planeTargetOversized, _budgetStep) = (0, 0);
     }
 }

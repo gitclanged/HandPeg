@@ -159,7 +159,7 @@ internal sealed unsafe partial class GpuViewportControl : IDisposable
         {
             Com.Release(ref _swapChain);
 
-            // Destroyed for real (the window free for another swap chain, or for libmpv) once the context lets go of it.
+            // Destroyed for real (the window free for another swap chain) once the context lets go of it.
             if (_device is { } device && device.Device.GetDeviceRemovedReason() >= 0)
             {
                 device.Context.ClearState();

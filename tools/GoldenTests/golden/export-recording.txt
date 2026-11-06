@@ -1,18 +1,40 @@
 # A clip of an MPEG-TS recording (its clock starts at 1.4 s), cut into and played at double speed, with its sound.
-# reads the cuts list: no; the chapters list: no
+# 1920 x 1080, 3600 frames at 30/1, yuv420p piped; the chapters list: no
 
 command:
   ffmpeg
   -hide_banner
   -y
+  -f
+  rawvideo
+  -pix_fmt
+  yuv420p
+  -video_size
+  1920x1080
+  -framerate
+  30/1
+  -color_range
+  tv
+  -colorspace
+  bt709
+  -color_primaries
+  bt709
+  -color_trc
+  bt709
   -i
-  D:/media/main.mp4
-  -filter_complex <graph 1>
+  pipe:0
+  -f
+  f32le
+  -ar
+  48000
+  -ch_layout
+  stereo
+  -i
+  {sound:1}
   -map
   0:v:0
   -map
-  [amixed0]
-  -vf <graph 2>
+  1:a:0
   -c:v
   libx264
   -preset
@@ -21,36 +43,36 @@ command:
   23
   -pix_fmt
   yuv420p
-  -metadata:s:a:0
-  title=Track 1
+  -color_range
+  tv
+  -colorspace
+  bt709
+  -color_primaries
+  bt709
+  -color_trc
+  bt709
   -c:a:0
   aac
   -b:a:0
   160k
+  -metadata:s:a:0
+  title=Track 1
   -map_chapters
   -1
   D:/out/recording.mp4
 
-graph 1 (-filter_complex): 2 chains, 220 characters
-  1| amovie='D\:/media/recording.ts'
-   |   ,atrim=start=6.433:end=46.433
-   |   ,asetpts=PTS-6.433/TB
-   |   ,aresample=48000:async=1:first_pts=0
-   |   ,atempo=2
-   |   ,adelay=30000:all=1[alayer0]
-  2| [0:a:0][alayer0]amix=inputs=2:duration=first:normalize=0[amixed0]
+the scene at 0 s: 1 layer
+    Media source 0 at 0.001 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
 
-graph 2 (-vf): 6 chains, 411 characters
-  1| null[center_in]
-  2| color=c=black:s=1920x1080:r=30:d=120
-   |   ,format=yuv420p[stage0]
-  3| [center_in]scale=1920:1080
-   |   ,format=yuva420p[center_layer]
-  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
-  5| movie='D\:/media/recording.ts':sp=4
-   |   ,trim=start=6.433:end=46.433
-   |   ,setpts=(PTS-6.433/TB)/2+30/TB
-   |   ,scale=960:540
-   |   ,format=yuva420p[ui1_layer]
-  6| [stage1][ui1_layer]overlay=192:432:eof_action=pass:enable='between(t,30,50)'
-   |   ,setsar=1
+the scene at 40 s: 2 layers
+    Media source 0 at 40.001 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Media source 1 at 25.001 box (192.0, 432.0) 960.0 x 540.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [recording, track 1]
+
+the scene at 60 s: 1 layer
+    Media source 0 at 60.001 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+
+the sound: 1 track (aac stereo), 2 strips, 2 voices
+    track 1 (Video 2) (Track): no effects
+      recording.ts a:0 heard 30-50 s from 5 s, rate 2, gain 1
+    track 2 (Track 1) (Track): no effects
+      main.mp4 a:0 heard 0-120 s from 0 s, rate 1, gain 1

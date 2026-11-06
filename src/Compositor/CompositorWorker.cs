@@ -8,7 +8,7 @@ using Microsoft.Win32.SafeHandles;
 namespace HandPegApp.Compositor;
 
 /// <summary>
-/// HandPeg.exe --compositor-worker &lt;base name&gt; &lt;adapter&gt; [--standby &lt;n&gt;] (Pass 5.0-Core, 5.0A): the GPU
+/// HandPeg.exe --compositor-worker &lt;base name&gt; &lt;adapter&gt; [--standby &lt;n&gt;] [--ffmpeg &lt;path&gt; --ffprobe &lt;path&gt;] (Pass 5.0-Core, 5.0A; the FFmpeg the decoders fall back on, 5.2-Arm64AndNpu): the GPU
 /// compositor in a process of its own. A driver that falls over, a TDR or a decoder fault takes only it down; HandPeg
 /// (CompositorClient) starts another and nothing is lost but a frame.
 /// <para>It opens the client's control plane, makes its device, its shaders and three shared output textures, and then
@@ -21,6 +21,16 @@ public static unsafe partial class CompositorWorker
 {
     public const string Argument = "--compositor-worker";
 
+    /// <summary>The options that name the FFmpeg and ffprobe the worker decodes with when Media Foundation cannot (each followed by a path).</summary>
+    public const string FfmpegOption = "--ffmpeg", FfprobeOption = "--ffprobe";
+
+    /// <summary>The word after <paramref name="option"/> on the command line; empty when it is not there.</summary>
+    internal static string OptionValue(string[] args, string option)
+    {
+        var at = Array.IndexOf(args, option);
+        return at > 0 && at + 1 < args.Length ? args[at + 1] : "";
+    }
+
     public static int Run(string[] args)
     {
         // A fault in a driver or a decoder ends this process quietly (no "stopped working" box), and a file on an empty
@@ -32,6 +42,11 @@ public static unsafe partial class CompositorWorker
         var adapter = int.TryParse(args[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var index) ? index : -1;
         var standbyAt = Array.IndexOf(args, "--standby");
         var standby = standbyAt > 0 && standbyAt + 1 < args.Length && int.TryParse(args[standbyAt + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : -1;
+
+        // The FFmpeg HandPeg uses (DependencyUpdater, AppSettings.FfmpegPath), for the streams Media Foundation cannot decode
+        // (FfmpegVideoDecoder, 5.2-Arm64AndNpu): looked for only when one of those is opened.
+        FfmpegVideoDecoder.FfmpegPath = OptionValue(args, FfmpegOption);
+        FfmpegVideoDecoder.FfprobePath = OptionValue(args, FfprobeOption);
 
         using var shared = CompositorSharedMemory.Open(baseName);
         if (shared is null)
@@ -234,29 +249,47 @@ public static unsafe partial class CompositorWorker
             outputs = new OutputRing(gpu, shared.BaseName, generation, width, height);
         }
 
-        // The texture after the one shown last; a reader holding it (rarely, and briefly) makes it the next.
+        // A preview frame has the device to itself from taking its output texture to the flush after it: the decode lanes hold back
+        // (DecoderPool.Drawing; the keyed mutex's acquire waits for the device as a draw does).
         var index = (Volatile.Read(ref control.PresentedIndex) + 1) % CompositorProtocol.OutputRing;
         var output = outputs[index];
-        if (Dxgi.AcquireSync(output.KeyedMutex, 0, 50) != 0)
-        {
-            index = (index + 1) % CompositorProtocol.OutputRing;
-            output = outputs[index];
-            if (Dxgi.AcquireSync(output.KeyedMutex, 0, 50) != 0)
-                return;
-        }
-
-        var count = Math.Clamp(header.ActiveLayerCount, 0, CompositorProtocol.MaxLayers);
-        var layers = MemoryMarshal.CreateReadOnlySpan(ref shared.Layer(slot, 0), count);
+        decoders.Drawing((header.Flags & FrameSceneHeader.FlagExactFrames) == 0);
+        var decodedBefore = decoders.FramesDecoded;
         try
         {
-            renderer.Render(header, layers, output.Texture.Rtv, width, height, raw: (header.Flags & FrameSceneHeader.FlagRawOutput) != 0);
+            // The texture after the one shown last; a reader holding it (rarely, and briefly) makes it the next.
+            var started = Stopwatch.GetTimestamp();
+            if (Dxgi.AcquireSync(output.KeyedMutex, 0, 50) != 0)
+            {
+                index = (index + 1) % CompositorProtocol.OutputRing;
+                output = outputs[index];
+                if (Dxgi.AcquireSync(output.KeyedMutex, 0, 50) != 0)
+                    return;
+            }
+
+            var acquired = Stopwatch.GetTimestamp();
+            var count = Math.Clamp(header.ActiveLayerCount, 0, CompositorProtocol.MaxLayers);
+            var layers = MemoryMarshal.CreateReadOnlySpan(ref shared.Layer(slot, 0), count);
+            try
+            {
+                renderer.Render(header, layers, output.Texture.Rtv, width, height, raw: (header.Flags & FrameSceneHeader.FlagRawOutput) != 0);
+            }
+            finally
+            {
+                _ = Dxgi.ReleaseSync(output.KeyedMutex, 0);
+            }
+
+            var drawn = Stopwatch.GetTimestamp();
+            gpu.Context.Flush();
+            control.LastAcquireMs = (float)Stopwatch.GetElapsedTime(started, acquired).TotalMilliseconds;
+            control.LastDrawMs = (float)Stopwatch.GetElapsedTime(acquired, drawn).TotalMilliseconds;
+            control.LastFlushMs = (float)Stopwatch.GetElapsedTime(drawn).TotalMilliseconds;
+            control.LastDrawDecodes = decoders.FramesDecoded - decodedBefore;
         }
         finally
         {
-            _ = Dxgi.ReleaseSync(output.KeyedMutex, 0);
+            decoders.Drawing(false);
         }
-
-        gpu.Context.Flush();
 
         // The frame commit barrier (the user's directive): this picture has videos at two moments. It goes no further: what is on
         // screen stays, and it is drawn again as the frames it lacks arrive, or once the barrier's time is up.

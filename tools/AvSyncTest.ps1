@@ -2,7 +2,6 @@ param(
     [Parameter(Mandatory)][string]$Project,
     [string]$Points = '100,300,600,1500',
     [ValidateSet('off', 'on', 'both')][string]$Proxies = 'both',
-    [string]$MainProxy,
     [double]$Tolerance = 15,
     [double]$Seconds = 3,
     [switch]$Session,
@@ -19,7 +18,7 @@ param(
 # the tolerance (ms); nominal is within 0.5 ms.
 #
 #   pwsh -NoProfile -File tools\AvSyncTest.ps1 -Project <file.hproj>                       every moment, proxies off and on
-#   pwsh -NoProfile -File tools\AvSyncTest.ps1 -Project <file.hproj> -Points 20,40 -MainProxy <a proxy of the main video>
+#   pwsh -NoProfile -File tools\AvSyncTest.ps1 -Project <file.hproj> -Points 20,40 -Proxies on    two moments, the proxies made played
 #   pwsh -NoProfile -File tools\AvSyncTest.ps1 -Project <file.hproj> -Session              the steps of a session, in real time
 #
 # -Session plays the app's in-session steps instead through a real GpuPreviewEngine and its WASAPI clock (a seek while
@@ -45,7 +44,6 @@ if (-not (Test-Path $exe)) {
 }
 
 $common = @('--project', (Resolve-Path -LiteralPath $Project).Path, '--points', $Points, '--tolerance', $Tolerance)
-if ($MainProxy) { $common += @('--main-proxy', (Resolve-Path -LiteralPath $MainProxy).Path) }
 
 if (-not $Session) {
     & $exe test @common --seconds $Seconds --proxies $(if ($Proxies -eq 'both') { 'off,on' } else { $Proxies })

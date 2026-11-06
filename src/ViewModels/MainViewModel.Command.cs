@@ -3,21 +3,22 @@ using System.IO;
 using System.Text;
 using HandPegApp.Models;
 using HandPegApp.Services;
+using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.ViewModels;
 
-// The view model's side of building FFmpeg commands. The building itself is FilterGraphBuilder's, which reads
-// nothing but the state it is handed; what is here gathers that state from the settings as they are now, asks
-// for the command or the graph, and does what the builder does not: write the lists a command reads beside it.
+// The view model's side of an export. The export itself is GpuExport's and the command EncoderCommand's (5.2-Audit: FFmpeg
+// only encodes and muxes), which read nothing but the state they are handed; what is here gathers that state from the
+// settings as they are now, and does what they do not: write the lists a command reads beside it.
 public partial class MainViewModel
 {
     // ----- The sequence as the builder is given it -----
 
     /// <summary>
-    /// Gathers everything a filter graph is built from into one snapshot. The sequence comes first: a copy of the timeline
-    /// document (TimelineForBuilder: its tracks of clips, the frame it is composed on and the rate its canvas ticks at),
-    /// which the builder lowers into the graph (FilterGraphBuilder.Timeline.cs), so that the black canvas it lays every
-    /// clip on is as long, as large and as fast as the timeline says, whatever the main video is doing on it.
+    /// Gathers everything an export, the GPU preview and the sound engine are made from into one snapshot. The sequence comes
+    /// first: a copy of the timeline document (TimelineForBuilder: its tracks of clips, the frame it is composed on and the rate
+    /// its canvas ticks at), which the lowering reads (TimelineLowering), so that the black canvas every clip is laid on is as
+    /// long, as large and as fast as the timeline says. No clip and no file is privileged (5.2-AuditB): each reads its own file.
     ///
     /// The document copy and the caption box are made for the snapshot: its own, so the builder cannot be handed a clip
     /// that changes while it works (it keeps what it lowers by the document), nor change one itself.
@@ -29,19 +30,16 @@ public partial class MainViewModel
         // A layer learns its shape (its height for each unit of its width) whenever it is laid out, which is
         // what lets it grow about its middle. Building the graph used to lay the real layers out; now that it
         // works on copies, they are laid out here.
-        if (FrameEngine)
+        foreach (var layer in Layers)
         {
-            foreach (var layer in Layers)
-            {
-                if (layer.IsUsable)
-                    layer.GetOutputRect(frameWidth, frameHeight, SourceWidth, SourceHeight);
-            }
+            if (layer.IsUsable)
+                layer.GetOutputRect(frameWidth, frameHeight, SourceWidth, SourceHeight);
         }
 
         // A clip that is still being looked at has no size or length yet, and is not rendered.
         var stack = GetStack().Where(l => l is { IsLoading: false, IsEmptyTrack: false }).ToList();
         var caption = Layer.FromState(CaptionLayer.ToState(), SourceWidth, SourceHeight, frameWidth, frameHeight);
-        FilterGraphBuilder.FoldConstantKeys(caption);
+        TimelineLowering.FoldConstantKeys(caption);
 
         // Which of the files the layers name are there: the builder leaves out a mask or a LUT that is missing.
         var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -69,7 +67,7 @@ public partial class MainViewModel
         foreach (var lut in SequenceEffects.Where(e => e.Type == Models.Effects.EffectRegistry.Lut))
             Note(lut.GetText("file"));
 
-        // The blurred background's own cards (5.0-Release): its LUT files too, or neither renderer draws them.
+        // The blur fill's own cards (5.0-Release): its LUT files too, or neither renderer draws them.
         foreach (var lut in _backgroundRow.Effects.Where(e => e.Type == Models.Effects.EffectRegistry.Lut))
             Note(lut.GetText("file"));
 
@@ -88,8 +86,8 @@ public partial class MainViewModel
                 seekIndexes[file] = index;
         }
 
-        // And where the picture of each proxy in use starts, on the proxy's own clock (see FilterGraphBuilder.AppendVideoFile).
-        foreach (var proxy in _proxiesInUse.Values.Append(MainProxy).OfType<string>())
+        // And where the picture of each proxy in use starts, on the proxy's own clock.
+        foreach (var proxy in _proxiesInUse.Values)
         {
             if (MediaProbe.KnownVideoStart(proxy) is { } start)
                 starts[proxy] = start;
@@ -97,44 +95,23 @@ public partial class MainViewModel
                 LearnVideoStart(proxy);
         }
 
-        var tracks = GetOutputAudioTracks()
-            .Select(t => new ExportAudioTrack(
-                t.Index, t.Title, t.Codec, t.Bitrate, t.IsPassthrough, t.Stream.Channels == 1, t.AutoDuck, t.IsVoice,
-                ReferenceEquals(t, _silentBase), t.HasProcessing, t.BuildEditChain(), t.GetFilterChain())
-            {
-                Offset = t.OffsetSeconds,
-                Channels = t.Stream.Channels > 0 ? t.Stream.Channels : 2,
-                MutedSpans = t.Pieces.Where(p => p.Muted).Select(p => (p.Start, p.End)).ToList(),
-            })
-            .ToList();
-
+        var timeline = TimelineForBuilder(frameWidth, frameHeight);
         return new SequenceExportState
         {
-            // The sequence: its tracks of clips, its frame, its clock; its crop.
-            Timeline = TimelineForBuilder(frameWidth, frameHeight),
-            SourceFrameRate = SourceFrameRate,
+            // The sequence: its tracks of clips, its frame, its clock (the Sequence's own rate).
+            Timeline = timeline,
+            SourceFrameRate = timeline.FrameRate.IsValid ? timeline.FrameRate.Fps : SourceFrameRate,
             TargetFramerate = GetTargetFramerate(),
-            SourceWidth = SourceWidth,
-            SourceHeight = SourceHeight,
             OutputWidth = OutputWidth,
             OutputHeight = OutputHeight,
             RequestedSize = GetRequestedSize(),
             OutputSize = GetOutputSize(),
             SampleAspectRatio = GetSampleAspectRatio(),
-            HasCrop = HasCrop,
-            CropFractions = GetCropFractions(),
 
-            // The main video's file, and where its clips sit on the frame.
-            LocalMediaPath = LocalMediaPath,
-            HasSource = HasSource,
-            SourceHasNoVideo = _mediaInfo is { Video: null },
-            SourceMayHaveAudio = _mediaInfo is not { Audio.Count: 0 },
-            MainMediaSeconds = MainMediaSeconds,
-            CenterRect = GetCenterRect(),
+            // The file whose own subtitle streams and chapters the Subtitles and Chapters settings name (the file last opened).
+            StreamSourcePath = LocalMediaPath,
 
-            // What is laid on the canvas besides the clips.
-            FrameEngine = FrameEngine,
-            BackgroundHidden = _backgroundRow.IsHidden,
+            // The blur fill's look (every clip's that has one), and what is laid on the canvas besides the clips.
             BlurRadius = BlurRadius,
             BlurPasses = BlurPasses,
             BackgroundDim = BackgroundDim,
@@ -149,11 +126,11 @@ public partial class MainViewModel
             Denoise = Denoise,
             TonemapToSdr = Colorspace == TonemapToSdr,
             LutPath = LutPath,
-            ColorFilters = BuildColorFilters(),
+            Grade = GetSequenceGrade(),
             FadeIn = FadeIn,
             FadeOut = FadeOut,
 
-            // Chapters (at the main video's clips, and at the markers), the Copy export's cuts list, subtitles.
+            // Chapters (at the clips' edges, and at the markers), the Copy export's cuts list, the file's own subtitles.
             ChapterMarkers = ChapterMarkers,
             ChaptersAtCuts = ChaptersAtCuts,
             ChaptersAtMarkers = ChaptersAtMarkers && Markers.Count > 0,
@@ -162,11 +139,10 @@ public partial class MainViewModel
             SoftSubtitleStreams = SubtitleTracks.Where(t => t.Action == SubtitleTrack.SoftSub).Select(t => t.Index).ToList(),
             BurnedSubtitleStreams = SubtitleTracks.Where(t => t.Action == SubtitleTrack.HardSub).Select(t => t.Index).ToList(),
 
-            // Sound.
-            AudioTracks = tracks,
+            // Sound: what each output audio track is made as, by its stream place (Ordinal: its place among the file's streams).
+            AudioOutputs = AudioTracks.Select((t, ordinal) => new AudioOutputChoice(ordinal, t.Title, t.Codec, t.Bitrate, t.IsPassthrough, t.IsDropped)).ToList(),
             MergeAudioTracks = MergeAudioTracks,
             NormalizeAudio = NormalizeAudio,
-            DuckAudio = DuckAudio,
             DuckAmountDb = DuckAmountDb,
             MixedAudioCodec = MixedAudioCodec,
             AudioBitrate = AudioBitrate,
@@ -183,8 +159,6 @@ public partial class MainViewModel
             // The command around the graph. A bare "ffmpeg" means the local copy; one chosen in the settings is spelled out.
             FfmpegExecutable = DependencyUpdater.IsFfmpegOverridden ? Quote(DependencyUpdater.FfmpegPath) : "ffmpeg",
             HardwareDecodeArguments = HardwareDecoding ? GpuAdapters.DecodeArguments : "",
-            OpenClBlur = EncoderProber.OpenClBlurAvailable,
-            OpenClDeviceArguments = EncoderProber.OpenClDeviceArguments,
             CopyVideoEncoder = VideoEncoder.Family == EncoderFamily.Copy,
             IsAnimatedOutput = IsAnimatedOutput,
             VideoCodecArguments = BuildVideoCodecArguments(),
@@ -201,7 +175,6 @@ public partial class MainViewModel
 
             // Read by Live Preview only: an export reads the originals.
             PreviewPaths = new Dictionary<string, string>(_proxiesInUse, StringComparer.OrdinalIgnoreCase),
-            MainPreviewHeight = MainProxyHeight,
         };
     }
 
@@ -260,7 +233,14 @@ public partial class MainViewModel
                             return Task.CompletedTask;
                         }, _shutdown.Token);
                     if (!indexed && File.Exists(file) && (await FfmpegRunner.GetIFramesAsync(file, _shutdown.Token)).Count > 0)
-                        System.Windows.Application.Current?.Dispatcher.BeginInvoke(InvalidateLiveFilter);
+                    {
+                        // The live graph, and the I-frames along the timeline, which its clips show now.
+                        System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+                        {
+                            InvalidateLiveFilter();
+                            RefreshSequence();
+                        });
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -274,118 +254,121 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The export's command line for the settings as they are. When the command reads its cuts or its chapters
-    /// from a list beside it, that list is written here: the builder only says that it is needed.
+    /// The export's command line for the settings as they are (5.2-Audit): the encode the GPU export runs (FFmpeg reading the
+    /// compositor's frames and the sound engine's tracks, their renders named by tokens until they are made; HandPeg's own for a
+    /// GIF), or a Copy export's stream copy. A cuts or chapters list it reads is written here: the builder only says it is needed.
     /// </summary>
     private string BuildFfmpegCommand()
     {
         var state = CompileExportState();
-        var command = FilterGraphBuilder.BuildExportCommand(state);
-        if (command.UsesCutsFile)
-            WriteCutsFile(state);
+        if (IsCopyExport(state))
+        {
+            var copy = EncoderCommand.BuildCopy(state);
+            if (copy.UsesCutsFile)
+                WriteCutsFile(state);
+            if (copy.UsesChaptersFile)
+                WriteChaptersFile(copy.UsesCutsFile);
+            return copy.CommandLine;
+        }
+
+        if (GpuExport.CommandFor(state, out var why) is not { } command)
+            return $"# This export cannot be made: {why}.";
         if (command.UsesChaptersFile)
-            WriteChaptersFile(command.UsesCutsFile);
+            WriteChaptersFile(false);
         return command.CommandLine;
     }
 
-    /// <summary>
-    /// The state the export's command is made from, for <see cref="RunExportAsync"/> to try the GPU with (Start Encode and
-    /// its software retry): null when the GPU does not render exports, the command was edited by hand, or in a background
-    /// worker (which only queues).
-    /// </summary>
-    private SequenceExportState? ExportStateForGpu() =>
-        !AppSettings.Current.WantsGpuExport || IsCommandManuallyEdited || _isBackgroundWorker ? null : CompileExportState();
+    /// <summary>A Copy export: the file's own picture copied, which no frame is drawn for (GIF and WebP are always drawn).</summary>
+    private static bool IsCopyExport(SequenceExportState state) => state.CopyVideoEncoder && !EncoderCommand.IsPictureOnly(state);
 
     /// <summary>
-    /// Runs an export's command (Start Encode and its software retry, RunEncodeAsync; each queued job, StartQueueAsync), 5.0:
-    /// with <see cref="AppSettings.ExportRenderer"/> on the GPU and a <paramref name="state"/> that makes this very command
-    /// (BuildExportCommand(state) is it: not edited by hand, nor changed by the hardware fallback, since), the GPU compositor
-    /// draws the frames and FFmpeg encodes them with the command's own sound, captions and subtitles (GpuExport; the user's
-    /// call, 5.0-Verify Q5: queued jobs too). An export it cannot draw, and any GPU export that fails before or while it
-    /// renders, FFmpeg's graph makes, from the beginning, with the command as it stands (a hardware encoder that fails there
-    /// is the caller's to retry in software).
+    /// Why the export as it is set now is refused before it starts: a Copy export that cannot cut (5.2-Arm64AndNpu, the user's call:
+    /// <see cref="EncoderCommand.WhyCopyCannotCut"/>, said in the status bar, nothing started, rather than warned of and handed to
+    /// FFmpeg to fail). Null for any other export, for one that can be made, and for a command edited by hand, which is the user's own.
     /// </summary>
-    /// <param name="state">The state the command was made from (the settings' now, or a queued job's snapshot); null for FFmpeg only.</param>
-    private async Task RunExportAsync(string command, SequenceExportState? state, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
+    private string? CopyRefusal()
     {
-        if (AppSettings.Current.WantsGpuExport && state is not null)
-        {
-            try
-            {
-                var built = FilterGraphBuilder.BuildExportCommand(state);
-                if (!string.Equals(built.CommandLine, command, StringComparison.Ordinal))
-                {
-                    AppLog.Write("GPU export: the command to run is not the one its state makes; FFmpeg runs it as it stands.");
-                }
-                else
-                {
-                    // The settings' own chapters list, as it stands now (the GPU command reads the same one); a queued
-                    // job reads the copy it was given when it was queued, which nothing rewrites.
-                    if (built.UsesChaptersFile && string.Equals(state.ChaptersFilePath, ChaptersFilePath, StringComparison.OrdinalIgnoreCase))
-                        WriteChaptersFile(built.UsesCutsFile);
-                    if (await GpuExport.TryRunAsync(state, progress, cancellationToken))
-                    {
-                        CrashReporter.Note("export", "rendered on the GPU compositor");
-                        return;
-                    }
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                AppLog.Write("GPU export failed; FFmpeg's graph makes the export instead", ex);
-                CrashReporter.Note("export", "GPU render failed, FFmpeg's graph used: " + ex.GetType().Name);
-                StatusText = "The GPU export failed: FFmpeg renders it instead...";
-                ProgressValue = 0;
-                IsProgressIndeterminate = true;
-            }
-        }
+        if (IsCommandManuallyEdited || VideoEncoder.Family != EncoderFamily.Copy)
+            return null;
 
-        SayWhatFfmpegLeavesOut(state);
-        await FfmpegRunner.RunAsync(command, progress, cancellationToken, graphInFile: true);
+        var state = CompileExportState();
+        return IsCopyExport(state) ? EncoderCommand.WhyCopyCannotCut(state.Timeline) : null;
     }
 
-    /// <summary>What the last export FFmpeg made left out (5.1-GpuFx); "" for nothing.</summary>
-    private string _exportLeftOut = "";
+    /// <summary>The state the export's command is made from (Start Encode and its software retry); null in a background worker, which only queues.</summary>
+    private SequenceExportState? ExportStateForGpu() => _isBackgroundWorker ? null : CompileExportState();
 
-    // An export FFmpeg's graph makes cannot draw the effects that are shaders alone: never left out silently.
-    private void SayWhatFfmpegLeavesOut(SequenceExportState? state)
+    /// <summary>
+    /// Runs an export's command (Start Encode and its software retry, RunEncodeAsync; each queued job, StartQueueAsync), 5.2-Audit:
+    /// a Copy export, and a hand-edited command that reads no piped picture, are FFmpeg's to run as they stand; every other export is
+    /// the GPU export of <paramref name="state"/> (GpuExport: the compositor draws the frames, the sound engine renders the sound,
+    /// FFmpeg encodes), with the command's own arguments when it was edited by hand. There is no other renderer to fall back to: an
+    /// export that cannot be made says why (<see cref="GpuExportException"/>); a hardware encoder that fails is the caller's to retry
+    /// in software.
+    /// </summary>
+    /// <param name="state">The state the command was made from (the settings' now, or a queued job's snapshot).</param>
+    private async Task RunExportAsync(string command, SequenceExportState? state, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
     {
         _exportLeftOut = "";
+        if (state is null || IsCopyExport(state) || !command.Contains("pipe:0", StringComparison.Ordinal) && GpuExport.CommandFor(state, out _) is not { Encoder: ExportEncoder.Gif })
+        {
+            await FfmpegRunner.RunAsync(command, progress, cancellationToken);
+            return;
+        }
+
+        // The settings' own chapters list, as it stands now; a queued job reads the copy it was given when it was queued.
+        if (string.Equals(state.ChaptersFilePath, ChaptersFilePath, StringComparison.OrdinalIgnoreCase))
+            WriteChaptersFile(false);
+
+        // A command edited by hand keeps its own arguments; the frames and the sound are still the state's.
+        IReadOnlyList<string>? arguments = null;
+        if (GpuExport.CommandFor(state, out var why) is not { } built)
+            throw new GpuExportException($"This export cannot be made: {why}.");
+        if (built.Encoder == ExportEncoder.Ffmpeg && !string.Equals(built.CommandLine, command, StringComparison.Ordinal))
+        {
+            var parts = FfmpegRunner.SplitArguments(command);
+            if (parts.Count < 2)
+                throw new FfmpegCommandException("The command is empty.");
+            arguments = parts.Skip(1).ToList();
+            AppLog.Write("Export: the command was edited by hand; its own arguments encode the GPU's frames.");
+        }
+
+        SayWhatIsLeftOut(state);
+        await GpuExport.RunAsync(state, arguments, progress, cancellationToken);
+        CrashReporter.Note("export", "rendered on the GPU compositor");
+    }
+
+    /// <summary>What the last export left out (5.2-Audit: what the compositor cannot draw yet); "" for nothing.</summary>
+    private string _exportLeftOut = "";
+
+    // What the compositor cannot draw is not in the export: never left out silently.
+    private void SayWhatIsLeftOut(SequenceExportState state)
+    {
         try
         {
-            if (state is null && _isBackgroundWorker)
-                return;
-            if (GpuExport.LeftOutByFfmpeg(state ?? CompileExportState()) is not { Count: > 0 } names)
+            if (GpuExport.LeftOut(state) is not { Count: > 0 } names)
                 return;
 
-            _exportLeftOut = $"This export went through FFmpeg, which cannot draw {string.Join(", ", names)}: they are not in the file. Export on the GPU to keep them.";
+            _exportLeftOut = $"Left out of this export (the GPU engine cannot draw it yet): {string.Join(", ", names)}.";
             StatusText = _exportLeftOut;
-            AppLog.Write($"FFmpeg's export leaves out what only the GPU draws: {string.Join(", ", names)}");
+            AppLog.Write($"Export: left out what the compositor cannot draw: {string.Join(", ", names)}");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            AppLog.Write("Could not check what FFmpeg's export leaves out", ex);
+            AppLog.Write("Could not check what the export leaves out", ex);
         }
     }
 
     /// <summary>
     /// The sequence as the GPU preview engine draws and plays it (5.0): the state gathered once per change (see
-    /// <see cref="_liveState"/>), with the soloed tracks applied; the preview's own (<see cref="SequenceExportState.IsPreview"/>:
-    /// its video layers read their proxies where they asked for one).
+    /// <see cref="_liveState"/>); the preview's own (<see cref="SequenceExportState.IsPreview"/>: its video layers read their
+    /// proxies where they asked for one; the soloed tracks are the document's, which the sound engine hears alone).
     /// </summary>
-    public SequenceExportState LivePreviewState() => Soloed((_liveState ??= CompileExportState()) with { IsPreview = true });
+    public SequenceExportState LivePreviewState() => (_liveState ??= CompileExportState()) with { IsPreview = true };
 
     // The state the GPU engine was last given. It is the same for every scene and every seek until something changes: it
     // is gathered again only then (every change raises LiveFilterInvalidated, which drops it).
     private SequenceExportState? _liveState;
-
-    /// <summary>Render Preview's command: a short, small encode of the given stretches of the timeline.</summary>
-    private string BuildPreviewCommand(string outputPath, List<(double Start, double End)> ranges, int percent, string? captionsPath) =>
-        FilterGraphBuilder.BuildPreviewCommand(CompileExportState(), outputPath, ranges, percent, captionsPath);
 
     // ----- Live Preview -----
 
@@ -410,35 +393,22 @@ public partial class MainViewModel
     // ----- Audio -----
 
     /// <summary>
-    /// The audio tracks that reach the output, in order. Before a source has been inspected there is
-    /// nothing to list, so a single stand-in track carries the tab's default codec and bitrate.
+    /// The audio tracks the output is said to have (the Projected Output card, the size estimate), in order: the file last opened's
+    /// streams that are kept (what each output track is made as, AudioOutputs). With none, a single stand-in with the tab's default
+    /// codec and bitrate for the sound the Sequence's clips carry: the sound engine makes an output of its own for it.
     /// </summary>
     private List<AudioTrack> GetOutputAudioTracks()
     {
-        if (_mediaInfo is not null)
-        {
-            var kept = AudioTracks.Where(t => !t.IsDropped).ToList();
-
-            // No sound of the sequence's own, but sound on its layers: a silent track is made for them to be
-            // mixed into, so that they are heard. It is always encoded.
-            if (kept.Count == 0 && GetLayerAudioSources().Count > 0)
-            {
-                ApplyAudioDefaults(_silentBase);
-                (_silentBase.Action, _silentBase.Codec) = (AudioTrack.Reencode, MixedAudioCodec);
-                kept.Add(_silentBase);
-            }
-
+        var kept = AudioTracks.Where(t => !t.IsDropped).ToList();
+        if (kept.Count > 0 || (_mediaInfo is not null && GetLayerAudioSources().Count == 0))
             return kept;
-        }
 
         var standIn = new AudioTrack(new AudioStreamInfo(0, "", 2, "", 48000, 0, "", ""));
         ApplyAudioDefaults(standIn);
+        if (_mediaInfo is not null)
+            (standIn.Action, standIn.Codec) = (AudioTrack.Reencode, MixedAudioCodec);
         return [standIn];
     }
-
-    // Stands for the silence that layer sound is mixed into when the sequence has none of its own. It is not
-    // a stream of the file: the graph makes it (anullsrc), under a number no real track has.
-    private readonly AudioTrack _silentBase = new(new AudioStreamInfo(900, "", 2, "stereo", 48000, 0, "", "")) { Title = "Timeline Audio" };
 
     /// <summary>How far a sound set to Auto-Duck is turned down while a voice speaks, in decibels.</summary>
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private double _duckAmountDb = -15;
@@ -451,13 +421,14 @@ public partial class MainViewModel
     // ----- Video encoder -----
 
     /// <summary>
-    /// The 4:2:0 format a hardware encoder is handed (p010le where 10-bit is ticked and the card can, else yuv420p),
-    /// which the export graph also ends in; null for a software or Copy encoder, or when the extra options set
-    /// their own -pix_fmt.
+    /// The 4:2:0 format a hardware encoder is handed (p010le where 10-bit is ticked and the card can, else yuv420p; NV12 for
+    /// a Media Foundation one, which refuses yuv420p: MediaFoundationEncoder.PixelFormat), which the export graph also ends
+    /// in; null for a software or Copy encoder, or when the extra options set their own -pix_fmt.
     /// </summary>
     private string? HardwarePixelFormat =>
         VideoEncoder.IsHardware && VideoEncoder.Family != EncoderFamily.Copy && !ExtraVideoArguments.Contains("-pix_fmt", StringComparison.Ordinal)
-            ? TenBit && CanTenBit ? "p010le" : "yuv420p"
+            ? VideoEncoder.Family == EncoderFamily.MediaFoundation ? MediaFoundationEncoder.PixelFormat(TenBit && CanTenBit)
+            : TenBit && CanTenBit ? "p010le" : "yuv420p"
             : null;
 
     private string BuildVideoCodecArguments()

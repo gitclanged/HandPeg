@@ -19,7 +19,7 @@ public partial class MainWindow
         {
             "Media" => ("Media", "Preview"),
             TimelinePaneId => ("Timeline", "Timeline"),
-            "Timeline" => ("Overview Bar", "Timeline"),
+            "Timeline" => (ScrubberTitle, "Timeline"),
             "Player" or "Layout" => (pane == "Layout" ? "Canvas" : "Player", "Timeline"),
             "Effects" or "Keyframes" => (pane, "Timeline"),
             _ => ("", ""),
@@ -70,6 +70,9 @@ public partial class MainWindow
             case "Timeline":
                 Toggle("Snap Clips", _viewModel.SnapClips, on => _viewModel.SnapClips = on, "Clips and edges snap to the playhead, markers and other clips' edges. Shift while dragging is never snapped.");
                 Toggle("Snap to I-Frames", _viewModel.SnapToIFrames, on => _viewModel.SnapToIFrames = on, "Cuts and the playhead snap to the video's I-frames, so stream copy cuts cleanly.");
+                Toggle("Snap to Audio Beats", _viewModel.SnapToBeats, on => _viewModel.SnapToBeats = on,
+                    "With Snap Clips on, edges also catch on the beats found in clips' sound (a clip's menu: Audio & Voice, Detect & Snap to Audio Beats).");
+                Toggle("Beat Grid", _viewModel.ShowBeatGrid, on => _viewModel.ShowBeatGrid = on, "Draws the beats found in a clip's sound as faint ticks along its block.");
                 Toggle("Gain and Fade Lines", settings.ShowClipGainLines, on =>
                 {
                     Save(s => s.ShowClipGainLines = on);
@@ -84,29 +87,31 @@ public partial class MainWindow
                     "How tall each track's row is (the slider in the timeline's toolbar sets any height between).");
                 break;
 
-            case "Overview Bar":
+            case ScrubberTitle:
                 Toggle("Snap to I-Frames", _viewModel.SnapToIFrames, on => _viewModel.SnapToIFrames = on, "Cuts and the playhead snap to the video's I-frames, so stream copy cuts cleanly.");
-                Toggle("Sync Overview Bar Stretch", _viewModel.SyncMasterTimeline, on => _viewModel.SyncMasterTimeline = on,
-                    "On: the overview bar is zoomed and moved along with the timeline. Off: it always shows the whole sequence.");
-                Choice("Overview Bar Height",
-                    [("Compact", (double)MainViewModel.CompactMasterTimeline), ("Medium", MainViewModel.MediumMasterTimeline), ("Tall", MainViewModel.TallMasterTimeline)],
+                Toggle($"Sync {ScrubberTitle} Stretch", _viewModel.SyncMasterTimeline, on => _viewModel.SyncMasterTimeline = on,
+                    $"On: the {ScrubberTitle} is zoomed and moved along with the timeline. Off: it always shows the whole sequence.");
+
+                // Tall is the tallest a drag gives it (120 px, ScrubberStep), not more.
+                Choice($"{ScrubberTitle} Height",
+                    [("Compact", ScrubberStep(MainViewModel.CompactMasterTimeline)), ("Medium", ScrubberStep(MainViewModel.MediumMasterTimeline)), ("Tall", ScrubberStep(MainViewModel.TallMasterTimeline))],
                     _viewModel.MasterTimelineHeight, height => _viewModel.MasterTimelineHeight = height,
-                    "How tall the overview bar is (Ctrl-drag the border beside it for any height between).");
+                    $"How tall the {ScrubberTitle} is (drag its lower edge for any height between, 16 to 120 px).");
                 break;
 
             case "Player" or "Canvas":
-                Toggle("Edit Layers on Video", _viewModel.EditLayersOnPlayer, on => _viewModel.EditLayersOnPlayer = on, "Move, resize and turn the selected layer on the player itself (with Live Preview).");
-                Toggle("Snap Guides", settings.SnapLayoutGuides, on => Save(s => s.SnapLayoutGuides = on), "A dragged layer snaps to the frame's edges, centre and the other layers (Alt while dragging: free).");
+                Toggle("Edit Clips on Video", _viewModel.EditLayersOnPlayer, on => _viewModel.EditLayersOnPlayer = on, "Move, resize and turn the selected clip on the player itself (with Live Preview).");
+                Toggle("Snap Guides", settings.SnapLayoutGuides, on => Save(s => s.SnapLayoutGuides = on), "A dragged clip snaps to the frame's edges, centre and the other clips (Alt while dragging: free).");
                 Toggle("Motion Path", settings.ShowMotionPath, on =>
                 {
                     Save(s => s.ShowMotionPath = on);
                     RefreshMotionPath();
-                }, "Draws the selected layer's path between its position keyframes.");
+                }, "Draws the selected clip's path between its position keyframes.");
                 break;
 
             default:
                 Toggle("Value Graph", _viewModel.ShowKeyframeGraph, on => _viewModel.ShowKeyframeGraph = on, "Draws each keyframe lane's values as a curve.");
-                Toggle("Key Changed Only", _viewModel.KeyChangedOnly, on => _viewModel.KeyChangedOnly = on, "A new keyframe is put only on the values that changed, not on every value of the layer.");
+                Toggle("Key Changed Only", _viewModel.KeyChangedOnly, on => _viewModel.KeyChangedOnly = on, "A new keyframe is put only on the values that changed, not on every value of the clip.");
                 break;
         }
 

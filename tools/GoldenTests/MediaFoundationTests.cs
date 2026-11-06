@@ -125,18 +125,39 @@ public static class MediaFoundationTests
             Expect(problems, what, actual, expected);
         }
 
+        // What they are handed (5.2): NV12, or P010 in 10 bits; the Snapdragon X Elite's encoders refuse planar yuv420p.
+        foreach (var tenBit in new[] { false, true })
+        {
+            var format = MediaFoundationEncoder.PixelFormat(tenBit);
+            Line(text, $"{(tenBit ? "10-bit" : "8-bit")} frames are handed over as {format}");
+            Expect(problems, $"the {(tenBit ? "10" : "8")}-bit pixel format", format, tenBit ? "p010le" : "nv12");
+        }
+
         foreach (var name in MediaFoundationEncoder.Names)
         {
-            var option = EncoderOption.FromHardwareName(name);
+            var option = EncoderOption.FromHardwareName(name, qualcommAdreno: false);
             Line(text, $"{name}: \"{option.DisplayName}\", {option.Family}, hardware {option.IsHardware}, falls back to {HardwareFallback.GetSoftwareEncoder(name) ?? "nothing"}");
             if (option.Family != EncoderFamily.MediaFoundation || !option.IsHardware || !MediaFoundationEncoder.Is(name))
                 problems.Add($"{name} is not offered as a Media Foundation hardware encoder");
         }
 
+        // On a Snapdragon PC the same encoders are named by the chip they reach (5.2-Audit, the user's directive).
+        foreach (var (name, expected) in new[] { ("h264_mf", "H.264 (Qualcomm Adreno)"), ("hevc_mf", "HEVC (Qualcomm Adreno)"), ("av1_mf", "AV1 (Qualcomm Adreno)") })
+        {
+            var option = EncoderOption.FromHardwareName(name, qualcommAdreno: true);
+            Line(text, $"{name} with a Qualcomm Adreno: \"{option.DisplayName}\"");
+            Expect(problems, $"{name}'s name on an Adreno PC", option.DisplayName, expected);
+        }
+
+        foreach (var (name, expected) in new[] { ("h264_nvenc", "H.264 (NVIDIA NVENC)"), ("hevc_amf", "HEVC (AMD AMF)"), ("av1_qsv", "AV1 (Intel QuickSync)") })
+            Expect(problems, $"{name}'s name", EncoderOption.FromHardwareName(name, qualcommAdreno: false).DisplayName, expected);
+
         (string Command, string Expected)[] fallbacks =
         [
-            ("ffmpeg -i in.mp4 -c:v hevc_mf -rate_control quality -quality 55 -hw_encoding 1 -pix_fmt yuv420p out.mp4",
+            ("ffmpeg -i in.mp4 -c:v hevc_mf -rate_control quality -quality 55 -hw_encoding 1 -pix_fmt nv12 out.mp4",
                 "ffmpeg -i in.mp4 -c:v libx265 -preset medium -crf 23 -pix_fmt yuv420p out.mp4"),
+            ("ffmpeg -i in.mp4 -c:v av1_mf -rate_control quality -quality 55 -hw_encoding 1 -pix_fmt p010le out.mp4",
+                "ffmpeg -i in.mp4 -c:v libsvtav1 -crf 23 -pix_fmt yuv420p10le out.mp4"),
             ("ffmpeg -i in.mp4 -c:v h264_mf -rate_control cbr -b:v 8000k -maxrate 8000k -bufsize 16000k -hw_encoding 1 out.mp4",
                 "ffmpeg -i in.mp4 -c:v libx264 -preset medium -b:v 8000k -maxrate 8000k -bufsize 16000k out.mp4"),
         ];

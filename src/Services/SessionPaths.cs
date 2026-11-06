@@ -24,9 +24,6 @@ public static class SessionPaths
     /// <summary>Cut and chapter lists belonging to queued jobs.</summary>
     public static string Queue => Path.Combine(Root, "queue");
 
-    /// <summary>Filter graphs handed to FFmpeg in files, each kept only while its run lasts (see FfmpegRunner.WithGraphFiles).</summary>
-    public static string Graphs => Path.Combine(Root, "graphs");
-
     /// <summary>Masks drawn from outlines as pictures, for FFmpeg's graph alone (see MaskStore.FileFor): gone with the session.</summary>
     public static string Masks => Path.Combine(Root, "masks");
 

@@ -1,41 +1,102 @@
 using System.Diagnostics;
+using HandPegApp.Models;
 
 namespace HandPegApp.Services.Gpu;
 
 // ----- The subtitle track's pictures (5.0-Verify) -----
-// A PGS or VobSub track (PictureSubtitles.cs) in the preview, as libmpv drew it: each cue's picture over the main video's
-// picture, under the captions, from its cue's start (in) to its end (not). A cue's picture is handed to the worker as a
-// still while the playhead is near it (PrepareAround, as captions are drawn), and let go by its last use alone.
+// A PGS or VobSub track (PictureSubtitles.cs), or an export's burned subtitles (BurnedSubtitles), as libmpv drew it: each
+// cue's picture over the picture of the clip it is shown in, under the captions, from its cue's start (in) to its end (not).
+// A cue's picture is handed to the worker as a still while the playhead is near it (PrepareAround, as captions are drawn),
+// and let go by its last use alone.
 public sealed partial class GpuScenePlan
 {
     private static readonly long PictureSubtitlesKey = default(GpuHash).Add("picture-subtitles").Value;
 
     /// <summary>
-    /// The entry of the subtitle track's pictures. The stream's canvas is laid on the main video's own picture at the scale
-    /// that fills it, centred (a film cropped or scaled from the frame its subtitles were drawn for is the middle of that
-    /// frame; a DVD's anamorphic canvas is the picture's own pixels), then placed as the main video is: the crop's part of
-    /// the picture filling its box (CenterRect). A picture is not cut by the crop or the box: a line under a letterbox that
-    /// was cropped off is still there to read, below the picture, as a player shows it. With no main video, the canvas is
-    /// laid on the frame the same way.
+    /// The entry of the subtitle track's pictures. Each cue is laid through the clip it is shown in (5.2-AuditB: any clip's
+    /// video, where it was the main video's box): the clip its cue names (burned subtitles: the clip of the file whose stream
+    /// they are, that its piece of the cue was placed by), else the bottom video of <paramref name="streamSource"/> (the file
+    /// whose subtitle streams the settings name) on in the cue's middle, else at its start. The stream's canvas is laid on
+    /// that clip's own picture at the scale that fills it, centred (a film cropped or scaled from the frame its subtitles
+    /// were drawn for is the middle of that frame; a DVD's anamorphic canvas is the picture's own pixels), then placed as the
+    /// clip is: the part its crop keeps filling its box. A picture is not cut by the crop or the box: a line under a
+    /// letterbox that was cropped off is still there to read, below the picture, as a player shows it. A cue with no such
+    /// clip is laid on the frame the same way.
     /// </summary>
-    private static Entry PictureSubtitlesEntry(PictureSubtitleTrack track, SequenceExportState state, int width, int height, bool hasPrimary)
+    private static Entry PictureSubtitlesEntry(PictureSubtitleTrack track, IReadOnlyList<Entry> entries, string streamSource, int width, int height)
     {
-        var (sourceWidth, sourceHeight) = hasPrimary && state.SourceWidth > 0 && state.SourceHeight > 0 ? (state.SourceWidth, state.SourceHeight) : (width, height);
-        var (boxX, boxY, boxWidth, boxHeight) = hasPrimary && state.CenterRect is { Width: > 0, Height: > 0 } box ? box : (0, 0, width, height);
-        var (left, top, right, bottom) = hasPrimary && state.HasCrop ? state.CropFractions : default;
+        // The videos, by their clips' keys, and those of the stream's file, bottom first.
+        var source = streamSource.Trim().Trim('"');
+        var (byKey, ofSource) = (new Dictionary<long, Entry>(), new List<Entry>());
+        foreach (var entry in entries)
+        {
+            if (entry.Kind != EntryKind.File || entry.Layer is not { } layer)
+                continue;
+            if (entry.ClipKey != 0)
+                byKey.TryAdd(entry.ClipKey, entry);
+            if (source.Length > 0 && string.Equals(layer.ImagePath.Trim().Trim('"'), source, StringComparison.OrdinalIgnoreCase))
+                ofSource.Add(entry);
+        }
+
+        var cues = track.CueArray;
+        var places = new CuePlace[cues.Length];
+        for (var i = 0; i < cues.Length; i++)
+        {
+            var cue = cues[i];
+            var video = (cue.ClipId != Guid.Empty ? byKey.GetValueOrDefault(GpuHash.Of(cue.ClipId)) : null)
+                        ?? OnAt(ofSource, (cue.From + cue.To) / 2) ?? OnAt(ofSource, cue.From);
+            places[i] = video is { Layer: { } layer } ? PlaceOn(track, (video.X, video.Y, video.W, video.H), layer, width, height) : PlaceOn(track, width, height);
+        }
+
+        var lane = new PictureLane(cues, places);
+        return new Entry { Kind = EntryKind.PictureSubtitles, Pictures = lane, Name = "Picture Subtitles", ClipKey = PictureSubtitlesKey };
+    }
+
+    /// <summary>The first (bottom) of some video entries that is on at a moment (its clip's stretch); null for none.</summary>
+    private static Entry? OnAt(List<Entry> videos, double t)
+    {
+        foreach (var video in videos)
+        {
+            if (t >= video.From && (video.ToExclusive ? t < video.To : t <= video.To))
+                return video;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A stream's canvas laid on a clip's picture (its own size, the frame's while that is not known; its crop's part filling
+    /// its box), as a scale and a shift each way.
+    /// </summary>
+    private static CuePlace PlaceOn(PictureSubtitleTrack track, (float X, float Y, float Width, float Height) box, Layer layer, int width, int height)
+    {
+        var (sourceWidth, sourceHeight) = layer.ImageWidth > 0 && layer.ImageHeight > 0 ? (layer.ImageWidth, layer.ImageHeight) : (width, height);
+        var (left, top, right, bottom) = layer.IsCropped ? layer.CropFractions : default;
         (left, top, right, bottom) = (Math.Clamp(left, 0, 1), Math.Clamp(top, 0, 1), Math.Clamp(right, 0, 1), Math.Clamp(bottom, 0, 1));
         if (left + right >= 0.999 || top + bottom >= 0.999)
             (left, top, right, bottom) = (0, 0, 0, 0);
+        return CanvasOn(track, sourceWidth, sourceHeight, (box.X, box.Y, box.Width, box.Height), (left, top, right, bottom));
+    }
+
+    /// <summary>A stream's canvas laid on the frame, filling it about its middle.</summary>
+    private static CuePlace PlaceOn(PictureSubtitleTrack track, int width, int height) => CanvasOn(track, width, height, (0, 0, width, height), default);
+
+    /// <summary>A stream's canvas on a picture of a size whose crop's part fills a box on the frame (the box, the crop's fractions).</summary>
+    private static CuePlace CanvasOn(PictureSubtitleTrack track, int sourceWidth, int sourceHeight, (double X, double Y, double Width, double Height) box,
+        (double Left, double Top, double Right, double Bottom) crop)
+    {
+        var (left, top, right, bottom) = crop;
 
         // The canvas on the source's picture, in its pixels; then the source's pixels on the frame.
         var fill = Math.Max((double)sourceWidth / track.CanvasWidth, (double)sourceHeight / track.CanvasHeight);
         var (canvasLeft, canvasTop) = ((sourceWidth - track.CanvasWidth * fill) / 2, (sourceHeight - track.CanvasHeight * fill) / 2);
-        var (perX, perY) = (boxWidth / (sourceWidth * (1 - left - right)), boxHeight / (sourceHeight * (1 - top - bottom)));
-        var (originX, originY) = (boxX - left * sourceWidth * perX, boxY - top * sourceHeight * perY);
-
-        var lane = new PictureLane(track.CueArray, (float)(fill * perX), (float)(originX + canvasLeft * perX), (float)(fill * perY), (float)(originY + canvasTop * perY));
-        return new Entry { Kind = EntryKind.PictureSubtitles, Pictures = lane, Name = "Picture Subtitles", ClipKey = PictureSubtitlesKey };
+        var (perX, perY) = (box.Width / (sourceWidth * (1 - left - right)), box.Height / (sourceHeight * (1 - top - bottom)));
+        var (originX, originY) = (box.X - left * sourceWidth * perX, box.Y - top * sourceHeight * perY);
+        return new CuePlace((float)(fill * perX), (float)(originX + canvasLeft * perX), (float)(fill * perY), (float)(originY + canvasTop * perY));
     }
+
+    /// <summary>Where a cue's canvas's pixels fall on the frame: a scale and a shift each way.</summary>
+    private readonly record struct CuePlace(float ScaleX, float ShiftX, float ScaleY, float ShiftY);
 
     /// <summary>The cue's picture up at a moment, as a still where its canvas's pixels fall on the frame.</summary>
     private int WritePictureSubtitle(Entry e, double t, ref GpuLayerDescriptor d)
@@ -44,36 +105,38 @@ public sealed partial class GpuScenePlan
             return 0;
 
         (d.SourceKind, d.StillResourceId) = ((int)GpuSourceKind.Still, still.Id);
-        (d.X, d.Y, d.Width, d.Height) = lane.Place(cue.Picture);
+        (d.X, d.Y, d.Width, d.Height) = lane.Place(cue);
         return 1;
     }
 
     /// <summary>
-    /// The subtitle track's pictures in a plan: its cues by their start, where the canvas's pixels fall on the frame (a scale
-    /// and a shift each way), and the still each cue's picture was handed over as. The stills are written on the UI thread
-    /// (<see cref="Prepare"/>) and read lock-free by the thread that evaluates; nothing else changes after it is made.
+    /// The subtitle track's pictures in a plan: its cues by their start, where each cue's canvas's pixels fall on the frame
+    /// (a scale and a shift each way, through the clip it is shown in), and the still each cue's picture was handed over as.
+    /// The stills are written on the UI thread (<see cref="Prepare"/>) and read lock-free by the thread that evaluates;
+    /// nothing else changes after it is made.
     /// </summary>
-    private sealed class PictureLane(PictureSubtitleCue[] cues, float scaleX, float shiftX, float scaleY, float shiftY)
+    private sealed class PictureLane(PictureSubtitleCue[] cues, CuePlace[] places)
     {
         // Each cue's still: its id + 1 in the high half and its serial in the low; 0 while it has none.
         private readonly long[] _stills = new long[cues.Length];
 
-        /// <summary>The cue up at a moment and its still, when that is there to be drawn with (allocation-free).</summary>
-        public bool At(double t, GpuResourceBroker resources, out PictureSubtitleCue cue, out GpuResourceRef still)
+        /// <summary>The cue up at a moment (its index) and its still, when that is there to be drawn with (allocation-free).</summary>
+        public bool At(double t, GpuResourceBroker resources, out int cue, out GpuResourceRef still)
         {
-            (cue, still) = (default, GpuResourceRef.None);
-            var at = UpAt(t);
-            if (at < 0)
+            (cue, still) = (UpAt(t), GpuResourceRef.None);
+            if (cue < 0)
                 return false;
 
-            cue = cues[at];
-            still = StillOf(at);
+            still = StillOf(cue);
             return !still.IsNone && resources.StateOf(still) == GpuResourceState.Ready;
         }
 
-        /// <summary>A picture's box on the frame: its place on the canvas, scaled and moved as the canvas is.</summary>
-        public (float X, float Y, float Width, float Height) Place(PictureSubtitlePicture picture) =>
-            (shiftX + scaleX * picture.X, shiftY + scaleY * picture.Y, scaleX * picture.Width, scaleY * picture.Height);
+        /// <summary>A cue's picture's box on the frame: its place on the canvas, scaled and moved as the cue's canvas is.</summary>
+        public (float X, float Y, float Width, float Height) Place(int cue)
+        {
+            var (picture, place) = (cues[cue].Picture, places[cue]);
+            return (place.ShiftX + place.ScaleX * picture.X, place.ShiftY + place.ScaleY * picture.Y, place.ScaleX * picture.Width, place.ScaleY * picture.Height);
+        }
 
         /// <summary>
         /// Hands over the pictures of the cues within <see cref="TextRasterizer.PrepareWindowSeconds"/> of a moment that are

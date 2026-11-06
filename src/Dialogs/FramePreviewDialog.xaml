@@ -16,9 +16,13 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- The frame -->
+        <!-- The frame, and over its corner the histogram of it (a picture of its own, counted once per still) -->
         <Border Background="Black" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
-            <Image x:Name="FrameImage" Stretch="Uniform" />
+            <Grid>
+                <Image x:Name="FrameImage" Stretch="Uniform" />
+                <Image x:Name="HistogramImage" Width="256" Height="100" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                       Margin="10" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.Name="Histogram" />
+            </Grid>
         </Border>
 
         <!-- Where in the video the frame is taken from -->
@@ -40,7 +44,7 @@
                        Margin="0,0,0,12" MinHeight="34" />
             <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,4,0,8">
                 <CheckBox x:Name="HistogramBox" Content="Show Histogram" Margin="0" Checked="HistogramBox_Changed" Unchecked="HistogramBox_Changed"
-                          ToolTip="Draws a histogram of the graded frame in its bottom-right corner. Only in this preview, never in the encoded video." />
+                          ToolTip="Shows a histogram of the graded frame over its bottom-right corner. Only in this preview, never in the encoded video." />
                 <Button Content="Reset" Margin="20,0,0,0" Padding="12,4" Command="{Binding ResetColorCommand}"
                         ToolTip="Puts every control back where it changes nothing." />
             </StackPanel>

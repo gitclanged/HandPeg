@@ -1,0 +1,12 @@
+# A Track Preset turns the frame to its shape only where the Sequence is its to shape: alone, or at the default 16:9 with no other preset (5.2B, Q2).
+ok: two Game Presets saved, both of the upright shape
+ok: a Sequence of one track, its frame made 4:3
+ok: a Track Preset on the only track that holds clips turns the frame to the preset's shape
+ok: three tracks of clips, the frame the default 16:9
+ok: the first Track Preset turns the frame to its shape
+ok: a different Track Preset beside it leaves the frame's shape as it is
+ok: while its node and its clip's Cutout still go on
+ok: two tracks of clips, the frame made 4:3
+ok: beside other clips on a frame made 4:3, a Track Preset leaves the frame's shape
+ok: one picture track and a music track, the frame made 4:3
+ok: beside a music track's clips on a frame made 4:3, a Track Preset on the only picture track leaves the frame's shape

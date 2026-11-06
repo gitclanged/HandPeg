@@ -188,9 +188,9 @@ public sealed partial class UnifiedTimelineControl
                     if (end < to)
                     {
                         var shade = Math.Max(end, from);
-                        drawing.DrawRectangle(TimelineTrack.PastEndShade, null, new Rect(shade, 0, to - shade, _extent));
+                        drawing.DrawRectangle(TimelineMetrics.PastEndShade, null, new Rect(shade, 0, to - shade, _extent));
                         if (end >= from)
-                            drawing.DrawLine(TimelineTrack.EndLine, new Point(end + 0.5, 0), new Point(end + 0.5, _extent));
+                            drawing.DrawLine(TimelineMetrics.EndLine, new Point(end + 0.5, 0), new Point(end + 0.5, _extent));
                     }
                 }
 
@@ -543,8 +543,16 @@ public sealed partial class UnifiedTimelineControl
                 drawing.DrawGeometry(ThemeManager.KeyFill, KeyOutline, block.KeyShape);
             }
 
+            // The beats of its sound (5.2B, the beat grid): laid with its file's stretch, so they stay on their moments as its start is trimmed.
+            if (block.Beats is { Count: > 0 } beats)
+                DrawBeats(drawing, beats, rect, contentLeft, from, to);
+
+            // Its own switches at its top right (5.2), its badge left of them.
+            var switches = BlockSwitchBoxes(block, rect);
+            var free = switches.Lock.IsEmpty ? switches.OnOff : switches.Lock;
             if (block.Badge is { Length: > 0 } badge)
-                DrawBadge(drawing, block, rect, badge, dpi.PixelsPerDip);
+                DrawBadge(drawing, block, free.IsEmpty ? rect : new Rect(rect.Left, rect.Top, Math.Max(free.Left - rect.Left, 0), rect.Height), badge, dpi.PixelsPerDip);
+            DrawBlockSwitches(drawing, block, switches, dpi.PixelsPerDip);
         }
 
         drawing.Pop();
@@ -566,6 +574,31 @@ public sealed partial class UnifiedTimelineControl
 
         if (IsSelected?.Invoke(block.Clip) == true)
             drawing.DrawRoundedRectangle(null, SelectedOutline, new Rect(rect.Left + 0.75, rect.Top + 0.75, Math.Max(rect.Width - 1.5, 1), Math.Max(rect.Height - 1.5, 1)), 3, 3);
+    }
+
+    // The beat grid's tick (5.2B): faint, a pixel wide.
+    private static readonly Pen BeatTick = Frozen(new Pen(Solid(140, 0xFF, 0xFF, 0xFF), 1));
+
+    /// <summary>
+    /// A block's beats: a short tick each along its foot, from <paramref name="contentLeft"/> (where its file's stretch is laid), only those
+    /// on the block and in the stretch drawn (<paramref name="from"/> to <paramref name="to"/>). The beats are in order, so the first past
+    /// the right ends it.
+    /// </summary>
+    private static void DrawBeats(DrawingContext drawing, IReadOnlyList<double> beats, Rect rect, double contentLeft, double from, double to)
+    {
+        var (left, right) = (Math.Max(rect.Left, from), Math.Min(rect.Right, to));
+        var (top, bottom) = (rect.Bottom - Math.Clamp(rect.Height / 5, 3, 8), rect.Bottom - 1);
+        for (var i = 0; i < beats.Count; i++)
+        {
+            var x = contentLeft + beats[i];
+            if (x < left)
+                continue;
+            if (x > right)
+                break;
+
+            x = Math.Round(x) + 0.5;
+            drawing.DrawLine(BeatTick, new Point(x, top), new Point(x, bottom));
+        }
     }
 
     /// <summary>A block's sound given the old way (peaks by fraction, in pixels: TimelineBlock.Peaks), as a window by time.</summary>
@@ -710,13 +743,13 @@ public sealed partial class UnifiedTimelineControl
 
     /// <summary>Where the gain line of a block lies, for a gain in dB: silence at its foot, +12 dB at its top.</summary>
     private static double GainY(Rect rect, double gainDb) =>
-        rect.Top + 3 + (1 - (Math.Clamp(gainDb, TimelineTrack.LowestGain, TimelineTrack.HighestGain) - TimelineTrack.LowestGain)
-            / (TimelineTrack.HighestGain - TimelineTrack.LowestGain)) * Math.Max(rect.Height - 6, 1);
+        rect.Top + 3 + (1 - (Math.Clamp(gainDb, TimelineMetrics.LowestGain, TimelineMetrics.HighestGain) - TimelineMetrics.LowestGain)
+            / (TimelineMetrics.HighestGain - TimelineMetrics.LowestGain)) * Math.Max(rect.Height - 6, 1);
 
     /// <summary>The gain in dB at a height in a block: the line's place, the other way round.</summary>
     private static double GainAt(Rect rect, double y) =>
-        Math.Round(TimelineTrack.LowestGain + (1 - Math.Clamp((y - rect.Top - 3) / Math.Max(rect.Height - 6, 1), 0, 1))
-            * (TimelineTrack.HighestGain - TimelineTrack.LowestGain), 1);
+        Math.Round(TimelineMetrics.LowestGain + (1 - Math.Clamp((y - rect.Top - 3) / Math.Max(rect.Height - 6, 1), 0, 1))
+            * (TimelineMetrics.HighestGain - TimelineMetrics.LowestGain), 1);
 
     /// <summary>How wide a block's fades are drawn, in pixels: their seconds at the scale, never more than the block.</summary>
     private static (double In, double Out) FadeSpan(Rect rect, double fadeInSeconds, double fadeOutSeconds, double scale)
@@ -851,6 +884,42 @@ public sealed partial class UnifiedTimelineControl
 
         diamonds.Freeze();
         return diamonds;
+    }
+
+    // ----- A block's own switches (5.2) -----
+    // Segoe MDL2 Assets: View (E890), Hide (ED1A), Volume (E767), Mute (E74F), Link (E71B), Unlock (E785).
+
+    private const double BlockSwitchSize = 14, BlockSwitchGap = 2;
+    private static readonly Brush SwitchOffFill = Solid(225, 0xC6, 0x28, 0x28);
+    private static readonly Brush SwitchFreeFill = Solid(225, 0xEF, 0x8F, 0x00);
+
+    /// <summary>Where a block's switches are (its On/Off rightmost, its Lock left of it), in its rect's space; none on a block too small for them.</summary>
+    internal static (Rect OnOff, Rect Lock) BlockSwitchBoxes(TimelineBlock block, Rect rect)
+    {
+        if ((block.IsOn is null && block.IsLocked is null) || block.Switched is null || rect.Width < 3 * BlockSwitchSize + 16 || rect.Height < BlockSwitchSize + 4)
+            return (Rect.Empty, Rect.Empty);
+
+        var (top, right) = (rect.Top + 3, rect.Right - 4);
+        var onOff = block.IsOn is null ? Rect.Empty : new Rect(right - BlockSwitchSize, top, BlockSwitchSize, BlockSwitchSize);
+        if (!onOff.IsEmpty)
+            right = onOff.Left - BlockSwitchGap;
+        var lockBox = block.IsLocked is null ? Rect.Empty : new Rect(right - BlockSwitchSize, top, BlockSwitchSize, BlockSwitchSize);
+        return (onOff, lockBox);
+    }
+
+    private void DrawBlockSwitches(DrawingContext drawing, TimelineBlock block, (Rect OnOff, Rect Lock) boxes, double pixelsPerDip)
+    {
+        if (!boxes.OnOff.IsEmpty && block.IsOn is { } on)
+            DrawBlockSwitch(drawing, boxes.OnOff, on ? (block.SwitchIsSound ? "\uE767" : "\uE890") : (block.SwitchIsSound ? "\uE74F" : "\uED1A"), on ? BadgeFill : SwitchOffFill, pixelsPerDip);
+        if (!boxes.Lock.IsEmpty && block.IsLocked is { } locked)
+            DrawBlockSwitch(drawing, boxes.Lock, locked ? "\uE71B" : "\uE785", locked ? BadgeFill : SwitchFreeFill, pixelsPerDip);
+    }
+
+    private void DrawBlockSwitch(DrawingContext drawing, Rect box, string glyph, Brush fill, double pixelsPerDip)
+    {
+        drawing.DrawRoundedRectangle(fill, null, box, 3, 3);
+        var text = Word(glyph, Brushes.White, 9, icon: true, pixelsPerDip);
+        drawing.DrawText(text, new Point(box.Left + (box.Width - text.Width) / 2, box.Top + (box.Height - text.Height) / 2));
     }
 
     /// <summary>A block's badge: its words in a small dark tag at its top right, where the block has room for it.</summary>
@@ -1120,11 +1189,12 @@ public sealed partial class UnifiedTimelineControl
                 }
             }
 
+            var badge = BadgeRect(lane, pixelsPerDip);
             if (lane.Height >= 11)
             {
                 var name = NameOf(row, lane.Detailed ? 12 : 9, lane.Mini ? _muted : _text, pixelsPerDip);
                 var left = NameLeft(lane);
-                var room = (lane.Detailed && !TwoLines(lane) ? SwitchesLeft(lane) : width - 4) - left;
+                var room = (lane.Detailed && !TwoLines(lane) ? badge.IsEmpty ? SwitchesLeft(lane) : badge.Left - 4 : width - 4) - left;
                 if (room > 8)
                 {
                     if (name.MaxTextWidth != room)
@@ -1151,6 +1221,19 @@ public sealed partial class UnifiedTimelineControl
                 }
             }
 
+            // Its track's Game Preset (5.2A, a Track Preset Node): a pill with the preset's name, or a faint "+ Preset" that sets one.
+            if (!badge.IsEmpty)
+            {
+                var set = row.Badge is { Length: > 0 };
+                var words = BadgeWords(row, set ? _text : _muted, pixelsPerDip);
+                if (set)
+                    drawing.DrawRoundedRectangle(Translucent(_accent, 0.45), null, badge, badge.Height / 2, badge.Height / 2);
+                else
+                    drawing.DrawRoundedRectangle(null, BadgeOutline, badge, badge.Height / 2, badge.Height / 2);
+                words.MaxTextWidth = Math.Max(badge.Width - 2 * BadgePadding, 1);
+                drawing.DrawText(words, new Point(badge.Left + BadgePadding, badge.Top + (badge.Height - words.Height) / 2));
+            }
+
             // The time area's ends beside it (the wells' lit edge, as the old bars had at theirs).
             if (_edgeWidth > 0 && lane.Height > 2 * _edgeWidth)
             {
@@ -1158,6 +1241,59 @@ public sealed partial class UnifiedTimelineControl
                 drawing.DrawLine(_lowerEdgePen, new Point(ActualWidth - _edgeWidth / 2, lane.Top), new Point(ActualWidth - _edgeWidth / 2, lane.Bottom));
             }
         }
+    }
+
+    // A header's preset badge (5.2A): its words' size, its padding, what it says with no preset, and the outline of that empty one.
+    private const double BadgeTextSize = 10, BadgePadding = 6, BadgeHeight = 16;
+    private const string NoBadgeText = "+ Preset";
+    private static readonly Pen BadgeOutline = Frozen(new Pen(Solid(90, 255, 255, 255), 1) { DashStyle = Frozen(new DashStyle([3, 2], 0)) });
+
+    /// <summary>
+    /// Where a header's preset badge is (5.2A): on a tall lane in the switches' line, after the switches, as wide as its words (the room
+    /// there at most); on a short one, left of the switches, and only for a preset that is set. Top-level rows drawn in full only; empty
+    /// for none, or no room.
+    /// </summary>
+    private Rect BadgeRect(in Lane lane, double pixelsPerDip)
+    {
+        var row = lane.Row;
+        var two = TwoLines(lane);
+        if (!lane.Detailed || lane.Depth > 0 || (row.Badge is not { Length: > 0 } && !(row.OffersBadge && two)))
+            return Rect.Empty;
+
+        var natural = BadgeWords(row, _muted, pixelsPerDip, measure: true).WidthIncludingTrailingWhitespace + 2 * BadgePadding;
+        double left, right, top;
+        if (two)
+        {
+            left = NameLeft(lane) - 3 + SwitchCount(row) * SwitchSize + 6;
+            right = Math.Min(_headerWidth - 6, left + natural);
+            top = lane.Top + 23 + (SwitchSize - BadgeHeight) / 2;
+        }
+        else
+        {
+            right = SwitchesLeft(lane) - 4;
+            left = Math.Max(NameLeft(lane) + 36, right - Math.Min(natural, 84));
+            top = lane.Top + (lane.Height - BadgeHeight) / 2;
+        }
+
+        return right - left >= 28 ? new Rect(left, top, right - left, BadgeHeight) : Rect.Empty;
+    }
+
+    // A badge's words: the preset's name (or "+ Preset"), laid out once for its text and colour; drawn trimmed with an ellipsis to the pill, and
+    // measured from a copy never trimmed.
+    private FormattedText BadgeWords(TimelineRow row, Brush brush, double pixelsPerDip, bool measure = false)
+    {
+        var text = row.Badge is { Length: > 0 } name ? name : NoBadgeText;
+        var key = (string.Concat(measure ? "\u0001measure:" : "\u0001badge:", text), brush, BadgeTextSize, false);
+        if (!_words.TryGetValue(key, out var words))
+        {
+            words = new FormattedText(text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, LabelFace, BadgeTextSize, brush, pixelsPerDip)
+            {
+                MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis,
+            };
+            _words[key] = words;
+        }
+
+        return words;
     }
 
     // A lane's stripe: its row's accent, else the nearest parent's.
@@ -1396,7 +1532,18 @@ public sealed partial class UnifiedTimelineControl
 
         if (_dropMark is { } mark && scale > 0)
             DrawDropMark(drawing, mark, scale, from, to, dpi.PixelsPerDip);
+
+        // A rubber band being drawn over empty space (5.2A).
+        if (_marquee is { } band)
+        {
+            var box = MarqueeBox(band);
+            box.Offset(-_originX, 0);
+            drawing.DrawRectangle(MarqueeFill, MarqueeEdge, box);
+        }
     }
+
+    private static readonly Brush MarqueeFill = Solid(40, 0x4F, 0xC3, 0xF7);
+    private static readonly Pen MarqueeEdge = Frozen(new Pen(Solid(200, 0x4F, 0xC3, 0xF7), 1));
 
     // A J/L cut being dragged, in words.
     private static string SplitWords(bool lead, double seconds) => (lead, seconds >= 0) switch

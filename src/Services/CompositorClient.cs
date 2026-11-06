@@ -98,9 +98,22 @@ public sealed class CompositorClient : IDisposable
 
     public int WorkerProcessId => _worker?.ProcessId ?? 0;
 
-    private string WorkerArguments(int standby) => standby < 0
+    private string WorkerArguments(int standby) => (standby < 0
         ? string.Create(CultureInfo.InvariantCulture, $"{CompositorWorker.Argument} {BaseName} {_adapter}")
-        : string.Create(CultureInfo.InvariantCulture, $"{CompositorWorker.Argument} {BaseName} {_adapter} --standby {standby}");
+        : string.Create(CultureInfo.InvariantCulture, $"{CompositorWorker.Argument} {BaseName} {_adapter} --standby {standby}")) + FfmpegArguments();
+
+    /// <summary>
+    /// The FFmpeg and ffprobe HandPeg uses (DependencyUpdater: the settings' own, else the installed copy), for the streams
+    /// Media Foundation cannot decode (FfmpegVideoDecoder, 5.2-Arm64AndNpu): read again for every worker started, so one
+    /// installed or chosen since is the next worker's. Whether they are there is the worker's question, asked only when needed.
+    /// </summary>
+    private static string FfmpegArguments()
+    {
+        var (ffmpeg, ffprobe) = (DependencyUpdater.FfmpegPath, DependencyUpdater.FfprobePath);
+        return ffmpeg.Length == 0 || ffprobe.Length == 0 || ffmpeg.Contains('"') || ffprobe.Contains('"')
+            ? ""
+            : $" {CompositorWorker.FfmpegOption} \"{ffmpeg.TrimEnd('\\')}\" {CompositorWorker.FfprobeOption} \"{ffprobe.TrimEnd('\\')}\"";
+    }
 
     private void StartStandby()
     {
@@ -198,26 +211,32 @@ public sealed class CompositorClient : IDisposable
         old?.Dispose();
     }
 
+    /// <summary>The longest a readback wait sleeps between two looks at the worker's count (and at its abort), ms.</summary>
+    internal const int ReadbackSliceMs = 20;
+
     /// <summary>
     /// Waits up to <paramref name="milliseconds"/> for the frame of <paramref name="sequence"/> (published with
     /// <see cref="FrameSceneHeader.FlagReadback"/>) to be read back, then copies it into <paramref name="into"/>: its BGRA8 rows
     /// (width x height x 4), or NV12's two planes with <see cref="FrameSceneHeader.FlagReadbackNv12"/>
     /// (<see cref="CompositorProtocol.Nv12Bytes"/>). False on a timeout, or when <paramref name="into"/> is too small.
     /// </summary>
-    public bool TryReadback(long sequence, Span<byte> into, out int width, out int height, int milliseconds)
+    public bool TryReadback(long sequence, Span<byte> into, out int width, out int height, int milliseconds) =>
+        TryReadback(sequence, into, out width, out height, milliseconds, abort: null);
+
+    /// <summary>
+    /// <see cref="TryReadback(long, Span{byte}, out int, out int, int)"/> that also gives up, false, as soon as
+    /// <paramref name="abort"/> is set: the player's stop event (GpuPreviewEngine's Export Frame and project thumbnail), so that a
+    /// pump told to stop leaves within a slice and is joined before this client's memory is let go (Pass 5.2D:
+    /// a 20 s capture wait outlived the 2 s join and read the control plane after it was unmapped).
+    /// </summary>
+    public bool TryReadback(long sequence, Span<byte> into, out int width, out int height, int milliseconds, WaitHandle? abort)
     {
         (width, height) = (0, 0);
         if (_readback is null)
             return false;
-        var deadline = Stopwatch.GetTimestamp() + (long)(milliseconds * (Stopwatch.Frequency / 1000.0));
         ref var control = ref _shared.Control;
-        while (Volatile.Read(ref control.ReadbackSequence) < sequence)
-        {
-            var left = (int)((deadline - Stopwatch.GetTimestamp()) * 1000 / Stopwatch.Frequency);
-            if (left <= 0)
-                return false;
-            _presented.WaitOne(Math.Min(left, 20));
-        }
+        if (!WaitForSequence(ref control.ReadbackSequence, sequence, _presented, abort, milliseconds))
+            return false;
 
         (width, height) = (control.ReadbackWidth, control.ReadbackHeight);
         var bytes = control.ReadbackRowBytes == width * 4 ? (long)width * height * 4 : CompositorProtocol.Nv12Bytes(width, height);
@@ -235,6 +254,33 @@ public sealed class CompositorClient : IDisposable
             {
                 view.SafeMemoryMappedViewHandle.ReleasePointer();
             }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Waits until <paramref name="counter"/> (a count the worker raises: <see cref="ControlBlock.ReadbackSequence"/>) reaches
+    /// <paramref name="target"/>, sleeping on <paramref name="signal"/> (the worker's frame event) a slice of at most
+    /// <see cref="ReadbackSliceMs"/> at a time. False when <paramref name="milliseconds"/> pass first, and false at once when
+    /// <paramref name="abort"/> is set: it is looked at before every slice and wakes the slice it comes in. Without an abort it
+    /// waits as it always did, with no allocation (the export's and the filmstrips' calls, every frame).
+    /// </summary>
+    internal static bool WaitForSequence(ref long counter, long target, WaitHandle signal, WaitHandle? abort, int milliseconds)
+    {
+        var deadline = Stopwatch.GetTimestamp() + (long)(milliseconds * (Stopwatch.Frequency / 1000.0));
+        var handles = abort is null ? null : new WaitHandle[] { signal, abort };
+        while (Volatile.Read(ref counter) < target)
+        {
+            if (abort is not null && abort.WaitOne(0))
+                return false;
+            var left = (int)((deadline - Stopwatch.GetTimestamp()) * 1000 / Stopwatch.Frequency);
+            if (left <= 0)
+                return false;
+            if (handles is null)
+                signal.WaitOne(Math.Min(left, ReadbackSliceMs));
+            else if (WaitHandle.WaitAny(handles, Math.Min(left, ReadbackSliceMs)) == 1)
+                return false;
         }
 
         return true;
@@ -540,7 +586,17 @@ public sealed class CompositorClient : IDisposable
         return true;
     }
 
-    public void Dispose()
+    public void Dispose() => Close(keepMemory: false);
+
+    /// <summary>
+    /// Ends the workers and lets go of the sections as <see cref="Dispose"/> does, but leaves the control plane, the readback
+    /// section and the events mapped and open: for an owner whose thread may still be inside a read or a wait on them
+    /// (GpuPreviewEngine's pump that did not stop within its join). Unmapped under that thread, its next read would be an access
+    /// violation, not an exception it could catch; kept, they go with the process. (Pass 5.2D)
+    /// </summary>
+    public void DisposeKeepingMemory() => Close(keepMemory: true);
+
+    private void Close(bool keepMemory)
     {
         if (_disposed)
             return;
@@ -568,11 +624,16 @@ public sealed class CompositorClient : IDisposable
             foreach (var section in _sections.Values)
                 section.Dispose();
             _sections.Clear();
-            _readbackView?.Dispose();
-            _readback?.Dispose();
-            (_readback, _readbackView) = (null, null);
+            if (!keepMemory)
+            {
+                _readbackView?.Dispose();
+                _readback?.Dispose();
+                (_readback, _readbackView) = (null, null);
+            }
         }
 
+        if (keepMemory)
+            return;
         _wake.Dispose();
         _presented.Dispose();
         _stopping.Dispose();

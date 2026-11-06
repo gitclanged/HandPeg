@@ -63,15 +63,11 @@ public sealed class EncodingPreset
     public string CustomPixelAspectRatio { get; set; } = "";
 
     /// <summary>
-    /// Whether the size is the source's shape turned on its side (16:9 becomes 9:16). Null in presets saved
-    /// before the option existed; those were vertical exactly when they used the framer.
+    /// Whether the size is the source's shape turned on its side (16:9 becomes 9:16). Null in presets saved before the option
+    /// existed, which reads as off (5.2-Arm64AndNpu: the old Frame &amp; Layer Engine switch, "VerticalFramer" in such a file, is
+    /// no longer read in its place; a member of a file this version does not know is skipped).
     /// </summary>
     public bool? UseVerticalResolution { get; set; }
-
-    // Frame & Layer Engine: the video on a blurred copy of itself, with layers on top.
-    // The names in the file are the ones it had as the "vertical framer", so older presets still load.
-    [JsonPropertyName("VerticalFramer")]
-    public bool FrameEngine { get; set; }
 
     /// <summary>Scale of the centre video: 1 fills the width of the frame.</summary>
     [JsonPropertyName("VerticalZoom")]
@@ -141,15 +137,8 @@ public sealed class EncodingPreset
     public bool Denoise { get; set; }
     public string LutPath { get; set; } = "";
 
-    // The watermark of earlier versions. Read so that it can be turned into an image layer; never written.
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? WatermarkPath { get; set; }
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? WatermarkOpacity { get; set; }
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? WatermarkPosition { get; set; }
+    // (The watermark of versions before images were clips, WatermarkPath and its opacity and position, is not read any more,
+    // 5.2-Arm64AndNpu: a preset that has one opens without it; an image clip does the same.)
 
     // Advanced: colour correction (eq) and sharpening (cas). The defaults leave the picture as it is.
     public double ColorContrast { get; set; } = 1;
@@ -212,7 +201,9 @@ public sealed class EncodingPreset
     public string AudioBitrate { get; set; } = "160k";
     public bool MergeAudioTracks { get; set; }
     public bool NormalizeAudio { get; set; }
-    public bool DuckAudio { get; set; }
+
+    // (A preset's old "DuckAudio", one switch for the first two streams from before ducking was set lane by lane, is not read
+    // any more, 5.2-Arm64AndNpu: each Sub-Lane ducks of its own. A file that has it reads without it.)
 
     /// <summary>The sample rate every encoded track is written at, in Hz; 0 (Auto, not written) keeps each track's own.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]

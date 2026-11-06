@@ -7,7 +7,7 @@ using HandPegApp.Services.Gpu;
 namespace HandPegApp.Tools.AvSync;
 
 /// <summary>What was heard and seen at one moment, against what the files say should have been.</summary>
-/// <param name="What">What was measured: the layer's file (its extension only) or the main video.</param>
+/// <param name="What">What was measured: a clip's file (its extension only), heard by its own sound ("clip") or by its Sub-Lanes ("lanes").</param>
 /// <param name="VideoLateMs">
 /// How late the picture is, in milliseconds: from the moment of its file the scene plan gives the worker and the file's
 /// own time stamps (exact), checked against which frames the output really shows (<paramref name="VideoRange"/>).
@@ -44,33 +44,56 @@ internal static class Measurement
     {
         var notes = new List<string>();
 
-        // What is to be heard at this moment: a video layer's sound (the top one that plays here), or else the main video's
-        // (the timeline as the builder lowers it: FilterGraphBuilder.Lowering, which the plan and the sound program read too).
-        var timeline = FilterGraphBuilder.Lowering(state);
-        var layer = timeline.LayerAudio.LastOrDefault(l => l.IsVideoFile && l.StartTime <= at + 0.001 && (l.Duration <= 0.001 || at < l.StartTime + l.Duration - 0.5));
-        if (layer is not null)
-            return MeasureLayer(state, plan, run, at, seconds, layer, shift, notes);
-        if (timeline.MainClips.FirstOrDefault(c => c.Start <= at && at < c.End - 0.5) is { End: > 0 } clip)
-            return MeasureMain(state, plan, run, at, seconds, clip, shift, notes);
-        return new PointResult(at, "nothing", null, null, 0, 0, null, 0, "neither a clip of the main video nor a video layer with sound plays here");
+        // What is to be heard at this moment (the timeline as it is lowered: TimelineLowering.Lowering, which the plan and the sound
+        // program read too). No clip is the main one (5.2-AuditB): a video clip's own sound (the top one that plays here), or else a
+        // video clip heard through its streams on its Sub-Lanes (sound clips that are its children, as the main video's are once a
+        // project from before is opened), each measured on its clip's own clock.
+        var timeline = HandPegApp.Services.Gpu.TimelineLowering.Lowering(state);
+        var document = state.Timeline;
+        bool Plays(Layer l) => l.StartTime <= at + 0.001 && (l.Duration <= 0.001 || at < l.StartTime + l.Duration - 0.5);
+        if (timeline.LayerAudio.LastOrDefault(l => l.IsVideoFile && Plays(l)) is { } own && document.FindClip(own.ClipId) is { } clip)
+            return MeasureClip(state, plan, run, at, seconds, clip, [Math.Max(own.AudioStream, 0)], "clip", shift, notes);
+
+        foreach (var lane in timeline.LayerAudio.Reverse())
+        {
+            if (!lane.IsAudio || !Plays(lane) || document.FindClip(lane.ClipId) is not { ParentClipId: { } parentId }
+                || document.FindClip(parentId) is not { ContentKind: LayerKind.VideoFile } picture || picture.Start > at || at >= picture.End - 0.5)
+                continue;
+
+            // Its streams heard here, by their numbers in the file (what the reference is decoded from).
+            var streams = timeline.LayerAudio.Where(l => l.IsAudio && Plays(l) && document.FindClip(l.ClipId)?.ParentClipId == parentId)
+                .Select(l => Math.Max(l.AudioStream, 0)).Distinct().ToList();
+            return MeasureClip(state, plan, run, at, seconds, picture, streams, "lanes", shift, notes);
+        }
+
+        return new PointResult(at, "nothing", null, null, 0, 0, null, 0, "no video clip heard by its own sound or its Sub-Lanes plays here");
     }
 
-    private static PointResult MeasureLayer(SequenceExportState state, GpuScenePlan plan, GpuRun run, double at, double seconds, Layer layer, Shift shift,
-        List<string> notes)
+    /// <summary>
+    /// A clip of a file at a moment, on its own clock: a moment t of the sequence shows, and plays from <paramref name="streams"/>,
+    /// the file's time stamp origin + MediaOffset + (t - start) x speed (its moment 0 its first picture, as the export cuts it).
+    /// </summary>
+    private static PointResult MeasureClip(SequenceExportState state, GpuScenePlan plan, GpuRun run, double at, double seconds, TimelineClip clip,
+        IReadOnlyList<int> streams, string what, Shift shift, List<string> notes)
     {
-        var file = layer.ImagePath.Trim().Trim('"');
-        var speed = layer.HasSpeed && double.IsFinite(layer.Speed) ? Math.Clamp(layer.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
+        // Never across the clip's end: what follows a cut is another clip's picture and sound, on another clock (its frames could only
+        // disagree with this one's), so a moment near a cut is measured up to it.
+        if (clip.End - at - 0.05 < seconds)
+        {
+            seconds = Math.Max(clip.End - at - 0.05, 0.5);
+            notes.Add(string.Create(CultureInfo.InvariantCulture, $"measured up to the clip's end ({seconds:0.###} s)"));
+        }
 
-        // The truth, from the file itself: its moment 0 is its first picture (as the export cuts it), so a moment t of the
-        // sequence shows and plays the file's time stamp origin + MediaOffset + (t - start) x speed.
+        var file = (clip.SourcePath ?? "").Trim().Trim('"');
+        var speed = double.IsFinite(clip.Speed) ? Math.Clamp(clip.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
         var origin = Media.StreamStart(file, "v") ?? 0;
-        double Due(double t) => origin + layer.MediaOffset + (t - layer.StartTime) * speed;
+        double Due(double t) => origin + clip.MediaOffset + (t - clip.Start) * speed;
 
-        var (audioLate, score) = LocateSound(run.Output, at, file, [0], Due, seconds, notes);
+        var (audioLate, score) = LocateSound(run.Output, at, file, streams, Due, seconds, notes);
 
-        // The picture: the layer of a clip of this file the plan draws (the worker's moment of it is from its first frame).
+        // The picture: the clip's layer the plan draws (the worker's moment of it is from its first frame).
         var probe = at + SoundSettle;
-        var drawn = Find(state, plan, probe - shift.VideoSeconds, c => c.ContentKind == LayerKind.VideoFile && SamePath(c.SourcePath, file));
+        var drawn = Find(state, plan, probe - shift.VideoSeconds, c => c.Id == clip.Id);
         double? videoLate = null;
         (double, double)? range = null;
         int matched = 0, compared = 0;
@@ -79,49 +102,14 @@ internal static class Measurement
         {
             proxied = d.Clip.ProxyChoice == ProxyChoice.Make && state.IsPreview && state.PreviewPaths.ContainsKey(file);
             videoLate = (Due(probe) - (d.Layer.MediaSeconds + origin)) / speed * 1000;
-            (range, matched, compared) = MatchFrames(run, at, seconds, file, Placement(d.Layer, run, notes), f => layer.StartTime + (f - origin - layer.MediaOffset) / speed, notes);
+            (range, matched, compared) = MatchFrames(run, at, seconds, file, Placement(d.Layer, run, notes), f => clip.Start + (f - origin - clip.MediaOffset) / speed, notes);
         }
         else
         {
-            notes.Add("the layer is not in the scene the plan draws");
+            notes.Add("the clip is not in the scene the plan draws");
         }
 
-        return new PointResult(at, $"layer {System.IO.Path.GetExtension(file)}{(proxied ? " (proxy)" : "")}", videoLate, range, matched, compared, audioLate, score, string.Join("; ", notes));
-    }
-
-    private static PointResult MeasureMain(SequenceExportState state, GpuScenePlan plan, GpuRun run, double at, double seconds, MainClip clip, Shift shift,
-        List<string> notes)
-    {
-        var file = state.LocalMediaPath.Trim().Trim('"');
-
-        // The main clips' offsets count from the container's start (the export's first input): a moment t of the sequence
-        // is the file's time stamp ContainerStart + Offset + (t - start).
-        var container = Media.ContainerStart(file) ?? 0;
-        var origin = Media.StreamStart(file, "v") ?? container;
-        double Due(double t) => container + clip.Offset + (t - clip.Start);
-        var tracks = state.AudioTracks.Where(t => !t.IsSilentBase).Select(t => t.Index).ToList();
-        var (audioLate, score) = tracks.Count == 0 ? (null, 0) : LocateSound(run.Output, at, file, tracks, Due, seconds, notes);
-        if (tracks.Count == 0)
-            notes.Add("the main video has no sound kept");
-
-        var probe = at + SoundSettle;
-        var drawn = Find(state, plan, probe - shift.VideoSeconds, c => c.ContentKind == LayerKind.MainVideo);
-        double? videoLate = null;
-        (double, double)? range = null;
-        int matched = 0, compared = 0;
-        var proxied = false;
-        if (drawn is { } d)
-        {
-            proxied = d.Clip.ProxyChoice == ProxyChoice.Make && state.IsPreview && state.PreviewPaths.ContainsKey(file);
-            videoLate = (Due(probe) - (d.Layer.MediaSeconds + origin)) * 1000;
-            (range, matched, compared) = MatchFrames(run, at, seconds, file, Placement(d.Layer, run, notes), f => clip.Start + (f - container - clip.Offset), notes);
-        }
-        else
-        {
-            notes.Add("the main video is not in the scene the plan draws");
-        }
-
-        return new PointResult(at, $"main video{(proxied ? " (proxy)" : "")}", videoLate, range, matched, compared, audioLate, score, string.Join("; ", notes));
+        return new PointResult(at, $"{what} {System.IO.Path.GetExtension(file)}{(proxied ? " (proxy)" : "")}", videoLate, range, matched, compared, audioLate, score, string.Join("; ", notes));
     }
 
     /// <summary>

@@ -15,7 +15,7 @@ namespace HandPegApp.Services;
 /// </summary>
 public static partial class CrashSummaries
 {
-    /// <summary>"mkv (matroska,webm), 1h02m03.4s, h264 1920x1080 29.97 fps yuv420p, 2 audio (aac 2ch 48000 Hz, ac3 6ch 48000 Hz), 1 subtitle (subrip), 3 layers".</summary>
+    /// <summary>"mkv (matroska,webm), 1h02m03.4s, h264 1920x1080 29.97 fps yuv420p, 2 audio (aac 2ch 48000 Hz, ac3 6ch 48000 Hz), 1 subtitle (subrip), 3 clips".</summary>
     public static string Media(string path, MediaInfo? info, int layers = 0)
     {
         var text = new StringBuilder(Extension(path));
@@ -42,7 +42,7 @@ public static partial class CrashSummaries
         if (info.Subtitles.Count > 0)
             text.Append(CultureInfo.InvariantCulture, $", {info.Subtitles.Count} subtitle ({string.Join(", ", info.Subtitles.Take(4).Select(s => Word(s.Codec)).Distinct())})");
         if (layers > 0)
-            text.Append(CultureInfo.InvariantCulture, $", {layers} layers");
+            text.Append(CultureInfo.InvariantCulture, $", {layers} clips");
         return text.ToString();
     }
 

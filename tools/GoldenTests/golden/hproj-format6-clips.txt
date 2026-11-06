@@ -1,0 +1,59 @@
+# A format 6 project of clips (each its own file's, a Cutout its clip's child on its clock, the file's streams on Sub-Lanes) written and opened again; one of the shape before 5.2-AuditB (a main video) refused as it is opened.
+ok: a project of clips is of the current shape: nothing in it is of the old kinds
+ok: opened as the window opens a project, and written again: the same file
+
+the Sequence's natural size: 1152 x 1080
+the output choices: 0 Game aac 160k Re-encode; 1 Mic libopus 96k Re-encode; 2 Discord aac 160k Ignore / Drop
+
+the document opened:
+  track 0: Video "Video 1"
+    VideoFile "match.mkv" 0-5 s, the file at 10 s x1 (of 120 s), v0 a-1
+      look: VideoFile 1920 x 1080 "D:/media/match.mkv", at (0, 0.236458) 1 wide = box (0, 454) 1080 x 1012
+      crop (0.2, 0, 0.2, 0), source (0, 0) 1 x 1, blur fill on, sound off
+    VideoFile "match.mkv" 5-10 s, the file at 30 s x1 (of 120 s), v0 a-1, crossfade in 1
+      look: VideoFile 1920 x 1080 "D:/media/match.mkv", at (0, 0.236458) 1 wide = box (0, 454) 1080 x 1012
+      crop (0.2, 0, 0.2, 0), source (0, 0) 1 x 1, blur fill on, sound off
+  track 1: Video "Video 2"
+    VideoFile "Killfeed" 3-5 s, the file at 13 s x1 (of 120 s), v0 a-1, child of track 0 clip 0, fades 0.5/0
+      look: VideoFile 1920 x 1080 "D:/media/match.mkv", at (0.36, 0.03) 0.62 wide = box (389, 58) 670 x 288
+      crop (0.65, 0.01, 0.01, 0.73), source (0, 0) 1 x 1, blur fill off, mask of its picture grown 4, sound off
+  track 2: Audio "Audio 1"
+    Audio "music" 0-10 s, the file at 4 s x1 (of 240 s), v0 a0, -8 dB
+      look: Audio, 
+  track 3: Audio "Game", under track 0, stream place 0, -3 dB, 1 filter(s), ducked
+    Audio "Game" 0-5 s, the file at 10 s x1 (of 120 s), v0 a0, child of track 0 clip 0
+      look: Audio, stereo
+    Audio "Game" 5-10 s, the file at 30 s x1 (of 120 s), v0 a0, child of track 0 clip 1, crossfade in 1
+      look: Audio, stereo
+  track 4: Audio "Mic", under track 0, stream place 1, 1 filter(s)
+    Audio "Mic" 0-5 s, the file at 10 s x1 (of 120 s), v0 a1, child of track 0 clip 0
+      look: Audio, stereo, a voice
+    Audio "Mic" 5-10 s, the file at 30 s x1 (of 120 s), v0 a1, child of track 0 clip 1, crossfade in 1
+      look: Audio, stereo, a voice
+
+ok: the document holds together (TimelineDocument.FindProblems)
+ok: the Sequence's natural size is the document's own
+ok: every clip and every look is a clip of a file or a sound: none of the old kinds
+ok: the clips of the file are drawn in one box, each with its blur fill
+ok: the Cutout is its clip's child, a clip of the same file on its clock (the file at 13 s), silent, with no blur fill
+ok: the file's streams are on Sub-Lanes under Video 1
+ok: each lane mixes its stream itself: Game -3 dB, its compressor, ducked; Mic its high-pass
+ok: each sound clip is its picture clip's child, of the same file, from its stream
+ok: the Mic's sound clips are a voice, the Game's are not
+ok: the output choices are read back: Game, Mic, and Discord left out
+ok: the captions are heard from a clip's stream (the Mic's), anchored to it
+
+5.1's project: 5 clips of the main video and 1 cut-out of it
+ok: a project of 5.1's shape (four clips of the main video, a picture in picture of it, a cut-out of it) is read as it is, and told apart by what it holds
+ok: read as it is: nothing of it is converted or dropped by reading (the view model converts it as it opens it)
+ok: an undo step holding the old kinds is told apart the same way (it is let go when it is stepped to)
+ok: read from its file it is the same project, and the file is left as it was, to the byte
+a clip of the main video: 1 clip of the main video
+ok: one clip of the main video among clips of files is told apart
+a cut-out of it in the recycle bin: clips of the main video in its recycle bin
+ok: a cut-out of the main video that went to the recycle bin with its clip is told apart
+a clip of it folded out: 1 clip of the main video
+ok: a clip of the main video folded out of the timeline is told apart
+captions heard from the main file: its captions are heard from the main video's file
+ok: captions heard from the main video's file are told apart
+ok: a stream's old mixing beside its output choice alone is no sign of the old shape: nothing to convert

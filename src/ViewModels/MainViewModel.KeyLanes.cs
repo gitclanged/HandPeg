@@ -391,6 +391,8 @@ public partial class MainViewModel
         KeyProperty.Scale => "Scale",
         KeyProperty.Rotation => "Rotation",
         KeyProperty.Opacity => "Opacity",
+        KeyProperty.TiltX => "Tilt X (Pitch)",
+        KeyProperty.TiltY => "Tilt Y (Yaw)",
         EffectKeyRef value => value.Label,
         _ => "motion",
     };

@@ -12,7 +12,14 @@ public sealed record InfoRow(string Label, string Value);
 /// </summary>
 public readonly record struct AudioPiece(double Start, double End, bool Muted);
 
-/// <summary>An audio stream of the source and what to do with it in the output.</summary>
+/// <summary>
+/// An output audio track (5.2-AuditB): a stream place of the file last opened, and what is made of it in the output: copied,
+/// encoded again or dropped, its codec, bitrate and title. Output N carries the sound of every Sub-Lane of stream place N.
+/// Nothing is heard through it: the file's sound plays through its clips and their Sub-Lanes, each lane with its own gain,
+/// filters and ducking. Its mixer and edits (gain, filters, ducking, voice, slip, silenced pieces) are what a project from
+/// before mixed the main video's stream with: the input of the conversion that puts them on Sub-Lanes as a 5.1 project is opened
+/// (LegacyMainVideo, which then sets them back to neutral); nothing the export or the player hears reads them.
+/// </summary>
 public sealed partial class AudioTrack : ObservableObject
 {
     public const string Passthrough = "Passthrough (Copy)";
@@ -98,17 +105,14 @@ public sealed partial class AudioTrack : ObservableObject
     [ObservableProperty] private string _codec = "aac";
     [ObservableProperty] private string _bitrate = "160k";
 
-    // ----- Mixer -----
+    // ----- Mixer (legacy: the input of LegacyMainVideo.Migrate, neutral after it; nothing the sound engine hears reads it) -----
 
-    /// <summary>Louder (positive) or quieter, in decibels. Applies to tracks that are re-encoded.</summary>
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HasProcessing))]
-    private double _gainDb;
+    /// <summary>Louder (positive) or quieter, in decibels, as a project from before 5.2-AuditB mixed the stream (now its Sub-Lane's gain).</summary>
+    [ObservableProperty] private double _gainDb;
 
-    /// <summary>The track's processing: compressor, gate, equalizer and so on. Replaced as a whole by its dialog.</summary>
+    /// <summary>The stream's processing as a project from before 5.2-AuditB had it (compressor, gate, equalizer...): now its Sub-Lane's.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(FiltersCountText))]
-    [NotifyPropertyChangedFor(nameof(HasProcessing))]
     private TrackAudioFilters _filters = new();
 
     /// <summary>A picture of the whole track's sound, drawn in the background after a load.</summary>
@@ -123,9 +127,6 @@ public sealed partial class AudioTrack : ObservableObject
     /// <summary>One of the video's own audio streams, with a codec, filters and a solo button of its own.</summary>
     public bool IsStream => true;
 
-    /// <summary>What the solo button plays: this track.</summary>
-    public object SoloTarget => this;
-
     /// <summary>The picture behind the whole row: the track's waveform.</summary>
     public System.Windows.Media.ImageSource? TrackWaveform => Waveform;
 
@@ -135,91 +136,35 @@ public sealed partial class AudioTrack : ObservableObject
     public double ClipSpeed { get => 1; set { } }
     public bool IsRemovable => false;
 
-    // ----- On the timeline -----
+    // ----- On the timeline (legacy: the input of LegacyMainVideo.Migrate, neutral after it) -----
 
-    /// <summary>How far the track has been slipped against the picture, in seconds: positive is later.</summary>
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsEdited))]
-    private double _offsetSeconds;
+    /// <summary>How far the stream was slipped against the picture, in seconds (positive is later), before 5.2-AuditB: now baked into its Sub-Lane clips.</summary>
+    [ObservableProperty] private double _offsetSeconds;
 
-    /// <summary>The parts the track was cut into, in its own time; empty while it is still whole.</summary>
+    /// <summary>The parts the stream was cut into, in its own time, before 5.2-AuditB (now Sub-Lane clips, the silenced ones muted); empty while it is still whole.</summary>
     public IReadOnlyList<AudioPiece> Pieces { get; private set; } = [];
-
-    /// <summary>Moved, or silenced in places: sound like that cannot be copied, only encoded again.</summary>
-    public bool IsEdited => Math.Abs(OffsetSeconds) > 0.001 || Pieces.Any(p => p.Muted);
 
     public void SetEdits(double offset, IEnumerable<AudioPiece>? pieces)
     {
         Pieces = [.. pieces ?? []];
         OffsetSeconds = offset;
         OnPropertyChanged(nameof(Pieces));
-        OnPropertyChanged(nameof(IsEdited));
     }
 
-    /// <summary>Cuts the track in two at a moment of its own time. <paramref name="total"/> is its length, for the first cut of a whole track.</summary>
-    public void SplitAt(double seconds, double total)
-    {
-        var pieces = Pieces.Count > 0 ? Pieces.ToList() : [new AudioPiece(0, total, false)];
-        var index = pieces.FindIndex(p => seconds > p.Start + 0.02 && seconds < p.End - 0.02);
-        if (index < 0)
-            return;
-
-        var piece = pieces[index];
-        pieces[index] = piece with { End = seconds };
-        pieces.Insert(index + 1, piece with { Start = seconds });
-        SetEdits(OffsetSeconds, pieces);
-    }
-
-    public void ToggleMuted(AudioPiece piece)
-    {
-        var pieces = Pieces.ToList();
-        var index = pieces.IndexOf(piece);
-        if (index < 0)
-            return;
-
-        pieces[index] = piece with { Muted = !piece.Muted };
-        SetEdits(OffsetSeconds, pieces);
-    }
-
-    /// <summary>
-    /// What the edits come to as audio filters, applied to the track before anything else: the silenced
-    /// parts turned down to nothing, then the whole track moved later (with silence in front) or earlier.
-    /// </summary>
-    public List<string> BuildEditChain()
-    {
-        static string Number(double value) => value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-
-        var chain = Pieces.Where(p => p.Muted).Select(p => $"volume=0:enable='between(t,{Number(p.Start)},{Number(p.End)})'").ToList();
-        if (OffsetSeconds > 0.001)
-            chain.Add($"adelay={(int)Math.Round(OffsetSeconds * 1000)}:all=1");
-        else if (OffsetSeconds < -0.001)
-            chain.Add($"atrim=start={Number(-OffsetSeconds)},asetpts=PTS-STARTPTS");
-        return chain;
-    }
-
-    /// <summary>The track is turned down while a voice is speaking.</summary>
+    /// <summary>The stream was turned down while a voice spoke, before 5.2-AuditB: now its Sub-Lane's ducking.</summary>
     [ObservableProperty] private bool _autoDuck;
 
     /// <summary>
-    /// The track is a voice (a microphone, dialogue): what the ducked tracks make room for, and (4.3E) what Auto-Captions
-    /// listen to. Found by its title when a new file is loaded (VoiceTrackScanner), and ticked or unticked by hand.
+    /// The stream was a voice (a microphone, dialogue: what the ducked tracks made room for), before 5.2-AuditB: now its
+    /// Sub-Lane clips are (their look's IsVoice).
     /// </summary>
     [ObservableProperty] private bool _isVoice;
-
-    /// <summary>The player is playing this track instead of the first one. Set by the view model.</summary>
-    [ObservableProperty] private bool _isSolo;
 
     /// <summary>The colour the waveform is drawn in, so that tracks can be told apart in the master view.</summary>
     public string WaveformColor { get; init; } = "#4FC3F7";
 
     /// <summary>How many filters are on, for the button that opens them to show; nothing when none is.</summary>
     public string FiltersCountText => Filters.ActiveCount > 0 ? Filters.ActiveCount.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
-
-    /// <summary>Whether there is anything for FFmpeg to do to the sound of this track.</summary>
-    public bool HasProcessing => Math.Abs(GainDb) >= 0.05 || Filters.IsActive;
-
-    /// <summary>The audio filters for this track's gain and processing; empty when there is none.</summary>
-    public List<string> GetFilterChain() => Filters.BuildChain(GainDb);
 
     public bool IsReencoded => Action == Reencode;
     public bool IsPassthrough => Action == Passthrough;

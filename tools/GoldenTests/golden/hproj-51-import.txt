@@ -1,0 +1,87 @@
+# A 5.1 project (a main video) opened as the app opens one: converted (LegacyMainVideo through MainViewModel.ConvertLegacy), written over its own file only by the window (the same name), and opened again as a project of this version's.
+opened by a harness: Project loaded: A 5.1 project
+converted from: 5 clips of the main video and 1 cut-out of it
+ok: the view model says what it converted
+ok: the Sequence it holds is of this version's shape (no clip of the old kinds) and holds together
+ok: a harness's opening (SavesConvertedProjects off: SeekBench, AvSync) leaves the 5.1 file as it was, to the byte, and writes nothing beside it
+opened by the window: Project loaded and converted from HandPeg 5.1.0 (5 clips of the main video and 1 cut-out of it); saved over its file in this version's shape: A 5.1 project
+ok: the window wrote the converted project over its own file: format 6, written by this version
+ok: under the same name, and nothing beside it (no second project, no part-written file): Save goes on writing to it
+ok: what was written is what is open: nothing counts as unsaved
+ok: the file holds nothing of the old shape: no clip of the main video, no cut-out of it, no captions heard from its file
+captions written: Clip stream 1, 1 anchored line(s), 1 shown from 2.1 s
+ok: its captions are heard from a clip's stream (the Mic's) of the same file, anchored to it in the file's time, and shown at 2.1 s: where the first clip plays that moment of the Mic, slipped 0.1 s
+ok: its streams' old mixing is let go (it lives on the Sub-Lanes now); their output choices stay: Game, Mic, Discord left out
+
+the Sequence's natural size: 1152 x 1080, frame 1080 x 1920
+
+the project as the window wrote it:
+  track 0: Video "Video 1"
+    VideoFile "match.mkv" 0-5 s, the file at 10 s x1 (of 120 s), v0 a-1
+      look: VideoFile 1920 x 1080 "<folder>\match.mkv", at (0, 0.236458) 1 wide = box (0, 454) 1080 x 1012
+      crop (0.2, 0, 0.2, 0), source (0, 0) 1 x 1, blur fill on, sound off
+    VideoFile "match.mkv" 5-10 s, the file at 30 s x1 (of 120 s), v0 a-1, crossfade in 1
+      look: VideoFile 1920 x 1080 "<folder>\match.mkv", at (0, 0.236458) 1 wide = box (0, 454) 1080 x 1012
+      crop (0.2, 0, 0.2, 0), source (0, 0) 1 x 1, blur fill on, sound off
+    VideoFile "match.mkv" 10-12 s, the file at 50 s x1 (of 120 s), v0 a-1, sound unlinked slip 0 J 0 L 0
+      look: VideoFile 1920 x 1080 "<folder>\match.mkv", at (0, 0.236458) 1 wide = box (0, 454) 1080 x 1012
+      crop (0.2, 0, 0.2, 0), source (0, 0) 1 x 1, blur fill on, sound off
+    VideoFile "match.mkv" 12-16 s, the file at 60 s x1 (of 120 s), v0 a-1
+      look: VideoFile 1920 x 1080 "<folder>\match.mkv", at (0, 0.236458) 1 wide = box (0, 454) 1080 x 608
+      crop (0, 0, 0, 0), source (0, 0) 1 x 1, blur fill on, sound off
+  track 1: Video "Video 2"
+    VideoFile "match.mkv" 2-6 s, the file at 70 s x1 (of 120 s), v0 a0
+      look: VideoFile 1920 x 1080 "<folder>\match.mkv", at (0.6, 0.05) 0.35 wide = box (648, 96) 378 x 212
+      crop (0, 0, 0, 0), source (0, 0) 1 x 1, blur fill off, sound on
+  track 2: Video "Video 3"
+    VideoFile "Killfeed" 3-5 s, the file at 13 s x1 (of 120 s), v0 a-1, child of track 0 clip 0, fades 0.5/0
+      look: VideoFile 1920 x 1080 "<folder>\match.mkv", at (0.360185, 0.030208) 0.62037 wide 0.15 tall = box (389, 58) 670 x 288
+      crop (0.65, 0.01, 0.01, 0.73), source (0, 0) 1 x 1, blur fill off, mask of its picture grown 4, sound off
+    VideoFile "Killfeed" 5-8 s, the file at 30 s x1 (of 120 s), v0 a-1, child of track 0 clip 1, fades 0/0.25
+      look: VideoFile 1920 x 1080 "<folder>\match.mkv", at (0.360185, 0.030208) 0.62037 wide 0.15 tall = box (389, 58) 670 x 288
+      crop (0.65, 0.01, 0.01, 0.73), source (0, 0) 1 x 1, blur fill off, mask of its picture grown 4, sound off
+  track 3: Audio "Audio 1"
+    Audio "music" 0-16 s, the file at 4 s x1 (of 240 s), v0 a0, -8 dB
+      look: Audio, 
+  track 4: Audio "Game", under track 0, stream place 0, -3 dB, 1 filter(s), ducked
+    Audio "Game" 0-5 s, the file at 10 s x1 (of 120 s), v0 a0, child of track 0 clip 0, fades 0/0.5
+      look: Audio, stereo
+    Audio "Game" 10.3-12.3 s, the file at 50 s x1 (of 120 s), v0 a0, child of track 0 clip 2
+      look: Audio, stereo
+  track 5: Audio "Mic", under track 0, stream place 1, 1 filter(s)
+    Audio "Mic" 0-5 s, the file at 9.9 s x1 (of 120 s), v0 a1, child of track 0 clip 0, fades 0/0.5
+      look: Audio, stereo, a voice
+    Audio "Mic" 10.3-12.3 s, the file at 49.9 s x1 (of 120 s), v0 a1, child of track 0 clip 2
+      look: Audio, stereo, a voice
+  track 6: Audio "Discord", under track 0, stream place 2, 2 dB, muted
+    Audio "Discord" 0-5 s, the file at 10 s x1 (of 120 s), v0 a2, child of track 0 clip 0, fades 0/0.5
+      look: Audio, stereo
+    Audio "Discord" 10.3-12.3 s, the file at 50 s x1 (of 120 s), v0 a2, child of track 0 clip 2
+      look: Audio, stereo
+  track 7: Audio "Game", under track 0, stream place 0, -3 dB, 1 filter(s), ducked
+    Audio "Game" 4.5-10.25 s, the file at 29.5 s x1 (of 120 s), v0 a0, child of track 0 clip 1, fades 0.5/0
+      look: Audio, stereo
+    Audio "Game" 12-16 s, the file at 60 s x1 (of 120 s), v0 a0, child of track 0 clip 3
+      look: Audio, stereo
+  track 8: Audio "Mic", under track 0, stream place 1, 1 filter(s)
+    Audio "Mic" 4.5-6.1 s, the file at 29.4 s x1 (of 120 s), v0 a1, child of track 0 clip 1, fades 0.5/0
+      look: Audio, stereo, a voice
+    Audio "Mic" 6.1-7.1 s, the file at 31 s x1 (of 120 s), v0 a1, child of track 0 clip 1, muted
+      look: Audio, stereo, a voice
+    Audio "Mic" 7.1-10.25 s, the file at 32 s x1 (of 120 s), v0 a1, child of track 0 clip 1
+      look: Audio, stereo, a voice
+    Audio "Mic" 12-16 s, the file at 59.9 s x1 (of 120 s), v0 a1, child of track 0 clip 3
+      look: Audio, stereo, a voice
+  track 9: Audio "Discord", under track 0, stream place 2, 2 dB, muted
+    Audio "Discord" 4.5-10.25 s, the file at 29.5 s x1 (of 120 s), v0 a2, child of track 0 clip 1, fades 0.5/0
+      look: Audio, stereo
+    Audio "Discord" 12-16 s, the file at 60 s x1 (of 120 s), v0 a2, child of track 0 clip 3
+      look: Audio, stereo
+
+ok: the Sequence's natural size is the file's picture cut by the first clip's crop, in the 1080 x 1920 frame its settings ask for
+ok: the document holds together (TimelineDocument.FindProblems)
+ok: the main video's clips are clips of its file, the three placed by the Center box drawn in it as they were, silent (their sound on Sub-Lanes)
+ok: each of the file's streams is on Sub-Lanes under Video 1 (two each, for the crossfade) mixing it as the Audio tab did: Game -3 dB, its compressor, ducked; Mic its high-pass; Discord muted (left out)
+ok: the Mic's sound clips are a voice, and its silenced second (31 to 32 s of the file) is a muted part from 6.1 to 7.1 s
+ok: the cut-out across the cut is two Cutouts, each a clip of the file and its clip's child
+ok: opened again it is a project of this version's: nothing converted, nothing written

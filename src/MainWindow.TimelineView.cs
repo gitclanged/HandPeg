@@ -13,8 +13,8 @@ namespace HandPegApp;
 // drop a clip after the last one, or drag one there, and the sequence grows to hold it. Fitted (the default), it shows
 // all of that and follows the sequence as it grows; zoomed, a second keeps its width, and the ruler, the scroll bar under
 // the tracks, Shift + wheel or a middle-button drag move along. Ctrl + wheel over the tracks, or the wheel over the ruler,
-// zoom about the pointer; the buttons and the slider about the playhead. The overview bar follows when "Sync Master
-// Timeline Stretch" is on in the Views menu.
+// zoom about the pointer; the buttons and the slider about the playhead. The Sequence Overview Scrubber follows when "Sync
+// Sequence Overview Scrubber Stretch" is on in the Views menu.
 public partial class MainWindow
 {
     /// <summary>The least the time bars can show across, in seconds: a few frames each wide enough to grab.</summary>
@@ -51,9 +51,6 @@ public partial class MainWindow
             return _viewFit || _viewSpan <= 0 || _viewSpan >= extent ? extent : Math.Max(_viewSpan, Math.Min(MinViewSpan, extent));
         }
     }
-
-    /// <summary>The moment of the sequence at a point along a time bar (or anything as wide and placed as one).</summary>
-    private double TimeAt(FrameworkElement bar, double x) => bar.ActualWidth > 0 ? _viewStart + x / bar.ActualWidth * ViewSpan : 0;
 
     /// <summary>How far along the zoom is, 0 (the whole timeline) to 1 (the closest): what the sliders show.</summary>
     private double ZoomLevel
@@ -190,9 +187,10 @@ public partial class MainWindow
         {
             // With nothing on the timeline yet the rulers still read as rulers (4.3E): a minute's ticks, all of it shaded as room to drop clips into.
             var markers = _viewModel.Markers.Select(m => m.Seconds).ToList();
+            var highlights = _viewModel.Markers.Where(m => m.Highlight).Select(m => m.Seconds).ToList();
             foreach (var ruler in _rulers)
             {
-                ruler.Show(_viewStart, span > 0 ? span : EmptyRulerSeconds, sequence, markers);
+                ruler.Show(_viewStart, span > 0 ? span : EmptyRulerSeconds, sequence, markers, highlights);
                 PlaceRulerPlayhead(ruler);
             }
 
@@ -294,7 +292,7 @@ public partial class MainWindow
 
     private void TimelineZoomFit_Click(object sender, RoutedEventArgs e) => FitTimeline();
 
-    /// <summary>Stretches the master timeline to the time bars' view and slides it to their place, while that is switched on; otherwise it fills its place as it always did.</summary>
+    /// <summary>Stretches the Sequence Overview Scrubber to the time bars' view and slides it to their place, while that is switched on; otherwise it fills its place as it always did.</summary>
     private void UpdateMasterStretch()
     {
         var (seconds, span) = (_viewModel.DurationMs / 1000, ViewSpan);
@@ -316,18 +314,17 @@ public partial class MainWindow
 
     /// <summary>
     /// What a dragged or dropped clip snaps to, in seconds: the start and the end of every clip on the timeline (the
-    /// main video's, the layers', the sound clips'), the start and end of the sequence, and the playhead. Nothing
-    /// while snapping is off.
+    /// videos', the pictures', the sound clips'), the start and end of the sequence, the playhead and the markers, and the
+    /// beats found in clips' sound, less those of the clips whose blocks a drag takes along (<paramref name="moving"/>: a
+    /// move's or a slip's, whose beats go with it). Nothing while snapping is off.
     /// </summary>
-    private IReadOnlyList<double> SnapTimes()
+    private IReadOnlyList<double> SnapTimes(IReadOnlyList<TimelineBlock> moving)
     {
         if (!_viewModel.SnapClips)
             return [];
 
         var sequence = _viewModel.DurationMs / 1000;
         var times = new List<double> { 0, sequence, _viewModel.PositionMs / 1000 };
-        foreach (var clip in _viewModel.GetMainClips())
-            times.AddRange([clip.Start, clip.End]);
         foreach (var layer in _viewModel.Layers.Where(l => l.HasTiming && !l.IsDeleted))
         {
             var (from, to) = layer.GetSpan(sequence);
@@ -335,6 +332,29 @@ public partial class MainWindow
         }
 
         times.AddRange(_viewModel.Markers.Select(m => m.Seconds));
+
+        // The beats found in clips' sound (5.2B, Detect & Snap to Audio Beats), where they fall on the Sequence: never those of a
+        // clip the drag moves or slips (its picture's block or its unlinked sound's), which would catch on where they were.
+        if (_viewModel.SnapToBeats)
+        {
+            HashSet<Guid>? going = null;
+            foreach (var block in moving)
+            {
+                var dragged = block.Clip switch { Layer view => view, LayerSound sound => sound.Layer, _ => null };
+                if (_viewModel.ClipOf(dragged) is { } model)
+                    (going ??= []).Add(model.Id);
+            }
+
+            foreach (var track in _viewModel.Document.Tracks)
+            {
+                foreach (var clip in track.Clips)
+                {
+                    if (going?.Contains(clip.Id) != true)
+                        ViewModels.MainViewModel.BeatsOnSequence(clip, times);
+                }
+            }
+        }
+
         return times;
     }
 
@@ -344,8 +364,8 @@ public partial class MainWindow
         if (perPixel <= 0)
             return seconds;
 
-        var (best, nearest) = (seconds, TimelineTrack.SnapPixels * 1.5 * perPixel);
-        foreach (var time in SnapTimes())
+        var (best, nearest) = (seconds, TimelineMetrics.SnapPixels * 1.5 * perPixel);
+        foreach (var time in SnapTimes([]))
         {
             if (Math.Abs(time - seconds) < nearest)
                 (best, nearest) = (time, Math.Abs(time - seconds));
@@ -434,7 +454,7 @@ public partial class MainWindow
         return brush;
     }
 
-    /// <summary>The markers on the master timeline: a flag at the top and a faint line down, each answering a click (go there) and a right-click (its menu).</summary>
+    /// <summary>The markers on the Sequence Overview Scrubber: a flag at the top and a faint line down, each answering a click (go there) and a right-click (its menu).</summary>
     private void DrawTimelineMarkers()
     {
         MarkerCanvas.Children.Clear();

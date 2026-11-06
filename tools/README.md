@@ -23,6 +23,17 @@ launch runs the old build (watch for MSB3026/MSB3027 in the build output).
 
 `pwsh -NoProfile -File tools\GoldenTests.ps1 [-Update] [-Filter <part of a name>] [-NoBuild]`
 
+Where there is no PowerShell 7 (a fresh Windows on ARM laptop), Windows PowerShell runs the same scripts:
+`powershell -NoProfile -ExecutionPolicy Bypass -File tools\GoldenTests.ps1`. A build that names no runtime is made for the
+machine it runs on (ARM64 there), so the tests run without an x64 .NET.
+
+The tests that compare with FFmpeg look for it in `HANDPEG_FFMPEG` first (a portable copy's
+`portable\deps\ffmpeg-arm64\ffmpeg.exe`, say), then in HandPeg's own tool folders under `%LOCALAPPDATA%` (`ffmpeg-arm64`, then
+`ffmpeg`). Without one they say so and leave those checks out. Where Media Foundation has no HEVC decoder (Windows without the
+Store's HEVC Video Extensions), the compositor decodes HEVC with FFmpeg instead (`FfmpegVideoDecoder`, 5.2-Arm64AndNpu: raw NV12
+from FFmpeg, each frame's own time from its stats line), so `gpu-export-every-frame` and `gpu-program-strip` still run on the HEVC
+sources, each with a note; only with neither are they left out (or drawn from an H.264 copy made the same way).
+
 SeekBench on a long project: always give `--from <s> --seconds <s>`: it runs in real time, so `MULTI VIDEO TEST` alone (6,703 s) would take hours. `--trace` prints every late frame with the lanes, seeks and render time, `--rest <ms>` is the pause before play. It clears the frame cache before each run: its numbers are cold-cache.
 
 Builds `tools\GoldenTests` (a console program referencing the app's build, so it tests the very code HandPeg runs)
@@ -35,17 +46,28 @@ writes `HandPeg.dll`.
 
 What is covered:
 
-- **FilterGraphBuilder** (`GraphCases.cs`, timelines written in code with neutral paths such as `D:/media/clip1.mp4`;
-  the builder never reads files): 4.2.0s cuts baked into split points of the main video, video, picture and text layers, effect cards in every zone,
+- **The export** (`GraphCases.cs`, timelines written in code with neutral paths such as `D:/media/clip1.mp4`; nothing
+  reads the files): since 5.2-Audit each `export-*` golden is the encode's FFmpeg command (no filter graph in it), the GPU
+  scene at the start and the middle of every clip, layer by layer, and the sound engine's program: 4.2.0s cuts baked into split points of the main video, video, picture and text layers, effect cards in every zone,
   keyframes with every easing about an off-centre anchor point, fades and transitions (dissolve, wipe, slide, zoom,
   blur dissolve), crossfades on a track and across tracks, Render Preview, the composed timeline proxy, and a
   short video repeating to the end (4.2.0's loop, read as one source). The fixtures are written in 4.2.0's terms (a
   `Scene`: the main video's clip and pieces, layers by track id); `Scene.Compile` makes the builder's state as
   `MainViewModel.CompileExportState` does, its timeline the `TimelineDocument` the test-only adapter
-  `LegacyFixtures.cs` writes of the scene (4.3Bs conventions; the view model has held a document of its own since 4.3C); the builder lowers and
-  prepares it itself (`FilterGraphBuilder.Timeline.cs`). `TimelineGraphCases.cs` writes documents by hand
+  `LegacyFixtures.cs` writes of the scene (4.3Bs conventions; the view model has held a document of its own since 4.3C); the lowering
+  prepares it (`Services/Gpu/TimelineLowering.cs`). `TimelineGraphCases.cs` writes documents by hand
   (`*-timeline-native*`): what only the document can say (gaps on Video 1, J/L cuts, slips, a picture in picture of the
-  main video's own file under it, a crossfade on an Audio track).
+  main video's own file under it, a crossfade on an Audio track). Since 5.2-AuditB no file is the main one: every fixture
+  that holds the old kinds (MainVideo clips, cut-outs of kind Video, the Center box, the main file's streams as the Audio
+  tab mixed them: `LegacyMain`, `LegacyStream`) is converted as 5.2-AuditB converted such a project (`LegacyFixtures.Migrate`,
+  the test-only `LegacyMainVideo.cs`; since 5.2-Arm64AndNpu the app refuses such a project instead), so the fixtures written
+  before keep testing the export: boxes, crops, moments of the files and Cutout pictures must come out as they did.
+- **Projects of clips and the typed sound chain** (`MigrationTests.cs`, 5.2-AuditB and 5.2-Arm64AndNpu): `hproj-format6-clips`,
+  a project of clips (each its own file's, a Cutout its clip's child, the streams on Sub-Lanes) written and opened again, and
+  a 5.1 project with a main video refused as it is opened (`ProjectStore.OldShapeOf`) in each way that shape can show;
+  `audio-chain-typed`, `AudioChainBuilder.From` against the
+  FFmpeg words it replaced read back as they were (`AudioChainOracle.cs`, the deleted `BuildChain` and parser), on settings
+  written by hand and 400 fuzzed ones, every parameter within 1e-4.
 - **The A/V invariant** (`AvCheck.cs`, `Timing.cs`), checked by code on every export with sound: for each video clip with sound on the timeline (the document's; an unlinked clip's sound where its slip
   puts it), a moment of its file is followed through the graph by its time stamps,
   the picture from its `movie=` to the overlay that lays it on the canvas, the sound from its `amovie=` to the `amix`;
@@ -53,10 +75,11 @@ What is covered:
   2 ms. A failure names the moment, where it is seen and heard, and which is late.
 - **Its GPU side** (`gpu-av-invariant`, `AvCheck.Gpu.cs`; 5.0-Verify, in place of the live graphs' cases): on the same
   timelines (the exports', the long session from where its seeks went, its proxies read in the preview, the loop from
-  30 s, the three document-made ones) at the same moments and as many into every clip of the main video, every layer
+  30 s, the three document-made ones) at the same moments and as many into every clip heard through its Sub-Lanes (the
+  main video's, converted), every layer
   `GpuScenePlan` draws from a file must be at the moment of it the timeline puts there and at the moment `AudioProgram`
-  plays for its clip's sound (an unlinked clip's slip moved in; a HUD piece and the blurred background held to the main
-  video's), within 0.5 ms. No worker and no file: the plan and the program are worked out. A repeating clip's sound is
+  plays for its clip's sound (an unlinked clip's slip moved in; a Cutout and a blur fill held to their clip's), within
+  0.5 ms. No worker and no file: the plan and the program are worked out. A repeating clip's sound is
   played once (in the export too): past its file's end the text says it is silent.
 - **The .hproj format** (`ProjectTests.cs`, format 5 since 4.3C): a format 5 file (`fixtures\format5.hproj`, written by
   hand: two clips of the main video, a track of clips with keys, effects (an unknown one's own settings kept), a mask, a
@@ -66,7 +89,7 @@ What is covered:
   carried without the document in memory being changed.
 - **FfmpegRunner** (`RunnerTests.cs`): every fixture's command and 4,000 random argument lists of the characters
   quoting gets wrong, quoted by CliWrap and split again as FFmpeg splits its command line (`CommandLineToArgvW`), come
-  back unchanged; how a command's graphs are given to each kind of FFmpeg in files.
+  back unchanged.
 - **The timeline document** (`TimelineDocumentTests.cs`, the model of v4.3, which the builder compiles since 4.3B), each
   case writing down what it did:
   - `timeline-frame-rate`: the NTSC fractions, frames and quantizing, and 10,000 splits at 59.94, 29.97 and 60 fps
@@ -97,7 +120,7 @@ files, and the project tests make the few files they need in a folder of their o
 ## AvSyncTest.ps1 (is the player's sound in step with its picture?)
 
 `pwsh -NoProfile -File tools\AvSyncTest.ps1 -Project <file.hproj> [-Points 100,300,600,1500] [-Proxies off|on|both]
-[-MainProxy <file>] [-Tolerance 15] [-Seconds 3] [-Session] [-Audible] [-NoBuild]`
+[-Tolerance 15] [-Seconds 3] [-Session] [-Audible] [-NoBuild]`
 
 Builds `tools\AvSync` (a console program referencing the app, which starts itself again as the compositor's worker, as
 HandPeg does) once, opens the project in the app's own view model with no window, and takes the state the GPU engine is
@@ -113,9 +136,10 @@ into one Matroska file on the sequence's clock (FFV1 and float PCM). Then:
   really shows (the range in brackets: every frame allows it; the layer's box and crop are the plan's);
 - **A/V** is the difference, PASS within the tolerance (15 ms); nominal is within 0.5 ms.
 
-The measured clip is the topmost video clip with sound playing at the moment, else the main video. `-Proxies on` sets the
-clips whose files have a proxy made to Optimize Long-GOP Clip for Scrubbing in that process (none is made); `-MainProxy`
-names a proxy of the main video to stand for one. The files are read back with `-copyts` and sought by their distance from
+The measured clip is the topmost video clip with its own sound playing at the moment, else a video clip heard through its
+streams on its Sub-Lanes (a project's main video since 5.2-AuditB), each on its own clock. `-Proxies on` sets the
+clips whose files have a proxy made to Optimize Long-GOP Clip for Scrubbing in that process (none is made). The files are
+read back with `-copyts` and sought by their distance from
 the container's start (`-seek_timestamp` with `-copyts` lost 0.78 s of an MPEG-TS file's sound).
 
 `-Session` plays the steps the app takes in real time instead, through a real `GpuPreviewEngine` and its

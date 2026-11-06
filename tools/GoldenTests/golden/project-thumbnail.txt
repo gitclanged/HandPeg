@@ -1,0 +1,45 @@
+# Baked project thumbnails (5.2D): their size, their JPEG, where a .hproj and a .hpb carry them, read back quickly.
+size: 1080 x 1920 -> 360 x 640
+size: 1920 x 1080 -> 640 x 360
+size: 1080 x 1080 -> 360 x 360
+size: 1001 x 1777 -> 360 x 640
+size: 2560 x 1081 -> 852 x 360
+size: 300 x 200 -> 300 x 200
+size: 301 x 199 -> 300 x 198
+ok: a 9:16 canvas (1080 x 1920) has a 360 x 640 thumbnail
+ok: a 16:9 canvas (1920 x 1080) has a 640 x 360 one
+ok: every size is even on both sides, its short side 360 (the canvas's own, made even, when smaller), and the canvas's shape within a pixel
+ok: EncodeJpeg makes a JPEG of a 640 x 360 BGRA frame
+ok: decoded at 360 pixels tall it is 640 x 360 again, and frozen (any thread may show it)
+ok: its colour comes back within 8 levels
+ok: decoded at the Project Manager's 72 pixels it keeps its shape (128 x 72)
+ok: bytes that are not a picture decode to none
+ok: the thumbnail is written right after the header, the timeline still last (format, version, writtenBy, thumbnailJpeg, name ...)
+ok: PeekHeader still reads the format, the version and the writer from the first 8 KB
+ok: ReadFromProject gives the same bytes
+ok: opened again, the project has the same thumbnail
+ok: and written again, the file is the same (format 6 as it was)
+ok: the text up to the property after it is all the reader needs
+ok: a start that ends inside it says it was cut off (the file is read further)
+ok: a state without a thumbnail writes no thumbnailJpeg
+ok: ReadFromProject finds none in it
+ok: it knows there is none from the property after writtenBy, without reading on
+ok: opened, it has none
+ok: a 360 x 640 frame makes a JPEG too
+bundle entries: bundle.json, project.hproj, thumbnail.jpg
+ok: thumbnail.jpg is in the bundle, stored as it is
+ok: right after project.hproj
+ok: the manifest names it ("thumbnail")
+ok: the bundled project carries it too
+ok: ReadFromBundle gives the same bytes
+ok: unpacking leaves it in the bundle: no picture in the folder
+ok: and the unpacked project still carries it
+ok: a bundle of a project without one has no thumbnail.jpg, and its manifest names none
+ok: ReadFromBundle finds none in it
+readback wait: slices of 20 ms
+ok: readback wait: a frame already read back is taken at once
+ok: readback wait: a frame read back during the wait ends it with the frame
+ok: readback wait: the player's stop already set, it gives up at once (false)
+ok: readback wait: the stop set 100 ms into a 5000 ms wait ends it (false) within 250 ms of the stop, inside the pump's 2 s join
+ok: readback wait: a stop that stays unset changes nothing (false at its 60 ms timeout)
+ok: readback wait: without an abort it times out as it always did (false at 60 ms)

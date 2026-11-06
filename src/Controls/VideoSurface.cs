@@ -63,9 +63,42 @@ public sealed partial class VideoSurface : HwndHost
     [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
     private static partial IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X, Y;
+    }
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetClientRect(IntPtr window, out NativeRect rect);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ClientToScreen(IntPtr window, ref NativePoint point);
+
+    [LibraryImport("user32.dll")]
+    private static partial int SetWindowRgn(IntPtr window, IntPtr region, [MarshalAs(UnmanagedType.Bool)] bool redraw);
+
+    [LibraryImport("gdi32.dll")]
+    private static partial IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DeleteObject(IntPtr handle);
+
     private Window? _owner;
     private Window? _overlayWindow;
     private Int32Rect _placed;
+
+    // The part of the second window that is shown (its own pixels), when it is cut to the window it lies on; empty: all of it.
+    private Int32Rect _clip;
 
     public VideoSurface()
     {
@@ -156,8 +189,9 @@ public sealed partial class VideoSurface : HwndHost
             };
             var made = _overlayWindow;
 
-            // Laid over the video at its size: its content takes HandPeg's UI scale (5.1-Polish), its size never.
+            // Laid over the video at its size: its content takes HandPeg's UI scale (5.1-Polish), its size never. A new window is cut to nothing yet.
             Services.UiScale.SetKeepsItsSize(made, true);
+            _clip = Int32Rect.Empty;
             made.SourceInitialized += (_, _) =>
             {
                 var handle = new WindowInteropHelper(made).Handle;
@@ -237,7 +271,12 @@ public sealed partial class VideoSurface : HwndHost
         }
     }
 
-    /// <summary>Puts the second window exactly over the native one, or hides it when that one cannot be seen.</summary>
+    /// <summary>
+    /// Puts the second window exactly over the native one, or hides it when that one cannot be seen. It is cut to the client
+    /// area of the window it lies on (5.2-AuditB): a pane laid out larger than its window never has it reach out past that
+    /// window's edge, nor (maximized) over the strip kept clear of a taskbar that hides itself (MainWindow.TitleBar.cs), where
+    /// the pointer brings the taskbar up and the Show Desktop corner is.
+    /// </summary>
     private void PlaceOverlay()
     {
         if (_overlayWindow is not { } overlay || _owner is not { } owner)
@@ -246,9 +285,7 @@ public sealed partial class VideoSurface : HwndHost
         if (!IsVisible || owner.WindowState == WindowState.Minimized || !owner.IsVisible || PresentationSource.FromVisual(this) is null
             || ActualWidth < 1 || ActualHeight < 1)
         {
-            if (overlay.IsVisible)
-                overlay.Hide();
-            _placed = default;
+            HideOverlay(overlay);
             return;
         }
 
@@ -258,6 +295,14 @@ public sealed partial class VideoSurface : HwndHost
         var place = new Int32Rect((int)Math.Round(corner.X), (int)Math.Round(corner.Y),
             (int)Math.Round(ActualWidth * dpi.DpiScaleX), (int)Math.Round(ActualHeight * dpi.DpiScaleY));
 
+        // The part of it inside the owner's client area; none of it there, it is not shown.
+        var shown = ClientAreaOf(owner) is { } client ? Intersection(place, client) : place;
+        if (shown.Width <= 0 || shown.Height <= 0)
+        {
+            HideOverlay(overlay);
+            return;
+        }
+
         if (!overlay.IsVisible)
         {
             overlay.Show();
@@ -265,10 +310,62 @@ public sealed partial class VideoSurface : HwndHost
             KeepUnderSideWindow();
         }
 
-        if (place == _placed)
+        var clip = shown == place ? Int32Rect.Empty : new Int32Rect(shown.X - place.X, shown.Y - place.Y, shown.Width, shown.Height);
+        if (place == _placed && clip == _clip)
             return;
 
-        _placed = place;
-        SetWindowPos(new WindowInteropHelper(overlay).Handle, IntPtr.Zero, place.X, place.Y, place.Width, place.Height, SwpNoZOrder | SwpNoActivate);
+        var handle = new WindowInteropHelper(overlay).Handle;
+        if (place != _placed)
+        {
+            _placed = place;
+            SetWindowPos(handle, IntPtr.Zero, place.X, place.Y, place.Width, place.Height, SwpNoZOrder | SwpNoActivate);
+        }
+
+        if (clip != _clip)
+        {
+            _clip = clip;
+            CutTo(handle, clip);
+        }
+    }
+
+    private void HideOverlay(Window overlay)
+    {
+        if (overlay.IsVisible)
+            overlay.Hide();
+        _placed = default;
+    }
+
+    /// <summary>A window's client area on the screen, in real pixels; null when it has no handle yet.</summary>
+    private static Int32Rect? ClientAreaOf(Window window)
+    {
+        var handle = new WindowInteropHelper(window).Handle;
+        var corner = new NativePoint();
+        if (handle == IntPtr.Zero || !GetClientRect(handle, out var area) || !ClientToScreen(handle, ref corner))
+            return null;
+        return new Int32Rect(corner.X, corner.Y, Math.Max(0, area.Right - area.Left), Math.Max(0, area.Bottom - area.Top));
+    }
+
+    private static Int32Rect Intersection(Int32Rect a, Int32Rect b)
+    {
+        var (left, top) = (Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
+        var (right, bottom) = (Math.Min(a.X + a.Width, b.X + b.Width), Math.Min(a.Y + a.Height, b.Y + b.Height));
+        return right > left && bottom > top ? new Int32Rect(left, top, right - left, bottom - top) : new Int32Rect(left, top, 0, 0);
+    }
+
+    /// <summary>Shows only <paramref name="clip"/> of a window (its own pixels; empty: all of it), and takes the pointer only there.</summary>
+    private static void CutTo(IntPtr window, Int32Rect clip)
+    {
+        if (window == IntPtr.Zero)
+            return;
+        if (clip.IsEmpty)
+        {
+            SetWindowRgn(window, IntPtr.Zero, true);
+            return;
+        }
+
+        // Windows owns the region once it is the window's; not taken, it is let go here.
+        var region = CreateRectRgn(clip.X, clip.Y, clip.X + clip.Width, clip.Y + clip.Height);
+        if (region != IntPtr.Zero && SetWindowRgn(window, region, true) == 0)
+            DeleteObject(region);
     }
 }

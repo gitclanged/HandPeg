@@ -6,13 +6,43 @@ using HandPegApp.Compositor.Native;
 
 namespace HandPegApp.Services.Audio;
 
-/// <summary>A meter's reading since it was last read: the peaks and RMS of each side (factors; see the dB properties).</summary>
+/// <summary>
+/// A meter's reading since it was last read: the peaks and RMS of each side (factors; see the dB properties), and (5.2B) the loudness an
+/// export of the mix would have: EBU R128's momentary, short-term and gated integrated loudness, the 4x-oversampled true peak and its 3 s
+/// hold, whether anything reached full scale, and the three bands' energies of the latest block (AudioBandFollower). All of it measured on
+/// the mix after the Sequence's master gain, before the monitor volume and Mute.
+/// </summary>
 public readonly record struct AudioMeterReading(float PeakLeft, float PeakRight, float RmsLeft, float RmsRight, int Frames)
 {
     public float PeakLeftDb => AudioMath.Decibels(PeakLeft);
     public float PeakRightDb => AudioMath.Decibels(PeakRight);
     public float RmsLeftDb => AudioMath.Decibels(RmsLeft);
     public float RmsRightDb => AudioMath.Decibels(RmsRight);
+
+    /// <summary>The highest 4x-oversampled true peak of both sides since the last read, dBTP (negative infinity in silence).</summary>
+    public float TruePeakDb { get; init; }
+
+    /// <summary>The highest true peak over the last 3 s, dBTP.</summary>
+    public float TruePeakHoldDb { get; init; }
+
+    /// <summary>EBU R128's momentary loudness (400 ms), LUFS; negative infinity when silent.</summary>
+    public float MomentaryLufs { get; init; }
+
+    /// <summary>EBU R128's short-term loudness (3 s), LUFS.</summary>
+    public float ShortTermLufs { get; init; }
+
+    /// <summary>The gated integrated loudness since play started or the last seek, LUFS.</summary>
+    public float IntegratedLufs { get; init; }
+
+    /// <summary>A sample or a true peak reached 0 dBFS since the last read.</summary>
+    public bool Clipped { get; init; }
+
+    /// <summary>The bands' energies of the latest block, 0 to 1 (AudioBandFollower: 20-160 Hz, 160 Hz-2 kHz, 2-10 kHz).</summary>
+    public float Bass { get; init; }
+
+    public float Mid { get; init; }
+
+    public float High { get; init; }
 }
 
 /// <summary>
@@ -87,12 +117,18 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     private long _seekPublished;
     private double _clockExtrapolate = 0.03;
 
-    // The meter: accumulated by the mixer, published by a seqlock, cleared when read.
+    // The meter: accumulated by the mixer, published by a seqlock, cleared when read. Since 5.2B also the loudness (the mixer's
+    // LiveLoudness), the true peak (cleared when read, as the peaks are) and the bands (AudioBandFollower): made when the device opens.
     private long _meterLock;
     private float _meterPeakL, _meterPeakR;
     private double _meterSumL, _meterSumR;
     private int _meterFrames;
     private int _meterResets, _meterResetSeen;
+    private float _meterTruePeak, _meterHold, _meterMomentary = float.NegativeInfinity, _meterShortTerm = float.NegativeInfinity, _meterIntegrated = float.NegativeInfinity;
+    private float _meterBass, _meterMid, _meterHigh;
+    private bool _meterClipped;
+    private LiveLoudness _loudness = new(NoDeviceRate);
+    private AudioBandFollower _bands = new(NoDeviceRate);
 
     // Position's monotonic hold (callers' threads only), and when its last good reading was made (Stopwatch ticks, 0 for
     // none in this run of playback) at what rate its line ran, which carry it on while the clock cannot be read.
@@ -282,7 +318,10 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         }
     }
 
-    /// <summary>The peaks and RMS since the last read, after the master volume (before Mute).</summary>
+    /// <summary>
+    /// The peaks and RMS since the last read, and the loudness, true peak and bands (5.2B, <see cref="AudioMeterReading"/>): measured on the
+    /// mix after the Sequence's master gain, before the master volume (the monitor's) and Mute, so it reads what an export gets.
+    /// </summary>
     public AudioMeterReading Meter
     {
         get
@@ -295,7 +334,18 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
                     continue;
                 var frames = _meterFrames;
                 reading = new AudioMeterReading(_meterPeakL, _meterPeakR,
-                    frames > 0 ? (float)Math.Sqrt(_meterSumL / frames) : 0, frames > 0 ? (float)Math.Sqrt(_meterSumR / frames) : 0, frames);
+                    frames > 0 ? (float)Math.Sqrt(_meterSumL / frames) : 0, frames > 0 ? (float)Math.Sqrt(_meterSumR / frames) : 0, frames)
+                {
+                    TruePeakDb = PeakDecibels(_meterTruePeak),
+                    TruePeakHoldDb = PeakDecibels(_meterHold),
+                    MomentaryLufs = _meterMomentary,
+                    ShortTermLufs = _meterShortTerm,
+                    IntegratedLufs = _meterIntegrated,
+                    Clipped = _meterClipped,
+                    Bass = _meterBass,
+                    Mid = _meterMid,
+                    High = _meterHigh,
+                };
                 Interlocked.MemoryBarrier();
                 if (Volatile.Read(ref _meterLock) == before)
                     break;
@@ -305,6 +355,32 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             return reading;
         }
     }
+
+    /// <summary>
+    /// The bands' energies of the latest block played (5.2B, 0 to 1: the audio-reactive effects' bus while nothing better is known), read
+    /// without clearing the meter.
+    /// </summary>
+    public (float Bass, float Mid, float High) LiveBands
+    {
+        get
+        {
+            for (var attempt = 0; attempt < 8; attempt++)
+            {
+                var before = Volatile.Read(ref _meterLock);
+                if ((before & 1) != 0)
+                    continue;
+                var bands = (_meterBass, _meterMid, _meterHigh);
+                Interlocked.MemoryBarrier();
+                if (Volatile.Read(ref _meterLock) == before)
+                    return bands;
+            }
+
+            return (0, 0, 0);
+        }
+    }
+
+    // A true peak (a factor) in dBTP, negative infinity for silence.
+    private static float PeakDecibels(float factor) => factor > 0 ? 20f * MathF.Log10(factor) : float.NegativeInfinity;
 
     /// <summary>Settings changed: the device (null or "" for the default), the buffer (ms) and the sync offset (ms). The device opens again only when it or the buffer changed.</summary>
     public void ApplySettings(string? deviceId, int bufferMs, double syncOffsetMs)
@@ -463,6 +539,10 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         _linePrevious = _lineNow;
         mixer.SetLine(frame, origin, rate, jump);
         (_lineNow, _lineJump) = (mixer.Line, jump);
+
+        // A jump (a seek, a pause, play from there): the integrated loudness counts from here (5.2B).
+        if (jump)
+            _loudness.Restart();
     }
 
     private double ReadSeek()
@@ -571,16 +651,18 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         mixer.WakeFeeders();
     }
 
-    // The master volume, the meter, then the device's format (nothing written without a device).
+    // The meter (5.2B: before the monitor's volume, on the mix as an export has it), the master volume, then the device's format (nothing
+    // written without a device).
     private void Finish(int frames, byte* data)
     {
         var mix = _mix.AsSpan(0, frames * 2);
-        AudioMath.Scale(mix, MasterVolume);
         if (Volatile.Read(ref _meterResets) != _meterResetSeen)
         {
             _meterResetSeen = Volatile.Read(ref _meterResets);
             Interlocked.Increment(ref _meterLock);
             (_meterPeakL, _meterPeakR, _meterSumL, _meterSumR, _meterFrames) = (0, 0, 0, 0, 0);
+            (_meterTruePeak, _meterClipped) = (0, false);
+            _loudness.TakePeak();
             Volatile.Write(ref _meterLock, _meterLock + 1);
         }
 
@@ -592,11 +674,20 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             (sumL, sumR) = (sumL + l * l, sumR + r * r);
         }
 
+        // The loudness, the true peak and the bands, all of it the mixer's alone until published below.
+        _loudness.Add(mix, frames);
+        _bands.Process(mix, frames);
+
         Interlocked.Increment(ref _meterLock);
         (_meterPeakL, _meterPeakR, _meterSumL, _meterSumR) = (peakL, peakR, sumL, sumR);
         _meterFrames = (int)Math.Min((long)_meterFrames + frames, int.MaxValue);
+        (_meterTruePeak, _meterHold, _meterClipped) = (_loudness.Peak, _loudness.HeldPeak, _loudness.Clipped || peakL >= 1 || peakR >= 1);
+        (_meterMomentary, _meterShortTerm, _meterIntegrated) = (_loudness.MomentaryLufs, _loudness.ShortTermLufs, _loudness.IntegratedLufs);
+        (_meterBass, _meterMid, _meterHigh) = (_bands.Bass, _bands.Mid, _bands.High);
         Volatile.Write(ref _meterLock, _meterLock + 1);
 
+        // The monitor's volume: what the speakers get, not what the meter reads.
+        AudioMath.Scale(mix, MasterVolume);
         if (data == null)
             return;
         if (Muted)
@@ -771,6 +862,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
 
         var frames = _hasDevice ? (int)Math.Max(_bufferFrames, 256) : 2048;
         _mix = new float[frames * 2];
+        (_loudness, _bands) = (new LiveLoudness(_rate), new AudioBandFollower(_rate));
         lock (_programGate)
         {
             var mixer = new AudioMixer(_rate, frames, threaded: true);

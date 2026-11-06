@@ -38,6 +38,7 @@ public partial class MainWindow
         // A file loaded is seen whole again, on the Canvas and in the player (the engine keeps its zoom from file to file).
         _viewModel.MediaLoaded += _ => ResetNavigationViews();
         LayoutCanvas.SizeChanged += (_, _) => ClampCanvasView();
+        HookCanvasBand();
         PlayerOverlay.SizeChanged += (_, _) =>
         {
             if (_playerZoom != 0)
@@ -119,11 +120,17 @@ public partial class MainWindow
             ["edit.trimStart"] = (source, () => TrimSelectedClip(start: true)),
             ["edit.trimEnd"] = (source, () => TrimSelectedClip(start: false)),
             ["clip.toggleLink"] = (source, ToggleSelectedClipLink),
-            // On what is selected, as the toolbar's button and the menus do (a video layer, an audio track, else the main video).
+            // On what is selected, as the toolbar's button and the menus do (a video clip, an audio track, else the voice or the video at the playhead).
             ["edit.deadAir"] = (source, () => RemoveDeadAir_Click(this, new RoutedEventArgs())),
             ["edit.bypassEffects"] = (source, () => _viewModel.SequenceEffectsBypassed = !_viewModel.SequenceEffectsBypassed),
+            ["edit.copy"] = (source, CopySelectedClips),
+            ["edit.cut"] = (source, CutSelectedClips),
+            ["edit.paste"] = (source, () => _viewModel.PasteClips(_viewModel.PositionMs / 1000)),
+            ["edit.duplicate"] = (source, DuplicateSelectedClips),
+            ["edit.pasteAttributes"] = (source, PasteAttributesToSelection),
 
             ["marker.add"] = (source, () => _viewModel.AddMarker()),
+            ["marker.ping"] = (source, () => _viewModel.PingToMark()),
             ["marker.next"] = (source, () => _viewModel.GoToMarker(forward: true)),
             ["marker.prev"] = (source, () => _viewModel.GoToMarker(forward: false)),
 
@@ -255,6 +262,10 @@ public partial class MainWindow
     private bool TryRunBound(string id, InputChord chord, KeyEventArgs e, object sender, IInputElement? focused)
     {
         if (KeybindManager.Action(id) is not { } action || KeyBelongsToFocus(chord.Key, focused))
+            return false;
+
+        // The Keyframes pane's rows copy and paste their own keyframes (Ctrl+C, Ctrl+V, Ctrl+A) while they hold the keyboard.
+        if (focused is KeyLanesView && chord.Mods == ModifierKeys.Control && chord.Key is Key.C or Key.V or Key.A)
             return false;
 
         if (action.Has(KeyActionFlags.Hold))
@@ -613,7 +624,7 @@ public partial class MainWindow
 
     /// <summary>
     /// A navigation key went down (4.4-BugHunt: no button needed). It steers the surface under the pointer (the timeline, its
-    /// overview bar or keyframe lanes, the Canvas, the player), else the timeline; while the right button is held after a press
+    /// Sequence Overview Scrubber or keyframe lanes, the Canvas, the player), else the timeline; while the right button is held after a press
     /// on a surface, that one. A second key held with the first steers what the first does.
     /// </summary>
     private void BeginKeyNavigation()
@@ -648,7 +659,7 @@ public partial class MainWindow
 
     private bool PlayerNavigable => _gpu is not null && VideoView.IsVisible;
 
-    // Which surface a press is on: the timeline (its pane, the overview bar or the keyframe lanes), the Canvas or the player.
+    // Which surface a press is on: the timeline (its pane, the Sequence Overview Scrubber or the keyframe lanes), the Canvas or the player.
     private NavSurface SurfaceAt(DependencyObject? source)
     {
         // A run of text stands for the element it is in.
@@ -677,14 +688,6 @@ public partial class MainWindow
         // The timeline's right-click opens no menu: the press was the navigation's (and the release is taken here, not by
         // the timeline).
         _navTimeline?.CancelPendingMenu();
-
-        // The overview bar's right-drag that marks a stretch is let go: the press was the navigation's.
-        if (_rangeDragStartMs is not null)
-        {
-            _rangeDragStartMs = null;
-            TimelineSlider.ReleaseMouseCapture();
-            RedrawSegments();
-        }
 
         if (_navSurface == NavSurface.Player)
             _navPicture = PictureSize();
@@ -962,7 +965,8 @@ public partial class MainWindow
                 Dispatcher.BeginInvoke(() => RunAction(id), DispatcherPriority.Input);
             };
             dial.CloseRequested += CloseLightningDial;
-            popup = _dialPopup = new Popup { AllowsTransparency = true, StaysOpen = true, Placement = PlacementMode.Relative, Focusable = false, Child = dial };
+            popup = _dialPopup = new Popup { AllowsTransparency = true, StaysOpen = true, Focusable = false, Child = dial };
+            UiScale.Track(popup);
         }
 
         var at = Mouse.GetPosition(root);
@@ -972,8 +976,7 @@ public partial class MainWindow
         CloseLightningDial();
         if (!held)
             _dialButton = null;
-        popup.PlacementTarget = root;
-        (popup.HorizontalOffset, popup.VerticalOffset) = (at.X - dial.Width / 2, at.Y - dial.Height / 2);
+        UiScale.PlaceRelative(popup, root, at.X - dial.Width / 2, at.Y - dial.Height / 2);
         dial.Open(KeybindManager.Dial, category, held);
         popup.IsOpen = true;
         dial.TakeMouse();
@@ -1017,7 +1020,8 @@ public partial class MainWindow
         if (_xrayPopup is null)
         {
             _xray = new XRayOverlay();
-            _xrayPopup = new Popup { AllowsTransparency = true, StaysOpen = true, Placement = PlacementMode.Relative, Focusable = false, IsHitTestVisible = false, Child = _xray };
+            _xrayPopup = new Popup { AllowsTransparency = true, StaysOpen = true, Focusable = false, IsHitTestVisible = false, Child = _xray };
+            UiScale.Track(_xrayPopup);
             _xrayTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
             _xrayTimer.Tick += (_, _) => RefreshXRay();
         }
@@ -1026,8 +1030,7 @@ public partial class MainWindow
         if (_xrayPopup.IsOpen)
             return;
 
-        _xrayPopup.PlacementTarget = root;
-        (_xrayPopup.HorizontalOffset, _xrayPopup.VerticalOffset) = (0, 0);
+        UiScale.PlaceRelative(_xrayPopup, root, 0, 0);
         (_xrayLastFrame, _xrayFrameSum, _xrayFrames) = (default, 0, 0);
         RefreshXRay();
         _xrayPopup.IsOpen = true;
@@ -1078,11 +1081,15 @@ public partial class MainWindow
         map.Measure(new Size(width, double.PositiveInfinity));
         var height = Math.Min(map.DesiredSize.Height, area.Height - 16);
 
-        _keyGlancePopup ??= new Popup { AllowsTransparency = true, StaysOpen = true, Placement = PlacementMode.Relative, Focusable = false };
+        if (_keyGlancePopup is null)
+        {
+            _keyGlancePopup = new Popup { AllowsTransparency = true, StaysOpen = true, Focusable = false };
+            UiScale.Track(_keyGlancePopup);
+        }
+
         _keyGlancePopup.Child = map;
         map.Height = height;
-        _keyGlancePopup.PlacementTarget = root;
-        (_keyGlancePopup.HorizontalOffset, _keyGlancePopup.VerticalOffset) = (area.X + (area.Width - width) / 2, area.Y + Math.Max((area.Height - height) / 2, 8));
+        UiScale.PlaceRelative(_keyGlancePopup, root, area.X + (area.Width - width) / 2, area.Y + Math.Max((area.Height - height) / 2, 8));
         _keyGlancePopup.IsOpen = true;
     }
 
@@ -1302,14 +1309,14 @@ public partial class MainWindow
                 + "ready to cut, stack and arrange.",
                 () => DropHint.IsVisible ? DropHint : AddMediaHost),
             new("The Timeline",
-                $"Every track is here, with the main video's sound and the captions under it. Drag a clip to move it, drag its edges to trim, "
+                $"Every track is here, with each clip's sound on its Sub-Lanes and the captions under it. Drag a clip to move it, drag its edges to trim, "
                 + $"and press {Keys("edit.split", "the split key")} to split at the playhead. Hold {Keys("nav.forward", "the zoom-in key")} or "
                 + $"{Keys("nav.back", "the zoom-out key")} to zoom and {Keys("nav.left", "the pan-left key")} or {Keys("nav.right", "the pan-right key")} "
                 + "to pan the timeline, or the Canvas or the player under the pointer; "
                 + $"{Keys("transport.stepBack", "Left")} and {Keys("transport.stepForward", "Right")} step a frame.",
                 () => UnifiedTimelinePanel),
             new("Arrange and Add Looks",
-                "The Canvas places every layer on the output frame; Effects adds looks and sound cleanup. Every one-click preset leaves all of "
+                "The Canvas places every clip on the output frame; Effects adds looks and sound cleanup. Every one-click preset leaves all of "
                 + "its settings here for you to change.",
                 () => LayoutPane.IsVisible ? LayoutPane : EffectsPanePanel),
             new("Your Keys and the Lightning Dial",

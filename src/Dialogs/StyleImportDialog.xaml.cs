@@ -18,20 +18,20 @@ public partial class StyleImportDialog : Window
         SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
 
         var isExport = fileName is null;
-        Title = isExport ? "Export Style Preset" : "Import Style Preset";
+        Title = isExport ? "Export Game Preset" : "Import Game Preset";
         ConfirmButton.Content = isExport ? "Export..." : "Import";
-        FileText.Text = isExport ? "The current style" : fileName;
+        FileText.Text = isExport ? "The current Game Preset" : fileName;
         IntroText.Text = isExport
             ? "Choose what to write into the file. Only the ticked parts are saved, so the file can carry just a look, or just a layout."
             : "Choose what to take from this file. Each part replaces what is set now; parts left unticked stay as they are.";
 
         var layers = settings.Layout?.Layers?.Count ?? 0;
-        // The masks travel inside the file; named here, so it is clear what comes with the layers.
+        // The masks travel inside the file; named here, so it is clear what comes with the Cutouts.
         var masks = settings.Masks is { Count: > 0 } embedded ? $" Masks: {string.Join(", ", embedded.Keys)}." : "";
         Offer(LayoutBox, LayoutText, settings.Layout is not null,
-            $"Main video position and zoom, and {layers} layer{(layers == 1 ? "" : "s")} with their masks.{masks}");
+            $"The video clips' position and zoom, and {layers} Cutout{(layers == 1 ? "" : "s")} with their masks.{masks}");
         Offer(ColorBox, ColorText, settings.Color is not null, "Contrast, brightness, saturation, gamma, hue, RGB balance and sharpening.");
-        Offer(BlurBox, BlurText, settings.Blur is not null, "Radius, passes and dimming of the blurred background.");
+        Offer(BlurBox, BlurText, settings.Blur is not null, "Radius, passes and dimming of the blur fill.");
         Offer(SubtitleBox, SubtitleText, settings.Subtitles is not null,
             "Auto-captions on or off, whisper's language, prompt and translation, the caption style, and where the caption box sits.");
     }

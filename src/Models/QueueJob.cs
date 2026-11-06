@@ -61,7 +61,7 @@ public sealed partial class QueueJob(
 
     /// <summary>
     /// The sequence the job was made from, with the job's own copies of its captions, cuts, chapters and voiceover, kept only
-    /// when it makes the job's very command (FilterGraphBuilder.BuildExportCommand(ExportState) is <see cref="Command"/>):
+    /// the sequence the GPU export draws the job from (5.2-Audit: the only renderer; a hand-edited <see cref="Command"/> keeps its own arguments):
     /// the GPU compositor can then draw the job's frames (5.0-Verify Q5). Null for a command edited by hand; a command the
     /// hardware fallback rewrites no longer matches it, and FFmpeg's graph makes that one. In memory only, as the queue is.
     /// </summary>

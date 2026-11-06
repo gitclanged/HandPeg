@@ -83,15 +83,13 @@ public partial class MainWindow
         _selectedClip is Layer layer && _viewModel.ClipOf(layer) is { } clip ? (clip.Start * 1000, clip.End * 1000) : null;
 
     /// <summary>
-    /// Moves the playhead to the nearest edit point that way: the start or end of a clip of the main video, of a
-    /// layer, or of the sequence.
+    /// Moves the playhead to the nearest edit point that way: the start or end of a clip (every track's alike, 5.2-AuditB),
+    /// or of the sequence.
     /// </summary>
     private void GoToEditPoint(bool forward)
     {
         var sequence = _viewModel.DurationMs / 1000;
         var points = new List<double> { 0, sequence };
-        foreach (var clip in _viewModel.GetMainClips())
-            points.AddRange([clip.Start, clip.End]);
         foreach (var layer in _viewModel.Layers.Where(l => l.HasTiming && !l.IsDeleted))
         {
             var (from, to) = layer.GetSpan(sequence);
@@ -177,7 +175,7 @@ public partial class MainWindow
 
         var (pictureWidth, pictureHeight) = _viewModel.LivePreview && _viewModel.FrameWidth > 0 && _viewModel.FrameHeight > 0
             ? ((double)_viewModel.FrameWidth, (double)_viewModel.FrameHeight)
-            : _viewModel.SourceWidth > 0 && _viewModel.SourceHeight > 0 ? (_viewModel.SourceWidth, _viewModel.SourceHeight) : (16.0, 9.0);
+            : _viewModel.CropPictureSize is { Width: > 0, Height: > 0 } source ? (source.Width, source.Height) : (16.0, 9.0);
         var scale = Math.Min(width / pictureWidth, height / pictureHeight);
         var picture = new Rect((width - pictureWidth * scale) / 2, (height - pictureHeight * scale) / 2, pictureWidth * scale, pictureHeight * scale);
 

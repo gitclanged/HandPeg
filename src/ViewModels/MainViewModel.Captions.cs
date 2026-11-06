@@ -209,16 +209,13 @@ public partial class MainViewModel
             : $"The captions are under {places[place].DisplayName} and everything over it, over {(place > 0 ? places[place - 1].DisplayName : "the background")}.";
     }
 
-    /// <summary>The layout pane has something to show with the engine on, or with captions to place.</summary>
-    public bool CanEditLayout => FrameEngine || AutoCaptions;
+    /// <summary>The layout pane always has something to show: the frame every clip is composed on (5.2-AuditB: there is no other way to compose it).</summary>
+    public bool CanEditLayout => true;
 
     partial void OnAutoCaptionsChanged(bool value)
     {
-        OnPropertyChanged(nameof(CanEditLayout));
         RefreshLayerRows();
-        if (!CanEditLayout)
-            IsArrangeActive = false;
-        else if (value)
+        if (value)
             OpenLayoutPaneIfWanted();
         SyncEditorCaptions();
     }
@@ -230,46 +227,17 @@ public partial class MainViewModel
         return (x, y, Math.Max(width, 16), Math.Max(height, 16));
     }
 
-    /// <summary>
-    /// Which of the video's audio tracks is transcribed: the one last marked as the Voice track (4.3E), or else the first,
-    /// unless another is chosen. Its stream is the one whisper's audio is cut from (CaptionGenerator.BuildExtractCommand's "0:a:N").
-    /// </summary>
-    [ObservableProperty] private AudioTrack? _captionAudioTrack;
-
     /// <summary>The separate audio file: a clean voice recording in sync with the video, say.</summary>
     [ObservableProperty] private string _captionAudioPath = "";
 
-    /// <summary>After the track list has been rebuilt for a new source: the choice falls back to the Voice track, or the first track.</summary>
-    private void KeepCaptionTrackValid()
-    {
-        if (CaptionAudioTrack is null || !AudioTracks.Contains(CaptionAudioTrack))
-            CaptionAudioTrack = AudioTracks.FirstOrDefault(t => t.IsVoice) ?? AudioTracks.FirstOrDefault();
-    }
-
     /// <summary>
-    /// A track of the video has just been marked as the Voice track (a tick on the Audio tab, its menu, a preset, or found by
-    /// its name on loading, 4.3E): Auto-Captions listen to it from now on, while they listen to the video's own tracks. A
-    /// separate audio file or the voiceover, chosen in the Auto-Captions dialog, stays chosen, and any track can still be
-    /// picked there afterwards. A project's own choice is put back after its tracks' flags (RestoreStateAsync), so it wins.
-    /// </summary>
-    private void ListenToVoice(AudioTrack voice)
-    {
-        if (CaptionUseVideoAudio && AudioTracks.Contains(voice))
-        {
-            CaptionAudioTrack = voice;
-            if (_captionSourceChoice is { Kind: CaptionSourceKind.MainFile })
-                _captionSourceChoice = null;
-        }
-    }
-
-    /// <summary>
-    /// A sound clip has just been marked as the voice (its Voiceover / Dialogue tick, 4.4), or unmarked: marked, Auto-Captions
-    /// listen to it from now on, as they do to a Voice track (a separate file or the voiceover, chosen in the Auto-Captions
-    /// dialog, stays chosen); unmarked, the choice of it goes, and they fall back to what is set.
+    /// A sound clip has just been marked as the voice (its Voiceover / Dialogue tick, 4.4; a stream found by its name on loading,
+    /// 4.3E), or unmarked: marked, Auto-Captions listen to it from now on (a separate file or the voiceover, chosen in the
+    /// Auto-Captions dialog, stays chosen); unmarked, the choice of it goes, and they fall back to what is set.
     /// </summary>
     private void ListenToVoice(Layer clip)
     {
-        if (!clip.CarriesSound || clip.IsMainVideo)
+        if (!clip.CarriesSound)
             return;
 
         var source = new CaptionSource(CaptionSourceKind.Clip, clip.ImagePath, Math.Max(ClipOf(clip)?.AudioStreamIndex ?? 0, 0));
@@ -280,15 +248,6 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(CaptionSourceSummary));
     }
 
-    /// <summary>Has Auto-Captions listen to one of the video's own audio tracks, as its right-click menu asks (4.3E).</summary>
-    public void UseTrackForCaptions(AudioTrack track)
-    {
-        if (!AudioTracks.Contains(track))
-            return;
-
-        ChooseCaptionSource(new CaptionSource(CaptionSourceKind.MainFile, LocalMediaPath, track.Index));
-        StatusText = $"Auto-captions now listen to {track.Title}.";
-    }
 
     public CaptionStyle CaptionStyle { get; private set; } = AppSettings.Current.DefaultCaptionStyle?.Clone() ?? new();
 
@@ -448,8 +407,10 @@ public partial class MainViewModel
         }
     }
 
+    // Whether the export draws captions (5.2-Audit: the compositor draws them from the caption file's words, wherever the command
+    // was edited; no command names the file any more): Auto-Captions on, and a picture drawn (not a Copy export).
     private bool CommandUsesCaptions(string command) =>
-        command.Contains(FilterGraphBuilder.CaptionFilter(CaptionsFilePath), StringComparison.OrdinalIgnoreCase);
+        AutoCaptions && command.Length > 0 && !(VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput);
 
     // Transcribing is the slow part, and the words do not change when only the style does. So the words are
     // kept, by what was listened to and with which model.
@@ -478,7 +439,7 @@ public partial class MainViewModel
 
     /// <summary>
     /// Makes a source what Auto-Captions listen to from now on: the voiceover and an external file through their switches
-    /// (which a project keeps), one of the video's tracks or a clip's file as the choice made by hand.
+    /// (which a project keeps), a clip's file and stream as the choice made by hand.
     /// </summary>
     public void ChooseCaptionSource(CaptionSource source)
     {
@@ -492,12 +453,6 @@ public partial class MainViewModel
                 (CaptionAudioPath, CaptionUseExternalAudio) = (source.Path, true);
                 _captionSourceChoice = null;
                 break;
-            case CaptionSourceKind.MainFile:
-                CaptionUseVideoAudio = true;
-                if (AudioTracks.FirstOrDefault(t => t.Index == source.Stream) is { } track)
-                    CaptionAudioTrack = track;
-                _captionSourceChoice = source;
-                break;
             default:
                 CaptionUseVideoAudio = true;
                 _captionSourceChoice = source;
@@ -508,11 +463,11 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// What captions are made from, for the request given: a track of the video (<see cref="AudioTrack"/>), a clip with sound
-    /// (<see cref="Layer"/>), a <see cref="CaptionSource"/>, or null for what is set. With nothing given: the voiceover or the
+    /// What captions are made from, for the request given: a stream of the file last opened (<see cref="AudioTrack"/>), a clip with
+    /// sound (<see cref="Layer"/>), a <see cref="CaptionSource"/>, or null for what is set. With nothing given: the voiceover or the
     /// external file when switched to; else the source last chosen by hand; else what the captions on the timeline were made
-    /// from; else a sound clip marked as the voice (4.4); else the video's chosen track (the Voice track once one is marked),
-    /// or its first. Null when there is nothing to listen to.
+    /// from; else a sound clip marked as the voice (4.4); else the first stream of the video clip at the playhead (or the selected
+    /// one: <see cref="ListenedSound"/>, 5.2-AuditB). Null when there is nothing to listen to.
     /// </summary>
     public CaptionSource? ResolveCaptionSource(object? requested = null)
     {
@@ -520,11 +475,11 @@ public partial class MainViewModel
         {
             case CaptionSource given:
                 return given;
-            case AudioTrack track when AudioTracks.Contains(track):
-                return new CaptionSource(CaptionSourceKind.MainFile, LocalMediaPath, track.Index);
-            case Layer { CarriesSound: true, IsMainVideo: false } clip when ClipOf(clip) is { } model:
+            case AudioTrack track when AudioTracks.Contains(track) && OpenedFile.Length > 0:
+                return new CaptionSource(CaptionSourceKind.Clip, OpenedFile, track.Index);
+            case Layer { CarriesSound: true } clip when ClipOf(clip) is { } model:
                 return new CaptionSource(CaptionSourceKind.Clip, clip.ImagePath, Math.Max(model.AudioStreamIndex, 0));
-            case Layer { IsMainVideo: false } row when CaptionStreamsOf(row) is { Count: > 0 } streams:
+            case Layer row when CaptionStreamsOf(row) is { Count: > 0 } streams:
                 return streams[0];
         }
 
@@ -533,9 +488,9 @@ public partial class MainViewModel
         if (CaptionUseExternalAudio)
         {
             // A file the timeline plays as clips of its own is followed through them.
-            var path = CaptionAudioPath.Trim().Trim('"');
-            var clip = new CaptionSource(CaptionSourceKind.Clip, path, 0);
-            return PlaysCaptionSource(clip) ? clip : new CaptionSource(CaptionSourceKind.External, path, 0);
+            var external = CaptionAudioPath.Trim().Trim('"');
+            var clip = new CaptionSource(CaptionSourceKind.Clip, external, 0);
+            return PlaysCaptionSource(clip) ? clip : new CaptionSource(CaptionSourceKind.External, external, 0);
         }
 
         if (_captionSourceChoice is { } chosen && PlaysCaptionSource(chosen))
@@ -543,14 +498,8 @@ public partial class MainViewModel
         if (_captionAnchorSource is { } anchored && PlaysCaptionSource(anchored))
             return anchored;
 
-        var voice = Layers.FirstOrDefault(l => l is { IsVoice: true, CarriesSound: true, IsHidden: false, IsMainVideo: false } && ClipOf(l) is not null);
-        if (voice is not null)
-            return new CaptionSource(CaptionSourceKind.Clip, voice.ImagePath, Math.Max(ClipOf(voice)!.AudioStreamIndex, 0));
-
-        if (!HasSource)
-            return null;
-        var listened = CaptionAudioTrack is { } set && AudioTracks.Contains(set) ? set : AudioTracks.FirstOrDefault(t => t.IsVoice) ?? AudioTracks.FirstOrDefault();
-        return new CaptionSource(CaptionSourceKind.MainFile, LocalMediaPath, listened?.Index ?? 0);
+        // The sound marked as the voice, else the first stream of the video at the playhead (or the selected one).
+        return ListenedSound() is var (path, stream) ? new CaptionSource(CaptionSourceKind.Clip, path, stream) : null;
     }
 
     /// <summary>What Auto-Captions listen to now, in a few words: for the Auto-Captions dialog and the track header's tooltip.</summary>
@@ -559,53 +508,41 @@ public partial class MainViewModel
     /// <summary>A source in a few words.</summary>
     public string DescribeCaptionSource(CaptionSource source) => source.Kind switch
     {
-        CaptionSourceKind.MainFile => source.Stream < 0 ? "The main video"
-            : $"The main video: {AudioTracks.FirstOrDefault(t => t.Index == source.Stream)?.Title ?? $"audio track {source.Stream + 1}"}",
-        CaptionSourceKind.Clip => CaptionLaneOf(source) is { Name.Length: > 0 } lane ? $"{Path.GetFileName(source.Path)}: {lane.Name}" : $"Sound clip: {Path.GetFileName(source.Path)}",
         CaptionSourceKind.External => $"External audio file: {Path.GetFileName(source.Path)}",
-        _ => "Recorded voiceover",
+        CaptionSourceKind.Voiceover => "Recorded voiceover",
+        _ when source.Stream < 0 => $"The picture of {Path.GetFileName(source.Path)}",
+        _ => CaptionLaneOf(source) is { Name.Length: > 0 } lane ? $"{Path.GetFileName(source.Path)}: {lane.Name}" : $"Sound clip: {Path.GetFileName(source.Path)}",
     };
 
-    /// <summary>Whether something on the timeline still plays a source: a clip of its file, the main file, the voiceover.</summary>
+    /// <summary>Whether something on the timeline still plays a source: a clip of its file, the voiceover.</summary>
     private bool PlaysCaptionSource(CaptionSource source) => source.Kind switch
     {
-        CaptionSourceKind.MainFile => HasSource && string.Equals(source.Path, LocalMediaPath, StringComparison.OrdinalIgnoreCase),
-        CaptionSourceKind.Clip => source.Path.Length > 0 && CaptionClips(source).Any(),
         CaptionSourceKind.External => source.Path.Length > 0,
-        _ => HasVoiceover,
+        CaptionSourceKind.Voiceover => HasVoiceover,
+        _ => source.Path.Length > 0 && CaptionClips(source).Any(),
     };
 
-    /// <summary>The clips, other than the main video's, that play a source's file with sound, from its stream (a file's streams on lanes of their own play at one moment each: one is the source).</summary>
-    private IEnumerable<(TimelineTrackModel Track, TimelineClip Clip)> CaptionClips(CaptionSource source) =>
-        Document.Tracks.SelectMany(t => t.Clips.Where(c => c.ContentKind != LayerKind.MainVideo && c.HasSound
-            && string.Equals(c.SourcePath, source.Path, StringComparison.OrdinalIgnoreCase) && Math.Max(c.AudioStreamIndex, 0) == Math.Max(source.Stream, 0)).Select(c => (t, c)));
+    /// <summary>
+    /// The clips that play a source's file: with sound from its stream (a file's streams on lanes of their own play at one moment
+    /// each: one is the source), or, for stream -1, its picture (5.2-AuditB: a top-level video clip of it).
+    /// </summary>
+    private IEnumerable<(TimelineTrackModel Track, TimelineClip Clip)> CaptionClips(CaptionSource source) => source.Stream < 0
+        ? Document.Tracks.SelectMany(t => t.Clips.Where(c => c is { ContentKind: LayerKind.VideoFile, ParentClipId: null } && SameFile(c.SourcePath, source.Path)).Select(c => (t, c)))
+        : Document.Tracks.SelectMany(t => t.Clips.Where(c => c.HasSound && SameFile(c.SourcePath, source.Path) && Math.Max(c.AudioStreamIndex, 0) == source.Stream).Select(c => (t, c)));
 
     /// <summary>
-    /// Every window of the timeline that plays a source, in order (4.4): the main video's clips for the main file (its
-    /// stream's J and L cuts and slips included; the picture's own place for stream -1), the clips of a file for a clip's
-    /// source, where the voiceover is placed for it, and the timeline's own clock for an external recording (or a main
-    /// video that is the whole sequence, with the frame engine off).
+    /// Every window of the timeline that plays a source, in order (4.4): the clips of a file for a clip's source (each with its J and
+    /// L cut and its slip while unlinked; for stream -1, the shown pictures of the file, SequenceSpans), where the voiceover is
+    /// placed for it, and the timeline's own clock for an external recording.
     /// </summary>
     private List<CaptionSpan> CaptionSpans(CaptionSource source)
     {
         var spans = new List<CaptionSpan>();
         switch (source.Kind)
         {
-            case CaptionSourceKind.MainFile:
-                if (!FrameEngine)
-                {
-                    spans.Add(CaptionSpan.Identity);
-                    break;
-                }
-
-                var sound = source.Stream >= 0;
-                var slip = sound ? AudioTracks.FirstOrDefault(t => t.Index == source.Stream)?.OffsetSeconds ?? 0 : 0;
-                foreach (var (_, clip) in MainVideoClips())
-                {
-                    if (string.Equals(clip.SourcePath, source.Path, StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(clip.SourcePath))
-                        spans.Add(SpanOf(clip, sound, slip));
-                }
-
+            case CaptionSourceKind.Clip when source.Stream < 0:
+                foreach (var span in SequenceSpans.SpansOf(Document, source.Path))
+                    spans.Add(new CaptionSpan(span.Start, span.End, span.MediaOffset, span.Speed > 0 ? span.Speed : 1));
                 break;
             case CaptionSourceKind.Clip:
                 foreach (var (_, clip) in CaptionClips(source))
@@ -638,23 +575,18 @@ public partial class MainViewModel
     /// <summary>How long a source is, in its own seconds; 0 when it is not known.</summary>
     private double CaptionSourceSeconds(CaptionSource source) => source.Kind switch
     {
-        CaptionSourceKind.MainFile => MainMediaSeconds,
         CaptionSourceKind.Clip => CaptionClips(source).Select(c => c.Clip.SourceDuration).DefaultIfEmpty(0).Max(),
         CaptionSourceKind.Voiceover => VoiceoverDuration,
         _ => 0,
     };
 
-    /// <summary>The document track the captions follow (4.4): the main video's, or the first clip's that plays their source; null for none.</summary>
+    /// <summary>The document track the captions follow (4.4): the first clip's that plays their source; null for none.</summary>
     public Guid? CaptionAnchorTrackId => _captionAnchorSource switch
     {
-        { Kind: CaptionSourceKind.MainFile } => MainVideoClips().Select(m => (Guid?)m.Track.Id).FirstOrDefault(),
         // (A stream's lane speaks for the video's track it is under: the captions go in that one's stack.)
         { Kind: CaptionSourceKind.Clip } source => CaptionClips(source).OrderBy(c => c.Clip.Start).Select(c => (Guid?)(c.Track.Kind == TimelineTrackKind.Audio ? c.Track.ParentTrackId ?? c.Track.Id : c.Track.Id)).FirstOrDefault(),
         _ => null,
     };
-
-    /// <summary>The captions are anchored to the main file (its sound or its picture): their row is a child of the main video's.</summary>
-    public bool CaptionsFollowMainFile => _captionAnchorSource is { Kind: CaptionSourceKind.MainFile };
 
     /// <summary>
     /// The pipeline: extract the audio that will be heard as a 16 kHz mono wave file, transcribe it with whisper.cpp, show
@@ -742,12 +674,6 @@ public partial class MainViewModel
                 break;
             // A file the timeline plays as clips is heard whole (4.4): its words are kept in its own time, so the same
             // transcription serves every cut, trim, fold and undo after it, and a stretch put back brings its words back.
-            case CaptionSourceKind.MainFile:
-                if (_mediaInfo is { Audio.Count: 0 })
-                    return (null, "This video has no audio to make captions from. Choose another sound to listen to, or switch Auto-Captions off.");
-                if (spans.Count == 0)
-                    return (null, "The main video is not on the timeline: there is nothing of it to make captions for.");
-                break;
             default:
                 if (spans.Count == 0)
                     return (null, $"{Path.GetFileName(source.Path)} is not on the timeline any more: there is nothing of it to make captions for.");

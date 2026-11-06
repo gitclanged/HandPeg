@@ -12,13 +12,13 @@ using HandPegApp.ViewModels;
 namespace HandPegApp;
 
 /// <summary>
-/// Edit Layers on Video Preview (4.1.1-B): the layers arranged on the player itself, as in the layout pane. Over the
-/// picture, in the window the video surface keeps above the video, each track's layer on screen at the playhead has a
-/// box where it is drawn: nearly see-through, so a click on a layer selects it (and a drag moves it straight away).
-/// Only the selected layer's box is outlined and has the handles (corner grip, rotation handle, anchor dot), and only
+/// Edit Clips on Video Preview (4.1.1-B): the clips arranged on the player itself, as in the layout pane. Over the
+/// picture, in the window the video surface keeps above the video, each track's clip on screen at the playhead has a
+/// box where it is drawn: nearly see-through, so a click on a clip selects it (and a drag moves it straight away).
+/// Only the selected clip's box is outlined and has the handles (corner grip, rotation handle, anchor dot), and only
 /// while paused: the video is never cluttered with the others. A click on the video away from it hides the outline
-/// until another layer is selected. Moving, resizing, turning and the anchor go through the same code as the layout
-/// pane's (MoveTrackLayer, ResizeTrackLayer, WireGizmo). Shown with Live Preview and the frame engine on. The caption box
+/// until another clip is selected. Moving, resizing, turning and the anchor go through the same code as the layout
+/// pane's (MoveTrackLayer, ResizeTrackLayer, WireGizmo). Shown with Live Preview on. The caption box
 /// is one of them while captions are on (5.0-Verify, the user's bug 3): on top, moved and sized like the Canvas's (no turn,
 /// no anchor), selected by a press on it or on any caption on the timeline.
 /// </summary>
@@ -52,7 +52,7 @@ public partial class MainWindow
                     _playerOutlineHidden = false;
                     UpdatePlayerSelection();
 
-                    // Another clip of the main video selected is another for the Canvas's Center Video box (4.4).
+                    // Another clip selected may be another box for the Canvas (4.4).
                     if (_viewModel.IsArrangeActive && !SameArrangeClips())
                         RedrawLayout();
                     break;
@@ -65,7 +65,7 @@ public partial class MainWindow
                         RedrawForClipsShown();
                     break;
                 case nameof(MainViewModel.EditLayersOnPlayer) or nameof(MainViewModel.LivePreview)
-                    or nameof(MainViewModel.IsPlaying) or nameof(MainViewModel.FrameEngine) or nameof(MainViewModel.AutoCaptions) or nameof(MainViewModel.HasSource)
+                    or nameof(MainViewModel.IsPlaying) or nameof(MainViewModel.AutoCaptions) or nameof(MainViewModel.HasSource)
                     or nameof(MainViewModel.FrameWidth) or nameof(MainViewModel.FrameHeight)
                     or nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer):
                     RedrawPlayerLayout();
@@ -74,9 +74,9 @@ public partial class MainWindow
         };
         _viewModel.Layers.CollectionChanged += (_, _) => RedrawPlayerLayout();
 
-        // A drag of a box, a gizmo or a slider (the Center controls' among them, in any window): while it lasts, the boxes
-        // are not rebuilt under the pointer as the playhead brings other clips, and the Center controls keep standing for
-        // the clip they were taken from (4.4); both catch up when it ends. The seek bar's and the scroll bars' drags hold nothing.
+        // A drag of a box, a gizmo or a slider (in any window): while it lasts, the boxes are not rebuilt under the pointer as
+        // the playhead brings other clips, and the Crop boxes keep standing for the clip they were taken from (4.4); both catch
+        // up when it ends. The seek bar's and the scroll bars' drags hold nothing.
         EventManager.RegisterClassHandler(typeof(Thumb), Thumb.DragStartedEvent, new DragStartedEventHandler((sender, _) => HoldForDrag(sender, true)), handledEventsToo: true);
         EventManager.RegisterClassHandler(typeof(Thumb), Thumb.DragCompletedEvent, new DragCompletedEventHandler((sender, _) => HoldForDrag(sender, false)), handledEventsToo: true);
 
@@ -87,6 +87,39 @@ public partial class MainWindow
         EventManager.RegisterClassHandler(typeof(Slider), PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler((sender, _) => HoldBoundEdge(sender, false)), handledEventsToo: true);
         EventManager.RegisterClassHandler(typeof(Slider), Mouse.LostMouseCaptureEvent, new MouseEventHandler((sender, _) => HoldBoundEdge(sender, false)), handledEventsToo: true);
         NumericInput.DragHeld += (box, held) => HoldBoundEdge(box, held);
+
+        // Ping-to-Mark (5.2C): Alt + a click on the picture (pressed and let go without a drag: Alt + a drag still moves a clip without
+        // snapping) drops a highlight at the playhead, where on the picture it was clicked kept on it.
+        PlayerOverlay.PreviewMouseLeftButtonDown += (_, e) => _altPressAt = Keyboard.Modifiers == ModifierKeys.Alt && !_explodedUi ? e.GetPosition(PlayerOverlay) : null;
+        PlayerOverlay.PreviewMouseLeftButtonUp += (_, e) =>
+        {
+            if (_altPressAt is not { } pressed)
+                return;
+            _altPressAt = null;
+            var at = e.GetPosition(PlayerOverlay);
+            if (Keyboard.Modifiers != ModifierKeys.Alt || Math.Abs(at.X - pressed.X) > SystemParameters.MinimumHorizontalDragDistance
+                || Math.Abs(at.Y - pressed.Y) > SystemParameters.MinimumVerticalDragDistance || PictureFocalAt(at) is not { } focal)
+                return;
+            RunGuarded("Ping-to-Mark", () => _viewModel.PingToMark(focal.X, focal.Y));
+        };
+    }
+
+    // Where an Alt press on the player was (Ping-to-Mark), while it is held.
+    private Point? _altPressAt;
+
+    /// <summary>A point of the player (its overlay's) as a place on the picture: fractions of the output frame across and down; null off the picture.</summary>
+    private Point? PictureFocalAt(Point at)
+    {
+        var (width, height) = (PlayerOverlay.ActualWidth, PlayerOverlay.ActualHeight);
+        var (frameWidth, frameHeight) = ((double)_viewModel.FrameWidth, (double)_viewModel.FrameHeight);
+        if (width <= 0 || height <= 0 || frameWidth <= 0 || frameHeight <= 0)
+            return null;
+
+        // The picture as the GPU engine fits it into the player: the output frame, letterboxed (as RedrawPlayerLayout lays the boxes).
+        var scale = Math.Min(width / frameWidth, height / frameHeight);
+        var (left, top) = ((width - frameWidth * scale) / 2, (height - frameHeight * scale) / 2);
+        var (x, y) = ((at.X - left) / (frameWidth * scale), (at.Y - top) / (frameHeight * scale));
+        return x is >= 0 and <= 1 && y is >= 0 and <= 1 ? new Point(x, y) : null;
     }
 
     // Whether the edge being tuned was begun by a bound slider or box (HoldBoundEdge): only its own letting go ends it.
@@ -123,7 +156,7 @@ public partial class MainWindow
         _viewModel.BeginEdgeTuning(layer, kind);
     }
 
-    // A drag holding the boxes and the Center controls' clip (HoldForDrag), and whether the playhead brought other clips during it.
+    // A drag holding the boxes and the Crop boxes' clip (HoldForDrag), and whether the playhead brought other clips during it.
     private bool _dragHeld, _redrawAfterDrag;
 
     private void HoldForDrag(object sender, bool started)
@@ -132,7 +165,7 @@ public partial class MainWindow
             return;
 
         _dragHeld = started;
-        _viewModel.HoldCenterTarget(started);
+        _viewModel.HoldCropTarget(started);
         if (!started && _redrawAfterDrag)
         {
             // After the drag's own handlers have finished with its box.
@@ -158,21 +191,19 @@ public partial class MainWindow
         && !_viewModel.IsPlaying && CurrentOverlayMode == OverlayMode.None && _viewModel.FrameWidth > 0 && _viewModel.FrameHeight > 0;
 
     /// <summary>
-    /// Each track's clip on screen at the playhead (shown, a picture): the boxes the player has, the main video's track's among
-    /// them (4.3D); and last, over them all as the captions are drawn, the caption box while captions are on (5.0-Verify).
+    /// Each track's clip on screen at the playhead (shown, a picture): the boxes the player has (4.3D); and last, over them all as
+    /// the captions are drawn, the caption box while captions are on (5.0-Verify).
     /// </summary>
     private List<Layer> PlayerClips()
     {
         var at = _viewModel.PositionMs / 1000;
         var total = _viewModel.SequenceSeconds;
-        List<Layer> clips = _viewModel.FrameEngine
-            ?
-            [
-                .. _viewModel.Layers.Where(l => l is { IsAudio: false, IsEmptyTrack: false, IsHidden: false, IsCaptions: false } && l.IsPicture)
-                    .Where(l => l.GetSpan(total) is var (start, end) && at >= start - 0.0005 && at < end && _viewModel.IsPictureDrawn(l, at))
-                    .GroupBy(l => l.TrackId).Select(t => t.First()),
-            ]
-            : [];
+        List<Layer> clips =
+        [
+            .. _viewModel.Layers.Where(l => l is { IsAudio: false, IsEmptyTrack: false, IsHidden: false, IsCaptions: false } && l.IsPicture)
+                .Where(l => l.GetSpan(total) is var (start, end) && at >= start - 0.0005 && at < end && _viewModel.IsPictureDrawn(l, at))
+                .GroupBy(l => l.TrackId).Select(t => t.First()),
+        ];
         if (_viewModel.AutoCaptions)
             clips.Add(_viewModel.CaptionLayer);
         return clips;
@@ -213,7 +244,7 @@ public partial class MainWindow
             Layer = clip,
             Style = (Style)FindResource("PlayerLayerThumb"),
             Cursor = Cursors.SizeAll,
-            ToolTip = $"{clip.Name}: click to select it; drag to move it (Alt: no snapping). Double-click to center it. Selected, a click with no drag picks the layer under it.",
+            ToolTip = $"{clip.Name}: click to select it; drag to move it (Alt: no snapping). Double-click to center it. Selected, a click with no drag picks the clip under it.",
             Takes = (self, at) => LayerBox.TakesPoint(self, HeldPlayerBox, at, IsDrawnNow),
         };
         System.Windows.Automation.AutomationProperties.SetName(box, $"{clip.Name} on the video");
@@ -264,6 +295,7 @@ public partial class MainWindow
             Canvas.SetTop(box, _playerFrame.Y + y * _playerScale);
             var angle = clip.HasFilters ? clip.Rotation : 0;
             (box.RenderTransformOrigin, box.RenderTransform) = (new Point(clip.AnchorX, clip.AnchorY), Math.Abs(angle % 360) < 0.05 ? Transform.Identity : new RotateTransform(angle));
+            OutlinePlayerBox(box, clip, !_playerOutlineHidden && ReferenceEquals(clip, PlayerSelected));
             if (ReferenceEquals(_playerGizmo?.AdornedElement, box))
                 _playerGizmo!.InvalidateArrange();
         }
@@ -281,7 +313,7 @@ public partial class MainWindow
     /// The layer a press inside its box stays with, on the player and on the Canvas: what the user has selected and can see of it. With
     /// nothing selected (the panes then show a clip by default), no box holds on to anything.
     /// </summary>
-    private Layer? HeldLayer => !_playerOutlineHidden && (_selectedClip is Layer || _mainClipSelected) ? PlayerSelected : null;
+    private Layer? HeldLayer => !_playerOutlineHidden && (_selectedClip is Layer || _playheadVideoSelected) ? PlayerSelected : null;
 
     private LayerBox? HeldPlayerBox
     {
@@ -341,7 +373,7 @@ public partial class MainWindow
         foreach (var (box, clip, _) in _playerBoxes)
         {
             var on = !_playerOutlineHidden && ReferenceEquals(clip, selected);
-            box.BorderThickness = new Thickness(on ? 1.5 : 0);
+            OutlinePlayerBox(box, clip, on);
             if (!on || AdornerLayer.GetAdornerLayer(box) is not { } layer)
                 continue;
 
@@ -362,7 +394,7 @@ public partial class MainWindow
             else
             {
                 var gizmo = new LayerGizmoAdorner(box, (Style)FindResource("LayerGrip"), name, () => new Point(clip.AnchorX, clip.AnchorY));
-                WireGizmo(gizmo, box, clip, name, PlayerLayoutCanvas, () => TrackLayerRect(clip), (deltaX, deltaY) => ResizeTrackLayer(clip, deltaX, deltaY), _playerScale);
+                WireGizmo(gizmo, box, clip, name, PlayerLayoutCanvas, () => TrackLayerRect(clip), _playerScale, () => _playerFrame);
                 _playerGizmo = gizmo;
             }
 
@@ -373,6 +405,22 @@ public partial class MainWindow
         // With an outline shown, the canvas takes the clicks on the rest of the video (to hide it); otherwise they pass
         // through to the video (a see-through pixel of the window over it takes no click).
         PlayerLayoutCanvas.Background = shown ? PlayerHitBrush : null;
+    }
+
+    // The tilted clips' outlines over the player (5.2B, the user's Q4), by their boxes: made the first time a box's clip is tilted.
+    private readonly Dictionary<LayerBox, System.Windows.Shapes.Polygon> _playerTiltOutlines = [];
+
+    /// <summary>
+    /// Outlines a clip's box over the player while it is the selected one (<paramref name="on"/>): the box's own border for a flat clip; for
+    /// a tilted one (5.2B) the four corners the GPU lays it at, in perspective, and no flat border (its handles on those corners, 5.2C).
+    /// </summary>
+    private void OutlinePlayerBox(LayerBox box, Layer clip, bool on)
+    {
+        var corners = TiltedCorners(clip, _playerFrame, _playerScale);
+        box.BorderThickness = new Thickness(on && corners is null ? 1.5 : 0);
+        _playerTiltOutlines.TryGetValue(box, out var outline);
+        if (PlaceTiltOutline(PlayerLayoutCanvas, box, outline, corners, on, null, box.BorderBrush ?? Brushes.White, 1.5, null) is { } placed)
+            _playerTiltOutlines[box] = placed;
     }
 
     // A click on the video away from every layer's box: the outline goes until a layer is selected again.
@@ -400,6 +448,9 @@ public partial class MainWindow
         foreach (var (box, _, _) in _playerBoxes)
             PlayerLayoutCanvas.Children.Remove(box);
         _playerBoxes.Clear();
+        foreach (var outline in _playerTiltOutlines.Values)
+            PlayerLayoutCanvas.Children.Remove(outline);
+        _playerTiltOutlines.Clear();
         PlayerLayoutCanvas.Background = null;
     }
 }

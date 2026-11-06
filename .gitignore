@@ -448,3 +448,12 @@ DESIGN_NORTH_STAR.md
 # Local design notes (never published); the README's screenshots are
 docs/*
 !docs/screenshots/
+
+# The working notes of the AI-assisted passes are local only. They live beside the source, in the folder the repository
+# is cloned into (or the one above it), and are never committed.
+/CLAUDE.md
+/ROADMAP.md
+/USERRESPONSE.txt
+/CLAUDE_PASS_LOG.md
+/CODE_INDEX.md
+

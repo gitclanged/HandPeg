@@ -5,17 +5,21 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Every video track is equal (5.1-TrackEqualityAndVram, the user's directive) -----
-// A recording with several audio streams shows them all, whichever track it is on. The main video's streams are its AudioTracks;
-// any other video's are sound clips of their own, one lane per stream in its track's audio stack, children of the video's clip,
-// so that a split, trim, move, fold or delete of the clip carries them along (TimelineTransaction). A file with one stream keeps it
-// on its clip: nothing to choose between.
+// ----- Every video track is equal (5.1-TrackEqualityAndVram, the user's directive; 5.2-AuditB: no main video) -----
+// A recording with several audio streams shows them all, whichever track it is on: every video's streams are sound clips of their
+// own, one lane per stream in its track's audio stack, children of the video's clip, so that a split, trim, move, fold or delete of
+// the clip carries them along (TimelineTransaction); the file opened goes on the timeline the same way. A file with one stream keeps
+// it on its clip: nothing to choose between. (AudioTracks are only what each output audio track is made as.)
+// In line (5.2, the user's call): the lanes are the track's, one for each stream by its place in the file (StreamOrdinal), so
+// every clip on the track puts its first stream on the "Stream 1" row, its second on "Stream 2", one after another, never on rows
+// of their own. A stream can be moved off onto a lane of its own, or an Audio track (MoveSoundToOwnLane; a drag onto a video row).
 public partial class MainViewModel
 {
     /// <summary>
-    /// The audio streams of a video clip that is not the main video's, each a sound clip on a lane of its own under the clip's track, and
-    /// the clip itself made silent: nothing is heard twice. Clips of one file on one track share their lanes. Nothing for a file with one
-    /// stream, or a clip already unpacked.
+    /// The audio streams of a video clip, each a sound clip on its stream's lane under the clip's track,
+    /// and the clip itself made silent: nothing is heard twice. Every clip on the track shares the lanes, by the stream's place in its
+    /// file (5.2): its first stream on the first lane, in line with the others' first streams. Nothing for a file with one stream, or a
+    /// clip already unpacked.
     /// </summary>
     private bool UnpackStreams(Layer view, MediaInfo info, bool undoable)
     {
@@ -25,8 +29,9 @@ public partial class MainViewModel
         var path = clip.SourcePath ?? view.ImagePath;
         var added = Edit($"unpack the audio streams of {view.Name}", edit =>
         {
-            foreach (var stream in info.Audio)
+            for (var ordinal = 0; ordinal < info.Audio.Count; ordinal++)
             {
+                var stream = info.Audio[ordinal];
                 var sound = new Layer
                 {
                     Kind = LayerKind.Audio,
@@ -42,8 +47,13 @@ public partial class MainViewModel
                 (made.AudioStreamIndex, made.MediaOffset, made.Speed, made.ParentClipId) = (stream.Index, clip.MediaOffset, clip.Speed, clip.Id);
                 made.SourceDuration = clip.SourceDuration;
 
-                var lane = StreamLaneOf(track, stream.Index, made.Start, made.End)
-                    ?? edit.InsertTrack(Document.Tracks.Count, TimelineTrackKind.Audio, sound.Name);
+                var lane = StreamLaneOf(track, ordinal, stream.Index, made.Start, made.End);
+                if (lane is null)
+                {
+                    lane = edit.InsertTrack(Document.Tracks.Count, TimelineTrackKind.Audio, $"Stream {ordinal + 1}");
+                    lane.StreamOrdinal = ordinal;
+                }
+
                 edit.SetTrackParent(lane, track.Id);
                 edit.PlaceClip(lane, made, allowCrossfadeOverlap: false);
             }
@@ -61,10 +71,95 @@ public partial class MainViewModel
         return added;
     }
 
-    // A lane under a track that already holds this stream and has room for a clip.
-    private TimelineTrackModel? StreamLaneOf(TimelineTrackModel track, int stream, double from, double to) =>
-        Document.Tracks.FirstOrDefault(t => t.Kind == TimelineTrackKind.Audio && t.ParentTrackId == track.Id && t.Clips.Count > 0
-            && t.Clips[0].AudioStreamIndex == stream && !t.Clips.Any(c => c.Start < to && c.End > from));
+    // The lane under a track for the stream at this place in its file (its ordinal, 5.2), with room for a clip from to to: a second lane
+    // for one ordinal only where a clip of the first is in the way. A lane from before 5.2 (no ordinal) is still taken for the same
+    // stream number, as it was then; a lane a stream was moved to on its own never.
+    private TimelineTrackModel? StreamLaneOf(TimelineTrackModel track, int ordinal, int stream, double from, double to) =>
+        SoundLanesOf(track).FirstOrDefault(t => (t.StreamOrdinal == ordinal || (t.StreamOrdinal is null && t.Clips.Count > 0 && t.Clips[0].AudioStreamIndex == stream))
+            && !t.Clips.Any(c => c.Start < to && c.End > from));
+
+    /// <summary>
+    /// The output audio track a stream lane's place goes to (5.2-AuditB: AudioTracks are what each output track is made as, by stream
+    /// place: output N carries every Sub-Lane of place N); null for a row of no stream place, or a place the file last opened has none for.
+    /// </summary>
+    public AudioTrack? OutputTrackOf(Layer row) => StreamOrdinalOf(row) is { } ordinal && ordinal < AudioTracks.Count ? AudioTracks[ordinal] : null;
+
+    /// <summary>The place of an audio lane's stream among its clips' streams ("Stream 1" is 0), or null for a lane of no stream: the order of a track's audio stack.</summary>
+    public int? StreamOrdinalOf(Layer row) => TrackOfRow(row) is { Kind: TimelineTrackKind.Audio, StreamOrdinal: >= 0 and var ordinal } ? ordinal : null;
+
+    /// <summary>A stream Sub-Lane's name as its header shows it ("Stream 2" until it is named), or null for a row of no stream place.</summary>
+    public string? StreamLaneName(Layer row) => TrackOfRow(row) is { Kind: TimelineTrackKind.Audio, StreamOrdinal: >= 0 } lane ? lane.DisplayName : null;
+
+    /// <summary>
+    /// Names a stream's Sub-Lane, and with it the output track its stream place goes to (5.2-Arm64AndNpu, the user's answer: the
+    /// output track's title follows the lane's name; the export's sound, ExportSoundPlan, takes an output's title from its output
+    /// choice before its lane's name, so both are set): every Sub-Lane of that place, which that one output carries, and the output track's title
+    /// together. Typed in place, a keystroke at a time, so it takes no step of Undo of its own: its caller takes the one step at the
+    /// first keystroke (the lanes' names and the output tracks' titles are both in a step). False for a row of no stream place.
+    /// </summary>
+    public bool RenameStreamLane(Layer row, string name)
+    {
+        name = name.Trim();
+        if (name.Length == 0 || StreamOrdinalOf(row) is not { } ordinal)
+            return false;
+
+        var lanes = Document.Tracks.Where(t => t.Kind == TimelineTrackKind.Audio && t.StreamOrdinal == ordinal && t.Name != name).ToList();
+        if (lanes.Count > 0)
+        {
+            Edit($"rename {name}", edit =>
+            {
+                foreach (var lane in lanes)
+                    edit.SetTrack(lane, name: name);
+            }, undoable: false);
+        }
+
+        if (ordinal < AudioTracks.Count)
+            AudioTracks[ordinal].Title = name;
+        return true;
+    }
+
+    /// <summary>
+    /// Moves a sound clip off the lane it shares onto a lane of its own (5.2, the user's call: a stream dragged out of its row): a new
+    /// lane in the audio stack of <paramref name="underRow"/>'s video track, or with none an Audio track of its own. It keeps its time
+    /// and its parent clip, so it still moves, trims and splits with its video. A lane it leaves empty goes. One step of Undo.
+    /// </summary>
+    public bool MoveSoundToOwnLane(Layer clip, Layer? underRow)
+    {
+        if (ClipOf(clip) is not { ContentKind: LayerKind.Audio } model || Document.TrackOf(model) is not { IsLocked: false } from)
+            return false;
+
+        TimelineTrackModel? under = null;
+        if (underRow is not null)
+        {
+            if (TrackOfRow(underRow) is not { Kind: TimelineTrackKind.Video or TimelineTrackKind.Switch, IsLocked: false } found)
+                return false;
+            under = found;
+        }
+
+        var moved = Edit(under is null ? $"move {clip.Name} to an Audio track of its own" : $"move {clip.Name} to a lane of its own", edit =>
+        {
+            edit.MoveClip(model, from, model.Start, insertTrackAtIndex: Document.Tracks.IndexOf(from) + 1, allowCrossfadeOverlap: false);
+            var lane = Document.TrackOf(model)!;
+            lane.StreamOrdinal = -1;
+            edit.SetTrack(lane, name: clip.Name);
+            edit.SetTrackParent(lane, under?.Id);
+            if (from.Clips.Count == 0)
+                edit.RemoveTrack(from);
+        });
+
+        if (moved)
+        {
+            StatusText = under is null ? $"{clip.Name} is on an Audio track of its own." : $"{clip.Name} is on a lane of its own under {underRow!.Name}.";
+            RefreshLayerRows();
+        }
+
+        return moved;
+    }
+
+    /// <summary>Whether a sound clip can be moved onto a lane of its own under this row's track (a drag onto a video row, 5.2).</summary>
+    public bool CanMoveSoundUnder(Layer clip, Layer row) =>
+        ClipOf(clip) is { ContentKind: LayerKind.Audio } model && Document.TrackOf(model) is { IsLocked: false }
+        && TrackOfRow(row) is { Kind: TimelineTrackKind.Video or TimelineTrackKind.Switch, IsLocked: false };
 
     /// <summary>Whether a clip's file may hold streams it has not shown yet: a video from a file, with its sound still on the clip.</summary>
     public bool CanUnpackStreams(Layer clip) => ClipOf(clip) is { ContentKind: LayerKind.VideoFile, AudioStreamIndex: >= 0 };
@@ -118,11 +213,9 @@ public partial class MainViewModel
     private IEnumerable<TimelineTrackModel> SoundLanesOf(TimelineTrackModel track) =>
         Document.Tracks.Where(t => t.Kind == TimelineTrackKind.Audio && t.ParentTrackId == track.Id);
 
-    /// <summary>Whether all that a video track's row can be heard is muted: the main file's streams, or its clips' sound and the lanes under it.</summary>
+    /// <summary>Whether all that a video track's row can be heard is muted: its clips' sound and the lanes under it.</summary>
     public bool IsRowSoundMuted(Layer row)
     {
-        if (row.IsMainVideo)
-            return AudioTracks.Count > 0 && AudioTracks.All(t => t.IsMuted);
         if (TrackOfRow(row) is not { } track)
             return row.IsMuted;
 
@@ -134,20 +227,11 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The master mute on every video track's header: all of what the track is heard by at once, in one step of Undo. The main video's
-    /// streams, or the sound of the track's clips and every lane in its audio stack; the picture stays.
+    /// The master mute on every video track's header: all of what the track is heard by at once, in one step of Undo: the sound of
+    /// the track's clips and every lane in its audio stack; the picture stays.
     /// </summary>
     public void SetTrackSoundMuted(Layer row, bool muted)
     {
-        if (row.IsMainVideo)
-        {
-            Checkpoint(muted ? $"mute the sound of {row.Name}" : $"unmute the sound of {row.Name}");
-            foreach (var stream in AudioTracks)
-                stream.IsMuted = muted;
-            GenerateCommand();
-            return;
-        }
-
         if (TrackOfRow(row) is not { } track)
         {
             row.IsMuted = muted;
@@ -180,19 +264,14 @@ public partial class MainViewModel
     /// </summary>
     public IReadOnlyList<CaptionSource>? CaptionStreamsOf(object? requested)
     {
-        var mainStreams = HasSource ? AudioTracks.Select(t => new CaptionSource(CaptionSourceKind.MainFile, LocalMediaPath, t.Index)).ToList() : [];
         switch (requested)
         {
             case AudioTrack:
-                return mainStreams;
-            case Layer { IsMainVideo: true }:
-                return mainStreams;
+                // The file last opened's streams (an output track's menu).
+                return OpenedFile.Length > 0 ? AudioTracks.Select(t => new CaptionSource(CaptionSourceKind.Clip, OpenedFile, t.Index)).ToList() : [];
             case Layer row when TrackOfRow(row) is { } track:
                 // A lane speaks for the track it is under.
                 var owner = row.IsAudio && track.ParentTrackId is { } parentId && Document.Tracks.Find(t => t.Id == parentId) is { } parent ? parent : track;
-                if (owner.Clips.Any(c => c.ContentKind == LayerKind.MainVideo))
-                    return mainStreams;
-
                 var sources = owner.Clips.Concat(SoundLanesOf(owner).SelectMany(t => t.Clips))
                     .Where(c => c.HasSound && c.SourcePath is { Length: > 0 })
                     .Select(c => new CaptionSource(CaptionSourceKind.Clip, c.SourcePath!, Math.Max(c.AudioStreamIndex, 0)))

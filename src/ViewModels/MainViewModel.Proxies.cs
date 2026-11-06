@@ -23,19 +23,9 @@ public partial class MainViewModel
     private bool _baking;
 
     /// <summary>
-    /// The main video's proxy when one of its clips asked for one and it is made (a project of before 5.0-Verify: the item is
-    /// not offered on the main video, whose proxy the GPU preview does not read yet); null for the original. Read by the
-    /// live graphs (the golden tests' and the A/V harness's) only.
-    /// </summary>
-    private string? MainProxy => HasSource && _proxiesInUse.TryGetValue(LocalMediaPath.Trim().Trim('"'), out var proxy) ? proxy : null;
-
-    /// <summary>How tall the main video's proxy is, when there is one in use (see <see cref="MainProxy"/>); 0 otherwise.</summary>
-    private int MainProxyHeight => MainProxy is null ? 0 : Math.Min(AppSettings.ProxyTiers.Contains(AppSettings.Current.ProxyTier) ? AppSettings.Current.ProxyTier : 540, SourceHeight > 0 ? SourceHeight : int.MaxValue);
-
-    /// <summary>
     /// The files that may have a proxy, and whether one was asked for (Optimize on any clip of the file: Make; Auto
-    /// otherwise; an older project's Use Original counts as Auto): the video layers' files, and the main video's when one of
-    /// its clips asked (see <see cref="MainProxy"/>).
+    /// otherwise; an older project's Use Original counts as Auto): the video clips' files (5.2-AuditB: the file opened too, as
+    /// any clip of it is).
     /// </summary>
     private Dictionary<string, ProxyChoice> ProxyFiles()
     {
@@ -49,11 +39,6 @@ public partial class MainViewModel
 
         foreach (var layer in Layers.Where(l => l.IsVideoFile && !l.IsDeleted))
             Add(layer.ImagePath, layer.ProxyChoice);
-        if (HasSource && _mediaInfo is { Video: not null })
-        {
-            foreach (var view in Layers.Where(l => l.IsMainVideo && !l.IsDeleted && l.ProxyChoice == ProxyChoice.Make))
-                Add(LocalMediaPath, view.ProxyChoice);
-        }
 
         return files;
     }
@@ -121,10 +106,8 @@ public partial class MainViewModel
     public string ProxyStatus(Layer clip)
     {
         var file = clip.ImagePath.Trim().Trim('"');
-        if (clip.IsMainVideo)
-            file = LocalMediaPath.Trim().Trim('"');
         return clip.ProxyChoice != ProxyChoice.Make ? "Not optimized: the preview plays the original"
-            : _proxiesInUse.ContainsKey(file) ? clip.IsMainVideo ? "Its proxy is made, but the preview plays the main video's original" : "Optimized: the preview plays its proxy"
+            : _proxiesInUse.ContainsKey(file) ? "Optimized: the preview plays its proxy"
             : _proxyQueue.Contains(file, StringComparer.OrdinalIgnoreCase) ? "Its proxy is being made"
             : _proxyFailed.Contains(file) ? "Its proxy could not be made (HandPeg.log says why)"
             : "Its proxy is to be made";
@@ -139,7 +122,7 @@ public partial class MainViewModel
     /// Whether a clip's right-click menu offers Optimize Long-GOP Clip for Scrubbing: when the clip has it on (so that it can
     /// be turned off); when Shift is held as the menu opens (<paramref name="asked"/>); or when a video layer's file is
     /// long-GOP (its I-frames further apart than Settings' heavy interval) and the preview cannot decode it fast (see
-    /// <see cref="PreviewDecodesFast"/>). Never otherwise for the main video, whose proxy the GPU preview does not read yet.
+    /// <see cref="PreviewDecodesFast"/>).
     /// </summary>
     public bool OptimizeIsUseful(Layer clip, bool asked)
     {

@@ -12,7 +12,8 @@ namespace HandPegApp.Services;
 // fault) into the crashes folder (AppPaths), and read by HandPeg.CrashDesk, which links this file: the two never disagree
 // on the layout. Nothing in a report may tell who made it or what they were working on: no paths, file names, user or
 // machine names, URLs, or words from the media (subtitles, text layers). Every string is sanitized before it is put here;
-// what is kept is the kind of thing (container, codec, size, rate, length), the code's own names, and numbers.
+// what is kept is the kind of thing (container, codec, size, rate, length), the code's own names, and numbers. The one
+// exception is a developer's own (DevVerbose), written only on a PC with the flight recorder on.
 
 /// <summary>A crash report as it is written to disk: JSON, camelCase, enums by name.</summary>
 public sealed class CrashReport
@@ -44,7 +45,7 @@ public sealed class CrashReport
     /// <summary>The exception's message, sanitized.</summary>
     public string Message { get; set; } = "";
 
-    /// <summary>The managed frames, innermost first, each normalized (<see cref="CrashSignature.NormalizeFrame"/>): "HandPegApp.Services.FilterGraphBuilder+Pass.AppendVideoFile".</summary>
+    /// <summary>The managed frames, innermost first, each normalized (<see cref="CrashSignature.NormalizeFrame"/>): "HandPegApp.Services.Gpu.GpuScenePlan+Maker.File".</summary>
     public List<string> Stack { get; set; } = [];
 
     /// <summary>The exceptions inside it (an AggregateException's, a TargetInvocationException's), outermost first, each as type and message.</summary>

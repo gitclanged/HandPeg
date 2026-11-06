@@ -19,6 +19,14 @@ public struct ExplodedPlane
 
     public int Flags;
 
+    /// <summary>
+    /// Its Pitch and Yaw (degrees) as the 3D view turns its plane out of the stack about its anchor (5.2C, the user's Q4: picked and resized
+    /// on that plane, ExplodedCamera.HitBox); 0 for a plane drawn upright (SceneRenderer.TiltsInDepth: a blurred background keeps it so).
+    /// </summary>
+    public float TiltX, TiltY;
+
+    public readonly bool Tilted => TiltX != 0 || TiltY != 0;
+
     /// <summary>Only a blurred background (a whole-frame blur under its video): drawn, never picked.</summary>
     public readonly bool BlurFillOnly => (Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0;
 
@@ -65,11 +73,13 @@ public sealed class ExplodedScene
         for (var k = 0; k < count; k++)
         {
             ref readonly var layer = ref layers[k];
+            var tilts = SceneRenderer.TiltsInDepth(layer);
             Planes[k] = new ExplodedPlane
             {
                 ClipKey = layer.ClipKey, Index = k, Flags = layer.Flags, ZDepth = layer.ZDepth,
                 X = layer.X, Y = layer.Y, Width = layer.Width, Height = layer.Height,
                 Rotation = layer.Rotation, AnchorX = layer.AnchorX, AnchorY = layer.AnchorY,
+                TiltX = tilts ? layer.TiltX : 0, TiltY = tilts ? layer.TiltY : 0,
             };
         }
 
@@ -307,8 +317,7 @@ public sealed partial class GpuPreviewEngine
             }
 
             header.ViewMode = 1;
-            if (AppSettings.Current.EnableExtraAnimations)
-                header.Flags |= FrameSceneHeader.FlagStudioStage;
+            header.Flags |= FrameSceneHeader.FlagDepthRails;
             header.CameraYaw = (float)_drawnYaw;
             header.CameraPitch = (float)_drawnPitch;
             header.CameraZoom = (float)_drawnZoom;

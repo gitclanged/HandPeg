@@ -1,0 +1,17 @@
+# A Track Preset Node: a track's own Game Preset, on its clips and on what comes onto it; a move between two swaps it, one step of Undo.
+ok: two Game Presets saved: two Cutouts, and one
+ok: a video track can carry a preset, and has none at first
+ok: set on track A
+ok: the clip on it took that preset's two Cutouts
+ok: the node is kept with its track in the project, and left out of a track without one
+ok: Undo takes the node and its Cutouts away in one step
+ok: Redo puts both back
+ok: set on track B: its clip took the one Cutout
+ok: a clip moved from track A to track B
+ok: it lies on B's track
+ok: its Cutouts are B's preset's now, A's gone
+ok: over its own span
+ok: one Undo puts it back on A's track with A's Cutouts
+ok: Clear Track Preset takes the node away
+ok: and its clip keeps the Cutout it has
+ok: a Cutout's lane carries no preset of its own

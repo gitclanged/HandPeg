@@ -69,7 +69,7 @@
                         </DockPanel>
                         <DockPanel>
                             <TextBlock Text="&#xE711;" Style="{StaticResource Mark}" Foreground="{DynamicResource WarningTextBrush}" />
-                            <TextBlock Style="{StaticResource Item}" Text="The words of subtitles, captions and text layers, and titles" />
+                            <TextBlock Style="{StaticResource Item}" Text="The words of subtitles, captions and text clips, and titles" />
                         </DockPanel>
                         <DockPanel>
                             <TextBlock Text="&#xE711;" Style="{StaticResource Mark}" Foreground="{DynamicResource WarningTextBrush}" />

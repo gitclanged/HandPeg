@@ -146,6 +146,10 @@ public partial class MainWindow
         // drag is one step of Undo), and the moment under the pointer over the ruler told as the rows' is (Instant Seek).
         surface.BlockClicked += Timeline_BlockClicked;
         surface.HeaderClicked += Timeline_HeaderClicked;
+
+        // 5.2A: a track's preset badge drops the Game Presets; a rubber band over empty space selects what it touches.
+        surface.BadgePressed += Timeline_BadgePressed;
+        surface.MarqueeSelected += Timeline_MarqueeSelected;
         surface.Together = _viewModel.EditTogether;
         _viewModel.ClipSelectionChanged += ClipGroup_Changed;
         pane.Ruler.PointerSecondsChanged += surface.NotePointerOverRuler;
@@ -156,7 +160,7 @@ public partial class MainWindow
         _viewModel.LayerRows.CollectionChanged += (_, _) => ScheduleClipRedraw();
         _viewModel.AudioRows.CollectionChanged += (_, _) => ScheduleClipRedraw();
 
-        // Play / Pause in the pane's corner while neither the playback bar's nor the overview bar's is on screen.
+        // Play / Pause in the pane's corner while neither the playback bar's nor the Sequence Overview Scrubber's is on screen.
         TimelinePane.IsVisibleChanged += (_, _) => ShowTimelinePlayButton();
         pane.Loaded += (_, _) =>
         {
@@ -244,11 +248,11 @@ public partial class MainWindow
 
     /// <summary>
     /// The timeline's rows, top to bottom, with their blocks laid out at <paramref name="scale"/> pixels a second. Each
-    /// track's row in the stacking order (the front first: LayerRows), its children (the tracks made to go with it, a style's
-    /// HUD cut-outs; its clips' unlinked sound) in its mini-stack; the main file's audio streams in the main video's; the
-    /// captions in the stack of the track whose sound they were heard in (else on top); the blurred background under the
-    /// pictures; the sound clips' tracks last. Each row is known by a key that an undo leaves as it was (Layer.TrackId,
-    /// an audio stream's index, "captions", "background"), so a row that was open stays open.
+    /// track's row in the stacking order (the front first: LayerRows), its children (the tracks made to go with it, a Game
+    /// Preset's HUD Cutouts; its clips' unlinked sound; its streams' Sub-Lanes) in its mini-stack; the captions in the stack of the
+    /// track whose sound they were heard in (else on top); the blur fill's settings row under the pictures; the sound clips'
+    /// tracks last. Each row is known by a key that an undo leaves as it was (Layer.TrackId, "captions", "background"), so a
+    /// row that was open stays open.
     /// </summary>
     private List<TimelineRow> BuildTimelineRows(double scale)
     {
@@ -260,33 +264,23 @@ public partial class MainWindow
         // The tracks' rows: pictures in the stacking order, then the sound clips' tracks (a video clip's sound is on its
         // own clip's row, or its lane while unlinked).
         var pictures = new List<(Layer Layer, TimelineRow Row)>();
-        TimelineRow? mainRow = null, captionRow = null, backgroundRow = null;
+        TimelineRow? captionRow = null, backgroundRow = null;
         foreach (var layer in _viewModel.LayerRows)
         {
             if (layer.IsCaptions)
-            {
                 captionRow = CaptionRow(layer, scale, seconds);
-            }
             else if (layer.IsBackground)
-            {
                 backgroundRow = BackgroundRow(layer, scale, seconds);
-            }
             else
-            {
-                var row = TrackRow(layer, scale, seconds);
-                pictures.Add((layer, row));
-                if (layer.IsMainVideo)
-                    mainRow ??= row;
-            }
+                pictures.Add((layer, TrackRow(layer, scale, seconds)));
         }
 
+        // (5.2-AuditB: a file's streams are Sub-Lanes of sound clips, rows of their own in their video track's stack; the output
+        // audio tracks are the Audio tab's, no rows of the timeline.)
         var sounds = new List<(Layer Layer, TimelineRow Row)>();
-        var streams = new List<TimelineRow>();
         foreach (var item in _viewModel.AudioRows)
         {
-            if (item is AudioTrack stream)
-                streams.Add(StreamRow(stream, scale, seconds));
-            else if (item is Layer { IsAudio: true } sound)
+            if (item is Layer { IsAudio: true } sound)
                 sounds.Add((sound, TrackRow(sound, scale, seconds)));
         }
 
@@ -310,23 +304,21 @@ public partial class MainWindow
                 Adopt(parentRow, row);
         }
 
-        // The main file's audio streams are the main video's sound: in its stack (on their own while there is no main video).
-        foreach (var stream in streams)
+        // Each picture track's effects (5.2): its clips' effects as blocks on lanes of its own stack, among its Sub-Lanes (EffectRows).
+        foreach (var (layer, row) in pictures)
         {
-            if (mainRow is not null)
-                Adopt(mainRow, stream);
+            foreach (var lane in EffectRows(layer, scale))
+                Adopt(row, lane);
         }
 
-        // The captions follow the sound they were heard in: in the stack of its track (the main video's, for the main file's),
-        // among its layers (4.4 BugHunt: beside the HUD cut-outs and masks, never among its sound's lanes).
+        // The captions follow the sound they were heard in: in the stack of its track, among its layers (4.4 BugHunt: beside
+        // the HUD cut-outs and masks, never among its sound's lanes).
         // Strict order (the user's directive): that is where they are drawn, right over that track; drawn anywhere else, their row is
         // where they are drawn, under the track over them, or at the very top over everything.
         TimelineRow? overCaptions = null;
         if (captionRow is not null)
         {
-            var anchor = _viewModel.CaptionsFollowMainFile ? mainRow
-                : _viewModel.CaptionAnchorTrackId is { } anchorId ? byTrack.GetValueOrDefault(anchorId)
-                : null;
+            var anchor = _viewModel.CaptionAnchorTrackId is { } anchorId ? byTrack.GetValueOrDefault(anchorId) : null;
             if (anchor is not null && _viewModel.CaptionsAreOverTheirTrack)
                 Adopt(anchor, captionRow);
             else if (_viewModel.Document.CaptionsUnderTrack is { } over && byTrack.TryGetValue(over.Id, out var overRow))
@@ -335,11 +327,8 @@ public partial class MainWindow
                 rows.Add(captionRow);
         }
 
-        // The blurred background is made of the main video's frames: in its stack, beside its HUD cut-outs, masks and captions
-        // (5.0-Verify, the user's bug 4). A row of the view only: it is the sequence's setting, no clip, and nothing links it.
-        if (backgroundRow is not null && mainRow is not null)
-            Adopt(mainRow, backgroundRow);
-
+        // The blur fill's settings (5.2-AuditB: each video's own blur fill, this row their look) under the pictures: a row of
+        // the view only, the sequence's setting, no clip, and nothing links it.
         rows.AddRange(pictures.Where(p => p.Row.Parent is null).Select(p => p.Row));
         if (overCaptions is not null)
         {
@@ -352,13 +341,11 @@ public partial class MainWindow
         if (backgroundRow is { Parent: null })
             rows.Add(backgroundRow);
         rows.AddRange(sounds.Where(s => s.Row.Parent is null).Select(s => s.Row));
-        if (mainRow is null)
-            rows.AddRange(streams);
 
         // Each row's stack in its two parts, each opened by itself: its layers (the captions first, as they are drawn in
-        // front of everything, then the tracks made to go with it, and last the blurred background under them all) and under
-        // them its sound's lanes.
-        OrderStacks(rows);
+        // front of everything, then the tracks made to go with it, and last the blur fill's settings row under them all) and under
+        // them its sound's lanes, a video track's stream lanes by stream (5.2: "Stream 1", "Stream 2"...).
+        OrderStacks(rows, row => row.Data is Layer lane && _viewModel.StreamOrdinalOf(lane) is { } ordinal ? ordinal : int.MaxValue);
         MarkInFront(rows);
         _rowByTrack = byTrack;
 
@@ -409,7 +396,7 @@ public partial class MainWindow
 
         return rows;
 
-        // A row taken into another's stack: among its layers, or (a sound: an audio track, a stream) among its sound's lanes.
+        // A row taken into another's stack: among its layers, or (a sound: an audio track, a stream's lane) among its sound's lanes.
         static void Adopt(TimelineRow parent, TimelineRow child)
         {
             child.Parent = parent;
@@ -417,9 +404,9 @@ public partial class MainWindow
             parent.Children.Add(child);
         }
 
-        // Every stack laid as its two parts, in the order they were taken in within each (a stable order, never a sort); among
-        // the layers the captions first and the blurred background last.
-        static void OrderStacks(List<TimelineRow> rows)
+        // Every stack laid as its two parts, in the order they were taken in within each (a stable order); among the layers the
+        /// captions first and the blur fill's settings row last, among the sound's lanes the streams by their place in the file.
+        static void OrderStacks(List<TimelineRow> rows, Func<TimelineRow, int> stream)
         {
             foreach (var row in rows)
             {
@@ -427,10 +414,11 @@ public partial class MainWindow
                     continue;
 
                 var ordered = row.Children.OrderBy(static child => child.Stack == ChildStack.Audio ? 3
-                    : child.Kind == TimelineRowKind.Captions ? 0 : child.Kind == TimelineRowKind.Background ? 2 : 1).ToList();
+                    : child.Kind == TimelineRowKind.Captions ? 0 : child.Kind == TimelineRowKind.Background ? 2 : 1)
+                    .ThenBy(child => child.Stack == ChildStack.Audio ? stream(child) : 0).ToList();
                 row.Children.Clear();
                 row.Children.AddRange(ordered);
-                OrderStacks(row.Children);
+                OrderStacks(row.Children, stream);
             }
         }
 
@@ -447,9 +435,9 @@ public partial class MainWindow
         }
 
         // Which children of each stack of layers are drawn in front of their parent, by the very order the compositor draws
-        // in (5.0-Release, the user's directive 4): a track over its parent's in the stacking order (a cut-out over the
+        // in (5.0-Release, the user's directive 4): a track over its parent's in the stacking order (a Cutout over the
         // video; one moved behind it, in the 3D view or by Send Backward, is under it), the captions over everything, the
-        // blurred background under everything. Open, the surface lays those in front above the parent's row.
+        /// blur fill's settings row under everything. Open, the surface lays those in front above the parent's row.
         void MarkInFront(List<TimelineRow> level)
         {
             foreach (var row in level)
@@ -477,7 +465,7 @@ public partial class MainWindow
             row.Data is Layer layer && _viewModel.TrackOfRow(layer) is { } track ? _viewModel.Document.Tracks.IndexOf(track) : -1;
     }
 
-    /// <summary>A track's row (a picture's, the main video's, an empty one, a sound clip's), with its clips and, while any of them is unlinked from its sound, that sound's lane in its stack.</summary>
+    /// <summary>A track's row (a picture's, a video's, an empty one, a sound clip's), with its clips and, while any of them is unlinked from its sound, that sound's lane in its stack.</summary>
     private TimelineRow TrackRow(Layer layer, double scale, double seconds)
     {
         var kind = layer.IsEmptyTrack ? TimelineRowKind.Empty : layer.IsAudio ? TimelineRowKind.Audio : TimelineRowKind.Video;
@@ -491,31 +479,37 @@ public partial class MainWindow
             Height = RowHeightOf(layer.TrackId, track, kind),
             SizedAlone = track is not null,
             HasOwnHeight = track?.Height is not null || (_rowHeightDrag is { } drag && Equals(drag.Key, layer.TrackId)),
-            Accent = layer.IsMainVideo ? MainClipBrush : layer.IsAudio ? SoundClipBrush : LayerClipBrush,
+            Accent = layer.IsAudio ? SoundClipBrush : LayerClipBrush,
             Tip = layer.IsEmptyTrack ? "An empty track: drop videos and pictures onto it." : null,
 
-            // A gap's pill closes it on this track: never on a locked one (an unlinked sound's lane, the main file's
-            // streams, the captions and the background have none either).
+            // A gap's pill closes it on this track: never on a locked one (an unlinked sound's lane, the captions and the
+            // blur fill's settings row have none either).
             ClosesGaps = track is { IsLocked: false },
+
+            // Its Track Preset (5.2A): the badge in its header, on a picture track of its own (an empty one too: set before anything is dropped).
+            Badge = _viewModel.TrackPresetOf(layer),
+            OffersBadge = _viewModel.CanHaveTrackPreset(layer),
         };
 
-        // Its header's switches: the eye (a sound clip's track is muted instead), its sound's mute, the voice, the lock.
+        // Its header's switches: the eye (a sound clip's track is muted instead), its sound's mute, the solo (5.2-AuditB: the
+        // track's own, the document's: Alt plays it alone), the voice, the lock.
         var (offered, state) = (RowSwitches.None, RowSwitches.None);
         if (layer.IsAudio)
         {
-            offered |= RowSwitches.Muted | RowSwitches.Voice;
-            state |= (layer.IsHidden ? RowSwitches.Muted : 0) | (layer.IsVoice ? RowSwitches.Voice : 0);
+            offered |= RowSwitches.Muted | RowSwitches.Voice | (track is not null ? RowSwitches.Soloed : 0);
+            state |= (layer.IsHidden ? RowSwitches.Muted : 0) | (layer.IsVoice ? RowSwitches.Voice : 0) | (track is { IsSoloed: true } ? RowSwitches.Soloed : 0);
         }
         else
         {
+            // The eye is the track's own switch (5.2: its whole family's), not its first clip's.
             if (layer.CanHide)
             {
                 offered |= RowSwitches.Hidden;
-                state |= layer.IsHidden ? RowSwitches.Hidden : 0;
+                state |= _viewModel.IsTrackHidden(layer) ? RowSwitches.Hidden : 0;
             }
 
             // The master mute: on every video track's header, all of its sound at once (the user's directive).
-            if (layer.IsVideoFile || layer.IsMainVideo)
+            if (layer.IsVideoFile)
             {
                 offered |= RowSwitches.Muted;
                 state |= _viewModel.IsRowSoundMuted(layer) ? RowSwitches.Muted : 0;
@@ -556,24 +550,6 @@ public partial class MainWindow
         return row;
     }
 
-    /// <summary>An audio stream of the main file: its parts where the main video's clips play them; its switches mute, solo (Alt: alone) and voice.</summary>
-    private TimelineRow StreamRow(AudioTrack stream, double scale, double seconds)
-    {
-        var row = new TimelineRow
-        {
-            Key = string.Concat("stream:", stream.Index.ToString(CultureInfo.InvariantCulture)),
-            Data = stream,
-            Kind = TimelineRowKind.Audio,
-            Name = stream.Title,
-            Height = SoundRowHeight,
-            Accent = LayerAudioBrush,
-            Tip = stream.Description,
-            Offered = RowSwitches.Muted | RowSwitches.Soloed | RowSwitches.Voice,
-            State = (stream.IsMuted ? RowSwitches.Muted : 0) | (stream.IsSolo ? RowSwitches.Soloed : 0) | (stream.IsVoice ? RowSwitches.Voice : 0),
-        };
-        BuildRowBlocks(row, scale, seconds);
-        return row;
-    }
 
     private TimelineRow CaptionRow(Layer captions, double scale, double seconds)
     {
@@ -605,7 +581,7 @@ public partial class MainWindow
             Accent = MainUnderBrush,
             Offered = RowSwitches.Hidden,
             State = background.IsHidden ? RowSwitches.Hidden : RowSwitches.None,
-            Tip = "The blurred background, made of the main video's frames and under everything: shown wherever the pictures leave the frame uncovered. In the main video's stack. Click it for its blur.",
+            Tip = "The blur fill: a video's blurred copy under it, wherever it leaves the frame uncovered (each video's own: its menu's Blur Fill). The eye gives every video one, or takes it from every video. Click it for its blur.",
         };
         BuildRowBlocks(row, scale, seconds);
         return row;
@@ -613,7 +589,7 @@ public partial class MainWindow
 
     /// <summary>
     /// The keys of a row and of every row in its stack, at any depth: what slides with a fold made on its track. Never the
-    /// blurred background's (in the main video's stack since 5.0-Verify): it lasts as long as the sequence, whatever is folded.
+    /// blur fill's settings row's: it lasts as long as the sequence, whatever is folded.
     /// </summary>
     private static List<object> RowKeysOf(TimelineRow row)
     {
@@ -643,7 +619,7 @@ public partial class MainWindow
         return null;
     }
 
-    /// <summary>Watches the clips' views and the audio streams that are on the timeline now (and no others) for what the rows show of them.</summary>
+    /// <summary>Watches the clips' views that are on the timeline now (and no others) for what the rows show of them.</summary>
     private void WatchRowSources()
     {
         var next = _rowSourcesNext;
@@ -652,8 +628,6 @@ public partial class MainWindow
             next.Add(layer);
         foreach (var layer in _viewModel.LayerRows)
             next.Add(layer);
-        foreach (var stream in _viewModel.AudioTracks)
-            next.Add(stream);
 
         foreach (var gone in _rowSources)
         {
@@ -671,14 +645,13 @@ public partial class MainWindow
         _rowSourcesNext.Clear();
     }
 
-    // What arrives or changes on a clip or a stream that its row shows: its strip of frames, its sound, its name, a mute.
+    // What arrives or changes on a clip that its row shows: its strip of frames, its sound, its name, a mute.
     private void RowSource_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         switch (e.PropertyName)
         {
             case nameof(Layer.Filmstrip) or nameof(Layer.Waveform) or nameof(Layer.IsLoading) or nameof(Layer.MediaDuration) or nameof(Layer.Name)
-                or nameof(Layer.IsHidden) or nameof(Layer.IsMuted) or nameof(Layer.IsVoice) or nameof(Layer.GainDb) or "AudioGainDb"
-                or nameof(AudioTrack.TrackWaveform) or nameof(AudioTrack.IsSolo) or nameof(AudioTrack.Title) or nameof(AudioTrack.Pieces) or nameof(AudioTrack.OffsetSeconds):
+                or nameof(Layer.IsHidden) or nameof(Layer.IsMuted) or nameof(Layer.IsVoice) or nameof(Layer.GainDb) or "AudioGainDb":
                 ScheduleClipRedraw();
                 break;
         }
@@ -687,20 +660,14 @@ public partial class MainWindow
     // ----- What the surface asks for -----
 
     // A switch on a row's header: the eye, a mute, the solo (Alt: this one alone), the voice, the lock. One step of Undo each
-    // where it is an edit of the timeline; a stream's switches are its own, as they were on the Audio tab.
+    // where it is an edit of the timeline.
     private void Timeline_HeaderSwitchToggled(TimelineRow row, RowSwitches which, bool alone)
     {
         switch (row.Data, which)
         {
-            case (AudioTrack stream, RowSwitches.Muted):
-                stream.IsMuted = !stream.IsMuted;
-                break;
-            case (AudioTrack stream, RowSwitches.Soloed):
-                // The command reads Alt itself: held, the stream is played alone.
-                _viewModel.ToggleSoloCommand.Execute(stream);
-                break;
-            case (AudioTrack stream, RowSwitches.Voice):
-                stream.IsVoice = !stream.IsVoice;
+            case (Layer sound, RowSwitches.Soloed):
+                // The command reads Alt itself: held, the track is played alone.
+                _viewModel.ToggleSoloCommand.Execute(sound);
                 break;
             case (Layer { IsAudio: true } sound, RowSwitches.Muted):
                 _viewModel.ToggleHidden(sound);
@@ -889,6 +856,40 @@ public partial class MainWindow
             SelectClip(row.Data);
     }
 
+    // A track's preset badge clicked (5.2A): its Game Presets drop from it, the track's own ticked, and Clear Track Preset under them.
+    private void Timeline_BadgePressed(TimelineRow row, Rect badge)
+    {
+        if (row.Data is not Layer layer || !_viewModel.CanHaveTrackPreset(layer))
+            return;
+
+        var menu = new ContextMenu { PlacementTarget = UnifiedTimeline.Surface, Placement = PlacementMode.Bottom, PlacementRectangle = badge };
+        AddTrackPresetItems(menu, layer, flat: true);
+        TidySeparators(menu, 0);
+        menu.IsOpen = true;
+    }
+
+    // A rubber band let go over the rows (5.2A): the clips it touched are the selection, or join it with Ctrl or Shift; the last one is the one the
+    // panes show. Captions, the blur fill's row and an effect's lane are not clips to select together.
+    private void Timeline_MarqueeSelected(IReadOnlyList<TimelineBlock> blocks, bool add)
+    {
+        var touched = blocks.Select(b => b.Clip switch { Layer clip => clip, LayerSound sound => sound.Layer, _ => null })
+            .OfType<Layer>().Where(_viewModel.CanGroup).Distinct().ToList();
+        if (touched.Count == 0)
+        {
+            if (!add)
+                ClearClipSelection();
+            UnifiedTimeline.Surface.Redraw();
+            return;
+        }
+
+        var group = add ? SelectedGroup().Concat(touched).Distinct().ToList() : touched;
+        _rangeAnchor = null;
+        _viewModel.SetClipSelection(group);
+        SelectClip(touched[^1], keepGroup: true);
+        _viewModel.StatusText = group.Count == 1 ? $"{group[0].Name} selected." : $"{group.Count} clips selected: Ctrl+C copies them, Ctrl+D duplicates them, Delete deletes them.";
+        CrashReporter.Note("timeline", $"select: a rubber band of {group.Count} clips");
+    }
+
     private void Timeline_DragEnded()
     {
         // What the press left to its click is decided by now (a click was told before the drag's end): a drag that moved
@@ -918,7 +919,7 @@ public partial class MainWindow
             _ => _selectedClip,
         };
         if (_selectedClip is null)
-            _mainClipSelected = false;
+            _playheadVideoSelected = false;
 
         // Clips selected together follow theirs the same way (5.0); where the range began, too.
         _viewModel.RemapClipSelection();
@@ -950,9 +951,6 @@ public partial class MainWindow
             case LayerSound sound when LiveClip(sound.Layer) is { } live:
                 _viewModel.SplitLayer(live, seconds);
                 break;
-            case AudioClip audio:
-                _viewModel.SplitAudio(audio.Track, seconds);
-                break;
 
             // A caption block (5.1-Polish, the user's directive): its words are split at the word under the click.
             case SubtitleRef:
@@ -973,11 +971,37 @@ public partial class MainWindow
     /// Every button of the timeline pane: what it does, by its Tag (the pane's title row, corners, inspector, bin and Add
     /// Layer kinds). A fault in it is a status line and a note in the log (4.4 BugHunt), never an exception that ends the app.
     /// </summary>
-    /// <summary>The Cutout Studio on the video, for pieces and Game Presets.</summary>
+    /// <summary>The Cutout Studio on the video, for Cutouts and Game Presets.</summary>
     private void OpenCutoutStudio()
     {
         if (_viewModel.HasSource)
             new MaskDrawWindow(_viewModel, null) { Owner = this }.ShowDialog();
+    }
+
+    /// <summary>
+    /// The Cutout Studio for one video clip (5.2: "Open Cutout &amp; Mask Studio..." on every video clip's menu): it starts
+    /// from the clip's own drawn shape, and Apply to This Clip cuts the clip to what is drawn, kept as its outlines alone (no
+    /// picture file), one step of Undo, as the mask dialog's Draw Custom Shape does. Its Cutouts and Game Presets are there as
+    /// ever.
+    /// </summary>
+    private void OpenCutoutStudio(Layer clip)
+    {
+        _viewModel.Checkpoint($"change the mask of {clip.Name}");
+        var visit = _viewModel.UndoMark;
+        var window = new MaskDrawWindow(_viewModel, clip) { Owner = this };
+        if (window.ShowDialog() == true && MaskStore.DrawnKey(window.Shapes).Length > 0)
+        {
+            (clip.CustomMask, clip.MaskPath, clip.MaskFrame, clip.MaskShapes) = (true, "", true, window.Shapes);
+            if (window.ForAllLayers)
+            {
+                var count = _viewModel.ShareFrameMask(clip);
+                _viewModel.StatusText = count == 0
+                    ? "There are no other Cutouts of the video to give the mask to."
+                    : $"The mask is now on {count + 1} Cutouts of the video: each takes its own part of it.";
+            }
+        }
+
+        _viewModel.DropStepIfUnchanged(visit);
     }
 
     private void TimelineTool_Click(object sender, RoutedEventArgs e)
@@ -1010,7 +1034,7 @@ public partial class MainWindow
 
             // The inspector's: they act on what their group shows (the button's DataContext).
             case "Properties" when sender is FrameworkElement { DataContext: Layer element }: ShowInEffectsPane(element); break;
-            case "BlurSettings": ShowBackgroundBlurCard(); break;
+            case "BlurSettings": ShowBlurFillSettings(); break;
             case "TrackFilters": TrackFilters_Click(sender, e); break;
 
             // The recycle bin's, and Text Settings' colours.
@@ -1018,7 +1042,7 @@ public partial class MainWindow
             case "EmptyBin": EmptyBin_Click(sender, e); break;
             case "Font" or "Outline": TextColor_Click(sender, e); break;
 
-            // Add Layer's kinds (the flyout has closed itself).
+            // Add Track's kinds (the flyout has closed itself).
             case "builtin.vfx.explosion" or "builtin.vfx.sparks" or "builtin.vfx.animelines" or "builtin.vfx.shield" or "builtin.vfx.saber" or "builtin.gpu.shockwave":
             case "Empty" or "Video" or "Image" or "Text" or "Adjustment" or "Region" or "MaskLayers" or "Audio" or "Voiceover"
                 or "Captions" or "ImportSubtitles" or "EditCaptions" or "CaptionStyle":
@@ -1044,13 +1068,6 @@ public partial class MainWindow
         {
             var key = KeybindManager.GestureText("clip.toggleLink") is { Length: > 0 } keys ? keys : "Toggle A/V Link";
             _viewModel.StatusText = $"Select a clip with sound first: {key} links or unlinks its sound alone (the chain button among the timeline's tools does every clip).";
-            return;
-        }
-
-        if (clip.IsMainVideo)
-        {
-            _viewModel.SetAudioLinked(!_viewModel.AudioLinked);
-            ScheduleClipRedraw();
             return;
         }
 
@@ -1097,9 +1114,6 @@ public partial class MainWindow
                 break;
             case LayerSound clipSound when _viewModel.Layers.Contains(clipSound.Layer):
                 (sound, name) = (clipSound.Layer, $"{clipSound.Layer.Name}: sound");
-                break;
-            case AudioClip audio:
-                (sound, name) = (audio.Track, audio.Track.Title);
                 break;
         }
 

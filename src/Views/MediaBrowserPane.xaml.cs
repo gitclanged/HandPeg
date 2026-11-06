@@ -7,7 +7,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
-using HandPegApp.Controls;
 using HandPegApp.Models;
 using HandPegApp.Services;
 using Microsoft.Win32;
@@ -99,22 +98,105 @@ public partial class MediaBrowserPane : UserControl
         SizeSlider.Value = Math.Clamp(settings.BrowserTileSize, 0, 100);
         ApplySize(SizeSlider.Value);
 
-        _projectMode = settings.BrowserShowsProject;
-        (_projectMode ? ProjectSide : FolderSide).IsChecked = true;
-        FolderBar.Visibility = _projectMode ? Visibility.Collapsed : Visibility.Visible;
+        _libraryMode = settings.BrowserShowsLibrary;
+        _projectMode = !_libraryMode && settings.BrowserShowsProject;
+        (_libraryMode ? LibrarySide : _projectMode ? ProjectSide : FolderSide).IsChecked = true;
+        ShowBars();
         _projectSettled.Tick += (_, _) =>
         {
             _projectSettled.Stop();
             if (_projectMode && _started && IsVisible)
                 _ = ListProjectAsync();
         };
+        _searchSettled.Tick += (_, _) =>
+        {
+            _searchSettled.Stop();
+            if (_libraryMode && _started)
+                _ = ListLibraryAsync();
+        };
     }
 
-    // ----- Project Media or Folder Browser -----
+    // ----- Project Media, Folder Browser or Clip Library -----
     // Project Media lists every file the open project uses (ProjectFiles), with no folder bar; Folder Browser is a folder
-    // on disk. The folder last shown is kept for coming back to it.
+    // on disk. The folder last shown is kept for coming back to it. The Clip Library (5.2C) lists the user's own clips
+    // (ClipLibrary), its search box above them.
 
-    private bool _projectMode;
+    private bool _projectMode, _libraryMode;
+    private readonly DispatcherTimer _searchSettled = new() { Interval = TimeSpan.FromMilliseconds(250) };
+
+    private bool FolderMode => !_projectMode && !_libraryMode;
+
+    private void ShowBars()
+    {
+        FolderBar.Visibility = FolderMode ? Visibility.Visible : Visibility.Collapsed;
+        SearchBox.Visibility = _libraryMode ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>What the pane shows, listed again (the folder from where it starts, the first time).</summary>
+    private Task ListAgain(bool fromStart = false) =>
+        _libraryMode ? ListLibraryAsync() : _projectMode ? ListProjectAsync() : _folder is null || fromStart ? NavigateAsync(null, fromStart: true) : NavigateAsync(_folder);
+
+    /// <summary>A clip went into the Clip Library (or out of it): listed again while the pane shows it.</summary>
+    public void LibraryChanged()
+    {
+        if (_libraryMode && _started)
+            _ = ListLibraryAsync();
+    }
+
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        _searchSettled.Stop();
+        _searchSettled.Start();
+    }
+
+    /// <summary>Lists the Clip Library's clips that answer the search, sorted as a folder's files are.</summary>
+    private async Task ListLibraryAsync()
+    {
+        StopIndexing();
+        _listing.Cancel();
+        _listing = new CancellationTokenSource();
+        var token = _listing.Token;
+        _queue.Clear();
+        _stripsWanted.Clear();
+        _strips.Clear();
+        _items.Clear();
+
+        var search = SearchBox.Text.Trim();
+        List<MediaBrowserItem> entries;
+        try
+        {
+            entries = await Task.Run(() => ClipLibrary.Load().Where(clip => clip.Matches(search)).Select(clip =>
+            {
+                var file = new FileInfo(clip.Path);
+                var tags = clip.Tags.Count > 0 ? " \u00B7 " + string.Join(", ", clip.Tags) : "";
+                return new MediaBrowserItem(file.FullName, MediaBrowserItem.KindOf(file.Name) ?? MediaBrowserKind.Video, clip.Title)
+                {
+                    Info = MediaBrowserItem.FormatSeconds(clip.Duration) + tags, Bytes = file.Length, Modified = clip.Saved,
+                };
+            }).ToList(), token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
+        {
+            StatusText.Text = $"The Clip Library could not be read: {ex.Message}";
+            return;
+        }
+
+        if (token.IsCancellationRequested || !await AddInTurnsAsync(Sorted(entries), token))
+            return;
+
+        StatusText.Text = entries.Count > 0
+            ? $"{entries.Count} clip{(entries.Count == 1 ? "" : "s")} in your Clip Library{(search.Length > 0 ? $" for \"{search}\"" : "")}. Drag them onto the timeline of any project."
+            : search.Length > 0
+                ? $"No clip in your Clip Library has \"{search}\" in its title or tags."
+                : "Your Clip Library is empty: a clip's menu, Save Clip to Personal Clip Library..., keeps one here.";
+        if (_items.Count > 0)
+            Items.ScrollIntoView(_items[0]);
+        ScheduleVisibleCheck();
+    }
     private readonly DispatcherTimer _projectSettled = new() { Interval = TimeSpan.FromMilliseconds(400) };
 
     /// <summary>The media files the open project uses, for Project Media.</summary>
@@ -132,19 +214,15 @@ public partial class MediaBrowserPane : UserControl
 
     private void Source_Checked(object sender, RoutedEventArgs e)
     {
-        var project = ReferenceEquals(sender, ProjectSide);
-        if (!IsInitialized || project == _projectMode)
+        var (project, library) = (ReferenceEquals(sender, ProjectSide), ReferenceEquals(sender, LibrarySide));
+        if (!IsInitialized || (project, library) == (_projectMode, _libraryMode))
             return;
 
-        _projectMode = AppSettings.Current.BrowserShowsProject = project;
-        FolderBar.Visibility = project ? Visibility.Collapsed : Visibility.Visible;
-        if (!_started)
-            return;
-
-        if (project)
-            _ = ListProjectAsync();
-        else
-            _ = _folder is null ? NavigateAsync(null, fromStart: true) : NavigateAsync(_folder);
+        (_projectMode, _libraryMode) = (project, library);
+        (AppSettings.Current.BrowserShowsProject, AppSettings.Current.BrowserShowsLibrary) = (project, library);
+        ShowBars();
+        if (_started)
+            _ = ListAgain();
     }
 
     /// <summary>Lists the files the open project uses, sorted as the folder's would be; a file that is gone says so.</summary>
@@ -203,7 +281,7 @@ public partial class MediaBrowserPane : UserControl
         : suggested is not null && Directory.Exists(suggested) ? suggested
         : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
 
-    /// <summary>A file was asked to be opened as the main video.</summary>
+    /// <summary>A file was asked to be opened (in place of the video open, when there is one).</summary>
     public event Action<string>? LoadRequested;
 
     /// <summary>
@@ -278,7 +356,7 @@ public partial class MediaBrowserPane : UserControl
             // Once the window has drawn (it may be the one being laid out for its first frame): what a folder holds is not
             // what the first frame waits for. A folder of 290 videos, its tiles all made at once, held it back half a second.
             _started = true;
-            Dispatcher.BeginInvoke(() => _ = _projectMode ? ListProjectAsync() : NavigateAsync(null, fromStart: true), DispatcherPriority.ContextIdle);
+            Dispatcher.BeginInvoke(() => _ = ListAgain(fromStart: true), DispatcherPriority.ContextIdle);
         }
         else
         {
@@ -387,7 +465,7 @@ public partial class MediaBrowserPane : UserControl
     private void StartIndexDwell()
     {
         var delay = AppSettings.Current.BrowserIndexDelaySeconds;
-        if (_folder is null || _projectMode || !IsVisible || delay <= 0 || _indexing is not null)
+        if (_folder is null || !FolderMode || !IsVisible || delay <= 0 || _indexing is not null)
             return;
 
         if (!_indexHooked)
@@ -517,14 +595,14 @@ public partial class MediaBrowserPane : UserControl
 
     private void GoUp()
     {
-        if (_folder is null || _projectMode)
+        if (_folder is null || !FolderMode)
             return;
 
         // From a drive's root, up is the list of drives.
         _ = NavigateAsync(Directory.GetParent(_folder)?.FullName);
     }
 
-    private void Refresh_Click(object sender, RoutedEventArgs e) => _ = _projectMode ? ListProjectAsync() : NavigateAsync(_folder);
+    private void Refresh_Click(object sender, RoutedEventArgs e) => _ = ListAgain();
 
     // ----- The view: its order and its size -----
 
@@ -1028,9 +1106,6 @@ public partial class MediaBrowserPane : UserControl
 
     private void Picture_MouseMove(object sender, MouseEventArgs e)
     {
-        if (sender is FrameworkElement { ActualWidth: > 0, ActualHeight: > 0 } tile && e.LeftButton != MouseButtonState.Pressed)
-            TiltToward(tile, e.GetPosition(tile));
-
         // Resting on a video's tile: a drop of it is likely (5.0-Release).
         if (sender is FrameworkElement { DataContext: MediaBrowserItem { IsVideo: true } hovered })
             RestOn(hovered);
@@ -1124,64 +1199,10 @@ public partial class MediaBrowserPane : UserControl
 
     private void Picture_MouseLeave(object sender, MouseEventArgs e)
     {
-        (_tiltTo, _tiltHeld) = (default, false);
         _restTimer?.Stop();
         _restingOn = null;
         if (sender is FrameworkElement { DataContext: MediaBrowserItem item })
             (item.HoverFraction, item.HoverFrame, item.HoverText) = (double.NaN, null, "");
-    }
-
-    // ----- The tile under the pointer tilts toward it (5.1-GpuFx) -----
-
-    private TileTiltEffect? _tilt;
-    private FrameworkElement? _tiltTile;
-    private Vector _tiltTo, _tiltNow;
-    private bool _tiltHeld, _tiltRunning;
-
-    /// <summary>How far a tile leans at its edge (the perspective's share), and how much smaller it is drawn while it does, to leave its near edge room.</summary>
-    private const double TiltMost = 0.09, TiltInset = 0.05, TiltSheen = 0.16;
-
-    private void TiltToward(FrameworkElement tile, Point at)
-    {
-        if (!AppSettings.Current.EnableExtraAnimations || !TileTiltEffect.Works)
-            return;
-
-        if (!ReferenceEquals(tile, _tiltTile))
-        {
-            _tiltTile?.ClearValue(EffectProperty);
-            _tiltNow = default;
-            _tiltTile = tile;
-            tile.Effect = _tilt ??= new TileTiltEffect();
-        }
-
-        (_tiltTo, _tiltHeld) = (new Vector(at.X / tile.ActualWidth * 2 - 1, at.Y / tile.ActualHeight * 2 - 1), true);
-        if (!_tiltRunning)
-        {
-            _tiltRunning = true;
-            CompositionTarget.Rendering += TiltFrame;
-        }
-    }
-
-    // Only while a tile is leaning: at rest nothing here runs, and no tile has an effect.
-    private void TiltFrame(object? sender, EventArgs e)
-    {
-        // (The pane hidden, or a tile recycled, under a still pointer: no MouseLeave comes.)
-        if (_tiltTile is not { IsMouseOver: true, IsVisible: true })
-            (_tiltTo, _tiltHeld) = (default, false);
-
-        _tiltNow += (_tiltTo - _tiltNow) * 0.2;
-        if (!_tiltHeld && _tiltNow.LengthSquared < 0.0004)
-        {
-            _tiltRunning = false;
-            CompositionTarget.Rendering -= TiltFrame;
-            _tiltTile?.ClearValue(EffectProperty);
-            _tiltTile = null;
-            return;
-        }
-
-        var lean = Math.Min(_tiltNow.Length, 1);
-        _tilt!.Tilt = new System.Windows.Media.Media3D.Point4D(_tiltNow.X * TiltMost, _tiltNow.Y * TiltMost, lean * TiltSheen, 1 - lean * TiltInset);
-        _tilt.Sheen = new Point(_tiltNow.X * 0.5 + 0.5, _tiltNow.Y * 0.5 + 0.5);
     }
 
     private IReadOnlyList<BitmapSource>? StripOf(MediaBrowserItem item)
@@ -1465,20 +1486,35 @@ public partial class MediaBrowserPane : UserControl
         else if (files.Count > 0)
         {
             var playable = files.Where(f => f.Kind != MediaBrowserKind.Image).ToList();
-            Add("Load as Main Video", () => LoadRequested?.Invoke(playable[0].Path), playable.Count == 1);
+            Add(loaded ? "Open in Place of the Open Video" : "Open Video", () => LoadRequested?.Invoke(playable[0].Path), playable.Count == 1);
             Add(files.Count > 1 ? "Add to Timeline at Playhead (End to End)" : "Add to Timeline at Playhead",
                 () => AddRequested?.Invoke([.. files.Where(f => f.Kind != MediaBrowserKind.Audio).Select(f => f.Path)], false),
                 loaded && files.Any(f => f.Kind != MediaBrowserKind.Audio));
             Add("Add as Audio at Playhead", () => AddRequested?.Invoke([.. playable.Select(f => f.Path)], true), loaded && playable.Count > 0);
             menu.Items.Add(new Separator());
             Add("Show in Explorer", () => ShowInExplorer(files[0].Path));
+
+            // The Clip Library's own (5.2C): its clips taken out of it, their files with them.
+            if (_libraryMode)
+                Add(files.Count > 1 ? $"Remove {files.Count} Clips from Clip Library" : "Remove from Clip Library", () => RemoveFromLibrary(files));
         }
 
         if (menu.Items.Count > 0)
             menu.Items.Add(new Separator());
-        if (!_projectMode)
+        if (FolderMode)
             Add("Up One Folder", GoUp, _folder is not null);
-        Add("Refresh", () => _ = _projectMode ? ListProjectAsync() : NavigateAsync(_folder));
+        Add("Refresh", () => _ = ListAgain());
+    }
+
+    private void RemoveFromLibrary(IEnumerable<MediaBrowserItem> files)
+    {
+        foreach (var file in files)
+        {
+            if (ClipLibrary.Find(file.Path) is { } entry)
+                ClipLibrary.Remove(entry);
+        }
+
+        _ = ListLibraryAsync();
     }
 
     // Started on the thread pool (4.3E): a shell start takes the interface's thread for tens of milliseconds.

@@ -251,7 +251,7 @@ public sealed class DockManager
     public string Save()
     {
         RememberSideBounds();
-        return JsonSerializer.Serialize(_state);
+        return JsonSerializer.Serialize(_state, Services.AppSettingsJsonContext.Default.DockLayoutState);
     }
 
     /// <summary>Every pane back where the mode starts with it, and the side window closed.</summary>
@@ -489,7 +489,7 @@ public sealed class DockManager
     private string? _builtSignature;
 
     // Which pane of a group is shown is not part of it: that is changed in place (see Activate), not by a rebuild.
-    private string Signature() => ActiveAttribute.Replace(JsonSerializer.Serialize(_state), "") + "|" + string.Join(",", _panes.Values.Where(p => p.IsShown()).Select(p => p.Id))
+    private string Signature() => ActiveAttribute.Replace(JsonSerializer.Serialize(_state, Services.AppSettingsJsonContext.Default.DockLayoutState), "") + "|" + string.Join(",", _panes.Values.Where(p => p.IsShown()).Select(p => p.Id))
         + "|" + (_side?.GetHashCode() ?? 0);
 
     private static readonly System.Text.RegularExpressions.Regex ActiveAttribute = new("\"Active\":(\"(?:[^\"\\\\]|\\\\.)*\"|null),?", System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -812,9 +812,12 @@ public sealed class DockManager
 
     /// <summary>
     /// The border between two parts of a split: dragged, it shares the room between them anew. Next to a part as tall as
-    /// its content (the overview bar, the playback controls) it shares the room between the nearest parts above and
-    /// below that are not (4.1.1: the player's row and the tabs; the timeline keeps the height its setting gives it);
-    /// with no such part on one side it is only a gap, or, beside a pane that can be made taller, it makes it so.
+    /// its content (the Sequence Overview Scrubber, the playback controls) it shares the room between the nearest parts above
+    /// and below that are not (4.1.1: the player's row and the tabs; the timeline keeps the height its setting gives it);
+    /// with no such part on one side it is only a gap, or, beside a pane that can be made taller, it makes it so. Right under
+    /// a pane that can be made taller (the Sequence Overview Scrubber), the border is that pane's lower edge: dragged, it makes
+    /// it taller or shorter, and Ctrl+drag shares the room instead (5.2-AuditB, the user's bug: the bar could no longer be
+    /// sized from its lower edge; the border there shared the room and moved it whole).
     /// </summary>
     private void AddBorder(Grid grid, DockNode split, List<(FrameworkElement Element, int Index, bool Fits)> parts, int k)
     {
@@ -823,20 +826,24 @@ public sealed class DockManager
         var (above, under) = (parts.Take(k).LastOrDefault(p => !p.Fits).Element, parts.Skip(k).FirstOrDefault(p => !p.Fits).Element);
         if ((before.Fits || after.Fits) && split.Vertical && above is not null && under is not null)
         {
-            // Ctrl held (4.2B-2): the pane beside it that fits its content is made taller or shorter instead (the overview
-            // bar, through its height setting), dragged away from it or towards it.
+            // The pane beside it that fits its content is made taller or shorter (through its height setting), dragged away
+            // from it or towards it: by a plain drag of its lower edge, by Ctrl+drag above it (4.2B-2).
             var (fitting, below) = before.Fits ? (split.Children[before.Index], false) : (split.Children[after.Index], true);
-            var resize = fitting.AllPanes().Select(p => _panes[p].ResizeBy).FirstOrDefault(r => r is not null);
+            var (resize, title) = Resizer(fitting);
+            var edge = resize is not null && !below;
             var thumb = new Thumb
             {
                 Height = 10, Cursor = Cursors.SizeNS, Template = SplitterLook(),
                 ToolTip = resize is null ? "Drag to share the room between the parts above and below"
-                    : "Drag to share the room between the parts above and below; Ctrl+drag to make the overview bar taller or shorter",
+                    : edge ? $"Drag to make the {title} taller or shorter; Ctrl+drag to share the room between the parts above and below"
+                    : $"Drag to share the room between the parts above and below; Ctrl+drag to make the {title} taller or shorter",
             };
+            var moved = PointerMoves(thumb, grid);
             thumb.DragDelta += (_, e) =>
             {
-                if (resize is not null && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
-                    resize(below ? -e.VerticalChange : e.VerticalChange);
+                var change = moved();
+                if (resize is not null && Keyboard.Modifiers.HasFlag(ModifierKeys.Control) != edge)
+                    resize(below ? -change : change);
                 else
                     ShareRows(grid, parts, above, under, e.VerticalChange);
             };
@@ -846,7 +853,7 @@ public sealed class DockManager
         else if (before.Fits || after.Fits)
         {
             var (fitting, below) = before.Fits ? (split.Children[before.Index], false) : (split.Children[after.Index], true);
-            var resize = split.Vertical ? fitting.AllPanes().Select(p => _panes[p].ResizeBy).FirstOrDefault(r => r is not null) : null;
+            var (resize, title) = split.Vertical ? Resizer(fitting) : ((Action<double>?)null, "");
             if (resize is null)
             {
                 border = split.Vertical ? new Border { Height = 8 } : new Border { Width = 8 };
@@ -854,8 +861,13 @@ public sealed class DockManager
             else
             {
                 // Dragged towards the pane that fits its content, it makes it smaller; away from it, taller.
-                var thumb = new Thumb { Height = 10, Cursor = Cursors.SizeNS, Template = SplitterLook(), ToolTip = "Drag to make it taller or shorter" };
-                thumb.DragDelta += (_, e) => resize(below ? -e.VerticalChange : e.VerticalChange);
+                var thumb = new Thumb { Height = 10, Cursor = Cursors.SizeNS, Template = SplitterLook(), ToolTip = $"Drag to make the {title} taller or shorter" };
+                var moved = PointerMoves(thumb, grid);
+                thumb.DragDelta += (_, _) =>
+                {
+                    var change = moved();
+                    resize(below ? -change : change);
+                };
                 border = thumb;
             }
         }
@@ -889,6 +901,37 @@ public sealed class DockManager
         }
 
         grid.Children.Add(border);
+    }
+
+    /// <summary>The pane of a part that the border beside it can make taller or shorter (DockPane.ResizeBy), and its title; none, (null, "").</summary>
+    private (Action<double>? Resize, string Title) Resizer(DockNode part)
+    {
+        foreach (var pane in part.AllPanes())
+        {
+            if (_panes[pane].ResizeBy is { } resize)
+                return (resize, _panes[pane].Title);
+        }
+
+        return (null, "");
+    }
+
+    /// <summary>
+    /// During a border's drag, how far the pointer has moved down the split since the last time this was asked (since it was
+    /// pressed, the first time), in the split's own DIPs: they stay where they are while the border moves with the pane it
+    /// sizes, so that pane's edge keeps step with the pointer. A Thumb's own change is measured from the border, which has
+    /// moved since: a pane sized by it ran ahead of the pointer, then waited for it.
+    /// </summary>
+    private static Func<double> PointerMoves(Thumb thumb, IInputElement split)
+    {
+        double? last = null;
+        thumb.DragStarted += (_, _) => last = Mouse.GetPosition(split).Y;
+        return () =>
+        {
+            var at = Mouse.GetPosition(split).Y;
+            var change = last is { } from ? at - from : 0;
+            last = at;
+            return change;
+        };
     }
 
     /// <summary>
@@ -1668,12 +1711,12 @@ public sealed class DockManager
         return Validate(state);
     }
 
-    private static DockNode Copy(DockNode node) => JsonSerializer.Deserialize<DockNode>(JsonSerializer.Serialize(node))!;
+    private static DockNode Copy(DockNode node) => JsonSerializer.Deserialize(JsonSerializer.Serialize(node, Services.AppSettingsJsonContext.Default.DockNode), Services.AppSettingsJsonContext.Default.DockNode)!;
 
     /// <summary>
     /// A small picture of an arrangement's main window, for the Layout Selector's cards: each part a rounded box named
     /// after its panes (as this mode shows them: hidden panes left out, and a part with none takes no room), the rows
-    /// sized to their content (the overview bar, the playback controls) a thin band, the header a small mark at the
+    /// sized to their content (the Sequence Overview Scrubber, the playback controls) a thin band, the header a small mark at the
     /// end of the row it joins. Drawn once and frozen, so showing it costs nothing.
     /// </summary>
     public DrawingImage Miniature(DockLayoutState layout, Size size, Brush part, Brush band, Brush text, Brush accent)

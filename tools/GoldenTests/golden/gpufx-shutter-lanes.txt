@@ -1,5 +1,5 @@
 # What the plan tells the worker: where a layer is as the shutter opens and closes, only for a layer with the card.
-ok: with no card, no shutter is written
+ok: with no such effect, no shutter is written
 ok: with the card, a keyframed layer has its shutter's places
 ok: the shutter sweeps half a frame of its move
 ok: either side of where it is at the frame

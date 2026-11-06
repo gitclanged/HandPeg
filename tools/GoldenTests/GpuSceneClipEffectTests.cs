@@ -14,8 +14,8 @@ namespace HandPegGoldenTests;
 /// <summary>
 /// An effect added to a clip from the Effects pane, followed up the real path as far as it runs without a window (Pass
 /// 5.0-Verify, the user's bug 2): the app's own view model, hosted with no window and no project file, is given a timeline
-/// of two clips of the main video (the anchor, drawn in one piece, and a second one that becomes a rider once its look is
-/// its own) and a video from another file over them. Each clip is selected as a press on its block selects it (KeyLayer),
+/// of two clips of the file opened (named the anchor and the rider for what they were until 5.2-AuditB: one chain drawn in
+/// one piece; now each clip of a file draws itself) and a video from another file over them. Each clip is selected as a press on its block selects it (KeyLayer),
 /// and the clip the Effects pane edits (ActiveKeyLayer) is given a card and a value the way the pane's Add and its slider
 /// write them (a checkpoint, then the change inside Layer.Echo). The state the GPU engine is pushed (LivePreviewState, which
 /// writes the views' looks into their clips) is planned (GpuScenePlan.Create) and evaluated inside each clip: the layer the
@@ -63,13 +63,14 @@ public static class GpuSceneClipEffectTests
         var known = typeof(MainViewModel).GetField("_mediaInfo", Hidden) ?? throw new MissingFieldException(nameof(MainViewModel), "_mediaInfo");
         known.SetValue(vm, probed);
 
-        var document = new TimelineDocument { Width = W, Height = H, FrameRate = FrameRate.Fps30 };
+        // The file opened, in two clips (5.2-AuditB: clips of a file like any other, the Sequence sized by its picture).
+        var document = new TimelineDocument { Width = W, Height = H, NaturalWidth = W, NaturalHeight = H, FrameRate = FrameRate.Fps30 };
         var mainTrack = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
         var insetTrack = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 2 };
         document.Tracks.Add(mainTrack);
         document.Tracks.Add(insetTrack);
-        var anchor = Clip(main, LayerKind.MainVideo, 0, 4, 0, Look(LayerKind.MainVideo, "Main", 0, 0, 1, main));
-        var rider = Clip(main, LayerKind.MainVideo, 4, 8, 4, Look(LayerKind.MainVideo, "Main", 0, 0, 1, main));
+        var anchor = Clip(main, LayerKind.VideoFile, 0, 4, 0, Look(LayerKind.VideoFile, "Main", 0, 0, 1, main));
+        var rider = Clip(main, LayerKind.VideoFile, 4, 8, 4, Look(LayerKind.VideoFile, "Main", 0, 0, 1, main));
         var file = Clip(inset, LayerKind.VideoFile, 0, 8, 0, Look(LayerKind.VideoFile, "inset", 0.5, 0.1, 0.4, inset));
         mainTrack.Clips.Add(anchor);
         mainTrack.Clips.Add(rider);
@@ -94,11 +95,11 @@ public static class GpuSceneClipEffectTests
         Expect(problems, vm, broker, names, 2, "anchor", GpuShaderSlot.BoxBlur);
         ExpectNone(problems, vm, broker, names, 6, "rider", GpuShaderSlot.BoxBlur);
 
-        // The second clip of the main video: Color Grade, its contrast 1.5 (its look is its own now: a rider).
-        Select(problems, vm, rider, "the second clip of the main video");
+        // The second clip of the opened file: Color Grade, its contrast 1.5 (its look is its own: a rider).
+        Select(problems, vm, rider, "the second clip of the opened file");
         var grade = Add(vm, EffectRegistry.Grade);
         Write(vm, grade, "contrast", 1.5);
-        Scene(text, problems, vm, broker, names, "Color Grade (contrast 1.5) on the second clip of the main video");
+        Scene(text, problems, vm, broker, names, "Color Grade (contrast 1.5) on the second clip of the opened file");
         Expect(problems, vm, broker, names, 6, "rider", GpuShaderSlot.ColorGrade);
         Expect(problems, vm, broker, names, 2, "anchor", GpuShaderSlot.BoxBlur);
 
@@ -129,7 +130,7 @@ public static class GpuSceneClipEffectTests
         foreach (var (clip, type) in new[] { (anchor, EffectRegistry.Blur), (rider, EffectRegistry.Grade), (file, EffectRegistry.Blur), (file, EffectRegistry.Grade) })
         {
             if (vm.Document.FindClip(clip.Id)?.State.Effects?.Any(e => e.Type == type) != true)
-                problems.Add($"{names[GpuHash.Of(clip.Id)]}'s clip has no {type} card in its look after the looks were written");
+                problems.Add($"{names[GpuHash.Of(clip.Id)]}'s clip has no {type} effect in its look after the looks were written");
         }
 
         // Split as Remove Dead Air splits: the selection stays on a view that is drawn, and the new half takes an effect.
@@ -140,7 +141,7 @@ public static class GpuSceneClipEffectTests
         var target = vm.ActiveKeyLayer;
         if (!vm.Layers.Contains(target) || target.ClipId == Guid.Empty || vm.ClipOf(target) is null)
             problems.Add("after the split the Effects pane's clip is not one on the timeline (an orphan view)");
-        var second = vm.Document.Tracks.SelectMany(t => t.Clips).FirstOrDefault(c => c.ContentKind == LayerKind.VideoFile && c.Start > 2.5);
+        var second = vm.Document.Tracks.SelectMany(t => t.Clips).FirstOrDefault(c => c.ContentKind == LayerKind.VideoFile && c.SourcePath == inset && c.Start > 2.5);
         if (second is not null)
         {
             names[GpuHash.Of(second.Id)] = "inset, second half";
@@ -154,39 +155,44 @@ public static class GpuSceneClipEffectTests
             problems.Add("the split made no second clip of the other file's video");
         }
 
-        // With no clip of the main video at all, what the pane would edit with nothing selected is a stand-in, drawn nowhere.
+        // One inset clip and nothing selected: what the pane would edit (5.2-AuditB: the video at the playhead; a stand-in, drawn
+        // nowhere, only while there is no video clip at all).
         var empty = new MainViewModel();
-        var alone = new TimelineDocument { Width = W, Height = H, FrameRate = FrameRate.Fps30 };
+        var alone = new TimelineDocument { Width = W, Height = H, NaturalWidth = W, NaturalHeight = H, FrameRate = FrameRate.Fps30 };
         var track = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
         track.Clips.Add(Clip(inset, LayerKind.VideoFile, 0, 8, 0, Look(LayerKind.VideoFile, "inset", 0.5, 0.1, 0.4, inset)));
         alone.Tracks.Add(track);
         typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(empty, [alone]);
         var standIn = empty.ActiveKeyLayer;
         text.Append(CultureInfo.InvariantCulture,
-            $"\nno main video, nothing selected: the clip the panes work on is {(empty.Layers.Contains(standIn) ? "a clip on the timeline" : "a stand-in that is no clip")}\n");
+            $"\none inset clip, nothing selected: the clip the panes work on is {(empty.Layers.Contains(standIn) ? "a clip on the timeline" : "a stand-in that is no clip")}\n");
 
         Background(text, problems, main);
         Draw(text, problems, folder, main, inset, plain, graded);
     }
 
-    // ----- The blurred background, the main video's video-only child (5.0-Release) -----
+    // ----- A clip's blur fill (5.2-AuditB; until then the blurred background, the main video's video-only child, 5.0-Release) -----
 
     /// <summary>
-    /// The blurred background behind a main video at half size: its continuous radius (7.5 px; 0 is sharp and still drawn),
-    /// its zoom (the middle 1 / zoom of the picture covers the frame) and an effect of its own (a Vignette added the way the
-    /// Effects pane adds one with the background's row selected), in the GPU scene and in the export's FFmpeg graph.
+    /// The blur fill behind a clip of the file opened at half size (its look's BlurFill; the main video's blurred background until
+    /// 5.2-AuditB): its continuous radius (7.5 px; 0 is sharp and still drawn), its zoom (the middle 1 / zoom of the picture covers
+    /// the frame) and an effect of its own (a Vignette added the way the Effects pane adds one with the background's row selected),
+    /// in the GPU scene and in the export's.
     /// </summary>
     private static void Background(StringBuilder text, List<string> problems, string main)
     {
-        var vm = new MainViewModel { SourceWidth = W, SourceHeight = H, LocalMediaPath = main, FrameEngine = true };
+        var vm = new MainViewModel { SourceWidth = W, SourceHeight = H, LocalMediaPath = main };
         var probed = new MediaInfo("mov,mp4,m4a,3gp,3g2,mj2", 8, 0, new VideoStreamInfo(W, H, "h264", 30, "16:9", "1:1", "bt709", "bt709", 0), [], []);
         (typeof(MainViewModel).GetField("_mediaInfo", Hidden) ?? throw new MissingFieldException(nameof(MainViewModel), "_mediaInfo")).SetValue(vm, probed);
-        var document = new TimelineDocument { Width = W, Height = H, FrameRate = FrameRate.Fps30 };
+        var document = new TimelineDocument { Width = W, Height = H, NaturalWidth = W, NaturalHeight = H, FrameRate = FrameRate.Fps30 };
         var track = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
-        track.Clips.Add(Clip(main, LayerKind.MainVideo, 0, 8, 0, Look(LayerKind.MainVideo, "Main", 0, 0, 1, main)));
+
+        // At half size in the middle (the Center controls' zoom of 0.5 until 5.2-AuditB: now the clip's own place), its blur fill on.
+        var look = Look(LayerKind.VideoFile, "Main", 0.25, 0.25, 0.5, main);
+        look.BlurFill = true;
+        track.Clips.Add(Clip(main, LayerKind.VideoFile, 0, 8, 0, look));
         document.Tracks.Add(track);
         typeof(MainViewModel).GetMethod("InstallDocument", Hidden)!.Invoke(vm, [document]);
-        vm.CenterZoom = 0.5;
 
         using var broker = new GpuResourceBroker(null, bakeOnCallingThread: true);
         void Show(string step)
@@ -204,32 +210,45 @@ public static class GpuSceneClipEffectTests
                     continue;
                 found = true;
                 var line = new StringBuilder(string.Create(CultureInfo.InvariantCulture,
-                    $"    blurred background: radius {d.BlurFillRadius:0.##}, {d.BlurFillPasses} passes, dim {d.BlurFillDim:0.##}, crop ({d.CropLeft:0.###}, {d.CropTop:0.###})-({d.CropRight:0.###}, {d.CropBottom:0.###})"));
+                    $"    blur fill: radius {d.BlurFillRadius:0.##}, {d.BlurFillPasses} passes, dim {d.BlurFillDim:0.##}, crop ({d.CropLeft:0.###}, {d.CropTop:0.###})-({d.CropRight:0.###}, {d.CropBottom:0.###})"));
                 for (var k = 0; k < d.EffectCount; k++)
                     line.Append(CultureInfo.InvariantCulture, $"{(k == 0 ? ": " : ", ")}{d.Effects[k].Slot}({d.Effects[k].P0:0.###} {d.Effects[k].P1:0.###} {d.Effects[k].P2:0.###})");
                 text.Append(line).Append('\n');
             }
 
             if (!found)
-                problems.Add($"{step}: no blurred background is drawn behind the main video at half size");
+                problems.Add($"{step}: no blur fill is drawn behind the video clip at half size");
         }
 
-        Show("the blurred background behind the main video at half size");
+        Show("the blur fill behind the video clip at half size");
 
-        // Its row selected; its blur and zoom set as its pinned card sets them; a Vignette added as Add Effect adds one.
+        // Its row selected; its blur and zoom set as its pinned Blur Fill effect sets them; a Vignette added as Add Effect adds one.
         vm.BackgroundSelected = true;
         (vm.BlurRadius, vm.BackgroundZoom) = (7.5, 1.5);
-        if (vm.AddEffectCard(vm.BackgroundLayer, EffectRegistry.Find(EffectRegistry.Vignette)!) is null)
-            problems.Add("a Vignette could not be added to the blurred background");
+        if (vm.AddEffect(vm.BackgroundLayer, EffectRegistry.Find(EffectRegistry.Vignette)!) is null)
+            problems.Add("a Vignette could not be added to the blur fill");
         Show("radius 7.5, zoom 1.5 and a Vignette of its own");
 
-        var graph = FilterGraphBuilder.BuildExportCommand(vm.LivePreviewState() with { IsPreview = false, CopyVideoEncoder = false, VideoCodecArguments = "-c:v libx264" }).CommandLine;
-        foreach (var (piece, what) in new[] { ("scale=480:270:force_original_aspect_ratio=increase,crop=320:180", "its zoom"), ("boxblur=8:2", "its radius, rounded"), ("vignette=angle=0.436", "its own vignette (25 degrees, 5.1-Polish)") })
+        // The export draws the same background (5.2-Audit: the GPU's, from the very plan): its blur, its zoom and its own card.
+        var exported = vm.LivePreviewState() with { IsPreview = false, CopyVideoEncoder = false, VideoCodecArguments = "-c:v libx264" };
+        using (var exportBroker = new GpuResourceBroker(null, bakeOnCallingThread: true))
         {
-            var has = graph.Contains(piece, StringComparison.Ordinal);
-            text.Append(CultureInfo.InvariantCulture, $"    the export's graph has {what}: {(has ? "yes" : "no")}\n");
-            if (!has)
-                problems.Add($"the export's graph has no {piece} for the blurred background's {what}");
+            var plan = GpuScenePlan.Create(exported, exportBroker);
+            var header = default(FrameSceneHeader);
+            var layers = new GpuLayerDescriptor[CompositorProtocol.MaxLayers];
+            var on = plan.Evaluate(1, ref header, layers);
+            var background = layers.Take(on).FirstOrDefault(l => (l.Flags & GpuScenePlan.FlagBlurFillOnly) != 0);
+            foreach (var (has, what) in new[]
+                     {
+                         ((background.Flags & GpuScenePlan.FlagBlurFillOnly) != 0 && Math.Abs(background.BlurFillRadius - 7.5f) < 0.01f, "its radius"),
+                         (background.CropRight - background.CropLeft is > 0.6f and < 0.7f, "its zoom (the middle two thirds)"),
+                         (background.EffectCount > 0 && Enumerable.Range(0, background.EffectCount).Any(i => background.Effects[i].Slot == GpuShaderSlot.Vignette), "its own vignette"),
+                     })
+            {
+                text.Append(CultureInfo.InvariantCulture, $"    the export's blur fill has {what}: {(has ? "yes" : "no")}\n");
+                if (!has)
+                    problems.Add($"the export's blur fill lacks {what}");
+            }
         }
 
         vm.BlurRadius = 0;
@@ -250,7 +269,7 @@ public static class GpuSceneClipEffectTests
         var ffmpeg = FindFfmpeg();
         if (ffmpeg is null)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the clip effects were not drawn");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the clip effects were not drawn");
             return;
         }
 
@@ -398,8 +417,7 @@ public static class GpuSceneClipEffectTests
 
     private static string? FindFfmpeg()
     {
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        foreach (var candidate in new[] { Path.Combine(local, "HandPeg-Data", "deps", "ffmpeg", "ffmpeg.exe"), Path.Combine(local, "HandPeg", "deps", "ffmpeg", "ffmpeg.exe") })
+        foreach (var candidate in GpuExportTests.FfmpegCandidates())
         {
             if (File.Exists(candidate))
                 return candidate;
@@ -420,11 +438,11 @@ public static class GpuSceneClipEffectTests
     }
 
     /// <summary>
-    /// EffectsPane.Add (and a track's Add Effect menu, 5.0-Release): MainViewModel.AddEffectCard, the card put on the pane's clip
+    /// EffectsPane.Add (and a track's Add Effect menu, 5.0-Release): MainViewModel.AddEffect, the effect put on the pane's clip
     /// as its own with its visible starting values (the user's Q1: an added Blur blurs at once).
     /// </summary>
     private static EffectInstance Add(MainViewModel vm, string type) =>
-        vm.AddEffectCard(vm.ActiveKeyLayer, EffectRegistry.Find(type)!) ?? throw new InvalidOperationException($"{type} could not be added to {vm.ActiveKeyLayer.Name}");
+        vm.AddEffect(vm.ActiveKeyLayer, EffectRegistry.Find(type)!) ?? throw new InvalidOperationException($"{type} could not be added to {vm.ActiveKeyLayer.Name}");
 
     /// <summary>EffectsPane.WriteValue: a value dragged on the card.</summary>
     private static void Write(MainViewModel vm, EffectInstance card, string key, double value)

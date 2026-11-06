@@ -24,6 +24,13 @@ public static class MediaFoundationEncoder
     public const string HardwareOnlyArgument = "-hw_encoding 1";
 
     /// <summary>
+    /// The pixel format a Media Foundation encoder is handed: NV12, P010 in 10 bits (5.2). Media Foundation's hardware encoders
+    /// take semi-planar 4:2:0 only: handed planar yuv420p, the Snapdragon X Elite's (Adreno) h264_mf, hevc_mf and av1_mf stop
+    /// with "format negotiation failed", which made the probe find no hardware encoder at all on the user's Snapdragon X Elite laptop.
+    /// </summary>
+    public static string PixelFormat(bool tenBit) => tenBit ? "p010le" : "nv12";
+
+    /// <summary>
     /// The rate control for a bitrate: constant ("cbr", held to it by the buffer) or average (unconstrained VBR, "u_vbr",
     /// which every hardware encoder Media Foundation lists takes).
     /// </summary>

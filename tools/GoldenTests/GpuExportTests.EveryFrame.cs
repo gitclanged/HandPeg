@@ -1,22 +1,28 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
+using HandPegApp.Services.Gpu;
 
 namespace HandPegGoldenTests;
 
 /// <summary>
 /// gpu-export-every-frame (Pass 5.0-Verify, the user's bug 1: a GPU export that only changed at the key frames). Sources
 /// made the way recorders make them (60 fps with a key frame every 4 s and B-frames, H.264 in MP4 and full-range HEVC in
-/// Matroska; HEVC at 420 fps on Matroska's millisecond clock), each the main video of a one-clip timeline, exported both
-/// ways at 60 fps (lossless). Every frame of the GPU export must be the FFmpeg export's same frame (the best match within
-/// six frames either side is that one, at 30 dB or better), and wherever FFmpeg's picture moves from one frame to the next
-/// the GPU's must move too (no frame held over).
+/// Matroska; HEVC at 420 fps on Matroska's millisecond clock), each the main video of a one-clip timeline, exported at 60 fps
+/// (lossless). Every frame of the export must be the scene the plan draws at its moment with exact frames (5.2-Audit: the
+/// reference was FFmpeg's export, which is gone; the scene drawn alone, frame by frame, by a compositor of its own, is what the
+/// preview shows): the best match within six frames either side is that one, at 30 dB or better, and wherever the scene moves
+/// from one frame to the next the export must move too (no frame held over).
 /// <para>HANDPEG_TEST_EXPORT_SOURCES ("path[@start]|..." of real recordings, 6 s from start) adds more: their numbers go
 /// to the console only, so the golden text stays the same.</para>
+/// <para>Where Media Foundation has no HEVC decoder (a Snapdragon X laptop as it comes), the HEVC sources are decoded by the
+/// workers' FFmpeg fallback (FfmpegVideoDecoder, 5.2-Arm64AndNpu) with the tests' FFmpeg: the golden text is the same either
+/// way; the console's counters (opens, seeks, frames decoded) are the decoder's own.</para>
 /// </summary>
 public static partial class GpuExportTests
 {
@@ -35,7 +41,7 @@ public static partial class GpuExportTests
     /// <summary>gpu-export-every-frame: sources at recorders' rates and key frame intervals, exported both ways, frame by frame.</summary>
     public static GraphResult EveryFrame()
     {
-        var text = new StringBuilder("# The GPU export of recorders' sources (long key frame intervals, B-frames), every frame against FFmpeg's export.\n");
+        var text = new StringBuilder("# The GPU export of recorders' sources (long key frame intervals, B-frames), every frame against the scene drawn at its moment.\n");
         var problems = new List<string>();
         try
         {
@@ -55,7 +61,7 @@ public static partial class GpuExportTests
         var ffmpeg = FindFfmpeg();
         if (ffmpeg is null)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the GPU export's frames were not checked");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the GPU export's frames were not checked");
             return;
         }
 
@@ -88,18 +94,49 @@ public static partial class GpuExportTests
         if (Environment.GetEnvironmentVariable("HANDPEG_TEST_EXPORT_ONLY") == "1")
             sources.RemoveAll(s => s.Made);
 
-        foreach (var source in sources)
+        // The GPU compositor decodes with Media Foundation, which has no HEVC decoder on a PC without the Store's HEVC Video
+        // Extensions (a clean Windows on ARM laptop); its workers then decode HEVC with the app's FFmpeg (FfmpegVideoDecoder,
+        // 5.2-Arm64AndNpu), here the tests' own, handed to them as the app's setting. Only with neither are the HEVC sources left out.
+        var hevc = MediaFoundationDecodesHevc || FallbackDecodes(ffmpeg);
+        if (!MediaFoundationDecodesHevc && hevc)
+            Console.WriteLine("  note  no HEVC decoder in Media Foundation on this PC (HEVC Video Extensions): the HEVC sources are decoded by the FFmpeg fallback");
+        var settings = AppSettings.Current;
+        var (savedFfmpeg, savedFfprobe) = (settings.FfmpegPath, settings.FfprobePath);
+        try
         {
-            try
+            (settings.FfmpegPath, settings.FfprobePath) = (ffmpeg, FfprobeBeside(ffmpeg));
+            foreach (var source in sources)
             {
-                EveryFrameOf(ffmpeg, folder, source, problems);
-            }
-            catch (Exception ex)
-            {
-                problems.Add($"{source.Name}: threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+                if (source.Made && source.File.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase) && !hevc)
+                {
+                    Console.WriteLine($"  note  no HEVC decoder in Media Foundation on this PC (HEVC Video Extensions) and no ffprobe beside FFmpeg for the fallback: not exported: {source.Name}");
+                    continue;
+                }
+
+                try
+                {
+                    EveryFrameOf(ffmpeg, folder, source, problems);
+                }
+                catch (Exception ex)
+                {
+                    problems.Add($"{source.Name}: threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+                }
             }
         }
+        finally
+        {
+            (settings.FfmpegPath, settings.FfprobePath) = (savedFfmpeg, savedFfprobe);
+        }
     }
+
+    /// <summary>The ffprobe beside an FFmpeg (where every FFmpeg build HandPeg installs keeps it).</summary>
+    internal static string FfprobeBeside(string ffmpeg) => Path.Combine(Path.GetDirectoryName(ffmpeg)!, "ffprobe.exe");
+
+    /// <summary>
+    /// Whether the GPU compositor's FFmpeg fallback can decode what Media Foundation cannot with this FFmpeg: it needs its
+    /// ffprobe beside it (the stream's size, depth and colour).
+    /// </summary>
+    internal static bool FallbackDecodes(string? ffmpeg) => ffmpeg is not null && File.Exists(ffmpeg) && File.Exists(FfprobeBeside(ffmpeg));
 
     private static void MakeEverySources(string ffmpeg, List<EverySource> sources)
     {
@@ -114,6 +151,36 @@ public static partial class GpuExportTests
     }
 
     private static string StyleMask(string folder) => Path.Combine(folder, "hud-mask.png");
+
+    /// <summary>
+    /// Whether Media Foundation on this PC can decode HEVC (MFVideoFormat_HEVC), which the GPU compositor's decoders need for the
+    /// HEVC sources: Windows has no HEVC decoder of its own until the Store's HEVC Video Extensions are installed.
+    /// </summary>
+    internal static bool MediaFoundationDecodesHevc => _decodesHevc ??= MediaFoundationDecodes(new Guid("43564548-0000-0010-8000-00aa00389b71"));
+
+    private static bool? _decodesHevc;
+
+    private static bool MediaFoundationDecodes(Guid subtype)
+    {
+        // MFT_CATEGORY_VIDEO_DECODER; MFT_ENUM_FLAG_ALL | MFT_ENUM_FLAG_SORTANDFILTER (every kind of decoder, hardware and the Store's too).
+        var input = new MftTypeInfo { MajorType = new Guid("73646976-0000-0010-8000-00aa00389b71"), Subtype = subtype };
+        if (MFTEnumEx(new Guid("d6c02d4b-6833-45b4-971a-05a4b04bab91"), 0x7F, ref input, 0, out var activates, out var count) < 0 || activates == 0)
+            return false;
+
+        for (var i = 0; i < count; i++)
+            Marshal.Release(Marshal.ReadIntPtr(activates, i * IntPtr.Size));
+        Marshal.FreeCoTaskMem(activates);
+        return count > 0;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MftTypeInfo
+    {
+        public Guid MajorType, Subtype;
+    }
+
+    [DllImport("mfplat.dll")]
+    private static extern int MFTEnumEx(Guid category, uint flags, ref MftTypeInfo input, nint output, out nint activates, out uint count);
 
     /// <summary>One source exported by FFmpeg's graph and by the GPU compositor (6 s at 60 fps, FFV1), and their frames compared.</summary>
     private static void EveryFrameOf(string ffmpeg, string folder, EverySource source, List<string> problems)
@@ -145,8 +212,7 @@ public static partial class GpuExportTests
 
         var slug = GpuHashOf(source.File + "@" + source.Start.ToString(CultureInfo.InvariantCulture) + (source.GameStyle ? "!style" : ""));
         var state = EveryState(ffmpeg, folder, source, width, height, fps, seconds, length);
-        var command = FilterGraphBuilder.BuildExportCommand(state);
-        Task.Run(() => FfmpegRunner.RunAsync(command.CommandLine, new Progress<FfmpegProgress>(), CancellationToken.None, graphInFile: true)).GetAwaiter().GetResult();
+        DrawReference(ffmpeg, state, state.OutputPath);
 
         var gpuState = state with { OutputPath = Path.Combine(folder, $"gpu-{slug}.mkv") };
         if (GpuExport.WhyNot(gpuState) is { } refused)
@@ -162,7 +228,7 @@ public static partial class GpuExportTests
             return;
         }
 
-        var export = GpuExport.Prepare(gpuState, client, out why);
+        var export = GpuExport.CommandFor(gpuState, out why) is { } command ? GpuExport.Prepare(gpuState, command, client, out why) : null;
         if (export is null)
         {
             client.Dispose();
@@ -199,25 +265,19 @@ public static partial class GpuExportTests
             ? StyleTimeline(source, width, height, seconds, fps, canvasW, canvasH)
             : (OneClip(source, width, height, seconds, fps, length), (0, 0, EveryW, EveryH), (IReadOnlySet<string>)new HashSet<string>());
 
-        return new SequenceExportState
+        // The document a 5.1 project held (the main video's clips, its pieces), converted as the project is opened (5.2-AuditB): no
+        // stream of the file was kept, so nothing of it is heard.
+        return LegacyFixtures.Opened(new SequenceExportState
         {
             Timeline = document,
             SourceFrameRate = fps,
-            SourceWidth = width,
-            SourceHeight = height,
             RequestedSize = (canvasW, canvasH),
             OutputSize = (canvasW, canvasH),
-            LocalMediaPath = source.File,
-            HasSource = true,
-            MainMediaSeconds = seconds,
-            CenterRect = center,
-            FrameEngine = true,
             Container = "mkv",
             OutputPath = Path.Combine(folder, $"ffmpeg-{slug}.mkv"),
             FfmpegExecutable = $"\"{ffmpeg}\"",
             VideoCodecArguments = "-c:v ffv1 -pix_fmt yuv420p",
             TargetFramerate = EveryRate,
-            AudioTracks = [],
             CaptionLayer = Layer.FromState(new LayerState
             {
                 Kind = LayerKind.Captions, Name = "Subtitles", PositionX = 0.05, PositionY = 0.7, SizeWidth = 0.9, SizeHeight = 0.2, LockAspectRatio = false,
@@ -225,8 +285,7 @@ public static partial class GpuExportTests
             }, canvasW, canvasH, canvasW, canvasH),
             ExistingFiles = masks,
             MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [source.File] = 0 },
-        };
-
+        }, new LegacyMain(source.File) { SourceWidth = width, SourceHeight = height, MediaSeconds = seconds, CenterRect = center });
     }
 
     /// <summary>The source as the main video in one clip filling the frame.</summary>
@@ -312,6 +371,40 @@ public static partial class GpuExportTests
         return Directory.Exists(folder) ? Directory.EnumerateFiles(folder, "owlayermask1*.png").FirstOrDefault() : null;
     }
 
+    /// <summary>
+    /// Every frame of a state's export as the plan draws its scene alone, exact frames, by a compositor of its own (what the preview
+    /// shows at each moment), losslessly into <paramref name="path"/>: the frames an export of it must be.
+    /// </summary>
+    private static void DrawReference(string ffmpeg, SequenceExportState state, string path)
+    {
+        var timing = EncoderCommand.Timing(state)!.Value;
+        var (width, height) = (state.Timeline.Width, state.Timeline.Height);
+        using var client = new CompositorClient(adapter: -1, keepStandby: false);
+        using var reader = new CompositorFrameReader(client);
+        using var broker = new GpuResourceBroker(client, bakeOnCallingThread: true);
+        var plan = GpuScenePlan.Create(state, broker);
+        plan.PrepareAround(0);
+        var problems = new List<string>();
+        using var encode = Process.Start(new ProcessStartInfo(ffmpeg,
+            // As the export is: 4:2:0, BT.709, limited range (an RGB reference would hold the export's chroma subsampling against it).
+            string.Create(CultureInfo.InvariantCulture, $"-hide_banner -loglevel error -f rawvideo -pix_fmt rgb24 -video_size {width}x{height} -framerate {timing.OutputRate} -i pipe:0 -vf \"scale=out_color_matrix=bt709:out_range=tv,format=yuv420p\" -color_range tv -colorspace bt709 -c:v ffv1 -y \"{path}\""))
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardError = true,
+        })!;
+        var errors = encode.StandardError.ReadToEndAsync();
+        var black = new byte[width * height * 3];
+        for (var k = 0L; k < timing.OutputFrames; k++)
+        {
+            var drawn = GpuSceneDifferentialTests.Draw(client, reader, plan, timing.CanvasSeconds(timing.CanvasFrameOf(k)), problems, "the reference") ?? black;
+            encode.StandardInput.BaseStream.Write(drawn);
+        }
+
+        encode.StandardInput.Close();
+        encode.WaitForExit();
+        if (encode.ExitCode != 0 || problems.Count > 0)
+            throw new InvalidOperationException($"the reference frames could not be drawn: {string.Join("; ", problems)} {errors.Result}");
+    }
+
     private static void CompareEveryFrame(string ffmpeg, EverySource source, string reference, string gpu, long expectedFrames, (int W, int H) compare, List<string> problems)
     {
         var how = $"-map 0:v:0 -vf \"scale={compare.W}:{compare.H}:flags=area:in_color_matrix=bt709:in_range=tv,format=rgb24\" -f rawvideo -";
@@ -328,7 +421,7 @@ public static partial class GpuExportTests
         }
 
         if (framesA != framesB || framesB != expectedFrames)
-            Problem($"FFmpeg's export has {framesA} frames, the GPU's {framesB}, its timing {expectedFrames}");
+            Problem($"the scenes drawn are {framesA} frames, the export's {framesB}, its timing {expectedFrames}");
 
         var frames = Math.Min(framesA, framesB);
         var (worst, worstAt, sum) = (double.MaxValue, -1, 0.0);
@@ -376,9 +469,9 @@ public static partial class GpuExportTests
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
             $"        {source.Name}: {frames} frames, worst {worst:0.0} dB (frame {worstAt}), mean {mean:0.0} dB; {held} held over (first {firstHeld}), {wrong} not the same frame (first {firstWrong}, like {bestOfWrong})"));
         if (held > 0)
-            Problem($"{held} frames held over where FFmpeg's picture moves (the first at frame {firstHeld})");
+            Problem($"{held} frames held over where the scene moves (the first at frame {firstHeld})");
         if (wrong > 0)
-            Problem($"{wrong} frames are another frame of FFmpeg's (the first, frame {firstWrong}, looks like its frame {bestOfWrong})");
+            Problem($"{wrong} frames are another moment's scene (the first, frame {firstWrong}, looks like the scene of frame {bestOfWrong})");
         // The game style's blurred background and its feathered, shadowed pieces are drawn a little differently from FFmpeg's
         // filters (gpu-scene-differential holds them to 20 dB); the frames themselves must still be the same ones.
         var floor = source.GameStyle ? StyleFloor : EveryFloor;

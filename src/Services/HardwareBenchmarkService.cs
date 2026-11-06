@@ -110,7 +110,12 @@ public static class HardwareBenchmarkService
             }
         }
 
-        var exitCode = await WorkerProcess.RunLinesAsync($"--hw-benchmark \"{clip}\"", OnLine, work.Token);
+        // With the FFmpeg the app uses: the codecs its fallback decodes where Media Foundation cannot are listed (5.2-Arm64AndNpu).
+        var ffmpeg = DependencyUpdater.FfmpegPath;
+        var arguments = ffmpeg.Length > 0 && !ffmpeg.Contains('"')
+            ? $"{Compositor.HardwareBenchmark.Argument} \"{clip}\" {Compositor.CompositorWorker.FfmpegOption} \"{ffmpeg}\""
+            : $"{Compositor.HardwareBenchmark.Argument} \"{clip}\"";
+        var exitCode = await WorkerProcess.RunLinesAsync(arguments, OnLine, work.Token);
         work.Token.ThrowIfCancellationRequested();
         if (exitCode != 0 || result is null)
         {

@@ -7,16 +7,16 @@ namespace HandPegApp.Services;
 
 /// <summary>
 /// The Game Presets HandPeg comes with (5.1-Release, the user's call): ordinary .hpstyle files written into the Styles folder, made
-/// exactly as the Cutout Studio makes one (<c>MainViewModel.SaveCutoutPreset</c>): a tall frame, the main video zoomed across its
-/// middle with its blurred background, and each piece of the game's HUD a layer of its own with a mask of its own, drawn from outlines
-/// the Studio opens and edits like any it drew. Nothing is locked: a built-in can be changed, renamed, saved over or deleted.
+/// exactly as the Cutout Studio makes one (<c>MainViewModel.SaveCutoutPreset</c>): a tall frame, each video clip it goes on zoomed
+/// across its middle with its blur fill, and each element of the game's HUD a Cutout of its own with a mask of its own, drawn from
+/// outlines the Studio opens and edits like any it drew. Nothing is locked: a built-in can be changed, renamed, saved over or deleted.
 ///
 /// They are written once per <see cref="Version"/>, only under a name the folder does not have yet: a file there already, the user's
-/// or an earlier built-in the user changed, is never written over, and HandPeg never deletes a style.
+/// or an earlier built-in the user changed, is never written over, and HandPeg never deletes a Game Preset.
 /// </summary>
 public static class GamePresetLibrary
 {
-    /// <summary>The zoom of the main video a Game Preset starts with: what its edges lose is what the pieces are for.</summary>
+    /// <summary>The zoom of the video clip a Game Preset starts with: what its edges lose is what the Cutouts are for.</summary>
     public const double DefaultZoom = 1.7;
 
     /// <summary>The blurred background a vertical Game Preset starts with.</summary>
@@ -25,7 +25,7 @@ public static class GamePresetLibrary
     public const int BlurPasses = 2;
 
     // Raised when a built-in is added or changed, so that it is written (where the folder has no file of its name).
-    // 1: Overwatch 2 (traced from the user's own mask and laid out as their own style), Marvel Rivals, Valorant, CS2, Apex Legends, The Finals.
+    // 1: Overwatch 2 (traced from the user's own mask and laid out as their own Game Preset), Marvel Rivals, Valorant, CS2, Apex Legends, The Finals.
     public const int Version = 1;
 
     // The frame the outlines below are written in, in pixels; the masks are drawn at this size too.
@@ -60,7 +60,7 @@ public static class GamePresetLibrary
     public static IReadOnlyList<BuiltIn> All { get; } =
     [
         // Traced from the user's own mask (their Photoshop cutout, the one HandPeg 5.0 shipped: 12 islands, within 0.32 % of its
-        // pixels), and cut, placed, feathered and grown as in the vertical style the user made by hand in HandPeg.
+        // pixels), and cut, placed, feathered and grown as in the vertical Game Preset the user made by hand in HandPeg.
         new("Overwatch 2 Vertical HUD",
         [
             new("Killfeed",
@@ -129,7 +129,7 @@ public static class GamePresetLibrary
     ];
 
     /// <summary>
-    /// A built-in as the Cutout Studio saves one: its pieces as masked video layers, each mask its outlines alone (no picture, no
+    /// A built-in as the Cutout Studio saves one: its pieces as masked Cutouts, each mask its outlines alone (no picture, no
     /// Base64 inside: 5.1-Release). Pure data, on any thread.
     /// </summary>
     public static StylePreset Build(BuiltIn preset)

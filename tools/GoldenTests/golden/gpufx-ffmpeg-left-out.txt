@@ -1,4 +1,0 @@
-# An export FFmpeg makes says what it could not draw: a shader is never left out silently.
-ok: nothing to say of a project with no such card
-ok: a clip's card and an adjustment clip's are both named
-ok: and the GPU export draws them: it has no reason to refuse

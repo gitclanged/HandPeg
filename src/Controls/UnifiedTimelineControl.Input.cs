@@ -8,7 +8,7 @@ using System.Windows.Threading;
 
 namespace HandPegApp;
 
-// The unified timeline's mouse: everything TimelineTrack did on a bar (selecting, seeking beside the blocks, moving a block
+// The unified timeline's mouse: everything the old per-track bar did (selecting, seeking beside the blocks, moving a block
 // along its row or onto another, trimming either end, rippling with Ctrl, rolling a shared cut, slipping with Alt, dragging
 // fade handles and gain lines, snapping, Shift for frame steps without snapping, auto-scroll near the ends, putting a drag
 // back when the mouse is taken away, cursors and tooltips), plus what 4.4 adds: the headers' switches and chevrons, the J/L
@@ -93,7 +93,7 @@ public sealed partial class UnifiedTimelineControl
     }
 
     // What a dragged block carries along (4.4 BugHunt): a child block (the clips linked to it on other rows, collapsed or
-    // open; its unlinked sound; the main file's sound under it), drawn on the overlay as the parent is dragged. Moved by the
+    // open; its unlinked sound; its file's sound on its Audio Sub-Lanes), drawn on the overlay as the parent is dragged. Moved by the
     // parent's travel, or with the parent's start or end edge (a trim, a roll, a seam), or left where it is and shown to come
     // loose (Detaching: a trim leaves it wholly outside the parent, which unlinks it). Where it was when the drag began.
     // 5.0: a caption under a clip goes with it too (moved with it; trimmed, cut to it as it is now: Within; slipped, slid
@@ -273,15 +273,16 @@ public sealed partial class UnifiedTimelineControl
 
         if (index < 0)
         {
-            Raise(() => EmptyPressed?.Invoke(null, TimeAt(point.X), e));
+            PressEmpty(null, point, e);
             return;
         }
 
         var lane = _lanes[index];
         var row = lane.Row;
 
-        // A crossfade's box: its button takes it away, its edges size it, the rest selects it (Delete then takes it away).
-        if (CrossfadeAt(lane, laid) is { } crossfade)
+        // A crossfade's box: its button takes it away and its edges size it. The rest of it is the clips' (5.2, the user's call: a
+        // crossfade never stands between a click and its clips or their effects), so a press there falls through to them.
+        if (CrossfadeAt(lane, laid) is { Part: not CrossfadePart.Inside } crossfade)
         {
             switch (crossfade.Part)
             {
@@ -304,6 +305,13 @@ public sealed partial class UnifiedTimelineControl
         {
             SelectedCrossfade = null;
             Invalidate();
+        }
+
+        // A block's own switches (5.2): its On/Off and a child's Lock, one click each, on a lane drawn in full.
+        if (BlockSwitchAt(lane, laid) is { } pressedSwitch)
+        {
+            Raise(() => pressedSwitch.Block.Switched?.Invoke(pressedSwitch.Which));
+            return;
         }
 
         if (RevealAt(lane, laid) is >= 0 and var reveal && !OnFadeHandle(index, laid))
@@ -334,7 +342,7 @@ public sealed partial class UnifiedTimelineControl
             if (lane.Mini && lane.Parent >= 0)
                 OpenStacksAbove(index);
             else
-                Raise(() => EmptyPressed?.Invoke(row, TimeAt(point.X), e));
+                PressEmpty(row, point, e);
             return;
         }
 
@@ -415,6 +423,135 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
+    // ----- A rubber band over empty space (5.2A; the seek on the press again, 5.2B) -----
+
+    // A press on empty space still held, that may yet become a rubber band (its row, where it was in laid-out pixels, whether Ctrl or Shift
+    // was held), and the band once the pointer has moved past the system's drag distance from it (laid-out pixels).
+    private (TimelineRow? Row, Point From, bool Add)? _marqueePress;
+    private (Point From, Point To, bool Add)? _marquee;
+
+    /// <summary>A rubber band is being drawn: the pointer, still held after a press on empty space, has gone past the drag distance.</summary>
+    internal bool IsBandDrawn => _marquee is not null;
+
+    /// <summary>
+    /// A press on empty space (beside the blocks, below the rows): the seek it always was, told at once (5.2B, the user's Q3). Held and
+    /// dragged past the system's drag distance it becomes a rubber band too (5.2A), which selects the clips it touches as it is let go and
+    /// leaves the playhead where the press put it. A double-click, or a host that takes no band, is the seek alone.
+    /// </summary>
+    private void PressEmpty(TimelineRow? row, Point point, MouseButtonEventArgs e)
+    {
+        var mayBand = e.ClickCount == 1 && MarqueeSelected is not null;
+        PressEmptyAt(row, point, e, Keyboard.Modifiers, mayBand && CaptureMouse());
+
+        // What the host did for the seek took the mouse away (a window came forward): no band can follow it.
+        if (_marqueePress is not null && !IsMouseCaptured)
+            _marqueePress = null;
+    }
+
+    /// <summary>
+    /// What a press on empty space does, at a point on the control (its own coordinates): the seek is told now; <paramref name="held"/> (the
+    /// mouse was taken for a band that may follow) waits for the pointer to move (<see cref="MoveEmptyPress"/>) or be let go
+    /// (<see cref="ReleaseEmptyPress"/>). Its own method so a test can drive it without a mouse.
+    /// </summary>
+    internal void PressEmptyAt(TimelineRow? row, Point point, MouseButtonEventArgs e, ModifierKeys modifiers, bool held)
+    {
+        (_marqueePress, _marquee) = (null, null);
+        Raise(() => EmptyPressed?.Invoke(row, TimeAt(point.X), e));
+        if (held)
+            _marqueePress = (row, Laid(point), modifiers.HasFlag(ModifierKeys.Control) || modifiers.HasFlag(ModifierKeys.Shift));
+    }
+
+    /// <summary>The pointer, still held after a press on empty space, at a point on the control: the band, once it has gone far enough. False with no such press.</summary>
+    internal bool MoveEmptyPress(Point point) => FollowMarquee(Laid(point));
+
+    /// <summary>The press on empty space let go: the clips the band touched are told (a press that drew none has done all it does). False with no such press.</summary>
+    internal bool ReleaseEmptyPress() => EndMarquee();
+
+    private static Rect MarqueeBox((Point From, Point To, bool Add) band) => new(band.From, band.To);
+
+    /// <summary>The blocks a band touches (laid-out pixels), top to bottom, on lanes drawn in full.</summary>
+    private List<TimelineBlock> BlocksIn(Rect box)
+    {
+        var found = new List<TimelineBlock>();
+        foreach (var lane in _lanes)
+        {
+            if (!lane.Detailed || lane.Height < 1 || lane.Bottom < box.Top || lane.Top > box.Bottom)
+                continue;
+
+            foreach (var block in lane.Row.Blocks)
+            {
+                if (BlockRect(lane, block, 0).IntersectsWith(box) && !found.Contains(block))
+                    found.Add(block);
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// The band follows the pointer once it has moved past the system's drag distance from the press (SystemParameters' minimum horizontal
+    /// and vertical drag distances, about 4 px: a hand that shakes as it clicks draws none); true while a press on empty space is held.
+    /// </summary>
+    private bool FollowMarquee(Point laid)
+    {
+        if (_marqueePress is not { } press)
+            return false;
+
+        if (_marquee is null && (Math.Abs(laid.X - press.From.X) > SystemParameters.MinimumHorizontalDragDistance
+            || Math.Abs(laid.Y - press.From.Y) > SystemParameters.MinimumVerticalDragDistance))
+            _marquee = (press.From, laid, press.Add);
+        if (_marquee is { } band)
+        {
+            _marquee = band with { To = laid };
+            _overlayDirty = true;
+            InvalidateVisual();
+        }
+
+        return true;
+    }
+
+    /// <summary>Lets go of a press on empty space: the band's blocks told (the press's seek was told as it went down); false when there was none.</summary>
+    private bool EndMarquee()
+    {
+        if (_marqueePress is null)
+            return false;
+
+        var band = _marquee;
+        (_marqueePress, _marquee) = (null, null);
+        if (IsMouseCaptured)
+            ReleaseMouseCapture();
+        if (band is { } drawn)
+        {
+            _overlayDirty = true;
+            InvalidateVisual();
+            var touched = BlocksIn(MarqueeBox(drawn));
+            Raise(() => MarqueeSelected?.Invoke(touched, drawn.Add));
+        }
+
+        return true;
+    }
+
+    // The block switch a point is on (5.2), on a lane drawn in full; null for none.
+    private static (TimelineBlock Block, BlockSwitch Which)? BlockSwitchAt(in Lane lane, Point at)
+    {
+        if (!lane.Detailed)
+            return null;
+
+        foreach (var block in lane.Row.Blocks)
+        {
+            if (block.Switched is null)
+                continue;
+
+            var (onOff, lockBox) = BlockSwitchBoxes(block, BlockRect(lane, block, 0));
+            if (!onOff.IsEmpty && Rect.Inflate(onOff, 1, 1).Contains(at))
+                return (block, BlockSwitch.OnOff);
+            if (!lockBox.IsEmpty && Rect.Inflate(lockBox, 1, 1).Contains(at))
+                return (block, BlockSwitch.Lock);
+        }
+
+        return null;
+    }
+
     private enum CrossfadePart { Inside, Edge, Remove }
 
     // The crossfade box a point is in, and which part of it; null for none. A crossfade is drawn on a lane in full only.
@@ -465,7 +602,7 @@ public sealed partial class UnifiedTimelineControl
         if (!modifiers.HasFlag(ModifierKeys.Control) || block is not { Edit: not null, CanDrag: not null, Commit: not null })
             return false;
 
-        var (left, right, edge) = (block.Left, block.Left + block.Width, TimelineTrack.EdgePixels);
+        var (left, right, edge) = (block.Left, block.Left + block.Width, TimelineMetrics.EdgePixels);
         return block.Resizable && x > right - edge || block.TrimmableStart && x < left + edge;
     }
 
@@ -545,6 +682,14 @@ public sealed partial class UnifiedTimelineControl
             _headersDirty = true;
             InvalidateVisual();
         }
+        else if (BadgeAt(lane, at))
+        {
+            // Its preset badge (5.2A): the host drops the presets from it, at its place on the control.
+            var badge = BadgeRect(lane, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            badge.Offset(0, -_verticalOffset);
+            ForgetTip();
+            Raise(() => BadgePressed?.Invoke(row, badge));
+        }
         else if (e.ClickCount % 2 == 0 && row.Children.Count > 0)
         {
             // A double click on the name opens or closes all of its stacks (every second click of a quick run of them).
@@ -567,7 +712,7 @@ public sealed partial class UnifiedTimelineControl
     {
         var ripple = modifiers.HasFlag(ModifierKeys.Control) && block.Edit is not null;
         var (left, right) = (block.Left, block.Left + block.Width);
-        var edge = TimelineTrack.EdgePixels;
+        var edge = TimelineMetrics.EdgePixels;
 
         // An edge at a seam of folded dead air (4.4 BugHunt, Q11): never a roll there. Dragged outward it shows the fold
         // again (as much as the fold, and the clip's file, have), inward it folds that much more of the clip into it; what
@@ -649,19 +794,19 @@ public sealed partial class UnifiedTimelineControl
     }
 
     // A drag began: the snapping moments are asked for (less where what the dragged block carries along is: it would snap
-    // to its own children), the hover and the skim line go, and the rows are drawn again without what is dragged (the
-    // overlay draws it as it goes).
+    // to its own children; and, 5.2B, less the beats of what a move or a slip takes along: they would catch on where they
+    // were), the hover and the skim line go, and the rows are drawn again without what is dragged (the overlay draws it as
+    // it goes).
     private void BeginDrag()
     {
         _clickOnly = null;
-        IReadOnlyList<double> times = [];
-        Raise(() => times = SnapTimes?.Invoke() ?? []);
-        _snapTimes = times;
         if (_drag is { } drag)
-        {
             CollectFamily(drag);
-            _snapTimes = WithoutFamily(_snapTimes, drag);
-        }
+
+        IReadOnlyList<double> times = [];
+        var moving = SoundTakenAlong(_drag);
+        Raise(() => times = SnapTimes?.Invoke(moving) ?? []);
+        _snapTimes = _drag is { } dragged ? WithoutFamily(times, dragged) : times;
 
         ToolTip = null;
         ForgetTip();
@@ -951,6 +1096,24 @@ public sealed partial class UnifiedTimelineControl
     // The children a trim may leave outside their parent (they stay where they are, and are shown coming loose once it does).
     private readonly HashSet<TimelineBlock> _loose = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// The blocks whose sound a drag takes along with it (5.2B, Snap to Audio Beats): a move's (the dragged block, the rest of its group and
+    /// what rides with them, as <see cref="CollectFamily"/> found them) and a slip's (what of its file the block plays slides under it). Their
+    /// clips' beats move with the drag, so they are no moments to snap to. A trim, a roll or a seam's edge leaves every beat where it is (what
+    /// of the file plays moves with the edge): none then, and a clip's own beats stay for its edges to catch on.
+    /// </summary>
+    private List<TimelineBlock> SoundTakenAlong(BlockDrag? drag)
+    {
+        var moving = new List<TimelineBlock>();
+        if (drag is not { Kind: BlockEdit.Move or BlockEdit.Slip })
+            return moving;
+
+        moving.Add(drag.Block);
+        if (drag.Kind == BlockEdit.Move)
+            moving.AddRange(_coupled.Select(c => c.Block));
+        return moving;
+    }
+
     /// <summary>The snapping moments less the edges of what the drag carries along (each its own child's), but never the dragged block's own.</summary>
     private IReadOnlyList<double> WithoutFamily(IReadOnlyList<double> times, BlockDrag drag)
     {
@@ -1084,9 +1247,9 @@ public sealed partial class UnifiedTimelineControl
             return null;
 
         var (lead, tail) = block.AudioSplit ?? (0.0, 0.0);
-        if (Math.Abs(laid.X - (rect.Left - lead * scale)) <= TimelineTrack.EdgePixels)
+        if (Math.Abs(laid.X - (rect.Left - lead * scale)) <= TimelineMetrics.EdgePixels)
             return true;
-        if (Math.Abs(laid.X - (rect.Right + tail * scale)) <= TimelineTrack.EdgePixels)
+        if (Math.Abs(laid.X - (rect.Right + tail * scale)) <= TimelineMetrics.EdgePixels)
             return false;
         return null;
     }
@@ -1116,7 +1279,7 @@ public sealed partial class UnifiedTimelineControl
 
         var rect = BlockRect(lane, block, 0);
         return Math.Abs(laid.Y - GainY(rect, gain.GainDb)) <= GainReach + 1
-            && laid.X > rect.Left + TimelineTrack.EdgePixels && laid.X < rect.Right - TimelineTrack.EdgePixels;
+            && laid.X > rect.Left + TimelineMetrics.EdgePixels && laid.X < rect.Right - TimelineMetrics.EdgePixels;
     }
 
     /// <summary>Whether a point is on a fade handle of the block under it: a seam's tab there gives way to the handle.</summary>
@@ -1188,8 +1351,8 @@ public sealed partial class UnifiedTimelineControl
     private static string ChevronTip(in Lane lane, ChildStack stack, bool open)
     {
         var lanes = lane.ChevronCount < 2 ? "its lanes"
-            : stack == ChildStack.Audio ? "its sound's lanes (the unlinked sound, the file's audio streams)"
-            : "its layers' lanes (the HUD cut-outs and masks, the captions)";
+            : stack == ChildStack.Audio ? "its Audio Sub-Lanes (the unlinked sound, the file's audio streams)"
+            : "its Visual Sub-Lanes (the HUD Cutouts and masks, the captions)";
         return open ? $"Fold {lanes} to thin bars" : $"Open {lanes} to their full height";
     }
 
@@ -1232,6 +1395,11 @@ public sealed partial class UnifiedTimelineControl
         return null;
     }
 
+    /// <summary>Whether a point (x on the control, y on the rows) is on a header's preset badge (5.2A).</summary>
+    private bool BadgeAt(in Lane lane, Point at) =>
+        (lane.Row.Badge is { Length: > 0 } || lane.Row.OffersBadge) && BadgeRect(lane, VisualTreeHelper.GetDpi(this).PixelsPerDip) is { IsEmpty: false } badge
+        && badge.Contains(at);
+
     // ----- Moving -----
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -1259,6 +1427,9 @@ public sealed partial class UnifiedTimelineControl
         }
 
         var laid = Laid(point);
+        if (FollowMarquee(laid))
+            return;
+
         if (_splitDrag is { } split)
         {
             FollowSplit(split, laid);
@@ -1378,7 +1549,7 @@ public sealed partial class UnifiedTimelineControl
             }
         }
 
-        // What it carries along (its children, its unlinked sound, the main file's sound under it) goes with it, every move.
+        // What it carries along (its children, its unlinked sound, its file's sound on its Audio Sub-Lanes) goes with it, every move.
         FollowFamily(drag);
         _overlayDirty = true;
         InvalidateVisual();
@@ -1514,6 +1685,19 @@ public sealed partial class UnifiedTimelineControl
                 return;
             }
 
+            if (BadgeAt(header, at))
+            {
+                Cursor = Cursors.Hand;
+                if (TipFor(header.Row, 6))
+                {
+                    ToolTip = header.Row.Badge is { Length: > 0 } preset
+                        ? $"Track Preset: {preset}. Every video dropped or moved onto this track takes it, with Cutouts of its own. Click to choose another, or clear it."
+                        : "Set a Track Preset: a Game Preset every video dropped or moved onto this track takes, with Cutouts of its own.";
+                }
+
+                return;
+            }
+
             Cursor = null;
             if (TipFor(header.Row, 2))
                 ToolTip = header.Row.Tip;
@@ -1597,7 +1781,7 @@ public sealed partial class UnifiedTimelineControl
         var rect = BlockRect(lane, block, 0);
         var alt = Keyboard.Modifiers.HasFlag(ModifierKeys.Alt);
         var fadeHandle = FadeHandleAt(lane, block, laid);
-        var edge = TimelineTrack.EdgePixels;
+        var edge = TimelineMetrics.EdgePixels;
 
         // An edge at a seam of folded dead air: dragged, it shows the fold again or folds more into it (never a roll there).
         var atSeam = fadeHandle is null && !alt && block.SeamTrim is not null
@@ -1859,7 +2043,7 @@ public sealed partial class UnifiedTimelineControl
             return x;
 
         var best = x;
-        var nearest = TimelineTrack.SnapPixels;
+        var nearest = TimelineMetrics.SnapPixels;
         for (var i = 0; i < _snapTimes.Count; i++)
         {
             var at = _snapTimes[i] * scale;
@@ -1886,6 +2070,12 @@ public sealed partial class UnifiedTimelineControl
             e.Handled = true;
             if (heightDrag.Row is { } sized)
                 Raise(() => RowHeightDragEnded?.Invoke(sized, true));
+            return;
+        }
+
+        if (EndMarquee())
+        {
+            e.Handled = true;
             return;
         }
 
@@ -2119,6 +2309,14 @@ public sealed partial class UnifiedTimelineControl
         base.OnLostMouseCapture(e);
         _panFrom = null;
         _clickOnly = null;
+        if (_marqueePress is not null)
+        {
+            // Taken away mid-band: nothing is selected, and the band goes.
+            (_marqueePress, _marquee) = (null, null);
+            _overlayDirty = true;
+            InvalidateVisual();
+        }
+
         if (_heightDrag is { Row: { } sized })
             Raise(() => RowHeightDragEnded?.Invoke(sized, false));
         _heightDrag = null;

@@ -1,18 +1,40 @@
 # The Thanos Snap as a filter graph writes it, without the card: grains going in the card's sweep, in place.
-# reads the cuts list: no; the chapters list: no
+# 1920 x 1080, 1800 frames at 30/1, yuv420p piped; the chapters list: no
 
 command:
   ffmpeg
   -hide_banner
   -y
+  -f
+  rawvideo
+  -pix_fmt
+  yuv420p
+  -video_size
+  1920x1080
+  -framerate
+  30/1
+  -color_range
+  tv
+  -colorspace
+  bt709
+  -color_primaries
+  bt709
+  -color_trc
+  bt709
   -i
-  D:/media/main.mp4
-  -filter_complex <graph 1>
+  pipe:0
+  -f
+  f32le
+  -ar
+  48000
+  -ch_layout
+  stereo
+  -i
+  {sound:1}
   -map
   0:v:0
   -map
-  [aedit0]
-  -vf <graph 2>
+  1:a:0
   -c:v
   libx264
   -preset
@@ -21,38 +43,34 @@ command:
   23
   -pix_fmt
   yuv420p
-  -metadata:s:a:0
-  title=Track 1
+  -color_range
+  tv
+  -colorspace
+  bt709
+  -color_primaries
+  bt709
+  -color_trc
+  bt709
   -c:a:0
   aac
   -b:a:0
   160k
+  -metadata:s:a:0
+  title=Track 1
   -map_chapters
   -1
   D:/out/transition-particle-snap.mp4
 
-graph 1 (-filter_complex): 1 chains, 48 characters
-  1| [0:a:0]atrim=end=60
-   |   ,asetpts=PTS-STARTPTS[aedit0]
+the scene at 0 s: 1 layer
+    Media source 0 at 0.001 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
 
-graph 2 (-vf): 8 chains, 954 characters
-  1| trim=end=60
-   |   ,setpts=PTS-STARTPTS
-   |   ,null[center_in]
-  2| color=c=black:s=1920x1080:r=30:d=60
-   |   ,format=yuv420p[stage0]
-  3| [center_in]scale=1920:1080
-   |   ,format=yuva420p[center_layer]
-  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
-  5| movie='D\:/media/clip2.mp4'
-   |   ,trim=start=1:end=11
-   |   ,setpts=PTS+4/TB
-   |   ,scale=768:432
-   |   ,format=yuva420p
-   |   ,split[ui1_tf][ui1_tfa_in]
-  6| [ui1_tfa_in]alphaextract
-   |   ,geq=lum='lum(X,Y)*lt(0.58*(1.34-X/W*0.86-(1-Y/H)*0.5)+0.42*((sin(floor(X/5)*12.9898+floor(Y/5)*78.233)*43758.5453)-floor((sin(floor(X/5)*12.9898+floor(Y/5)*78.233)*43758.5453))),clip((T-5)/1,0,1))':enable='between(t,5,6)'
-   |   ,geq=lum='lum(X,Y)*lt(0.58*(1.34-X/W*0.86-(1-Y/H)*0.5)+0.42*((sin(floor(X/5)*12.9898+floor(Y/5)*78.233)*43758.5453)-floor((sin(floor(X/5)*12.9898+floor(Y/5)*78.233)*43758.5453))),(1-clip((T-13.5)/1.5,0,1)))':enable='between(t,13.5,15)'[ui1_tfa]
-  7| [ui1_tf][ui1_tfa]alphamerge[ui1_layer]
-  8| [stage1][ui1_layer]overlay=96:54:eof_action=pass:enable='between(t,5,15)'
-   |   ,setsar=1
+the scene at 10 s: 2 layers
+    Media source 0 at 10.001 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Media source 1 at 6.001 box (96.0, 54.0) 768.0 x 432.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [clip2, track 1]
+
+the scene at 30 s: 1 layer
+    Media source 0 at 30.001 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+
+the sound: 1 track (aac stereo), 1 strips, 1 voices
+    track 2 (Track 1) (Track): no effects
+      main.mp4 a:0 heard 0-60 s from 0 s, rate 1, gain 1

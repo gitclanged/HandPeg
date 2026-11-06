@@ -1,12 +1,9 @@
-using System.IO;
 using System.Windows;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using HandPegApp.Models;
 
 namespace HandPegApp.Services;
 
-/// <summary>The ready-made shapes a layer can be cut to, stretched over the layer: see <see cref="HudLibrary.EnsureMask"/>.</summary>
+/// <summary>The ready-made shapes a layer can be cut to, stretched over the layer: see <see cref="HudLibrary.Outline"/>.</summary>
 public enum HudShape
 {
     /// <summary>A plain rectangle with slightly rounded corners.</summary>
@@ -62,48 +59,24 @@ public static class HudLibrary
     }
 
     /// <summary>
-    /// The mask picture for a shape: white where the layer shows, black where it does not, with a soft edge.
-    /// Drawn once and kept in the masks folder, where the layers refer to it. Null for a plain panel, which
-    /// has no need of a picture: its rounded corners are the layer's own.
+    /// A ready shape's outline (5.2-Audit, the user's call: no picture is written to the Masks folder), as a drawn mask's text
+    /// (<see cref="MaskStore.FormatShapes"/>) on the layer's own picture, which it is stretched over: the shape a little in
+    /// from the edges, so the layer's Soft Edges (which blurs a mask) fades it out all the way round. Null for a plain panel,
+    /// which needs no mask: its rounded corners are the layer's own.
     /// </summary>
-    public static string? EnsureMask(HudShape shape)
+    public static string? Outline(HudShape shape)
     {
-        if (shape == HudShape.Panel)
-            return null;
-
-        var path = Path.Combine(AppPaths.Masks, $"hud_{shape.ToString().ToLowerInvariant()}_soft.png");
-        if (File.Exists(path))
-            return path;
-
-        // On a unit square; the mask is stretched to whatever shape the layer has. The shape is drawn a little
-        // in from the edges and then blurred, so that it fades out to black all the way round: a feathered edge.
-        const int size = 512;
-        const double inset = 34, feather = 22;
-        Geometry outline = shape switch
+        const double inset = 0.045, size = 1 - 2 * inset;
+        List<Point>? outline = shape switch
         {
-            HudShape.Ellipse => new EllipseGeometry(new Point(size / 2.0, size / 2.0), size / 2.0 - inset, size / 2.0 - inset),
-            HudShape.Slant => new PathGeometry([new PathFigure(new Point(size * 0.10 + inset, inset),
-                [new PolyLineSegment([new Point(size - inset, inset), new Point(size * 0.90 - inset, size - inset), new Point(inset, size - inset)], true)], true)]),
-            _ => new RectangleGeometry(new Rect(inset, inset, size - 2 * inset, size - 2 * inset), 18, 18),
+            HudShape.Ellipse => MaskStore.Ellipse(inset, inset, size, size, 64),
+            HudShape.Slant => MaskStore.Slant(inset, inset, size, size, 0.1 / size),
+            HudShape.Soft => MaskStore.RoundedRectangle(inset, inset, size, size, 24),
+            _ => null,
         };
-
-        var shapeVisual = new DrawingVisual { Effect = new System.Windows.Media.Effects.BlurEffect { Radius = feather, KernelType = System.Windows.Media.Effects.KernelType.Gaussian } };
-        using (var context = shapeVisual.RenderOpen())
-            context.DrawGeometry(Brushes.White, null, outline);
-
-        var drawing = new DrawingVisual();
-        using (var context = drawing.RenderOpen())
-            context.DrawRectangle(Brushes.Black, null, new Rect(0, 0, size, size));
-        drawing.Children.Add(shapeVisual);
-
-        var bitmap = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(drawing);
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(bitmap));
-
-        Directory.CreateDirectory(AppPaths.Masks);
-        using var file = File.Create(path);
-        encoder.Save(file);
-        return path;
+        return outline is null ? null : MaskStore.FormatShapes([outline]);
     }
+
+    /// <summary>How soft a ready shape's edge is when the layer's own Soft Edges is off: as soft as the shapes' pictures were before 5.2-Audit.</summary>
+    public const int ShapeFeatherRadius = 24;
 }

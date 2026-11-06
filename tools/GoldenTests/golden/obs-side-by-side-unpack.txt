@@ -1,0 +1,15 @@
+# Unpack OBS Side-by-Side Canvas (5.2C): the gameplay half on the clip, the facecam half a Cutout above it, placed for 16:9 and 9:16, one step of Undo.
+ok: 3840 x 1080 and 5120 x 1440 are two pictures side by side; 21:9 and 16:9 are one
+ok: the double-wide clip can be unpacked, the 16:9 one cannot
+ok: unpacked
+ok: 16:9: the clip shows the left half (cropped right 50 %) and fills the 1920 x 1080 frame
+ok: a Cutout of the same file on the same clock over the clip's span, silent: the facecam
+ok: on a Sub-Lane above the clip's track
+ok: the facecam shows the right half (cropped left 50 %) whole, 30 % of the frame wide in the bottom right corner (48 px in)
+ok: a split of the clip splits the facecam with it, each half on its half's clock
+ok: two steps of Undo (the split, then the unpack) leave the clip as it was, no facecam, no Sub-Lane
+ok: unpacked on a 9:16 Sequence
+ok: 9:16: the facecam across the top, the frame's width and its own 16:9 shape (1080 x 608)
+ok: the gameplay fills the rest of the frame, cut at its sides about its half's middle
+ok: a Sequence shaped as the double-wide canvas becomes 1920 x 1080
+ok: 5120 x 1440 lays out as 3840 x 1080 does

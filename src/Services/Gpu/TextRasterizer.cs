@@ -9,7 +9,7 @@ namespace HandPegApp.Services.Gpu;
 
 /// <summary>
 /// Words drawn by WPF into stills for the GPU engine (<see cref="GpuResourceKind.Still2D"/>, BGRA8 straight alpha), as the
-/// export draws them: a text clip as FFmpeg's drawtext writes it (FilterGraphBuilder.Video.cs AppendTextSource: the same
+/// export draws them: a text clip as FFmpeg's drawtext writes it (the export's graph before 5.2-Audit, AppendTextSource: the same
 /// layout, TextLayout, the same font, size, colours and outline, each line centred on its baseline), drawn whole and cut
 /// by its crop; and the captions as libass draws the .ass file the export burns in (CaptionGenerator.WriteAss: bold, the
 /// style's colours, outline and size at the caption box's scale, centred at the box's bottom margin).

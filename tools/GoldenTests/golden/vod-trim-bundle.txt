@@ -1,0 +1,15 @@
+# A project bundle carries a long recording as the stretches it uses (5.2C, VodTrim): stream copies from key frames, +5 s handles, every frame where it was.
+ok: only the long recording used little is planned (not the one 87 % used, not the 90 s one)
+ok: its two stretches with 5 s handles each side (25-45 s, 95-113 s), 12 % of it used
+ok: stretches within 30 s of each other are one (5-45 s)
+ok: remapped: the first clip on the first piece at 5.5 s of it, the second on the second at 6 s
+ok: the project's own name of the file names its first piece; the state given is not changed
+ok: a file one clip of which no piece holds whole is not trimmed at all: every clip of it as it was
+ok: packed: two pieces of the one recording, nothing missing
+entries: media/vod [26-46 s].mkv, media/vod [96-114 s].mkv
+ok: the bundle holds the two stretches and not the whole recording
+ok: the stretches cut beside the bundle are gone after it is written
+ok: the working project still names the whole recording
+ok: unpacked, each clip's first, second and last frames are the recording's very frames (each piece starts on the key frame at or before its stretch)
+ok: with the setting off the recording goes in whole
+ok: the setting is on as it comes

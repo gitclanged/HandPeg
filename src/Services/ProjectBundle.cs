@@ -14,10 +14,14 @@ namespace HandPegApp.Services;
 //   bundle.json    what the bundle is: its format and version, the HandPeg that wrote it, and each media file's entry name,
 //                  length and last-write time (never where it came from: a bundle is meant to be given away);
 //   project.hproj  the project (format 6), each file it reads written as its entry's name ("media/clip.mkv");
+//   thumbnail.jpg  the project's thumbnail when it has one (Pass 5.2D: stored, for Explorer's preview, which
+//                  finds it through the archive's directory without reading the media); unpacking leaves it in the bundle;
 //   media/...      the files, stored as they are (no compression: video does not shrink, and the copy runs at disk speed).
 // Opening a bundle unpacks it into a folder beside it (named after it), points the project at the unpacked files and opens
 // that project, which is then an ordinary one: saving writes it there. A bundle opened again finds its folder and opens the
 // project in it as it was left; a changed bundle unpacks into a folder of its own, never over the user's work.
+// A long recording the Sequence uses little of goes in as the stretches it uses (5.2C, VodTrim: lossless stream copies with 5 s
+// handles, AppSettings.TrimLongVodsOnBundle), the bundle's project pointed at them; the working project is never changed.
 public static class ProjectBundle
 {
     public const string Extension = ".hpb";
@@ -45,6 +49,11 @@ public static class ProjectBundle
         public int Version { get; set; }
         public string? WrittenBy { get; set; }
         public string Project { get; set; } = ProjectEntry;
+
+        /// <summary>The project's thumbnail entry ("thumbnail.jpg", Pass 5.2D); left out when the bundle has none.</summary>
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public string? Thumbnail { get; set; }
+
         public List<MediaEntry> Media { get; set; } = [];
     }
 
@@ -63,10 +72,44 @@ public static class ProjectBundle
 
     /// <summary>
     /// Writes the state as a bundle (through a ".part" file, moved into place when whole): the project and every file it reads
-    /// that is there. Reports the share of bytes written (0 to 1). Returns how many files went in and how many named files were
-    /// not there (left as they were in the project).
+    /// that is there. Reports the share of bytes written (0 to 1). Returns how many files went in, how many named files were
+    /// not there (left as they were in the project), and how many long recordings went in trimmed (<paramref name="trimLongVods"/>:
+    /// VodTrim, the stretches cut beside the bundle first and let go of after).
     /// </summary>
-    public static (int Files, int Missing) Pack(ProjectState state, string bundlePath, IProgress<double>? progress = null, CancellationToken cancel = default)
+    public static (int Files, int Missing, int Trimmed) Pack(ProjectState state, string bundlePath, IProgress<double>? progress = null, CancellationToken cancel = default,
+        bool trimLongVods = false)
+    {
+        var trimFolder = bundlePath + ".trim";
+        Dictionary<string, IReadOnlyList<VodTrim.Piece>>? pieces = null;
+        try
+        {
+            if (trimLongVods && VodTrim.Plan(state) is { Count: > 0 } plan)
+            {
+                if (VodTrim.Cut(plan, trimFolder, cancel) is { Count: > 0 } cut)
+                    (state, pieces) = VodTrim.Remap(state, cut);
+            }
+
+            var (files, missing) = PackWhole(state, bundlePath, progress, cancel, pieces);
+            return (files, missing, pieces?.Count ?? 0);
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(trimFolder))
+                    Directory.Delete(trimFolder, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                AppLog.Write("Project bundle: the trimmed stretches could not all be deleted", ex);
+            }
+        }
+    }
+
+    /// <param name="trimmed">The pieces of each recording trimmed (VodTrim.Cut): anything still naming one of them (a look kept elsewhere in the
+    /// project) names its first piece, so the whole recording never goes in beside its pieces.</param>
+    private static (int Files, int Missing) PackWhole(ProjectState state, string bundlePath, IProgress<double>? progress, CancellationToken cancel,
+        IReadOnlyDictionary<string, IReadOnlyList<VodTrim.Piece>>? trimmed)
     {
         var project = JsonNode.Parse(ProjectStore.Serialize(state)) ?? throw new InvalidDataException("The project could not be written.");
 
@@ -90,6 +133,8 @@ public static class ProjectBundle
 
             if (entries.TryGetValue(full, out var known))
                 return known;
+            if (trimmed is not null && trimmed.TryGetValue(full, out var cut) && cut.Count > 0)
+                return EntryFor(cut[0].Path);
             if (!File.Exists(full))
             {
                 missing.Add(full);
@@ -123,7 +168,11 @@ public static class ProjectBundle
         if (output is not null && exportName is { Length: > 0 })
             output["path"] = exportName;
 
-        var manifest = new Manifest { Format = FormatName, Version = CurrentVersion, WrittenBy = ProjectStore.WriterName };
+        var thumbnail = state.ThumbnailJpeg is { Length: > 0 } picture ? picture : null;
+        var manifest = new Manifest
+        {
+            Format = FormatName, Version = CurrentVersion, WrittenBy = ProjectStore.WriterName, Thumbnail = thumbnail is null ? null : ProjectThumbnail.BundleEntry,
+        };
         var files = entries.Select(e => (Path: e.Key, Entry: e.Value, Info: new FileInfo(e.Key))).ToList();
         foreach (var (_, entry, info) in files)
             manifest.Media.Add(new MediaEntry { Entry = entry, Length = info.Length, Written = info.LastWriteTimeUtc.Ticks });
@@ -140,6 +189,13 @@ public static class ProjectBundle
             {
                 WriteText(archive, ManifestEntry, JsonSerializer.Serialize(manifest, ManifestOptions));
                 WriteText(archive, ProjectEntry, project.ToJsonString());
+
+                // The thumbnail right after the project, stored (a JPEG does not shrink): Explorer's preview reads it alone.
+                if (thumbnail is not null)
+                {
+                    using var written = archive.CreateEntry(ProjectThumbnail.BundleEntry, CompressionLevel.NoCompression).Open();
+                    written.Write(thumbnail);
+                }
 
                 var buffer = new byte[CopyBuffer];
                 foreach (var (path, entry, info) in files)
@@ -323,8 +379,8 @@ public static class ProjectBundle
         }
     }
 
-    /// <summary>An entry's file inside the folder, or null for a name that would leave it ("..", a rooted name).</summary>
-    private static string? InsideOf(string folder, string entryName)
+    /// <summary>An entry's file inside the folder, or null for a name that would leave it ("..", a rooted name). Also a portable project's media (5.2A).</summary>
+    internal static string? InsideOf(string folder, string entryName)
     {
         if (entryName.Length == 0 || Path.IsPathRooted(entryName))
             return null;
@@ -336,7 +392,7 @@ public static class ProjectBundle
     // ----- The project's paths -----
 
     /// <summary>Replaces every string of the JSON that <paramref name="map"/> has another value for (null: kept), at any depth.</summary>
-    private static void Rewrite(JsonNode node, Func<string, string?> map)
+    internal static void Rewrite(JsonNode node, Func<string, string?> map)
     {
         switch (node)
         {
@@ -370,7 +426,7 @@ public static class ProjectBundle
     }
 
     /// <summary>A string that names a file on a drive or a share ("D:\clip.mkv", "\\pc\share\a.wav"): what the project reads.</summary>
-    private static bool LooksLikeFilePath(string text) =>
+    internal static bool LooksLikeFilePath(string text) =>
         text.Length is > 3 and < 1024 && !text.Contains("://", StringComparison.Ordinal) && text.IndexOfAny(['\n', '\r', '"', '<', '>', '|']) < 0
         && ((char.IsAsciiLetter(text[0]) && text[1] == ':' && text[2] is '\\' or '/') || text.StartsWith(@"\\", StringComparison.Ordinal));
 

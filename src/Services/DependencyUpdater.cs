@@ -356,6 +356,47 @@ public static partial class DependencyUpdater
     /// <summary>True when the settings name a specific whisper.exe instead of the local copy.</summary>
     public static bool IsWhisperOverridden => !string.IsNullOrWhiteSpace(AppSettings.Current.WhisperPath);
 
+    // The ggml libraries of whisper.cpp's graphics back ends (b5454 and later load them from beside whisper.exe), and what each is.
+    private static readonly (string Library, string Backend)[] WhisperGpuLibraries =
+        [("ggml-cuda.dll", "CUDA"), ("ggml-opencl.dll", "OpenCL"), ("ggml-vulkan.dll", "Vulkan"), ("ggml-sycl.dll", "SYCL")];
+
+    /// <summary>
+    /// The graphics back end of the whisper.cpp in use (5.2-Arm64AndNpu), by the ggml library beside it: "CUDA" (the NVIDIA
+    /// builds), "OpenCL" (the Adreno build HandPeg installs on a Snapdragon PC with the graphics driver's OpenCL), "Vulkan"
+    /// (one set by hand); empty for a build on the processor alone, or one that keeps its back ends inside (it then decides
+    /// for itself, as before). A few file checks: not for the UI thread before the first frame.
+    /// </summary>
+    public static string WhisperGpuBackend
+    {
+        get
+        {
+            try
+            {
+                var folder = Path.GetDirectoryName(WhisperPath);
+                if (string.IsNullOrEmpty(folder) || !File.Exists(WhisperPath))
+                    return "";
+                foreach (var (library, backend) in WhisperGpuLibraries)
+                {
+                    if (File.Exists(Path.Combine(folder, library)))
+                        return backend;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                // Not readable: as a build on the processor alone.
+            }
+
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// Whether a speech build that runs on an NPU is installed (a QNN or ONNX Runtime one). None is today: the pinned
+    /// whisper.cpp b5454 builds are for the processor, CUDA and Adreno OpenCL only (5.2-Arm64AndNpu; an NPU speech model is
+    /// planned with the AI worker in 6.0).
+    /// </summary>
+    public static bool NpuSpeechBuildInstalled => false;
+
     /// <summary>True when the settings name a specific ffmpeg.exe instead of the local copy.</summary>
     public static bool IsFfmpegOverridden => !string.IsNullOrWhiteSpace(AppSettings.Current.FfmpegPath);
 
@@ -544,9 +585,19 @@ public static partial class DependencyUpdater
             throw new InvalidOperationException($"{program} did not answer.");
         }
 
-        // A program that could not load (a missing library, the wrong architecture) ends with a Windows error code.
+        // A program that could not load (a missing library, the wrong architecture) ends with a Windows error code: the
+        // install is refused with what it means (IsInstallFailure), and since Program.Main's error mode no Windows box asks first.
         if (result.ExitCode is < 0 or > 255)
-            throw new InvalidOperationException($"{program} could not start (code 0x{result.ExitCode:X8}).");
+        {
+            var why = unchecked((uint)result.ExitCode) switch
+            {
+                0xC0000135 => "a library it needs is missing",
+                0xC000007B => "it or a library it loads is not a program for this processor",
+                0xC0000139 => "a library it loads is the wrong version",
+                _ => "it ended with a Windows error",
+            };
+            throw new InvalidOperationException($"{program} could not start: {why} (code 0x{result.ExitCode:X8}).");
+        }
 
         return tool switch
         {
@@ -1126,8 +1177,10 @@ public static partial class DependencyUpdater
             return;
         }
 
-        // whisper.cpp: the command line program, as whisper.exe, with the libraries it loads: whisper.dll and
-        // the ggml ones. The archive's other programs (server, benchmarks, tests) are left behind.
+        // whisper.cpp: the command line program, as whisper.exe, with the libraries it loads: whisper.dll, the ggml ones, and
+        // the OpenMP runtime the ARM64 builds ship beside them (libomp140.aarch64.dll, which ggml-base.dll and ggml-cpu.dll
+        // import and Windows does not have: without it whisper.exe cannot start, 0xC0000135, 5.2 on the user's Windows on ARM laptop).
+        // The archive's other programs (server, benchmarks, tests) are left behind.
         // Called whisper-cli.exe now; older builds called it main.exe, which newer ones keep only as a stub.
         var program = archive.Entries.FirstOrDefault(e => e.Name.Equals("whisper-cli.exe", StringComparison.OrdinalIgnoreCase))
                       ?? archive.Entries.FirstOrDefault(e => e.Name.Equals("main.exe", StringComparison.OrdinalIgnoreCase))
@@ -1138,7 +1191,7 @@ public static partial class DependencyUpdater
         {
             cancellationToken.ThrowIfCancellationRequested();
             var isLibrary = entry.Name.Equals("whisper.dll", StringComparison.OrdinalIgnoreCase)
-                            || (entry.Name.StartsWith("ggml", StringComparison.OrdinalIgnoreCase)
+                            || ((entry.Name.StartsWith("ggml", StringComparison.OrdinalIgnoreCase) || entry.Name.StartsWith("libomp", StringComparison.OrdinalIgnoreCase))
                                 && entry.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
             if (isLibrary)
                 entry.ExtractToFile(Path.Combine(folder, entry.Name), overwrite: true);

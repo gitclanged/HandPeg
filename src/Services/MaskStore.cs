@@ -331,6 +331,20 @@ public static class MaskStore
         string.Join(";", shapes.Where(s => s.Count >= 3).Select(s => string.Join(" ", s.Select(p =>
             string.Create(CultureInfo.InvariantCulture, $"{Math.Round(p.X, 5)},{Math.Round(p.Y, 5)}")))));
 
+    /// <summary>
+    /// A Cutout's own drawn mask (not the frame's) moved from the part of the picture it was cut from (<paramref name="part"/>,
+    /// fractions of the whole) onto the whole picture, as the mask of a Cutout of a file is (5.2-AuditB): its outlines go where
+    /// they lay, so the crop cuts the same mask. A mask picture of its own is left as it is: it cannot be moved without a file.
+    /// </summary>
+    public static void SpreadOverPicture(LayerState state, (double X, double Y, double Width, double Height) part)
+    {
+        if (!state.CustomMask || state.MaskFrame || !IsDrawn(SourceOf(state.MaskPath, state.MaskShapes)))
+            return;
+
+        var moved = ParseShapes(state.MaskShapes).Select(s => (IReadOnlyList<Point>)s.Select(p => new Point(part.X + p.X * part.Width, part.Y + p.Y * part.Height)).ToList());
+        (state.MaskPath, state.MaskShapes) = ("", FormatShapes(moved));
+    }
+
     /// <summary>How large a drawn mask is made as a picture for a source of this size: at least 1920 wide and at most 3840, in the source's shape.</summary>
     public static (int Width, int Height) SizeFor(int sourceWidth, int sourceHeight)
     {

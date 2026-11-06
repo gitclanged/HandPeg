@@ -45,7 +45,7 @@ public sealed class PlaybackControlSet : ObservableObject
             new("NextMarker", "Next Marker", "Markers", "Jump on to the marker after the playhead (Shift+M)."),
             new("LivePreview", "Live Preview", "Viewer", "Runs the export's filters on the picture as it plays."),
             new("SafeMargins", "Safe Margins", "Viewer", "Outlines the action-safe (90%) and title-safe (80%) areas of the frame over the picture."),
-            new("EditOnVideo", "Edit Layers on Video Preview", "Viewer", "Move, resize and turn the selected layer on the player itself (with Live Preview)."),
+            new("EditOnVideo", "Edit Clips on Video Preview", "Viewer", "Move, resize and turn the selected clip on the player itself (with Live Preview)."),
             new("Exploded3D", "3D Exploded View", "Viewer", "Turns the player into a 3D view of the layer stack: orbit it, spread the layers apart, drag them in their planes and along the stack (the GPU preview engine)."),
             new("ExportFrame", "Export Frame", "Viewer", "Saves the frame as it is shown, as a PNG beside the output."),
             new("RenderPreview", "Render Preview", "Viewer", "Encodes a few seconds as the export will look, and plays them."),

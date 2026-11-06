@@ -188,7 +188,7 @@ public static class SocialSquisher
             var sound = audioKbps > 0 ? $"-map 0:a:0 -c:a aac -b:a {Number(audioKbps)}k -ac 2" : "-an";
             var command = $"ffmpeg -hide_banner -y -i \"{input}\" -map 0:v:0 {sound} -vf \"scale=-2:'min({Number(HeightFor(videoKbps))},ih)'\" "
                           + $"-c:v {encoder} {EncoderOptions(encoder, presetOverride)} -b:v {Number(videoKbps)}k -maxrate {Number(videoKbps)}k -bufsize {Number(videoKbps * 2)}k "
-                          + $"-pix_fmt yuv420p -movflags +faststart \"{outputPath}\"";
+                          + $"-pix_fmt {(MediaFoundationEncoder.Is(encoder) ? MediaFoundationEncoder.PixelFormat(false) : "yuv420p")} -movflags +faststart \"{outputPath}\"";
             AppLog.Write($"Squisher, attempt {attempt}: {encoder} at {videoKbps} kb/s for {preset.Name} ({preset.TargetSizeMb.ToString("0.#", CultureInfo.InvariantCulture)} MB)");
             try
             {

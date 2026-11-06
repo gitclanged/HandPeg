@@ -109,7 +109,6 @@
       0
     ],
     "useVerticalResolution": false,
-    "VerticalFramer": true,
     "layoutSourceAspectRatio": 1.7778,
     "captionStyle": {},
     "captionLayer": {

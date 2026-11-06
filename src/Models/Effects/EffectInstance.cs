@@ -184,8 +184,10 @@ public sealed partial class EffectInstance : ObservableObject
     /// </remarks>
     public GpuEffectPacket EvaluateGpuPacket(double clipTimeSeconds, Layer? layer = null, int packet = 0)
     {
+        // (5.2B: the Audio Reactive Pulse's own packet only while the pulse is in use, EffectDefinition.GpuPulsePacket.)
         if (!Enabled || Definition is not { } definition || packet < 0 || packet >= definition.GpuPacketCount
-            || Range is { } range && (clipTimeSeconds < range.Start || clipTimeSeconds > range.End))
+            || Range is { } range && (clipTimeSeconds < range.Start || clipTimeSeconds > range.End)
+            || packet == definition.GpuPulsePacket && !PulseInUse())
             return default;
 
         Span<float> lanes = stackalloc float[GpuEffectPacket.Lanes];
@@ -196,6 +198,10 @@ public sealed partial class EffectInstance : ObservableObject
             var param = parameters[i];
             if (param.GpuLanes == 0)
                 continue;
+
+            // A lane kept for the variant (EffectDefinition.GpuVariantLane): the parameters go round it.
+            if (definition.GpuVariantLane is { } reserved && lane <= reserved && reserved < lane + param.GpuLanes)
+                lane = reserved + 1;
 
             if (param.Kind == ParamKind.Color)
             {
@@ -218,10 +224,17 @@ public sealed partial class EffectInstance : ObservableObject
             lane += param.GpuLanes;
         }
 
-        if (definition.GpuVariant != 0 && packet == definition.GpuPacketCount - 1)
-            lanes[GpuEffectPacket.Lanes - 1] = definition.GpuVariant;
+        if (definition.GpuVariant != 0 && (definition.GpuVariantLane ?? definition.GpuPacketCount * GpuEffectPacket.Lanes - 1) is var at
+            && at >= first && at < first + GpuEffectPacket.Lanes)
+            lanes[at - first] = definition.GpuVariant;
+        if (packet == definition.GpuPulsePacket)
+            lanes[GpuEffectPacket.Lanes - 1] = GpuEffectPacket.PulseMarker;
         return GpuEffectPacket.From(definition.GpuSlot, lanes);
     }
+
+    // Whether the card's Audio Reactive Pulse is in use (5.2B): its keys when it has any, else its value (EffectRegistry.PulseInUse).
+    private bool PulseInUse() =>
+        EffectRegistry.PulseInUse(Keys.GetValueOrDefault(EffectRegistry.AudioPulseKey), Values.GetValueOrDefault(EffectRegistry.AudioPulseKey));
 
     private static void Put(Span<float> lanes, int first, int lane, double value)
     {

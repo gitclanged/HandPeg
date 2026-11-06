@@ -15,7 +15,7 @@
             <docking:PaneTitleSlot PaneId="Effects" />
             <TextBlock x:Name="TargetLabel" Margin="10,0,6,0" MinWidth="40" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis"
                        docking:PaneTitleRow.Optional="True"
-                       ToolTip="What the effects are on: the clip last selected on the timeline (or the main video), or the Sequence Output." />
+                       ToolTip="What the effects are on: the clip last selected on the timeline (or the video clip at the playhead), or the Sequence Output." />
             <ToggleButton x:Name="SequenceToggle" Content="Sequence Output" Padding="8,3" Margin="0,0,4,0" Click="SequenceToggle_Click"
                           AutomationProperties.Name="Sequence Output"
                           ToolTip="Sequence Output: the effects on the finished picture, after the Filters tab's colour, over the whole sequence. Off: the selected clip's effects." />

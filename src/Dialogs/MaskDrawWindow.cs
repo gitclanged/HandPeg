@@ -14,8 +14,8 @@ namespace HandPegApp;
 /// <summary>
 /// The Cutout Studio (5.1-CleanupStudioAndFfmpegPurge; Draw Custom Shape before it): a still of the video to trace a game's HUD on by
 /// hand, corner by corner with the polygon pen, zoomed in to 64 screen pixels a source pixel and panned at any moment, a shape half drawn or
-/// not. The shapes belong to named pieces; the pieces become layers, or are saved as a Game Preset (.hpstyle) for the drop overlay and
-/// the Style Presets, laid out on a tall frame beside the drawing. Opened from a layer it can also be that layer's mask. Built in code.
+/// not. The shapes belong to named Cutouts; the Cutouts become clips, or are saved as a Game Preset (.hpstyle) for the drop overlay and
+/// the Game Presets list, laid out on a tall frame beside the drawing. Opened from a clip it can also be that clip's mask. Built in code.
 /// </summary>
 public sealed partial class MaskDrawWindow : Window
 {
@@ -39,6 +39,11 @@ public sealed partial class MaskDrawWindow : Window
     private readonly MainViewModel _viewModel;
     private readonly Layer _layer;
     private readonly bool _forLayer;
+
+    // The file the still is taken from (5.2-Audit, the user's Q4): the clip's own, for a clip of any file (5.2-AuditB: on the video
+    // alone, the video's at the playhead); the file last opened's otherwise. And whether it is the clip's, read on its clock.
+    private readonly string _stillSource;
+    private readonly bool _stillOnClip;
 
     // The still and the shapes are laid out in the source's own pixels; the view scales and moves them.
     private readonly double _width, _height;
@@ -78,17 +83,26 @@ public sealed partial class MaskDrawWindow : Window
     // Segoe MDL2 Assets: Undo (E7A7), Redo (E7A6), Delete (E74D).
     private static readonly string UndoGlyph = char.ConvertFromUtf32(0xE7A7), RedoGlyph = char.ConvertFromUtf32(0xE7A6), DeleteGlyph = char.ConvertFromUtf32(0xE74D);
 
-    /// <summary>The finished shapes as a mask's text (see <see cref="MaskStore"/>), once the window was confirmed for a layer.</summary>
+    /// <summary>The finished shapes as a mask's text (see <see cref="MaskStore"/>), once the window was confirmed for a clip.</summary>
     public string Shapes { get; private set; } = "";
 
     /// <summary>Whether the shapes are for every layer cut from the video, not only the one the window was opened from.</summary>
     public bool ForAllLayers { get; private set; }
 
-    /// <param name="layer">The layer it is asked to mask; null opens it on the video alone, for pieces and Game Presets.</param>
+    /// <param name="layer">The clip it is asked to mask; null opens it on the video alone, for Cutouts and Game Presets.</param>
     public MaskDrawWindow(MainViewModel viewModel, Layer? layer)
     {
-        (_viewModel, _layer, _forLayer) = (viewModel, layer ?? viewModel.MainLayer, layer is not null);
-        (_width, _height) = viewModel.SourceWidth > 0 && viewModel.SourceHeight > 0 ? (viewModel.SourceWidth, viewModel.SourceHeight) : (1920.0, 1080.0);
+        (_viewModel, _layer, _forLayer) = (viewModel, layer ?? viewModel.PlayheadVideo, layer is not null);
+
+        // The still and its natural size are the clip's being edited (on the video alone, the video at the playhead): a clip is
+        // drawn on over its own file's picture.
+        var target = layer ?? _layer;
+        var ownFile = target is { IsVideoFile: true } && target.ImagePath.Trim().Trim('"') is { Length: > 0 } path ? path : null;
+        (_stillSource, _stillOnClip) = (ownFile ?? viewModel.LocalMediaPath, ownFile is not null);
+        (_width, _height) = ownFile is not null
+            ? MediaProbe.KnownInfo(ownFile)?.Video is { Width: > 0, Height: > 0 } video ? (video.Width, video.Height)
+            : target.ImageWidth > 0 && target.ImageHeight > 0 ? (target.ImageWidth, target.ImageHeight) : (1920.0, 1080.0)
+            : viewModel.SourceWidth > 0 && viewModel.SourceHeight > 0 ? (viewModel.SourceWidth, viewModel.SourceHeight) : (1920.0, 1080.0);
 
         Title = layer is null ? "Cutout Studio" : $"Cutout Studio: {layer.Name}";
         Width = 1320;
@@ -101,7 +115,8 @@ public sealed partial class MaskDrawWindow : Window
         SetResourceReference(ForegroundProperty, "TextBrush");
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
 
-        var regions = viewModel.Layers.Where(l => l.IsVideo && !l.IsDeleted && !(l.UsesFrameMask && l.MaskShapes.Length > 0))
+        // The old regions of the opened file (LayerKind.Video, a legacy kind) are shown over its still alone.
+        var regions = viewModel.Layers.Where(l => ownFile is null && l.IsVideo && !l.IsDeleted && !(l.UsesFrameMask && l.MaskShapes.Length > 0))
             .Select(l => (new Rect(l.SourceX * _width, l.SourceY * _height, l.SourceWidth * _width, l.SourceHeight * _height), l.Name, ReferenceEquals(l, layer)))
             .ToList();
         _surface = new ShapeSurface(_width, _height, regions, StartingShapes());
@@ -184,16 +199,16 @@ public sealed partial class MaskDrawWindow : Window
         var cancel = new Button { Content = _forLayer ? "Cancel" : "Close", MinWidth = 88, Margin = new Thickness(6, 0, 0, 0), IsCancel = true };
         var addLayers = new Button
         {
-            Content = "Add Pieces to Timeline",
+            Content = "Add Cutouts to Timeline",
             Padding = new Thickness(14, 4, 14, 4),
-            ToolTip = "Lays the video out tall with its blurred background and adds each named piece as a layer over it, as drawn here. Pieces added before are replaced. One step of Undo; every piece stays an ordinary layer.",
+            ToolTip = "Lays the video out tall with its blur fill and adds each named Cutout over it, as drawn here. Cutouts added before are replaced. One step of Undo; every Cutout stays an ordinary clip.",
         };
         addLayers.Click += (_, _) =>
         {
             _surface.CloseShape();
             if (Pieces() is { Count: > 0 } pieces)
             {
-                _viewModel.AddCutoutPieces(pieces, _zoomSlider.Value);
+                _viewModel.AddCutouts(pieces, _zoomSlider.Value);
                 DialogResult = false;
             }
             else
@@ -204,17 +219,17 @@ public sealed partial class MaskDrawWindow : Window
         right.Children.Add(addLayers);
         if (_forLayer)
         {
-            var applyOne = new Button { Content = "Apply to This Layer", Padding = new Thickness(14, 4, 14, 4), Margin = new Thickness(6, 0, 0, 0) };
+            var applyOne = new Button { Content = "Apply to This Clip", Padding = new Thickness(14, 4, 14, 4), Margin = new Thickness(6, 0, 0, 0) };
             applyOne.Click += (_, _) => Finish(forAll: false);
             right.Children.Add(applyOne);
             if (regions.Count > 1)
             {
                 var applyAll = new Button
                 {
-                    Content = "Apply to All Cut-out Layers",
+                    Content = "Apply to All Cutouts",
                     Padding = new Thickness(14, 4, 14, 4),
                     Margin = new Thickness(6, 0, 0, 0),
-                    ToolTip = "Every layer cut from the video gets this mask of the whole frame, and takes the part of it under its own area.",
+                    ToolTip = "Every Cutout of the video gets this mask of the whole frame, and takes the part of it under its own area.",
                 };
                 applyAll.Click += (_, _) => Finish(forAll: true);
                 right.Children.Add(applyAll);
@@ -235,7 +250,7 @@ public sealed partial class MaskDrawWindow : Window
         _stage = new CutoutStage(_width, _height) { Height = 300, Margin = new Thickness(0, 6, 0, 6) };
         _stage.Moved += PieceMoved;
         _zoomSlider.ValueChanged += (_, _) => RefreshPieces();
-        ToolTipService.SetToolTip(_zoomSlider, "How far the main video is zoomed on the tall frame. Its sides are what the pieces bring back.");
+        ToolTipService.SetToolTip(_zoomSlider, "How far the video is zoomed on the tall frame. Its sides are what the Cutouts bring back.");
         var pane = PiecesPane();
         DockPanel.SetDock(pane, Dock.Right);
 
@@ -287,8 +302,9 @@ public sealed partial class MaskDrawWindow : Window
 
         if (_forLayer)
         {
-            var text = _layer.UsesFrameMask && _layer.MaskShapes.Length > 0 ? _layer.MaskShapes
-                : _layer.IsVideo ? _viewModel.Layers.FirstOrDefault(l => l.UsesFrameMask && l.CustomMask && l.MaskShapes.Length > 0)?.MaskShapes ?? "" : "";
+            var piece = _viewModel.IsCutout(_layer);
+            var text = (_layer.UsesFrameMask || (piece && _layer.CustomMask)) && _layer.MaskShapes.Length > 0 ? _layer.MaskShapes
+                : piece ? _viewModel.CutoutLayers.FirstOrDefault()?.MaskShapes ?? "" : "";
             if (text.Length > 0)
                 Take(NewPiece(_layer.Name), text);
             return start;
@@ -316,19 +332,19 @@ public sealed partial class MaskDrawWindow : Window
     private int NewPiece(string? name = null)
     {
         var piece = ++_nextPiece;
-        _names[piece] = name ?? (piece <= PieceNames.Length ? PieceNames[piece - 1] : $"Piece {piece}");
+        _names[piece] = name ?? (piece <= PieceNames.Length ? PieceNames[piece - 1] : $"Cutout {piece}");
         return piece;
     }
 
     private StackPanel PiecesPane()
     {
         var pane = new StackPanel { Width = 270, Margin = new Thickness(10, 0, 0, 0) };
-        pane.Children.Add(new TextBlock { Text = "Cutout Pieces", FontWeight = FontWeights.SemiBold });
-        var hint = new TextBlock { Text = "New shapes go to the piece selected. Each piece becomes one layer.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 4) };
+        pane.Children.Add(new TextBlock { Text = "Cutouts", FontWeight = FontWeights.SemiBold });
+        var hint = new TextBlock { Text = "New shapes go to the Cutout selected. Each one becomes a clip of its own.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 4) };
         hint.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
         pane.Children.Add(hint);
         pane.Children.Add(new ScrollViewer { Content = _pieceRows, MaxHeight = 150, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-        var add = new Button { Content = "New Piece", Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(0, 4, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+        var add = new Button { Content = "New Cutout", Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(0, 4, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
         add.Click += (_, _) =>
         {
             _surface.CloseShape();
@@ -354,12 +370,12 @@ public sealed partial class MaskDrawWindow : Window
         pane.Children.Add(new TextBlock { Text = "Game Preset Name", Margin = new Thickness(0, 4, 0, 0) });
         pane.Children.Add(_presetName);
         var save = new Button { Content = "Save as Game Preset", Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 6, 0, 0) };
-        save.ToolTip = "Saves the pieces as a style preset in the Styles folder, its masks inside it: it shows on the drag-and-drop overlay and in the Style Presets. Nothing on the timeline changes.";
+        save.ToolTip = "Saves the Cutouts as a Game Preset in the Styles folder, its masks inside it: it shows on the drag-and-drop overlay and in the Game Presets. Nothing on the timeline changes.";
         save.Click += (_, _) =>
         {
             _surface.CloseShape();
             var problem = _viewModel.SaveCutoutPreset(_presetName.Text, Pieces(), _zoomSlider.Value);
-            _status.Text = problem ?? $"Game Preset \"{_presetName.Text.Trim()}\" saved: drop a video on it, or pick it from the Style Presets.";
+            _status.Text = problem ?? $"Game Preset \"{_presetName.Text.Trim()}\" saved: drop a video on it, or pick it from the Game Presets.";
         };
         pane.Children.Add(save);
         return pane;
@@ -420,7 +436,7 @@ public sealed partial class MaskDrawWindow : Window
             var placed = new CutoutStage.Placed { Id = id, Source = source, Outlines = outlines, X = x, Y = y, Width = width };
             _placed[id] = placed;
             seen.Add(placed);
-            result.Add(new CutoutPiece(_names[id].Trim().Length > 0 ? _names[id].Trim() : $"Piece {id}", MaskStore.FormatShapes(outlines), source, x, y, width));
+            result.Add(new CutoutPiece(_names[id].Trim().Length > 0 ? _names[id].Trim() : $"Cutout {id}", MaskStore.FormatShapes(outlines), source, x, y, width));
         }
 
         _stage.Show(seen, _still.Source as BitmapSource, _zoomSlider.Value);
@@ -432,7 +448,7 @@ public sealed partial class MaskDrawWindow : Window
     {
         // An undo can bring back the shapes of a piece that was removed.
         foreach (var id in _surface.Owners)
-            _names.TryAdd(id, $"Piece {id}");
+            _names.TryAdd(id, $"Cutout {id}");
         Pieces();
         _stage.Selected = _surface.CurrentPiece;
 
@@ -461,7 +477,7 @@ public sealed partial class MaskDrawWindow : Window
         var count = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0), MinWidth = 46, FontSize = 11 };
         count.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
         DockPanel.SetDock(count, Dock.Right);
-        var remove = new Button { Content = DeleteGlyph, FontFamily = Glyphs, FontSize = 11, Padding = new Thickness(5, 2, 5, 2), Margin = new Thickness(4, 0, 0, 0), ToolTip = "Remove this piece and its shapes. Ctrl+Z brings the shapes back." };
+        var remove = new Button { Content = DeleteGlyph, FontFamily = Glyphs, FontSize = 11, Padding = new Thickness(5, 2, 5, 2), Margin = new Thickness(4, 0, 0, 0), ToolTip = "Remove this Cutout and its shapes. Ctrl+Z brings the shapes back." };
         remove.Click += (_, _) =>
         {
             _surface.RemovePiece(id);
@@ -473,8 +489,8 @@ public sealed partial class MaskDrawWindow : Window
         DockPanel.SetDock(remove, Dock.Right);
         var swatch = new System.Windows.Shapes.Rectangle { Width = 10, Height = 10, Fill = ShapeSurface.LineOf(id), Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
         DockPanel.SetDock(swatch, Dock.Left);
-        var named = new TextBox { Text = name, MinWidth = 90, VerticalContentAlignment = VerticalAlignment.Center, ToolTip = "This piece's name: the layer's, on the Timeline and in the Game Preset." };
-        System.Windows.Automation.AutomationProperties.SetName(named, "Piece Name");
+        var named = new TextBox { Text = name, MinWidth = 90, VerticalContentAlignment = VerticalAlignment.Center, ToolTip = "This Cutout's name: the clip's, on the Timeline and in the Game Preset." };
+        System.Windows.Automation.AutomationProperties.SetName(named, "Cutout Name");
         named.TextChanged += (_, _) => _names[id] = named.Text;
         named.GotKeyboardFocus += (_, _) => Select(id);
 
@@ -724,10 +740,13 @@ public sealed partial class MaskDrawWindow : Window
         ? $"Drawing: {_surface.PointsInShape} point{(_surface.PointsInShape == 1 ? "" : "s")}. Click the glowing first point to close the shape."
         : $"{_surface.ShapeCount} shape{(_surface.ShapeCount == 1 ? "" : "s")}.";
 
-    /// <summary>The source's frame at the playhead, as it is in the file (the areas layers cut out are measured on it).</summary>
+    /// <summary>
+    /// The frame at the playhead, as it is in the file (the areas layers cut out are measured on it): of the clip's own file
+    /// where it is one of another file (its moment there: the playhead held to the clip), else of the file opened last.
+    /// </summary>
     private async Task LoadStillAsync()
     {
-        var source = _viewModel.LocalMediaPath;
+        var source = _stillSource;
         if (string.IsNullOrWhiteSpace(source) || !File.Exists(source))
         {
             _status.Text = "There is no video file to take a still from: shapes can still be drawn on the blank frame.";
@@ -737,7 +756,7 @@ public sealed partial class MaskDrawWindow : Window
         _status.Text = "Taking a still of the video at the playhead...";
         try
         {
-            _still.Source = await SourceStill.TakeAsync(source, _viewModel.FileSecondsAt(_viewModel.PositionMs / 1000), _stillPath, _closing.Token);
+            _still.Source = await SourceStill.TakeAsync(source, StillSeconds(), _stillPath, _closing.Token);
             ShowHelp();
             RefreshPieces();
         }
@@ -750,6 +769,21 @@ public sealed partial class MaskDrawWindow : Window
             AppLog.Write("Cutout Studio: the still could not be taken", ex);
             _status.Text = $"The still could not be taken ({ex.Message}): shapes can still be drawn on the blank frame.";
         }
+    }
+
+    // Where the still is taken in its file: the playhead's moment in the clip (held to the clip's span), or (the file last opened)
+    // where a video at the playhead shows it.
+    private double StillSeconds()
+    {
+        var at = _viewModel.PositionMs / 1000;
+        if (_stillOnClip && _layer.IsVideoFile)
+        {
+            var end = _layer.Duration > 0.001 ? _layer.StartTime + _layer.Duration : double.PositiveInfinity;
+            var inside = Math.Clamp(at, _layer.StartTime, Math.Max(_layer.StartTime, end - 0.001));
+            return Math.Max(_layer.MediaOffset + (inside - _layer.StartTime) * _layer.Speed, 0);
+        }
+
+        return _viewModel.FileMomentAt(at)?.Seconds ?? at;
     }
 
     private void Finish(bool forAll)

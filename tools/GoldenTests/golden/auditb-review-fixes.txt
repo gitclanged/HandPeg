@@ -1,0 +1,17 @@
+# Pass 5.2-AuditB's review: a Cutout's clip takes a preset, Cutouts are replaced on their own clips, a file opened over a longer one keeps its Cutouts, the source view follows the playhead, a Cutout's own mask moves onto the whole picture, one box rule for every clip.
+ok: a preset on each clip
+ok: a selected Cutout gives a preset to its clip, not to itself
+ok: Cutouts added to one clip leave another clip's on it
+ok: and take the place of that clip's own
+ok: with nothing selected the source view follows the playhead from clip to clip
+ok: with a clip selected it shows that clip's picture
+ok: a preset on the file opened
+ok: nothing of the file opened before is left on the Sequence
+ok: the new file's clip lies where the first one's did, 4 s long
+ok: its Cutouts are cut from it and held to its span
+ok: the Sequence takes the new file's rate, as the first file's
+ok: the document holds together
+ok: a Cutout's own outlines move onto its part of the whole picture
+ok: a mask of the whole frame, or a picture, stays as it is
+a cropped clip 1080 wide: 1080 x 692
+ok: a cropped clip keeps its picture's exact shape (692 px, not the crop filter's evened 694)

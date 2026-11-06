@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using HandPegApp.Models;
 using HandPegApp.Services;
+using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.ViewModels;
 
@@ -30,14 +31,14 @@ public partial class MainViewModel : ObservableObject
         nameof(PositionMs), nameof(PositionText), nameof(DurationMs), nameof(DurationText), nameof(TimelineMaximum),
         nameof(IFrameStatusText), nameof(Volume), nameof(EditingJob), nameof(IsEditingQueuedJob),
         nameof(SourceWidth), nameof(SourceHeight), nameof(SourceSizeText), nameof(IsCustomPixelAspectRatio),
-        nameof(HardwareEncoderStatusText), nameof(AreSoftwareEncoderOptionsEnabled), nameof(IsVideoReencoded),
+        nameof(HardwareEncoderStatusText), nameof(AreSoftwareEncoderOptionsEnabled), nameof(IsVideoReencoded), nameof(ShowsCopyNote),
         nameof(IsAudioReencoded), nameof(IsCustomFramerate), nameof(IsConstantQuality), nameof(IsBitrateMode),
         nameof(IsSourceHdr), nameof(HdrStatusText), nameof(SelectedPreset), nameof(PresetName),
         nameof(DownloadSubtitles), nameof(AudioTracksHint), nameof(SubtitleTracksHint), nameof(HasRateControl),
         nameof(QueueButtonText), nameof(IsQueuePauseRequested), nameof(IsNvencEncoder), nameof(CanNvencTemporalAq),
         nameof(IsAmfEncoder), nameof(HasLookahead), nameof(HasTenBit), nameof(CanTenBit), nameof(RateControlChoice),
         nameof(IsDependencyUpdateAvailable), nameof(DependencyStatusText),
-        nameof(IsInteractiveCropActive), nameof(TargetSizeHint), nameof(PlaybackSpeed), nameof(CanSetPixelAspect), nameof(HasEncoderPresets),
+        nameof(IsInteractiveCropActive), nameof(TargetSizeHint), nameof(PlaybackSpeed), nameof(HasEncoderPresets),
         nameof(FrameWidth), nameof(FrameHeight), nameof(ShowIFrames),
         nameof(CaptionAudioPath), nameof(CaptionHint), nameof(CaptionStyleSummary),
         nameof(DefaultPresetChoice),
@@ -46,12 +47,12 @@ public partial class MainViewModel : ObservableObject
         nameof(ResolutionPreset), nameof(ShowPresetBarAtTop), nameof(ShowPresetBarInSummary),
         nameof(TimelineAreaHeight), nameof(AudioTrackRowHeight), nameof(ShowWaveforms),
         nameof(WhisperPrompt), nameof(WhisperLanguage), nameof(WhisperTranslate), nameof(CanEditLayout),
-        nameof(CaptionUseExternalAudio), nameof(CaptionUseVideoAudio), nameof(CaptionAudioTrack), nameof(IsPlaying),
+        nameof(CaptionUseExternalAudio), nameof(CaptionUseVideoAudio), nameof(IsPlaying),
         nameof(ShowAdvancedPlayback), nameof(ShowSimplePlayback),
         nameof(ShowCommandPreviewTab), nameof(ShowAdvancedFiltersTab),
         nameof(DrawTargetLayer), nameof(IsArrangeActive), nameof(SpriteSheetPath),
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
-        nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloTrack),
+        nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloedTracks),
         nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
         nameof(CopyBypassWarning), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips),
         nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer), nameof(SelectedTextLayer), nameof(IsTextLayerSelected),
@@ -61,6 +62,8 @@ public partial class MainViewModel : ObservableObject
         nameof(ShowKeyframesPane), nameof(ShowEffectsPane), nameof(ShowMediaBrowser), nameof(IsMediaBrowserVisible), nameof(SourceActionText), nameof(ShowClipKeyframes), nameof(HasDeleted), nameof(RecycleBinText),
         nameof(RecentActions), nameof(HideDroppedTracks), nameof(HasSelectedKeyframe), nameof(SelectedKeyEasing), nameof(PreviewSubtitles),
         nameof(BackgroundSelected),
+        // The Studio Audio Suite (5.2B): the master gain is an edit of the document (its commit builds the command), the rest are views.
+        nameof(MasterGainDb), nameof(ShowMasterMeter), nameof(SnapToBeats), nameof(ShowBeatGrid),
     ];
 
 
@@ -126,8 +129,6 @@ public partial class MainViewModel : ObservableObject
         // The tracks a video is given are mixed into one, which is what an edit is exported as.
         _mergeAudioTracks = true;
         (_chapterMarkers, _chaptersAtCuts) = (settings.StartWithChapterMarkers, settings.StartWithChaptersAtCuts);
-        // The Layer Engine is simply how the picture is composed; there is nothing to switch on.
-        _frameEngine = true;
 
         // The encoder chosen in the first-run window. A hardware one is only in the list once the probe
         // has found it, so until then it waits; see ProbeHardwareEncodersAsync.
@@ -158,7 +159,6 @@ public partial class MainViewModel : ObservableObject
         RefreshLayerRows();
         LoadAutomation();
         Presets.CollectionChanged += (_, _) => RefreshPresetNames();
-        AudioTracks.CollectionChanged += (_, _) => KeepCaptionTrackValid();
         CaptionLayer.PropertyChanged += (_, _) => GenerateCommand();
 
         // The preview's captions are drawn in the box where and as large as it is, with its opacity and its
@@ -217,6 +217,14 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>Asked before an encode replaces an existing file. Returning false aborts the encode.</summary>
     public Func<string, OverwriteDecision>? AskOverwrite { get; set; }
+
+    /// <summary>
+    /// Draws the Sequence at the playhead as a project's thumbnail, a JPEG (Pass 5.2D: the window's GPU engine,
+    /// MainWindow.GpuPreview.cs); null when it cannot (no engine, playing, nothing open). Called on the window's thread, and nothing it
+    /// does after the call needs that thread: a save waits for it there a moment (CaptureStateForSave). Unset for a view model with no
+    /// window, whose saves carry no thumbnail.
+    /// </summary>
+    public Func<Task<byte[]?>>? CaptureThumbnail { get; set; }
 
     /// <summary>The concat list used for I-frame-snapped cuts.</summary>
     public string CutsFilePath => Path.Combine(_workFolder, "cuts.txt");
@@ -300,12 +308,11 @@ public partial class MainViewModel : ObservableObject
             Presets.Add(preset);
     }
 
-    /// <param name="withLayout">False for a project's own settings: its timeline (layers, the main video's look) is the project's, not a preset's.</param>
+    /// <param name="withLayout">False for a project's own settings: its timeline (its clips, their looks, places and crops) is the project's, not a preset's.</param>
     private void ApplyPreset(EncodingPreset preset, bool withLayout = true)
     {
         // Some sixty settings change here; the command is built once, when they have all been set.
         using var whole = DeferCommand();
-        FrameEngine = true;
 
         // Width and height are set as stored, without one recalculating the other on the way.
         _syncingDimensions = true;
@@ -313,9 +320,10 @@ public partial class MainViewModel : ObservableObject
         {
             KeepAspectRatio = preset.KeepAspectRatio;
 
-            // Presets from before the option existed were vertical exactly when they used the framer.
-            UseVerticalResolution = preset.UseVerticalResolution ?? preset.FrameEngine;
-            ApplyPresetCrop(preset);
+            // Presets from before the option existed say nothing, and are not tall.
+            UseVerticalResolution = preset.UseVerticalResolution ?? false;
+            if (withLayout)
+                ApplyPresetCrop(preset);
             OutputWidth = preset.OutputWidth;
             OutputHeight = preset.OutputHeight;
         }
@@ -330,22 +338,24 @@ public partial class MainViewModel : ObservableObject
 
         PixelAspectRatio = Pick(PixelAspectRatios, preset.PixelAspectRatio, SameAsSource);
         CustomPixelAspectRatio = preset.CustomPixelAspectRatio;
-        CenterZoom = preset.CenterZoom is > 0 and var zoom ? Math.Clamp(zoom, SmallestCenterZoom, LargestCenterZoom) : 1;
-        CenterOffsetX = Math.Clamp(preset.CenterOffsetX, -100, 100);
-        CenterOffsetY = Math.Clamp(preset.CenterOffsetY, -100, 100);
         BlurRadius = Math.Clamp(preset.BlurRadius, 0, Models.Effects.EffectRegistry.BackgroundMostRadius);
         BlurPasses = Math.Clamp(preset.BlurPasses, 1, MostBlurPasses);
         BackgroundDim = Math.Clamp(preset.BackgroundDim, -0.5, 0);
         BackgroundZoom = Math.Clamp(preset.BackgroundZoom, 1, MostBackgroundZoom);
         SetBackgroundEffects(preset.BackgroundEffects, preset.BackgroundEffectsBypassed);
-        // Its layout (app data, not a project): its layers as a template on the timeline, the main video's look on its
-        // clips. A project's settings carry none: its timeline is its own (RestoreStateAsync puts it in place after this).
+        // Its layout (app data, not a project), 5.2-AuditB: a template on the selected video clips, or every top-level one (its
+        // layers their Cutouts, its video look theirs, its old Center values their place; with no clip, the next file opened takes
+        // it), when it carries one. A project's settings carry none: its timeline is its own (RestoreStateAsync puts it in place after this).
         if (withLayout)
         {
-            PlaceTemplate(preset.Layers ?? [], Math.Max(preset.MainVideoIndex, 0));
-            TakeMainLook(preset.MainLayer);
             _backgroundRow.IsHidden = preset.BackgroundHidden;
-            AddLegacyWatermark(preset);
+            TakeBlurFill(preset.BackgroundHidden);
+            if (preset.MainLayer is not null || preset.Layers is { Count: > 0 } || Math.Abs(preset.CenterZoom - 1) > 0.0005 && preset.CenterZoom > 0
+                || Math.Abs(preset.CenterOffsetX) > 0.0005 || Math.Abs(preset.CenterOffsetY) > 0.0005)
+            {
+                PutTemplate(TemplateOf(preset.Layers, preset.MainVideoIndex, preset.MainLayer, preset.CenterZoom, preset.CenterOffsetX, preset.CenterOffsetY,
+                    blurFilled: !preset.BackgroundHidden), $"apply {preset.Name}");
+            }
         }
 
         _layoutSourceAspect = preset.LayoutSourceAspectRatio;
@@ -413,7 +423,6 @@ public partial class MainViewModel : ObservableObject
         AudioChannels = AudioChannelChoice.Normalize(preset.AudioChannels);
         MergeAudioTracks = preset.MergeAudioTracks;
         NormalizeAudio = preset.NormalizeAudio;
-        DuckAudio = false;
         DuckAmountDb = Math.Clamp(preset.DuckAmountDb, -40, -1);
 
         // A preset only speaks for the target size when it was saved with one.
@@ -428,28 +437,17 @@ public partial class MainViewModel : ObservableObject
         if (preset.Container is { } container && Containers.Contains(container))
             Container = container;
 
-        ApplyLegacyDuck(preset.DuckAudio);
         Log(encoderFound
             ? $"Applied preset \"{preset.Name}\""
             : $"Applied preset \"{preset.Name}\", but {preset.VideoEncoder} is not available here: kept {VideoEncoder.DisplayName}");
     }
 
-    // A preset from before ducking was set track by track: "duck the game audio to the mic" was one box
-    // for the first two tracks. It is carried over as what it meant, once there are two tracks to carry it to.
-    private bool _legacyDuckPending;
-
-    private void ApplyLegacyDuck(bool? asked = null)
-    {
-        _legacyDuckPending = asked ?? _legacyDuckPending;
-        if (!_legacyDuckPending || AudioTracks.Count < 2)
-            return;
-
-        _legacyDuckPending = false;
-        (AudioTracks[0].AutoDuck, AudioTracks[1].IsVoice) = (true, true);
-    }
-
-    /// <summary>Puts back per-track choices for the tracks that exist; states for missing tracks are ignored.</summary>
-    private void ApplyAudioTrackStates(IEnumerable<AudioTrackState> states)
+    /// <summary>
+    /// Puts back per-track output choices (what is made of each, its codec, bitrate and title) for the tracks that exist; states
+    /// for missing tracks are ignored. With <paramref name="legacyMixing"/> (a project of 5.1 being opened), also what it mixed each of the
+    /// main video's streams with: the input of its conversion (ConvertLegacy), which sets it back to neutral.
+    /// </summary>
+    private void ApplyAudioTrackStates(IEnumerable<AudioTrackState> states, bool legacyMixing = false)
     {
         foreach (var saved in states)
         {
@@ -461,6 +459,9 @@ public partial class MainViewModel : ObservableObject
             track.Bitrate = Pick(AudioTrack.AllBitrates, saved.Bitrate, track.Bitrate);
             if (!string.IsNullOrWhiteSpace(saved.Title))
                 track.Title = saved.Title;
+            if (!legacyMixing)
+                continue;
+
             track.GainDb = Math.Clamp(saved.GainDb, -40, 30);
             track.Filters = saved.Filters?.Clone() ?? new TrackAudioFilters();
             track.SetEdits(saved.Offset, saved.Pieces);
@@ -482,9 +483,15 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _downloadResolution = "Best";
     [ObservableProperty] private string _destinationPath = "";
 
-    /// <summary>The file FFmpeg reads: the source itself, or the yt-dlp download for a URL.</summary>
+    /// <summary>
+    /// The file last opened (the source itself, or the yt-dlp download for a URL): what the Info, Streams and Download panels
+    /// describe, what the default output and project names come from, and whose own subtitle streams and chapters the export
+    /// names (SequenceExportState.StreamSourcePath). Never read to render the Sequence: every clip reads its own file
+    /// (5.2-AuditB); opening it puts a clip of it on the timeline like any dropped file (PlaceOpenedFile). "" for none.
+    /// </summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSource))]
+    [NotifyPropertyChangedFor(nameof(ShowsCopyNote))]
     private string _localMediaPath = "";
 
     // ----- Status bar -----
@@ -584,9 +591,9 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _outputHeight = "";
     [ObservableProperty] private bool _keepAspectRatio = true;
 
-    // The crop, as percentages (0 to 100) of the source's height and width. Being relative, a crop set on
-    // one recording cuts the same part out of a recording of any other resolution. The crop of the main video's clip the
-    // Center controls stand for (4.4: each clip has its own; see TakeCropBoxes and ShowCenterTarget).
+    // The crop, as percentages (0 to 100) of a picture's height and width. Being relative, a crop set on one recording cuts the
+    // same part out of a recording of any other resolution. The crop of the clip the Crop boxes stand for (4.4: each clip has its
+    // own; see TakeCropBoxes, ShowCropTarget and CropTarget).
     [ObservableProperty] private double _cropTop;
     [ObservableProperty] private double _cropBottom;
     [ObservableProperty] private double _cropLeft;
@@ -609,8 +616,8 @@ public partial class MainViewModel : ObservableObject
     private int _sourceHeight;
 
     public string SourceSizeText => SourceWidth > 0 && SourceHeight > 0
-        ? $"Source: {SourceWidth} x {SourceHeight}. Leave width and height blank to keep the size left after cropping."
-        : "Leave width and height blank to keep the source size.";
+        ? $"Source: {SourceWidth} x {SourceHeight}. Leave width and height blank to keep the Sequence's own size."
+        : "Leave width and height blank to keep the Sequence's own size.";
 
     // One box alone also decides the other side of the frame, so both sides are announced each time.
     partial void OnOutputWidthChanged(string value)
@@ -635,20 +642,18 @@ public partial class MainViewModel : ObservableObject
     partial void OnCropBottomChanged(double value) => TakeCropBoxes();
     partial void OnCropLeftChanged(double value) => TakeCropBoxes();
     partial void OnCropRightChanged(double value) => TakeCropBoxes();
-    partial void OnSourceWidthChanged(int value) => RelinkDimensions();
-    partial void OnSourceHeightChanged(int value) => RelinkDimensions();
 
     /// <summary>Keeps the width when there is one and recalculates the height; otherwise works from the height.</summary>
     private void RelinkDimensions() =>
         UpdateLinkedDimension(typedIsWidth: !string.IsNullOrWhiteSpace(OutputWidth) || string.IsNullOrWhiteSpace(OutputHeight));
 
     /// <summary>
-    /// With "Keep Aspect Ratio" on, fills in the other dimension from the one just typed, using the shape
-    /// of the source frame after cropping: as it is, or on its side with Use Vertical Resolution.
+    /// With "Keep Aspect Ratio" on, fills in the other dimension from the one just typed, using the shape of the Sequence's own
+    /// size: as it is, or on its side with Use Vertical Resolution.
     /// </summary>
     private void UpdateLinkedDimension(bool typedIsWidth)
     {
-        if (_syncingDimensions || !KeepAspectRatio || GetCroppedSourceSize() is null)
+        if (_syncingDimensions || !KeepAspectRatio || GetSequenceSize() is null)
             return;
 
         var natural = GetNaturalSize();
@@ -695,6 +700,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(AreSoftwareEncoderOptionsEnabled))]
     [NotifyPropertyChangedFor(nameof(IsVideoReencoded))]
+    [NotifyPropertyChangedFor(nameof(ShowsCopyNote))]
     [NotifyPropertyChangedFor(nameof(HasRateControl))]
     [NotifyPropertyChangedFor(nameof(IsNvencEncoder))]
     [NotifyPropertyChangedFor(nameof(CanNvencTemporalAq))]
@@ -709,6 +715,12 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>False for stream copy, where quality and frame rate settings do not apply.</summary>
     public bool IsVideoReencoded => VideoEncoder.Family != EncoderFamily.Copy;
+
+    /// <summary>
+    /// The Timeline's note that Copy renders nothing of the edit: only while the video is copied and there is something to export
+    /// (5.2E, the user's report: an empty Sequence of a copy that never chose an encoder showed it).
+    /// </summary>
+    public bool ShowsCopyNote => !IsVideoReencoded && HasSource;
 
     [ObservableProperty] private string _customFramerate = "";
     public bool IsCustomFramerate => Framerate == CustomOption;
@@ -979,24 +991,6 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     [ObservableProperty] private bool _isCommandManuallyEdited;
 
-    /// <summary>Splits every unlocked track at two moments, as one step of Undo (a stretch marked on the timeline).</summary>
-    public bool SplitAt(double from, double to)
-    {
-        var count = 0;
-        if (!Edit("split a stretch", edit =>
-            {
-                count = SplitAllAt(to, "split the end of a stretch") + SplitAllAt(from, "split the start of a stretch");
-            }))
-        {
-            return false;
-        }
-
-        Log(count > 0
-            ? $"Split {count} clip{(count == 1 ? "" : "s")} at {TimeDisplay.Format(from)} and {TimeDisplay.Format(to)}: delete what lies between on every track (the gap then closes up), or keep it"
-            : $"Nothing to split at {TimeDisplay.Format(from)} or {TimeDisplay.Format(to)}");
-        return true;
-    }
-
     // ----- Long-running operations -----
 
     private bool CanStartOperation() => !IsBusy;
@@ -1044,9 +1038,9 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>
     /// The hardware encoders as an earlier probe found them for this FFmpeg and these drivers (read on another thread
-    /// while the window was being made), put in the list before the window's first frame: the Video and Layers tabs then
-    /// open with the encoder they keep, where a hardware default used to show as Copy, with Copy's warning over the
-    /// layers, until the probe answered. Not there yet, or none saved: the probe after the first frame does it, as before.
+    /// while the window was being made), put in the list before the window's first frame: the Video tab then opens with
+    /// the encoder it keeps, where a hardware default used to show as Copy, with Copy's warning, until the probe
+    /// answered. Not there yet, or none saved: the probe after the first frame does it, as before.
     /// </summary>
     public void TakeEarlyHardwareEncoders()
     {
@@ -1141,12 +1135,10 @@ public partial class MainViewModel : ObservableObject
         if (problems.Count > 0)
             HardwareEncoderStatusText += $". Not usable: {string.Join("; ", problems)}";
 
-        // Testing the OpenCL blur and offering an older FFmpeg are not part of putting the list up: they wait for the
-        // window to be drawn (this may run before its first frame).
+        // Offering an older FFmpeg is not part of putting the list up: it waits for the window to be drawn (this may run
+        // before its first frame).
         System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(() =>
         {
-            if (!EncoderProber.OpenClKnown)
-                _ = ProbeOpenClBlurAsync();
             if (EncoderProber.NvencNeedsOlderFfmpeg)
                 OfferFfmpegForOlderNvidiaDrivers();
         }, System.Windows.Threading.DispatcherPriority.Background);
@@ -1183,22 +1175,6 @@ public partial class MainViewModel : ObservableObject
         }
 
         HardwareEncoderStatusText += ". NVENC needs a newer NVIDIA driver, or the FFmpeg build for older drivers: update FFmpeg in Settings to install it.";
-    }
-
-    /// <summary>Tests whether the graphics card can blur the background (OpenCL), and writes the command again when it can.</summary>
-    private async Task ProbeOpenClBlurAsync()
-    {
-        try
-        {
-            var before = EncoderProber.OpenClBlurAvailable;
-            if (await WorkScheduler.Run(new WorkSpec("Testing the OpenCL blur", WorkLane.Idle) { Visible = false },
-                    work => EncoderProber.ProbeOpenClBlurAsync(work.Token), _shutdown.Token) != before)
-                GenerateCommand();
-        }
-        catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-            // Not known: the processor blurs, as it always could.
-        }
     }
 
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
@@ -1278,18 +1254,18 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Loads a file and gives it a style preset: what dropping a video on a style in the launch window does.
+    /// Loads a file and gives it a Game Preset: what dropping a video on a Game Preset in the launch window does.
     /// </summary>
     public async Task LoadFileWithStyleAsync(string path, string stylePath)
     {
-        // A link dropped on a style is downloaded first, with yt-dlp, which may itself have to be downloaded.
+        // A link dropped on a Game Preset is downloaded first, with yt-dlp, which may itself have to be downloaded.
         if (IsWebAddress(path) && !await RequireAsync("Downloading a video", [DependencyUpdater.YtDlp, DependencyUpdater.Ffmpeg], []))
             return;
 
         await LoadFileWithStyleNowAsync(path, stylePath);
     }
 
-    private Task LoadFileWithStyleNowAsync(string path, string stylePath) => RunOperationAsync("Loading with a style", WorkLane.Interactive, async cancellationToken =>
+    private Task LoadFileWithStyleNowAsync(string path, string stylePath) => RunOperationAsync("Loading with a Game Preset", WorkLane.Interactive, async cancellationToken =>
     {
         SourcePath = path;
         EditingJob = null;
@@ -1300,11 +1276,9 @@ public partial class MainViewModel : ObservableObject
         if (ReadStyle(stylePath) is not { } style)
             return $"{message}. {StatusText}";
 
-        // A style is layers: the Layer Engine is what shows them, whatever mode or preset was in effect.
-        FrameEngine = true;
         ApplyStyle(style, layout: true, color: true, blur: true, subtitles: true);
         MarkSaved();
-        return $"{message}. Style \"{Path.GetFileNameWithoutExtension(stylePath)}\" applied.";
+        return $"{message}. Game Preset \"{Path.GetFileNameWithoutExtension(stylePath)}\" applied.";
     });
 
 
@@ -1313,8 +1287,9 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     /// <param name="knownLocalPath">A file already downloaded for this source, used instead of downloading again.</param>
     /// <param name="applyAutomation">Whether the smart rules and the default preset from the settings apply.</param>
+    /// <param name="place">Whether a clip of it goes on the timeline (PlaceOpenedFile); not for a project, whose timeline is its own.</param>
     private async Task<(bool Loaded, string Message)> LoadMediaAsync(
-        string source, string? knownLocalPath, bool applyAutomation, CancellationToken cancellationToken)
+        string source, string? knownLocalPath, bool applyAutomation, CancellationToken cancellationToken, bool place = true)
     {
         string localPath;
         if (File.Exists(source))
@@ -1350,12 +1325,17 @@ public partial class MainViewModel : ObservableObject
         CrashReporter.KeepOut(localPath);
         // What the user is waiting on: never queued behind the media browser's posters and strips (4.3E).
         var mediaInfo = await MediaProbe.ProbeAsync(localPath, cancellationToken, urgent: true);
+        var previous = LocalMediaPath;
         ResetForNewSource();
         LocalMediaPath = localPath;
         SetMediaInfo(mediaInfo);
+        NoteHevcDecoder(mediaInfo?.Video);
 
-        // The main video on the timeline: one clip of the whole file, where its clips were (the layers stay).
-        PlaceMainVideo();
+        // A clip of the whole file on the timeline, as a dropped file is made (5.2-AuditB): on an empty Sequence at its start, or
+        // where the clips of the file opened before were (the other clips stay).
+        (_openedOver, _openedClip) = (null, null);
+        if (place)
+            PlaceOpenedFile(previous);
 
         // For a crash report: what kind of file this is (container, codecs, size, rate, length), never which.
         var mediaSummary = CrashSummaries.Media(localPath, mediaInfo, Layers.Count);
@@ -1372,11 +1352,20 @@ public partial class MainViewModel : ObservableObject
         {
             if (Presets.FirstOrDefault(p => p.Name.Equals(presetName, StringComparison.OrdinalIgnoreCase)) is { } preset)
             {
-                // Selecting it applies it; when it is already selected, apply it again to undo later changes.
-                if (ReferenceEquals(SelectedPreset, preset))
-                    ApplyPreset(preset);
-                else
-                    SelectedPreset = preset;
+                // Selecting it applies it; when it is already selected, apply it again to undo later changes. It goes on the clip
+                // of the file just opened, not on what is selected on the Timeline.
+                _templateTargetOnly = _openedClip;
+                try
+                {
+                    if (ReferenceEquals(SelectedPreset, preset))
+                        ApplyPreset(preset);
+                    else
+                        SelectedPreset = preset;
+                }
+                finally
+                {
+                    _templateTargetOnly = null;
+                }
 
                 message += $". Preset \"{preset.Name}\" applied automatically.";
             }
@@ -1400,13 +1389,12 @@ public partial class MainViewModel : ObservableObject
         {
             MediaLoaded?.Invoke(localPath);
 
-            // Live Preview comes on with every video, style or project opened (4.3E): what a style, a layout or a crop does is
-            // only seen with it, and a style dropped on with it off showed the plain source. Once the player is opening the
+            // Live Preview comes on with every video, Game Preset or project opened (4.3E): what a Game Preset, a layout or a
+            // crop does is only seen with it, and a Game Preset dropped on with it off showed the plain source. Once the player is opening the
             // new file, so it gets its graph when the file is ready instead of being opened twice.
             LivePreview = true;
             _ = ScanIFramesAsync(localPath);
             _ = GenerateSpriteSheetAsync(localPath);
-            _ = LoadMainFilmstripAsync(localPath);
             _ = GenerateWaveformsAsync(localPath);
         }
         return (true, message);
@@ -1520,7 +1508,6 @@ public partial class MainViewModel : ObservableObject
         PreviewCache.Proxies.QueueTrim();
 
         ApplyDisplaySettings();
-        FrameEngine = true;
         LoadAutomation();
         GenerateCommand();
         _ = ProbeHardwareEncodersAsync();
@@ -1575,9 +1562,13 @@ public partial class MainViewModel : ObservableObject
         if (!HasSource && !(SequenceSeconds > 0) && !IsCommandManuallyEdited)
             return "There is nothing to export: open a video or a project first.";
 
+        // A Copy export that cannot cut is refused here, before anything is asked or started (5.2-Arm64AndNpu, the user's call).
+        if (CopyRefusal() is { } refused)
+            return refused;
+
         // Copy keeps the picture as it is: said once more before the time is spent, when there is work it would skip.
         if (CopyBypassWarning.Length > 0 && !IsCommandManuallyEdited && Confirm is not null
-            && !Confirm("Stream Copy", $"{CopyBypassWarning}\n\nThe video is copied as it is: nothing set on the Layers and Filters tabs, and no crop or resize, reaches the output. To apply them, choose an encoder on the Video tab.", "Encode Anyway"))
+            && !Confirm("Stream Copy", $"{CopyBypassWarning}\n\nThe video is copied as it is: no clip's effects, crop or place, nothing set on the Filters tab, and no resize reaches the output. To apply them, choose an encoder on the Video tab.", "Encode Anyway"))
         {
             return "Encode cancelled.";
         }
@@ -1779,8 +1770,8 @@ public partial class MainViewModel : ObservableObject
         PositionMs = 0;
         DurationMs = 0;
 
-        // A new main video starts where any does: at the beginning of the timeline, whole, and keeping still (PlaceMainVideo,
-        // once it has been looked at). The other clips stay; the bin and the markers were the old video's.
+        // A file opened goes on the timeline where any does: at the beginning of the timeline, whole (PlaceOpenedFile, once it has
+        // been looked at). The other clips stay; the bin and the markers were the old file's.
         SetBin(null);
         SetMarkers(null);
         Document.Markers = [];
@@ -1807,19 +1798,15 @@ public partial class MainViewModel : ObservableObject
             DestinationPath = Path.ChangeExtension(DestinationPath, value);
     }
 
-    // The Center controls and the Crop boxes, which only show the clip they stand for while ShowCenterTarget sets them: that
-    // clip is as it was, so the command, the proxies and Live Preview are too (the playhead crossing into another clip of the
-    // main video during playback rebuilds nothing).
-    private static readonly HashSet<string> CenterTargetProperties =
-    [
-        nameof(CenterZoom), nameof(CenterOffsetX), nameof(CenterOffsetY), nameof(CropLeft), nameof(CropTop), nameof(CropRight), nameof(CropBottom),
-    ];
+    // The Crop boxes, which only show the clip they stand for while ShowCropTarget sets them: that clip is as it was, so the
+    // command, the proxies and Live Preview are too (the playhead crossing into another clip during playback rebuilds nothing).
+    private static readonly HashSet<string> CropTargetProperties = [nameof(CropLeft), nameof(CropTop), nameof(CropRight), nameof(CropBottom)];
 
     protected override void OnPropertyChanged(PropertyChangedEventArgs e)
     {
         base.OnPropertyChanged(e);
 
-        if (e.PropertyName is { } name && !NonCommandProperties.Contains(name) && !(_showingTarget && CenterTargetProperties.Contains(name)))
+        if (e.PropertyName is { } name && !NonCommandProperties.Contains(name) && !(_showingTarget && CropTargetProperties.Contains(name)))
             GenerateCommand();
     }
 
@@ -1859,9 +1846,9 @@ public partial class MainViewModel : ObservableObject
         }
 
         // The timeline is as long as its clips reach (what the builder reads from it is gathered afresh for this state), and
-        // the main video's clips show where the Center controls put it on the frame as it is now.
+        // every picture keeps its middle on a frame of another shape.
         _liveState = null;
-        PlaceMainViews();
+        KeepPlacesOnReshape();
         RefreshSequence();
 
         // The Properties tab follows the settings even while the command itself is frozen by a manual edit.
@@ -1904,8 +1891,8 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Writes the concat list a Copy export reads (4.3C: the main video's clips, as the graph builder lays them: the
-    /// source named once per clip with its in and out points in the file). Copied video can only start on an I-frame, so
+    /// Writes the concat list a Copy export reads (4.3C; 5.2-AuditB: the clips of the file the Sequence shows most of,
+    /// SequenceSpans.CopyCutOf: the file named once per clip with its in and out points in it). Copied video can only start on an I-frame, so
     /// a clip's stretch begins at the I-frame at or before its in point.
     /// </summary>
     private string _writtenCuts = "";
@@ -1913,7 +1900,7 @@ public partial class MainViewModel : ObservableObject
     private void WriteCutsFile(SequenceExportState state)
     {
         // The command is rebuilt for every setting that changes; the file is only written when the clips have.
-        var text = FilterGraphBuilder.BuildCutsList(state);
+        var text = EncoderCommand.BuildCutsList(state);
         if (text == _writtenCuts && File.Exists(CutsFilePath))
             return;
 

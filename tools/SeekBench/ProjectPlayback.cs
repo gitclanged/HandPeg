@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
 using HandPegApp.Services.Gpu;
 using HandPegApp.Tools.AvSync;
@@ -45,7 +46,9 @@ internal static class ProjectPlayback
         if (Array.IndexOf(args, "--strip") >= 0)
             return Strip(state, runs);
 
-        using var client = new CompositorClient(-1, keepStandby: false, cacheMb switch { < 0 => -1, 0 => 0, _ => cacheMb << 20 }, threads);
+        // --software-decode: on the processor, as with Settings' hardware video decoding off (the card's decoding measured against it).
+        using var client = new CompositorClient(-1, keepStandby: false, cacheMb switch { < 0 => -1, 0 => 0, _ => cacheMb << 20 }, threads,
+            softwareDecode: Array.IndexOf(args, "--software-decode") >= 0);
         var clock = Stopwatch.StartNew();
         while (client.State == CompositorWorkerState.Starting && clock.ElapsedMilliseconds < 10_000)
             Thread.Sleep(5);
@@ -105,7 +108,9 @@ internal static class ProjectPlayback
                 using var strip = new GpuProgramStrip();
                 if (ahead)
                 {
-                    strip.Prewarm(state.LocalMediaPath);
+                    // The file of the first picture clip (5.2-AuditB: no file is the main one; the first the sheet reads).
+                    if (SequenceSpans.PictureSpans(state.Timeline) is [var first, ..])
+                        strip.Prewarm(first.Path);
                     ProjectSession.Pump(TimeSpan.FromMilliseconds(1500));
                 }
 
@@ -121,7 +126,7 @@ internal static class ProjectPlayback
         return 0;
     }
 
-    /// <summary>Every cut in a stretch of the sequence (where a file-reading layer comes on or the main video goes on to another clip).</summary>
+    /// <summary>Every cut in a stretch of the sequence (where a file-reading layer comes on or goes on to another clip).</summary>
     private static List<double> Cuts(GpuScenePlan plan, double from, double to)
     {
         var cuts = new List<double>();

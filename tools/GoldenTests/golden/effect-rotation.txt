@@ -1,0 +1,23 @@
+# The Rotation of the spatial effects: one more lane each, where its shader reads it, the shared slots' variants kept.
+ok: 3D Explosion: a Rotation from -180 to 180 degrees, 0 as it comes
+  3D Explosion: 2 packets, Rotation in Q2
+ok: 3D Explosion: in the lane its shader reads
+ok: 3D Sparks & Debris: a Rotation from -180 to 180 degrees, 0 as it comes
+  3D Sparks & Debris: 2 packets, Rotation in Q7
+ok: 3D Sparks & Debris: in the lane its shader reads
+ok: Anime Lines: a Rotation from -180 to 180 degrees, 0 as it comes
+  Anime Lines: 2 packets, Rotation in Q5
+ok: Anime Lines: in the lane its shader reads
+ok: Energy Shield: a Rotation from -180 to 180 degrees, 0 as it comes
+  Energy Shield: 2 packets, Rotation in Q3
+ok: Energy Shield: in the lane its shader reads
+ok: Saber Glow: a Rotation from -180 to 180 degrees, 0 as it comes
+  Saber Glow: 2 packets, Rotation in Q4
+ok: Saber Glow: in the lane its shader reads
+ok: Anamorphic Lens: a Rotation from -180 to 180 degrees, 0 as it comes
+  Anamorphic Lens: 2 packets, Rotation in Q0
+ok: Anamorphic Lens: in the lane its shader reads
+ok: the Saber's variant where it was (Q7)
+ok: the Anamorphic Lens's variant still in its first packet (P7), its Rotation in a second
+ok: the Impact Shockwave: one packet, variant 0
+ok: with an Audio Reactive Pulse (5.2B), a second packet, marked as the pulse's (its last lane -1), its first as it was

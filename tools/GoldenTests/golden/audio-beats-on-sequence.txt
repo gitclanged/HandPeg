@@ -1,0 +1,6 @@
+# A clip's beats, found in its file's own seconds, where they fall on the Sequence: trimmed, at another speed, slipped, with a J cut.
+ok: trimmed to its file's 3 to 11 s at 2x: the beats at 3, 4, 7 and 11 s land at 10, 10.5, 12 and 14 s; those outside it are not on the Sequence
+ok: its sound unlinked and slipped half a second later: every beat half a second later with it
+ok: a J cut of a second: the beat its sound plays before the picture (its file's 1 s, at 9 s) is on the Sequence too
+ok: unlinked and slipped 3 s with its J cut kept: the cut is not heard, so only the beats its sound plays (13 to 17 s) are on the Sequence, not its file's 1 s at 12 s
+ok: a clip with no beats has none on the Sequence

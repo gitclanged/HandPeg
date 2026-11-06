@@ -4,9 +4,11 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// Settings > Export & Hardware > GPU Roles (Pass 5.0-Core, micro-step 5.0-0): the compositor's and the timeline decode's
-// lists (the background's and the export's are filled with the Performance lists, SettingsWindow.xaml.cs), and Test &
-// Auto-Tune Hardware, whose measurements the stage draws as they come in (SettingsStagePreview.ShowBenchmark).
+// Settings > Export & Hardware > GPU & NPU Roles (Pass 5.0-Core, micro-step 5.0-0; the NPUs 5.2-Arm64AndNpu): the compositor's
+// and the timeline decode's lists (the background's and the export's are filled with the Performance lists,
+// SettingsWindow.xaml.cs), Test & Auto-Tune Hardware, whose measurements the stage draws as they come in
+// (SettingsStagePreview.ShowBenchmark), the NPUs found (listed off the UI thread once the screen is up) and what Auto-Captions
+// run on (AppSettings.CaptionAccelerator).
 public partial class SettingsWindow
 {
     // The benchmark running from here, while it runs: pressing the button again cancels it.
@@ -40,12 +42,36 @@ public partial class SettingsWindow
         CompositorGpuBox.SelectedValue = _settings.CompositorGpuAdapter;
         DecodeGpuBox.SelectedValue = _settings.DecodeGpuAdapter;
 
-        // The last result, read off the UI thread once the screen is up (a small file), for the stage and the status line.
+        // What Auto-Captions run on: the choice, and (once the screen is up) what it comes to with the whisper build installed.
+        if (!AppSettings.CaptionAccelerators.Contains(_settings.CaptionAccelerator))
+            _settings.CaptionAccelerator = AppSettings.SpeechOnAuto;
+        CaptionAcceleratorBox.ItemsSource = new List<Choice>
+        {
+            new(AppSettings.SpeechOnAuto, "Auto (NPU, else graphics card, else processor)"),
+            new(AppSettings.SpeechOnNpu, "NPU"),
+            new(AppSettings.SpeechOnGpu, "Graphics Card"),
+            new(AppSettings.SpeechOnCpu, "Processor"),
+        };
+        CaptionAcceleratorBox.SelectedValue = _settings.CaptionAccelerator;
+        CaptionAcceleratorBox.SelectionChanged += (_, _) => ShowSpeechPlan();
+
+        // The last result, read off the UI thread once the screen is up (a small file), for the stage and the status line; the
+        // NPUs, listed off it too (DXCore, once a session).
         Loaded += async (_, _) =>
         {
+            ShowSpeechPlan();
             var saved = await Task.Run(() => HardwareBenchmarkService.LoadSaved());
             if (saved is not null && _benchmarkRun is null && _benchmarkShown is null)
                 ShowBenchmarkResult(saved, fresh: false);
+            try
+            {
+                ShowNpus(await NpuAdapters.ListAsync());
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                AppLog.Write("The NPUs could not be listed", ex);
+                NpuText.Text = "The NPUs could not be listed (the log says why).";
+            }
         };
 
         // Closed while it runs: the run stops with the screen (nothing is left half-applied).
@@ -130,6 +156,31 @@ public partial class SettingsWindow
         return card is null ? index : adapters.First(a => (a.VendorId, a.DeviceId) == (card.VendorId, card.DeviceId)).Index;
     }
 
+    // The NPUs found, each with what it is used for (nothing yet: said as it is).
+    private void ShowNpus(IReadOnlyList<NpuAdapter> npus)
+    {
+        NpuText.Text = npus.Count == 0
+            ? "None found (an NPU's driver lists it to Windows: a Snapdragon X, an Intel Core Ultra or an AMD Ryzen AI laptop has one)."
+            : string.Join(Environment.NewLine, npus.Select(NpuAdapters.Describe)) + Environment.NewLine + NpuAdapters.UsedFor;
+    }
+
+    // What Auto-Captions would run on with the choice shown, in a sentence (a few file checks, on a pool thread).
+    private async void ShowSpeechPlan()
+    {
+        var choice = CaptionAcceleratorBox.SelectedValue as string ?? AppSettings.SpeechOnAuto;
+        try
+        {
+            var (plan, installed) = await Task.Run(() => (CaptionGenerator.PlanSpeech(choice), System.IO.File.Exists(DependencyUpdater.WhisperPath)));
+            if ((CaptionAcceleratorBox.SelectedValue as string ?? AppSettings.SpeechOnAuto) == choice)
+                CaptionAcceleratorText.Text = installed ? plan.Why : "whisper.cpp is not installed yet (Tools). " + plan.Why;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("What Auto-Captions run on could not be worked out", ex);
+            CaptionAcceleratorText.Text = "";
+        }
+    }
+
     // The button turns into Stop while the test runs, and the four lists wait for its answer.
     private void SetBenchmarkRunning(bool running)
     {
@@ -152,7 +203,14 @@ public partial class SettingsWindow
             : stale ? "Last tested on other cards or drivers: test again."
             : tested.Length > 0 ? $"Last tested {tested}." : "Tested before.";
 
-        var reasons = result.Recommended.Reasons;
+        // The roles' reasons, then (5.2-Arm64AndNpu) what decodes what, the shared memory, and the NPUs.
+        var reasons = result.Recommended.Reasons.ToList();
+        if (result.FfmpegFallbackCodecs.Count > 0)
+            reasons.Add($"Decoded by FFmpeg on the processor (Media Foundation has no decoder for it here): {string.Join(", ", result.FfmpegFallbackCodecs)}.");
+        foreach (var card in result.Adapters.Where(a => a.UnifiedMemory && a.SameCardAs < 0))
+            reasons.Add($"{card.Name} shares the computer's memory: the frame cache's Auto takes an eighth of it, at most 2.5 GB.");
+        foreach (var npu in result.Npus)
+            reasons.Add($"NPU: {npu.Name}. {npu.UsedFor}");
         BenchmarkReasonsText.Text = string.Join(Environment.NewLine, reasons);
         BenchmarkReasonsText.Visibility = reasons.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         BenchmarkStatusText.ToolTip = reasons.Count > 0 ? BenchmarkReasonsText.Text : null;

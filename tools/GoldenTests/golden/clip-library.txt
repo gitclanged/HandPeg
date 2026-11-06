@@ -1,0 +1,13 @@
+# The Personal Clip Library (5.2C): a clip's span kept losslessly with its title, tags and focal point, searched, dropped back where it was saved, taken out.
+ok: an empty library lists nothing
+ok: search: every word in the title or a tag, case aside
+ok: a video clip can go into the library
+ok: its focal point is the highlight's inside its span
+ok: saved: its file (the title made fit for a name), its title, its tags (trimmed, once each), its focal point, the file it came from
+ok: the copy starts on the key frame at 12 s, the clip 1.3 s into it, 6 s long (In / Out)
+ok: the frame at its In is the source's frame at 13.3 s (lossless)
+ok: a clip dropped from the library starts at its In and lasts Out - In, where it was dropped
+ok: listed, and found by its file (a file elsewhere is not the library's)
+ok: a second clip of the same title gets a file of its own
+ok: taken out: its line and its file
+ok: a newer ledger is kept aside and the library starts again

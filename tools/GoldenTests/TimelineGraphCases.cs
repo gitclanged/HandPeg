@@ -6,7 +6,7 @@ using HandPegApp.Services;
 namespace HandPegGoldenTests;
 
 /// <summary>
-/// FilterGraphBuilder on a timeline written as a <see cref="TimelineDocument"/> by hand (4.3B), not through the fixtures of
+/// The export of a timeline written as a <see cref="TimelineDocument"/> by hand (4.3B), not through the fixtures of
 /// 4.2.0: what only the document can say. Video 1 is not privileged: it starts with a gap, has a gap between its clips, a
 /// picture and another file's clip of its own, a clip of the main video at double speed (which leaves the primary chain
 /// and is read as a layer in the main video's box) and a crossfade from a picture into a clip of the chain (a dip: the two
@@ -70,21 +70,13 @@ public static class TimelineGraphCases
         if (document.CaptionsUnderTrack != document.Tracks[2])
             problems.Add("the captions were not put under Video 3");
 
-        var command = FilterGraphBuilder.BuildExportCommand(state).CommandLine;
-        var (amongAt, pictureAt, fadeAt) = (command.IndexOf("[cap_base_st]", StringComparison.Ordinal), command.IndexOf("still.png", StringComparison.Ordinal),
-            command.IndexOf(",fade=t=in", StringComparison.Ordinal));
-        if (amongAt < 0 || command.Contains("[cap_base]", StringComparison.Ordinal))
-            problems.Add("the export's captions are not laid among the layers (or are also over the finished picture)");
-        if (amongAt >= 0 && fadeAt >= 0 && amongAt > fadeAt)
-            problems.Add("the captions among the layers come after the fades");
-
         // The GPU plan: the captions' place is between Video 2's piece and Video 3's picture (the 3D view's order).
         var plan = HandPegApp.Services.Gpu.GpuScenePlan.Create(state, new HandPegApp.Services.Gpu.GpuResourceBroker(null, bakeOnCallingThread: true));
         var (piece, picture) = (document.Tracks[1].Clips[0], document.Tracks[2].Clips[0]);
         var places = (Piece: plan.PlaceOf(HandPegApp.Services.Gpu.GpuHash.Of(piece.Id)), Captions: plan.PlaceOf(HandPegApp.Services.Gpu.GpuScenePlan.CaptionClipKey),
             Picture: plan.PlaceOf(HandPegApp.Services.Gpu.GpuHash.Of(picture.Id)));
         if (!(places.Piece >= 0 && places.Piece < places.Captions && places.Captions < places.Picture))
-            problems.Add($"the GPU plan's places are not piece < captions < picture ({places.Piece}, {places.Captions}, {places.Picture}; pictures at {pictureAt})");
+            problems.Add($"the GPU plan's places are not piece < captions < picture ({places.Piece}, {places.Captions}, {places.Picture})");
         return (state, problems);
     }
 
@@ -148,26 +140,18 @@ public static class TimelineGraphCases
         }, Main.Width, Main.Height, document.Width, document.Height);
 
         Media[] videos = [Clip1, Clip2, Main];
-        var state = new SequenceExportState
+        var state = Opened(new SequenceExportState
         {
             Timeline = document,
             SourceFrameRate = 30,
-            SourceWidth = Main.Width,
-            SourceHeight = Main.Height,
             RequestedSize = (document.Width, document.Height),
             OutputSize = (document.Width, document.Height),
-            LocalMediaPath = Main.Path,
-            HasSource = true,
-            MainMediaSeconds = Main.Seconds,
-            CenterRect = (0, 0, document.Width, document.Height),
-            FrameEngine = true,
             CaptionLayer = caption,
-            AudioTracks = [new ExportAudioTrack(0, "Track 1", "aac", "160k", false, false, false, false, false, false, [], [])],
             VideoCodecArguments = "-c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p",
             OutputPath = "D:/out/timeline.mp4",
             MediaStarts = videos.ToDictionary(m => m.Path, m => m.VideoStart, StringComparer.OrdinalIgnoreCase),
             SeekIndexes = videos.Where(m => m.Indexed).ToDictionary(m => m.Path, m => new SeekIndex(m.ContainerStart, m.IFrames), StringComparer.OrdinalIgnoreCase),
-        };
+        }, Main, (0, 0, document.Width, document.Height), problems);
 
         return (state, problems);
     }
@@ -224,27 +208,19 @@ public static class TimelineGraphCases
 
         var problems = document.FindProblems(requireFrames: true).Select(p => "the document: " + p).ToList();
         Media[] videos = [Clip1, Main];
-        var state = new SequenceExportState
+        var state = Opened(new SequenceExportState
         {
             Timeline = document,
             SourceFrameRate = 30,
-            SourceWidth = Main.Width,
-            SourceHeight = Main.Height,
             RequestedSize = (document.Width, document.Height),
             OutputSize = (document.Width, document.Height),
-            LocalMediaPath = Main.Path,
-            HasSource = true,
-            MainMediaSeconds = Main.Seconds,
-            CenterRect = (0, 0, document.Width, document.Height),
-            FrameEngine = true,
             CaptionLayer = Captions(document, Main),
-            AudioTracks = [new ExportAudioTrack(0, "Track 1", "aac", "160k", false, false, false, false, false, false, [], [])],
             VideoCodecArguments = "-c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p",
             OutputPath = "D:/out/unified-crop.mp4",
             ExistingFiles = new HashSet<string>([PieceMask, InsetMask], StringComparer.OrdinalIgnoreCase),
             MediaStarts = videos.ToDictionary(m => m.Path, m => m.VideoStart, StringComparer.OrdinalIgnoreCase),
             SeekIndexes = videos.Where(m => m.Indexed).ToDictionary(m => m.Path, m => new SeekIndex(m.ContainerStart, m.IFrames), StringComparer.OrdinalIgnoreCase),
-        };
+        }, Main, (0, 0, document.Width, document.Height), problems);
 
         return (state, problems);
     }
@@ -295,31 +271,38 @@ public static class TimelineGraphCases
 
         var problems = document.FindProblems(requireFrames: true).Select(p => "the document: " + p).ToList();
         var masks = new HashSet<string>([killfeedMask, healthMask], StringComparer.OrdinalIgnoreCase);
-        var state = new SequenceExportState
+        var state = Opened(new SequenceExportState
         {
             Timeline = document,
             SourceFrameRate = 30,
-            SourceWidth = Match.Width,
-            SourceHeight = Match.Height,
             RequestedSize = (document.Width, document.Height),
             OutputSize = (document.Width, document.Height),
-            LocalMediaPath = Match.Path,
-            HasSource = true,
-            MainMediaSeconds = Match.Seconds,
-            HasCrop = true,
-            CropFractions = (0.2, 0, 0.2, 0),
-            CenterRect = (0, centerY, centerWidth, centerHeight),
-            FrameEngine = true,
             CaptionLayer = Captions(document, Match),
-            AudioTracks = [new ExportAudioTrack(0, "Track 1", "aac", "160k", false, false, false, false, false, false, [], [])],
             VideoCodecArguments = "-c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p",
             OutputPath = "D:/out/game-style.mp4",
             ExistingFiles = masks,
             AlphaMasks = masks,
             MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [Match.Path] = Match.VideoStart },
-        };
+        }, Match, (0, centerY, centerWidth, centerHeight), problems);
 
         return (state, problems);
+    }
+
+    /// <summary>
+    /// A state of a document of the 5.1 kinds (clips of the main video, pieces cut from it) as a project opened now compiles it
+    /// (5.2-AuditB, LegacyFixtures.Opened): converted with the Center box the main video was laid in and its one stream as
+    /// 5.1 kept it; then held to what the conversion promises (nothing of the old kinds left, the document whole).
+    /// </summary>
+    private static SequenceExportState Opened(SequenceExportState state, Media main, (int X, int Y, int Width, int Height) center, List<string> problems)
+    {
+        var opened = LegacyFixtures.Opened(state, new LegacyMain(main.Path)
+        {
+            SourceWidth = main.Width, SourceHeight = main.Height, MediaSeconds = main.Seconds, CenterRect = center, Streams = [new LegacyStream(0, "Track 1")],
+        });
+        if (LegacyMainVideo.Needs(opened.Timeline))
+            problems.Add("the converted document still holds clips of the old kinds");
+        problems.AddRange(opened.Timeline.FindProblems(requireFrames: true).Select(p => "the converted document: " + p));
+        return opened;
     }
 
     /// <summary>The caption box every fixture's state has (none of them burns captions in).</summary>

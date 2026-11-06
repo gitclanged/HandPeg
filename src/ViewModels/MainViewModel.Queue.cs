@@ -72,20 +72,25 @@ public partial class MainViewModel
             return null;
         }
 
+        // A Copy export that cannot cut is not queued to fail later (5.2-Arm64AndNpu, the user's call): refused now, with the reason.
+        if (CopyRefusal() is { } refused)
+        {
+            StatusText = refused;
+            return null;
+        }
+
         // The cuts and chapters lists are rewritten whenever the settings change, so the job gets copies of its own.
         CaptionJob? captions = null;
         string? ownCaptions = null;
         var copies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            // The caption file likewise is the job's own: the command names it the way a filter needs it written.
-            // Nothing is listened to here. Captions that are a subtitle track's cues are written at once, being
+            // The caption file likewise is the job's own (its state names it: the compositor draws it). Nothing is listened to here. Captions that are a subtitle track's cues are written at once, being
             // only written; ones that have to be heard are left to the job, which transcribes when it runs.
             if (CommandUsesCaptions(command))
             {
                 Directory.CreateDirectory(QueueFolder);
                 var own = ownCaptions = Path.Combine(QueueFolder, $"captions_{Guid.NewGuid():N}.ass");
-                command = command.Replace(FilterGraphBuilder.CaptionFilter(CaptionsFilePath), FilterGraphBuilder.CaptionFilter(own), StringComparison.OrdinalIgnoreCase);
 
                 if (HasTextCues)
                 {
@@ -109,7 +114,8 @@ public partial class MainViewModel
             foreach (var shared in new[] { CutsFilePath, ChaptersFilePath, VoiceoverPath })
             {
                 var heard = captions is not null && string.Equals(captions.AudioPath, shared, StringComparison.OrdinalIgnoreCase);
-                if (shared.Length == 0 || !File.Exists(shared) || !(heard || command.Contains(shared, StringComparison.OrdinalIgnoreCase)))
+                var used = command.Contains(shared, StringComparison.OrdinalIgnoreCase) || (IncludeVoiceover && string.Equals(shared, VoiceoverPath, StringComparison.OrdinalIgnoreCase));
+                if (shared.Length == 0 || !File.Exists(shared) || !(heard || used))
                     continue;
 
                 Directory.CreateDirectory(QueueFolder);
@@ -135,33 +141,27 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The sequence a job is made from, its captions, cuts, chapters and voiceover the job's own copies (CreateQueueJob), for
-    /// the GPU compositor to draw the job by (RunExportAsync): kept only when it makes the job's command exactly, so it can
-    /// never draw anything but what the command says. Null for a command edited by hand, or one it does not make.
+    /// The sequence a job is made from, its captions, cuts, chapters and voiceover the job's own copies (CreateQueueJob), for the
+    /// GPU compositor to draw the job by (RunExportAsync, 5.2-Audit: the only renderer, a command edited by hand encoding its frames
+    /// with its own arguments). Null only when it cannot be gathered.
     /// </summary>
     private SequenceExportState? JobExportState(string command, string? captions, IReadOnlyDictionary<string, string> copies)
     {
-        if (IsCommandManuallyEdited)
-            return null;
         try
         {
             string Own(string path) => copies.TryGetValue(path, out var copy) ? copy : path;
             var state = CompileExportState();
-            state = state with
+            return state with
             {
                 CaptionsFilePath = captions ?? state.CaptionsFilePath,
                 CutsFilePath = Own(state.CutsFilePath),
                 ChaptersFilePath = Own(state.ChaptersFilePath),
                 VoiceoverPath = Own(state.VoiceoverPath),
             };
-            if (string.Equals(FilterGraphBuilder.BuildExportCommand(state).CommandLine, command, StringComparison.Ordinal))
-                return state;
-            AppLog.Write("A queued job's command is not its sequence's: FFmpeg's graph makes it.");
-            return null;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            AppLog.Write("A queued job keeps no sequence of its own (FFmpeg's graph makes it)", ex);
+            AppLog.Write($"A queued job keeps no sequence of its own, so it cannot be drawn ({command.Length} characters of command)", ex);
             return null;
         }
     }

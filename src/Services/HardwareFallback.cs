@@ -46,10 +46,6 @@ public static partial class HardwareFallback
     [GeneratedRegex(@" -hwaccel \S+(?: -hwaccel_device \S+)?")]
     private static partial Regex HardwareDecodeRegex();
 
-    // The background blur as the graphics card does it, and the device it is given for that.
-    [GeneratedRegex(@"format=yuv420p,hwupload,boxblur_opencl=(?<radius>\d+):(?<passes>\d+),hwdownload,format=yuv420p")]
-    private static partial Regex OpenClBlurRegex();
-
     /// <summary>The software encoder that stands in for a hardware one, or null for anything else.</summary>
     public static string? GetSoftwareEncoder(string encoderName)
     {
@@ -99,8 +95,9 @@ public static partial class HardwareFallback
             rewritten = AmfQsvTuningRegex().Replace(rewritten, "");
         }
 
-        // 10-bit under the name the software encoders know it by.
-        rewritten = rewritten.Replace("-pix_fmt p010le", "-pix_fmt yuv420p10le");
+        // 10-bit under the name the software encoders know it by; a Media Foundation encoder's NV12 (5.2) as the planar
+        // 4:2:0 every software encoder takes (SVT-AV1 takes no NV12).
+        rewritten = rewritten.Replace("-pix_fmt p010le", "-pix_fmt yuv420p10le").Replace("-pix_fmt nv12", "-pix_fmt yuv420p");
 
         // In the bitrate modes only the vendor's "-rc" switch has to go; the bitrate itself carries over.
         rewritten = VendorRateModeRegex().Replace(rewritten, "");
@@ -114,9 +111,6 @@ public static partial class HardwareFallback
 
         // If the GPU is the problem, do not ask it to decode either.
         rewritten = HardwareDecodeRegex().Replace(rewritten, "");
-
-        // Nor to blur: the processor does that as well as it ever did.
-        rewritten = OpenClBlurRegex().Replace(rewritten, "boxblur=${radius}:${passes}").Replace($" {EncoderProber.OpenClDeviceArguments}", "");
         return true;
     }
 

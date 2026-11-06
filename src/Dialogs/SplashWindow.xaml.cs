@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media.Imaging;
 using HandPegApp.Services;
 using Microsoft.Win32;
 
@@ -15,8 +16,21 @@ public enum LaunchKind
 }
 
 /// <param name="Path">The video, or the project file.</param>
-/// <param name="StylePath">The style preset to give the video, or null to open it as it is.</param>
+/// <param name="StylePath">The Game Preset to give the video, or null to open it as it is.</param>
 public sealed record LaunchRequest(LaunchKind Kind, string Path, string? StylePath = null);
+
+/// <summary>A saved project as the launch window's recent list shows it: its entry, and its baked thumbnail decoded small (Pass 5.2D).</summary>
+/// <param name="Thumbnail">The thumbnail; null when the project's file has none.</param>
+/// <param name="ThumbnailVisibility">Its place: shown, kept empty (another row has one), or left out (none has).</param>
+public sealed record RecentProject(ProjectEntry Entry, BitmapSource? Thumbnail, Visibility ThumbnailVisibility)
+{
+    public string Name => Entry.Name;
+
+    public string SavedText => Entry.SavedText;
+
+    /// <summary>The project's name: what the list's keyboard search and screen readers go by.</summary>
+    public override string ToString() => Name;
+}
 
 /// <summary>A style preset as the launch window and the settings list it: a file in the Styles folder.</summary>
 public sealed record StyleFile(string Path)
@@ -91,12 +105,27 @@ public partial class SplashWindow : Window
         _ = ShowRecentAsync();
     }
 
+    // How tall the recent projects' thumbnails are decoded: the list shows them 40 pixels tall, at up to twice that on a high-DPI screen.
+    private const int ThumbnailDecodeHeight = 80;
+
     private async Task ShowRecentAsync()
     {
-        List<ProjectEntry> recent;
+        List<RecentProject> recent;
         try
         {
-            recent = (await Task.Run(ProjectStore.ListRecent)).Take(12).ToList();
+            recent = await Task.Run(() =>
+            {
+                var entries = ProjectStore.ListRecent().Take(12).ToList();
+
+                // Each with its baked thumbnail when its file has one (Pass 5.2D), decoded here, off the interface;
+                // a row without one keeps the place empty while another has one, so that the names line up.
+                var anyThumbnail = entries.Exists(e => e.Thumbnail is { Length: > 0 });
+                return entries.Select(e =>
+                {
+                    var thumbnail = e.Thumbnail is { Length: > 0 } jpeg ? ProjectThumbnail.Decode(jpeg, ThumbnailDecodeHeight) : null;
+                    return new RecentProject(e, thumbnail, thumbnail is not null ? Visibility.Visible : anyThumbnail ? Visibility.Hidden : Visibility.Collapsed);
+                }).ToList();
+            });
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -123,7 +152,7 @@ public partial class SplashWindow : Window
 
     private void LoadRecent_Click(object sender, RoutedEventArgs e)
     {
-        if (RecentBox.SelectedItem is ProjectEntry project)
+        if (RecentBox.SelectedItem is RecentProject { Entry: var project })
             Finish(new LaunchRequest(LaunchKind.Project, project.FilePath));
     }
 

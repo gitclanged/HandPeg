@@ -307,50 +307,54 @@ public static partial class CompositorParityTests
             Holds(blurred >= sharp + 4 && ramped >= blurred + 3 && frozen == sharp, $"motion blur: the flow of a real clip, by its own speed (22)", numbers);
         }
 
-        // ----- The Studio Stage -----
+        // ----- The depth rails (5.2: the 5.1 Studio Stage's mirror floor, reflections and gathered light are gone) -----
 
-        public void StudioStage()
+        public void DepthRails()
         {
             const int cw = 320, ch = 180, ow = 400, oh = 300;
-            RefImage? Stage(string what, Vector3 colour, int flags, float yaw = 18, float pitch = 16, float spread = 40, float zoom = 1.2f)
+            RefImage? View(string what, Vector3 colour, int flags, float yaw = 18, float pitch = 16, float spread = 40, float zoom = 1.2f)
             {
-                // Long enough for the light, gathered as each frame is drawn and eased, to settle on this picture. (A scene is written anew for each publish: its slot holds another.)
-                RefImage? shown = null;
-                for (var frame = 0; frame < 24; frame++)
-                {
-                    Begin(cw, ch, FrameSceneHeader.FlagExactFrames | flags);
-                    ref var scene = ref client.Scene;
-                    (scene.OutputWidth, scene.OutputHeight) = (ow, oh);
-                    (scene.ViewMode, scene.CameraYaw, scene.CameraPitch, scene.CameraZoom, scene.ExplodedZSpread) = (1, yaw, pitch, zoom, spread);
-                    ref var layer = ref Layer(0, GpuSourceKind.SolidColor, 0, 0, 0, cw, ch);
-                    (layer.SolidR, layer.SolidG, layer.SolidB, layer.SolidA, layer.ZDepth) = (colour.X, colour.Y, colour.Z, 1, 0);
-                    ref var over = ref Layer(1, GpuSourceKind.SolidColor, 0, 90, 50, 140, 80);
-                    (over.SolidR, over.SolidG, over.SolidB, over.SolidA, over.ZDepth) = (1, 1, 1, 1, 1);
-                    shown = Render(what);
-                }
-
-                return shown;
+                Begin(cw, ch, FrameSceneHeader.FlagExactFrames | flags);
+                ref var scene = ref client.Scene;
+                (scene.OutputWidth, scene.OutputHeight) = (ow, oh);
+                (scene.ViewMode, scene.CameraYaw, scene.CameraPitch, scene.CameraZoom, scene.ExplodedZSpread) = (1, yaw, pitch, zoom, spread);
+                ref var layer = ref Layer(0, GpuSourceKind.SolidColor, 0, 0, 0, cw, ch);
+                (layer.SolidR, layer.SolidG, layer.SolidB, layer.SolidA, layer.ZDepth) = (colour.X, colour.Y, colour.Z, 1, 0);
+                ref var over = ref Layer(1, GpuSourceKind.SolidColor, 0, 90, 50, 140, 80);
+                (over.SolidR, over.SolidG, over.SolidB, over.SolidA, over.ZDepth) = (1, 1, 1, 1, 1);
+                return Render(what);
             }
 
-            Line($"the Studio Stage (Extra Animations):");
-            const int stage = FrameSceneHeader.FlagStudioStage;
+            Line($"the 3D view's depth rails (planes, outlines and rails; no mirror floor, no light read back):");
+            const int rails = FrameSceneHeader.FlagDepthRails;
             var (red, blue) = (new Vector3(1, 0.05f, 0.05f), new Vector3(0.05f, 0.05f, 1));
-            if (Stage("plain 3D", red, 0) is not { } plain || Stage("stage", red, stage) is not { } lit || Stage("blue stage", blue, stage) is not { } blueLit)
+            if (View("plain 3D", red, 0) is not { } plain || View("plain 3D, blue", blue, 0) is not { } plainBlue
+                || View("rails", red, rails) is not { } railed || View("blue, rails", blue, rails) is not { } blueRailed)
                 return;
 
-            var floorBand = (X0: 60, Y0: oh - 60, X1: ow - 60, Y1: oh - 16);
-            var (floorPlain, floorRed, floorBlue) = (Mean(plain, floorBand.X0, floorBand.Y0, floorBand.X1, floorBand.Y1), Mean(lit, floorBand.X0, floorBand.Y0, floorBand.X1, floorBand.Y1),
-                Mean(blueLit, floorBand.X0, floorBand.Y0, floorBand.X1, floorBand.Y1));
-            Holds(floorRed.X > floorPlain.X + 0.02f, $"the floor shines under the stack", Numbers($"red {floorPlain.X:0.000} plain, {floorRed.X:0.000} on the stage"));
-            Holds(floorRed.X > floorBlue.X + 0.02f && floorBlue.Z > floorRed.Z + 0.02f, $"the floor takes the picture's colour, red or blue",
-                Numbers($"({floorRed.X:0.00}, {floorRed.Z:0.00}) and ({floorBlue.X:0.00}, {floorBlue.Z:0.00})"));
-            var (backRed, backBlue) = (Mean(lit, 2, 2, 40, 40), Mean(blueLit, 2, 2, 40, 40));
-            Holds(backRed.X > backBlue.X && backBlue.Z > backRed.Z, $"the room's light follows the picture", Numbers($"({backRed.X:0.000}, {backRed.Z:0.000}) and ({backBlue.X:0.000}, {backBlue.Z:0.000})"));
+            Holds(Changed(plain, railed) > 0.02f, $"the rails run back through the stack", Numbers($"{Changed(plain, railed):0.000} steps"));
 
-            // Dead straight with no spread is the flat picture, stage or no stage.
-            var (flatPlain, flatStage) = (Stage("flat", red, 0, 0, 0, 0, 1), Stage("flat on the stage", red, stage, 0, 0, 0, 1));
-            if (flatPlain is not null && flatStage is not null)
-                Holds(Changed(flatPlain, flatStage) < 3, $"the way out of the flat picture stays quiet", Numbers($"{Changed(flatPlain, flatStage):0.00} steps"));
+            // Wherever the planes are not (the plain view the same, red picture or blue), the view with the rails is the same too:
+            // no mirror floor, no reflection of a plane and no light gathered from the picture.
+            static bool Same(RefImage a, RefImage b, int i) =>
+                MathF.Abs(a.Rgba[i] - b.Rgba[i]) <= 1f / 255 && MathF.Abs(a.Rgba[i + 1] - b.Rgba[i + 1]) <= 1f / 255 && MathF.Abs(a.Rgba[i + 2] - b.Rgba[i + 2]) <= 1f / 255;
+            var (outside, differs) = (0, 0);
+            for (var i = 0; i < plain.Rgba.Length; i += 4)
+            {
+                if (!Same(plain, plainBlue, i))
+                    continue;
+                outside++;
+                if (!Same(railed, blueRailed, i))
+                    differs++;
+            }
+
+            Holds(outside > plain.Rgba.Length / 4 / 4 && differs == 0, $"no mirror floor and no light read back: off the planes, the picture's colour changes nothing",
+                Numbers($"{outside} pixels off the planes, {differs} of them changed by the picture's colour"));
+
+            // Dead straight with no spread is the flat picture, rails or no rails.
+            var (flatPlain, flatRails) = (View("flat", red, 0, 0, 0, 0, 1), View("flat with the rails", red, rails, 0, 0, 0, 1));
+            if (flatPlain is not null && flatRails is not null)
+                Holds(Changed(flatPlain, flatRails) < 3, $"the way out of the flat picture stays quiet", Numbers($"{Changed(flatPlain, flatRails):0.00} steps"));
         }
 
         // ----- What they cost -----
@@ -371,11 +375,13 @@ public static partial class CompositorParityTests
                 ("neon rim", GpuShaderSlot.RimGlass, 3, new(GpuShaderSlot.RimGlass, 0.13f, 0.9f, 1, 3, 24, 1.5f, 0.25f, 0), null),
             };
 
+            // The first case's first frames raise the card's clocks (ClockUpFrames); after them, each case's first frame warms its shaders.
             var plainMs = Clocked(null, null);
+            var lead = ClockUpFrames + 1;
             foreach (var (name, slot, budget, first, second) in cases)
             {
                 var (best, whole, passes) = (float.MaxValue, float.MaxValue, 0);
-                for (var round = 0; round < 5; round++)
+                for (var round = 0; round < lead + 4; round++)
                 {
                     Begin(1920, 1080, FrameSceneHeader.FlagTimePasses | FrameSceneHeader.FlagWaitForTimings);
                     ref var layer = ref Layer(0, GpuSourceKind.TestPattern, 3, 0, 0, 1920, 1080);
@@ -389,10 +395,11 @@ public static partial class CompositorParityTests
                         return;
                     }
 
-                    if (round > 0)
+                    if (round >= lead)
                         (best, whole, passes) = (MathF.Min(best, client.Memory.Control.SlotGpuMs[(int)slot]), MathF.Min(whole, client.Memory.Control.LastFrameGpuMs), client.Memory.Control.SlotRuns[(int)slot]);
                 }
 
+                lead = 1;
                 Holds(best <= budget, $"{name} within its budget of {budget} ms", Numbers($"{name} {best:0.000} ms in {passes} passes, the frame {whole:0.000} ms"));
                 Console.WriteLine(Numbers($"        {name}: {Clocked(first, second) - plainMs:0.00} ms a frame more than a plain layer, by the wall clock"));
             }

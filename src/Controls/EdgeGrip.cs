@@ -6,10 +6,11 @@ using System.Windows.Media;
 namespace HandPegApp;
 
 /// <summary>
-/// A thin grip along an edge (5.1-Polish, the user's directive: the Overview Bar's lower edge): see-through until the pointer
-/// is over it, then a 1 px line in the accent across its middle. Dragged, it tells how far the pointer has gone (DIPs, down
-/// positive) since it was pressed, measured in the window (the edge moves as what it sizes grows); double-clicked, that the
-/// usual size is wanted. Drawn in OnRender.
+/// A thin grip along an edge (5.1-Polish, the user's directive: the Sequence Overview Scrubber's lower edge): see-through until
+/// the pointer is over it, then a 1 px line in the accent across its middle. Dragged, it tells how far the pointer has gone (DIPs,
+/// down positive) since it was pressed, measured in the window's content (the edge moves as what it sizes grows; the content's
+/// DIPs are those what it sizes is laid out in, which HandPeg's UI scale makes other than the window's own: UiScale);
+/// double-clicked, that the usual size is wanted. Drawn in OnRender.
 /// </summary>
 public sealed class EdgeGrip : FrameworkElement
 {
@@ -56,7 +57,7 @@ public sealed class EdgeGrip : FrameworkElement
 
         if (!CaptureMouse())
             return;
-        _fromY = e.GetPosition(null).Y;
+        _fromY = PointerY(e);
         DragStarted?.Invoke();
         InvalidateVisual();
     }
@@ -65,8 +66,14 @@ public sealed class EdgeGrip : FrameworkElement
     {
         base.OnMouseMove(e);
         if (_fromY is { } from)
-            Dragged?.Invoke(e.GetPosition(null).Y - from);
+            Dragged?.Invoke(PointerY(e) - from);
     }
+
+    /// <summary>
+    /// Where the pointer is, down the window's content: its root's own DIPs, inside the UI scale's LayoutTransform (the window's
+    /// own DIPs, GetPosition(null), are a third larger on a 2880 x 1800 screen at 200 %, and the edge lagged behind the pointer).
+    /// </summary>
+    private double PointerY(MouseEventArgs e) => e.GetPosition(Window.GetWindow(this)?.Content as IInputElement).Y;
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {

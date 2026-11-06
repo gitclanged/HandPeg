@@ -13,7 +13,7 @@ namespace HandPegApp.ViewModels;
 // auto-captions, or typed in the Subtitle Editor. There is one. While it has text cues, the captions are made
 // of them instead of being transcribed: they are drawn in the caption style, in the caption box, by the same
 // steps (the GPU preview's captions, the caption overlay for the export). A picture track's pictures are decoded
-// for the GPU preview, which draws them over the main video's picture (5.0-Verify); the export leaves them out.
+// for the GPU preview, which draws them over the Sequence's picture (5.0-Verify); the export leaves them out.
 public partial class MainViewModel
 {
     public ObservableCollection<SubtitleCue> SubtitleCues { get; } = [];
@@ -85,16 +85,17 @@ public partial class MainViewModel
         var images = SubtitleFiles.IsImageFile(path);
         Checkpoint("import subtitles");
 
-        // Words timed to the main video while it is still the whole sequence (its file's time is the timeline's) are
-        // anchored to its picture (4.4): cuts, folds and moves made afterwards carry them along. Once it is edited, a file's
-        // times can no longer be told apart from the edited timeline's, and they stay on the timeline's clock. A file's cues
-        // have no word times, so each is given its words spread over it by their length: a cut or fold through one then
-        // divides its words, and the part no window shows is kept through an edit of the part still seen.
-        if (!images && HasSource && FrameEngine && IsMainWholeSequence && MainVideoClips().Any())
+        // Words timed to the file last opened while it is still the whole sequence (one clip of it from its start: its file's
+        // time is the timeline's, SequenceSpans.WholeFiles) are anchored to its picture (4.4): cuts, folds and moves made
+        // afterwards carry them along. Once it is edited, a file's times can no longer be told apart from the edited timeline's,
+        // and they stay on the timeline's clock. A file's cues have no word times, so each is given its words spread over it by
+        // their length: a cut or fold through one then divides its words, and the part no window shows is kept through an edit
+        // of the part still seen.
+        if (!images && IsOpenedFileWhole)
         {
             var anchors = cues.Where(c => c.End > c.Start).OrderBy(c => c.Start)
                 .Select(c => CaptionProjection.WithWordTimes(new SubtitleCueState(c.Start, c.End, c.Text))).ToList();
-            SetSubtitleTrack([], path, false, 0, new CaptionSource(CaptionSourceKind.MainFile, LocalMediaPath, -1), anchors);
+            SetSubtitleTrack([], path, false, 0, new CaptionSource(CaptionSourceKind.Clip, OpenedFile, -1), anchors);
         }
         else
         {

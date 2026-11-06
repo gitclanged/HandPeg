@@ -9,13 +9,19 @@ using HandPegApp.Services.Gpu;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// A sheet of the Overview Bar's pictures: <see cref="Count"/> thumbnails of <see cref="CellWidth"/> x
+/// A sheet of the Sequence Overview Scrubber's pictures: <see cref="Count"/> thumbnails of <see cref="CellWidth"/> x
 /// <see cref="CellHeight"/>, <see cref="Columns"/> to a row, left to right and top to bottom, the i-th standing for the
 /// stretch from i x <see cref="IntervalSeconds"/>. The sequence's own (<see cref="GpuProgramStrip"/>, drawn at
-/// <see cref="Moments"/>), or the main file's key frames (FFmpeg's hover sheet, no moments) where the GPU cannot draw them.
+/// <see cref="Moments"/>), or the opened file's key frames (FFmpeg's hover sheet, no moments) where the GPU cannot draw them.
 /// </summary>
 public sealed record ThumbnailSheet(BitmapSource Picture, int Columns, int Count, int CellWidth, int CellHeight, double IntervalSeconds, double[] Moments)
 {
+    /// <summary>
+    /// A sheet still being drawn (5.2-Audit, progressive filling): the pictures drawn so far, each one not drawn yet standing in
+    /// with its nearest drawn neighbour's. The full sheet follows.
+    /// </summary>
+    public bool IsPartial { get; init; }
+
     /// <summary>The picture standing for a moment (seconds on the sheet's clock), clamped to the sheet.</summary>
     public int IndexAt(double seconds) => IntervalSeconds > 0 ? Math.Clamp((int)(seconds / IntervalSeconds), 0, Math.Max(Count - 1, 0)) : 0;
 
@@ -30,9 +36,9 @@ public sealed record ThumbnailSheet(BitmapSource Picture, int Columns, int Count
 }
 
 /// <summary>
-/// The Overview Bar's pictures drawn from the sequence itself (Pass 5.0-Verify, the user's call: the timeline shows what
-/// the GPU engine renders, never the main file's frames): every track, placement, crop, mask, effect and blurred
-/// background at evenly spread moments of the sequence, as the player draws them (fades and captions left out: a
+/// The Sequence Overview Scrubber's pictures drawn from the sequence itself (Pass 5.0-Verify, the user's call: the timeline
+/// shows what the GPU engine renders, never one file's frames): every track, placement, crop, mask, effect and blur fill
+/// at evenly spread moments of the sequence, as the player draws them (fades and captions left out: a
 /// thumbnail is the picture), from the live preview's state (proxies where they are made).
 /// <list type="bullet">
 /// <item><b>Its own compositor.</b> A worker on the background card (the high-performance one when there is no other),
@@ -48,12 +54,12 @@ public sealed record ThumbnailSheet(BitmapSource Picture, int Columns, int Count
 /// <item><b>Started ahead.</b> A file hovered in the Media pane or dragged onto a style (on a fast local drive, DriveKind)
 /// starts the worker and opens the file in it (<see cref="Prewarm"/>), so the sheet a drop asks for begins at its first
 /// picture.</item>
-/// <item><b>One decode a picture.</b> A moment within half a picture's stretch of one of the main file's key frames is
-/// moved onto it (as the source strips are, <see cref="GpuFilmstrips.SnapToKeyFrames"/>): a long recording costs one
+/// <item><b>One decode a picture.</b> A moment is moved onto a key frame of the file the bottom picture there reads (as the
+/// source strips are, <see cref="GpuFilmstrips.SnapToKeyFrames"/>; 5.2-AuditB: any clip's file): a long recording costs one
 /// decoded frame per picture, never a chase from the key frame before it.</item>
 /// </list>
 /// <para>Whenever it cannot draw a sheet (the setting, a worker that does not start or answer) it gives none, and the
-/// Overview Bar keeps the main file's key frames; three faults in a row end it for the session (<see cref="GaveUp"/>).</para>
+/// Sequence Overview Scrubber keeps the opened file's key frames; three faults in a row end it for the session (<see cref="GaveUp"/>).</para>
 /// </summary>
 public sealed class GpuProgramStrip : IDisposable
 {
@@ -80,6 +86,12 @@ public sealed class GpuProgramStrip : IDisposable
 
     // How long a picture may take: the first opens the files (a long recording's index is read), the rest decode a frame or so.
     private const int FirstPictureMs = 15_000, PictureMs = 8_000;
+
+    /// <summary>
+    /// How often a sheet being drawn is handed over as it fills, ms (5.2-Audit: a 22-minute recording's first sheet came whole after
+    /// some 100 s; now its first picture shows at once and the rest sharpen in across the whole bar).
+    /// </summary>
+    public const int ProgressMilliseconds = 400;
 
     // How far into a key frame a moment moved onto it is taken (container time stamps are rounded to the millisecond).
     private const double KeyLead = 0.001;
@@ -116,6 +128,9 @@ public sealed class GpuProgramStrip : IDisposable
     private sealed record Job(SequenceExportState State, double SettingInterval, bool ForStrip, long Asked, CancellationToken Token)
     {
         public TaskCompletionSource<ThumbnailSheet?> Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Told of the sheet as it fills (the worker's thread): null to be given the whole sheet alone.</summary>
+        public Action<ThumbnailSheet>? Progress { get; init; }
     }
 
     /// <summary>Made on the interface's thread, whose dispatcher <see cref="SheetReady"/> is raised on.</summary>
@@ -135,7 +150,7 @@ public sealed class GpuProgramStrip : IDisposable
     }
 
     /// <summary>
-    /// Whether the Overview Bar's pictures are the sequence's: with a background card that is a card (Settings' Background
+    /// Whether the Sequence Overview Scrubber's pictures are the sequence's: with a background card that is a card (Settings' Background
     /// GPU is not Processor Only) and a worker that has not failed three times in a row this session.
     /// </summary>
     public static bool IsWanted => !_gaveUp && AppSettings.Current.BackgroundGpu != -2;
@@ -143,7 +158,7 @@ public sealed class GpuProgramStrip : IDisposable
     /// <summary>A new sheet of the newest state (the interface's thread).</summary>
     public event Action<ThumbnailSheet>? SheetReady;
 
-    /// <summary>The worker failed three times in a row: the Overview Bar goes back to the main file's key frames (the interface's thread).</summary>
+    /// <summary>The worker failed three times in a row: the Sequence Overview Scrubber goes back to the opened file's key frames (the interface's thread).</summary>
     public event Action? GaveUp;
 
     /// <summary>How many pictures the last sheet drew (the rest were unchanged and kept): the golden tests' check that an edit redraws only what it touched.</summary>
@@ -217,13 +232,21 @@ public sealed class GpuProgramStrip : IDisposable
         var settings = AppSettings.Current;
         try
         {
-            var sheet = await WorkScheduler.Run(new WorkSpec("Overview Bar pictures", WorkLane.Background) { Visible = false }, async work =>
+            var sheet = await WorkScheduler.Run(new WorkSpec("Sequence Overview Scrubber pictures", WorkLane.Background) { Visible = false }, async work =>
             {
                 // A few decoding sessions at a time on the card, whatever asked for them.
                 await WorkScheduler.GpuDecodeGate.WaitAsync(work.Token);
                 try
                 {
-                    var job = new Job(state, settings.ThumbnailIntervalSeconds, settings.ShowTimelineThumbnails == true, asked, work.Token);
+                    // The sheet as it fills goes to the bar at once, while it is still the newest asked for.
+                    var job = new Job(state, settings.ThumbnailIntervalSeconds, settings.ShowTimelineThumbnails == true, asked, work.Token)
+                    {
+                        Progress = partial => _home.BeginInvoke(() =>
+                        {
+                            if (asked == Volatile.Read(ref _asked) && !_disposed)
+                                SheetReady?.Invoke(partial);
+                        }),
+                    };
                     using (work.Token.Register(() => job.Done.TrySetResult(null)))
                         return await Enqueue(job);
                 }
@@ -241,7 +264,7 @@ public sealed class GpuProgramStrip : IDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            AppLog.Write("Overview Bar pictures", ex);
+            AppLog.Write("Sequence Overview Scrubber pictures", ex);
         }
         finally
         {
@@ -323,7 +346,7 @@ public sealed class GpuProgramStrip : IDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            // Never out of this thread: the Overview Bar keeps what it has.
+            // Never out of this thread: the Sequence Overview Scrubber keeps what it has.
             AppLog.Write("GPU program strip", ex);
             next?.Done.TrySetResult(null);
             lock (_gate)
@@ -427,7 +450,7 @@ public sealed class GpuProgramStrip : IDisposable
     /// <summary>One sheet of the state: planned, each picture drawn (or taken from the last sheets), the sheet made; null when it was not.</summary>
     private ThumbnailSheet? DrawSheet(Job job)
     {
-        // A worker that does not start will not start the next time either: the main file's key frames at once.
+        // A worker that does not start will not start the next time either: the opened file's key frames at once.
         if (_client is null && !Start())
         {
             _faultsInARow = 2;
@@ -478,8 +501,11 @@ public sealed class GpuProgramStrip : IDisposable
             if (!client.WaitForFrame(client.Publish(), FirstPictureMs))
                 return Fault("the compositor drew nothing in time");
 
+            // Coarse to fine: the bar fills across its whole width at once and sharpens (see DrawingOrder), handed over as it does.
             var drawnNow = 0;
-            for (var i = 0; i < count; i++)
+            var placed = new bool[count];
+            var (placedCount, handedOver, lastHanded) = (0, 0, 0L);
+            foreach (var i in DrawingOrder(count))
             {
                 if (job.Token.IsCancellationRequested || job.Asked != Volatile.Read(ref _asked))
                     return null;
@@ -510,6 +536,16 @@ public sealed class GpuProgramStrip : IDisposable
                 var (left, top) = (i % Columns * cellWidth * 4, i / Columns * cellHeight);
                 for (var y = 0; y < cellHeight; y++)
                     picture.AsSpan(y * cellWidth * 4, cellWidth * 4).CopyTo(sheet.AsSpan((top + y) * stride + left, cellWidth * 4));
+                placed[i] = true;
+                placedCount++;
+
+                // The first picture at once, then the sheet as it fills, every so often.
+                if (job.Progress is { } progress && placedCount < count && placedCount > handedOver
+                    && (handedOver == 0 || clock.ElapsedMilliseconds - lastHanded >= ProgressMilliseconds))
+                {
+                    progress(Partial(sheet, placed, stride, cellWidth, cellHeight, rows));
+                    (handedOver, lastHanded) = (placedCount, clock.ElapsedMilliseconds);
+                }
             }
 
             // Kept for the next sheet: this one's pictures alone.
@@ -527,6 +563,29 @@ public sealed class GpuProgramStrip : IDisposable
             var bitmap = BitmapSource.Create(Columns * cellWidth, rows * cellHeight, 96, 96, PixelFormats.Bgr32, null, sheet, stride);
             bitmap.Freeze();
             return new ThumbnailSheet(bitmap, Columns, count, cellWidth, cellHeight, interval, moments);
+
+            // The sheet so far: each picture not drawn yet is its nearest drawn neighbour's (the one before it on a tie).
+            ThumbnailSheet Partial(byte[] drawn, bool[] done, int rowBytes, int width, int height, int sheetRows)
+            {
+                var copy = (byte[])drawn.Clone();
+                for (var n = 0; n < done.Length; n++)
+                {
+                    if (done[n])
+                        continue;
+                    var from = -1;
+                    for (var reach = 1; reach < done.Length && from < 0; reach++)
+                        from = n - reach >= 0 && done[n - reach] ? n - reach : n + reach < done.Length && done[n + reach] ? n + reach : -1;
+                    if (from < 0)
+                        continue;
+                    var (fromLeft, fromTop, toLeft, toTop) = (from % Columns * width * 4, from / Columns * height, n % Columns * width * 4, n / Columns * height);
+                    for (var y = 0; y < height; y++)
+                        drawn.AsSpan((fromTop + y) * rowBytes + fromLeft, width * 4).CopyTo(copy.AsSpan((toTop + y) * rowBytes + toLeft, width * 4));
+                }
+
+                var picture = BitmapSource.Create(Columns * width, sheetRows * height, 96, 96, PixelFormats.Bgr32, null, copy, rowBytes);
+                picture.Freeze();
+                return new ThumbnailSheet(picture, Columns, done.Length, width, height, interval, moments) { IsPartial = true };
+            }
         }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or ArgumentException or COMException or InvalidOperationException)
         {
@@ -548,7 +607,7 @@ public sealed class GpuProgramStrip : IDisposable
         if (Interlocked.Increment(ref _faultsInARow) >= 3 && !_gaveUp)
         {
             _gaveUp = true;
-            AppLog.Write("GPU program strip: three faults in a row; the Overview Bar shows the main file's key frames for the rest of the session.");
+            AppLog.Write("GPU program strip: three faults in a row; the Sequence Overview Scrubber shows the opened file's key frames for the rest of the session.");
             _home.BeginInvoke(() => GaveUp?.Invoke());
         }
 
@@ -558,30 +617,61 @@ public sealed class GpuProgramStrip : IDisposable
     // ----- Where and what -----
 
     /// <summary>
-    /// The moments the pictures are drawn at: each in the middle of its stretch, moved onto the main file's nearest key frame
-    /// (before or after where that moment reads it, however far: key frames only, the user's call in 5.0-Release, since a key
-    /// frame is one decode and a moment between two is a chase through up to a whole GOP), when HandPeg knows its key frames
-    /// and the move lands on that key frame in the same clip. Only a picture whose clip holds no key frame is drawn where it is.
+    /// The order a sheet's pictures are drawn in (5.2-Audit): the first, then the one halfway along, then those a quarter of the
+    /// way between, and so on (every picture once), so a sheet handed over half drawn covers the whole sequence evenly.
+    /// </summary>
+    public static int[] DrawingOrder(int count)
+    {
+        var order = new List<int>(Math.Max(count, 0));
+        var taken = new bool[Math.Max(count, 0)];
+        var step = 1;
+        while (step * 2 < count)
+            step *= 2;
+        for (; step >= 1; step /= 2)
+        {
+            for (var i = 0; i < count; i += step)
+            {
+                if (taken[i])
+                    continue;
+                taken[i] = true;
+                order.Add(i);
+            }
+        }
+
+        return [.. order];
+    }
+
+    /// <summary>
+    /// The moments the pictures are drawn at: each in the middle of its stretch, moved onto the nearest key frame of the file
+    /// the bottom picture there reads (5.2-AuditB: whichever clip's, every file alike; before or after where that
+    /// moment reads it, however far: key frames only, the user's call in 5.0-Release, since a key frame is one decode and a
+    /// moment between two is a chase through up to a whole GOP), when HandPeg knows its key frames and the move lands on that
+    /// key frame in the same clip. Only a picture whose clip holds no key frame is drawn where it is.
     /// </summary>
     private double[] Moments(GpuScenePlan plan, GpuResourceBroker broker, int count, double interval, double duration)
     {
         var moments = new double[count];
         var last = Math.Max(duration - 0.001, 0);
-        var keys = plan.PrimarySource >= 0 ? broker.IFramesOfSource(plan.PrimarySource) : null;
+        var keysOf = new Dictionary<int, double[]?>();
         _keyFramed = 0;
         for (var i = 0; i < count; i++)
         {
             var at = Math.Min((i + 0.5) * interval, last);
-            moments[i] = keys is { Length: > 0 } ? OntoKeyFrame(plan, keys, at, double.PositiveInfinity, last) : at;
+            moments[i] = OntoKeyFrame(plan, broker, keysOf, at, double.PositiveInfinity, last);
             _keyFramed += moments[i] != at ? 1 : 0;
         }
 
         return moments;
     }
 
-    private double OntoKeyFrame(GpuScenePlan plan, double[] keys, double at, double reach, double last)
+    private double OntoKeyFrame(GpuScenePlan plan, GpuResourceBroker broker, Dictionary<int, double[]?> keysOf, double at, double reach, double last)
     {
-        if (PrimaryMoment(plan, at) is not { } media)
+        if (BottomMoment(plan, at) is not { } bottom)
+            return at;
+        var (source, media) = bottom;
+        if (!keysOf.TryGetValue(source, out var keys))
+            keysOf[source] = keys = broker.IFramesOfSource(source);
+        if (keys is not { Length: > 0 })
             return at;
 
         var low = Array.BinarySearch(keys, media);
@@ -597,7 +687,7 @@ public sealed class GpuProgramStrip : IDisposable
             var moved = at + (target - media);
             if (Math.Abs(moved - at) >= reach || moved < 0 || moved > last || Math.Abs(moved - at) >= distance)
                 continue;
-            if (PrimaryMoment(plan, moved) is { } landed && Math.Abs(landed - target) < 0.0005)
+            if (MomentOf(plan, source, moved) is { } landed && Math.Abs(landed - target) < 0.0005)
                 (best, distance) = (moved, Math.Abs(moved - at));
         }
 
@@ -607,13 +697,17 @@ public sealed class GpuProgramStrip : IDisposable
     // How many of the last sheet's moments were moved onto a key frame (the log's timing line).
     private int _keyFramed;
 
-    // Where the sequence's moment reads the main file (the worker's time), when it does.
-    private double? PrimaryMoment(GpuScenePlan plan, double at)
+    // The file the bottom picture reads at a moment of the sequence, and where (the worker's time), when one does.
+    private (int Source, double Media)? BottomMoment(GpuScenePlan plan, double at) =>
+        plan.MediaAt(at, _hints) > 0 ? (_hints[0].SourceId, _hints[0].MediaSeconds) : null;
+
+    // Where the sequence's moment reads a file (the worker's time), when it does.
+    private double? MomentOf(GpuScenePlan plan, int source, double at)
     {
         var found = plan.MediaAt(at, _hints);
         for (var i = 0; i < found; i++)
         {
-            if (_hints[i].SourceId == plan.PrimarySource)
+            if (_hints[i].SourceId == source)
                 return _hints[i].MediaSeconds;
         }
 

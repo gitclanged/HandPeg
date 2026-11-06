@@ -33,10 +33,18 @@ float2 Aspected(float2 uv, float2 point_)
     return (uv - point_ / 100) * float2(DstSize.x / max(DstSize.y, 1), 1);
 }
 
+// A way in the picture turned by an effect's Rotation (5.2): degrees, clockwise on the picture (y runs down). 0 leaves it as it is.
+float2 Turn(float2 v, float degrees)
+{
+    float s, c;
+    sincos(radians(degrees), s, c);
+    return float2(v.x * c - v.y * s, v.x * s + v.y * c);
+}
+
 // ----- The Explosion (slot 26) -----
 //
 // A ball of fire raymarched through a baked 3D noise (t2, tiled): P0 how far through (0..1), P1, P2 where, P3 how large (% of the height), P4..P6 the fire's colour,
-// P7 the smoke; Q1 the seed. It bursts out fast, rolls, cools from the outside in and leaves smoke. The steps are started a little off from pixel to pixel,
+// P7 the smoke; Q1 the seed, Q2 its Rotation. It bursts out fast, rolls, cools from the outside in and leaves smoke. The steps are started a little off from pixel to pixel,
 // which turns what would be bands into a fine grain the half-size picture and its bilinear enlargement smooth away.
 static const int ExplosionSteps = 26;
 
@@ -50,7 +58,7 @@ float4 PSExplosion(VsOut i) : SV_Target
 {
     float age = saturate(P0);
     float radius = max(P3 / 100 * 0.5 * (1 - exp(-7 * age)) * (1 + 0.35 * age), 1e-3);
-    float2 at = Aspected(i.Uv, float2(P1, P2)) / radius;
+    float2 at = Turn(Aspected(i.Uv, float2(P1, P2)), -Q2) / radius;
     if (dot(at, at) > 2.4)
         return float4(0, 0, 0, 0);
 
@@ -132,8 +140,8 @@ VsOut VSSparks(uint id : SV_VertexID)
     float near = 1 / max(1 - here.z * 0.6, 0.3);
     float2 size = float2(DstSize.y / max(DstSize.x, 1), 1);
     float2 start = float2(P1, P2) / 100;
-    float2 at = (start + here.xy * near * size) * DstSize;
-    float2 from = (start + before.xy * near * size) * DstSize;
+    float2 at = (start + Turn(here.xy, Q7) * near * size) * DstSize;
+    float2 from = (start + Turn(before.xy, Q7) * near * size) * DstSize;
 
     float2 pixel;
     if (debris)
@@ -182,16 +190,19 @@ float4 PSDebris(VsOut i) : SV_Target
 // ----- Anime Lines (slot 28) -----
 //
 // P0 the style (0 radial, 1 across, 2 down), P1, P2 the middle, P3 how many, P4 thickness, P5 the clear middle (% of the height), P6 new drawings a second,
-// P7 the opacity (%); Q0..Q2 the colour, Q4 the seed. Drawn anew so many times a second, on twos as a hand would, never smoothly animated.
+// P7 the opacity (%); Q0..Q2 the colour, Q4 the seed, Q5 their Rotation about the middle. Drawn anew so many times a second, on twos as a hand would, never smoothly animated.
 float4 PSAnimeLines(VsOut i) : SV_Target
 {
     float drawing = floor(Params4.w * max(P6, 1));
     float seed = Q4 * 3.17 + drawing * 7.31 + 1;
     float count = max(P3, 1);
     float shown = 0;
+    // The lines turned about their middle (Q5): the picture's point read where it was before the turn.
+    float2 turned = Turn(Aspected(i.Uv, float2(P1, P2)), -Q5);
+    float2 uv = turned / float2(DstSize.x / max(DstSize.y, 1), 1) + float2(P1, P2) / 100;
     if (P0 < 0.5)
     {
-        float2 p = Aspected(i.Uv, float2(P1, P2));
+        float2 p = turned;
         float r = length(p);
         float around = (atan2(p.y, p.x) / 6.28318531 + 0.5) * count;
         float line_ = floor(around);
@@ -206,8 +217,8 @@ float4 PSAnimeLines(VsOut i) : SV_Target
     else
     {
         bool across = P0 < 1.5;
-        float along = across ? i.Uv.x : i.Uv.y;
-        float rows = (across ? i.Uv.y : i.Uv.x) * count;
+        float along = across ? uv.x : uv.y;
+        float rows = (across ? uv.y : uv.x) * count;
         float line_ = floor(rows);
         float centre = Hash(line_ * 0.73 + seed);
         float reach = lerp(0.08, 0.45, Hash(line_ * 1.13 + seed));
@@ -234,13 +245,13 @@ float HexEdge(float2 p)
 }
 
 // The shield: a dome of hexagons with a bright rim. P0 how far it has risen, P1, P2 its middle, P3 its radius (% of the height), P4..P6 its colour, P7 the hexagons;
-// Q1 how fast its pulse goes, Q2 the seed.
+// Q1 how fast its pulse goes, Q2 the seed, Q3 its Rotation.
 float4 PSEnergyShield(VsOut i) : SV_Target
 {
     float rise = saturate(P0);
     float grown = rise * rise * (3 - 2 * rise);
     float radius = max(P3 / 100 * grown, 1e-3);
-    float2 p = Aspected(i.Uv, float2(P1, P2)) / radius;
+    float2 p = Turn(Aspected(i.Uv, float2(P1, P2)), -Q3) / radius;
     float d = dot(p, p);
     float3 tint = float3(P4, P5, P6);
     if (d >= 1)
@@ -261,11 +272,15 @@ float4 PSEnergyShield(VsOut i) : SV_Target
 }
 
 // The saber: a blade of light. P0 how far it has come out, P1, P2 its hilt, P3, P4 its tip (% of the picture), P5..P7 its colour; Q1 the core's width (px of a
-// 1080-wide frame), Q2 the glow, Q3 how much it flickers.
+// 1080-wide frame), Q2 the glow, Q3 how much it flickers, Q4 its Rotation about the middle of hilt and tip.
 float4 PSSaber(VsOut i) : SV_Target
 {
     float2 hilt = float2(P1, P2) / 100 * DstSize;
     float2 tip = float2(P3, P4) / 100 * DstSize;
+    float2 middle = (hilt + tip) * 0.5;
+    float2 turned = middle + Turn(hilt - middle, Q4);
+    tip = middle + Turn(tip - middle, Q4);
+    hilt = turned;
     float out_ = saturate(P0);
     tip = lerp(hilt, tip, out_ * out_ * (3 - 2 * out_));
     float2 pixel = i.Uv * DstSize;

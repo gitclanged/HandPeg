@@ -19,8 +19,8 @@ public sealed record SequenceLook(
 // ----- Universal undo (4.4) -----
 // An edit of the document takes its own step (OnDocumentCommitted), and so does whatever takes one by hand (Checkpoint):
 // a gizmo dragged, a dialog's visit, a keyframe moved. Everything else the user changes is a look: of a clip's view (its
-// place, size, text, filters), of the caption box, of one of the main file's audio tracks, or of the sequence (its colour,
-// its blurred background, the Center controls). Each of those takes a step just before it changes (PropertyChanging, or
+// place, size, text, filters), of the caption box, of one of the output audio tracks (5.2-AuditB: what is made of it, its title),
+// or of the sequence (its colour, its blur fill's look). Each of those takes a step just before it changes (PropertyChanging, or
 // the toolkit's OnXChanging), so the step holds the look as it was; but only when it is the user changing it, and once for
 // a burst of changes: a slider dragged, a box typed into, a name typed letter by letter.
 public partial class MainViewModel
@@ -52,7 +52,7 @@ public partial class MainViewModel
     // is changed in it belongs to that step, for as long as no other step follows it.
     private byte[]? _visitStep;
 
-    // The caption box, the main file's audio tracks and the dialogs are listened to from the user's first touch (NoteUserInput):
+    // The caption box, the output audio tracks and the dialogs are listened to from the user's first touch (NoteUserInput):
     // a look changes by the user's hand only after a touch of theirs.
     private bool _undoSourcesHooked;
 
@@ -85,12 +85,13 @@ public partial class MainViewModel
     /// <summary>
     /// Whether a look may take a step at all now: not while the views are being written from the document, a step is being
     /// put back, a project or a preset is being put in place (the command deferred), keyframes are being played or recorded,
-    /// a value is being copied along a track, the main video is being placed or shown in the Center controls, the crop is
+    /// a value is being copied along a track, a picture is being kept in place as the frame changes shape, the Crop boxes are
+    /// showing a clip's crop, the crop is
     /// being written into clips, a style is being applied, an edit is open, or the Effects pane is writing (it keeps steps of
     /// its own). Nor before the user has touched anything at all.
     /// </summary>
     private bool LookStepsShut =>
-        _inputGesture == 0 || _isBackgroundWorker || _syncingViews || _applyingKeys || _recordingKey || _settingQuietly || _placingMain
+        _inputGesture == 0 || _isBackgroundWorker || _syncingViews || _applyingKeys || _recordingKey || _settingQuietly || _placingViews
         || _showingTarget || _takingCrop || _commandDeferrals > 0 || _lookStepsHeld > 0 || _openEdit is not null || Layer.IsEchoing
         || IsRestoringTimeline;
 
@@ -154,6 +155,7 @@ public partial class MainViewModel
         nameof(Layer.PositionX) or nameof(Layer.PositionY) or nameof(Layer.AnchorX) or nameof(Layer.AnchorY) => $"move {view.Name}",
         nameof(Layer.SizeWidth) or nameof(Layer.SizeHeight) or nameof(Layer.LockAspectRatio) => $"resize {view.Name}",
         nameof(Layer.Rotation) => $"turn {view.Name}",
+        nameof(Layer.TiltX) or nameof(Layer.TiltY) => $"tilt {view.Name} in 3D",
         nameof(Layer.CropLeft) or nameof(Layer.CropTop) or nameof(Layer.CropRight) or nameof(Layer.CropBottom) => $"crop {view.Name}",
         nameof(Layer.Opacity) => $"change the opacity of {view.Name}",
         nameof(Layer.FontFamily) or nameof(Layer.FontSize) or nameof(Layer.FontColor) or nameof(Layer.OutlineColor)
@@ -182,7 +184,7 @@ public partial class MainViewModel
         }
     }
 
-    // ----- The main file's audio tracks -----
+    // ----- The output audio tracks -----
 
     private void HookTrack(AudioTrack track)
     {
@@ -190,7 +192,7 @@ public partial class MainViewModel
         track.PropertyChanging += OnTrackChanging;
     }
 
-    /// <summary>One of the main file's audio tracks is about to change (its gain, muting, filters, ducking, voice or title): a step first, when it is the user's change.</summary>
+    /// <summary>One of the output audio tracks is about to change (what is made of it, or its title): a step first, when it is the user's change.</summary>
     private void OnTrackChanging(object? sender, PropertyChangingEventArgs e)
     {
         if (LookStepsShut || sender is not AudioTrack track || e.PropertyName is not { } name)
@@ -198,10 +200,7 @@ public partial class MainViewModel
 
         var what = name switch
         {
-            nameof(AudioTrack.GainDb) => $"change the volume of {track.Title}",
-            nameof(AudioTrack.Action) => track.IsMuted ? $"unmute {track.Title}" : $"change the output of {track.Title}",
-            nameof(AudioTrack.Filters) => $"change the audio filters of {track.Title}",
-            nameof(AudioTrack.AutoDuck) or nameof(AudioTrack.IsVoice) => $"change the ducking of {track.Title}",
+            nameof(AudioTrack.Action) => track.IsMuted ? $"take {track.Title} back into the output" : $"change the output of {track.Title}",
             nameof(AudioTrack.Title) => $"rename {track.Title}",
             _ => null,
         };
@@ -209,9 +208,8 @@ public partial class MainViewModel
             TakeLookStep(track, name, what);
     }
 
-    // ----- The sequence's look and the Center controls -----
-    // Set by a style (held), a preset or a project (deferred), an undo step (deferred), or by the Center controls showing
-    // another clip (_showingTarget) or following one (_placingMain): none of those is the user's change.
+    // ----- The sequence's look -----
+    // Set by a Game Preset (held), a preset or a project (deferred), an undo step (deferred): none of those is the user's change.
 
     partial void OnColorContrastChanging(double value) => SequenceLookChanging(nameof(ColorContrast), "change the contrast");
     partial void OnColorBrightnessChanging(double value) => SequenceLookChanging(nameof(ColorBrightness), "change the brightness");
@@ -222,15 +220,11 @@ public partial class MainViewModel
     partial void OnColorGreenChanging(double value) => SequenceLookChanging(nameof(ColorGreen), "change the green balance");
     partial void OnColorBlueChanging(double value) => SequenceLookChanging(nameof(ColorBlue), "change the blue balance");
     partial void OnSharpenStrengthChanging(double value) => SequenceLookChanging(nameof(SharpenStrength), "change the sharpening");
-    partial void OnBlurRadiusChanging(double value) => SequenceLookChanging(nameof(BlurRadius), "change the background blur");
-    partial void OnBlurPassesChanging(int value) => SequenceLookChanging(nameof(BlurPasses), "change the background blur");
-    partial void OnBackgroundDimChanging(double value) => SequenceLookChanging(nameof(BackgroundDim), "change the background's darkening");
-    partial void OnBackgroundZoomChanging(double value) => SequenceLookChanging(nameof(BackgroundZoom), "zoom the background");
+    partial void OnBlurRadiusChanging(double value) => SequenceLookChanging(nameof(BlurRadius), "change the blur fill's blur");
+    partial void OnBlurPassesChanging(int value) => SequenceLookChanging(nameof(BlurPasses), "change the blur fill's blur");
+    partial void OnBackgroundDimChanging(double value) => SequenceLookChanging(nameof(BackgroundDim), "change the blur fill's darkening");
+    partial void OnBackgroundZoomChanging(double value) => SequenceLookChanging(nameof(BackgroundZoom), "zoom the blur fill");
 
-    // The Center controls are a view of one clip of the main video (4.4): typed or slid, that clip's place changes.
-    partial void OnCenterZoomChanging(double value) => SequenceLookChanging(nameof(CenterZoom), "zoom the main video");
-    partial void OnCenterOffsetXChanging(double value) => SequenceLookChanging(nameof(CenterOffsetX), "move the main video");
-    partial void OnCenterOffsetYChanging(double value) => SequenceLookChanging(nameof(CenterOffsetY), "move the main video");
 
     private void SequenceLookChanging(string name, string what)
     {
@@ -241,7 +235,7 @@ public partial class MainViewModel
     // ----- What is listened to, from the user's first touch -----
 
     /// <summary>
-    /// Listens to the caption box, the main file's audio tracks (those there and those to come) and the dialogs: called on the
+    /// Listens to the caption box, the output audio tracks (those there and those to come) and the dialogs: called on the
     /// interface's thread at the user's first touch, before any change of theirs can be made.
     /// </summary>
     private void HookUndoSources()
@@ -268,7 +262,7 @@ public partial class MainViewModel
     // ----- Putting a step back (4.4-BugHunt) -----
     // While a document is being put in place (an undo or redo step, a project opened, a new one: Step, RestoreTimeline and
     // InstallDocument, each nesting in the one before), nothing may take an undo step, open an edit, project the captions or
-    // write the Center controls and the crop into clips: what asks then is the restore itself, or something it set going, and
+    // write the Crop boxes into clips: what asks then is the restore itself, or something it set going, and
     // it would land in the middle of it. The captions are projected once, as it ends, from the anchors put back. And from its
     // end until the window's bindings have taken the new views (the dispatcher idle again), or the user's next touch, what
     // they write back is their echo, not the user's change: it takes no step and makes no edit.
@@ -303,11 +297,6 @@ public partial class MainViewModel
     /// </summary>
     public event Action? TimelineRestored;
 
-    /// <summary>
-    /// Whether a preset, a style or a project's settings are being put in place (the command deferred): the Center controls
-    /// and the Crop boxes then set every clip of the main video. Not an undo step, which defers the command as well.
-    /// </summary>
-    private bool PresetBeingApplied => _commandDeferrals > 0 && _restoring == 0;
 
     /// <summary>A document starts being put in place; disposed, it is done (the outermost then finishes, <see cref="EndRestore"/>).</summary>
     private RestoreScope BeginRestore()

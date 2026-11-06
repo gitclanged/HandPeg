@@ -97,70 +97,15 @@ float AlphaAt(float2 uv, float2 rate)
 
 // ----- Pixel shaders -----
 
-// The Studio Stage's light (5.1-GpuFx): the picture's own colour, gathered and eased from frame to frame (PSAmbientGather), a texel of Aux.
-float3 Ambient() { return Aux.SampleLevel(PointClamp, float2(0.5, 0.5), 0).rgb; }
-
-// Behind everything: a quiet vertical gradient from Color (top) to Params3 (bottom), darker towards the corners, with the stage's light behind the stack
-// (Params2.x, none on the plain view). Opaque.
+// Behind everything: a quiet vertical gradient from Color (top) to Params3 (bottom), darker towards the corners. Opaque.
 float4 PSExplodedBackdrop(VsOut i) : SV_Target
 {
     float3 rgb = lerp(Color.rgb, Params3.rgb, i.Uv.y);
     float2 d = i.Uv - 0.5;
-    float2 glow = d * float2(1.1, 1.8);
-    return float4(rgb * (1 - 0.6 * dot(d, d)) + Ambient() * Params2.x * exp(-dot(glow, glow) * 5), 1);
+    return float4(rgb * (1 - 0.6 * dot(d, d)), 1);
 }
 
-// The stage's light: what the picture's main colour is. Input a plane's picture, in its part of the texture (Params3.xy, as Tap reads it), weighed by how much of a
-// colour each of 64 taps is; Aux the light so far, moved toward it by Color.a. Drawn into one texel.
-float4 PSAmbientGather(VsOut i) : SV_Target
-{
-    float3 sum = float3(0, 0, 0);
-    float total = 1e-4;
-    [unroll] for (int y = 0; y < 8; y++)
-    {
-        [unroll] for (int x = 0; x < 8; x++)
-        {
-            float4 c = Unpremul(Input.SampleLevel(LinearClamp, (float2(x, y) + 0.5) / 8 * Params3.xy, 0));
-            float strength = c.a * (0.15 + 2 * (max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b))));
-            sum += saturate(c.rgb) * strength;
-            total += strength;
-        }
-    }
-
-    return float4(lerp(Ambient(), sum / total, Color.a), 1);
-}
-
-// The obsidian floor: Color its stone, with a pool of the stage's light on it and a faint grid (Params2.xy cells across and deep, Params2.z its strength), going out
-// into the dark all round; polished, so it shines more the lower it is looked at (Params3.x).
-float4 PSExplodedFloor(VsOut i) : SV_Target
-{
-    float2 p = i.Local - 0.5;
-    float fall = saturate(1 - dot(p, p) * 3.8);
-    float2 cells = i.Local * Params2.xy;
-    float2 rate = max(fwidth(cells), 1e-5);
-    float2 lines = abs(frac(cells + 0.5) - 0.5) / rate;
-    float grid = saturate(1.2 - min(lines.x, lines.y)) * Params2.z * fall;
-    float3 rgb = Color.rgb + Ambient() * (0.1 + 0.25 * Params3.x) * fall * fall + (Ambient() * 0.5 + 0.25) * grid;
-    float a = fall * fall * (3 - 2 * fall) * Color.a;
-    return float4(rgb * a, a);
-}
-
-// A plane mirrored in the floor: its picture fading out with the height above the floor (Params2.x how much of it shows, Params2.y how strongly), softer the higher.
-float4 PSExplodedReflection(VsOut i) : SV_Target
-{
-    float height = 1 - i.Local.y;
-    float fade = 1 - saturate(height / max(Params2.x, 1e-3));
-    fade *= fade;
-    if (fade <= 0.002)
-        return float4(0, 0, 0, 0);
-
-    float2 rate = fwidth(i.Uv);
-    float2 soft = float2(0, rate.y * (1 + height * 14));
-    float4 c = (SamplePlane(i.Uv - soft, rate) + SamplePlane(i.Uv - soft * 0.33, rate) + SamplePlane(i.Uv + soft * 0.33, rate) + SamplePlane(i.Uv + soft, rate)) * 0.25;
-    return c * fade * Params2.y;
-}
-
-// A hairline along a quad (the depth guides): Color, solid along its middle and fading to nothing at its two ends (Local.x).
+// A hairline along a quad (the depth rails): Color, solid along its middle and fading to nothing at its two ends (Local.x).
 float4 PSExplodedLine(VsOut i) : SV_Target
 {
     float across = 1 - abs(i.Local.y * 2 - 1);
@@ -180,18 +125,7 @@ float4 PSExplodedPlane(VsOut i) : SV_Target
         c = SamplePlane(i.Uv, rate) * Params4.x;
     float edge = EdgeDistance(i.Local, localRate);
     float stroke = saturate(Params2.x - edge) * Color.a;
-
-    // On the Studio Stage (Params2.y) the picture's own light wraps round the plane's edges, and the hairline takes its colour.
-    float3 line_ = Color.rgb;
-    if (Params2.y > 0)
-    {
-        float3 light = Ambient();
-        c.rgb += light * c.a * exp(-edge / 26) * Params2.y;
-        line_ = lerp(Color.rgb, light * 1.4 + 0.12, saturate(Params2.y * 2));
-        stroke = saturate(stroke * (1 + Params2.y * 2));
-    }
-
-    return float4(line_ * stroke + c.rgb * (1 - stroke), stroke + c.a * (1 - stroke));
+    return float4(Color.rgb * stroke + c.rgb * (1 - stroke), stroke + c.a * (1 - stroke));
 }
 
 // The neon outline round a plane's silhouette: where its picture's alpha changes (a mask's or a key's edge, the box's

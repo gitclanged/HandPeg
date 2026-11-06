@@ -27,7 +27,7 @@ public partial class MainWindow
         {
             "Window" => ShownForMirror(ChromeRoot),
             "Header" => ShownForMirror(EditorHeader),
-            // The timeline pane; the overview bar while the timeline is not on show.
+            // The timeline pane; the Sequence Overview Scrubber while the timeline is not on show.
             "Timeline" => ShownForMirror(UnifiedTimelinePanel) ?? ShownForMirror(TimelinePane),
             "Player" => ShownForMirror(PlayerPane),
             "Canvas" => ShownForMirror(LayoutPane),
@@ -55,8 +55,8 @@ public partial class MainWindow
         element is { IsVisible: true, ActualWidth: >= 40, ActualHeight: >= 20 } ? element : null;
 
     /// <summary>
-    /// The Overview Bar's picture nearest the playhead, as the timeline's strip cuts them (RebuildFilmstrip), or null while
-    /// there is no sheet: the sequence's own (drawn by the GPU engine), else the main file's key frames, whose own time is
+    /// The Sequence Overview Scrubber's picture nearest the playhead, as the timeline's strip cuts them (RebuildFilmstrip), or null while
+    /// there is no sheet: the sequence's own (drawn by the GPU engine), else the opened file's key frames, whose own time is
     /// near enough to the sequence's for a stand-in.
     /// </summary>
     private ImageSource? StillAtPlayhead()

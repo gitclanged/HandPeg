@@ -1,13 +1,13 @@
-# A press on the preview: hidden layers, sticky selection and mask-aware hits, through WPF's hit test on real LayerBoxes.
+# A press on the preview: hidden clips, sticky selection and mask-aware hits, through WPF's hit test on real LayerBoxes.
 ok: nothing selected, the topmost box takes the press (top)
-ok: inside the piece's mask it takes the press (piece)
+ok: inside the Cutout's mask it takes the press (piece)
 ok: in the empty corner of its mask the press falls through to what lies under it (video)
-ok: a hidden layer never takes a press (video)
-ok: the selected layer keeps a press inside its box though others lie over it (video)
-ok: so does a press on a piece over it (video)
-ok: a selected masked layer takes all of its box, its empty corner too (piece)
+ok: a hidden clip never takes a press (video)
+ok: the selected clip keeps a press inside its box though others lie over it (video)
+ok: so does a press on a Cutout over it (video)
+ok: a selected masked clip takes all of its box, its empty corner too (piece)
 ok: outside the selected box a press goes where it would (video)
-ok: a selected layer that is hidden holds nothing back (video)
+ok: a selected clip that is hidden holds nothing back (video)
 ok: a click goes down the stack and comes round (piece, video, top)
 ok: with nothing else there, a click stays where it is
 ok: a turned selected box keeps its middle

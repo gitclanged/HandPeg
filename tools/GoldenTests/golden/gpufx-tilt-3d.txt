@@ -1,0 +1,11 @@
+# True 3D (5.2A): a clip's Pitch and Yaw go into its layer, and its quad is drawn in perspective.
+ok: a flat clip's layer is flat
+ok: a tilt is held to 60 degrees
+ok: set, its Pitch and Yaw go into its layer
+ok: keyed, the Yaw at the moment (half way: 20 degrees)
+ok: kept in its look, keys and all
+ok: untilted, the matrix is the flat one, w 1
+ok: swung (Yaw 40), its right edge is further away: shorter, its left edge longer
+ok: and it is narrower, as a card turned away is
+ok: about its anchor, which stays where it was
+ok: tilted back (Pitch 30), its top edge is the shorter

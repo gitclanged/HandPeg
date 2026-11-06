@@ -116,8 +116,12 @@ public sealed class PictureSubtitleSet(string path, int canvasWidth, int canvasH
     public long PackedBytes { get; } = pictures.Sum(p => (long)p.PackedBytes);
 }
 
-/// <summary>A cue of the track the preview draws: when its picture is up on the sequence clock (from, in; to, not) and the picture.</summary>
-public readonly record struct PictureSubtitleCue(double From, double To, PictureSubtitlePicture Picture);
+/// <summary>
+/// A cue of the track the preview draws: when its picture is up on the sequence clock (from, in; to, not), the picture, and
+/// the clip it is shown in when that is known (burned subtitles: the clip its piece of the cue was placed by; empty: the
+/// scene plan finds the clip of the stream's file that is on).
+/// </summary>
+public readonly record struct PictureSubtitleCue(double From, double To, PictureSubtitlePicture Picture, Guid ClipId = default);
 
 /// <summary>
 /// The subtitle track's pictures as the GPU preview draws them (<see cref="SequenceExportState.PictureSubtitles"/>): each
@@ -144,11 +148,13 @@ public sealed class PictureSubtitleTrack
     /// The track of a decoded file's pictures, cue for cue: the <paramref name="fileCues"/> as they were read from the file,
     /// in its order, and the same cues by position as they are to be shown (retimed, the offset added). A cue's picture is
     /// the one the file shows at the cue's own moment there (or that comes within <see cref="MatchToleranceSeconds"/> of
-    /// it); a cue with none (not decoded yet, or past the budget) is left out. Null when no cue has a picture.
+    /// it); a cue with none (not decoded yet, or past the budget) is left out. <paramref name="shownClips"/>, when given, holds
+    /// the clip each shown cue is shown in, by position (<see cref="PictureSubtitleCue.ClipId"/>). Null when no cue has a picture.
     /// </summary>
-    public static PictureSubtitleTrack? Match(PictureSubtitleSet set, IReadOnlyList<(double Start, double End)> fileCues, IReadOnlyList<(double Start, double End)> shownCues)
+    public static PictureSubtitleTrack? Match(PictureSubtitleSet set, IReadOnlyList<(double Start, double End)> fileCues, IReadOnlyList<(double Start, double End)> shownCues,
+        IReadOnlyList<Guid>? shownClips = null)
     {
-        if (set.Pictures.Count == 0 || fileCues.Count != shownCues.Count)
+        if (set.Pictures.Count == 0 || fileCues.Count != shownCues.Count || (shownClips is not null && shownClips.Count != shownCues.Count))
             return null;
 
         var cues = new List<PictureSubtitleCue>(fileCues.Count);
@@ -158,7 +164,7 @@ public sealed class PictureSubtitleTrack
             if (!double.IsFinite(from) || !double.IsFinite(to) || to <= from)
                 continue;
             if (PictureAt(set.Pictures, fileCues[i].Start) is { } picture)
-                cues.Add(new PictureSubtitleCue(Math.Max(from, 0), to, picture));
+                cues.Add(new PictureSubtitleCue(Math.Max(from, 0), to, picture, shownClips?[i] ?? Guid.Empty));
         }
 
         cues.Sort(static (a, b) => a.From.CompareTo(b.From));

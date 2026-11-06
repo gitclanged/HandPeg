@@ -8,7 +8,7 @@
     <Grid>
     <StackPanel x:Name="MainPanel" Margin="20">
         <TextBlock Text="HandPeg" FontSize="26" FontWeight="SemiBold" />
-        <TextBlock Text="Drop a video to get started, pick up where you left off, or open a video with one of your style presets."
+        <TextBlock Text="Drop a video to get started, pick up where you left off, or open a video with one of your Game Presets."
                    Foreground="{DynamicResource MutedTextBrush}" Margin="0,2,0,14" TextWrapping="Wrap" />
 
         <!-- The drop zone: a video dropped (or chosen with a click) here opens as it would in the main window -->
@@ -41,19 +41,30 @@
                       ToolTip="Your saved projects, most recently saved first.">
                 <ComboBox.ItemTemplate>
                     <DataTemplate>
-                        <TextBlock TextTrimming="CharacterEllipsis">
-                            <Run Text="{Binding Name, Mode=OneWay}" /><Run Text="   " /><Run Text="{Binding SavedText, Mode=OneWay}" Foreground="{DynamicResource MutedTextBrush}" />
-                        </TextBlock>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <!-- The project's baked thumbnail (Pass 5.2D), small; its place kept empty while another row has one -->
+                            <Border Width="72" Height="40" Margin="0,0,8,0" Background="#FF0E0E0E" CornerRadius="2" ClipToBounds="True"
+                                    Visibility="{Binding ThumbnailVisibility, Mode=OneWay}">
+                                <Image Source="{Binding Thumbnail, Mode=OneWay}" Stretch="Uniform" />
+                            </Border>
+                            <TextBlock Grid.Column="1" TextTrimming="CharacterEllipsis" VerticalAlignment="Center">
+                                <Run Text="{Binding Name, Mode=OneWay}" /><Run Text="   " /><Run Text="{Binding SavedText, Mode=OneWay}" Foreground="{DynamicResource MutedTextBrush}" />
+                            </TextBlock>
+                        </Grid>
                     </DataTemplate>
                 </ComboBox.ItemTemplate>
             </ComboBox>
         </Grid>
 
-        <!-- Style presets, as targets: a video dropped on one opens with that look and layout -->
+        <!-- Game Presets, as targets: a video dropped on one opens with that look and layout -->
         <StackPanel x:Name="StylePanel" Margin="0,18,0,0">
-            <TextBlock Text="Open with a style preset" FontWeight="SemiBold" FontSize="14" />
+            <TextBlock Text="Open with a Game Preset" FontWeight="SemiBold" FontSize="14" />
             <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,2,0,8"
-                       Text="Drop a video on a style, or click one to choose a video: it opens with that style's layers, masks, colors and captions. Which styles are shown is chosen in Settings, on the Interface tab." />
+                       Text="Drop a video on a Game Preset, or click one to choose a video: it opens with that preset's Cutouts, masks, colors and captions. Which Game Presets are shown is chosen in Settings, on the Interface tab." />
             <ItemsControl x:Name="StyleList" Focusable="False">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
@@ -76,7 +87,7 @@
             </ItemsControl>
         </StackPanel>
         <TextBlock x:Name="NoStylesText" Visibility="Collapsed" Foreground="{DynamicResource MutedTextBrush}" Margin="0,16,0,0" TextWrapping="Wrap"
-                   Text="There are no style presets yet. Set up layers, colors or captions, then use Export Style Preset on the Summary tab: styles saved in the Styles folder appear here." />
+                   Text="There are no Game Presets yet. Set up Cutouts, colors or captions, then use Export Game Preset on the Summary tab: Game Presets saved in the Styles folder appear here." />
 
         <!-- The Social Sharing Squisher: a video dropped on a preset is squeezed under its size, here, without being opened -->
         <StackPanel x:Name="SquisherPanel" Margin="0,18,0,0">
@@ -111,7 +122,7 @@
         </StackPanel>
 
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" Margin="0,16,0,0" TextWrapping="Wrap"
-                   Text="This window opens as HandPeg starts. It can be switched off, and its styles chosen, under Settings, Interface." />
+                   Text="This window opens as HandPeg starts. It can be switched off, and its Game Presets chosen, under Settings, Interface." />
     </StackPanel>
 
     <!-- What the window shrinks to while a video is squeezed: its picture, how far along it is, and afterwards the file to drag out -->

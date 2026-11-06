@@ -38,7 +38,7 @@ public static partial class CompositorParityTests
             harness.GpuFx();
             harness.Exploded();
             harness.ExplodedDetail();
-            harness.StudioStage();
+            harness.DepthRails();
             harness.Loupe();
             harness.Nv12();
             harness.Decode();
@@ -946,7 +946,7 @@ public static partial class CompositorParityTests
             var ffmpeg = FindFfmpeg();
             if (ffmpeg is null)
             {
-                Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the decode checks were not run");
+                Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the decode checks were not run");
                 Line($"  frame-exact seeks, forward and back");
                 Line($"  BT.709 colour within 4/255");
                 Line($"  motion blur: the flow of a real clip, by its own speed (22)");
@@ -1081,8 +1081,7 @@ public static partial class CompositorParityTests
 
         private static string? FindFfmpeg()
         {
-            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            foreach (var candidate in new[] { Path.Combine(local, "HandPeg-Data", "deps", "ffmpeg", "ffmpeg.exe"), Path.Combine(local, "HandPeg", "deps", "ffmpeg", "ffmpeg.exe") })
+            foreach (var candidate in GpuExportTests.FfmpegCandidates())
             {
                 if (File.Exists(candidate))
                     return candidate;
@@ -1102,13 +1101,20 @@ public static partial class CompositorParityTests
 
         // ----- Timing -----
 
+        /// <summary>
+        /// Frames drawn before any timing is kept (5.2-Arm64AndNpu). A mobile GPU idles at a low clock and is raised only by a run of frames, as playback
+        /// raises it: on the Adreno X1-85 a few frames in a row were timed at a third of the speed it plays at (a plain pass 0.30 ms, not 0.08), which said
+        /// nothing of whether playback keeps up. A desktop card is raised at once, so its timings are the same either way. The budgets are unchanged.
+        /// </summary>
+        private const int ClockUpFrames = 90;
+
         public void Timing()
         {
             Line($"timing (1920 x 1080, every slot on a full-frame layer, GPU timestamps, the best of four frames):");
             var best = new float[128];
             var runs = new int[128];
             Array.Fill(best, float.MaxValue);
-            for (var round = 0; round < 5; round++)
+            for (var round = 0; round < ClockUpFrames + 5; round++)
             {
                 Begin(1920, 1080, FrameSceneHeader.FlagTimePasses | FrameSceneHeader.FlagWaitForTimings);
                 ref var a = ref Layer(0, GpuSourceKind.TestPattern, 3, 0, 0, 1920, 1080);
@@ -1136,9 +1142,9 @@ public static partial class CompositorParityTests
                     return;
                 }
 
-                // The first frame warms the shaders and the card's clocks: not counted.
+                // The first frames warm the shaders and raise the card's clocks: not counted.
                 ref var timings = ref client.Memory.Control;
-                for (var i = 0; round > 0 && i < 128; i++)
+                for (var i = 0; round > ClockUpFrames && i < 128; i++)
                 {
                     if (timings.SlotRuns[i] > 0)
                         (best[i], runs[i]) = (MathF.Min(best[i], timings.SlotGpuMs[i]), timings.SlotRuns[i]);

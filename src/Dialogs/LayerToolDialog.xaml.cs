@@ -6,10 +6,10 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-/// <summary>What of a track the dialog sets.</summary>
+/// <summary>What of a clip the dialog sets.</summary>
 public enum LayerTool
 {
-    /// <summary>Filters applied to this track alone.</summary>
+    /// <summary>Filters applied to this clip alone.</summary>
     Filters,
 
     /// <summary>The shape it is cut to.</summary>
@@ -18,7 +18,7 @@ public enum LayerTool
 
 /// <summary>
 /// A clip's filters or its mask, opened from its right-click menu (where it sits on the frame is the Timeline's inspector strip, the Canvas and
-/// the menu's Transform, Sizing & Position). Bound straight to the layer, so every change is seen at once; what is changed is this clip's alone.
+/// the menu's Transform, Sizing & Position). Bound straight to the clip, so every change is seen at once; what is changed is this clip's alone.
 /// </summary>
 public partial class LayerToolDialog : Window
 {
@@ -26,7 +26,7 @@ public partial class LayerToolDialog : Window
     private readonly MainViewModel _viewModel;
     private readonly LayerTool _tool;
 
-    /// <summary>Set when the dialog was closed in order to mark the layer's area on the video again.</summary>
+    /// <summary>Set when the dialog was closed in order to mark the clip's area on the video again.</summary>
     public bool RedrawRequested { get; private set; }
 
     public LayerToolDialog(Layer layer, MainViewModel viewModel, LayerTool tool)
@@ -40,19 +40,19 @@ public partial class LayerToolDialog : Window
         {
             case LayerTool.Filters:
                 Title = $"Filters: {layer.Name}";
-                IntroText.Text = "Filters for this track alone. The filters of the Filters tab are applied to the finished picture, after every track has been laid on it.";
+                IntroText.Text = "Filters for this clip alone. The filters of the Filters tab are applied to the finished picture, after every track has been laid on it.";
                 FiltersPanel.Visibility = Visibility.Visible;
                 break;
 
             default:
                 Title = $"Mask: {layer.Name}";
                 IntroText.Text = layer.IsVideo
-                    ? "The shape this track is cut to. A mask is a black-and-white picture: one of the whole video frame, white over every HUD element, serves every piece cut from the video, each taking its own part of it. Crop cuts away edges of the layer, and the outline rounds or softens it."
-                    : "The shape this track is cut to. A mask is a black-and-white picture stretched over the layer; crop cuts away its edges, and the outline rounds or softens the rectangle itself.";
+                    ? "The shape this clip is cut to. A mask is a black-and-white picture: one of the whole video frame, white over every HUD element, serves every Cutout of the video, each taking its own part of it. Crop cuts away edges of the clip, and the outline rounds or softens it."
+                    : "The shape this clip is cut to. A mask is a black-and-white picture stretched over the clip; crop cuts away its edges, and the outline rounds or softens the rectangle itself.";
                 MaskPanel.Visibility = Visibility.Visible;
-                RedrawButton.Visibility = layer.IsVideo ? Visibility.Visible : Visibility.Collapsed;
+                RedrawButton.Visibility = layer.IsVideo || viewModel.IsCutout(layer) ? Visibility.Visible : Visibility.Collapsed;
 
-                // A mask of the whole frame belongs to a piece cut from the video: other layers have no place in the frame to take it from.
+                // A mask of the whole frame belongs to a Cutout of the video: other clips have no place in the frame to take it from.
                 MaskFrameBox.Visibility = FrameMaskButtons.Visibility = MaskLayersButton.Visibility = layer.IsVideo ? Visibility.Visible : Visibility.Collapsed;
                 break;
         }
@@ -72,7 +72,7 @@ public partial class LayerToolDialog : Window
 
     private void BrowseLut_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Select a LUT for this layer", Filter = "3D LUT (*.cube)|*.cube|All files|*.*" };
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Select a LUT for this clip", Filter = "3D LUT (*.cube)|*.cube|All files|*.*" };
         if (dialog.ShowDialog(this) == true)
             _layer.FilterLut = dialog.FileName;
     }
@@ -86,7 +86,7 @@ public partial class LayerToolDialog : Window
         {
             (_layer.MaskPath, _layer.CustomMask, _layer.MaskShapes) = (dialog.FileName, true, "");
 
-            // A picture in the shape of the video is taken for a mask of the whole frame; anything else is stretched over the layer.
+            // A picture in the shape of the video is taken for a mask of the whole frame; anything else is stretched over the clip.
             if (_layer.IsVideo)
                 _layer.MaskFrame = IsFrameShaped(dialog.FileName);
         }
@@ -147,8 +147,8 @@ public partial class LayerToolDialog : Window
         _undo.Forget();
         var count = _viewModel.ShareFrameMask(_layer);
         _viewModel.StatusText = count == 0
-            ? "There are no other layers cut from the video to give the mask to."
-            : $"The mask is now on {count + 1} layers cut from the video: each takes its own part of it.";
+            ? "There are no other Cutouts of the video to give the mask to."
+            : $"The mask is now on {count + 1} Cutouts of the video: each takes its own part of it.";
     }
 
     private void Shape_Click(object sender, RoutedEventArgs e)
@@ -156,15 +156,12 @@ public partial class LayerToolDialog : Window
         if (sender is not FrameworkElement { Tag: string name } || !Enum.TryParse<HudShape>(name, out var shape))
             return;
 
-        try
-        {
-            if (HudLibrary.EnsureMask(shape) is { } mask)
-                (_layer.MaskPath, _layer.CustomMask, _layer.MaskFrame, _layer.MaskShapes) = (mask, true, false, "");
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _viewModel.StatusText = $"The mask could not be made: {ex.Message}";
-        }
+        // Outlines only (5.2-Audit): nothing is written to the Masks folder. The shape is soft-edged, as its picture was.
+        if (HudLibrary.Outline(shape) is not { } outline)
+            return;
+        (_layer.MaskPath, _layer.CustomMask, _layer.MaskFrame, _layer.MaskShapes) = ("", true, false, outline);
+        if (!_layer.Feather)
+            (_layer.Feather, _layer.FeatherRadius) = (true, HudLibrary.ShapeFeatherRadius);
     }
 
     private void NoMask_Click(object sender, RoutedEventArgs e) => (_layer.CustomMask, _layer.MaskPath, _layer.MaskFrame, _layer.MaskShapes) = (false, "", false, "");

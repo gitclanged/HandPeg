@@ -124,7 +124,7 @@ public partial class MainWindow
             }
 
             _viewModel.StatusText = _viewModel.HasSource
-                ? "The main video's file is not there (an offline drive?): the player starts again once it is."
+                ? "The file you opened is not there (an offline drive?): the player starts again once it is."
                 : "There is no video loaded to reload.";
             return;
         }
@@ -219,12 +219,9 @@ public partial class MainWindow
 
     private void SeekToWaveformPoint(FrameworkElement waveform, MouseEventArgs e)
     {
-        // Setting the position moves the timeline, which seeks the player. A track's row shows the time bars' view
-        // (it holds one); the master mix shows the whole sequence.
+        // Setting the position moves the timeline, which seeks the player. The master mix shows the whole sequence.
         var x = e.GetPosition(waveform).X;
-        if (waveform is Border { Child: Grid grid } && grid.Children.OfType<TimelineTrack>().Any())
-            _viewModel.PositionMs = Math.Clamp(TimeAt(waveform, x) * 1000, 0, _viewModel.DurationMs);
-        else if (waveform.ActualWidth > 0)
+        if (waveform.ActualWidth > 0)
             _viewModel.PositionMs = Math.Clamp(x / waveform.ActualWidth, 0, 1) * _viewModel.DurationMs;
     }
 
@@ -345,7 +342,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A press anywhere on the master timeline, not only on the playhead: the playhead goes to where the
+    /// A press anywhere on the Sequence Overview Scrubber, not only on the playhead: the playhead goes to where the
     /// pointer is, and the press is then handed to it, so that it is held from that moment exactly as if it
     /// had been pressed itself. Holding and dragging scrubs; letting go ends it, by the same steps as any
     /// drag of the playhead (DragStarted, DragCompleted). The slider has usually moved the playhead to the

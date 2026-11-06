@@ -1,0 +1,13 @@
+# Three multi-stream clips on one track: their streams in line on the track's lanes, by place in the file; one moved off.
+ok: three lanes under the track, not one set per clip (3)
+ok: each lane a stream by its place in the file: Stream 1, Stream 2, Stream 3
+ok: on each lane the three clips' streams in line, one after another
+ok: each the stream at that place in its own file (A's 1, 2, 3; B's 2, 3, 4)
+ok: each stream a child of its own video clip
+ok: the video clips silent: nothing heard twice
+ok: the rows of a stack in stream order
+ok: a stream dragged onto its video's row: moved
+ok: onto a lane of its own in the track's stack, at its own time, no other stream ever put there
+ok: still its video clip's child: it goes with it until unlocked
+ok: a stream onto an Audio track of its own
+ok: the shared lanes keep the others' streams in line

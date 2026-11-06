@@ -12,7 +12,7 @@ namespace HandPegApp.Services;
 /// <summary>
 /// Strips of frames drawn by the GPU compositor (Pass 5.0-AudioAnd3D, 5.0D): the same picture FFmpeg's strip is
 /// (<see cref="FfmpegRunner.GenerateFilmstripAsync"/>, which asks here first), with the same frames' sizes, moments and
-/// order and written to the same file, so every picture made from a strip (a clip's block, the Overview Bar, the media
+/// order and written to the same file, so every picture made from a strip (a clip's block, the Sequence Overview Scrubber, the media
 /// browser's tiles) is unchanged. Each thumbnail is a one-layer scene the size of the thumbnail, drawn with its exact frame
 /// (<see cref="FrameSceneHeader.FlagExactFrames"/>) and read back (<see cref="FrameSceneHeader.FlagReadback"/>).
 /// <para>The worker is a compositor of its own (no standby, a small frame cache, one decode lane, on the background card),

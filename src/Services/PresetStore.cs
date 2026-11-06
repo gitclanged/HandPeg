@@ -8,7 +8,7 @@ namespace HandPegApp.Services;
 public static class PresetStore
 {
 
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true, TypeInfoResolver = AppSettingsJsonContext.Default };
 
     public static string FilePath => AppPaths.PresetsFile;
 
@@ -29,7 +29,7 @@ public static class PresetStore
         {
             try
             {
-                presets = JsonSerializer.Deserialize<List<EncodingPreset>>(File.ReadAllText(FilePath)) ?? [];
+                presets = JsonSerializer.Deserialize(File.ReadAllText(FilePath), AppSettingsJsonContext.Default.ListEncodingPreset) ?? [];
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
             {
@@ -90,7 +90,7 @@ public static class PresetStore
         // Vertical 1080 x 1920 at 60 fps, kept inside what the upload pipelines accept without re-processing.
         new()
         {
-            Name = "TikTok (Vertical)", FrameEngine = true, UseVerticalResolution = true, OutputWidth = "1080", OutputHeight = "1920",
+            Name = "TikTok (Vertical)", UseVerticalResolution = true, OutputWidth = "1080", OutputHeight = "1920",
             VideoEncoder = "libx264", Profile = "high", Level = "4.2", RateControl = "Average Bitrate (ABR)", TargetBitrate = "15000",
             Framerate = "60", ExtraVideoArguments = "-pix_fmt yuv420p", AudioEncoder = "aac", AudioBitrate = "192k", Container = "mp4",
         },

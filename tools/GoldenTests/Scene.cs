@@ -1,6 +1,7 @@
 using HandPegApp.Models;
 using HandPegApp.Models.Effects;
 using HandPegApp.Services;
+using HandPegApp.Services.Gpu;
 
 namespace HandPegGoldenTests;
 
@@ -41,8 +42,9 @@ public sealed record SceneClip(LayerState State, Media? Media);
 /// <summary>
 /// A timeline written as a fixture, in 4.2.0's terms (the main video's clips, layers by track id), made into the
 /// <see cref="SequenceExportState"/> the view model would hand the builder: its timeline the document the fixture makes
-/// of it (LegacyFixtures, 4.3B), which the builder lowers and prepares (crossfades, folded keyframes) itself. Only the
-/// values a fixture sets differ.
+/// of it (LegacyFixtures, 4.3B), converted as a project from before is when it is opened (5.2-AuditB: LegacyFixtures.Migrate,
+/// the main video's clips as clips of its file, its streams on Sub-Lanes), which the builder lowers and prepares (crossfades,
+/// folded keyframes) itself. Only the values a fixture sets differ.
 /// </summary>
 public sealed class Scene(string name)
 {
@@ -50,7 +52,6 @@ public sealed class Scene(string name)
     public int FrameWidth { get; init; } = 1920;
     public int FrameHeight { get; init; } = 1080;
     public double FrameRate { get; init; } = 30;
-    public bool FrameEngine { get; init; } = true;
     public bool AudioLinked { get; init; } = true;
     public bool BackgroundHidden { get; init; }
     public bool FadeIn { get; init; }
@@ -65,7 +66,9 @@ public sealed class Scene(string name)
     public List<(double Start, double Offset, double Duration)> MoreMainClips { get; } = [];
 
     public List<SceneClip> Clips { get; } = [];
-    public List<ExportAudioTrack> AudioTracks { get; } = [];
+
+    /// <summary>The main video's audio streams as the Audio tab mixed them (5.1's AudioTracks), put on Sub-Lanes as the project opens.</summary>
+    public List<LegacyStream> AudioTracks { get; } = [];
     public Dictionary<string, string> Proxies { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> ExistingFiles { get; } = new(StringComparer.OrdinalIgnoreCase);
     public List<EffectInstance> SequenceEffects { get; } = [];
@@ -85,7 +88,7 @@ public sealed class Scene(string name)
     public Scene WithMainAudio(int count)
     {
         for (var i = 0; i < count; i++)
-            AudioTracks.Add(new ExportAudioTrack(i, $"Track {i + 1}", "aac", "160k", false, false, false, false, false, false, [], []));
+            AudioTracks.Add(new LegacyStream(i, $"Track {i + 1}"));
         return this;
     }
 
@@ -170,48 +173,49 @@ public sealed class Scene(string name)
             SourceWidth = 0.25, SourceHeight = 0.25,
         });
         var layers = Clips.Select(c => Make(c.State)).ToList();
-
-        if (FrameEngine)
-        {
-            foreach (var layer in layers.Where(l => l.IsUsable))
-                layer.GetOutputRect(frameWidth, frameHeight, sourceWidth, sourceHeight);
-        }
+        foreach (var layer in layers.Where(l => l.IsUsable))
+            layer.GetOutputRect(frameWidth, frameHeight, sourceWidth, sourceHeight);
 
         var caption = Layer.FromState(captionRow.ToState(), sourceWidth, sourceHeight, frameWidth, frameHeight);
-        FilterGraphBuilder.FoldConstantKeys(caption);
+        TimelineLowering.FoldConstantKeys(caption);
 
         // The sequence as 4.2.0 measured it, for its "to the end" clips: to the end of the main video and of every clip with a length.
         var mainClips = MainClips(mainRow);
         var sequenceSeconds = mainClips.Count == 0 ? MainClip.Start : mainClips.Max(c => c.End);
-        if (FrameEngine)
-            sequenceSeconds = layers.Where(l => l.Duration > 0.001).Select(l => l.StartTime + l.Duration).Append(sequenceSeconds).Max();
+        sequenceSeconds = layers.Where(l => l.Duration > 0.001).Select(l => l.StartTime + l.Duration).Append(sequenceSeconds).Max();
 
+        // The document a 5.1 project held, converted as it is opened: the Center box (the frame's width, at the main video's shape,
+        // in the middle) and the streams are what the old engine laid the main video out and heard it with.
         var centerWidth = frameWidth;
         var centerHeight = (int)Math.Round((double)centerWidth * sourceHeight / sourceWidth / 2) * 2;
-        var videoFiles = layers.Where(l => l.IsVideoFile).Select(l => Clips.First(c => c.State.ImagePath == l.ImagePath).Media!).DistinctBy(m => m.Path).ToList();
+        var timeline = LegacyFixtures.ToTimeline(this, mainRow, mainClips, layers, sequenceSeconds);
+        var outputs = LegacyFixtures.Migrate(timeline, new LegacyMain(Main.Path)
+        {
+            SourceWidth = sourceWidth,
+            SourceHeight = sourceHeight,
+            MediaSeconds = Main.Seconds,
+            BackgroundHidden = BackgroundHidden,
+            CenterRect = ((frameWidth - centerWidth) / 2, (frameHeight - centerHeight) / 2, centerWidth, centerHeight),
+            Streams = AudioTracks,
+        });
+
+        // Every video clip's file (the main video's among them now: a clip of a file like any other), as CompileExportState lists them.
+        var videoFiles = layers.Where(l => l.IsVideoFile).Select(l => Clips.First(c => c.State.ImagePath == l.ImagePath).Media!).Prepend(Main).DistinctBy(m => m.Path).ToList();
 
         return new SequenceExportState
         {
-            Timeline = LegacyFixtures.ToTimeline(this, mainRow, mainClips, layers, sequenceSeconds),
+            Timeline = timeline,
             SourceFrameRate = FrameRate,
-            SourceWidth = sourceWidth,
-            SourceHeight = sourceHeight,
-            RequestedSize = FrameEngine ? (frameWidth, frameHeight) : null,
+            RequestedSize = (frameWidth, frameHeight),
             OutputSize = (frameWidth, frameHeight),
-            LocalMediaPath = Main.Path,
-            HasSource = true,
-            SourceMayHaveAudio = Main.HasAudio,
-            MainMediaSeconds = Main.Seconds,
-            CenterRect = ((frameWidth - centerWidth) / 2, (frameHeight - centerHeight) / 2, centerWidth, centerHeight),
-            FrameEngine = FrameEngine,
-            BackgroundHidden = BackgroundHidden,
+            StreamSourcePath = Main.Path,
             CaptionLayer = caption,
             FadeIn = FadeIn,
             FadeOut = FadeOut,
             ChaptersAtCuts = ChaptersAtCuts,
             CutsFilePath = "D:/session/cuts.txt",
             ChaptersFilePath = "D:/session/chapters.txt",
-            AudioTracks = AudioTracks,
+            AudioOutputs = outputs,
             MergeAudioTracks = MergeAudioTracks,
             VideoCodecArguments = VideoCodecArguments,
             EncoderPixelFormat = EncoderPixelFormat,
@@ -225,19 +229,16 @@ public sealed class Scene(string name)
     }
 
     /// <summary>The main video's clips as 4.2.0's MainViewModel.GetMainClips laid them out.</summary>
-    private List<MainClip> MainClips(Layer main)
+    private List<LegacyClip> MainClips(Layer main)
     {
         var media = Main.Seconds;
-        var clips = new List<MainClip>();
-        if (!FrameEngine)
-            return [new MainClip(0, 0, media, 0)];
-
+        var clips = new List<LegacyClip>();
         void Add(int index, double start, double duration, double offset, double fadeIn, double fadeOut, TransitionStyle inStyle, TransitionStyle outStyle)
         {
             var left = Math.Max(media - offset, 0);
             var length = duration > 0.001 ? Math.Min(duration, left) : left;
             if (length > 0.001)
-                clips.Add(new MainClip(index, start, start + length, offset) { FadeIn = fadeIn, FadeOut = fadeOut, FadeInStyle = inStyle, FadeOutStyle = outStyle });
+                clips.Add(new LegacyClip(index, start, start + length, offset) { FadeIn = fadeIn, FadeOut = fadeOut, FadeInStyle = inStyle, FadeOutStyle = outStyle });
         }
 
         Add(0, main.StartTime, main.Duration, main.MediaOffset, main.FadeInSeconds, main.FadeOutSeconds, main.FadeInStyle, main.FadeOutStyle);

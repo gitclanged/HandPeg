@@ -1,0 +1,14 @@
+# Tilted handles and the 3D view's pick (5.2C, the user's Q4): a tilted plane met where it is drawn, the grip on the drawn corner.
+ok: untilted, the ray through a box's point meets its plane at that point (HitPlane's), a quarter across and three down
+ok: tilted, the ray through each drawn corner (and the middle) meets the box there on its tilted plane (within a thousandth of the box)
+ok: a point of the tilted box as drawn, outside the flat box, picks the tilted plane
+ok: a point of the flat box only, outside the tilted box as drawn, does not
+ok: a flat box's grip moves its corner as the pointer moves
+ok: a tilted box's drawn corner moved 10 pixels' worth along its drawn bottom edge grows it 10 across, none down
+ok: each of a tilted box's four drawn corners moved 10 pixels' worth along its own drawn top or bottom edge grows it 10 across, none down; along its own left or right edge, 10 down, none across
+ok: dragged from any of its four corners (out and in), a tilted box's drawn corner ends under the pointer (within 1 px)
+ok: and its anchor point stays where it was
+ok: with Ctrl, the opposite corner stays where it is from every corner (and a locked box's height follows its width)
+ok: with Ctrl, a tilted (and turned) box's opposite corner stays where it is drawn, dragged out and in from each of its four corners, its height free or locked (within 1 px)
+ok: where keeping only its flat box's corner would move it (more than 2 px); an untilted box's Ctrl is the flat one as before
+ok: the bottom right corner grows the box by the move over its share past the anchor, as the one grip always did

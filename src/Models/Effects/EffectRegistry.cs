@@ -1,6 +1,4 @@
-using System.Globalization;
 using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
 
 namespace HandPegApp.Models.Effects;
 
@@ -47,7 +45,10 @@ public enum ParamKind
     Action,
 }
 
-/// <summary>How a value can be animated: an expression FFmpeg works out for every frame, a command per keyframe, or not at all.</summary>
+/// <summary>
+/// How a value can be animated: along its keyframes (Expression and Command alike, which named FFmpeg's two ways until its
+/// filter strings went: the compositor reads the value at every frame either way), or not at all.
+/// </summary>
 public enum ParamAnimation
 {
     None,
@@ -57,7 +58,7 @@ public enum ParamAnimation
 
 /// <summary>
 /// The v5.0 compositor's shader for an effect or a transition (HandPeg.Compositor.exe, see ARCHITECTURE_CONTRACTS.md): the
-/// id a <see cref="GpuEffectPacket"/> names its pixel shader by. The FFmpeg graph is compiled from the same definitions.
+/// id a <see cref="GpuEffectPacket"/> names its pixel shader by.
 /// </summary>
 /// <remarks>A contract with the compositor: the numbers are fixed, new slots are added at the end, and none is renumbered.</remarks>
 public enum GpuShaderSlot
@@ -141,6 +142,17 @@ public readonly record struct GpuEffectPacket(GpuShaderSlot Slot, float P0, floa
 
     public const int SizeInBytes = sizeof(int) + Lanes * sizeof(float);
 
+    /// <summary>
+    /// The last lane of an Audio Reactive Pulse's own packet (5.2B, <see cref="EffectDefinition.GpuPulsePacket"/>): a value no packet of
+    /// its slots has there otherwise (the Glow's Mix is 0 or more, the Impact Shockwave's and the Neon Rim's variant lane 0, the Anamorphic
+    /// Lens's 1 and its second packet's last lane 0, the Frosted Glass's 1), so the compositor takes a packet after a card as that card's
+    /// pulse only when it carries it, and two cards of one slot side by side are each drawn.
+    /// </summary>
+    public const float PulseMarker = -1;
+
+    /// <summary>Whether a packet is an Audio Reactive Pulse's own (<see cref="PulseMarker"/> in its last lane).</summary>
+    public static bool IsPulsePacket(in GpuEffectPacket packet) => packet.P7 == PulseMarker;
+
     /// <summary>A packet from a slot and up to eight lanes (the rest 0).</summary>
     public static GpuEffectPacket From(GpuShaderSlot slot, ReadOnlySpan<float> lanes)
     {
@@ -219,14 +231,12 @@ public sealed record EffectParam(
 }
 
 /// <summary>
-/// One effect: what it is called and where it goes, its parameters, what it costs, and how it becomes filters. Built-in
-/// effects are written as plugins will be (declarative parameters, a cost class, a compile that only formats them).
+/// One effect: what it is called and where it goes, its parameters, what it costs, and the compositor's shader that draws it.
+/// Built-in effects are written as plugins will be (declarative parameters, a cost class, a shader slot). No effect becomes an
+/// FFmpeg filter any more (5.2-Arm64AndNpu: the filter-string compilers went with the graph builder).
 /// </summary>
-/// <param name="Compile">The filters for a card's values, in order; null or none when the values do nothing. Null for the
-/// effects the graph builder places itself (the key, the mask and edges, the shadow, the blend), whose filters need labels.</param>
 public sealed record EffectDefinition(
-    string Type, string Name, string Category, EffectZone Zone, IReadOnlyList<EffectParam> Params, EffectCost Cost,
-    Func<EffectCompileContext, EffectInstance, IReadOnlyList<string>?>? Compile = null)
+    string Type, string Name, string Category, EffectZone Zone, IReadOnlyList<EffectParam> Params, EffectCost Cost)
 {
     public string Description { get; init; } = "";
 
@@ -257,6 +267,22 @@ public sealed record EffectDefinition(
     public int GpuVariant { get; init; }
 
     /// <summary>
+    /// Where its variant is sent instead (5.2), a lane counted across its packets that its parameters' lanes go round: the Anamorphic
+    /// Lens keeps it in its first packet's last lane, where the Impact Shockwave's slot looks for it, and sends its Rotation in a second
+    /// packet. Null: the last lane of its last packet.
+    /// </summary>
+    public int? GpuVariantLane { get; init; }
+
+    /// <summary>
+    /// Its Audio Reactive Pulse's own packet (5.2B), counted from 0, or null for none: sent only while the pulse is in use
+    /// (<see cref="EffectRegistry.PulseInUse"/>), so a card at 0 is sent as it was before the pulse (one packet: its passes and the layer's
+    /// sixteen as they were), and marked in its last lane (<see cref="GpuEffectPacket.PulseMarker"/>), so the compositor pairs it with its
+    /// card and never two cards of one slot side by side. The Glow's, the Neon Rim's and the Impact Shockwave's; the Anime Lines' pulse
+    /// is in lanes of the second packet it always sends.
+    /// </summary>
+    public int? GpuPulsePacket { get; init; }
+
+    /// <summary>
     /// Drawn by the compositor alone, with no FFmpeg filter to fall back on (the roadmap's Law 4): an export FFmpeg has to make leaves it out, and says so
     /// (<c>GpuExport.LeftOutByFfmpeg</c>).
     /// </summary>
@@ -274,7 +300,7 @@ public sealed record EffectDefinition(
             var lanes = 0;
             for (var i = 0; i < Params.Count; i++)
                 lanes += Params[i].GpuLanes;
-            return lanes;
+            return GpuVariantLane is { } reserved ? Math.Max(lanes + (reserved < lanes ? 1 : 0), reserved + 1) : lanes;
         }
     }
 
@@ -287,11 +313,11 @@ public sealed record EffectDefinition(
     public bool HasAdvanced => Params.Any(p => p.IsAdvanced);
 
     /// <summary>
-    /// A new card as the user adds it: each value with a starting value (<see cref="EffectParam.Starting"/>,
-    /// <see cref="EffectParam.StartingText"/>) written into it, so that it shows at once. A value bound to the layer is the
-    /// layer's, and is left alone.
+    /// A new effect as the user adds it: each value with a starting value (<see cref="EffectParam.Starting"/>,
+    /// <see cref="EffectParam.StartingText"/>) written into it, so that it shows at once. A value bound to the clip is the
+    /// clip's, and is left alone.
     /// </summary>
-    public EffectInstance NewCard()
+    public EffectInstance NewEffect()
     {
         var card = new EffectInstance { Type = Type };
         foreach (var param in Params)
@@ -305,102 +331,6 @@ public sealed record EffectDefinition(
         }
 
         return card;
-    }
-}
-
-/// <summary>What an effect's compile is told about where it is being built.</summary>
-public sealed class EffectCompileContext
-{
-    /// <summary>The picture it works on, in pixels (a layer as it is built, smaller in Live Preview).</summary>
-    public int Width { get; init; }
-
-    public int Height { get; init; }
-
-    /// <summary>The frame being composed, in pixels: what a blur given for a 1080-wide frame is scaled to.</summary>
-    public int FrameWidth { get; init; }
-
-    /// <summary>How much smaller than the export Live Preview builds it: pixel distances are scaled by this.</summary>
-    public double PixelScale { get; init; } = 1;
-
-    /// <summary>Where the clip's own time 0 falls on the clock of the picture being composed, in seconds.</summary>
-    public double ClipStart { get; init; }
-
-    /// <summary>Whether a file named in a value is there (from the state's list, never the disk).</summary>
-    public Func<string, bool> Exists { get; init; } = _ => false;
-
-    /// <summary>A path as a filter option takes it, inside single quotes.</summary>
-    public Func<string, string> EscapePath { get; init; } = path => path;
-
-    /// <summary>Keyframes as an expression of t (the flat sum of clipped ramps the motion compiler writes), given where the clip begins.</summary>
-    public Func<IReadOnlyList<Keyframe>, double, string> KeyExpression { get; init; } = (keys, _) => Number(keys[0].Value);
-
-    /// <summary>
-    /// A name no other filter of the graph has, for a filter that sendcmd sends its animated values to (filter@name). The
-    /// builder makes a new one for every card it compiles, so the same card compiled for two stretches never shares one.
-    /// </summary>
-    public string InstanceName { get; init; } = "fx";
-
-    /// <summary>How often a value animated by commands (<see cref="ParamAnimation.Command"/>) is sent between its keyframes.</summary>
-    public const double CommandsPerSecond = 12;
-
-    /// <summary>The most commands one value is sent as: a long, slow animation is sampled more sparsely.</summary>
-    public const int MostCommands = 720;
-
-    /// <summary>A number as FFmpeg reads it, whatever the machine's language.</summary>
-    public static string Number(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
-
-    /// <summary>A value as a filter option: the number, or, animated, its keyframes as an expression held to the range, in quotes.</summary>
-    public string Value(EffectInstance effect, string key, double min, double max) => effect.HasKeys(key)
-        ? $"'clip({KeyExpression(effect.GetKeys(key), ClipStart)},{Number(min)},{Number(max)})'"
-        : Number(Math.Clamp(effect.Get(key), min, max));
-
-    /// <summary>
-    /// A value as a filter option where it can only be animated by commands: its set value, or, animated, the value its
-    /// keyframes give where the picture being composed begins (the commands take it on from there).
-    /// </summary>
-    public string Initial(EffectInstance effect, string key, double min, double max) =>
-        Number(Math.Clamp(effect.HasKeys(key) ? EasingCurves.ValueAt(effect.GetKeys(key), Math.Max(-ClipStart, 0)) : effect.Get(key), min, max));
-
-    /// <summary>
-    /// The sendcmd filter that animates values of the filter named <paramref name="target"/> (filter@InstanceName) for
-    /// the filters that have runtime commands but no per-frame expressions (colorbalance, colortemperature, chromakey);
-    /// null when none of them has keyframes. Each value is sent at each of its keyframes and, between two, as often as
-    /// <see cref="CommandsPerSecond"/> along its easing (a Hold only at the keyframes); every command is "enter" at a
-    /// moment of the clock of the picture being composed and holds until the next, so a seek into the middle settles on
-    /// the latest one. Nothing before that picture's start is sent: the filter's own options hold that value (Initial).
-    /// </summary>
-    /// <param name="values">Each value's key on the card, the filter's name for it, and its range.</param>
-    public string? Commands(EffectInstance effect, string target, params (string Key, string Option, double Min, double Max)[] values)
-    {
-        var moments = new SortedDictionary<double, List<string>>();
-        foreach (var (key, option, min, max) in values)
-        {
-            if (effect.GetKeys(key) is not { Count: > 0 } keys)
-                continue;
-
-            var times = new SortedSet<double>(keys.Select(k => k.Time));
-            var step = Math.Max(1 / CommandsPerSecond, (keys[^1].Time - keys[0].Time) / MostCommands);
-            for (var i = 1; i < keys.Count; i++)
-            {
-                if (keys[i - 1].Easing == EasingType.Hold || Math.Abs(keys[i].Value - keys[i - 1].Value) < 1e-9)
-                    continue;
-                for (var at = keys[i - 1].Time + step; at < keys[i].Time - step / 2; at += step)
-                    times.Add(Math.Round(at, 3));
-            }
-
-            foreach (var time in times)
-            {
-                var clock = Math.Round(ClipStart + time, 3);
-                if (clock <= 0)
-                    continue;
-                if (!moments.TryGetValue(clock, out var list))
-                    moments[clock] = list = [];
-                list.Add($"{target}@{InstanceName} {option} {Number(Math.Clamp(EasingCurves.ValueAt(keys, time), min, max))}");
-            }
-        }
-
-        return moments.Count == 0 ? null
-            : $"sendcmd=c='{string.Join(";", moments.Select(m => $"{Number(m.Key)} {string.Join(",", m.Value)}"))}'";
     }
 }
 
@@ -432,29 +362,23 @@ public static partial class EffectRegistry
 
     public static void Register(EffectDefinition definition) => Definitions[definition.Type] = definition;
 
-    private static string N(double value) => EffectCompileContext.Number(value);
-
     static EffectRegistry()
     {
         // ----- Look -----
         Register(new(Flip, "Flip", "Transform", EffectZone.Look,
-            [new("h", "Flip Horizontally", ParamKind.Toggle) { Starting = 1 }, new("v", "Flip Vertically", ParamKind.Toggle)], EffectCost.Green,
-            (_, fx) => [.. (fx.IsOn("h") ? ["hflip"] : Array.Empty<string>()), .. (fx.IsOn("v") ? ["vflip"] : Array.Empty<string>())])
+            [new("h", "Flip Horizontally", ParamKind.Toggle) { Starting = 1 }, new("v", "Flip Vertically", ParamKind.Toggle)], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.Flip, Geometric = true, Description = "Mirrors the picture left to right, or upside down.",
         });
 
         Register(new(Lut, "LUT 3D", "Color", EffectZone.Look,
-            [new("file", "LUT File", ParamKind.File) { Tip = "A .cube file whose look is given to the picture." }], EffectCost.Amber,
-            (context, fx) => fx.GetText("file").Trim().Trim('"') is { Length: > 0 } file && context.Exists(file) ? [$"lut3d=file='{context.EscapePath(file)}'"] : null)
+            [new("file", "LUT File", ParamKind.File) { Tip = "A .cube file whose look is given to the picture." }], EffectCost.Amber)
         {
             GpuSlot = GpuShaderSlot.Lut3D, Description = "A colour look from a .cube file.",
         });
 
         Register(new(Denoise, "Denoise", "Detail", EffectZone.Look,
-            [new("strength", "Strength", Min: 0, Max: 20, Default: 4, Step: 0.5) { Tip = "How much grain is smoothed away (hqdn3d's spatial strength; 4 is its default)." }], EffectCost.Red,
-            (_, fx) => fx.Get("strength") is var strength && strength < 0.05 ? null
-                : [Math.Abs(strength - 4) < 0.01 ? "hqdn3d" : $"hqdn3d={N(Math.Clamp(strength, 0, 20))}"])
+            [new("strength", "Strength", Min: 0, Max: 20, Default: 4, Step: 0.5) { Tip = "How much grain is smoothed away (hqdn3d's spatial strength; 4 is its default)." }], EffectCost.Red)
         {
             GpuSlot = GpuShaderSlot.Denoise, Description = "Smooths grain and compression noise, between frames as well as within them.",
         });
@@ -465,7 +389,7 @@ public static partial class EffectRegistry
                 new("brightness", "Brightness", Min: -1, Max: 1, Default: 0, Animation: ParamAnimation.Expression),
                 new("saturation", "Saturation", Min: 0, Max: 3, Default: 1, Animation: ParamAnimation.Expression) { Starting = 1.2 },
                 new("gamma", "Gamma", Min: 0.1, Max: 3, Default: 1, Animation: ParamAnimation.Expression) { IsAdvanced = true },
-            ], EffectCost.Green, CompileGrade)
+            ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.ColorGrade, Description = "Contrast, brightness, saturation and gamma.",
         });
@@ -474,7 +398,7 @@ public static partial class EffectRegistry
             [
                 new("h", "Hue", Min: -180, Max: 180, Default: 0, Step: 1, Unit: "°", Animation: ParamAnimation.Expression) { Starting = 20 },
                 new("s", "Saturation", Min: 0, Max: 10, Default: 1, Animation: ParamAnimation.Expression) { Starting = 1.15 },
-            ], EffectCost.Green, CompileHue)
+            ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.HueSaturation, Description = "Turns every colour round the colour wheel.",
         });
@@ -488,8 +412,7 @@ public static partial class EffectRegistry
                 new("rh", "Highlights Red", Min: -1, Max: 1, Animation: ParamAnimation.Command) { Starting = 0.1 }, new("gh", "Highlights Green", Min: -1, Max: 1, Animation: ParamAnimation.Command),
                 new("bh", "Highlights Blue", Min: -1, Max: 1, Animation: ParamAnimation.Command) { Starting = -0.05 },
                 new("pl", "Preserve Lightness", ParamKind.Toggle) { Starting = 1, IsAdvanced = true },
-            ], EffectCost.Green,
-            CompileBalance)
+            ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.ColorBalance, Description = "Pushes the shadows, midtones and highlights towards red, green or blue.",
         });
@@ -499,18 +422,7 @@ public static partial class EffectRegistry
                 new("temperature", "Temperature", Min: 1000, Max: 40000, Default: 6500, Step: 50, Unit: "K", Animation: ParamAnimation.Command) { Starting = 5200 },
                 new("mix", "Mix", Default: 1, Animation: ParamAnimation.Command) { IsAdvanced = true },
                 new("pl", "Preserve Lightness", Default: 0) { IsAdvanced = true },
-            ], EffectCost.Green,
-            (context, fx) =>
-            {
-                var animated = fx.HasKeys("temperature") || fx.HasKeys("mix");
-                if (!animated && (Math.Abs(fx.Get("temperature") - 6500) < 1 || fx.Get("mix") < 0.005))
-                    return null;
-
-                var options = $"temperature={context.Initial(fx, "temperature", 1000, 40000)}:mix={context.Initial(fx, "mix", 0, 1)}:pl={N(Math.Clamp(fx.Get("pl"), 0, 1))}";
-                return animated && context.Commands(fx, "colortemperature", ("temperature", "temperature", 1000, 40000), ("mix", "mix", 0, 1)) is { } commands
-                    ? [commands, $"colortemperature@{context.InstanceName}={options}"]
-                    : [$"colortemperature={options}"];
-            })
+            ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.ColorTemperature, Description = "Warmer (lower) or cooler (higher) than daylight's 6500 K.",
         });
@@ -528,18 +440,7 @@ public static partial class EffectRegistry
                     ],
                 },
                 new("master", "Master Curve", ParamKind.Text) { IsAdvanced = true, Tip = "Points of the curve as input/output pairs from 0 to 1, e.g. 0/0 0.5/0.6 1/1. Applied after the preset." },
-            ], EffectCost.Green,
-            (_, fx) =>
-            {
-                var preset = fx.GetText("preset");
-                var master = fx.GetText("master").Trim();
-                var options = new List<string>();
-                if (preset is { Length: > 0 } && preset != "none" && CurvePresetName().IsMatch(preset))
-                    options.Add($"preset={preset}");
-                if (master.Length > 0 && CurvePoints().IsMatch(master))
-                    options.Add($"master='{Regex.Replace(Regex.Replace(master, @"\s*/\s*", "/"), @"\s+", " ")}'");
-                return options.Count == 0 ? null : [$"curves={string.Join(":", options)}"];
-            })
+            ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.ToneCurve, Description = "A tone curve: one of FFmpeg's presets, or points of your own.",
         });
@@ -552,7 +453,7 @@ public static partial class EffectRegistry
                 new("ratio", "Horizontal / Vertical", Min: 0.25, Max: 4, Default: 1, Step: 0.05)
                     { IsAdvanced = true, Tip = "Above 1 blurs less down than across (the radius down is the radius divided by it); below 1 less across than down." },
                 new("dim", "Dim", Min: 0, Max: 50, Default: 0, Step: 1, Unit: "%") { IsAdvanced = true, Tip = "Darkens the blurred picture by so much (eq's brightness)." },
-            ], EffectCost.Amber, CompileBlur)
+            ], EffectCost.Amber)
         {
             GpuSlot = GpuShaderSlot.BoxBlur, Description = "Softens the picture (a box blur run twice, or as many times as its Passes).",
         });
@@ -565,7 +466,7 @@ public static partial class EffectRegistry
                     { IsAdvanced = true, Tip = "How wide the detail it sharpens is: its blur reaches so many pixels of a 1080-wide frame each way (scaled to the frame being made). Small for fine detail, larger for a bolder look." },
                 new("threshold", "Threshold", Min: 0, Max: 64, Default: 0, Step: 1)
                     { IsAdvanced = true, Tip = "Differences in brightness smaller than this (in levels of 255) are left as they are, so flat areas and noise are not sharpened." },
-            ], EffectCost.Amber, CompileSharpen)
+            ], EffectCost.Amber)
         {
             GpuSlot = GpuShaderSlot.Sharpen, Description = "An unsharp mask: the detail of the picture made stronger, with a radius and a threshold of its own.",
         });
@@ -579,7 +480,7 @@ public static partial class EffectRegistry
                     { IsAdvanced = true, Tip = "100 % a circle; less, towards the frame's own shape (an ellipse as wide as the picture)." },
                 new("feather", "Feather", Min: 5, Max: 100, Default: 100, Step: 1, Unit: "%")
                     { IsAdvanced = true, Tip = "How much of the way out from the middle it darkens over: 100 % all of it (a lens's falloff), less a harder edge nearer the corners." },
-            ], EffectCost.Green, CompileVignette)
+            ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.Vignette, Description = "Darkens the corners, as an old lens does.",
         });
@@ -601,31 +502,13 @@ public static partial class EffectRegistry
         });
 
         Register(new(Choke, "Matte Choke", "Matte", EffectZone.KeyAndMatte,
-            [new("amount", "Amount", Min: -20, Max: 20, Default: 0, Step: 1, Unit: "px") { Starting = 2, Tip = "Above 0 shrinks what shows (erosion); below 0 spreads it (dilation)." }], EffectCost.Amber,
-            (context, fx) =>
-            {
-                var amount = Math.Clamp(fx.Get("amount"), -20, 20);
-                if (Math.Abs(amount) < 0.5)
-                    return null;
-                var passes = Math.Max((int)Math.Round(Math.Abs(amount) * context.PixelScale), 1);
-                return Enumerable.Repeat(amount > 0 ? "erosion" : "dilation", passes).ToList();
-            })
+            [new("amount", "Amount", Min: -20, Max: 20, Default: 0, Step: 1, Unit: "px") { Starting = 2, Tip = "Above 0 shrinks what shows (erosion); below 0 spreads it (dilation)." }], EffectCost.Amber)
         {
             GpuSlot = GpuShaderSlot.MatteChoke, AlphaOnly = true, Description = "Pulls the edge of what shows in, or pushes it out, by so many pixels.",
         });
 
         Register(new(Smooth, "Matte Smooth", "Matte", EffectZone.KeyAndMatte,
-            [new("frames", "Frames", Min: 1, Max: 9, Default: 5, Step: 2) { Tip = "How many frames the edge is averaged over (Hann weights): steadies a key that flickers." }], EffectCost.Red,
-            (_, fx) =>
-            {
-                var frames = (int)Math.Round(Math.Clamp(fx.Get("frames"), 1, 9));
-                if (frames % 2 == 0)
-                    frames++;
-                if (frames <= 1)
-                    return null;
-                var weights = Enumerable.Range(1, frames).Select(k => N(Math.Pow(Math.Sin(Math.PI * k / (frames + 1)), 2)));
-                return [$"tmix=frames={frames}:weights='{string.Join(" ", weights)}'"];
-            })
+            [new("frames", "Frames", Min: 1, Max: 9, Default: 5, Step: 2) { Tip = "How many frames the edge is averaged over (Hann weights): steadies a key that flickers." }], EffectCost.Red)
         {
             GpuSlot = GpuShaderSlot.MatteSmooth, AlphaOnly = true, Description = "Averages the transparency over a few frames, so a keyed edge stops crawling.",
         });
@@ -636,12 +519,12 @@ public static partial class EffectRegistry
                 new("grow", "Grow", Min: -Layer.MaskGrowLimit, Max: Layer.MaskGrowLimit, Default: 0, Step: 1, Unit: "px") { Bind = nameof(Layer.MaskGrow) },
                 new("invert", "Invert", ParamKind.Toggle) { Bind = nameof(Layer.MaskInvert) },
                 new("offsetX", "Mask Offset X", Min: -Layer.MaskOffsetLimit, Max: Layer.MaskOffsetLimit, Default: 0, Step: 0.1, Unit: "%")
-                    { Bind = nameof(Layer.MaskOffsetX), IsAdvanced = true, Tip = "Moves the mask picture left (negative) or right, in percent of the layer's width: a mask nudged to fit, not drawn again." },
+                    { Bind = nameof(Layer.MaskOffsetX), IsAdvanced = true, Tip = "Moves the mask picture left (negative) or right, in percent of the clip's width: a mask nudged to fit, not drawn again." },
                 new("offsetY", "Mask Offset Y", Min: -Layer.MaskOffsetLimit, Max: Layer.MaskOffsetLimit, Default: 0, Step: 0.1, Unit: "%")
-                    { Bind = nameof(Layer.MaskOffsetY), IsAdvanced = true, Tip = "Moves the mask picture up (negative) or down, in percent of the layer's height." },
+                    { Bind = nameof(Layer.MaskOffsetY), IsAdvanced = true, Tip = "Moves the mask picture up (negative) or down, in percent of the clip's height." },
             ], EffectCost.Amber)
         {
-            GpuSlot = GpuShaderSlot.LayerMask, Feature = nameof(Layer.CustomMask), Description = "A drawn, picture or whole-frame mask: the layer shows where it is white.",
+            GpuSlot = GpuShaderSlot.LayerMask, Feature = nameof(Layer.CustomMask), Description = "A drawn, picture or whole-frame mask: the clip shows where it is white.",
         });
 
         Register(new(Edges, "Rounded & Feathered Edges", "Matte", EffectZone.KeyAndMatte,
@@ -654,28 +537,28 @@ public static partial class EffectRegistry
             GpuSlot = GpuShaderSlot.CornerFeather, Feature = "Edges", Description = "Rounds the corners, and lets the outline fade out.",
         });
 
-        // ----- The blurred background's own (5.0-Release) -----
-        // Not a card: the pinned first row of the background's stack in the Effects pane, its values the sequence's
+        // ----- The blur fill's own (5.0-Release) -----
+        // Not an effect of a clip: the pinned first row of the blur fill's stack in the Effects pane, its values the sequence's
         // (MainViewModel.BlurRadius, BackgroundZoom, BlurPasses, BackgroundDim), drawn by DrawBlurFill and the builder's [bg].
-        Register(new(BackgroundBlur, "Background Blur", "Blur", EffectZone.Look,
+        Register(new(BackgroundBlur, "Blur Fill", "Blur", EffectZone.Look,
             [
                 new("radius", "Blur Radius", Min: 0, Max: BackgroundMostRadius, Default: 20, Step: 0.5, Unit: "px")
-                    { Tip = "How far the blurred background is blurred, in pixels of the frame: 0 is sharp, and every value between is its own." },
+                    { Tip = "How far the blur fill is blurred, in pixels of the frame: 0 is sharp, and every value between is its own." },
                 new("zoom", "Zoom", Min: 100, Max: 400, Default: 100, Step: 1, Unit: "%")
-                    { Tip = "How much the background is enlarged about its middle: 100 % just covers the frame." },
+                    { Tip = "How much the blur fill is enlarged about its middle: 100 % just covers the frame." },
                 new("passes", "Blur Passes", Min: 1, Max: 4, Default: 2, Step: 1)
                     { IsAdvanced = true, Tip = "How many times its box blur is run: more passes fall off more smoothly, and blur further." },
                 new("dim", "Dim", Min: 0, Max: 50, Default: 15, Step: 1, Unit: "%") { IsAdvanced = true, Tip = "How much darker than the video it is (eq's brightness)." },
             ], EffectCost.Amber)
         {
-            Pinned = true, Description = "The blurred copy of the main video that fills the frame behind everything: its blur and zoom.",
+            Pinned = true, Description = "The blurred copy of each video clip that fills the frame around it (its Blur Fill): its blur and zoom.",
         });
 
         // ----- Composite -----
         Register(new(Opacity, "Opacity", "Composite", EffectZone.Composite,
             [new("opacity", "Opacity", Min: 0, Max: 100, Default: 100, Step: 1, Unit: "%", Animation: ParamAnimation.Expression) { Bind = nameof(Layer.Opacity) }], EffectCost.Green)
         {
-            GpuSlot = GpuShaderSlot.TransformComposite, Pinned = true, Description = "How solid the layer is; its keyframes are the layer's Opacity keyframes.",
+            GpuSlot = GpuShaderSlot.TransformComposite, Pinned = true, Description = "How solid the clip is; its keyframes are the clip's Opacity keyframes.",
         });
 
         Register(new(Shadow, "Drop Shadow", "Composite", EffectZone.Composite,
@@ -689,7 +572,7 @@ public static partial class EffectRegistry
             ], EffectCost.Amber)
         {
             GpuSlot = GpuShaderSlot.DropShadow, Feature = nameof(Layer.Shadow),
-            Description = "The layer's outline in a colour under it: Distance and Angle say where it falls (135\u00B0 is lit from the upper left, so it falls right and down), Softness feathers its edge (0 is hard).",
+            Description = "The clip's outline in a colour under it: Distance and Angle say where it falls (135\u00B0 is lit from the upper left, so it falls right and down), Softness feathers its edge (0 is hard).",
         });
 
         Register(new(BlendMode, "Blend Mode", "Composite", EffectZone.Composite,
@@ -703,42 +586,18 @@ public static partial class EffectRegistry
                 },
             ], EffectCost.Amber)
         {
-            GpuSlot = GpuShaderSlot.BlendMode, Description = "How the layer's colours mix with the picture under it. Any mode but Normal works in RGB over the whole frame.",
+            GpuSlot = GpuShaderSlot.BlendMode, Description = "How the clip's colours mix with the picture under it. Any mode but Normal works in RGB over the whole frame.",
         });
 
         RegisterGpuFx();
     }
 
-    // ----- Blur and Vignette (5.0-Release: their Advanced values) -----
+    // ----- Blur (5.0-Release: its Advanced values) -----
+    // The sizes the compositor's PSBoxBlur and PSSharpen are drawn at (SceneRenderer): worked out here, from the card's values in
+    // pixels of a 1080-wide frame, so the host and the goldens' reference agree on them to the pixel.
 
-    /// <summary>The blurred background's widest blur, in pixels of the frame (5.0-Release: from 0, sharp, continuously).</summary>
+    /// <summary>The blur fill's widest blur, in pixels of the frame (5.0-Release: from 0, sharp, continuously).</summary>
     public const double BackgroundMostRadius = 64;
-
-    /// <summary>
-    /// Blur: a box blur run Passes times (never gblur: an FFmpeg built for a player crashed on it in a layer's chain), as wide
-    /// as a Gaussian of half the radius (<see cref="BlurSizes"/>), then the Dim. The same box across and down is boxblur (the
-    /// two passes it always was, by default); a different one avgblur, once a pass. PSBoxBlur draws the same boxes.
-    /// </summary>
-    private static IReadOnlyList<string>? CompileBlur(EffectCompileContext context, EffectInstance fx)
-    {
-        var filters = new List<string>();
-        var radius = Math.Clamp(fx.Get("radius"), 0, 50);
-        if (radius >= 0.05)
-        {
-            var passes = (int)Math.Round(Math.Clamp(fx.Get("passes"), 1, 4));
-            var (across, down) = BlurSizes(radius, fx.Get("ratio"), passes, context.FrameWidth, context.Width, context.Height);
-            if (across > 0 && down > 0)
-            {
-                filters.Add(across == down ? $"boxblur={across}:{passes}"
-                    : string.Join(",", Enumerable.Repeat($"avgblur=sizeX={across}:sizeY={down}", passes)));
-            }
-        }
-
-        var dim = Math.Clamp(fx.Get("dim"), 0, 50);
-        if (dim >= 0.5)
-            filters.Add($"eq=brightness={N(-dim / 100)}");
-        return filters.Count > 0 ? filters : null;
-    }
 
     /// <summary>
     /// A blur's boxes, across and down, in pixels of the picture: so many passes of a box are as wide as a Gaussian of half the
@@ -756,40 +615,6 @@ public static partial class EffectRegistry
         return (Box(sigma * Math.Min(1, ratio)), Box(sigma * Math.Min(1, 1 / ratio)));
     }
 
-    /// <summary>
-    /// Vignette: FFmpeg's vignette (cos(angle d)^4 by the distance d from the middle over the half-diagonal), its aspect from
-    /// the Roundness (<see cref="VignetteAspect"/>). Feathered (below 100 %), the distance is first narrowed to the outer part
-    /// of the way out ((d - (1 - feather)) / feather, held to 0..1), which vignette cannot do: geq draws the same factor then,
-    /// on the luma and about the chroma's middle as vignette does (its angle, when animated, its keyframes' expression on
-    /// geq's clock, T, as vignette's eval=frame follows them on t). PSVignette draws the same in every case.
-    /// </summary>
-    private static IReadOnlyList<string>? CompileVignette(EffectCompileContext context, EffectInstance fx)
-    {
-        // The card's angle is in degrees (5.1-Polish, the user's Q5): FFmpeg's in radians, keys and all.
-        var animated = fx.HasKeys("angle");
-        if (fx.Get("angle") < 0.005 && !animated)
-            return null;
-
-        var aspect = VignetteAspect(fx.Get("round"), context.Width, context.Height);
-        var feather = Math.Clamp(fx.Get("feather"), 5, 100) / 100;
-        if (feather < 0.995)
-        {
-            // (The keyframes' expression names the clock t, as every filter's does, and nothing else is a lone t in it.)
-            var angle = animated
-                ? $"clip(({Regex.Replace(context.KeyExpression(fx.GetKeys("angle"), context.ClipStart), @"\bt\b", "T")})*PI/180,0,{N(1.5708)})"
-                : N(Math.Clamp(Math.Clamp(fx.Get("angle"), 0, 90) * Math.PI / 180, 0, 1.5708));
-            var d = $"hypot(X-W/2,(Y-H/2)*{N(aspect)})/hypot(W/2,H/2)";
-            var factor = $"if(gt({d},1),0,pow(cos({angle}*clip(({d}-{N(1 - feather)})/{N(feather)},0,1)),4))";
-            return ["format=yuva444p", $"geq=lum='p(X,Y)*{factor}':cb='(p(X,Y)-128)*{factor}+128':cr='(p(X,Y)-128)*{factor}+128':a='alpha(X,Y)'"];
-        }
-
-        var shape = Math.Abs(aspect - 1) < 1e-4 ? "" : $":aspect={N(aspect)}";
-        var radians = animated
-            ? $"'clip(({context.KeyExpression(fx.GetKeys("angle"), context.ClipStart)})*PI/180,0,{N(1.5708)})'"
-            : N(Math.Clamp(Math.Clamp(fx.Get("angle"), 0, 90) * Math.PI / 180, 0, 1.5708));
-        return [$"vignette=angle={radians}{shape}{(animated ? ":eval=frame" : "")}"];
-    }
-
     // ----- Sharpen (5.1-Polish, the user's Q3: an unsharp mask) -----
 
     /// <summary>Sharpen's widest Radius on the card, and the one it starts with (unsharp's own 5 x 5 square on a 1080-wide frame).</summary>
@@ -797,36 +622,6 @@ public static partial class EffectRegistry
 
     /// <summary>What the difference is multiplied by at Strength 1 (unsharp's amount; 0.6, the card's start, is 1.2).</summary>
     public const double SharpenAmount = 2;
-
-    /// <summary>
-    /// Sharpen: the picture plus Strength x <see cref="SharpenAmount"/> times its difference from a box blur of it (a square
-    /// of <see cref="SharpenBox"/>), on the luma alone. With no Threshold that is FFmpeg's unsharp (its la; its square is the
-    /// box); with one, the same made by hand in 16 bits, where a difference smaller than the threshold (levels of 255,
-    /// 256 to the 16-bit level) is left as it was, coming in over two levels either side of it (no hard step): the box by
-    /// boxblur (luma only, one pass), the rest by blend's expression. PSSharpen draws the same.
-    /// </summary>
-    private static IReadOnlyList<string>? CompileSharpen(EffectCompileContext context, EffectInstance fx)
-    {
-        var strength = Math.Clamp(fx.Get("strength"), 0, 1);
-        if (strength < 0.005)
-            return null;
-        var radius = SharpenBox(fx.Get("radius"), context.FrameWidth, context.Width, context.Height);
-        if (radius < 1)
-            return null;
-
-        var amount = N(SharpenAmount * strength);
-        var threshold = Math.Clamp(fx.Get("threshold"), 0, 64);
-        if (threshold < 0.5)
-            return [$"unsharp=lx={2 * radius + 1}:ly={2 * radius + 1}:la={amount}"];
-
-        var name = context.InstanceName;
-        return
-        [
-            "format=yuv444p16le",
-            $"split[{name}_sa][{name}_sb];[{name}_sb]boxblur=luma_radius={radius}:luma_power=1:chroma_radius=0:chroma_power=0[{name}_sc];"
-            + $"[{name}_sa][{name}_sc]blend=c0_expr='clip(A+(A-B)*{amount}*clip((abs(A-B)/256-{N(threshold)}+1)/2,0,1),0,65535)':c1_expr=A:c2_expr=A",
-        ];
-    }
 
     /// <summary>
     /// Sharpen's box radius in pixels of the picture: its Radius (in pixels of a 1080-wide frame, at most
@@ -839,153 +634,4 @@ public static partial class EffectRegistry
         var limit = Math.Min(Math.Min(width, height) / 4 - 1, 11);
         return limit < 1 ? 0 : Math.Clamp((int)Math.Round(radius * Math.Max(frameWidth, 1) / 1080.0, MidpointRounding.AwayFromZero), 1, limit);
     }
-
-    /// <summary>
-    /// The vignette's aspect for a roundness (0..100 %) on a picture: 1 at 100 % (a circle), the picture's own shape at 0. With
-    /// square pixels vignette stretches the distance down by it (its yscale), so the darkening follows an ellipse that wide.
-    /// </summary>
-    public static double VignetteAspect(double round, int width, int height) =>
-        Math.Pow((double)Math.Max(width, 1) / Math.Max(height, 1), 1 - Math.Clamp(double.IsFinite(round) ? round : 100, 0, 100) / 100);
-
-    // Color Balance's values in the order of its ranges (shadows, midtones, highlights), red, green and blue in each.
-    private static readonly string[] BalanceKeys = ["rs", "gs", "bs", "rm", "gm", "bm", "rh", "gh", "bh"];
-
-    // The picture at half its values in 16-bit RGB, lifted 2/65535 off black, and back (see CompileBalance).
-    private const string BalanceHalve = "lutrgb=r='val/2+2':g='val/2+2':b='val/2+2'", BalanceRestore = "lutrgb=r='(val-2)*2':g='(val-2)*2':b='(val-2)*2'";
-
-    /// <summary>
-    /// Color Balance (5.0-AudioAnd3D, the user's Q1): its three tonal ranges weighed by the colour's HSL lightness,
-    /// (max + min) / 2, and Preserve Lightness as the new colour's hue and chroma at the original's lightness, with no colour
-    /// turned grey. FFmpeg's colorbalance weighs by max + min (twice the lightness), and preserving greys out any colour
-    /// with a channel at 0 or 1. Both are mended around the filter, which is used as it is:
-    /// <list type="bullet">
-    /// <item>it is given the picture at half its values (16-bit RGB, a lutrgb before it and one doubling them back after it),
-    /// whose max + min is the whole picture's (max + min) / 2, and half of each value, so each push is the same;</item>
-    /// <item>lifted 2/65535 off black there, so no channel is 0; and, preserving, each range's three values are moved together
-    /// until the least is 0: an equal push on the three channels is all lightness, which is put back, so the picture is the
-    /// same, and no push takes a channel below black, where preservel would grey it.</item>
-    /// </list>
-    /// The GPU's PSColorBalance (and CompositorReference) is the same math in closed form. Animated by commands: every value
-    /// a keyframe touches (preserving, its range's three) is sent at each moment.
-    /// </summary>
-    private static IReadOnlyList<string>? CompileBalance(EffectCompileContext context, EffectInstance fx)
-    {
-        var (animated, any) = (false, false);
-        foreach (var key in BalanceKeys)
-        {
-            animated |= fx.HasKeys(key);
-            any |= fx.HasKeys(key) || Math.Abs(fx.Get(key)) >= 0.005;
-        }
-
-        if (!any)
-            return null;
-
-        var preserve = fx.IsOn("pl");
-        var start = BalanceAt(fx, Math.Max(-context.ClipStart, 0), preserve);
-        var options = string.Join(":", BalanceKeys.Select((key, i) => $"{key}={N(start[i])}"));
-        var commands = animated ? BalanceCommands(context, fx, preserve) : null;
-        var name = commands is null ? "colorbalance" : $"colorbalance@{context.InstanceName}";
-        return commands is null
-            ? ["format=gbrp16le", BalanceHalve, $"{name}={options}{(preserve ? ":pl=1" : "")}", BalanceRestore]
-            : ["format=gbrp16le", BalanceHalve, commands, $"{name}={options}{(preserve ? ":pl=1" : "")}", BalanceRestore];
-    }
-
-    /// <summary>The nine values at a moment of the clip as the filter is given them: held to -1..1, preserving each range moved down to its least, halved.</summary>
-    private static double[] BalanceAt(EffectInstance fx, double time, bool preserve)
-    {
-        var values = new double[BalanceKeys.Length];
-        for (var i = 0; i < values.Length; i++)
-            values[i] = Math.Clamp(fx.HasKeys(BalanceKeys[i]) ? EasingCurves.ValueAt(fx.GetKeys(BalanceKeys[i]), time) : fx.Get(BalanceKeys[i]), -1, 1);
-
-        for (var range = 0; range < 3; range++)
-        {
-            var least = preserve ? Math.Min(values[3 * range], Math.Min(values[3 * range + 1], values[3 * range + 2])) : 0;
-            for (var c = 3 * range; c < 3 * range + 3; c++)
-                values[c] = (values[c] - least) / 2;
-        }
-
-        return values;
-    }
-
-    /// <summary>
-    /// The sendcmd that animates Color Balance (as EffectCompileContext.Commands does: each animated value's keyframes and,
-    /// between two that differ, so many a second along its easing), with every value of the moment worked out as
-    /// <see cref="BalanceAt"/> gives it; null when nothing is sent.
-    /// </summary>
-    private static string? BalanceCommands(EffectCompileContext context, EffectInstance fx, bool preserve)
-    {
-        var times = new SortedSet<double>();
-        var ranges = new bool[3];
-        for (var i = 0; i < BalanceKeys.Length; i++)
-        {
-            if (fx.GetKeys(BalanceKeys[i]) is not { Count: > 0 } keys)
-                continue;
-
-            ranges[i / 3] = true;
-            foreach (var key in keys)
-                times.Add(key.Time);
-            var step = Math.Max(1 / EffectCompileContext.CommandsPerSecond, (keys[^1].Time - keys[0].Time) / EffectCompileContext.MostCommands);
-            for (var k = 1; k < keys.Count; k++)
-            {
-                if (keys[k - 1].Easing == EasingType.Hold || Math.Abs(keys[k].Value - keys[k - 1].Value) < 1e-9)
-                    continue;
-                for (var at = keys[k - 1].Time + step; at < keys[k].Time - step / 2; at += step)
-                    times.Add(Math.Round(at, 3));
-            }
-        }
-
-        var moments = new List<string>();
-        foreach (var time in times)
-        {
-            var clock = Math.Round(context.ClipStart + time, 3);
-            if (clock <= 0)
-                continue;
-
-            var values = BalanceAt(fx, time, preserve);
-            var sent = new List<string>();
-            for (var i = 0; i < BalanceKeys.Length; i++)
-            {
-                if (fx.HasKeys(BalanceKeys[i]) || (preserve && ranges[i / 3]))
-                    sent.Add($"colorbalance@{context.InstanceName} {BalanceKeys[i]} {N(values[i])}");
-            }
-
-            moments.Add($"{N(clock)} {string.Join(",", sent)}");
-        }
-
-        return moments.Count == 0 ? null : $"sendcmd=c='{string.Join(";", moments)}'";
-    }
-
-    private static IReadOnlyList<string>? CompileGrade(EffectCompileContext context, EffectInstance fx)
-    {
-        var animated = fx.HasKeys("contrast") || fx.HasKeys("brightness") || fx.HasKeys("saturation") || fx.HasKeys("gamma");
-        var (contrast, brightness) = (Math.Clamp(fx.Get("contrast"), 0, 2), Math.Clamp(fx.Get("brightness"), -1, 1));
-        var (saturation, gamma) = (Math.Clamp(fx.Get("saturation"), 0, 3), Math.Clamp(fx.Get("gamma"), 0.1, 3));
-        if (!animated && Math.Abs(contrast - 1) < 0.005 && Math.Abs(brightness) < 0.005 && Math.Abs(saturation - 1) < 0.005 && Math.Abs(gamma - 1) < 0.005)
-            return null;
-
-        return [$"eq=contrast={context.Value(fx, "contrast", 0, 2)}:brightness={context.Value(fx, "brightness", -1, 1)}"
-                + $":saturation={context.Value(fx, "saturation", 0, 3)}:gamma={context.Value(fx, "gamma", 0.1, 3)}{(animated ? ":eval=frame" : "")}"];
-    }
-
-    private static IReadOnlyList<string>? CompileHue(EffectCompileContext context, EffectInstance fx)
-    {
-        var (hueAnimated, saturationAnimated) = (fx.HasKeys("h"), fx.HasKeys("s"));
-        var turns = hueAnimated || Math.Abs(fx.Get("h")) >= 0.05;
-        var saturates = saturationAnimated || Math.Abs(fx.Get("s") - 1) >= 0.005;
-        if (!turns && !saturates)
-            return null;
-
-        var options = new List<string>();
-        if (turns)
-            options.Add($"h={context.Value(fx, "h", -180, 180)}");
-        if (saturates)
-            options.Add($"s={context.Value(fx, "s", 0, 10)}");
-        return [$"hue={string.Join(":", options)}"];
-    }
-
-    [GeneratedRegex(@"^[a-z_]+$")]
-    private static partial Regex CurvePresetName();
-
-    [GeneratedRegex(@"^\s*\d*\.?\d+\s*/\s*\d*\.?\d+(\s+\d*\.?\d+\s*/\s*\d*\.?\d+)*\s*$")]
-    private static partial Regex CurvePoints();
 }

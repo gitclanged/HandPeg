@@ -8,9 +8,9 @@ using HandPegApp.Services;
 namespace HandPegApp.ViewModels;
 
 /// <summary>
-/// One named piece the Cutout Studio makes (a hero's portrait and health, the abilities, the killfeed): its outlines as a mask's text
+/// One named Cutout the Cutout Studio makes (a hero's portrait and health, the abilities, the killfeed): its outlines as a mask's text
 /// (fractions of the source's frame, see <see cref="MaskStore"/>), and where it lies on a tall frame. Its own mask, so that what another
-/// piece has inside this one's box never shows through it.
+/// Cutout has inside this one's box never shows through it.
 /// </summary>
 /// <param name="Source">The box round its outlines, as fractions of the source.</param>
 /// <param name="X">Its left edge on the frame, as a fraction of the frame's width.</param>
@@ -22,19 +22,22 @@ public sealed record CutoutPiece(string Name, string Shapes, Rect Source, double
 // come from an ML model (v6.0); never guessed at by heuristics.
 public partial class MainViewModel
 {
-    /// <summary>The zoom of the main video a Game Preset starts with: what its edges lose is what the pieces are for.</summary>
+    /// <summary>How wide (a fraction of the frame's width) a Game Preset makes its video to begin with: what its edges lose is what the Cutouts are for.</summary>
     public const double CutoutDefaultZoom = GamePresetLibrary.DefaultZoom;
 
-    // The blurred background a vertical Game Preset starts with: the built-ins' (one source).
+    // The blur fill a vertical Game Preset starts with: the built-ins' (one source).
     private const double CutoutBlurRadius = GamePresetLibrary.BlurRadius, CutoutBackgroundDim = GamePresetLibrary.BackgroundDim;
     private const int CutoutBlurPasses = GamePresetLibrary.BlurPasses;
 
-    /// <summary>The pieces the Studio made earlier in this project, which it opens with and takes the place of when added again.</summary>
-    public IEnumerable<Layer> CutoutLayers => Layers.Where(l => l is { IsVideo: true, IsDeleted: false, UsesFrameMask: true, CustomMask: true } && l.MaskShapes.Length > 0 && ClipOf(l) is not null);
+    /// <summary>
+    /// The Cutouts the Studio made earlier in this project (5.2-AuditB: Cutouts cut from their video's own file, with drawn outlines
+    /// of their own), which it opens with and takes the place of when added again.
+    /// </summary>
+    public IEnumerable<Layer> CutoutLayers => Layers.Where(l => l is { CustomMask: true } && l.MaskShapes.Length > 0 && IsCutout(l));
 
     /// <summary>
-    /// The pieces as layers: each with a mask of its own, its outlines alone (filled in memory where it is drawn, no picture file:
-    /// 5.1-Release), sharp, cut to its box. A piece with no outlines is left out; null when none has any.
+    /// The Cutouts as clip looks: each with a mask of its own, its outlines alone (filled in memory where it is drawn, no picture
+    /// file: 5.1-Release), sharp, cut to its box. A Cutout with no outlines is left out; null when none has any.
     /// </summary>
     private static List<LayerState>? CutoutStates(IReadOnlyList<CutoutPiece> pieces)
     {
@@ -50,22 +53,24 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The Studio's pieces on the timeline: a tall frame, the main video zoomed across its middle with its blurred background, and each
-    /// piece a layer over it, a child of the main video. Pieces the Studio made before are replaced (into the recycle bin). One step of Undo.
+    /// The Studio's Cutouts on the timeline: a tall frame, each video clip they go on (the selected ones, or every top-level one,
+    /// 5.2-AuditB) as wide as the zoom says across its middle with a blur fill, and each Cutout a clip over it, a child of it on its
+    /// clock. Cutouts the Studio made before on those clips are replaced (into the recycle bin). One step of Undo.
     /// </summary>
-    public void AddCutoutPieces(IReadOnlyList<CutoutPiece> pieces, double zoom)
+    public void AddCutouts(IReadOnlyList<CutoutPiece> pieces, double zoom)
     {
-        if (pieces.Count == 0 || CutoutStates(pieces) is not { Count: > 0 } states)
+        if (pieces.Count == 0 || CutoutStates(pieces) is not { Count: > 0 } states || CutoutTargets("Cutouts") is not { Count: > 0 } targets)
             return;
 
         FlushLooks();
         var before = CaptureSnapshot();
+        using var held = HoldLookSteps();
         using var whole = DeferCommand();
-        var old = CutoutLayers.ToList();
+        var old = CutoutLayers.Where(l => IsCutoutOf(l, targets)).ToList();
         if (old.Count > 0)
         {
             var binned = old.Select(v => (View: v, Deleted: Binned(ClipOf(v)!, Document.TrackOf(ClipOf(v)!)!, v))).ToList();
-            if (Edit("take away the last cutout's layers", edit =>
+            if (Edit("take away the last Cutouts", edit =>
                 {
                     foreach (var (view, _) in binned)
                         edit.DeleteClip(ClipOf(view)!);
@@ -79,24 +84,24 @@ public partial class MainViewModel
         if (!UseVerticalResolution)
             UseVerticalResolution = true;
 
-        PlacePieces(states, "add cutout pieces", mainInFront: false);
-        PlaceEveryMainClip(Math.Clamp(zoom, SmallestCenterZoom, LargestCenterZoom), 0, 0);
+        var template = TemplateOf(states, videoIndex: 0, look: null, zoom, 0, 0, blurFilled: true);
+        foreach (var id in targets)
+            PutTemplateOn(id, template, "add Cutouts");
         BlurRadius = CutoutBlurRadius;
         BlurPasses = CutoutBlurPasses;
         BackgroundDim = CutoutBackgroundDim;
         _backgroundRow.IsHidden = false;
         if (CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
-        FrameEngine = true;
         if (!_isBackgroundWorker && HasSource)
             LivePreview = true;
-        Checkpoint("add cutout pieces", before);
-        StatusText = $"Added {states.Count} cutout piece{(states.Count == 1 ? "" : "s")} as layers. Ctrl+Z takes them away again.";
+        Checkpoint("add Cutouts", before);
+        StatusText = $"Added {states.Count} Cutout{(states.Count == 1 ? "" : "s")}. Ctrl+Z takes them away again.";
     }
 
     /// <summary>
-    /// The Studio's pieces saved as a Game Preset: a .hpstyle in the Styles folder (one file: each piece's outlines are its mask) with the tall frame,
-    /// the zoomed video and its blurred background, put first on the drop overlay and shown in the Style Presets list. An
+    /// The Studio's Cutouts saved as a Game Preset: a .hpstyle in the Styles folder (one file: each Cutout's outlines are its mask) with the tall frame,
+    /// the zoomed video and its blur fill, put first on the drop overlay and shown in the Game Presets list. An
     /// existing preset of that name is replaced. Nothing on the timeline changes.
     /// </summary>
     /// <returns>Null, or why it could not be saved.</returns>
@@ -106,7 +111,7 @@ public partial class MainViewModel
         if (safe.Length == 0)
             return "Type a name for the Game Preset first.";
         if (pieces.Count == 0)
-            return "Draw at least one piece first.";
+            return "Draw at least one Cutout first.";
         if (CutoutStates(pieces) is not { Count: > 0 } states)
             return "The masks could not be drawn.";
 
@@ -114,7 +119,7 @@ public partial class MainViewModel
         {
             Layout = new LayoutSection
             {
-                CenterZoom = Math.Clamp(zoom, SmallestCenterZoom, LargestCenterZoom),
+                CenterZoom = Math.Clamp(zoom, SmallestTemplateWidth, LargestTemplateWidth),
                 SourceAspectRatio = CurrentSourceAspect,
                 Vertical = true,
                 MainVideoIndex = 0,
@@ -142,7 +147,7 @@ public partial class MainViewModel
         }
 
         RefreshStylePresets();
-        StatusText = $"Game Preset \"{safe}\" saved: drop a video on it, or pick it from the Style Presets.";
+        StatusText = $"Game Preset \"{safe}\" saved: drop a video on it, or pick it from the Game Presets.";
         return null;
     }
 }

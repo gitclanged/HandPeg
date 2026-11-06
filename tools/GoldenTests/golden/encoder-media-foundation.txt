@@ -7,8 +7,14 @@ crf 51 is quality 1
 constant bitrate: -rate_control cbr -b:v 8000k -maxrate 8000k -bufsize 16000k -hw_encoding 1
 average bitrate: -rate_control u_vbr -b:v 8000k -hw_encoding 1
 constant quality: -rate_control quality -quality 55 -hw_encoding 1
-h264_mf: "Media Foundation H.264 (h264_mf)", MediaFoundation, hardware True, falls back to libx264
-hevc_mf: "Media Foundation H.265 (hevc_mf)", MediaFoundation, hardware True, falls back to libx265
-av1_mf: "Media Foundation AV1 (av1_mf)", MediaFoundation, hardware True, falls back to libsvtav1
+8-bit frames are handed over as nv12
+10-bit frames are handed over as p010le
+h264_mf: "H.264 (Media Foundation)", MediaFoundation, hardware True, falls back to libx264
+hevc_mf: "HEVC (Media Foundation)", MediaFoundation, hardware True, falls back to libx265
+av1_mf: "AV1 (Media Foundation)", MediaFoundation, hardware True, falls back to libsvtav1
+h264_mf with a Qualcomm Adreno: "H.264 (Qualcomm Adreno)"
+hevc_mf with a Qualcomm Adreno: "HEVC (Qualcomm Adreno)"
+av1_mf with a Qualcomm Adreno: "AV1 (Qualcomm Adreno)"
 hevc_mf -> libx265: ffmpeg -i in.mp4 -c:v libx265 -preset medium -crf 23 -pix_fmt yuv420p out.mp4
+av1_mf -> libsvtav1: ffmpeg -i in.mp4 -c:v libsvtav1 -crf 23 -pix_fmt yuv420p10le out.mp4
 h264_mf -> libx264: ffmpeg -i in.mp4 -c:v libx264 -preset medium -b:v 8000k -maxrate 8000k -bufsize 16000k out.mp4

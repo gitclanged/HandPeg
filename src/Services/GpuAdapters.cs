@@ -26,6 +26,10 @@ public sealed record GpuAdapter(int Index, string Name)
 
     public bool IsIntel => VendorId == 0x8086;
 
+    /// <summary>A Qualcomm Adreno (a Snapdragon PC's graphics): PCI vendor 0x5143, or 'QCOM' as Windows on ARM reports it, or its name says so.</summary>
+    public bool IsQualcomm => VendorId is 0x5143 or 0x4D4F4351
+                              || Name.Contains("Qualcomm", StringComparison.OrdinalIgnoreCase) || Name.Contains("Adreno", StringComparison.OrdinalIgnoreCase);
+
     public string Display => Index < 0 ? Name : string.Create(CultureInfo.InvariantCulture, $"{Index}: {Name}");
 
     public override string ToString() => Display;
@@ -41,6 +45,9 @@ public static partial class GpuAdapters
 
     /// <summary>Every card that can decode, in DXGI's order. Empty when DXGI could not be asked.</summary>
     public static IReadOnlyList<GpuAdapter> All => _found ??= Enumerate();
+
+    /// <summary>A card here is a Qualcomm Adreno: the Media Foundation encoders reach it (EncoderOption.FromHardwareName names them so).</summary>
+    public static bool HasQualcommAdreno => All.Any(a => a.IsQualcomm);
 
     private static int? _warpIndex;
 

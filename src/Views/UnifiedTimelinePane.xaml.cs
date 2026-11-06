@@ -10,10 +10,10 @@ namespace HandPegApp.Views;
 /// The timeline pane (4.4): the drawn surface of every track (<see cref="Surface"/>), its ruler, scroll bars, zoom, tools and
 /// the inspector of what is selected. It edits nothing itself: every button goes out through <see cref="ToolClick"/>, its
 /// Tag saying what it is, to the main window, which holds the selection and the view (MainWindow.UnifiedTimeline.cs).
-/// What is its own: the rows' scroll bar following the surface, the Add Layer flyout and the recycle bin's popup.
+/// What is its own: the rows' scroll bar following the surface, the Add Track flyout and the recycle bin's popup.
 /// Made before the first frame in every layout, so making it does nothing but lay out its parts: the surface is empty
 /// until the window gives it rows. The row of tools is made with it (5.0, the user's Q5: zero pop-in); what is hidden at
-/// the first frame (Text Settings, the inspector, the Add Layer and recycle bin flyouts: DetailsTemplate) is not made at
+/// the first frame (Text Settings, the inspector, the Add Track and recycle bin flyouts: DetailsTemplate) is not made at
 /// all until the window is on screen (<see cref="RealizeTools"/>).
 /// </summary>
 public partial class UnifiedTimelinePane : UserControl
@@ -39,7 +39,7 @@ public partial class UnifiedTimelinePane : UserControl
         InitializeComponent();
 
         // The ruler and the time's scroll bar begin where the rows' headers end; the zoom's corner beside the ruler is as wide
-        // as the headers (the tracks' height is on the row of tools, with the other layer tools).
+        // as the headers (the tracks' height is on the row of tools, with the other timeline tools).
         var headers = Surface.HeaderWidth;
         ZoomCorner.Width = headers;
         Ruler.Margin = new Thickness(headers, 0, 0, 2);
@@ -49,19 +49,19 @@ public partial class UnifiedTimelinePane : UserControl
         Surface.VerticalOffsetChanged += UpdateRowScroll;
         Surface.SizeChanged += (_, _) => UpdateRowScroll();
 
-        // Left out of a narrow row, Add Layer is still in the "more" menu: as a menu of its kinds.
-        Toolbar.MenuEntryFor = element => ReferenceEquals(element, AddLayerHost) ? ("Add Layer", new Action(OpenKindsMenu)) : null;
+        // Left out of a narrow row, Add Track is still in the "more" menu: as a menu of its kinds.
+        Toolbar.MenuEntryFor = element => ReferenceEquals(element, AddLayerHost) ? ("Add Track", new Action(OpenKindsMenu)) : null;
     }
 
     /// <summary>
     /// Makes what is under the tracks and hidden at the first frame (5.0, the user's Q5; DetailsTemplate): Text Settings, the
-    /// inspector, and the flyouts of the row of tools (Add Layer's kinds, the recycle bin's list). The window calls it once it
+    /// inspector, and the flyouts of the row of tools (Add Track's kinds, the recycle bin's list). The window calls it once it
     /// is on screen (at ContextIdle after ContentRendered), so the first frame never waits for them; they start hidden and
     /// DetailsHost takes no room until something is selected, so nothing moves when they come. The row of tools itself is
-    /// made with the pane. Once: again does nothing. Anything that needs them before (the "more" menu's Add Layer, resting on
+    /// made with the pane. Once: again does nothing. Anything that needs them before (the "more" menu's Add Track, resting on
     /// the bin) makes them at once.
     /// </summary>
-    /// <summary>The inspector's place among the row's priorities: above every tool (Add Layer is 100).</summary>
+    /// <summary>The inspector's place among the row's priorities: above every tool (Add Track is 100).</summary>
     private const int InspectorPriority = 1000;
 
     public void RealizeTools()
@@ -84,7 +84,7 @@ public partial class UnifiedTimelinePane : UserControl
         _textSettingsPanel = Part<FrameworkElement>("TextSettingsPanel");
         _fontBox = Part<ComboBox>("FontBox");
 
-        // Add Layer's kinds open as the Settings button's do: resting on it, and close a moment after the pointer leaves. The
+        // Add Track's kinds open as the Settings button's do: resting on it, and close a moment after the pointer leaves. The
         // flyouts' targets are in the pane's own name scope, so they are given here, not by ElementName.
         var addLayer = Part<Popup>("AddLayerPopup");
         addLayer.PlacementTarget = AddLayerHost;
@@ -144,8 +144,8 @@ public partial class UnifiedTimelinePane : UserControl
 
     /// <summary>
     /// Shows the values of what is selected in the inspector under the tracks: a picture clip's (<paramref name="picture"/>,
-    /// a Layer), a sound's (<paramref name="sound"/>: an audio track of the main file, or a clip that carries sound), the
-    /// background's blur (<paramref name="background"/>: what holds it, the view model). Each group edits what it is given;
+    /// a Layer), a sound's (<paramref name="sound"/>: a clip that carries sound), the blur fill's settings
+    /// (<paramref name="background"/>: what holds them, the view model). Each group edits what it is given;
     /// with none of them the inspector is hidden. Asked before the inspector is made (RealizeTools), it is shown as it is.
     /// </summary>
     public void Inspect(string name, object? picture, object? sound, object? background)
@@ -202,7 +202,7 @@ public partial class UnifiedTimelinePane : UserControl
             Surface.VerticalOffset = RowScroll.Value;
     }
 
-    // ----- Add Layer: a click adds an empty track; resting on the button opens the kinds -----
+    // ----- Add Track: a click adds an empty track; resting on the button opens the kinds -----
 
     // From the keyboard: Down (or Alt+Down) on the button opens the kinds, the first one focused; Escape closes them again.
     private void AddLayerButton_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -233,7 +233,7 @@ public partial class UnifiedTimelinePane : UserControl
         ToolClick?.Invoke(sender, e);
     }
 
-    /// <summary>The kinds of layer as a menu at the pointer: Add Layer's entry of the "more" menu, when the tools' row has no room for it.</summary>
+    /// <summary>The kinds of clip as a menu at the pointer: Add Track's entry of the "more" menu, when the tools' row has no room for it.</summary>
     private void OpenKindsMenu()
     {
         RealizeTools();

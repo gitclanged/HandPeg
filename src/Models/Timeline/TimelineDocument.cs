@@ -16,7 +16,7 @@ namespace HandPegApp.Models.Timeline;
 /// <summary>What a track holds. Saved by name in projects: new kinds are added at the end, and none is renamed.</summary>
 public enum TimelineTrackKind
 {
-    /// <summary>Pictures: video files, images, text, cut-outs of a video, the blurred background.</summary>
+    /// <summary>Pictures: video files (a Cutout is one, a child of the clip it is cut from), images, text.</summary>
     Video,
 
     /// <summary>Sound with no picture of its own: a file's audio stream, music, a voice-over.</summary>
@@ -88,6 +88,25 @@ public sealed class TimelineTrackModel
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? Height { get; set; }
+
+    /// <summary>
+    /// Which audio stream an audio lane under a video track holds for every clip on that track (5.2, in-line sub-lanes): 0 the
+    /// first stream of each clip's file ("Stream 1"), 1 the second, and so on, whatever numbers each file gives its streams,
+    /// so that the first streams of Clip 1, Clip 2 and Clip 3 lie in line on one row. -1 for a lane a stream was moved to on
+    /// its own (MainViewModel.MoveSoundToOwnLane), which no other clip's stream is put on. Null for any other track, and for a
+    /// lane from before 5.2. Left out of the file while null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? StreamOrdinal { get; set; }
+
+    /// <summary>
+    /// The Game Preset this track gives its clips (5.2A, a Track Preset Node: the name of a saved preset in the Styles folder),
+    /// or null for none. A clip dropped or moved onto the track takes that preset's place, look, blur fill and Cutouts, in
+    /// place of any it had (MainViewModel.InheritTemplate); set on a track, it goes on the clips the track holds then too. A
+    /// picture track's only. Left out of the file while null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PresetNodeName { get; set; }
 
     /// <summary>
     /// What its clips shared in 4.2.0 (only an old document's: since 5.1-DogfoodPolish every clip's <see cref="TimelineClip.State"/> holds
@@ -190,7 +209,7 @@ public sealed class TimelineTrackModel
         (Id, TrackNumber, Name, Kind) = (from.Id, from.TrackNumber, from.Name, from.Kind);
         (IsHidden, IsMuted, IsSoloed, IsLocked) = (from.IsHidden, from.IsMuted, from.IsSoloed, from.IsLocked);
         (GainDb, DuckAgainstVoice, DuckAmountDb, AudioFilters, TrackLook) = (from.GainDb, from.DuckAgainstVoice, from.DuckAmountDb, from.AudioFilters, from.TrackLook);
-        (ParentTrackId, CaptionsUnder, Height) = (from.ParentTrackId, from.CaptionsUnder, from.Height);
+        (ParentTrackId, CaptionsUnder, Height, StreamOrdinal, PresetNodeName) = (from.ParentTrackId, from.CaptionsUnder, from.Height, from.StreamOrdinal, from.PresetNodeName);
     }
 }
 
@@ -242,8 +261,10 @@ public sealed class TimelineClip
 
     /// <summary>
     /// It plays its own file through in time (a video file, a sound), so its edges move its <see cref="MediaOffset"/> and
-    /// stop at its file's ends, as in 4.2.0. Images, text and adjustments have no file to run out of, and a cut-out of a
-    /// video (<see cref="LayerKind.Video"/>) or the blurred background shows what the video under it shows.
+    /// stop at its file's ends, as in 4.2.0. Images, text and adjustments have no file to run out of. (A clip of the legacy
+    /// kind <see cref="LayerKind.MainVideo"/> plays its file too, until <c>LegacyMainVideo.Migrate</c> makes it a video file as a 5.1
+    /// project is opened (the golden tests' 4.2.0-shaped fixtures the same way); a legacy cut-out,
+    /// <see cref="LayerKind.Video"/>, had no clock of its own.)
     /// </summary>
     [JsonIgnore]
     public bool PlaysFile => ContentKind is LayerKind.VideoFile or LayerKind.Audio or LayerKind.MainVideo;
@@ -290,13 +311,22 @@ public sealed class TimelineClip
     public ProxyChoice ProxyChoice { get; set; }
 
     /// <summary>
-    /// The clip it goes with (4.4: a child of that one, as a style's cut-out of the main video or a mask is), or null for
+    /// The clip it goes with (4.4: a child of that one, as a Cutout, a mask or a stream's Sub-Lane clip is), or null for
     /// none. While it lies with its parent in time (overlaps it), the parent's splits, trims, moves, deletes and folds
     /// carry it along (<see cref="TimelineDocument.ChildrenOf"/>). A parent that is gone leaves it a clip of its own; null
     /// is left out of the file.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Guid? ParentClipId { get; set; }
+
+    /// <summary>
+    /// The beats found in its sound (5.2B, Detect &amp; Snap to Audio Beats: Services/Audio/BeatDetector.cs), ascending, in seconds of its
+    /// file (media time, as <see cref="MediaOffset"/> is), so a trim, a move, a split or a change of speed keeps each on its moment of the
+    /// sound; null while none were looked for, and so left out of the file. Never changed in place: an edit puts a new array here
+    /// (<see cref="ITimelineTransaction.SetClipBeats"/>), so a snapshot that shares this one keeps what it had.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double[]? BeatTimes { get; set; }
 
     /// <summary>
     /// Its look, as a layer is saved, so everything a <see cref="Layer"/> and an <see cref="EffectInstance"/> do works on it
@@ -319,7 +349,8 @@ public sealed class TimelineClip
         && AudioSlipSeconds == other.AudioSlipSeconds && AudioLeadInSeconds == other.AudioLeadInSeconds && AudioTailOutSeconds == other.AudioTailOutSeconds
         && FadeInSeconds == other.FadeInSeconds && FadeOutSeconds == other.FadeOutSeconds && FadeInStyle == other.FadeInStyle
         && FadeOutStyle == other.FadeOutStyle && TransitionIn == other.TransitionIn && GainDb == other.GainDb && IsHidden == other.IsHidden
-        && IsMuted == other.IsMuted && ProxyChoice == other.ProxyChoice && ParentClipId == other.ParentClipId && ReferenceEquals(State, other.State);
+        && IsMuted == other.IsMuted && ProxyChoice == other.ProxyChoice && ParentClipId == other.ParentClipId && ReferenceEquals(BeatTimes, other.BeatTimes)
+        && ReferenceEquals(State, other.State);
 
     /// <summary>Takes every value of another clip (its id too): a rollback, in place, so whoever holds this clip keeps it.</summary>
     internal void Restore(TimelineClip from)
@@ -348,6 +379,7 @@ public sealed class TimelineClip
         IsMuted = from.IsMuted;
         ProxyChoice = from.ProxyChoice;
         ParentClipId = from.ParentClipId;
+        BeatTimes = from.BeatTimes;
         State = from.State;
     }
 }
@@ -462,6 +494,26 @@ public sealed class TimelineDocument
     public int Height { get; set; } = 1080;
     public bool UseVerticalResolution { get; set; }
 
+    /// <summary>
+    /// The Sequence's natural frame size in pixels (5.2-AuditB): the size its frame takes when nothing asks for another,
+    /// before Use Vertical Resolution turns it on its side. Set when the first file's picture goes onto an empty Sequence
+    /// (that picture as its crop leaves it, even), or, in a project 5.2-AuditB converted, by that conversion (what its main
+    /// video's size and crop made it); 0 while unset, and then left out of the file. It replaces "the main file's
+    /// size cut by its first clip's crop": cropping a clip later never resizes the Sequence.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int NaturalWidth { get => _naturalWidth; set => _naturalWidth = Math.Max(value, 0); }
+
+    /// <summary>The height of <see cref="NaturalWidth"/>'s size; 0 while unset, and then left out of the file.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int NaturalHeight { get => _naturalHeight; set => _naturalHeight = Math.Max(value, 0); }
+
+    private int _naturalWidth, _naturalHeight;
+
+    /// <summary>Whether <see cref="NaturalWidth"/> and <see cref="NaturalHeight"/> are both set.</summary>
+    [JsonIgnore]
+    public bool HasNaturalSize => _naturalWidth > 0 && _naturalHeight > 0;
+
     public FrameRate FrameRate { get; set; } = FrameRate.Fps60;
 
     /// <summary>Every edge lands on a frame of <see cref="FrameRate"/> (an edit can ask to be left free).</summary>
@@ -474,6 +526,23 @@ public sealed class TimelineDocument
     public List<EffectState> SequenceEffects { get; set; } = [];
 
     public bool SequenceEffectsBypassed { get; set; }
+
+    /// <summary>The most and least the Sequence's master output fader goes to, in decibels.</summary>
+    public const double LoudestMasterGainDb = 12, QuietestMasterGainDb = -40;
+
+    /// <summary>
+    /// The Sequence's master output fader in decibels (5.2B): a gain on the whole mix after every track is summed and before the
+    /// Sequence's fades, heard in the player and exported alike (AudioProgram.MasterGain), held to -40..+12. 0, no change at all, is
+    /// left out of the file (<see cref="ITimelineTransaction.SetMasterGain"/>).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public double MasterGainDb
+    {
+        get => _masterGainDb;
+        set => _masterGainDb = double.IsFinite(value) ? Math.Clamp(value, QuietestMasterGainDb, LoudestMasterGainDb) : 0;
+    }
+
+    private double _masterGainDb;
 
     public List<TimelineMarker> Markers { get; set; } = [];
 
@@ -562,10 +631,13 @@ public sealed class TimelineDocument
             Width = Width,
             Height = Height,
             UseVerticalResolution = UseVerticalResolution,
+            NaturalWidth = NaturalWidth,
+            NaturalHeight = NaturalHeight,
             FrameRate = FrameRate,
             QuantizeToFrames = QuantizeToFrames,
             SequenceEffects = deep ? [.. SequenceEffects.Select(e => System.Text.Json.JsonSerializer.Deserialize<EffectState>(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(e, TimelineTransaction.CopyOptions), TimelineTransaction.CopyOptions)!)] : [.. SequenceEffects],
             SequenceEffectsBypassed = SequenceEffectsBypassed,
+            MasterGainDb = MasterGainDb,
             Markers = [.. Markers],
             Folds = Folds is null ? null : [.. Folds],
             RestoredFolds = RestoredFolds is null ? null : [.. RestoredFolds],
@@ -580,6 +652,8 @@ public sealed class TimelineDocument
             {
                 var clipCopy = clip.Snapshot();
                 clipCopy.State = Look(clip.State) ?? new LayerState();
+                if (deep && clip.BeatTimes is { } beats)
+                    clipCopy.BeatTimes = [.. beats];
                 made.Clips.Add(clipCopy);
             }
             copy.Tracks.Add(made);
@@ -659,6 +733,24 @@ public sealed class TimelineDocument
                     yield return (track, clip);
             }
         }
+    }
+
+    /// <summary>
+    /// Whether a track's pictures are hidden by a header (5.2): its own switch, or that of any track it lies under, since a track
+    /// header's switch is its whole family's. A clip's own switch (<see cref="TimelineClip.IsHidden"/>) is never counted here.
+    /// </summary>
+    public bool IsHiddenWithParents(TimelineTrackModel track)
+    {
+        TimelineTrackModel? at = track;
+        for (var steps = 0; at is not null && steps <= Tracks.Count; steps++)
+        {
+            if (at.IsHidden)
+                return true;
+            var parentId = at.ParentTrackId;
+            at = parentId is null ? null : Tracks.Find(t => t.Id == parentId);
+        }
+
+        return false;
     }
 
     /// <summary>The tracks that lie under <paramref name="track"/> (<see cref="TimelineTrackModel.ParentTrackId"/>), in the stacking order.</summary>

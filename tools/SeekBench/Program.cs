@@ -9,7 +9,7 @@ namespace HandPegSeekBench;
 
 /// <summary>
 /// Instant Seek's bench (written in Pass 5.0-AudioAnd3D, run in Pass 5.0-Verify):
-/// <c>HandPeg.SeekBench &lt;video&gt; [--ffprobe path] [--duration s] [--seeks n] [--cache-mb n] [--threads n] [--out file.json]</c>.
+/// <c>HandPeg.SeekBench &lt;video&gt; [--ffprobe path] [--ffmpeg path] [--duration s] [--seeks n] [--cache-mb n] [--threads n] [--software-decode] [--out file.json]</c>.
 /// <para>A real compositor worker (this program again, as HandPeg starts HandPeg.exe) draws one media layer of the file;
 /// each scenario publishes scenes as HandPeg would and times, from the counters in the control block, how soon a frame
 /// is presented (any: the stand-in Instant Seek shows at once) and how soon the exact frame is.</para>
@@ -48,8 +48,8 @@ public static class Program
 
         if (args.Length == 0 || !File.Exists(args[0]))
         {
-            Console.WriteLine("HandPeg.SeekBench <video> [--ffprobe path] [--duration s] [--seeks n] [--cache-mb n] [--threads n] [--out file.json]");
-            Console.WriteLine("HandPeg.SeekBench --project <file.hproj> [--from s] [--seconds s] [--refresh hz] [--runs n] [--rest ms] [--hints horizon|legacy|none] [--cache-mb n] [--threads n]");
+            Console.WriteLine("HandPeg.SeekBench <video> [--ffprobe path] [--ffmpeg path] [--duration s] [--seeks n] [--cache-mb n] [--threads n] [--software-decode] [--out file.json]");
+            Console.WriteLine("HandPeg.SeekBench --project <file.hproj> [--from s] [--seconds s] [--refresh hz] [--runs n] [--rest ms] [--hints horizon|legacy|none] [--cache-mb n] [--threads n] [--software-decode]");
             return 2;
         }
 
@@ -59,6 +59,14 @@ public static class Program
         var video = Path.GetFullPath(args[0]);
 
         var ffprobe = Option("--ffprobe") ?? FindOnPath("ffprobe.exe");
+
+        // The FFmpeg its worker decodes with where Media Foundation cannot (HEVC on a Windows without the HEVC Video Extensions,
+        // 5.2-Release: such a PC's file runs decoded nothing): --ffmpeg, else the one beside ffprobe, else one on the PATH.
+        // The bench's own data folder has no settings naming one.
+        var beside = ffprobe is not null ? Path.Combine(Path.GetDirectoryName(ffprobe) ?? "", "ffmpeg.exe") : null;
+        var ffmpeg = Option("--ffmpeg") ?? (beside is not null && File.Exists(beside) ? beside : FindOnPath("ffmpeg.exe"));
+        if (ffmpeg is not null && ffprobe is not null)
+            (AppSettings.Current.FfmpegPath, AppSettings.Current.FfprobePath) = (Path.GetFullPath(ffmpeg), Path.GetFullPath(ffprobe));
         var (duration, keys, rate) = ffprobe is not null ? Probe(ffprobe, video) : (0d, Array.Empty<double>(), 30.0);
         duration = Number("--duration", duration);
         if (duration <= 0)
@@ -72,7 +80,9 @@ public static class Program
         var threads = (int)Number("--threads", 0);
         Console.WriteLine(FormattableString.Invariant($"{Path.GetFileName(video)}: {duration:0.0} s, {rate:0.##} fps, {keys.Length} key frames (mean GOP {(keys.Length > 1 ? duration / keys.Length : double.NaN):0.00} s)"));
 
-        using var client = new CompositorClient(-1, keepStandby: false, cacheMb switch { < 0 => -1, 0 => 0, _ => cacheMb << 20 }, threads);
+        // --software-decode: on the processor, as with Settings' hardware video decoding off (the card's decoding measured against it).
+        using var client = new CompositorClient(-1, keepStandby: false, cacheMb switch { < 0 => -1, 0 => 0, _ => cacheMb << 20 }, threads,
+            softwareDecode: Array.IndexOf(args, "--software-decode") >= 0);
         var clock = Stopwatch.StartNew();
         while (client.State == CompositorWorkerState.Starting && clock.ElapsedMilliseconds < 10_000)
             Thread.Sleep(5);
@@ -100,6 +110,7 @@ public static class Program
         foreach (var result in results)
             report.AppendLine(result.Describe());
         var stats = client.CacheStats;
+        var decoded = Volatile.Read(ref client.Memory.Control.DecodedFrames);
         report.AppendLine(FormattableString.Invariant(
             $"Cache: {stats.Frames} frames, {stats.Bytes >> 20} of {stats.BudgetBytes >> 20} MB, {stats.Hits} hits, {stats.Misses} misses, {stats.PredictedHits} decoded ahead, {stats.Evictions} evicted; worst exact {stats.WorstExactLatencyMs:0.0} ms"));
         Console.Write(report.ToString());
@@ -112,6 +123,13 @@ public static class Program
             };
             File.WriteAllText(outPath, System.Text.Json.JsonSerializer.Serialize(results.Select(r => r.ToJson()).ToList(), options));
             Console.WriteLine($"Written: {outPath}");
+        }
+
+        // Nothing decoded measures nothing (a file no decoder here reads, no FFmpeg for it): said with the worker's reason, and failed.
+        if (decoded == 0)
+        {
+            Console.WriteLine($"The worker decoded no frame of the file: {(client.Message is { Length: > 0 } message ? message : "it gave no reason")}{(ffmpeg is null ? " (no FFmpeg was found: give --ffmpeg)" : "")}");
+            return 1;
         }
 
         return 0;

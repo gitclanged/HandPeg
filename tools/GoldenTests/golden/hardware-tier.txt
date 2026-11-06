@@ -1,0 +1,53 @@
+# Hardware tiers (5.2-Arm64AndNpu): unified memory and the frame cache's Auto budget, what Auto-Captions run on, FFmpeg's colour in Media Foundation's numbers.
+unified memory (DXCore's IsIntegrated, else a carve-out of at most 1 GB with four times as much shared):
+  Adreno X1-85 (DXCore: integrated; 128 MB, 7990 MB shared): unified
+  Adreno X1-85 without DXCore (128 MB, 7990 MB shared): unified
+  a laptop chip's graphics without DXCore (512 MB, 8 GB shared): unified
+  RTX 4090 (24 GB, 32 GB shared): its own
+  a 512 MB discrete card DXCore calls discrete (8 GB shared): its own
+  WARP: its own
+frame cache, unified memory (Auto): an eighth of the computer's memory, 1.5 to 2.5 GB from 12 GB up, proportionally less below:
+  64 GB: 2560 MB
+  32 GB: 2560 MB
+  16 GB: 2048 MB
+  16 GB as Windows counts it on a 16 GB laptop (16755752960 bytes): 1997.4 MB
+  12 GB: 1536 MB
+  8 GB: 1024 MB
+  4 GB: 512 MB
+  not known: 512 MB
+frame cache Auto budget (before Windows' caps):
+  WARP: 512 MB
+  Adreno X1-85, 16 GB computer: 2048 MB
+  Adreno X1-85, 16 GB computer, Windows asked (7 GB free): 2048 MB
+  a 256 MB card of its own: 512 MB
+  an 8 GB card, Windows not asked yet: 1024 MB
+  an 8 GB card, a game on it: 1024 MB
+  a 24 GB card, 22 GB free: 11264 MB
+  a 24 GB card, Windows not asked yet: 3072 MB
+Auto-Captions (whisper.cpp, its silence detection inside it): choice, NPU build, graphics back end, fell over before -> device, --no-gpu, why:
+  auto, no NPU build, OpenCL, fine -> gpu: On the graphics card, whisper's OpenCL back end (Auto).
+  auto, no NPU build, OpenCL, fell over -> cpu --no-gpu: On the processor (Auto): whisper's OpenCL back end fell over on this computer before.
+  auto, no NPU build, none, fine -> cpu: On the processor (Auto): the whisper.cpp build in use has no graphics back end.
+  auto, NPU build, OpenCL, fine -> npu --no-gpu: On the NPU (Auto).
+  npu, no NPU build, OpenCL, fine -> gpu: On the graphics card, whisper's OpenCL back end (no speech build for the NPU is installed yet).
+  npu, no NPU build, none, fine -> cpu: On the processor (no speech build for the NPU is installed yet): the whisper.cpp build in use has no graphics back end.
+  npu, NPU build, none, fine -> npu --no-gpu: On the NPU, as chosen.
+  gpu, no NPU build, CUDA, fell over -> gpu: On the graphics card (CUDA), as chosen.
+  gpu, no NPU build, none, fine -> cpu: On the processor: the whisper.cpp build in use shows no graphics back end (it decides for itself).
+  cpu, no NPU build, OpenCL, fine -> cpu --no-gpu: On the processor, as chosen.
+FFmpeg's colour as Media Foundation numbers it (the compositor's YUV to RGB reads these):
+  matrix bt709: 1
+  matrix smpte170m: 2
+  matrix bt470bg: 2
+  matrix smpte240m: 3
+  matrix bt2020nc: 4
+  matrix bt2020c: 4
+  matrix unknown: 1
+  matrix (not said): 1
+  transfer bt709: 5
+  transfer smpte170m: 5
+  transfer smpte2084: 15
+  transfer arib-std-b67: 16
+  transfer iec61966-2-1: 7
+  transfer bt2020-10: 13
+  transfer unknown: 0

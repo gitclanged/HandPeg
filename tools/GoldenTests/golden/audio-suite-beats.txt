@@ -1,0 +1,4 @@
+# BeatDetector (5.2B): a kick at 120 BPM in noise, every beat found within 15 ms and nothing else, a minute under 15 ms.
+119 kicks at 120 BPM from 0.25 s in noise at -34 dBFS: 119 beats found, each within 15 ms
+a minute of 22050 Hz mono in under 15 ms where the code is optimized (the best of five; a debug build's held to 100 ms)
+silence: no beats

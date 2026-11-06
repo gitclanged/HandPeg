@@ -58,7 +58,6 @@ internal static class Program
         var nominal = options.Number("nominal", 0.5);
         var longest = (int)options.Number("size", 1280);
         var work = options.WorkFolder();
-        var mainProxy = options.Has("main-proxy") ? Path.GetFullPath(options.Get("main-proxy")) : null;
 
         // Known answers, for checking the harness itself: --video-shift-ms N draws every picture N ms late (the plan is
         // evaluated N ms earlier); --audio-shift-ms N renders the sound N ms late. The A/V column must read the difference.
@@ -77,7 +76,7 @@ internal static class Program
         var results = new List<(bool Proxies, PointResult Result, GpuRun Run)>();
         foreach (var proxies in proxyRuns)
         {
-            var inUse = project.UseProxies(proxies, proxies ? mainProxy : null);
+            var inUse = project.UseProxies(proxies);
             Console.WriteLine();
             Console.WriteLine($"Proxies {(proxies ? "on" : "off")}: {(inUse.Count == 0 ? "none in use" : string.Join(", ", inUse.Select(p => $"{Path.GetExtension(p.Key)} -> {Path.GetFileName(p.Value)}")))}");
             if (proxies && inUse.Count == 0)
@@ -86,6 +85,19 @@ internal static class Program
             var state = project.State();
             var plan = renderer.Plan(state);
             var program = AudioProgram.Build(state);
+
+            // The default moments (100 to 1500 s) are for a long recording's project: a Sequence too short for any of them (the 11.6 s
+            // SAMPLE QUICK CUTS, a cut every second or so) is measured inside its three longest clips of a file instead, a quarter second
+            // past each one's start and crossfade, unless --points names others (a measurement stays inside its clip: Measurement).
+            if (!options.Has("points") && points.TrueForAll(at => plan.SequenceSeconds - at - 0.05 < 1))
+            {
+                points = [.. state.Timeline.Tracks.SelectMany(t => t.Clips)
+                    .Where(c => c is { ContentKind: HandPegApp.Models.LayerKind.VideoFile, IsHidden: false, ParentClipId: null } && c.End - c.Start >= 1.5)
+                    .OrderByDescending(c => c.End - c.Start).Take(3)
+                    .Select(c => Math.Round(c.Start + 0.25 + c.TransitionIn / 2, 3)).Distinct().Order()];
+                Console.WriteLine($"  The Sequence is {plan.SequenceSeconds:0.###} s long: measured inside its longest clips, at {string.Join(", ", points.Select(p => p.ToString("0.###", CultureInfo.InvariantCulture)))} s.");
+            }
+
             foreach (var at in points)
             {
                 var length = Math.Min(seconds, plan.SequenceSeconds - at - 0.05);

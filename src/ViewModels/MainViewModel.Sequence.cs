@@ -7,17 +7,17 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// The sequence: a timeline with a clock of its own, on which the main video is clips like any other (the document's,
-// see MainViewModel.Document.cs); and motion, the keyframes that move, size and turn a layer as that clock runs.
+// The sequence: a timeline with a clock of its own, on which every file is clips like any other (the document's, see
+// MainViewModel.Document.cs); and motion, the keyframes that move, size and turn a layer as that clock runs.
 public partial class MainViewModel
 {
     // ----- The sequence clock -----
-    // The timeline is not the main video's. It is as long as whatever reaches furthest along it, and the main video is
-    // clips on it like any other: one to begin with, more once it has been split, each moved, trimmed and deleted on its
-    // own. Everything on the timeline is in the sequence's time.
+    // The timeline is no file's. It is as long as whatever reaches furthest along it, and a file is clips on it like any
+    // other: one to begin with, more once it has been split, each moved, trimmed and deleted on its own. Everything on the
+    // timeline is in the sequence's time.
 
     /// <summary>
-    /// How long the main video's file is, in seconds: as its probe says, else (a recording never finished: its recorder
+    /// How long the file last opened is, in seconds: as its probe says, else (a recording never finished: its recorder
     /// stopped mid-write, and nothing says how long it is) to one GOP past its last I-frame once they are listed; 0 while
     /// neither is known.
     /// </summary>
@@ -31,67 +31,79 @@ public partial class MainViewModel
         return Math.Max(_sourceIFrames[^1] - _mediaInfo.ContainerStartSeconds + gop, 0);
     }
 
-    // The I-frames of the main video's file, and how its clips lay when they were last put along the sequence.
+    // The I-frames of the file last opened (its length, while its probe says none), and how the clips that show files' pictures
+    // lay (and which of their files' I-frames were known) when the I-frames were last put along the sequence.
     private List<double> _sourceIFrames = [];
     private int _iFrameLayout;
 
     /// <summary>
-    /// How the main video's clips lie, as a number that changes when they do: read from the document (cheap, asked after
-    /// every change), so that the builder's lowering is only asked for when there is something to lay out again.
+    /// How the clips that show files' pictures lie, and how many of their files' I-frames are known, as a number that changes when
+    /// either does: read from the document (cheap, asked after every change), so the I-frames are laid out again only then.
     /// </summary>
-    private int GetMainLayout()
+    private int GetPictureLayout()
     {
         var hash = new HashCode();
-        hash.Add(FrameEngine);
-        hash.Add(MainMediaSeconds);
-        foreach (var track in Document.Tracks)
+        var (file, known) = ("", 0);
+        foreach (var span in PictureSpans())
         {
-            hash.Add(track.Kind);
-            hash.Add(track.IsHidden);
-            foreach (var clip in track.Clips)
-            {
-                if (clip.ContentKind != LayerKind.MainVideo)
-                    continue;
-                hash.Add(clip.Start);
-                hash.Add(clip.End);
-                hash.Add(clip.MediaOffset);
-                hash.Add(clip.Speed);
-                hash.Add(clip.IsHidden);
-                hash.Add(clip.TransitionIn);
-                hash.Add(clip.SourcePath);
-            }
+            hash.Add(span.Start);
+            hash.Add(span.End);
+            hash.Add(span.MediaOffset);
+            hash.Add(span.Speed);
+            hash.Add(span.Path, StringComparer.OrdinalIgnoreCase);
+
+            // (A run of clips of one file asks about it once: a long recording cut at its silences is thousands of clips.)
+            if (!string.Equals(span.Path, file, StringComparison.OrdinalIgnoreCase))
+                (file, known) = (span.Path, MediaProbe.KnownSeekIndex(span.Path)?.IFrames.Length ?? 0);
+            hash.Add(known);
         }
 
         return hash.ToHashCode();
     }
 
-    /// <summary>Takes the I-frame index of the main video's file, and lays it along the sequence: each I-frame where the clip that shows it puts it.</summary>
+    /// <summary>
+    /// Takes the I-frame index of the file last opened, and lays the I-frames along the sequence. A file with no length of its own
+    /// gets its clip now that its I-frames say how long it is.
+    /// </summary>
     private void SetSourceIFrames(List<double> iFrames)
     {
         _sourceIFrames = iFrames;
+        if (iFrames.Count > 1 && _openedOver is { } previous && !(_mediaInfo?.DurationSeconds > 0))
+            PlaceOpenedFile(previous);
+        PlaceIFrames();
+    }
 
-        // A file with no length of its own gets its clip now that its I-frames say how long it is.
-        if (iFrames.Count > 1 && HasSource && !(_mediaInfo?.DurationSeconds > 0) && !MainVideoClips().Any())
-            PlaceMainVideo();
-
-        _iFrameLayout = GetMainLayout();
-        if (IsMainWholeSequence || iFrames.Count == 0)
+    /// <summary>
+    /// Lays the I-frames along the sequence (5.2-AuditB): each clip that shows a file's picture puts its own file's where it shows
+    /// them (MediaProbe.KnownSeekIndex: the I-frames on the file's own clock, its picture's first frame its moment 0), at its speed.
+    /// A file whose I-frames are not listed yet puts none (they are laid out again once they are).
+    /// </summary>
+    private void PlaceIFrames()
+    {
+        _iFrameLayout = GetPictureLayout();
+        var placed = new List<double>();
+        var indexes = new Dictionary<string, (SeekIndex? Index, double Start)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var span in PictureSpans())
         {
-            IFrames = iFrames;
-        }
-        else
-        {
-            var placed = new List<double>(iFrames.Count);
-            foreach (var clip in GetMainClips())
+            if (!indexes.TryGetValue(span.Path, out var known))
             {
-                var first = iFrames.BinarySearch(clip.Offset);
-                for (var i = first < 0 ? ~first : first; i < iFrames.Count && iFrames[i] < clip.Offset + clip.End - clip.Start; i++)
-                    placed.Add(iFrames[i] - clip.Offset + clip.Start);
+                var seek = MediaProbe.KnownSeekIndex(span.Path);
+                indexes[span.Path] = known = (seek, MediaProbe.KnownVideoStart(span.Path) ?? seek?.ContainerStart ?? 0);
             }
 
-            IFrames = placed;
+            if (known.Index is not { IFrames.Length: > 0 } index)
+                continue;
+
+            var speed = span.Speed > 0 ? span.Speed : 1;
+            var from = known.Start + span.MediaOffset;
+            var to = from + (span.End - span.Start) * speed;
+            var first = Array.BinarySearch(index.IFrames, from);
+            for (var i = first < 0 ? ~first : first; i < index.IFrames.Length && index.IFrames[i] < to; i++)
+                placed.Add(span.Start + (index.IFrames[i] - from) / speed);
         }
 
+        placed.Sort();
+        IFrames = placed;
         UpdateIFrameMarks();
     }
 
@@ -107,39 +119,8 @@ public partial class MainViewModel
             UpdateIFrameMarks();
         }
 
-        if (GetMainLayout() != _iFrameLayout)
-            SetSourceIFrames(_sourceIFrames);
-    }
-
-    /// <summary>
-    /// The clip of the main video that is on screen at a moment of the sequence, as the player plays it (the graph
-    /// builder's primary chain), or null when none is.
-    /// </summary>
-    public MainClip? GetMainClipAt(double seconds)
-    {
-        foreach (var clip in GetMainClips())
-        {
-            if (seconds >= clip.Start - 0.0005 && seconds < clip.End)
-                return clip;
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Puts the main video back as it is when a source is loaded: one clip of the whole file at the start of the timeline,
-    /// its other clips gone (the main video row's "Back to the Start of the Timeline, Whole"). One step of Undo.
-    /// </summary>
-    public void ResetMainTiming()
-    {
-        if (!HasSource || MainMediaSeconds <= 0.05)
-            return;
-
-        FlushLooks();
-        var before = CaptureSnapshot();
-        PlaceMainVideo();
-        Checkpoint("put the main video back whole", before);
-        Log("The main video is back at the start of the timeline, whole");
+        if (GetPictureLayout() != _iFrameLayout)
+            PlaceIFrames();
     }
 
     // ----- The recycle bin -----
@@ -182,7 +163,7 @@ public partial class MainViewModel
             if (clip?.Clip is not { } deleted)
                 continue;
 
-            var name = deleted.ContentKind == LayerKind.MainVideo ? MainVideoName() : deleted.State.Name;
+            var name = deleted.State.Name;
             var preview = deleted.SourcePath is { } path ? GetLayerPicture(path) : null;
             RecycleBin.Add(new BinItem(clip, name, $"{TimeDisplay.Format(deleted.Start)} to {TimeDisplay.Format(deleted.End)}", preview));
         }
@@ -385,14 +366,23 @@ public partial class MainViewModel
             ? $"Keyframes on: moving, resizing or turning a clip {(KeyframesSnap ? "changes its keyframe nearest the playhead" : "sets a keyframe at the playhead")}."
             : "Keyframes off: a clip that is moved takes its whole motion with it.";
 
-    /// <summary>The clip whose keyframes the Keyframes pane shows and the keyframe buttons work on: the one last selected, or the main video.</summary>
+    /// <summary>The clip whose keyframes the Keyframes pane shows and the keyframe buttons work on: the one last selected, or the video at the playhead.</summary>
     [ObservableProperty] private Layer? _keyLayer;
 
-    // The main video's clip the keyframe controls last showed, with nothing selected (see OnPositionMsChanged).
-    private Layer? _mainLayerShown;
+    // The video clip the keyframe controls last showed, with nothing selected (see OnPositionMsChanged).
+    private Layer? _playheadVideoShown;
 
-    /// <summary>The clip the keyframe controls work on.</summary>
-    public Layer ActiveKeyLayer => KeyLayer is { } layer && Layers.Contains(layer) && layer.IsPicture && !layer.IsEmptyTrack ? layer : MainLayer;
+    /// <summary>The clip the keyframe controls work on: the one selected, else the video at the playhead (<see cref="PlayheadVideo"/>).</summary>
+    public Layer ActiveKeyLayer => KeyLayer is { } layer && Layers.Contains(layer) && layer.IsPicture && !layer.IsEmptyTrack ? layer : PlayheadVideo;
+
+    /// <summary>
+    /// What the keyframe controls, the Effects pane and a split work on with nothing selected (5.2-AuditB: where the main video's clip
+    /// at the playhead was): the lowest shown top-level video clip at the playhead, or the first; a hidden stand-in while there is none.
+    /// </summary>
+    public Layer PlayheadVideo => VideoViewAt(PositionMs / 1000) ?? FirstVideoView() ?? _noVideo;
+
+    // What stands for the video at the playhead while there is none on the timeline.
+    private readonly Layer _noVideo = new() { Kind = LayerKind.VideoFile, Name = "No Video", IsHidden = true };
 
     /// <summary>The text layer that is selected, whose words and font the Text Settings panel edits; null when what is selected is not one.</summary>
     public Layer? SelectedTextLayer => KeyLayer is { IsText: true } layer && Layers.Contains(layer) ? layer : null;
@@ -503,7 +493,7 @@ public partial class MainViewModel
     /// <summary>The action-safe and title-safe areas are outlined over the picture.</summary>
     [ObservableProperty] private bool _showSafeMargins;
 
-    /// <summary>Layers are moved, resized and turned on the player itself (Settings, the Canvas, the playback bar; 4.1.1-B).</summary>
+    /// <summary>Clips are moved, resized and turned on the player itself (Settings, the Canvas, the playback bar; 4.1.1-B).</summary>
     public bool EditLayersOnPlayer
     {
         get => AppSettings.Current.EditLayersOnPlayer;
@@ -515,8 +505,8 @@ public partial class MainViewModel
             SaveView(s => s.EditLayersOnPlayer = value);
             OnPropertyChanged();
             StatusText = value
-                ? "Edit Layers on Video Preview on: with Live Preview, click a layer on the player to select it, then drag it, its corner, its round handle or its anchor."
-                : "Edit Layers on Video Preview off: layers are arranged on the Canvas.";
+                ? "Edit Clips on Video Preview on: with Live Preview, click a clip on the player to select it, then drag it, its corner, its round handle or its anchor."
+                : "Edit Clips on Video Preview off: clips are arranged on the Canvas.";
         }
     }
 
@@ -572,27 +562,29 @@ public partial class MainViewModel
     /// box) it is the voice the ducked sounds make room for. Says what that comes to, because ducking takes
     /// two: a sound to turn down, and a voice to turn it down for.
     /// </summary>
-    /// <param name="sound">An audio track of the video, or a clip that carries sound.</param>
+    /// <param name="sound">A clip that carries sound (5.2-AuditB: a file's streams are clips on Sub-Lanes).</param>
     /// <param name="voice">Whether it is the Voiceover / Dialogue box that was clicked, not Auto-Duck.</param>
     public void ToggleDucking(object sound, bool voice)
     {
-        var name = sound switch { AudioTrack track => track.Title, Layer layer => layer.Name, _ => "" };
-        if (name.Length == 0)
+        if (sound is not Layer layer)
             return;
 
+        var name = layer.Name;
         Checkpoint($"change the ducking of {name}");
         bool on;
-        switch (sound)
+        if (voice)
         {
-            case AudioTrack track when voice: on = track.IsVoice = !track.IsVoice; break;
-            case AudioTrack track: on = track.AutoDuck = !track.AutoDuck; break;
-            // A clip marked as the voice is what Auto-Captions listen to from now on (4.4), as a Voice track is.
-            case Layer layer when voice: on = layer.IsVoice = !layer.IsVoice; ListenToVoice(layer); break;
-            default: on = ((Layer)sound).AutoDuck = !((Layer)sound).AutoDuck; break;
+            // A clip marked as the voice is what Auto-Captions listen to from now on (4.4).
+            on = layer.IsVoice = !layer.IsVoice;
+            ListenToVoice(layer);
+        }
+        else
+        {
+            on = layer.AutoDuck = !layer.AutoDuck;
         }
 
-        var voices = AudioTracks.Count(t => t.IsVoice && !t.IsDropped) + Layers.Count(l => l is { IsVoice: true, CarriesSound: true, IsHidden: false });
-        var ducked = AudioTracks.Count(t => t is { AutoDuck: true, IsVoice: false, IsDropped: false }) + Layers.Count(l => l is { AutoDuck: true, IsVoice: false, CarriesSound: true, IsHidden: false });
+        var voices = Layers.Count(l => l is { IsVoice: true, CarriesSound: true, IsHidden: false });
+        var ducked = Layers.Count(l => l is { AutoDuck: true, IsVoice: false, CarriesSound: true, IsHidden: false });
         var amount = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{Math.Abs(DuckAmountDb):0} dB");
         Log((voice, on) switch
         {
@@ -624,16 +616,16 @@ public partial class MainViewModel
         RefreshSelectedKey();
     }
 
-    // The order matters for the main video, whose corner is worked out from its size.
-    private static readonly KeyProperty[] KeyOrder = [KeyProperty.Scale, KeyProperty.X, KeyProperty.Y, KeyProperty.Rotation, KeyProperty.Opacity];
+    // Scale first: a picture grows about its anchor, so its corner follows from its size.
+    private static readonly KeyProperty[] KeyOrder = [KeyProperty.Scale, KeyProperty.X, KeyProperty.Y, KeyProperty.Rotation, KeyProperty.Opacity, KeyProperty.TiltX, KeyProperty.TiltY];
 
     partial void OnPositionMsChanged(double value)
     {
-        // With nothing selected, the keyframe controls and the Effects pane work on the main video's clip at the playhead:
-        // the playhead crossing into another of its clips is another clip to show.
-        if (KeyLayer is null && !_applyingKeys && !ReferenceEquals(MainLayer, _mainLayerShown))
+        // With nothing selected, the keyframe controls and the Effects pane work on the video clip at the playhead: the
+        // playhead crossing into another clip is another clip to show.
+        if (KeyLayer is null && !_applyingKeys && !ReferenceEquals(PlayheadVideo, _playheadVideoShown))
         {
-            _mainLayerShown = MainLayer;
+            _playheadVideoShown = PlayheadVideo;
             OnPropertyChanged(nameof(ActiveKeyLayer));
             RefreshSelectedKey();
         }

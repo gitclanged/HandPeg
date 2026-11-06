@@ -30,13 +30,36 @@ internal sealed class CachedFrame
     public bool Software;
     public int Matrix = 1;
     public bool FullRange;
+
+    /// <summary>The source's transfer function (MfVideoDecoder.Transfer): 15 PQ, 16 HLG; anything else SDR.</summary>
+    public int Transfer;
     public long Bytes;
     public long LastUsed;
 
     /// <summary>Renders using it right now (the renderer pins what it draws until its frame is submitted).</summary>
     public int Pins;
 
-    public bool Covers(double seconds) => seconds >= Time - 1e-6 && seconds < Until - 1e-6;
+    /// <summary>
+    /// Whether <see cref="Until"/> is known for sure: the next frame of its run was read (FrameCache.CloseGap), FFmpeg gave its
+    /// length to the next picture, or the stream ended after it. Open, the end is the container's word for it (a sample's duration).
+    /// </summary>
+    public bool Closed;
+
+    /// <summary>
+    /// Where the frame stops standing for moments. An open frame leaves its last millisecond to the frame after it (Pass
+    /// 5.2D): a container's clock rounds stamps to a millisecond, so the next frame may start before this
+    /// one's duration ends (Matroska at 420 fps: frames stamped 10.686 and 10.688 s, each said to last 2.38 ms), and a moment
+    /// there is the next frame's. An exact moment there waits for that frame to be read instead of taking this one (the
+    /// reference's frame 316 of the game style on Media Foundation's HEVC was the frame before); the player, which shows what
+    /// there is as it plays, still takes it (<see cref="Covers"/>, not strictly).
+    /// </summary>
+    public double CoverEnd => Closed ? Until : Math.Max(Until - OpenSlack, Time + (Until - Time) / 2);
+
+    /// <summary>How much of an open frame's end is left to the frame after it (seconds): a container's millisecond clock.</summary>
+    public const double OpenSlack = 0.001;
+
+    /// <summary>Whether the frame stands for <paramref name="seconds"/>: strictly, to <see cref="CoverEnd"/>; else to its stated end.</summary>
+    public bool Covers(double seconds, bool strictly = true) => seconds >= Time - 1e-6 && seconds < (strictly ? CoverEnd : Until) - 1e-6;
 
     public void Dispose()
     {
@@ -66,21 +89,21 @@ internal sealed class CachedFrame
 /// card about 11 GB of cache and 8 GB untouched); with something else eating the card (Windows' budget for this process well under
 /// the card's size: a game), the small cache of old, an eighth of the card, at most 3 GB. Whichever it is, never more than what
 /// Windows lets this process have beside everything else it holds (IDXGIAdapter3::QueryVideoMemoryInfo, asked twice a second): when a
-/// game starts, the cache shrinks at once. Beyond the budget, the frames farthest from every moment of interest (the frames shown, the
-/// hints, the pre-roll) go first, key frames last, and the held stretches (the first frames of the cuts ahead of the
-/// playhead, 5.0-Release) after everything else. Textures are reused by size and format.
+/// game starts, the cache shrinks at once. A card that shares the computer's memory (a unified-memory SoC: 5.2-Arm64AndNpu) takes a
+/// share of the computer's memory instead, 1.5 to 2.5 GB from 12 GB up (<see cref="MemoryTier"/>, which holds the whole Auto rule).
+/// Beyond the budget, the frames farthest from every moment of interest (the frames shown, the hints, the pre-roll) go first, key
+/// frames last, and the held stretches (the first frames of the cuts ahead of the playhead, 5.0-Release) after everything else.
+/// Textures are reused by size and format. The budget is a ceiling, never a reservation: the cache holds only frames decoded, so an
+/// idle editor holds none of it.
 /// <para>Threads: the decode lanes insert, the renderer looks up and pins; one lock, held for microseconds.</para>
 /// </summary>
 internal sealed unsafe class FrameCache : IDisposable
 {
-    private const long MaxAutoBudget = 3L << 30;
     private const long MinBudget = 96L << 20;
     private const long WindowsHeadroom = 256L << 20;
 
-    // The super-cache: the most it takes, the least margin it leaves, the most that margin need be, and the share of Windows' budget
-    // for this process below which something else is taken to be eating the card.
-    private const long MaxSuperBudget = 12L << 30;
-    private const long LeastMargin = 1L << 30, MostMargin = 8L << 30;
+    // The share of Windows' budget for this process below which something else is taken to be eating the card (the rest of the
+    // Auto rule is MemoryTier's).
     private const double FreeCardShare = 0.7;
 
     // Video memory is charged to Windows' commit (RAM + page file) as well as to the card (5.1-DogfoodPolish: a 12 GB cache, a game and
@@ -96,6 +119,10 @@ internal sealed unsafe class FrameCache : IDisposable
     private readonly List<(int Source, double Seconds, double Weight)> _interests = [];
     private readonly List<(int Source, double From, double To)> _held = [];
     private readonly long _dedicated;
+
+    // The card shares the computer's memory (GpuDevice.UnifiedMemory), and how much the computer has: the Auto rule's own.
+    private readonly bool _unified;
+    private readonly long _physical;
     private nint _adapter3;
     private long _requested;
     private long _budget;
@@ -128,6 +155,7 @@ internal sealed unsafe class FrameCache : IDisposable
             }
         }
 
+        (_unified, _physical) = (gpu.UnifiedMemory, SystemCommit.PhysicalMemory());
         SetBudget(0);
     }
 
@@ -222,9 +250,7 @@ internal sealed unsafe class FrameCache : IDisposable
         var requested = _requested;
         var wanted = _disabled ? MinBudget
             : requested > 0 ? requested
-            : _gpu.IsWarp || _dedicated < (512L << 20) ? 512L << 20
-            : _cardBusy || _freeOnCard == 0 ? Math.Min(_dedicated / 8, MaxAutoBudget)
-            : Math.Max(Math.Min(_dedicated / 8, MaxAutoBudget), Math.Min(Math.Min(_freeOnCard / 2, MaxSuperBudget), _freeOnCard - Math.Clamp(_dedicated / 3, LeastMargin, MostMargin)));
+            : MemoryTier.AutoBudget(_gpu.IsWarp, _unified, _dedicated, _physical, _cardBusy, _freeOnCard);
         _budget = Math.Max(Math.Min(Math.Min(wanted, _windowsRoom), _commitRoom), MinBudget);
         TrimLocked();
     }
@@ -291,6 +317,10 @@ internal sealed unsafe class FrameCache : IDisposable
             {
                 var old = list[at];
                 frame.KeyFrame |= old.KeyFrame;
+
+                // The same frame decoded again (a seek back over it): the end its run learnt stands.
+                if (old.Closed && !frame.Closed)
+                    (frame.Until, frame.Closed) = (old.Until, true);
                 list[at] = frame;
                 Retire(old);
             }
@@ -311,19 +341,22 @@ internal sealed unsafe class FrameCache : IDisposable
         lock (_gate)
         {
             if (_bySource.TryGetValue(source, out var list) && list.Count > 0 && Math.Abs(list[^1].Time - time) < 1e-6)
-                list[^1].Until = double.PositiveInfinity;
+                (list[^1].Until, list[^1].Closed) = (double.PositiveInfinity, true);
         }
     }
 
-    /// <summary>The frame that covers <paramref name="seconds"/>, pinned (call <see cref="Unpin"/>); null when it was not decoded yet.</summary>
-    public CachedFrame? Exact(int source, double seconds)
+    /// <summary>
+    /// The frame that covers <paramref name="seconds"/>, pinned (call <see cref="Unpin"/>); null when it was not decoded yet. Not
+    /// <paramref name="strictly"/> (the player while it plays), an open frame stands for its whole stated length.
+    /// </summary>
+    public CachedFrame? Exact(int source, double seconds, bool strictly = true)
     {
         lock (_gate)
         {
             if (!_bySource.TryGetValue(source, out var list) || list.Count == 0)
                 return null;
             var at = IndexAtOrBefore(list, seconds + 1e-6);
-            if (at < 0 || !list[at].Covers(seconds))
+            if (at < 0 || !list[at].Covers(seconds, strictly))
                 return null;
             var frame = list[at];
             frame.Pins++;
@@ -377,22 +410,27 @@ internal sealed unsafe class FrameCache : IDisposable
     /// Two frames decoded one after the other (one run of the decoder, no seek between): the first lasts until the second
     /// starts, whatever its own duration said. Matroska's millisecond clock leaves gaps a frame's duration does not cover
     /// (420 fps: frames at 0, 2, 5, 7 ms, each 2.38 ms long), and a moment in such a gap would be decoded for again and
-    /// again. Only across at most <paramref name="maxGap"/> seconds (a dropped frame or two), never over a hole.
+    /// again; it also makes a duration run past the next frame's start (frames at 2 and 4 ms), which is cut back to it
+    /// (Pass 5.2D). Lengthened only across at most <paramref name="maxGap"/> seconds (a dropped frame or
+    /// two), never over a hole; either way the frame's end is then known (<see cref="CachedFrame.Closed"/>).
     /// </summary>
     public void CloseGap(int source, double earlier, double later, double maxGap)
     {
-        if (!(later > earlier) || later - earlier > maxGap)
+        if (!(later > earlier))
             return;
         lock (_gate)
         {
             if (!_bySource.TryGetValue(source, out var list) || list.Count == 0)
                 return;
             var at = IndexAtOrBefore(list, earlier + 1e-6);
-            if (at < 0 || Math.Abs(list[at].Time - earlier) > 1e-6 || list[at].Until >= later - 1e-9)
+            if (at < 0 || Math.Abs(list[at].Time - earlier) > 1e-6)
                 return;
             if (at + 1 < list.Count && list[at + 1].Time < later - 1e-6)
                 return;
-            list[at].Until = later;
+            var frame = list[at];
+            if (frame.Until > later + 1e-9 || frame.Until < later - 1e-9 && later - earlier <= maxGap)
+                frame.Until = later;
+            frame.Closed = true;
         }
     }
 
@@ -755,5 +793,12 @@ internal static partial class SystemCommit
         var read = GlobalMemoryStatusEx(ref status) && status.TotalPageFile > 0;
         (left, limit) = read ? ((long)status.AvailablePageFile, (long)status.TotalPageFile) : (0, 0);
         return read;
+    }
+
+    /// <summary>The computer's memory (the physical total), bytes; 0 when Windows does not say.</summary>
+    public static long PhysicalMemory()
+    {
+        var status = new MemoryStatus { Length = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MemoryStatus>() };
+        return GlobalMemoryStatusEx(ref status) ? (long)status.TotalPhysical : 0;
     }
 }

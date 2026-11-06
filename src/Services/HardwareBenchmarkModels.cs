@@ -56,6 +56,19 @@ public sealed class HardwareBenchmarkResult
     /// <summary>The four roles the results point to (applied by the auto-tune, each still the user's to change).</summary>
     public HardwareBenchmarkRoles Recommended { get; set; } = new();
 
+    /// <summary>The codecs Media Foundation has a decoder for on this computer, any kind (the card's, the processor's, the Store's): "H.264", "HEVC", "VP9", "AV1" (5.2-Arm64AndNpu).</summary>
+    public List<string> MediaFoundationDecodeCodecs { get; set; } = [];
+
+    /// <summary>
+    /// The codecs Media Foundation has no decoder for that the GPU compositor decodes with FFmpeg instead (FfmpegVideoDecoder:
+    /// on the processor, its pictures uploaded), as the FFmpeg in use lists its decoders; empty without FFmpeg. HEVC on a PC
+    /// without the HEVC Video Extensions (a Snapdragon X laptop as it comes).
+    /// </summary>
+    public List<string> FfmpegFallbackCodecs { get; set; } = [];
+
+    /// <summary>The NPUs DXCore lists (5.2-Arm64AndNpu), with what each is used for.</summary>
+    public List<HardwareBenchmarkNpu> Npus { get; set; } = [];
+
     /// <summary>Why the benchmark stopped short, when it did; empty otherwise.</summary>
     public string Error { get; set; } = "";
 }
@@ -71,6 +84,12 @@ public sealed class HardwareBenchmarkAdapter
     public long Luid { get; set; }
     public long DedicatedVideoMemoryMb { get; set; }
     public long SharedSystemMemoryMb { get; set; }
+
+    /// <summary>
+    /// It shares the computer's memory (a unified-memory SoC's graphics: DXCore's IsIntegrated, else DXGI's sizes): the frame
+    /// cache's Auto budget is then a share of the computer's memory (MemoryTier, 5.2-Arm64AndNpu).
+    /// </summary>
+    public bool UnifiedMemory { get; set; }
 
     /// <summary>"AMD", "Intel", "NVIDIA", "Qualcomm", "Microsoft" or the vendor number in hex.</summary>
     public string Vendor { get; set; } = "";
@@ -140,6 +159,28 @@ public sealed class HardwareBenchmarkCrossAdapter
 
     /// <summary>Whether the second card's decoding plus the copy beats decoding on the composite card.</summary>
     public bool CrossIsFaster { get; set; }
+}
+
+/// <summary>One NPU the benchmark found (DXCore, 5.2-Arm64AndNpu): nothing is measured on it yet.</summary>
+public sealed class HardwareBenchmarkNpu
+{
+    public string Name { get; set; } = "";
+
+    /// <summary>"Qualcomm", "Intel", "AMD" or the vendor number in hex.</summary>
+    public string Vendor { get; set; } = "";
+
+    public uint VendorId { get; set; }
+    public uint DeviceId { get; set; }
+    public string DriverVersion { get; set; } = "";
+
+    /// <summary>The computer's memory it may use, MB.</summary>
+    public long SharedSystemMemoryMb { get; set; }
+
+    /// <summary>DirectML and ONNX Runtime can run models on it.</summary>
+    public bool GenericMl { get; set; }
+
+    /// <summary>What HandPeg uses it for, in a sentence (today: nothing yet, and why).</summary>
+    public string UsedFor { get; set; } = "";
 }
 
 /// <summary>The four GPU roles, by DXGI index (-1 Auto; -2 for Background means the processor).</summary>

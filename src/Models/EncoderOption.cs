@@ -35,16 +35,21 @@ public sealed record EncoderOption(string Name, string DisplayName, EncoderFamil
     ];
 
     /// <summary>
-    /// Describes an FFmpeg hardware encoder such as "hevc_qsv" as "Intel QuickSync H.265 (hevc_qsv)", and "hevc_mf" as
-    /// "Media Foundation H.265 (hevc_mf)".
+    /// Describes an FFmpeg hardware encoder by its codec, then the hardware behind it (5.2-Audit, the user's directive):
+    /// "hevc_qsv" as "HEVC (Intel QuickSync)", and a Media Foundation one by the chip it reaches where that is a Qualcomm
+    /// Adreno (<see cref="Services.GpuAdapters.HasQualcommAdreno"/>: "h264_mf" as "H.264 (Qualcomm Adreno)"), else as
+    /// "H.264 (Media Foundation)".
     /// </summary>
-    public static EncoderOption FromHardwareName(string name)
+    public static EncoderOption FromHardwareName(string name) => FromHardwareName(name, Services.GpuAdapters.HasQualcommAdreno);
+
+    /// <summary><see cref="FromHardwareName(string)"/> on a machine with, or without, a Qualcomm Adreno GPU.</summary>
+    public static EncoderOption FromHardwareName(string name, bool qualcommAdreno)
     {
         var parts = name.Split('_');
         var codec = parts[0] switch
         {
             "h264" => "H.264",
-            "hevc" => "H.265",
+            "hevc" => "HEVC",
             "av1" => "AV1",
             _ => parts[0].ToUpperInvariant(),
         };
@@ -53,11 +58,11 @@ public sealed record EncoderOption(string Name, string DisplayName, EncoderFamil
             "nvenc" => ("NVIDIA NVENC", EncoderFamily.Nvenc),
             "qsv" => ("Intel QuickSync", EncoderFamily.Qsv),
             "amf" => ("AMD AMF", EncoderFamily.Amf),
-            "mf" => ("Media Foundation", EncoderFamily.MediaFoundation),
+            "mf" => (qualcommAdreno ? "Qualcomm Adreno" : "Media Foundation", EncoderFamily.MediaFoundation),
             _ => ("Hardware", EncoderFamily.Software),
         };
 
-        return new EncoderOption(name, $"{vendor} {codec} ({name})", family);
+        return new EncoderOption(name, $"{codec} ({vendor})", family);
     }
 
     public override string ToString() => DisplayName;

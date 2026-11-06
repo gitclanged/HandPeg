@@ -90,10 +90,9 @@ game-engine effects (5.1-GpuFx):
   a 512 px still of 8 px stripes in a 64 px box, the camera close: every pixel off the stripes' edges black or white as its stripe
   the selected layer's outline round its box: the same with a box blur of 4 px and of 12 px as with none
   a layer above two others gone: they and the selected one's outline stay where they were, to the pixel
-the Studio Stage (Extra Animations):
-  the floor shines under the stack
-  the floor takes the picture's colour, red or blue
-  the room's light follows the picture
+the 3D view's depth rails (planes, outlines and rails; no mirror floor, no light read back):
+  the rails run back through the stack
+  no mirror floor and no light read back: off the planes, the picture's colour changes nothing
   the way out of the flat picture stays quiet
 magnifier loupe (320 x 180 canvas on a 640 x 360 output, a red layer turned 30 degrees, 400 %):
   a framed square of the expected size in a corner, the layer's edge in it over the checkerboard; none without a loupe

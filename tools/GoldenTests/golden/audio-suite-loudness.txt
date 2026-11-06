@@ -1,0 +1,5 @@
+# The live meter (5.2B): EBU R128 momentary, short-term and integrated loudness of a -23 LUFS sine, and the true peak between samples.
+a -23 LUFS 1 kHz sine for 5 s: momentary, short-term and integrated within 0.5 LU of -23
+12 kHz at 45 degrees, samples at -9.03 dBFS: the true peak within 0.2 dB of -6.02 dBTP, not clipped
+and held over the last 3 s
+restarted (a seek): the loudness begins afresh

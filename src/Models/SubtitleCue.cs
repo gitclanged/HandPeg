@@ -161,10 +161,17 @@ public sealed class SubtitleTrackData
 /// <summary>What auto-captions listen to, and so what the captions made from it follow on the timeline (4.4).</summary>
 public enum CaptionSourceKind
 {
-    /// <summary>One of the main video's file's audio streams; with stream -1, its picture (an imported track timed to the file).</summary>
+    /// <summary>
+    /// Legacy (before 5.2-AuditB): one of the main video's file's audio streams; with stream -1, its picture (an imported
+    /// track timed to the file). Kept so that a project of that shape still reads: converted to <see cref="Clip"/> of the same file and
+    /// stream as it is opened (LegacyMainVideo.MigrateCaptions), and so that the kinds after it keep their numbers; nothing makes it any more.
+    /// </summary>
     MainFile,
 
-    /// <summary>A file the timeline plays as clips of its own: a sound clip, or a video layer's sound.</summary>
+    /// <summary>
+    /// A file the timeline plays as clips of its own: a sound clip, a video clip's sound or a stream of it on a Sub-Lane;
+    /// with stream -1, its picture (an imported track timed to the file).
+    /// </summary>
     Clip,
 
     /// <summary>A separate recording in sync with the timeline: its time is the timeline's.</summary>
@@ -178,11 +185,11 @@ public enum CaptionSourceKind
 public sealed record CaptionSource(CaptionSourceKind Kind, string Path, int Stream)
 {
     /// <summary>
-    /// Its captions are kept in its own time and projected through the clips that play it (the main file's, or a clip's file):
-    /// cuts, trims, folds and moves made before or after the captions carry them along.
+    /// Its captions are kept in its own time and projected through the clips that play it (a clip's file): cuts, trims, folds
+    /// and moves made before or after the captions carry them along.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool IsAnchored => Kind is CaptionSourceKind.MainFile or CaptionSourceKind.Clip;
+    public bool IsAnchored => Kind is CaptionSourceKind.Clip;
 
     /// <summary>Whether it is the same source: the same kind of the same file (any stream of it: the words are where they are said).</summary>
     public bool SameAs(CaptionSource? other) =>

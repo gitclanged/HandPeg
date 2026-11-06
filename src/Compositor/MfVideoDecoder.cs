@@ -18,6 +18,14 @@ namespace HandPegApp.Compositor;
 /// Cached (the compositor, Instant Seek): every frame kept goes into the <see cref="FrameCache"/> as a frame of its own,
 /// and a decode lane drives the decoder one frame at a time (<see cref="Prepare"/>, <see cref="Step"/>); the decoder then
 /// belongs to that lane's thread for as long as it works with it.</para>
+/// <para>FFmpeg (5.2-Arm64AndNpu): a stream Media Foundation cannot open, on the card or on the processor (HEVC without the
+/// Store's HEVC Video Extensions, a codec or container it lacks, a Windows without Media Foundation), is decoded by FFmpeg
+/// instead (<see cref="FfmpegVideoDecoder"/>): its pictures come down a pipe with their own time stamps and are uploaded as
+/// the processor's are. Everything else here (held and cached, the key frames, the seeks' landings, the frame lengths) is
+/// the same for both; only reading a picture, seeking and uploading differ.</para>
+/// <para>Preferred FFmpeg (5.2C, the user's Q1): an export on an ARM64 PC decodes an HEVC stream with FFmpeg even where Media Foundation
+/// could (the Store's HEVC Video Extensions installed): measured on the Snapdragon X Elite, Media Foundation's HEVC exported at 229-254
+/// fps against FFmpeg's 277-406, and the game style at 72-107 against 154-164 (5.2B). When FFmpeg cannot (none there), Media Foundation does.</para>
 /// </summary>
 internal sealed unsafe class MfVideoDecoder : IDisposable
 {
@@ -25,6 +33,7 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
     private readonly FrameCache? _cache;
     private readonly int _source;
     private nint _reader;
+    private FfmpegVideoDecoder? _ffmpeg;
     private readonly List<double> _keyFrames = [];
     private double[]? _iFrames;
 
@@ -60,6 +69,9 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
 
     /// <summary>YUV matrix: 1 BT.709, 2 BT.601, 4 BT.2020 (MFVideoTransferMatrix), and full range or not.</summary>
     public int Matrix { get; private set; } = 1;
+
+    /// <summary>The transfer function (MFVideoTransferFunction): 15 SMPTE ST 2084 (PQ), 16 HLG, the rest SDR; 0 when not said.</summary>
+    public int Transfer { get; private set; }
     public bool FullRange { get; private set; }
 
     /// <summary>The luma and chroma planes of the frame held (0 before the first frame).</summary>
@@ -81,9 +93,13 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
     /// <summary>The NV12 texture holding the frame (hardware), for a reader that wants the picture itself (the benchmark).</summary>
     public nint FrameTexture => _frame?.Texture ?? 0;
 
-    public MfVideoDecoder(GpuDevice gpu, string path, int streamIndex, bool hardware, FrameCache? cache = null, int source = 0)
+    /// <summary>FFmpeg decodes this stream (Media Foundation could not): the codec, as FFmpeg names it; null for Media Foundation's.</summary>
+    public string? FfmpegCodec => _ffmpeg?.Codec;
+
+    public MfVideoDecoder(GpuDevice gpu, string path, int streamIndex, bool hardware, FrameCache? cache = null, int source = 0, bool preferFfmpeg = false)
     {
         _gpu = gpu;
+        _hardwareWanted = hardware;
         _cache = cache;
         _source = source;
         Path = path;
@@ -92,22 +108,74 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
         {
             try
             {
-                Open(hardware && MediaFoundation.DeviceManagerFor(gpu) != 0);
+                try
+                {
+                    Open(hardware && MediaFoundation.DeviceManagerFor(gpu) != 0);
+                }
+                catch (GpuException) when (hardware)
+                {
+                    // The card cannot decode this one (a codec it lacks, a profile it refuses): the processor can.
+                    Close();
+                    Open(false);
+                }
+
+                if (preferFfmpeg && _nativeSubtype == MfGuids.Hevc)
+                    PreferFfmpeg(hardware);
             }
-            catch (GpuException) when (hardware)
+            catch (Exception ex) when (ex is GpuException { IsDeviceLost: false } or DllNotFoundException or EntryPointNotFoundException)
             {
-                // The card cannot decode this one (a codec it lacks, a profile it refuses): the processor can.
+                // Media Foundation cannot decode it at all (no HEVC Video Extensions, a codec or container it lacks, no Media
+                // Foundation): FFmpeg decodes it into the same planes (5.2-Arm64AndNpu).
                 Close();
-                Open(false);
+                OpenWithFfmpeg(ex);
             }
         }
         catch
         {
-            // Nothing half open is kept: the file, the reader, the decoder's surfaces go with the failure.
+            // Nothing half open is kept: the file, the reader, FFmpeg, the decoder's surfaces go with the failure.
             Close();
             throw;
         }
     }
+
+    /// <summary>
+    /// An HEVC stream Media Foundation opened, decoded by FFmpeg instead (see the summary: an ARM64 PC's export); Media Foundation again
+    /// when FFmpeg cannot (none there, or it fails on the file).
+    /// </summary>
+    private void PreferFfmpeg(bool hardware)
+    {
+        if (FfmpegVideoDecoder.Missing is not null)
+            return;
+
+        Close();
+        try
+        {
+            OpenWithFfmpeg(new GpuException(unchecked((int)0xC00D5212), "FFmpeg preferred for HEVC"));
+        }
+        catch (GpuException ex) when (!ex.IsDeviceLost)
+        {
+            // Media Foundation's after all, from the file's start as it was first opened.
+            Close();
+            _keyFrames.Clear();
+            (_heldTime, _heldUntil, _readTime, _runTime, _lastKept) = (double.NaN, double.NaN, double.NaN, double.NaN, double.NaN);
+            (_endOfStream, _landing) = (false, true);
+            Open(hardware && MediaFoundation.DeviceManagerFor(_gpu) != 0);
+        }
+    }
+
+    // The stream's own format as Media Foundation names it (MF_MT_SUBTYPE of its native type: H.264, HEVC...).
+    private Guid _nativeSubtype;
+
+    // Decoding on the card was asked for (not WARP, not Settings' hardware video decoding off): FFmpeg's too, on a card of its own.
+    private readonly bool _hardwareWanted;
+
+    /// <summary>
+    /// Whether FFmpeg should decode an export's HEVC (see the summary): on an ARM64 PC, unless HANDPEG_EXPORT_HEVC_DECODER=mf asks for Media
+    /// Foundation's (a measurement's switch: the golden tests' alternating runs).
+    /// </summary>
+    public static bool PrefersFfmpegForHevcExports { get; } =
+        System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.Arm64
+        && !string.Equals(Environment.GetEnvironmentVariable("HANDPEG_EXPORT_HEVC_DECODER"), "mf", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Called on every sample read and around a file's opening: the worker's heartbeat while it decodes.</summary>
     internal static Action? Beat;
@@ -191,7 +259,10 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
                 Matrix = (int)matrix;
             if (Mf.GetUInt32(native, MfGuids.NominalRange, out var range) >= 0)
                 FullRange = range == 1;
+            if (Mf.GetUInt32(native, MfGuids.TransferFunction, out var transfer) >= 0)
+                Transfer = (int)transfer;
             _ = Mf.GetGuid(native, MfGuids.Subtype, out var subtype);
+            _nativeSubtype = subtype;
             // A compressed stream does not say its depth: NV12 is asked first, P010 when the decoder refuses it.
             TenBit = subtype == MfGuids.P010;
         }
@@ -214,7 +285,47 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
         _readTime = _heldTime;
     }
 
+    /// <summary>
+    /// The stream decoded by FFmpeg, after Media Foundation failed with <paramref name="why"/>: its size, depth and colour from
+    /// ffprobe, its first frame read (the file's time 0, as <see cref="Open"/> has it). Fails with both reasons in the message
+    /// (and nothing open) when FFmpeg is missing or cannot decode it either.
+    /// </summary>
+    private void OpenWithFfmpeg(Exception why)
+    {
+        var code = why is GpuException mf ? mf.Code : unchecked((int)0xC00D5212);
+        try
+        {
+            // On a card with memory of its own, FFmpeg decodes on it (D3D11VA, 5.2-Release, the user's Q2: a GTX 1070 on a Windows without
+            // the HEVC Video Extensions, where a six-core Ryzen 5 2600 fell behind: 101 of 600 frames late against 600). On one that shares
+            // the computer's memory, on the processor: the pictures come down for the pipe either way, and each seek opens the card again;
+            // measured on a Snapdragon X Elite's Adreno, HEVC 4K60 decoded at 145-207 fps on the card and 243 fps on the processor, and a
+            // seek's first picture took 300-715 ms against 210 (5.2-Arm64AndNpu).
+            var card = _hardwareWanted && !_gpu.IsWarp && !_gpu.UnifiedMemory && _gpu.AdapterIndex >= 0 ? _gpu.AdapterIndex : -1;
+            var ffmpeg = _ffmpeg = FfmpegVideoDecoder.Open(Path, StreamIndex, card);
+            Hardware = false;
+            (Width, Height, TenBit) = (ffmpeg.Width, ffmpeg.Height, ffmpeg.TenBit);
+            (Matrix, Transfer, FullRange) = (ffmpeg.Matrix, ffmpeg.Transfer, ffmpeg.FullRange);
+            (FrameDuration, _rateFromStream, _seeded, _spacingCount) = (ffmpeg.FrameDuration > 0 ? ffmpeg.FrameDuration : 1 / 30.0, ffmpeg.FrameDuration > 0, false, 0);
+            DurationSeconds = ffmpeg.DurationSeconds;
+
+            // Whatever Media Foundation's try left is forgotten: the first frame read is the file's time 0.
+            _keyFrames.Clear();
+            (_heldTime, _heldUntil, _readTime, _runTime, _lastKept) = (double.NaN, double.NaN, double.NaN, double.NaN, double.NaN);
+            (_endOfStream, _landing, _originKnown) = (false, true, false);
+            if (!ReadFrame(double.NegativeInfinity, out _, out _))
+                throw new GpuException(unchecked((int)0xC00D36B4), "FFmpeg gave no frame");
+            _readTime = _heldTime;
+        }
+        catch (GpuException ex) when (!ex.IsDeviceLost)
+        {
+            throw new GpuException(code, $"Decoding with Media Foundation ({why.Message}) and with FFmpeg ({FfmpegVideoDecoder.ReasonOf(ex)})");
+        }
+    }
+
     private bool _originKnown;
+
+    // A stream to read from: Media Foundation's reader, or FFmpeg's.
+    private bool Opened => _reader != 0 || _ffmpeg is not null;
 
     private bool SetOutput(in Guid subtype)
     {
@@ -263,7 +374,7 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
     /// </summary>
     public bool ShowAt(double seconds)
     {
-        if (_reader == 0)
+        if (!Opened)
             return false;
         if (seconds < 0)
             seconds = 0;
@@ -321,17 +432,26 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
     private void Seek(double seconds)
     {
         Seeks++;
-        _ = Mf.Flush(_reader, Stream);
 
         // Held inside the stream: a moment past its last frame (a clip running to the end, a source whose first frame is
         // late, as B-frames make it) is the last frame, reached by decoding forward from the key frame before it.
         var ticks = _origin + (long)Math.Round(seconds * 1e7);
         if (DurationSeconds > 0)
             ticks = Math.Min(ticks, _origin + (long)((DurationSeconds - FrameDuration) * 1e7));
-        var hr = Mf.SetCurrentPosition(_reader, Math.Max(ticks, 0));
-        if (hr < 0 && ticks > _origin)
-            hr = Mf.SetCurrentPosition(_reader, _origin);
-        Com.Check(hr, "SetCurrentPosition");
+        if (_ffmpeg is { } ffmpeg)
+        {
+            // FFmpeg started again at the key frame at or before it (its stamps are the stream's own clock, as the origin is).
+            ffmpeg.Seek(Math.Max(ticks, _origin));
+        }
+        else
+        {
+            _ = Mf.Flush(_reader, Stream);
+            var hr = Mf.SetCurrentPosition(_reader, Math.Max(ticks, 0));
+            if (hr < 0 && ticks > _origin)
+                hr = Mf.SetCurrentPosition(_reader, _origin);
+            Com.Check(hr, "SetCurrentPosition");
+        }
+
         _readTime = _runTime = double.NaN;
         _endOfStream = false;
         _heldTime = _heldUntil = double.NaN;
@@ -417,6 +537,20 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
     {
         ticks = 0;
         length = FrameDuration;
+        if (_ffmpeg is { } ffmpeg)
+        {
+            // FFmpeg's next picture, its stamp, and its length to the next one (0, not known: as a sample without a duration).
+            Beat?.Invoke();
+            if (!ffmpeg.Read(out ticks, out var lengthTicks))
+            {
+                _endOfStream = true;
+                return false;
+            }
+
+            length = Took(ticks, lengthTicks / 1e7, keepAfter, 0);
+            return true;
+        }
+
         for (var attempt = 0; attempt < 64; attempt++)
         {
             Beat?.Invoke();
@@ -446,51 +580,7 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
             try
             {
                 ticks = timestamp;
-                if (!_originKnown)
-                    (_origin, _originKnown) = (timestamp, true);
-                var time = (timestamp - _origin) / 1e7;
-                length = Mf.SampleDuration(sample) / 1e7;
-
-                // No duration on the sample: the stream's frame length, or the one learned. Not known yet (a fresh decoder
-                // of a stream that gives none), a frame kept in the cache lasts a millisecond until the next one read in a
-                // row says where it ends (FrameCache.CloseGap): never a guess that covers a frame not decoded yet.
-                if (length <= 0)
-                    length = FrameDurationKnown || _cache is null ? FrameDuration : ProvisionalLength;
-                var landed = _landing;
-                if (_landing)
-                {
-                    _landing = false;
-                    var at = _keyFrames.BinarySearch(time);
-                    if (at < 0 && _keyFrames.Count < 100_000)
-                        _keyFrames.Insert(~at, time);
-                }
-
-                _readTime = time;
-                FramesDecoded++;
-                LastWasLanding = landed;
-
-                // Cached, the key frame a seek landed on is always kept (it is what a fast scrub shows), the rest from keepAfter
-                // on; a frame the cache already holds is not copied again (a chase through frames decoded before).
-                if (time + length > keepAfter || landed && _cache is not null)
-                {
-                    if (_cache is not null && _cache.HasFrameAt(_source, time, landed))
-                        _lastKept = time;
-                    else
-                        Hold(sample, time, length, landed);
-                    _heldTime = time;
-                    _heldUntil = time + length;
-                }
-
-                // The frame before it in this run lasts until it starts (FrameCache.CloseGap): two frames read in a row with
-                // no seek between have nothing between them, so a frame the encoder dropped or a variable-rate stretch is
-                // held as FFmpeg's constant-rate canvas holds it (up to a second: beyond, it is a hole).
-                if (!double.IsNaN(_runTime))
-                {
-                    LearnSpacing(time - _runTime);
-                    _cache?.CloseGap(_source, _runTime, time, MaxRunGap);
-                }
-
-                _runTime = time;
+                length = Took(timestamp, Mf.SampleDuration(sample) / 1e7, keepAfter, sample);
                 return true;
             }
             finally
@@ -502,56 +592,99 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
         return false;
     }
 
-    /// <summary>Copies a sample's picture into this decoder's own textures, or (cached) into a frame of the cache.</summary>
-    private void Hold(nint sample, double time, double length, bool keyFrame)
+    /// <summary>
+    /// A frame read, by Media Foundation (<paramref name="sample"/>) or FFmpeg (0: its picture): its time on the file's own
+    /// clock, the key frame a seek landed on, kept (held, or into the cache) when it ends after <paramref name="keepAfter"/>,
+    /// and the frame before it joined to it. Returns its length.
+    /// </summary>
+    private double Took(long timestamp, double length, double keepAfter, nint sample)
     {
-        Com.Check(Mf.GetBufferByIndex(sample, 0, out var buffer), "GetBufferByIndex");
+        if (!_originKnown)
+            (_origin, _originKnown) = (timestamp, true);
+        var time = (timestamp - _origin) / 1e7;
+
+        // FFmpeg's length is to its next picture: that end is known (FrameCache's closed frame); a sample's duration is not.
+        var closed = sample == 0 && length > 0;
+
+        // No duration on the sample: the stream's frame length, or the one learned. Not known yet (a fresh decoder
+        // of a stream that gives none), a frame kept in the cache lasts a millisecond until the next one read in a
+        // row says where it ends (FrameCache.CloseGap): never a guess that covers a frame not decoded yet.
+        if (length <= 0)
+            length = FrameDurationKnown || _cache is null ? FrameDuration : ProvisionalLength;
+        var landed = _landing;
+        if (_landing)
+        {
+            _landing = false;
+            var at = _keyFrames.BinarySearch(time);
+            if (at < 0 && _keyFrames.Count < 100_000)
+                _keyFrames.Insert(~at, time);
+        }
+
+        _readTime = time;
+        FramesDecoded++;
+        LastWasLanding = landed;
+
+        // Cached, the key frame a seek landed on is always kept (it is what a fast scrub shows), the rest from keepAfter
+        // on; a frame the cache already holds is not copied again (a chase through frames decoded before).
+        if (time + length > keepAfter || landed && _cache is not null)
+        {
+            if (_cache is not null && _cache.HasFrameAt(_source, time, landed))
+                _lastKept = time;
+            else
+                Hold(sample, time, length, landed, closed);
+            _heldTime = time;
+            _heldUntil = time + length;
+        }
+
+        // The frame before it in this run lasts until it starts (FrameCache.CloseGap): two frames read in a row with
+        // no seek between have nothing between them, so a frame the encoder dropped or a variable-rate stretch is
+        // held as FFmpeg's constant-rate canvas holds it (up to a second: beyond, it is a hole).
+        if (!double.IsNaN(_runTime))
+        {
+            LearnSpacing(time - _runTime);
+            _cache?.CloseGap(_source, _runTime, time, MaxRunGap);
+        }
+
+        _runTime = time;
+        return length;
+    }
+
+    /// <summary>
+    /// Copies a sample's picture (FFmpeg's picture for <paramref name="sample"/> 0) into this decoder's own textures, or (cached)
+    /// into a frame of the cache.
+    /// </summary>
+    private void Hold(nint sample, double time, double length, bool keyFrame, bool closed)
+    {
+        nint buffer = 0;
         CachedFrame? frame = null;
         try
         {
-            if (Hardware && Com.Query(buffer, Iid.MfDxgiBuffer) is var dxgi and not 0)
+            if (sample == 0)
             {
-                try
-                {
-                    Com.Check(Mf.GetTexture(dxgi, out var texture, out var subresource), "IMFDXGIBuffer::GetResource");
-                    try
-                    {
-                        nint target;
-                        if (_cache is not null)
-                        {
-                            frame = _cache.Rent(Width, Height, TenBit, software: false);
-                            target = frame.Planar!.Texture;
-                        }
-                        else
-                        {
-                            EnsureHardwareFrame();
-                            target = _frame!.Texture;
-                        }
-
-                        var box = new Box { Right = (uint)Width, Bottom = (uint)Height, Back = 1 };
-                        _gpu.Context.CopySubresourceRegion(target, 0, 0, 0, texture, subresource, &box);
-                    }
-                    finally
-                    {
-                        Com.Release(ref texture);
-                    }
-                }
-                finally
-                {
-                    Com.Release(ref dxgi);
-                }
+                // FFmpeg's picture, in the computer's memory: uploaded as the processor's frames are.
+                if (_cache is not null)
+                    frame = _cache.Rent(Width, Height, TenBit, software: true);
+                UploadFfmpegPicture(frame);
             }
             else
             {
-                if (_cache is not null)
-                    frame = _cache.Rent(Width, Height, TenBit, software: true);
-                UploadSoftware(buffer, frame);
+                Com.Check(Mf.GetBufferByIndex(sample, 0, out buffer), "GetBufferByIndex");
+                if (Hardware && Com.Query(buffer, Iid.MfDxgiBuffer) is var dxgi and not 0)
+                {
+                    CopyHardwareFrame(dxgi, ref frame);
+                }
+                else
+                {
+                    if (_cache is not null)
+                        frame = _cache.Rent(Width, Height, TenBit, software: true);
+                    UploadSoftware(buffer, frame);
+                }
             }
 
             if (frame is not null)
             {
-                (frame.Source, frame.Time, frame.Until, frame.KeyFrame, frame.Ahead) = (_source, time, time + length, keyFrame, KeepingAhead);
-                (frame.Matrix, frame.FullRange) = (Matrix, FullRange);
+                (frame.Source, frame.Time, frame.Until, frame.KeyFrame, frame.Ahead, frame.Closed) = (_source, time, time + length, keyFrame, KeepingAhead, closed);
+                (frame.Matrix, frame.FullRange, frame.Transfer) = (Matrix, FullRange, Transfer);
                 _cache!.Insert(frame);
                 _lastKept = time;
                 frame = null;
@@ -562,6 +695,43 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
             if (frame is not null)
                 _cache!.Return(frame);
             Com.Release(ref buffer);
+        }
+    }
+
+    /// <summary>
+    /// The card's decoded picture (an IMFDXGIBuffer's texture), copied GPU to GPU into this decoder's own texture, or (cached)
+    /// into a frame rented for the cache (<paramref name="frame"/>). Lets go of <paramref name="dxgi"/>.
+    /// </summary>
+    private void CopyHardwareFrame(nint dxgi, ref CachedFrame? frame)
+    {
+        try
+        {
+            Com.Check(Mf.GetTexture(dxgi, out var texture, out var subresource), "IMFDXGIBuffer::GetResource");
+            try
+            {
+                nint target;
+                if (_cache is not null)
+                {
+                    frame = _cache.Rent(Width, Height, TenBit, software: false);
+                    target = frame.Planar!.Texture;
+                }
+                else
+                {
+                    EnsureHardwareFrame();
+                    target = _frame!.Texture;
+                }
+
+                var box = new Box { Right = (uint)Width, Bottom = (uint)Height, Back = 1 };
+                _gpu.Context.CopySubresourceRegion(target, 0, 0, 0, texture, subresource, &box);
+            }
+            finally
+            {
+                Com.Release(ref texture);
+            }
+        }
+        finally
+        {
+            Com.Release(ref dxgi);
         }
     }
 
@@ -591,15 +761,6 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
     private void UploadSoftware(nint buffer, CachedFrame? into)
     {
         var bytesPerSample = TenBit ? 2 : 1;
-        if (into is null && (_softLuma is null || _softLuma.Width != Width || _softLuma.Height != Height))
-        {
-            ReleaseFrame();
-            _softLuma = _gpu.CreateTexture(Width, Height, TenBit ? DxgiFormat.R16Unorm : DxgiFormat.R8Unorm, renderTarget: false);
-            _softChroma = _gpu.CreateTexture(Width / 2, Height / 2, TenBit ? DxgiFormat.R16G16Unorm : DxgiFormat.R8G8Unorm, renderTarget: false);
-            (_lumaSrv, _chromaSrv) = (_softLuma.Srv, _softChroma!.Srv);
-            Com.AddRef(_lumaSrv);
-            Com.AddRef(_chromaSrv);
-        }
 
         // The padded height the planes are laid out with (the output type's frame size, before the aperture).
         Com.Check(Mf.GetCurrentMediaType(_reader, Stream, out var current), "GetCurrentMediaType");
@@ -633,10 +794,7 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
         {
             if (pitch < 0)
                 throw new GpuException(unchecked((int)0x80004005), "A bottom-up frame");
-            var chroma = data + (long)pitch * Math.Max(paddedHeight, Height);
-            var (lumaPlane, chromaPlane) = into is not null ? (into.Luma!, into.Chroma!) : (_softLuma!, _softChroma!);
-            _gpu.Context.UpdateSubresource(lumaPlane.Texture, 0, null, data, (uint)pitch, 0);
-            _gpu.Context.UpdateSubresource(chromaPlane.Texture, 0, null, chroma, (uint)pitch, 0);
+            Upload(data, pitch, data + (long)pitch * Math.Max(paddedHeight, Height), pitch, into);
         }
         finally
         {
@@ -648,6 +806,35 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
         }
     }
 
+    /// <summary>FFmpeg's picture read last (luma rows, then interleaved chroma rows, each at its own pitch), uploaded as <see cref="UploadSoftware"/> does.</summary>
+    private void UploadFfmpegPicture(CachedFrame? into)
+    {
+        var ffmpeg = _ffmpeg!;
+        fixed (byte* picture = ffmpeg.Picture)
+            Upload(picture, ffmpeg.LumaPitch, picture + ffmpeg.ChromaOffset, ffmpeg.ChromaPitch, into);
+    }
+
+    /// <summary>
+    /// A picture's two planes in the computer's memory, uploaded into this decoder's own luma and chroma textures (made at the
+    /// frame's size when they are not), or into <paramref name="into"/>'s (cached).
+    /// </summary>
+    private void Upload(byte* luma, int lumaPitch, byte* chroma, int chromaPitch, CachedFrame? into)
+    {
+        if (into is null && (_softLuma is null || _softLuma.Width != Width || _softLuma.Height != Height))
+        {
+            ReleaseFrame();
+            _softLuma = _gpu.CreateTexture(Width, Height, TenBit ? DxgiFormat.R16Unorm : DxgiFormat.R8Unorm, renderTarget: false);
+            _softChroma = _gpu.CreateTexture(Width / 2, Height / 2, TenBit ? DxgiFormat.R16G16Unorm : DxgiFormat.R8G8Unorm, renderTarget: false);
+            (_lumaSrv, _chromaSrv) = (_softLuma.Srv, _softChroma!.Srv);
+            Com.AddRef(_lumaSrv);
+            Com.AddRef(_chromaSrv);
+        }
+
+        var (lumaPlane, chromaPlane) = into is not null ? (into.Luma!, into.Chroma!) : (_softLuma!, _softChroma!);
+        _gpu.Context.UpdateSubresource(lumaPlane.Texture, 0, null, luma, (uint)lumaPitch, 0);
+        _gpu.Context.UpdateSubresource(chromaPlane.Texture, 0, null, chroma, (uint)chromaPitch, 0);
+    }
+
     // ----- Driven by a decode lane (cached) -----
 
     /// <summary>The time of the last frame read (NaN right after a seek): the next frame read comes after it.</summary>
@@ -655,10 +842,13 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
 
     public bool AtEnd => _endOfStream;
 
-    public bool IsOpen => _reader != 0;
+    public bool IsOpen => Opened;
 
-    /// <summary>A seek costs about this many frames on top of decoding from the key frame (the flush and the first decode).</summary>
-    private const double SeekFrames = 4;
+    /// <summary>
+    /// A seek costs about this many frames on top of decoding from the key frame (the flush and the first decode); FFmpeg's,
+    /// a process started again (some 80 ms on the Snapdragon X Elite), the second.
+    /// </summary>
+    private const double SeekFrames = 4, FfmpegSeekFrames = 12;
 
     /// <summary>The key frame at or before <paramref name="seconds"/> as far as it is known (the client's list, else those learned); NaN when none is.</summary>
     public double KeyAtOrBefore(double seconds)
@@ -694,19 +884,19 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
     /// </summary>
     public double CostTo(double seconds)
     {
-        if (_reader == 0)
+        if (!Opened)
             return double.PositiveInfinity;
         if (!double.IsNaN(_readTime) && seconds > _readTime && !_endOfStream && WithinReach(seconds))
             return (seconds - _readTime) / FrameDuration;
         var key = KeyAtOrBefore(seconds);
         var chase = double.IsNaN(key) ? Math.Min(Math.Max(seconds, 0), 1.0) : Math.Max(seconds - key, 0);
-        return SeekFrames + chase / FrameDuration;
+        return (_ffmpeg is null ? SeekFrames : FfmpegSeekFrames) + chase / FrameDuration;
     }
 
     /// <summary>Makes the frames read next lead to <paramref name="seconds"/>: a seek, unless decoding forward from here is as short.</summary>
     public void Prepare(double seconds)
     {
-        if (_reader == 0)
+        if (!Opened)
             return;
         seconds = Math.Max(seconds, 0);
         var ahead = !double.IsNaN(_readTime) && seconds > _readTime && !_endOfStream;
@@ -717,7 +907,7 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
     /// <summary>Puts the reader at the key frame at or before <paramref name="seconds"/>, whatever it was doing.</summary>
     public void SeekTo(double seconds)
     {
-        if (_reader != 0)
+        if (Opened)
             Seek(Math.Max(seconds, 0));
     }
 
@@ -729,7 +919,7 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
     public bool Step(double keepFrom, out double time, out double until)
     {
         (time, until) = (double.NaN, double.NaN);
-        if (_reader == 0 || _endOfStream)
+        if (!Opened || _endOfStream)
             return false;
         if (!ReadFrame(keepFrom, out var ticks, out var length))
         {
@@ -827,6 +1017,8 @@ internal sealed unsafe class MfVideoDecoder : IDisposable
     private void Close()
     {
         Com.Release(ref _reader);
+        _ffmpeg?.Dispose();
+        _ffmpeg = null;
         ReleaseFrame();
     }
 

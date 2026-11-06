@@ -7,7 +7,7 @@
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <StackPanel Margin="16">
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,10"
-                   Text="Finds the dead air in the sound (the clip's own, or the main video's Voice track, else its first) and takes it out of the timeline, what follows closing up behind it." />
+                   Text="Finds the dead air in the sound (the clip's own, or the sound marked as the voice, else the first sound of the video clip at the playhead) and takes it out of the timeline, what follows closing up behind it." />
 
         <TextBlock Text="Find Dead Air By:" Margin="0,0,0,4" />
         <RadioButton x:Name="AudioSourceRadio" GroupName="DeadAirSource" Content="Audio Silence (dB Threshold)" Margin="0,2" Checked="Source_Checked"

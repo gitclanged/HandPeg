@@ -123,12 +123,6 @@ public partial class MainWindow
 
         foreach (var layer in targets)
         {
-            if (layer.IsMainVideo)
-            {
-                _viewModel.MoveCenter(deltaX, deltaY);
-                continue;
-            }
-
             // Whole pixels, exactly: no snapping to the guides.
             var (least, most) = layer.IsCaptions ? (0.0, 1.0) : (-2.0, 2.0);
             layer.PositionX = Math.Clamp(layer.PositionX + deltaX / frameWidth, least, most);

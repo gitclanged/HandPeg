@@ -40,6 +40,9 @@ public partial class MainWindow
     /// </summary>
     private void EnsureGpuEngine()
     {
+        // Saves bake the engine's picture of the Sequence into the project from now on (none while it is not running).
+        if (_viewModel.CaptureThumbnail is null)
+            _viewModel.CaptureThumbnail = CaptureProjectThumbnailAsync;
         if (_gpu is not null || _startingGpu || !_shellDrawn || _gpuRetry.IsEnabled || _gpuGaveUp || _windowClosing.IsCancellationRequested)
             return;
         if (!_playerWanted && _pendingMedia is null && !_viewModel.HasSource)
@@ -123,7 +126,7 @@ public partial class MainWindow
         {
             VideoView.SizeChanged += (_, _) => _gpu?.Invalidate();
 
-            // The moment under the pointer on a timeline (the Timeline's rows and its ruler, the Overview Bar): Instant Seek
+            // The moment under the pointer on a timeline (the Timeline's rows and its ruler, the Sequence Overview Scrubber): Instant Seek
             // decodes it before a click.
             UnifiedTimeline.Surface.PointerSecondsChanged += OnTimelinePointer;
             TimelineSlider.MouseMove += OverviewPointerMoved;
@@ -266,18 +269,18 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The sequence with the subtitle track's pictures (a PGS or VobSub track: the preview's alone), its sound (one soloed
-    /// track is the program's to apply: the state is filtered for two or more) and its captions, into the engine.
+    /// The sequence with the subtitle track's pictures (a PGS or VobSub track: the preview's alone), its sound (the soloed
+    /// tracks are the document's, which the sound engine hears alone) and its captions, into the engine.
     /// </summary>
     private void PushGpuState(GpuPreviewEngine engine)
     {
-        // A rectangle drawn on the source (the crop, a layer's place) and Live Preview off show the file itself.
-        engine.ShowSource(!_viewModel.LivePreview || CurrentOverlayMode != OverlayMode.None);
-        var solo = _viewModel.SoloedTracks.Count == 1 ? new Services.Audio.AudioBuildOptions { SoloStreams = _viewModel.SoloedTracks.Select(t => t.Index).ToList() } : null;
+        // A rectangle drawn on a clip's picture (the crop, a region's place) and Live Preview off show that clip's file itself
+        // (5.2-AuditB: the clip the overlay is drawn on, else the video at the playhead).
+        engine.ShowSource(!_viewModel.LivePreview || CurrentOverlayMode != OverlayMode.None, _viewModel.ShownSourceClip);
         var state = _viewModel.LivePreviewState();
         if (_viewModel.PreviewPictureSubtitles() is { } pictures)
             state = state with { PictureSubtitles = pictures };
-        engine.SetState(state, solo);
+        engine.SetState(state, null);
         var (lines, style, scale) = _viewModel.GpuCaptions();
         engine.SetCaptions(lines, style, scale);
         RequestProgramStrip(state);
@@ -428,7 +431,7 @@ public partial class MainWindow
         _gpu?.SetPointer(double.IsNaN(_pointerPending) ? null : _pointerPending);
     }
 
-    /// <summary>The pointer over the Overview Bar: its moment of the sequence (the slider's track, as a click there seeks).</summary>
+    /// <summary>The pointer over the Sequence Overview Scrubber: its moment of the sequence (the slider's track, as a click there seeks).</summary>
     private void OverviewPointerMoved(object sender, System.Windows.Input.MouseEventArgs e)
     {
         if (_viewModel.DurationMs <= 0 || TimelineSlider.ActualWidth <= 0)
@@ -478,6 +481,22 @@ public partial class MainWindow
 
             _viewModel.StatusText = $"The frame could not be saved to {path}: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// The thumbnail a save bakes into the project (MainViewModel.CaptureThumbnail, Pass 5.2D): the Sequence at the
+    /// playhead drawn small on the card (GpuPreviewEngine.CaptureThumbnailAsync), made a JPEG on the thread pool. Null with no engine,
+    /// while playing, or with nothing open. Called on the window's thread; nothing after its first wait needs it (the save holds it).
+    /// </summary>
+    private async Task<byte[]?> CaptureProjectThumbnailAsync()
+    {
+        if (_gpu is not { } engine || !_viewModel.HasSource)
+            return null;
+
+        if (await engine.CaptureThumbnailAsync().ConfigureAwait(false) is not { } frame)
+            return null;
+
+        return await Task.Run(() => ProjectThumbnail.EncodeJpeg(frame.Bgra, frame.Width, frame.Height)).ConfigureAwait(false);
     }
 
     private void CloseGpuEngine()

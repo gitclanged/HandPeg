@@ -325,6 +325,7 @@ public partial class SettingsWindow : Window
 
         ShowCacheUsage();
         WatchCrashReports();
+        InitializeExplorerPreviews();
         YtDlpDefaultText.Text = $"Default: {AppSettings.DefaultYtDlpReleaseUrl}";
         FfmpegDefaultText.Text = $"Default: {AppSettings.DefaultFfmpegReleaseUrl}";
 
@@ -594,12 +595,30 @@ public partial class SettingsWindow : Window
         if (sender is not Button { Tag: TextBox target })
             return;
 
+        // A network folder is not looked at, nor opened in at first: a share out of reach would hold this window's thread for as long as
+        // Windows waits on it (Pass 5.2D). The dialog opens where it last was instead.
         var current = target.Text.Trim().Trim('"');
         var dialog = new OpenFolderDialog { Title = "Choose a folder" };
-        if (current.Length > 0 && Directory.Exists(current))
+        if (current.Length > 0 && !IsNetworkPathForm(current) && Directory.Exists(current))
             dialog.InitialDirectory = current;
         if (dialog.ShowDialog(this) == true)
             target.Text = dialog.FolderName;
+    }
+
+    /// <summary>
+    /// Whether a path names a network share by its form alone (\\server\share, //server/share, \\?\UNC\server\share), asking nothing of the
+    /// disk or the network: safe on the window's thread. A device path to a local disk (\\?\C:\...) is not one.
+    /// </summary>
+    internal static bool IsNetworkPathForm(string path)
+    {
+        static bool Separator(char c) => c is '\\' or '/';
+        if (path.Length < 2 || !Separator(path[0]) || !Separator(path[1]))
+            return false;
+
+        // \\?\ and \\.\ name a device: the network only as UNC\ (\\?\UNC\server\share), a local disk or volume otherwise.
+        if (path.Length >= 4 && (path[2] is '?' or '.') && Separator(path[3]))
+            return path.Length >= 8 && path.AsSpan(4).StartsWith("UNC", StringComparison.OrdinalIgnoreCase) && Separator(path[7]);
+        return true;
     }
 
     /// <summary>
@@ -657,24 +676,33 @@ public partial class SettingsWindow : Window
         ShowCrashReportUsage();
     }
 
+    // ----- Explorer's previews (General > Projects and saving, Pass 5.2D) -----
+
+    private void InitializeExplorerPreviews()
+    {
+        // Explorer's previews are a registration on the PC, which a self-contained copy never leaves behind.
+        if (AppPaths.IsSelfContained || AppPaths.IsPortable)
+            (ExplorerThumbnailsCheck.IsEnabled, ExplorerThumbnailsHint.Visibility) = (false, Visibility.Visible);
+    }
+
     // ----- Search -----
 
-    // Whether the folded Advanced section was open before a search opened or closed it, to put it back when the box is cleared.
-    private bool? _advancedOpenBeforeSearch;
+    // Whether each folded section was open before a search opened or closed it, to put each back when the box is cleared.
+    private Dictionary<Expander, bool>? _foldsOpenBeforeSearch;
 
     /// <summary>
     /// Shows only what matches the search box. An option is one of the things stacked down a tab (a tick box,
     /// a labelled row, a block of text); it matches when its own words, or its tool tip, or the title of the
-    /// section it is under, contain what was typed. Tabs left with nothing are hidden. A folded section (Tools &amp;
-    /// Backup's Advanced, 4.3-0B) is searched as well: it opens while something in it matches, and goes back to
-    /// how it was when the box is cleared.
+    /// section it is under, contain what was typed. Tabs left with nothing are hidden. Every folded section (Tools &amp;
+    /// Backup's Advanced, 4.3-0B) is searched as well: it opens while something in it matches,
+    /// and goes back to how it was when the box is cleared.
     /// </summary>
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         var query = SearchBox.Text.Trim();
         SearchHint.Visibility = SearchBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (query.Length > 0)
-            _advancedOpenBeforeSearch ??= AdvancedToolsExpander.IsExpanded;
+            _foldsOpenBeforeSearch ??= Folds().ToDictionary(fold => fold, fold => fold.IsExpanded);
 
         TabItem? firstMatch = null;
         foreach (var tab in SettingsTabs.Items.OfType<TabItem>())
@@ -689,15 +717,41 @@ public partial class SettingsWindow : Window
                 firstMatch ??= tab;
         }
 
-        if (query.Length == 0 && _advancedOpenBeforeSearch is { } open)
+        if (query.Length == 0 && _foldsOpenBeforeSearch is { } open)
         {
-            AdvancedToolsExpander.IsExpanded = open;
-            _advancedOpenBeforeSearch = null;
+            foreach (var (fold, wasOpen) in open)
+                fold.IsExpanded = wasOpen;
+            _foldsOpenBeforeSearch = null;
         }
 
         // The tab that was open may just have been hidden.
         if (query.Length > 0 && firstMatch is not null && SettingsTabs.SelectedItem is TabItem { Visibility: not Visibility.Visible })
             SettingsTabs.SelectedItem = firstMatch;
+    }
+
+    // Every folded section of every tab, and any folded inside one: the shape ShowMatches walks.
+    private IEnumerable<Expander> Folds()
+    {
+        static IEnumerable<Expander> FoldsIn(Panel panel)
+        {
+            foreach (var fold in panel.Children.OfType<Expander>())
+            {
+                yield return fold;
+                if (fold.Content is Panel folded)
+                {
+                    foreach (var inner in FoldsIn(folded))
+                        yield return inner;
+                }
+            }
+        }
+
+        foreach (var tab in SettingsTabs.Items.OfType<TabItem>())
+        {
+            if ((tab.Content is ScrollViewer scroller ? scroller.Content : tab.Content) is not Panel panel)
+                continue;
+            foreach (var fold in FoldsIn(panel))
+                yield return fold;
+        }
     }
 
     /// <summary>Shows what matches among one panel's options (a tab's, or a folded section's); whether anything did.</summary>

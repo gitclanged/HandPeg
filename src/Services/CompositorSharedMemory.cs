@@ -26,9 +26,10 @@ public static class CompositorProtocol
 
     /// <summary>
     /// Raised only by an incompatible change; a worker of another version refuses the mapping (2: Instant Seek's hints and
-    /// counters, 5.0-AudioAnd3D; 3: hints of 32 bytes with a stretch and a moment, at 3584, 5.0-Release; 4: NV12 readbacks, 5.1; 6: a layer's shutter, 5.1-GpuFx).
+    /// counters, 5.0-AudioAnd3D; 3: hints of 32 bytes with a stretch and a moment, at 3584, 5.0-Release; 4: NV12 readbacks, 5.1; 6: a layer's shutter, 5.1-GpuFx;
+    /// 7: a layer's 3D tilt, 784 bytes a layer, 5.2A).
     /// </summary>
-    public const int Version = 6;
+    public const int Version = 7;
 
     /// <summary>The bytes of a frame in NV12: its Y plane, then its interleaved UV plane, half the size each way (rounded up), rows packed.</summary>
     public static long Nv12Bytes(int width, int height) => (long)width * height + 2L * ((width + 1) / 2) * ((height + 1) / 2);
@@ -249,7 +250,18 @@ public struct ControlBlock
     /// <summary>1 when, besides that, the next frames of every video of that picture are decoded (DecoderPool.NextFramesReady); written on every turn of the worker.</summary>
     [FieldOffset(3096)] public int PresentedAhead;
 
-    // 3100..3479: free (protocol 2's hints).
+    /// <summary>
+    /// Where the last frame's time went (diagnostics, tools\AvSync's trace; 5.2-Release): taking its output texture (the keyed mutex), its
+    /// layers drawn (SceneRenderer.Render), and the flush after it, ms. <see cref="LastFrameCpuMs"/> is all of the worker's frame.
+    /// </summary>
+    [FieldOffset(3100)] public float LastAcquireMs;
+    [FieldOffset(3104)] public float LastDrawMs;
+    [FieldOffset(3108)] public float LastFlushMs;
+
+    /// <summary>Frames the decode lanes finished while the last frame was drawn (diagnostics: a preview frame's draw holds them back).</summary>
+    [FieldOffset(3112)] public int LastDrawDecodes;
+
+    // 3116..3479: free (protocol 2's hints).
 
     // 3480..: the cache's counters (diagnostics, tools\SeekBench): exact frames found, frames not there yet, presents
     // made with a stand-in, frames and bytes held, the budget in force, how long the last exact frame took after it was
@@ -422,6 +434,16 @@ public struct FrameSceneHeader
     [FieldOffset(112)] public int ExplodedDepth;
 
     /// <summary>
+    /// The Sequence's sound around this frame's moment in three bands (5.2B, the audio-reactive shader bus: Services/Audio/AudioReactive.cs),
+    /// each 0 to 1: Bass 20-160 Hz, Mid 160 Hz-2 kHz, High 2-10 kHz, followed fast up (5 ms) and slowly down (120 ms). The GPU effects with an
+    /// Audio Reactive Pulse lift their strength by them (SceneRenderer.Fx.cs); 0, as a cleared scene has them, lifts nothing. In bytes the
+    /// header left free, so the layout and the protocol's version are as they were.
+    /// </summary>
+    [FieldOffset(116)] public float AudioBass;
+    [FieldOffset(120)] public float AudioMid;
+    [FieldOffset(124)] public float AudioHigh;
+
+    /// <summary>
     /// Bit 3 (<see cref="FlagExactFrames"/>): draw only once every media layer has its exact frame (exports, filmstrips,
     /// tests); without it a layer whose frame is not decoded yet shows the nearest one there is and the frame is drawn
     /// again when the exact one arrives (Instant Seek).
@@ -439,11 +461,12 @@ public struct FrameSceneHeader
     /// to read back and to pipe); <see cref="ControlBlock.ReadbackRowBytes"/> is then its width, which says so.
     /// </summary>
     /// <summary>
-    /// Bit 7 (<see cref="FlagStudioStage"/>, 5.1-GpuFx): the 3D exploded view stands on the Studio Stage (its obsidian floor and reflections, depth guides and
-    /// the picture's ambient light): the editor's Extra Animations setting. Without it the view is the plain one.
+    /// Bit 7 (<see cref="FlagDepthRails"/>, 5.2): the 3D exploded view draws its depth rails, four hairlines back through the stack
+    /// from the canvas's corners (the editor's view always; a test's scene without it is the planes alone). Until 5.2 this bit was
+    /// the Studio Stage's mirror floor and gathered light, removed as UI bloat.
     /// </summary>
     public const int FlagTimePasses = 1, FlagWaitForTimings = 2, FlagRawOutput = 4, FlagExactFrames = 8, FlagLetterbox = 16, FlagReadback = 32, FlagReadbackNv12 = 64,
-        FlagStudioStage = 128;
+        FlagDepthRails = 128;
 }
 
 /// <summary>
@@ -548,6 +571,14 @@ public struct GpuLayerDescriptor
     [FieldOffset(760)] public double PreviousMoment;
 
     /// <summary>
+    /// True 3D (5.2A): degrees the layer is tilted about the horizontal axis through its anchor (Pitch: its top away from the viewer) and
+    /// swung about the upright one (Yaw: its right edge away), after its <see cref="Rotation"/> (its Roll) in its own plane, and drawn in
+    /// perspective: a quad whose far side is smaller (Matrix4.Box). Both 0 for a flat layer, drawn exactly as before.
+    /// </summary>
+    [FieldOffset(768)] public float TiltX;
+    [FieldOffset(772)] public float TiltY;
+
+    /// <summary>
     /// Bit 2 (<see cref="FlagBlurFillOnly"/>): only the layer's blurred background is drawn, over the whole frame (the
     /// primary chain's background and the blur twins, at their own place in the stack, as FFmpeg makes them). Bit 3
     /// (<see cref="FlagSelected"/>): the clip selected in the editor (outlined in the 3D exploded view). Bit 4
@@ -556,6 +587,18 @@ public struct GpuLayerDescriptor
     /// above are set (<see cref="FlagShutterPlace"/>, <see cref="FlagPreviousMoment"/>).
     /// </summary>
     public const int FlagVisible = 1, FlagAdjustment = 2, FlagBlurFillOnly = 4, FlagSelected = 8, FlagSelectedTrack = 16, FlagShutterPlace = 32, FlagPreviousMoment = 64;
+
+    /// <summary>
+    /// The video is interlaced and is shown deinterlaced (5.2-Audit: the sequence's Deinterlace, drawn by the compositor): its top
+    /// field alone, line-doubled, so no combing shows (PSYuvSource).
+    /// </summary>
+    public const int FlagDeinterlace = 128;
+
+    /// <summary>
+    /// A PQ or HLG video is tone-mapped to SDR (5.2-Audit: the sequence's Tone Map to SDR, drawn by the compositor): its light
+    /// brought down to BT.709 with the Hable curve, as FFmpeg's zscale and tonemap did (PSYuvSource). An SDR video is left alone.
+    /// </summary>
+    public const int FlagToneMapSdr = 256;
 }
 
 /// <summary>The 16 packets of a layer, 36 bytes each (<see cref="GpuEffectPacket.SizeInBytes"/>), back to back.</summary>
@@ -569,7 +612,7 @@ public struct EffectPackets
 public static class FrameScene
 {
     public const int HeaderBytes = 256;
-    public const int LayerBytes = 768;
+    public const int LayerBytes = 784;
     public const int LayersOffset = HeaderBytes;
 }
 

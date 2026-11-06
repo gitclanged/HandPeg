@@ -5,8 +5,9 @@ using System.Text;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The hidden developer flight recorder (4.4.0): on only on a PC that has the flag file <see cref="FlagPath"/>
-/// (%AppData%\HandPeg\dev-verbose.flag) or "devVerboseLogging": true in appsettings.json, never shown in Settings. While on,
+/// The developer flight recorder (4.4.0): on only on a PC that has the flag file <see cref="FlagPath"/>
+/// (%AppData%\HandPeg\dev-verbose.flag) or "devVerboseLogging": true in appsettings.json (Settings > General > Diagnostics >
+/// Developer Options since Pass 5.2D, which switches it on and off at once: <see cref="Follow"/>). While on,
 /// it keeps the last <see cref="Capacity"/> events (every breadcrumb, log line, key and click, bound action, timeline edit,
 /// refusal, undo step, project and media path, each with the playhead and the selection) in a lock-free ring, written to
 /// <see cref="LogPath"/> about once a second off the window's thread, and a snapshot of the open project (its path, its
@@ -127,38 +128,89 @@ public static class DevFlightRecorder
 
     private static Timer? _timer;
 
+    // Whether this process has started the recorder before (switched off and on again in Settings): its log is moved aside once only.
+    private static bool _startedBefore;
+
+    // Start, Stop and Follow, one at a time (Settings saved twice in a row runs two of them on the pool).
+    private static readonly object SwitchGate = new();
+
+    /// <summary>
+    /// Whether the recorder is asked for on this PC: the flag file, or the setting. Reads the disk (never before the first
+    /// frame); never throws.
+    /// </summary>
+    public static bool IsWanted()
+    {
+        try
+        {
+            return File.Exists(FlagPath) || AppSettings.Current.DevVerboseLogging;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Decides whether the recorder runs: the flag file, or the setting. Called off the window's thread after the first
     /// frame (the disk is not touched before it); turns on the writer while on.
     /// </summary>
     public static void Start()
     {
-        bool on;
-        try
-        {
-            on = File.Exists(FlagPath) || AppSettings.Current.DevVerboseLogging;
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            on = false;
-        }
-
-        if (!on || _on)
+        if (!IsWanted())
             return;
 
-        // The last session's log is kept beside this one's (a crash and a restart would otherwise write over it).
-        try
+        lock (SwitchGate)
         {
-            if (File.Exists(LogPath))
-                File.Move(LogPath, LogPath + ".previous", overwrite: true);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
+            if (_on)
+                return;
 
-        _on = true;
-        Record("dev", $"flight recorder on (HandPeg {CrashReports.AppVersion}, flag {(File.Exists(FlagPath) ? "file" : "setting")})");
-        _timer = new Timer(_ => Flush(), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+            // The last session's log is kept beside this one's (a crash and a restart would otherwise write over it); switched
+            // on again in the same session, it is this session's that goes on.
+            try
+            {
+                if (!_startedBefore && File.Exists(LogPath))
+                    File.Move(LogPath, LogPath + ".previous", overwrite: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+
+            _startedBefore = true;
+            _on = true;
+            Record("dev", $"flight recorder on (HandPeg {CrashReports.AppVersion}, flag {(File.Exists(FlagPath) ? "file" : "setting")})");
+            _timer = new Timer(_ => Flush(), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        }
+    }
+
+    /// <summary>
+    /// Switched off in Settings (Pass 5.2D): the recorder writes its last lines and stops at once, and
+    /// records nothing more. Never throws.
+    /// </summary>
+    public static void Stop()
+    {
+        lock (SwitchGate)
+        {
+            if (!_on)
+                return;
+
+            Record("dev", "flight recorder off (Settings)");
+            Flush();
+            _on = false;
+            _timer?.Dispose();
+            _timer = null;
+        }
+    }
+
+    /// <summary>
+    /// Settings were saved: the recorder follows what is asked for now (<see cref="IsWanted"/>), started or stopped. Off the
+    /// window's thread; never throws.
+    /// </summary>
+    public static void Follow()
+    {
+        if (IsWanted())
+            Start();
+        else
+            Stop();
     }
 
     private static readonly object FlushGate = new();

@@ -1,0 +1,13 @@
+# A window on this PC's monitor at HandPeg's scale, and every kind of popup over it (5.2: drawn at the window's scale, placed unmirrored).
+a window at HandPeg's scale for its monitor:
+  its content: drawn at the window's pixels per DIP
+  a popup made in code (UiScale.Track): drawn at the window's pixels per DIP
+  the same popup opened again: drawn at the window's pixels per DIP
+  a tooltip: drawn at the window's pixels per DIP
+  a context menu: drawn at the window's pixels per DIP
+  a popup placed 30, 20 DIPs from the target's top left (UiScale.PlaceRelative) is there
+  and moved while open to 60, 0, it is there
+the Quick-Start Tour on it:
+  its ring 4 DIPs round the target, on every side
+  its card: drawn at the window's pixels per DIP
+  its card 12 DIPs under the target

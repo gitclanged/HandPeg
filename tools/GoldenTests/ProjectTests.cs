@@ -66,7 +66,10 @@ public static class ProjectTests
         // Linear keyframe on an effect card (4.0 left it out of the file as if it were the default, so it read back as Ease
         // In-Out, a keyframe's constructor default), an effect no version knows yet with a setting of its own, and a Custom
         // Bézier's handles.
-        Expect(problems, first.Settings.FrameEngine, "the Layer Engine setting is read (VerticalFramer in the file)");
+        // (5.2-AuditB: the Layer Engine is gone; 5.2-Arm64AndNpu: its setting is not read at all, as any member this version does
+        // not know, so Use Vertical Resolution is what the file sets itself, and VerticalFramer is never written again.)
+        Expect(problems, first.Settings is { UseVerticalResolution: false },
+            "the Layer Engine setting (VerticalFramer in the file) is skipped: Use Vertical Resolution is the file's own");
 
         // Format 6: the blurred background is a layer of its own, kept together under sequence.background (its blur, passes,
         // darkening, zoom and effects), and the settings written leave it out.
@@ -77,7 +80,7 @@ public static class ProjectTests
         var clips = header["timeline"]?["tracks"]?[1]?["clips"];
         var brightness = clips?[0]?["state"]?["effects"]?[0]?["keys"]?["brightness"]?.AsArray();
         Expect(problems, brightness is { Count: 2 } && brightness[0]?["easing"]?.GetValue<string>() == "EaseIn" && brightness[1]?["easing"]?.GetValue<string>() == "Linear",
-            $"an effect card's Linear keyframe is written as Linear ({brightness?.ToJsonString()})");
+            $"an effect's Linear keyframe is written as Linear ({brightness?.ToJsonString()})");
         Expect(problems, first.Timeline.Tracks[1].Clips[0].State.Effects is [_, _, { Type: "plugin.future.glow", Extra: { } extra }] && extra.ContainsKey("extraSetting"),
             "an effect this version does not know keeps a setting of its own");
         Expect(problems, first.Timeline.Tracks[1].Clips[1].State.KeysScale is [{ Easing: EasingType.CubicBezier, BezierX1: 0.7, BezierX2: 0.3, BezierY2: 1 }, { Easing: EasingType.Linear }],
@@ -103,8 +106,9 @@ public static class ProjectTests
         Expect(problems, ProjectStore.Serialize(second) == written, "read and written again, the file is the same");
 
         // Everything the fixture says is still said, in the same words. Its seek index is for a file that is not on this
-        // machine: it is not taken up, and so not written again (seek facts are written for files as they are).
-        problems.AddRange(Contains(JsonNode.Parse(original)!, JsonNode.Parse(written)!, "file", ignore: ["writtenBy", "seekIndexes"]));
+        // machine: it is not taken up, and so not written again (seek facts are written for files as they are). The Layer
+        // Engine switch is not read, and never written again (5.2-AuditB, 5.2-Arm64AndNpu).
+        problems.AddRange(Contains(JsonNode.Parse(original)!, JsonNode.Parse(written)!, "file", ignore: ["writtenBy", "seekIndexes", "file.settings.VerticalFramer"]));
 
         // A recycle bin entry of 4.2.0's shape (a layer, or a piece of the main video), left in a file translated by hand, has
         // no clip to put back, and is passed over.
@@ -567,7 +571,7 @@ public static class ProjectTests
         state.UndoHistory = [new UndoStepState("a step naming this PC's files", [1, 2, 3])];
         state.ManualCommand = $"ffmpeg -i \"{files["D:/media/main.mp4"]}\" out.mp4";
         var bundlePath = Path.Combine(root, "Test.hpb");
-        var (packed, missing) = ProjectBundle.Pack(state, bundlePath);
+        var (packed, missing, _) = ProjectBundle.Pack(state, bundlePath);
         Expect(problems, packed == 5 && missing == 0, $"the five files the project reads went in, none missing ({packed}, {missing} missing)");
 
         var golden = new System.Text.StringBuilder("# A project bundle (.hpb): what goes in, and the project's files named as its entries.\n\n");
@@ -778,7 +782,7 @@ public static class ProjectTests
             case JsonObject objectExpected when actual is JsonObject objectActual:
                 foreach (var (key, value) in objectExpected)
                 {
-                    if (ignore.Contains(key) && path == "file")
+                    if (ignore.Contains(key) && path == "file" || ignore.Contains($"{path}.{key}"))
                         continue;
                     if (!objectActual.TryGetPropertyValue(key, out var found))
                     {

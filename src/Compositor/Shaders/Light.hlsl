@@ -81,7 +81,9 @@ float4 PSJfaSeed(VsOut i) : SV_Target
     return a >= 0.5 ? float4(0, 0, FarAway, FarAway) : float4(FarAway, FarAway, 0, 0);
 }
 
-// One pass: Params.z the step, in texels: a neighbour's nearest, seen from here, may be nearer than this texel's.
+// One pass: Params.z the step, in texels: a neighbour's nearest, seen from here, may be nearer than this texel's. A neighbour beyond the edge is passed
+// over by a choice, not a branch: on a tiled mobile GPU (an Adreno) a divergent branch round each of the eight taps cost more than the taps themselves
+// (5.2-Arm64AndNpu).
 float4 PSJfaStep(VsOut i) : SV_Target
 {
     float4 best = SampleAt(i.Uv, float2(0, 0));
@@ -90,26 +92,23 @@ float4 PSJfaStep(VsOut i) : SV_Target
     {
         [unroll] for (int x = -1; x <= 1; x++)
         {
-            float2 way = float2(x, y) * Params.z;
-            float2 at = i.Uv + way * SrcTexel;
-            if (any(at < 0) || any(at > 1))
+            if (x == 0 && y == 0)
                 continue;
 
+            float2 way = float2(x, y) * Params.z;
+            float2 at = i.Uv + way * SrcTexel;
+            bool within = all(at >= 0) && all(at <= 1);
             float4 there = Input.SampleLevel(PointClamp, at, 0);
             float2 inside = there.xy + way, outside = there.zw + way;
-            float d = dot(inside, inside);
-            if (d < toInside)
-            {
-                toInside = d;
-                best.xy = inside;
-            }
+            float d = within ? dot(inside, inside) : 1e30;
+            bool nearer = d < toInside;
+            toInside = nearer ? d : toInside;
+            best.xy = nearer ? inside : best.xy;
 
-            d = dot(outside, outside);
-            if (d < toOutside)
-            {
-                toOutside = d;
-                best.zw = outside;
-            }
+            d = within ? dot(outside, outside) : 1e30;
+            nearer = d < toOutside;
+            toOutside = nearer ? d : toOutside;
+            best.zw = nearer ? outside : best.zw;
         }
     }
 
@@ -195,9 +194,12 @@ float4 PSShockwave(VsOut i) : SV_Target
 // ----- The Anamorphic Lens (slot 25, variant 1) -----
 
 // One pass of the streaks (a quarter of the picture's height, half its width): seven taps along the row, Params.z texels apart; the host goes wider each pass.
+// The row turned Params.y radians (5.2: the lens's Rotation), as long on the screen whichever way it runs (Params.w the picture's width over its height).
 float4 PSStreak(VsOut i) : SV_Target
 {
-    float2 step = float2(SrcTexel.x * Params.z, 0);
+    float s, c;
+    sincos(Params.y, s, c);
+    float2 step = float2(c, s * Params.w) * SrcTexel.x * Params.z;
     float4 sum = Sample(i.Uv) * 4;
     sum += (Sample(i.Uv - step) + Sample(i.Uv + step)) * 3;
     sum += (Sample(i.Uv - step * 2) + Sample(i.Uv + step * 2)) * 2;

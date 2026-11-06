@@ -116,8 +116,16 @@ public static class KeybindManager
         new("clip.toggleLink", "Link / Unlink A/V", Editing, "\uE71B", ["G", "U"], KeyActionFlags.ChangesProject),
         new("edit.deadAir", "Remove Dead Air...", Editing, "\uE74F", ["B"], KeyActionFlags.ChangesProject),
         new("edit.bypassEffects", "Bypass Sequence Effects", Editing, "\uE711", [], KeyActionFlags.ChangesProject),
+        // The clip clipboard (5.2A): the selected clips with their Cutouts, pasted at the playhead; Duplicate right after them; Paste Attributes onto the selection.
+        new("edit.copy", "Copy Clips", Editing, "\uE8C8", ["Ctrl+C"]),
+        new("edit.cut", "Cut Clips", Editing, "\uE8C6", ["Ctrl+X"], KeyActionFlags.ChangesProject),
+        new("edit.paste", "Paste Clips at Playhead", Editing, "\uE77F", ["Ctrl+V"], KeyActionFlags.ChangesProject),
+        new("edit.duplicate", "Duplicate Clips", Editing, "\uF413", ["Ctrl+D"], KeyActionFlags.ChangesProject),
+        new("edit.pasteAttributes", "Paste Attributes...", Editing, "\uE77F", ["Ctrl+Alt+V"], KeyActionFlags.ChangesProject),
 
         new("marker.add", "Add Marker", Markers, "\uE7C1", ["C", "M"], KeyActionFlags.ChangesProject),
+        // Ping-to-Mark (5.2C): a highlight at the playhead; Alt + a click on the player's picture also marks where to look.
+        new("marker.ping", "Ping-to-Mark Highlight", Markers, "\uE735", ["Ctrl+J"], KeyActionFlags.ChangesProject),
         new("marker.next", "Next Marker", Markers, "\uE893", ["Shift+M"], KeyActionFlags.Repeat),
         new("marker.prev", "Previous Marker", Markers, "\uE892", ["Ctrl+Shift+M"], KeyActionFlags.Repeat),
         new("transport.prevEdit", "Previous Edit Point", Markers, "\uE892", ["Z", "Up"], KeyActionFlags.Repeat),
@@ -195,7 +203,8 @@ public static class KeybindManager
             ["key.toggle"] = ["T", "Alt+K"],
             ["key.prev"] = ["["],
             ["key.next"] = ["]"],
-            ["edit.bypassEffects"] = ["Ctrl+D"],
+            // Ctrl+D duplicates clips everywhere since 5.2A: the bypass moved to Ctrl+Shift+D here.
+            ["edit.bypassEffects"] = ["Ctrl+Shift+D"],
         },
     };
 

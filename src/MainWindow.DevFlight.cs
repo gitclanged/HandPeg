@@ -54,7 +54,7 @@ public partial class MainWindow
     private string SelectedForFlight() => _selectedClip switch
     {
         Layer layer => $"clip {layer.ClipId} ({layer.Kind}, track {layer.TrackId})",
-        null when _mainClipSelected => "the main video's clip",
+        null when _playheadVideoSelected => "the video at the playhead",
         null => "nothing",
         var other => other.GetType().Name,
     };

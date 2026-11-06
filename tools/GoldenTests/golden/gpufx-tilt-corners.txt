@@ -1,0 +1,7 @@
+# Tilt on the Canvas and in the 3D view (5.2B, the user's Q4): a box's corners as its quad lays them, and the exploded planes turned with it.
+ok: untilted, the four corners (top left, top right, bottom right, bottom left) are the turned box's
+ok: tilted, they are where the perspective quad puts its corners
+ok: and not where the flat box's are
+ok: an untilted plane's matrix is the flat one, number for number
+ok: a tilted plane turns about the anchor: the anchor stays where it was
+ok: swung (Yaw 50), its right edge is further from the camera than its left

@@ -1,0 +1,6 @@
+# HandPeg's GIF encoder (5.2-Audit, FFmpeg's palettegen and paletteuse gone): one palette, dithered, only what changed written, looping.
+ok: 12 frames written, 12 read back
+  12 frames of 96 x 54, delays 7 6 7 7 6 7 7 6 7 7 6 7 (1/100 s); every frame at least 26 dB from what was made
+ok: every frame, read back as GIF readers compose it, is the picture made (26 dB or better: one palette, dithered)
+ok: the delays add up to the clip's length (12 frames at 15 fps: 0.8 s)
+ok: a GIF89a that loops

@@ -17,7 +17,9 @@ VsOut VSFull(uint id : SV_VertexID)
     return o;
 }
 
-// A quad (a strip of four) placed by Transform: a layer, its shadow, a blurred background.
+// A quad (a strip of four) placed by Transform: a layer, its shadow, a blurred background. A layer tilted in 3D (5.2A: its Pitch and
+// Yaw, Matrix4.Tilted) has a Transform with a perspective column, so its corners come out with w != 1: the rasterizer divides by it and
+// interpolates Uv and Local in perspective, so the picture is foreshortened, never sheared. A flat layer's w is 1, as it always was.
 VsOut VSQuad(uint id : SV_VertexID)
 {
     VsOut o;
@@ -107,13 +109,78 @@ float4 SampleRgb(float2 uv, float2 size, float2 footprint)
 // UvRect: the part of the source shown (its crop; edges swapped for a flip). Params2.xy the luma plane's size in texels,
 // Params2.zw the chroma plane's. Params3.xy the footprint: source texels per target pixel. YuvRow0..2 the matrix.
 
+// An interlaced picture's top field (Params3.z, 5.2-Audit: the sequence's Deinterlace): the plane's even lines alone, a
+// moment's one field, line-doubled by blending each two of them (yadif's spatial half: no combing, no frame history), each
+// line read bilinearly across. `rows` is the plane's height; v the place down it.
+float FieldV(float k, float rows)
+{
+    return (2 * clamp(k, 0, rows * 0.5 - 1) + 0.5) / rows;
+}
+
+#define FIELD(T, plane, uv, rows, result) \
+    { \
+        float k = (uv).y * (rows) * 0.5 - 0.5; \
+        float k0 = floor(k); \
+        result = lerp(plane.SampleLevel(LinearClamp, float2((uv).x, FieldV(k0, rows)), 0), \
+                      plane.SampleLevel(LinearClamp, float2((uv).x, FieldV(k0 + 1, rows)), 0), k - k0); \
+    }
+
+// HDR to SDR (Params3.w the transfer, 5.2-Audit: the sequence's Tone Map to SDR, as FFmpeg's zscale and tonemap made it): the
+// BT.2020 picture's light in nits (PQ's EOTF, or HLG's inverse OETF with its 1000-nit OOTF), 100 nits as SDR's white, the
+// Hable curve over it (its white at the 1000-nit peak these masters are graded to), BT.709's primaries, BT.709's curve.
+float3 PqToNits(float3 e)
+{
+    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
+    float3 p = pow(saturate(e), 1 / m2);
+    return 10000 * pow(max(p - c1, 0) / (c2 - c3 * p), 1 / m1);
+}
+
+float3 HlgToNits(float3 e)
+{
+    const float a = 0.17883277, b = 0.28466892, c = 0.55991073;
+    float3 x = saturate(e);
+    float3 scene = x <= 0.5 ? x * x / 3 : (exp((x - c) / a) + b) / 12;
+    float ys = dot(scene, float3(0.2627, 0.6780, 0.0593));
+    return 1000 * scene * pow(max(ys, 1e-6), 0.2);
+}
+
+float3 Hable(float3 x)
+{
+    const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30;
+    return (x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F) - E / F;
+}
+
+float3 ToneMapToSdr(float3 rgb, float transfer)
+{
+    float3 light = (transfer > 15.5 ? HlgToNits(rgb) : PqToNits(rgb)) / 100;
+    float3 mapped = Hable(light) / Hable(10).r;
+    float3 bt709 = float3(dot(float3(1.6605, -0.5876, -0.0728), mapped),
+                          dot(float3(-0.1246, 1.1329, -0.0083), mapped),
+                          dot(float3(-0.0182, -0.1006, 1.1187), mapped));
+    float3 l = saturate(bt709);
+    return l < 0.018 ? 4.5 * l : 1.099 * pow(l, 0.45) - 0.099;
+}
+
 float4 PSYuvSource(VsOut i) : SV_Target
 {
     float2 uv = lerp(UvRect.xy, UvRect.zw, i.Uv);
-    float y = SampleLuma(uv, Params2.xy, Params3.xy);
-    float2 cbcr = SampleChroma(uv, Params2.zw, Params3.xy * Params2.zw / Params2.xy);
+    float y;
+    float2 cbcr;
+    if (Params3.z > 0.5)
+    {
+        FIELD(float, LumaPlane, uv, Params2.y, y)
+        FIELD(float2, ChromaPlane, uv, Params2.w, cbcr)
+    }
+    else
+    {
+        y = SampleLuma(uv, Params2.xy, Params3.xy);
+        cbcr = SampleChroma(uv, Params2.zw, Params3.xy * Params2.zw / Params2.xy);
+    }
+
     float3 yuv = float3(y, cbcr);
     float3 rgb = float3(dot(YuvRow0.xyz, yuv) + YuvRow0.w, dot(YuvRow1.xyz, yuv) + YuvRow1.w, dot(YuvRow2.xyz, yuv) + YuvRow2.w);
+    if (Params3.w > 0.5)
+        rgb = ToneMapToSdr(saturate(rgb), Params3.w);
     return float4(saturate(rgb), 1);
 }
 
@@ -171,7 +238,7 @@ float4 PSPattern(VsOut i) : SV_Target
 // Input: the layer's working texture (premultiplied). Params4.x its opacity (the layer's, times the TransformComposite
 // packet's), Params4.y a dissolve's factor (dissolve, blur dissolve, the start or end of a zoom). A wipe: Params2.x 1,
 // Params2.y 1 to keep the low side, Params2.z the axis (0 x, 1 y), Params2.w how much is shown (q); Params3.x the
-// feather in pixels, Params3.zw the box's size in pixels. (FilterGraphBuilder.Video.cs AppendPictureFades, the same math.)
+// feather in pixels, Params3.zw the box's size in pixels. (the math the export's FFmpeg graph used before 5.2-Audit.)
 
 float WipeFactor(float2 local)
 {
@@ -198,7 +265,7 @@ float4 PSComposite(VsOut i) : SV_Target
 }
 
 // The blend modes, on straight colours, as FFmpeg's blend filter has them with the picture under as its top input (A)
-// and the layer as its bottom (B) (FilterGraphBuilder.Video.cs AppendBlend).
+// and the layer as its bottom (B) (as the export's FFmpeg blend did before 5.2-Audit).
 float3 BlendColors(float3 a, float3 b, int mode)
 {
     if (mode == 1) return a * b;

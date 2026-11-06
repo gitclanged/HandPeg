@@ -30,22 +30,25 @@ public partial class MainViewModel
     /// <summary>Whether waveforms are drawn at all: the timeline's and the Audio tab's go on and off together.</summary>
     public bool ShowWaveforms => AppSettings.Current.ShowTimelineWaveform;
 
-    // The three heights: the master timeline's, and the track heights in the bottom bars of the Layers and Audio tabs.
-    // Each runs 1 to 50 and is remembered. The master timeline's has no slider since 4.2B-2: the border beside it
-    // (Ctrl-drag, or a plain drag where it is at the top or bottom) and its tab's right-click presets set it, from
-    // Compact to Tall (44 to 160 px, TimelineAreaHeight).
+    // The three heights: the Sequence Overview Scrubber's, and the track heights of the timeline's and the Audio tab's rows.
+    // Each runs 1 to 50 (the Scrubber's 1 to 52) and is remembered. The Sequence Overview Scrubber's has no slider since 4.2B-2:
+    // its lower edge and the border under it (a plain drag; Ctrl-drag shares the rows instead) and its tab's right-click presets
+    // set it, a drag keeping to 16 to 120 px (TimelineAreaHeight; MainWindow.ScrubberStep).
 
-    /// <summary>How tall the master timeline is, 1 to 50.</summary>
+    /// <summary>How tall the Sequence Overview Scrubber is, 1 (16 px) to 52.</summary>
     public double MasterTimelineHeight
     {
-        get => Math.Clamp(AppSettings.Current.MasterTimelineHeight is > 0 and var set ? set : 4 * AppSettings.Current.TimelineHeight - 3, 1, 50);
-        set => SetHeight(s => s.MasterTimelineHeight, (s, v) => s.MasterTimelineHeight = v, value, nameof(MasterTimelineHeight), nameof(TimelineAreaHeight));
+        get => Math.Clamp(AppSettings.Current.MasterTimelineHeight is > 0 and var set ? set : 4 * AppSettings.Current.TimelineHeight - 1, 1, MostMasterTimeline);
+        set => SetHeight(s => s.MasterTimelineHeight, (s, v) => s.MasterTimelineHeight = v, value, nameof(MasterTimelineHeight), nameof(TimelineAreaHeight), MostMasterTimeline);
     }
 
-    /// <summary>The master timeline's presets (its tab's menu) and the range a drag keeps to: 44, 88 and 160 px.</summary>
-    public const int CompactMasterTimeline = 6, MediumMasterTimeline = AppSettings.DefaultMasterTimelineHeight, TallMasterTimeline = 35;
+    /// <summary>The Sequence Overview Scrubber's presets (its tab's menu): 44, 88 and (held to 120 px by MainWindow.ScrubberStep) Tall.</summary>
+    public const int CompactMasterTimeline = 8, MediumMasterTimeline = AppSettings.DefaultMasterTimelineHeight, TallMasterTimeline = 37;
 
-    /// <summary>How tall each track's time bar is on the Layers tab, 1 to 50.</summary>
+    // The Scrubber's tallest setting: 220 px, as before its steps were moved down by two (5.2-AuditB).
+    private const int MostMasterTimeline = 52;
+
+    /// <summary>How tall each track's time bar is on the timeline, 1 to 50.</summary>
     public double LayerTrackHeight
     {
         get => Math.Clamp(AppSettings.Current.LayerHeight, 1, 50);
@@ -59,9 +62,9 @@ public partial class MainViewModel
         set => SetHeight(s => s.AudioHeight, (s, v) => s.AudioHeight = v, value, nameof(AudioTrackHeight), nameof(AudioTrackRowHeight));
     }
 
-    private void SetHeight(Func<AppSettings, int> get, Action<AppSettings, int> set, double value, string name, string pixels)
+    private void SetHeight(Func<AppSettings, int> get, Action<AppSettings, int> set, double value, string name, string pixels, int most = 50)
     {
-        var steps = (int)Math.Round(Math.Clamp(value, 1, 50));
+        var steps = (int)Math.Round(Math.Clamp(value, 1, most));
         if (get(AppSettings.Current) == steps)
             return;
 
@@ -95,10 +98,10 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Height in pixels of the timeline (waveform, I-frame lines, playhead): 24 at its slimmest, 220 at its tallest.</summary>
-    public double TimelineAreaHeight => 20 + 4 * MasterTimelineHeight;
+    /// <summary>Height in pixels of the timeline (waveform, I-frame lines, playhead): 16 at its slimmest, 220 at its tallest.</summary>
+    public double TimelineAreaHeight => 12 + 4 * MasterTimelineHeight;
 
-    /// <summary>Height in pixels of a track's time bar on the Layers tab: 26 at the default of 25.</summary>
+    /// <summary>Height in pixels of a track's time bar on the timeline: 26 at the default of 25.</summary>
     // The same reckoning as an audio row's height, so that the two sliders reach the same smallest and largest.
     public double LayerBarHeight => Math.Round(46 + 2.16 * LayerTrackHeight);
 
@@ -192,44 +195,18 @@ public partial class MainViewModel
         }
     }
 
-    // ----- Listening to one track -----
-
-    /// <summary>
-    /// The audio track the player plays instead of the first one, while exactly one is soloed; null otherwise. The player
-    /// plays one track at a time, so this is how a track is heard on its own; several soloed are mixed live instead (see
-    /// SoloedTracks, MainViewModel.Edits). It changes nothing about the encode.
-    /// </summary>
-    [ObservableProperty] private AudioTrack? _soloTrack;
-
-    partial void OnSoloTrackChanged(AudioTrack? value)
-    {
-        // Set from outside the solo buttons (a video loaded): the set follows it.
-        if (!_applyingSolo)
-        {
-            _soloed.Clear();
-            if (value is not null)
-                _soloed.Add(value);
-            OnPropertyChanged(nameof(SoloedTracks));
-        }
-
-        foreach (var track in AudioTracks)
-            track.IsSolo = _soloed.Contains(track);
-        if (value is not null)
-            StatusText = $"Playing {value.Title} on its own. Press its button again to stop; click another's to hear them together (Alt-click: alone).";
-    }
-
     // ----- The layers list -----
 
     /// <summary>
-    /// The rows of the Layers tab's list: the pieces of video and the images, and after them the
-    /// caption box while auto-captions are on. One list, so every layer is placed and sized the same way.
+    /// The timeline's picture rows: the video clips, Cutouts and images, and after them the
+    /// caption box while auto-captions are on. One list, so every clip is placed and sized the same way.
     /// </summary>
     public ObservableCollection<Layer> LayerRows { get; } = [];
 
     private void RefreshLayerRows()
     {
-        // As they are stacked, front first: the captions over everything, then the layers with the main video
-        // among them, and the blurred background behind it all.
+        // As they are stacked, front first: the captions over everything, then the layers, and the blur fill's settings
+        // row behind it all.
         // A row is a track: its first clip stands for it, and the others are drawn on the same time bar. The lists are
         // only filled again when their rows are other rows (every edit asks): a row re-made loses its selection and a
         // box being dragged in it.
@@ -266,8 +243,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Every sound on the timeline, one row each, for the Audio tab's one list: the main video's own audio
-    /// tracks, and after them the sounds added from files. They are the same kind of thing there.
+    /// The Audio tab's one list: the output audio tracks (the file last opened's streams, 5.2-AuditB: what each output track
+    /// is made as), and after them every sound on the timeline, one row per track.
     /// </summary>
     public ObservableCollection<object> AudioRows { get; } = [];
 
@@ -320,15 +297,15 @@ public partial class MainViewModel
     // ----- The voice among the tracks, found by its name (4.3E) -----
 
     /// <summary>
-    /// On loading a new file (never a project or a queued job, whose tracks keep what was saved): marks the track whose
-    /// title names a microphone or a voice as the Voice track (<see cref="VoiceTrackScanner"/>), unless the settings say not
-    /// to or a track already is one (a preset said which). It is marked as a tick would mark it, so Auto-Captions follow it
-    /// (<see cref="ListenToVoice"/>) and the sounds set to Duck make room for it. Returns what the status line says of it;
-    /// null when nothing was marked.
+    /// On loading a new file (never a project or a queued job, whose clips keep what was saved): marks the sound of the stream
+    /// whose title names a microphone or a voice as the voice (<see cref="VoiceTrackScanner"/>; 5.2-AuditB: its clips on the
+    /// timeline, a Sub-Lane's sound, Layer.IsVoice), unless the settings say not to or a sound already is one. It is marked as a
+    /// tick would mark it, so Auto-Captions follow it (<see cref="ListenToVoice(Layer)"/>) and the lanes set to Duck make room
+    /// for it. Returns what the status line says of it; null when nothing was marked.
     /// </summary>
     private string? MarkVoiceTrack()
     {
-        if (!AppSettings.Current.AutoMarkVoiceTrack || AudioTracks.Any(t => t.IsVoice))
+        if (!AppSettings.Current.AutoMarkVoiceTrack || Layers.Any(l => l is { IsVoice: true, CarriesSound: true }))
             return null;
 
         // The titles the file gives its tracks ("Track 2", given to an untitled one, names nothing); an untitled track of an
@@ -339,8 +316,14 @@ public partial class MainViewModel
             return null;
         }
 
-        voice.IsVoice = true;
-        var said = $"\"{voice.Title}\" marked as the Voice track by its name: Auto-Captions listen to it, and sounds set to Duck make room for it (untick Voice on the Audio tab to change that)";
+        var sounds = Layers.Where(l => l.CarriesSound && ClipOf(l) is { AudioStreamIndex: var stream } clip && stream == index && SameFile(clip.SourcePath, OpenedFile)).ToList();
+        if (sounds.Count == 0)
+            return null;
+
+        foreach (var sound in sounds)
+            sound.IsVoice = true;
+        ListenToVoice(sounds[0]);
+        var said = $"\"{voice.Title}\" marked as the voice by its name: Auto-Captions listen to it, and sounds set to Duck make room for it (untick Voice on its clip to change that)";
         Log(said);
         return said;
     }
@@ -612,8 +595,8 @@ public partial class MainViewModel
     public double OutputDurationSeconds => GetOutputDuration();
 
     /// <summary>
-    /// Where one clip of the main video ends and the next begins in the finished video (the cuts of the main video,
-    /// 4.3C: what 4.2.0's kept segments were), each as a fraction (0 to 1) of its length.
+    /// Where one clip of a file's picture begins after another in the finished video (5.2-AuditB: every shown top-level video
+    /// clip, PictureSpans; 4.3C: what 4.2.0's kept segments were), each as a fraction (0 to 1) of its length.
     /// </summary>
     public List<double> GetCutSplitFractions()
     {
@@ -622,10 +605,11 @@ public partial class MainViewModel
         if (total <= 0)
             return splits;
 
-        foreach (var clip in GetMainClips().Skip(1))
+        foreach (var span in PictureSpans().Skip(1))
         {
-            if (clip.Start > 0.001 && clip.Start < total - 0.001)
-                splits.Add(clip.Start / total);
+            var fraction = span.Start / total;
+            if (span.Start > 0.001 && span.Start < total - 0.001 && (splits.Count == 0 || fraction - splits[^1] > 1e-9))
+                splits.Add(fraction);
         }
 
         return splits;

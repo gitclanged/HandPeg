@@ -147,9 +147,11 @@
                     BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" docking:PaneTitleRow.CanCompact="True">
                 <StackPanel Orientation="Horizontal">
                     <RadioButton x:Name="ProjectSide" Style="{StaticResource SwitchSide}" Content="Project Media" Tag="Project" Checked="Source_Checked"
-                                 AutomationProperties.Name="Project Media" ToolTip="Project Media: every file the open project uses: the main video, the layers' videos and pictures, the sounds." />
+                                 AutomationProperties.Name="Project Media" ToolTip="Project Media: every file the open project uses: the clips' videos and pictures, the sounds." />
                     <RadioButton x:Name="FolderSide" Style="{StaticResource SwitchSide}" Content="Folder Browser" Tag="Folder" Checked="Source_Checked"
                                  AutomationProperties.Name="Folder Browser" ToolTip="Folder Browser: the media files of a folder on disk, with its path above them." />
+                    <RadioButton x:Name="LibrarySide" Style="{StaticResource SwitchSide}" Content="Clip Library" Tag="Library" Checked="Source_Checked"
+                                 AutomationProperties.Name="Clip Library" ToolTip="Clip Library: your own clips kept across projects (a clip's menu, Save Clip to Personal Clip Library...), searched by title and tags." />
                 </StackPanel>
             </Border>
             <ComboBox x:Name="SortBox" docking:PaneTitleRow.Optional="True" MinWidth="78" Margin="0" SelectionChanged="SortBox_SelectionChanged"
@@ -206,12 +208,17 @@
                     AutomationProperties.Name="Browse for Media Folder" ToolTip="Choose a folder." />
         </Grid>
 
+        <!-- The Clip Library's search (5.2C): every word in the title or a tag. Clip Library only. -->
+        <TextBox x:Name="SearchBox" DockPanel.Dock="Top" Margin="0,0,0,6" Padding="6,5,4,5" VerticalContentAlignment="Center" Visibility="Collapsed"
+                 TextChanged="SearchBox_TextChanged" AutomationProperties.Name="Search Clip Library"
+                 ToolTip="Search the Clip Library: every word typed in a clip's title or among its tags." />
+
         <TextBlock DockPanel.Dock="Bottom" x:Name="StatusText" Margin="0,4,0,0" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis"
-                   Text="Drag files onto the Layers or Audio tab; double-click a folder to open it." />
+                   Text="Drag files onto the timeline or the player; double-click a folder to open it." />
 
         <!--
-            The files. Dragged out, they drop like files from Explorer: onto a layer track, after the main video, on
-            the Audio tab, or on the player. Double-click: a folder opens; a file is added at the playhead (or loaded,
+            The files. Dragged out, they drop like files from Explorer: onto a track of the timeline, or on
+            the player. Double-click: a folder opens; a file is added at the playhead (or loaded,
             when nothing is). Right-click for more.
         -->
         <ListBox x:Name="Items" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"

@@ -71,6 +71,20 @@ public partial class FirstRunWindow : Window
             _probeCancellation.Cancel();
         };
 
+        // An FFmpeg installed from anywhere while this window is open (this panel, Settings, a feature's prompt, the
+        // background update): its encoders are asked for the moment it is in place (5.2), on this window's thread.
+        Action<string> installed = tool =>
+        {
+            if (tool == DependencyUpdater.Ffmpeg)
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!_closed)
+                        _ = ProbeEncodersAsync();
+                });
+        };
+        DependencyUpdater.Installed += installed;
+        Closed += (_, _) => DependencyUpdater.Installed -= installed;
+
         // Closing the window stops an install, so Start waits for it (or for Cancel).
         Dependencies.RunningChanged += () => StartButton.IsEnabled = !Dependencies.IsRunning && !_finishing;
 

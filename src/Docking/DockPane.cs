@@ -40,7 +40,7 @@ public sealed class DockPane
 
     public PaneHandle Handle { get; init; } = PaneHandle.TitleSlot;
 
-    /// <summary>As tall as what is in it, in a column of panes (the overview bar, the playback controls...), rather than a share of the room.</summary>
+    /// <summary>As tall as what is in it, in a column of panes (the Sequence Overview Scrubber, the playback controls...), rather than a share of the room.</summary>
     public bool FitsContent { get; init; }
 
     /// <summary>Whether the pane is to be shown now (its own setting, and the mode); hidden, it keeps its place.</summary>
@@ -49,7 +49,10 @@ public sealed class DockPane
     /// <summary>Hides the pane (its setting off); null for one that cannot be closed.</summary>
     public Action? Close { get; init; }
 
-    /// <summary>A pane sized to its content that can still be made taller or shorter by the border under it: told by how many pixels.</summary>
+    /// <summary>
+    /// A pane sized to its content that can still be made taller or shorter by the borders beside it (a plain drag of the one
+    /// under it, Ctrl+drag of the one above): told by how many pixels the pointer moved since it last was.
+    /// </summary>
     public Action<double>? ResizeBy { get; init; }
 
     /// <summary>The least width the pane can be given.</summary>

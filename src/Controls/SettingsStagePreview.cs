@@ -296,7 +296,7 @@ public sealed class SettingsStagePreview : FrameworkElement
 
         // Tabs: the open one boxed in the panel's colour with its trace, the others inline.
         var panel = Of("PanelBrush");
-        var tabs = new[] { "Layers", "Effects", "Export" };
+        var tabs = new[] { "Timeline", "Effects", "Export" };
         for (var i = 0; i < tabs.Length; i++)
         {
             var tab = new Rect(10 + i * 70, 32, 66, 22);
@@ -586,7 +586,7 @@ public sealed class SettingsStagePreview : FrameworkElement
             : string.Create(CultureInfo.InvariantCulture, $"Auto, {WorkScheduler.LaneLimit(WorkLane.Background)}");
         Text(drawing, $"Background tools ({jobs} at once)", 146, y, 11, TextBrush);
 
-        // The four GPU roles (5.0-0): which card composites, decodes the timeline's layers, takes background work, and exports.
+        // The four GPU roles (5.0-0): which card composites, decodes the timeline's clips, takes background work, and exports.
         y += 24;
         var adapters = GpuAdapters.All;
         string Named(int index) => adapters.FirstOrDefault(a => a.Index == index)?.Name ?? "Automatic";
@@ -602,7 +602,7 @@ public sealed class SettingsStagePreview : FrameworkElement
 
         var half = (width - 10) / 2;
         Card(drawing, new Rect(0, y, half, 54), "Compositor (player and shaders)", compositor);
-        Card(drawing, new Rect(half + 10, y, half, 54), "Timeline layers decode on", decode);
+        Card(drawing, new Rect(half + 10, y, half, 54), "Timeline clips decode on", decode);
         Card(drawing, new Rect(0, y + 62, half, 54), "Background work on", background);
         Card(drawing, new Rect(half + 10, y + 62, half, 54), "Exports decode on", export);
         var encoder = _settings.DefaultVideoEncoder.Length == 0 ? "the built-in default (Copy)" : _settings.DefaultVideoEncoder;

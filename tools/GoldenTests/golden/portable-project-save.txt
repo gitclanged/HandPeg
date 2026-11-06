@@ -1,0 +1,14 @@
+# A fully portable save: Projects\Name\Name.hproj with its media in media\, named by relative paths, opened again wherever it is carried.
+ok: Save writes Projects\Carry Me\Carry Me.hproj
+ok: and that is where the next Ctrl+S goes
+ok: its media is in media\ beside it (hard-linked on the same drive)
+ok: the project says it is portable
+ok: and names its media by relative paths only
+ok: its undo and redo steps name the media by the same relative paths (unpacked, rewritten, packed again)
+ok: and nothing in them names the folder the media came from
+ok: carried to another folder, it opens reading the media beside it
+ok: it opens with its step to undo and its step to redo
+ok: and each step's clips read the media beside the carried project, as the project's own do
+ok: the Swap Project list finds it in its folder
+ok: saved again, its media folder still holds the one file
+ok: with the setting off, a save is one file in Projects, as before

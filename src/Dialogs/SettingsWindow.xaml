@@ -300,23 +300,23 @@
                                 Value="{Binding ScrollbarThickness}" ValueChanged="ScrollbarSlider_ValueChanged" AutomationProperties.Name="Scrollbar Thickness" />
                         <TextBlock Text="{Binding Value, ElementName=ScrollbarSlider, StringFormat={}{0:0} px}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
-                    <CheckBox Content="Follow Windows display scaling (off = crisp native 1:1 pixel UI)" IsChecked="{Binding FollowWindowsDpiScaling}" Margin="0,2"
+                    <CheckBox Content="Follow Windows display scaling (off = HandPeg's own crisp, roomier scale)" IsChecked="{Binding FollowWindowsDpiScaling}" Margin="0,2"
                               AutomationProperties.Name="Follow Windows Display Scaling"
-                              ToolTip="Off (as HandPeg comes): on a monitor Windows scales to 125 %, 150 % or more, HandPeg is drawn at the monitor's own pixels, 1:1, so the timeline, the player and the panes have that much more room. On: HandPeg is drawn as large as Windows scales every program. Either way the UI Scale below is applied on top. Applied when you press Save." />
+                              ToolTip="Off (as HandPeg comes): on a desktop monitor (scaled to 125 %, or a 1440p one to 150 %) HandPeg is drawn at the monitor's own pixels, 1:1, so the timeline, the player and the panes have that much more room; on a high-PPI screen (150 % or more on more than 2560 pixels, such as a 13-inch 2880 x 1800 laptop at 200 %) it is drawn about 1920 DIPs across, readable and still roomier than Windows draws it. On: HandPeg is drawn as large as Windows scales every program. Either way the UI Scale below is applied on top. Applied when you press Save." />
                     <StackPanel Style="{StaticResource Row}"
-                                ToolTip="HandPeg's own scale, on top of the setting above: from 75 % (smaller, more room) to 150 % (larger). 100 % is as it is drawn. Applied when you press Save.">
+                                ToolTip="HandPeg's own scale, on top of the setting above: from 75 % (smaller, more room) to 150 % (larger). 100 % is as the setting above draws it (1:1 on a desktop monitor, about 1920 DIPs across on a high-PPI screen). Applied when you press Save.">
                         <TextBlock Text="UI Scale:" Style="{StaticResource FieldLabel}" />
                         <Slider x:Name="UiScaleSlider" Width="200" Minimum="75" Maximum="150" TickFrequency="5" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
                                 Value="{Binding UiScalePercent}" AutomationProperties.Name="UI Scale" local:NumericInput.Default="100" />
                         <TextBlock Text="{Binding Value, ElementName=UiScaleSlider, StringFormat={}{0:0} %}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
-                    <CheckBox Content="Extra animations &amp; GPU visual flair" IsChecked="{Binding EnableExtraAnimations}" Margin="0,2"
-                              AutomationProperties.Name="Extra Animations and GPU Visual Flair"
-                              ToolTip="On (as HandPeg comes): the Timeline's stacks and folds slide into place, and the GPU's flourishes play. Off: everything snaps to where it is going at once. Applied when you press Save." />
+                    <CheckBox Content="Extra animations" IsChecked="{Binding EnableExtraAnimations}" Margin="0,2"
+                              AutomationProperties.Name="Extra Animations"
+                              ToolTip="On (as HandPeg comes): the Timeline's stacks and folds slide into place and the Cutout Studio's zoom eases in. Off: everything snaps to where it is going at once. Applied when you press Save." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Double-Click Resets To:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="ResetBox" MinWidth="190" Margin="0" SelectedItem="{Binding DoubleClickResetsTo}" AutomationProperties.Name="Double-Click Resets To"
-                                  ToolTip="Double-clicking a slider or a number box puts it back to a starting value: the one in the style preset that is in use (and the built-in default where the style has none, or none is in use), or always the built-in default." />
+                                  ToolTip="Double-clicking a slider or a number box puts it back to a starting value: the one in the Game Preset that is in use (and the built-in default where the preset has none, or none is in use), or always the built-in default." />
                     </StackPanel>
 
                     <TextBlock Text="Launch" Style="{StaticResource SectionTitle}" />
@@ -333,11 +333,11 @@
                                Text="What each of these is set to when HandPeg starts. Each can still be changed in the main window for the session." />
                     <WrapPanel>
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding StartWithSnapToIFrames}" Margin="0,2,24,2"
-                                  ToolTip="The playhead, the razor and the in and out points ([ and ]) land on the main video's I-frames, where a Copy export can cut it without encoding." />
+                                  ToolTip="The playhead, the razor and the in and out points ([ and ]) land on the I-frames of the video clip under them, where a Copy export can cut it without encoding." />
                         <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="0,2,24,2" />
                         <CheckBox Content="Create chapter markers" IsChecked="{Binding StartWithChapterMarkers}" Margin="0,2,24,2" />
                         <CheckBox Content="Chapters at cut points" IsChecked="{Binding StartWithChaptersAtCuts}" Margin="0,2,24,2"
-                                  ToolTip="A chapter at the start of each clip of the main video, once it has been split." />
+                                  ToolTip="A chapter at each edge of a clip on a video track, once there are cuts." />
                         <CheckBox Content="Open the Canvas by itself" IsChecked="{Binding AutoOpenLayoutPane}" Margin="0,2,24,2"
                                   ToolTip="Opens the Canvas beside the player as soon as there is a layout to edit." />
                     </WrapPanel>
@@ -346,9 +346,17 @@
 
                     <TextBlock Text="Projects and saving" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Prompt to save before closing" IsChecked="{Binding PromptToSaveOnExit}"
-                              ToolTip="When HandPeg is closed while the open video has cuts, layers or settings that were not saved as a project, asks whether to save them first." />
+                              ToolTip="When HandPeg is closed while the open video has cuts, clips or settings that were not saved as a project, asks whether to save them first." />
                     <CheckBox Content="Show video &amp; hover previews in Project Manager" IsChecked="{Binding ShowProjectPreviews}" AutomationProperties.Name="Show Video and Hover Previews in Project Manager"
-                              ToolTip="The Project Manager shows a 16:9 picture of each project's main video; with the pointer across it, the frames along the video. They are the media browser's pictures, kept in its cache (Caches, below), and made in the background when not kept. Also a box in the Project Manager itself." />
+                              ToolTip="The Project Manager shows a 16:9 picture of the video each project was opened with; with the pointer across it, the frames along the video. They are the media browser's pictures, kept in its cache (Caches, below), and made in the background when not kept. Also a box in the Project Manager itself." />
+                    <!-- Explorer's previews of projects (ExplorerThumbnails, Pass 5.2D); the hint is shown by the code in a self-contained copy -->
+                    <StackPanel>
+                        <CheckBox x:Name="ExplorerThumbnailsCheck" Content="Show project preview thumbnails in Windows Explorer" IsChecked="{Binding ShowExplorerThumbnails}"
+                                  AutomationProperties.Name="Show Project Preview Thumbnails in Windows Explorer"
+                                  ToolTip="On at first. .hproj projects and .hpb bundles show the frame they were saved at as their picture in Windows Explorer (and in Open and Save boxes), instead of a plain icon: HandPeg registers a thumbnail handler of its own for your Windows account only (no administrator is asked for), and takes it out again when this is switched off. Applied when you press Save." />
+                        <TextBlock x:Name="ExplorerThumbnailsHint" Style="{StaticResource Hint}" Margin="22,0,0,4" Visibility="Collapsed"
+                                   Text="Not in a self-contained copy: it leaves nothing on the PC outside its own folder." />
+                    </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <CheckBox Content="Enable Autosave" IsChecked="{Binding AutosaveEnabled}" VerticalAlignment="Center" AutomationProperties.Name="Enable Autosave"
                                   ToolTip="Writes the open project to a file beside it named after it (Name.autosave.hproj) every so often, when it has changed. Written in the background; the project itself, and what can be undone, are left as they are." />
@@ -356,6 +364,12 @@
                         <TextBox Width="48" Padding="4,2" VerticalAlignment="Center" Text="{Binding AutosaveMinutes}" IsEnabled="{Binding AutosaveEnabled}" AutomationProperties.Name="Autosave Interval"
                                  ToolTip="How many minutes pass between autosaves: 1 to 120." />
                     </StackPanel>
+                    <CheckBox Content="Fully portable project saves — copy all project media into a self-contained project folder on Save" IsChecked="{Binding FullyPortableProjectSave}"
+                              AutomationProperties.Name="Fully Portable Project Saves"
+                              ToolTip="Off at first. On: Save (Ctrl+S) writes the project as a folder of its own, Projects\Name\Name.hproj, with every video, sound, picture and LUT it uses in Projects\Name\media\, named there by relative paths, so the whole folder can be carried to another PC or a USB drive and opened there. A file on the same drive is hard-linked (instant, no space taken); one from another drive is copied in the background. Autosaves, and Save As to a file you choose, are left as they are." />
+                    <CheckBox Content="Trim long recordings in project bundles to the parts the Sequence uses (+5 s)" IsChecked="{Binding TrimLongVodsOnBundle}"
+                              AutomationProperties.Name="Trim Long Recordings in Project Bundles"
+                              ToolTip="On at first. Save Project Bundle (.hpb) puts a video longer than 2 minutes, of which the clips use less than 60 %, into the bundle as the stretches they use, each with 5 seconds to spare at either end: lossless stream copies (every audio track kept, nothing encoded again), each starting on a key frame, and the bundle's project pointed at them so every frame lands where it was. A two-hour stream recording cut down to a few minutes goes in as those minutes. Off: every file goes in whole. The project you are working on and its files are never changed." />
 
                     <!-- Diagnostics: crash reports (CrashReporter), written here and sent once each (CrashReports.UploadPendingAsync) -->
                     <TextBlock Text="Diagnostics" Style="{StaticResource SectionTitle}" />
@@ -372,6 +386,7 @@
                                 ToolTip="Deletes every crash report in the folder, at once (not when you press Save)." />
                         <TextBlock x:Name="CrashReportsUsage" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
+
                 </StackPanel>
             </TabItem>
 
@@ -380,17 +395,17 @@
                 <StackPanel>
                     <TextBlock Text="Timeline" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Whether waveforms are drawn, and whether a strip of pictures from the video is drawn along the timeline behind them. (How tall the timeline is, is the slider beside the volume in the main window.) The pictures are the finished sequence (every track, crop, mask, effect and blurred background), drawn by the GPU engine on the background graphics card and drawn again a moment after each edit, from the same sheet as the hover previews below." />
+                               Text="Whether waveforms are drawn, and whether a strip of pictures from the video is drawn along the timeline behind them. (How tall the timeline is, is the slider beside the volume in the main window.) The pictures are the finished sequence (every track, crop, mask, effect and blur fill), drawn by the GPU engine on the background graphics card and drawn again a moment after each edit, from the same sheet as the hover previews below." />
                     <CheckBox Content="Show waveforms" IsChecked="{Binding ShowTimelineWaveform}"
                               ToolTip="After each load, draws the mix of the active audio tracks behind the timeline, and each audio track's own waveform on its row of the timeline. Applies to the next video you load." />
                     <CheckBox Content="Show Timeline Thumbnails" IsChecked="{Binding ShowTimelineThumbnails}"
-                              ToolTip="Draws a strip of pictures of the finished sequence along the Overview Bar, behind the waveform, drawn again a moment after each edit. On by default." />
+                              ToolTip="Draws a strip of pictures of the finished sequence along the Sequence Overview Scrubber, behind the waveform, drawn again a moment after each edit. On by default." />
                     <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Video Layer Thumbnail Count:" Style="{StaticResource FieldLabel}" />
+                        <TextBlock Text="Video Clip Thumbnail Count:" Style="{StaticResource FieldLabel}" />
                         <Slider Width="150" Minimum="1" Maximum="25" VerticalAlignment="Center"
-                                Value="{Binding LayerThumbnailCount}" AutomationProperties.Name="Video Layer Thumbnail Count" local:NumericInput.Default="8"
-                                ToolTip="How many frames are taken from a video layer's file for the strip of pictures its block on the timeline is drawn with. Applies to the video layers added from now on." />
-                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding LayerThumbnailCount, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Video Layer Thumbnail Count Value"
+                                Value="{Binding LayerThumbnailCount}" AutomationProperties.Name="Video Clip Thumbnail Count" local:NumericInput.Default="8"
+                                ToolTip="How many frames are taken from a video clip's file for the strip of pictures its block on the timeline is drawn with. Applies to the video clips added from now on." />
+                        <TextBox Style="{StaticResource ValueBox}" Text="{Binding LayerThumbnailCount, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Video Clip Thumbnail Count Value"
                                  local:NumericInput.Default="8" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="25" />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
@@ -402,7 +417,7 @@
                         </ComboBox>
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
-                                ToolTip="Where a video or a picture dropped on the timeline goes. Always Create New Track: a track of its own, just above the row it was dropped on. Join Track Under Pointer If Free: onto that row's track when nothing is there at that moment. Either way a clip is never laid over another: one that would overlap gets a new track above. An empty track (Add Layer) is always filled.">
+                                ToolTip="Where a video or a picture dropped on the timeline goes. Always Create New Track: a track of its own, just above the row it was dropped on. Join Track Under Pointer If Free: onto that row's track when nothing is there at that moment. Either way a clip is never laid over another: one that would overlap gets a new track above. An empty track (Add Track) is always filled.">
                         <TextBlock Text="Dropped Clips:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="DroppedClipsBox" MinWidth="250" Margin="0" AutomationProperties.Name="Dropped Clips">
                             <ComboBoxItem Content="Always create new track" />
@@ -410,13 +425,13 @@
                         </ComboBox>
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
-                                ToolTip="How a picture or a video added to the timeline is sized on the frame, its middle on the frame's middle. Fit: the whole picture shows, touching the frame's edges on one side. Fill: it covers the whole frame, what reaches past the edges cut off. A clip's menu has Fit to Frame and Fill Frame for one already there. Templates, styles and HUD pieces keep the places they were made with.">
+                                ToolTip="How a picture or a video added to the timeline is sized on the frame, its middle on the frame's middle. Fit: the whole picture shows, touching the frame's edges on one side. Fill: it covers the whole frame, what reaches past the edges cut off. A clip's menu has Fit to Frame and Fill Frame for one already there. Templates, Game Presets and HUD Cutouts keep the places they were made with.">
                         <TextBlock Text="New Clips on the Frame:" Style="{StaticResource FieldLabel}" />
                         <ComboBox MinWidth="250" Margin="0" ItemsSource="{x:Static services:AppSettings.NewClipSizings}" DisplayMemberPath="Value" SelectedValuePath="Key"
                                   SelectedValue="{Binding NewClipSizing}" AutomationProperties.Name="New Clip Sizing" />
                     </StackPanel>
                     <CheckBox Content="Ripple affects all tracks" IsChecked="{Binding RippleAllTracks}" AutomationProperties.Name="Ripple Affects All Tracks"
-                              local:KeyTip.Text="A ripple edit (Ctrl-drag of a clip's edge, or Ripple Delete, {key:edit.rippleDelete|on a clip's menu}) moves the later clips of every track by as much, so they stay in step. Off: only the clips of its own track move. The main video and the video's own audio tracks never move with a ripple." />
+                              local:KeyTip.Text="A ripple edit (Ctrl-drag of a clip's edge, or Ripple Delete, {key:edit.rippleDelete|on a clip's menu}) moves the later clips of every unlocked track by as much, so they stay in step. Off: only the clips of its own track move. A locked track never moves with a ripple." />
                     <CheckBox Content="Solo is exclusive" IsChecked="{Binding SoloIsExclusive}" AutomationProperties.Name="Solo Is Exclusive"
                               ToolTip="On: a track's Solo button plays it alone, the others' solo going off. Off: several tracks can be soloed together and are mixed in the player; Alt-click plays one alone." />
                     <CheckBox Content="Show gain lines on clips with sound" IsChecked="{Binding ShowClipGainLines}" AutomationProperties.Name="Show Gain Lines"
@@ -451,7 +466,7 @@
 
                     <TextBlock Text="Hover previews" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="A small picture of the finished sequence appears above the pointer as it moves along the Overview Bar. The pictures are drawn by the GPU engine in the background, and drawn again a moment after each edit (only those the edit changed); a long sequence spaces them further apart so one sheet of 100 covers all of it. Where the GPU cannot draw them, they are the main file's key frames." />
+                               Text="A small picture of the finished sequence appears above the pointer as it moves along the Sequence Overview Scrubber. The pictures are drawn by the GPU engine in the background, and drawn again a moment after each edit (only those the edit changed); a long sequence spaces them further apart so one sheet of 100 covers all of it. Where the GPU cannot draw them, they are the key frames of the file opened last." />
                     <CheckBox Content="Auto-generate hover previews on load" IsChecked="{Binding GenerateHoverPreviews}" />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Thumbnail Interval (seconds):" Style="{StaticResource FieldLabel}" />
@@ -468,8 +483,8 @@
                     <TextBlock Text="Player" Style="{StaticResource SectionTitle}" />
                     <CheckBox Content="Hardware video decoding (GPU preview)" IsChecked="{Binding PlayerHardwareAcceleration}" AutomationProperties.Name="Hardware Video Decoding"
                               ToolTip="The graphics card decodes the preview's video (Media Foundation on Direct3D 11) as well as drawing it, which keeps high-resolution and high-frame-rate footage smooth and the processor free. Turn this off if the preview shows broken frames (green, garbled or blocky pictures from a driver's decoder): the processor then decodes, more slowly. Exports are not affected. Applies when the player starts again (Reload Player, or the next start of HandPeg)." />
-                    <CheckBox Content="Edit Layers on Video Preview" IsChecked="{Binding EditLayersOnPlayer}" AutomationProperties.Name="Edit Layers on Video Preview"
-                              ToolTip="With Live Preview on, click a layer on the player to select it, then drag it to move it, its corner to resize it, its round handle to turn it and its gold dot to move its anchor, as in the Canvas. Only the selected layer's outline and handles are drawn over the video, and none while it plays; a click on the video away from it hides them. Also in the Canvas's title row and the playback bar." />
+                    <CheckBox Content="Edit Clips on Video Preview" IsChecked="{Binding EditLayersOnPlayer}" AutomationProperties.Name="Edit Clips on Video Preview"
+                              ToolTip="With Live Preview on, click a clip on the player to select it, then drag it to move it, its corner to resize it, its round handle to turn it and its gold dot to move its anchor, as in the Canvas. Only the selected clip's outline and handles are drawn over the video, and none while it plays; a click on the video away from it hides them. Also in the Canvas's title row and the playback bar." />
                     <CheckBox Content="Show advanced playback controls" IsChecked="{Binding ShowAdvancedPlayback}"
                               ToolTip="A transport row centred under the player: reload player, previous I-frame, back one frame, play/pause, forward one frame, next I-frame and render preview, with a playback speed selector (0.25x to 2x) beside it." />
 
@@ -570,12 +585,12 @@
 
                     <TextBlock Text="Proxies" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="A proxy is a small copy of a video whose I-frames are far apart (a long-GOP recording) that the GPU preview plays in its place, so that seeking and scrubbing it cost what a 540-line H.264 file costs. Most cards need none: the preview decodes the original on the graphics card and keeps what it has decoded in video memory (Instant Seek, Export &amp; Hardware). So a clip's right-click Optimize Long-GOP Clip for Scrubbing is offered only where it helps: a long-GOP video layer whose codec the card cannot decode, a preview on the processor, or one that has been slow to show exact frames; hold Shift as the menu opens to have it anyway. Proxies are made in the background, on the second graphics card where there is one. Exports always read the original files, and the sound always comes from the originals." />
+                               Text="A proxy is a small copy of a video whose I-frames are far apart (a long-GOP recording) that the GPU preview plays in its place, so that seeking and scrubbing it cost what a 540-line H.264 file costs. Most cards need none: the preview decodes the original on the graphics card and keeps what it has decoded in video memory (Instant Seek, Export &amp; Hardware). So a clip's right-click Optimize Long-GOP Clip for Scrubbing is offered only where it helps: a long-GOP video clip whose codec the card cannot decode, a preview on the processor, or one that has been slow to show exact frames; hold Shift as the menu opens to have it anyway. Proxies are made in the background, on the second graphics card where there is one. Exports always read the original files, and the sound always comes from the originals." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Long-GOP: I-Frames Further Apart Than (s):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="60" Text="{Binding ProxyHeavyIFrameSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Long-GOP I-Frames Further Apart Than"
                                  local:NumericInput.Default="2" local:NumericInput.DragStep="0.02" local:NumericInput.Minimum="0.5" local:NumericInput.Maximum="60" local:NumericInput.Decimals="1"
-                                 ToolTip="Every seek decodes from the I-frame before it: a video layer whose I-frames are further apart than this (at the median) is long-GOP, and its right-click menu offers Optimize Long-GOP Clip for Scrubbing when the preview cannot decode it fast." />
+                                 ToolTip="Every seek decodes from the I-frame before it: a video clip whose I-frames are further apart than this (at the median) is long-GOP, and its right-click menu offers Optimize Long-GOP Clip for Scrubbing when the preview cannot decode it fast." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Proxy Height (lines):" Style="{StaticResource FieldLabel}" />
@@ -681,7 +696,7 @@
 
                     <TextBlock Text="Default encoding settings" Style="{StaticResource SectionTitle}" Margin="0,10,0,2" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="What the Video and Audio tabs start with when HandPeg is launched (the encoder and audio codec were first chosen in the first-run window). Built-in default leaves HandPeg's own. An encoding preset always sets its own over these; a style preset does too, unless the box under them is ticked. A project brings back what it was saved with. Applies the next time HandPeg starts." />
+                               Text="What the Video and Audio tabs start with when HandPeg is launched (the encoder and audio codec were first chosen in the first-run window). Built-in default leaves HandPeg's own. An encoding preset always sets its own over these; a Game Preset does too, unless the box under them is ticked. A project brings back what it was saved with. Applies the next time HandPeg starts." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Format:" Style="{StaticResource FieldLabel}" Width="120" />
                         <ComboBox x:Name="DefaultContainerBox" MinWidth="120" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
@@ -760,8 +775,8 @@
                         <CheckBox Content="Normalize audio" IsChecked="{Binding DefaultNormalizeAudio}" Margin="20,0,0,0" VerticalAlignment="Center"
                                   ToolTip="Evens out the loudness to the EBU R128 standard." />
                     </StackPanel>
-                    <CheckBox Content="Default encoding settings override style presets" IsChecked="{Binding DefaultsOverrideStyles}"
-                              ToolTip="When a style preset is applied (from the drop overlay, or the style list), these settings are put back afterwards wherever the style set something else, a tall frame for instance. An encoding preset always overrides these, ticked or not." />
+                    <CheckBox Content="Default encoding settings override Game Presets" IsChecked="{Binding DefaultsOverrideStyles}"
+                              ToolTip="When a Game Preset is applied (from the drop overlay, or the Game Presets list), these settings are put back afterwards wherever the preset set something else, a tall frame for instance. An encoding preset always overrides these, ticked or not." />
                     <StackPanel Style="{StaticResource Row}">
                         <Button Content="Use the Current Video and Audio Settings" Padding="12,4" Click="UseCurrentEncoding_Click"
                                 ToolTip="Fills the boxes above with what the Video and Audio tabs are set to now." />
@@ -771,10 +786,11 @@
                     <CheckBox Content="Save the Target File Size with each preset" IsChecked="{Binding SaveTargetSizeInPresets}"
                               ToolTip="When on, Save Preset also stores the Target File Size set at the time, and applying that preset brings it back." />
 
-                    <!-- The four GPU roles (5.0-0): each card's job, set by hand or by Test & Auto-Tune Hardware (HardwareBenchmarkService) -->
-                    <TextBlock Text="GPU Roles" Style="{StaticResource SectionTitle}" />
+                    <!-- The four GPU roles (5.0-0): each card's job, set by hand or by Test & Auto-Tune Hardware (HardwareBenchmarkService);
+                         the NPUs and what Auto-Captions run on (5.2-Arm64AndNpu, SettingsWindow.Hardware.cs) -->
+                    <TextBlock Text="GPU &amp; NPU Roles" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="Which graphics card does what. Auto suits most computers. Test &amp; Auto-Tune Hardware measures every card in a few seconds (decoding speed, seeking, accuracy, and how fast frames cross between cards) and sets all four from what it finds; each stays yours to change." />
+                               Text="Which graphics card does what, and what the NPU is for. Auto suits most computers. Test &amp; Auto-Tune Hardware measures every card in a few seconds (decoding speed, seeking, accuracy, and how fast frames cross between cards), lists the NPUs, and sets the four GPU roles from what it finds; each stays yours to change." />
                     <!-- One option: the button, its status, and (after a test) why each role went where it did -->
                     <StackPanel>
                         <StackPanel Style="{StaticResource Row}">
@@ -801,7 +817,7 @@
                         <TextBlock Text="Timeline Decode GPU:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="DecodeGpuBox" MinWidth="260" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Value"
                                   SelectedValue="{Binding DecodeGpuAdapter}" AutomationProperties.Name="Timeline Decode GPU"
-                                  ToolTip="Timeline Layer Hardware Decode GPU: the card that decodes the timeline's video layers for the compositor. Auto: the compositor's own card, so decoded frames never leave its memory (zero-copy). Another card decodes and copies each frame across (worth it only when it is much faster: the benchmark measures both)." />
+                                  ToolTip="Timeline Clip Hardware Decode GPU: the card that decodes the timeline's video clips for the compositor. Auto: the compositor's own card, so decoded frames never leave its memory (zero-copy). Another card decodes and copies each frame across (worth it only when it is much faster: the benchmark measures both)." />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Background GPU:" Style="{StaticResource FieldLabel}" />
@@ -815,6 +831,20 @@
                                   SelectedValue="{Binding HardwareDecodeAdapter}" AutomationProperties.Name="Hardware Decode Adapter"
                                   ToolTip="Hardware Encode Export GPU: which graphics card decodes the video for an encode, when Enable Hardware Decoding is ticked on the Video tab. Automatic leaves it to FFmpeg (-hwaccel auto). Choosing a card names it to FFmpeg (-hwaccel d3d11va -hwaccel_device and its number), so that a second card can take the decoding while the first one encodes or runs a game." />
                     </StackPanel>
+                    <StackPanel Style="{StaticResource Row}"
+                                ToolTip="The NPUs (neural processing units) Windows lists, such as a Snapdragon X's Hexagon NPU, and what HandPeg uses each for. None is used yet: the speech builds HandPeg installs run on the processor or the graphics card, and Auto-Captions on the NPU need a speech model built for it, planned with the AI worker in 6.0.">
+                        <TextBlock Text="NPU:" Style="{StaticResource FieldLabel}" />
+                        <TextBlock x:Name="NpuText" Style="{StaticResource FieldLabel}" MaxWidth="440" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"
+                                   Text="Looking for an NPU..." AutomationProperties.AutomationId="NpuText" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource Row}">
+                        <TextBlock Text="Auto-Captions On:" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="CaptionAcceleratorBox" MinWidth="260" Margin="0" DisplayMemberPath="Display" SelectedValuePath="Name"
+                                  SelectedValue="{Binding CaptionAccelerator}" AutomationProperties.Name="Auto-Captions Accelerator"
+                                  ToolTip="What whisper.cpp transcribes on, its silence detection with it. Auto: the NPU when a speech build for it is installed (none is yet), else the graphics card when the whisper build in use has a back end for it (the Adreno OpenCL build on a Snapdragon PC, CUDA on NVIDIA) and it has not fallen over on this computer, else the processor. A choice the installed build cannot follow runs on the next one down, and the log says so. Should whisper fall over on the graphics card, the audio is transcribed again on the processor." />
+                    </StackPanel>
+                    <TextBlock x:Name="CaptionAcceleratorText" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,6"
+                               AutomationProperties.AutomationId="CaptionAcceleratorPlan" />
 
                     <!-- The GPU preview engine (5.0D, SettingsWindow.GpuEngine.cs): Instant Seek's frame cache (its readout refreshed while
                          this page is shown) and the compositor's decode threads -->
@@ -825,7 +855,7 @@
                         <TextBlock Text="Frame Cache (MB):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="70" Text="{Binding GpuFrameCacheMb, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="GPU Frame Cache"
                                  local:NumericInput.Default="0" local:NumericInput.DragStep="2" local:NumericInput.Minimum="-1" local:NumericInput.Maximum="65536" local:NumericInput.Decimals="0"
-                                 ToolTip="How much video memory Instant Seek may keep decoded frames in, in megabytes. 0 is Auto: with the card free, half of what is free on it, at most 12 GB, always leaving a good margin (a third of the card, at most 8 GB); with a game using the card, an eighth of it, at most 3 GB. -1 turns it off: every frame is decoded when it is shown (only the few on screen are kept). Windows' own budget for HandPeg always caps it, so the cache shrinks at once when a game needs the memory. Applies as soon as you press Save." />
+                                 ToolTip="How much video memory Instant Seek may keep decoded frames in, in megabytes. 0 is Auto: with the card free, half of what is free on it, at most 12 GB, always leaving a good margin (a third of the card, at most 8 GB); with a game using the card, an eighth of it, at most 3 GB. Graphics that share the computer's memory (a Snapdragon X's Adreno, a laptop chip's own graphics) take an eighth of the computer's memory instead, 1.5 to 2.5 GB with 12 GB or more, less below; the cache fills only as frames are decoded. -1 turns it off: every frame is decoded when it is shown (only the few on screen are kept). Windows' own budget for HandPeg always caps it, so the cache shrinks at once when a game needs the memory. Applies as soon as you press Save." />
                         <TextBlock x:Name="GpuCacheUsage" Style="{StaticResource FieldLabel}" Margin="16,0,12,0" Foreground="{DynamicResource MutedTextBrush}" />
                         <Button x:Name="ClearGpuCacheButton" Content="Clear" Padding="12,3" Click="ClearGpuFrameCache_Click" AutomationProperties.Name="Clear GPU Frame Cache"
                                 ToolTip="Lets go of every frame the cache holds now: its video memory goes back at once. Frames are decoded again as they are shown." />
@@ -847,13 +877,6 @@
                     <Button x:Name="RetestEncodersButton" Content="Test Hardware Encoders Again" HorizontalAlignment="Left" Padding="12,4" Margin="0,4,0,0"
                             Click="RetestEncoders_Click" AutomationProperties.Name="Test Hardware Encoders Again"
                             ToolTip="The hardware encoders are tested with a short encode once for each FFmpeg and graphics driver, and the result is kept. Press this to test them again (after changing a card, say): the test runs when you press Save, or at the next start." />
-                    <!-- What renders an export's frames (5.0, AppSettings.Export.cs); the Export tab's Render choice is the same setting -->
-                    <StackPanel Style="{StaticResource Row}">
-                        <TextBlock Text="Export Renderer:" Style="{StaticResource FieldLabel}" />
-                        <ComboBox MinWidth="200" Margin="0" ItemsSource="{x:Static services:AppSettings.ExportRenderers}" DisplayMemberPath="Display" SelectedValuePath="Value"
-                                  SelectedValue="{Binding ExportRenderer}" AutomationProperties.Name="Export Renderer"
-                                  ToolTip="What draws an export's frames. GPU Compositor (default): the engine that draws the player renders every frame on the Compositor GPU, exact to the frame, and FFmpeg encodes them with the export's own sound, captions and subtitles: the composing is taken off the processor. FFmpeg Filter Graph: FFmpeg composes the picture itself, as the Command Preview shows (the bit-exact reference). A Copy export, a GIF or WebP, a hand-edited command, the queue and anything the compositor cannot draw yet always go through FFmpeg, and so does a GPU export that fails, from the start." />
-                    </StackPanel>
                     <CheckBox Content="Fall back to the software encoder when a hardware encode fails" IsChecked="{Binding AutoFallbackToSoftware}"
                               ToolTip="If an encode or queue job fails on a hardware encoder, it is tried once more with libx264 (or libx265 for HEVC, SVT-AV1 for AV1)." />
                     <CheckBox Content="Install FFmpeg 8.1 instead of the newest build (for older NVIDIA drivers)" IsChecked="{Binding UseFfmpegForOlderNvidiaDrivers}"
@@ -1124,16 +1147,16 @@
 
                     <TextBlock Text="Drag &amp; drop overlay" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
-                               Text="While a file is dragged over an empty HandPeg window, the window dims and shows targets to drop it on: style presets and the Social Squisher's presets. Dropped anywhere else, the file opens as it always did." />
-                    <TextBlock Text="Style presets" FontWeight="SemiBold" Margin="0,4,0,2" />
+                               Text="While a file is dragged over an empty HandPeg window, the window dims and shows targets to drop it on: Game Presets and the Social Squisher's presets. Dropped anywhere else, the file opens as it always did." />
+                    <TextBlock Text="Game Presets" FontWeight="SemiBold" Margin="0,4,0,2" />
                     <StackPanel Style="{StaticResource Row}"
-                                ToolTip="How many of the style presets below the overlay shows: the first so many, from the top. 0 shows none.">
-                        <TextBlock Text="Style presets shown:" Style="{StaticResource FieldLabel}" />
+                                ToolTip="How many of the Game Presets below the overlay shows: the first so many, from the top. 0 shows none.">
+                        <TextBlock Text="Game Presets shown:" Style="{StaticResource FieldLabel}" />
                         <Slider x:Name="OverlayCountSlider" Width="200" Minimum="0" Maximum="8" TickFrequency="1" IsSnapToTickEnabled="True" IsMoveToPointEnabled="True" VerticalAlignment="Center"
-                                Value="{Binding SplashPresetCount}" AutomationProperties.Name="Overlay Style Presets Shown" />
+                                Value="{Binding SplashPresetCount}" AutomationProperties.Name="Overlay Game Presets Shown" />
                         <TextBlock Text="{Binding Value, ElementName=OverlayCountSlider, StringFormat={}{0:0}}" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
-                    <ItemsControl x:Name="OverlayStyleList" Focusable="False" AutomationProperties.Name="Overlay Style Presets">
+                    <ItemsControl x:Name="OverlayStyleList" Focusable="False" AutomationProperties.Name="Overlay Game Presets">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel Orientation="Horizontal" Margin="0,2">
@@ -1146,9 +1169,9 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                        <ComboBox x:Name="OverlayStyleAddBox" MinWidth="260" Margin="0" AutomationProperties.Name="Overlay Style Presets To Add" ToolTip="A preset that is not on the list yet." />
+                        <ComboBox x:Name="OverlayStyleAddBox" MinWidth="260" Margin="0" AutomationProperties.Name="Overlay Game Presets To Add" ToolTip="A preset that is not on the list yet." />
                         <Button Content="Add Preset" Padding="12,4" Margin="6,0,0,0" Tag="OverlayStyleList" Click="AddOverlayPreset_Click" />
-                        <Button Content="Use Most Recent" Padding="12,4" Margin="6,0,0,0" Tag="OverlayStyleList" Click="ResetOverlayPresets_Click" ToolTip="Empties the list: the overlay then offers the style presets saved most recently." />
+                        <Button Content="Use Most Recent" Padding="12,4" Margin="6,0,0,0" Tag="OverlayStyleList" Click="ResetOverlayPresets_Click" ToolTip="Empties the list: the overlay then offers the Game Presets saved most recently." />
                     </StackPanel>
 
                     <TextBlock Text="Social Sharing Squisher" Style="{StaticResource SectionTitle}" />

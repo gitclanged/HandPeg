@@ -1,4 +1,4 @@
-# The main file's sound: J and L cuts placed sample for sample (MainSound), mixed where they overlap.
+# The main file's sound (on its Sub-Lanes since 5.2-AuditB): J and L cuts placed sample for sample, mixed where they overlap.
 2.0 s: the first clip alone
 4.4 s: the first clip, before the J cut
 4.6 s: the first clip and the J cut's sound (12 s into the file less 0.4 s)

@@ -207,7 +207,7 @@ public partial class MainWindow : Window
         HookLoupe();
         _viewModel.SessionCleared += OnSessionCleared;
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
-        // (The last file's Overview Bar pictures go before the new one is opened, which asks for its own.)
+        // (The last file's Sequence Overview Scrubber pictures go before the new one is opened, which asks for its own.)
         _viewModel.MediaLoaded += _ => ClearProgramStrip();
         _viewModel.MediaLoaded += PlayMedia;
 
@@ -224,8 +224,12 @@ public partial class MainWindow : Window
         MediaBrowser.LoadRequested += path => LoadDroppedFile(path);
         MediaBrowser.ProjectFiles = _viewModel.MediaFilesInUse;
         _viewModel.Layers.CollectionChanged += (_, _) => MediaBrowser.ProjectChanged();
+        InitializeClipLibrary();
         EffectsView.Attach(_viewModel);
         EffectsView.EditMaskRequested += layer => OpenLayerTool(layer, LayerTool.Mask);
+
+        // The master meters and fader, the sound's cards' full dialog, the beat grid (5.2B, the Studio Audio Suite).
+        InitializeAudioSuite();
 
         // The timeline (4.4): its surface, ruler, toolbar and inspector hooked up to the view model and this window.
         InitializeUnifiedTimeline();
@@ -238,6 +242,9 @@ public partial class MainWindow : Window
         _viewModel.PreviewRendered += ShowPreview;
         _viewModel.AskOverwrite = AskOverwrite;
         _viewModel.Confirm = (title, message, confirm) => new ConfirmDialog(title, message, confirm) { Owner = this }.ShowDialog() == true;
+
+        // A 5.1 project opened here is converted and written over its own file (the harnesses open projects only to read them).
+        _viewModel.SavesConvertedProjects = true;
 
         // A question that can be answered once for all (4.4): its "Remember my choice" box is kept with the answer.
         _viewModel.ConfirmOrRemember = (title, message, confirm, decline) =>
@@ -273,7 +280,7 @@ public partial class MainWindow : Window
         _viewModel.IsTimelineDragHeld = () => TimelineDragHeld;
         _viewModel.TimelineSelection = SelectedGroup;
 
-        // The timeline's rows follow the layers, and anything about a layer that changes (the main videos clips are layers: 4.3C).
+        // The timeline's rows follow the clip views (Layers), and anything about one that changes.
         _viewModel.LiveFilterInvalidated += ScheduleClipRedraw;
         _viewModel.Layers.CollectionChanged += (_, _) => ScheduleClipRedraw();
         _viewModel.TimelineChanged += ScheduleClipRedraw;
@@ -333,6 +340,14 @@ public partial class MainWindow : Window
 
             // The crash sentinel starts once the window is idle (no process before the first frame).
             CrashReporter.FirstFrameShown(Dispatcher);
+
+            // Explorer's project previews and open command follow their setting, off this thread (Pass 5.2D, 5.2-Release).
+            ExplorerThumbnails.ApplyLater();
+
+            // A project or bundle HandPeg was started with (a double-click in Explorer: ExplorerThumbnails' open command, 5.2-Release):
+            // opened once the window is up, as a choice in the launch window is.
+            if (LaunchFile() is { } launched)
+                Dispatcher.BeginInvoke(() => _ = OpenLaunchRequestAsync(new LaunchRequest(LaunchKind.Project, launched)), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
             // How long the launch took, for the log: from the process starting to the window being on screen.
             var sinceStart = (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalMilliseconds;
@@ -474,6 +489,11 @@ public partial class MainWindow : Window
         splash.Show();
     }
 
+    /// <summary>The .hproj or .hpb on the command line (<c>HandPeg.exe "x.hproj"</c>: Explorer's open command), or null.</summary>
+    private static string? LaunchFile() =>
+        Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(arg => !arg.StartsWith('-')
+            && (arg.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) || arg.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase)));
+
     /// <summary>
     /// Opens what was chosen in the launch window, once nothing else is running: an operation asked for while
     /// the start-up checks are still busy would otherwise be dropped, and with it the style that was chosen.
@@ -542,28 +562,70 @@ public partial class MainWindow : Window
         ThemeManager.SetCloaked(this, false);
     }
 
+    // Whether the save prompt of a close is up: a close asked for again meanwhile (the taskbar's Close, Alt+F4, a second
+    // click on Close before the prompt came up) waits for its answer instead of asking a second time.
+    private bool _closeAsked;
+
     /// <summary>
     /// Closing with changes that were not saved as a project asks first, when the settings say to: save and
-    /// close, close without saving, or go back.
+    /// close, close without saving, or go back. The window stays only when the user says so (5.2-AuditB, the user's bug:
+    /// the Close button did not always close HandPeg): Cancel in that prompt, or keeping it open when the project could not
+    /// be saved. Nothing that fails on the way out keeps it open with no word of it.
     /// </summary>
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
+        if (_closeAsked)
+        {
+            e.Cancel = true;
+            return;
+        }
+
         // From here the user is closing HandPeg: ended from outside while the save prompt is up (the taskbar, Task
         // Manager), the crash sentinel takes it for the user's doing, not a crash. Going back to work clears it.
-        CrashReporter.MarkUserClosing(true);
+        Guarded("note the close", () => CrashReporter.MarkUserClosing(true));
 
         // The side window's place and size are kept with the arrangement. Set before the window's size is remembered,
         // which writes the settings file: the arrangement's own save waits half a second, and the app is gone by then.
-        _viewModel.SavePaneLayout(s => s.DockLayout = _dock.Save());
-        RememberWindowSize();
+        Guarded("keep the arrangement", () => _viewModel.SavePaneLayout(s => s.DockLayout = _dock.Save()));
+        Guarded("remember the window's size", RememberWindowSize);
+
+        bool close;
+        try
+        {
+            _closeAsked = true;
+            close = MayClose();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("Asking whether to save before closing failed", ex);
+            close = MayCloseAfterFault(ex);
+        }
+        finally
+        {
+            _closeAsked = false;
+        }
+
+        if (!close)
+        {
+            e.Cancel = true;
+            Guarded("note the close called off", () => CrashReporter.MarkUserClosing(false));
+            return;
+        }
+
+        Guarded("empty the side window", _dock.Shutdown);
+    }
+
+    /// <summary>
+    /// Whether the window may close: at once with nothing unsaved (or the prompt switched off in the settings); otherwise as the
+    /// save prompt is answered. False only when the user chose to stay.
+    /// </summary>
+    private bool MayClose()
+    {
         var unsaved = _viewModel.HasUnsavedChanges;
         if (unsaved)
             AppLog.Write($"Closing with unsaved changes in {_viewModel.DescribeUnsavedChanges()}.");
         if (!AppSettings.Current.PromptToSaveOnExit || !unsaved)
-        {
-            _dock.Shutdown();
-            return;
-        }
+            return true;
 
         string name;
         try
@@ -580,37 +642,77 @@ public partial class MainWindow : Window
         switch (dialog.Choice)
         {
             case ExitChoice.Cancel:
-                e.Cancel = true;
-                break;
+                return false;
 
-            // A project that could not be saved must not be followed by losing what it was meant to keep.
-            case ExitChoice.SaveAndClose when !_viewModel.SaveProject(dialog.ProjectName).StartsWith("Project saved", StringComparison.Ordinal):
-                e.Cancel = true;
-                break;
+            case ExitChoice.SaveAndClose:
+                // A project that could not be saved must not be followed by losing what it was meant to keep without a word:
+                // what went wrong is said, and closing all the same is the user's call (never a window that silently stays).
+                var saved = _viewModel.SaveProject(dialog.ProjectName);
+                return saved.StartsWith("Project saved", StringComparison.Ordinal)
+                    || new ConfirmDialog("Project Not Saved", $"{saved}\n\nClose HandPeg anyway? The changes that were not saved are lost.", "Close Without Saving")
+                    {
+                        Owner = this, DefaultsToCancel = true, CancelText = "Keep HandPeg Open",
+                    }.ShowDialog() == true;
+
+            default:
+                return true;
         }
+    }
 
-        if (e.Cancel)
-            CrashReporter.MarkUserClosing(false);
-        else
-            _dock.Shutdown();
+    /// <summary>
+    /// The save prompt itself failed: asked once more, plainly (a Windows message box), whether to close without saving;
+    /// when even that cannot be asked, HandPeg closes, as the user asked.
+    /// </summary>
+    private bool MayCloseAfterFault(Exception fault)
+    {
+        try
+        {
+            if (!_viewModel.HasUnsavedChanges)
+                return true;
+            return MessageBox.Show(this, $"HandPeg could not ask whether to save the project ({fault.Message}).\n\nClose without saving? The changes that were not saved are lost.",
+                "HandPeg", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("Asking whether to close without saving failed; HandPeg closes", ex);
+            return true;
+        }
+    }
+
+    /// <summary>One step of closing, which may fail without stopping the rest: what failed is written to the log.</summary>
+    private static void Guarded(string step, Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"Closing HandPeg: could not {step}", ex);
+        }
     }
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
-        CrashReporter.Note("app", "window closed");
+        Guarded("note the window closed", () => CrashReporter.Note("app", "window closed"));
 
         // Encodes, downloads and probes still running go first, children included, so nothing is left
-        // behind in the background and nothing still holds a file in the session folder.
-        _windowClosing.Cancel();
-        ProcessPipes.KillAll();
-        _viewModel.Shutdown();
-        FollowPlayerByFrame(false);
-        _gpuRetry.Stop();
-        CloseGpuEngine();
-        _programStrip?.Dispose();
+        // behind in the background and nothing still holds a file in the session folder. Each step on its own: one that
+        // fails leaves the others to run.
+        Guarded("cancel the window's work", _windowClosing.Cancel);
+        Guarded("end the tools still running", ProcessPipes.KillAll);
+        Guarded("shut the view model down", _viewModel.Shutdown);
+        Guarded("stop following the player", () => FollowPlayerByFrame(false));
+        Guarded("stop the GPU retry", _gpuRetry.Stop);
+        Guarded("close the GPU engine", CloseGpuEngine);
+        Guarded("close the Sequence Overview Scrubber's drawer", () => _programStrip?.Dispose());
 
         // The most recent downloads stay, so the same URL loads without downloading again.
-        YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize, _viewModel.PinnedDownloads());
+        Guarded("trim the downloads", () => YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize, _viewModel.PinnedDownloads()));
+
+        // The main window gone, HandPeg is gone, whatever other window is still about (one never shown, one not owned by this
+        // one): the application's ShutdownMode is OnLastWindowClose unless the first-run window ran.
+        Application.Current?.Shutdown();
     }
 
     // ----- Hotkeys -----
@@ -807,27 +909,25 @@ public partial class MainWindow : Window
     /// <summary>
     /// Split / Trim by Exact Timecode (a timeline row's right-click menu, and the toolbar's button for the selected clip):
     /// a typed time, with the I-frames of the clip's file either side of it offered; then a split or a trim there.
-    /// A clip of the main video is a clip like any other (its I-frames are the main video's, laid along the timeline).
     /// </summary>
     private void SplitTrimByTimecode(Layer clip)
     {
-        double start, end;
-        var iFrames = new List<double>();
-        if (clip.IsMainVideo)
+        if (_viewModel.ClipOf(clip) is null)
         {
-            if (_viewModel.ClipOf(clip) is not { } model)
-                return;
-            (start, end) = (model.Start, model.End);
-            iFrames.AddRange(_viewModel.IFrames.Where(key => key >= start && key <= end));
+            _viewModel.StatusText = "Select a clip to split or trim first.";
+            return;
         }
-        else
+
+        var iFrames = new List<double>();
+        var speed = clip.Speed > 0 ? clip.Speed : 1;
+        var (start, end) = (clip.StartTime, clip.Duration > 0.001 ? clip.StartTime + clip.Duration : _viewModel.SequenceSeconds);
+        if (clip.IsVideoFile && MediaProbe.KnownIFrames(clip.ImagePath.Trim().Trim('"')) is { } keys)
         {
-            var speed = clip.Speed > 0 ? clip.Speed : 1;
-            (start, end) = (clip.StartTime, clip.Duration > 0.001 ? clip.StartTime + clip.Duration : _viewModel.SequenceSeconds);
-            if (clip.IsVideoFile && MediaProbe.KnownIFrames(clip.ImagePath.Trim().Trim('"')) is { } keys)
-                foreach (var key in keys)
-                    if (key >= clip.MediaOffset && clip.StartTime + (key - clip.MediaOffset) / speed is var on && on <= end)
-                        iFrames.Add(on);
+            foreach (var key in keys)
+            {
+                if (key >= clip.MediaOffset && clip.StartTime + (key - clip.MediaOffset) / speed is var on && on <= end)
+                    iFrames.Add(on);
+            }
         }
 
         iFrames.Sort();
@@ -844,27 +944,26 @@ public partial class MainWindow : Window
             TimecodeEdit.TrimStart => _viewModel.TrimClip(clip, start: true, dialog.Seconds),
             _ => _viewModel.TrimClip(clip, start: false, dialog.Seconds),
         };
-        (_selectedClip, _mainClipSelected) = (null, false);
+        (_selectedClip, _playheadVideoSelected) = (null, false);
         ScheduleClipRedraw();
     }
 
-    // The toolbar's button: the selected clip, or else the main video.
+    // The toolbar's button: the selected clip, or else the video at the playhead.
     private void ManualCut_Click(object sender, RoutedEventArgs e) => SplitTrimByTimecode(_selectedClip switch
     {
         Layer layer when _viewModel.Layers.Contains(layer) && layer.HasTiming => layer,
         LayerSound sound when _viewModel.Layers.Contains(sound.Layer) => sound.Layer,
-        _ => _viewModel.MainLayer,
+        _ => _viewModel.PlayheadVideo,
     });
 
     /// <summary>
     /// Remove Dead Air: first how quiet counts as silence (and whether to mark or delete),
-    /// then the search, on whatever is selected: a video layer, an audio track, or otherwise the main video.
+    /// then the search, on whatever is selected: a clip with sound, or otherwise the sound listened to (MainViewModel.ListenedSound).
     /// </summary>
     private void RemoveDeadAir_Click(object sender, RoutedEventArgs e) => RunDeadAir(_selectedClip switch
     {
         Layer { CarriesSound: true } layer => layer,
         LayerSound sound => sound.Layer,
-        AudioClip audio => audio.Track,
         _ => null,
     });
 
@@ -996,7 +1095,7 @@ public partial class MainWindow : Window
     // leaving the button or the flyout closes it a moment later. While its box has the keyboard (something is being
     // typed or pasted) it stays.
 
-    /// <summary>Picks files to add: with nothing open, the first is opened as the main video (or project); otherwise every one goes onto the timeline at the playhead.</summary>
+    /// <summary>Picks files to add: with nothing open, the first is opened (or the project), onto Track 1; otherwise every one goes onto the timeline at the playhead.</summary>
     private void AddMedia_Click(object sender, RoutedEventArgs e)
     {
         _addMediaHover.Close();
@@ -1242,6 +1341,7 @@ public partial class MainWindow : Window
         if (tab is not null)
             window.ShowTab(tab);
         prepare?.Invoke(window);
+        var explorerThumbnails = AppSettings.Current.ShowExplorerThumbnails;
         var saved = window.ShowDialog() == true;
         CrashReporter.Note("settings", saved ? "saved" : "closed");
         if (saved)
@@ -1251,6 +1351,10 @@ public partial class MainWindow : Window
             UiScale.ApplyAll();
             if (_dock.IsRealized(ExportId))
                 FillExportSection();
+
+            // Explorer's project previews registered or taken out when that was switched (Pass 5.2D).
+            if (AppSettings.Current.ShowExplorerThumbnails != explorerThumbnails)
+                ExplorerThumbnails.ApplyLater();
         }
 
         // Crash reports switched on or off there (or in the first-run window it can open): the sentinel follows.
@@ -1291,14 +1395,15 @@ public partial class MainWindow : Window
             SourceAction_Click(sender, e);
     }
 
-    // ----- Segment strip above the timeline -----
+    // ----- What the view model's changes redraw -----
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        // The markers' flags along the Sequence Overview Scrubber, at its new length.
         if (e.PropertyName is nameof(MainViewModel.DurationMs))
-            RedrawSegments();
+            DrawTimelineMarkers();
 
-        if (e.PropertyName is nameof(MainViewModel.SoloTrack) or nameof(MainViewModel.SoloedTracks))
+        if (e.PropertyName is nameof(MainViewModel.SoloedTracks))
             OnSoloTrackChanged();
 
         if (e.PropertyName is nameof(MainViewModel.DurationMs) or nameof(MainViewModel.ShowLinkedAudio)
@@ -1360,11 +1465,15 @@ public partial class MainWindow : Window
         if (e.PropertyName is nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer))
             UpdateOverlayMode();
 
+        // The source view shows the selected clip's picture (MainViewModel.ShownSourceClip).
+        if (e.PropertyName == nameof(MainViewModel.KeyLayer) && (!_viewModel.LivePreview || CurrentOverlayMode != OverlayMode.None))
+            ScheduleGpuState();
+
         if (e.PropertyName == nameof(MainViewModel.IsArrangeActive))
             UpdateLayoutPane();
 
         // Which layers there are to show in the layout pane.
-        if (e.PropertyName is nameof(MainViewModel.FrameEngine) or nameof(MainViewModel.AutoCaptions))
+        if (e.PropertyName is nameof(MainViewModel.AutoCaptions))
             RedrawLayout();
 
         // What is drawn over the video, and the live crop of the video itself, follow the numbers
@@ -1378,10 +1487,6 @@ public partial class MainWindow : Window
             RedrawLayout();
         }
 
-        // The centre video is moved in place rather than redrawn: a redraw would replace the very
-        // box that is being dragged.
-        if (e.PropertyName is nameof(MainViewModel.CenterZoom) or nameof(MainViewModel.CenterOffsetX) or nameof(MainViewModel.CenterOffsetY))
-            _placeCenter?.Invoke();
 
         if (e.PropertyName == nameof(MainViewModel.SpriteSheetPath))
             LoadSpriteSheet();
@@ -1395,11 +1500,8 @@ public partial class MainWindow : Window
         return dialog.Decision;
     }
 
-    private void SegmentCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => RedrawSegments();
-
-    // What playback skips, and the stretch a right-drag is marking.
-    private static readonly Brush BlackoutBrush = Frozen(Color.FromArgb(0xB0, 0x2A, 0x16, 0x16));
-    private static readonly Brush RangeDragBrush = Frozen(Color.FromArgb(0x70, 0xFF, 0x8C, 0x00));
+    // The markers' flags along the Sequence Overview Scrubber are laid out again at its new width.
+    private void MarkerCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => DrawTimelineMarkers();
 
     // The layout pane's stage: the output frame.
     private static readonly Brush StageBrush = Frozen(Color.FromRgb(0x2A, 0x2A, 0x2A));
@@ -1411,45 +1513,6 @@ public partial class MainWindow : Window
         return brush;
     }
 
-    private void RedrawSegments()
-    {
-        SegmentCanvas.Children.Clear();
-        ShadeCanvas.Children.Clear();
-
-        var duration = _viewModel.DurationMs;
-        var width = SegmentCanvas.ActualWidth;
-        if (duration <= 0 || width <= 0)
-            return;
-
-        // A stretch being marked by a right-drag (split at both its ends when it is let go), the markers.
-        if (_rangeDragStartMs is { } dragStart)
-            AddShade(Math.Min(dragStart, _rangeDragEndMs), Math.Max(dragStart, _rangeDragEndMs), RangeDragBrush);
-
-        DrawTimelineMarkers();
-    }
-
-    /// <summary>Shades the timeline between two times, given in milliseconds.</summary>
-    private void AddShade(double fromMs, double toMs, Brush fill)
-    {
-        var (duration, width) = (_viewModel.DurationMs, ShadeCanvas.ActualWidth);
-        if (toMs <= fromMs || duration <= 0 || width <= 0)
-            return;
-
-        var shade = new System.Windows.Shapes.Rectangle
-        {
-            Width = Math.Max((toMs - fromMs) / duration * width, 1),
-            Height = ShadeCanvas.ActualHeight,
-            Fill = fill,
-        };
-        Canvas.SetLeft(shade, fromMs / duration * width);
-        ShadeCanvas.Children.Add(shade);
-    }
-
-    // ----- Marking a segment by dragging with the right button -----
-
-    private double? _rangeDragStartMs;
-    private double _rangeDragEndMs;
-
     /// <summary>The time, in milliseconds, at a horizontal position on the timeline.</summary>
     private double TimelineMsAt(double x)
     {
@@ -1457,74 +1520,6 @@ public partial class MainWindow : Window
         const double inset = 5.5;
         var track = TimelineSlider.ActualWidth - 2 * inset;
         return track > 0 ? Math.Clamp((x - inset) / track, 0, 1) * _viewModel.DurationMs : 0;
-    }
-
-    /// <summary>The same pull towards I-frames that the thumb feels while it is dragged, when that is switched on.</summary>
-    private double PullToIFrame(double positionMs)
-    {
-        var settings = AppSettings.Current;
-        if (!settings.SnapTimelineToIFrames || TimelineSlider.ActualWidth <= 0 || _viewModel.GetNearestIFrameMs(positionMs) is not { } iFrame)
-            return positionMs;
-
-        const double pixelsPerStep = 4;
-        var reach = Math.Clamp(settings.TimelineMagnetism, 1, 5) * pixelsPerStep / TimelineSlider.ActualWidth * _viewModel.DurationMs;
-        return Math.Abs(iFrame - positionMs) <= reach ? iFrame : positionMs;
-    }
-
-    private void TimelineSlider_RightButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (_viewModel.DurationMs <= 0 || !TimelineSlider.CaptureMouse())
-            return;
-
-        _rangeDragStartMs = _rangeDragEndMs = PullToIFrame(TimelineMsAt(e.GetPosition(TimelineSlider).X));
-        PreviewPopup.IsOpen = false;
-        e.Handled = true;
-        RedrawSegments();
-    }
-
-    private void TimelineSlider_RightButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        if (_rangeDragStartMs is not { } start)
-            return;
-
-        var end = _rangeDragEndMs;
-        _rangeDragStartMs = null;
-        TimelineSlider.ReleaseMouseCapture();
-        e.Handled = true;
-        RedrawSegments();
-
-        // A right-click without a drag marks nothing.
-        var pixels = Math.Abs(end - start) / _viewModel.DurationMs * TimelineSlider.ActualWidth;
-        if (pixels < 3)
-        {
-            _viewModel.StatusText = "Drag along the timeline with the right mouse button to mark a stretch: every track is split at both its ends.";
-            return;
-        }
-
-        // The same way in as a typed cut, so Snap cuts to I-frames applies to it in the same way.
-        if (_viewModel.AddManualSegment(Math.Min(start, end) / 1000, Math.Max(start, end) / 1000) is { } problem)
-            _viewModel.StatusText = problem;
-    }
-
-    private void TimelineSlider_LostMouseCapture(object sender, MouseEventArgs e)
-    {
-        if (_rangeDragStartMs is null)
-            return;
-
-        _rangeDragStartMs = null;
-        RedrawSegments();
-    }
-
-    private void AddStripMark(double left, double width, Brush fill)
-    {
-        var mark = new System.Windows.Shapes.Rectangle
-        {
-            Width = width,
-            Height = SegmentCanvas.ActualHeight,
-            Fill = fill,
-        };
-        Canvas.SetLeft(mark, left);
-        SegmentCanvas.Children.Add(mark);
     }
 
     // ----- Advanced playback -----
@@ -1664,7 +1659,7 @@ public partial class MainWindow : Window
         var span = clip.GetSpan(seconds);
         ClampView();
         KeyLanes.ShowGraph = _viewModel.ShowKeyframeGraph;
-        KeyLanes.Show(BuildKeyLanes(clip), _viewStart, ViewSpan, span, clip.IsMainVideo ? MainClipBrush : LayerClipBrush, _viewModel.PositionMs / 1000);
+        KeyLanes.Show(BuildKeyLanes(clip), _viewStart, ViewSpan, span, LayerClipBrush, _viewModel.PositionMs / 1000);
         _viewModel.SelectedKeyLane = KeyLanes.Selected?.Target;
     }
 
@@ -1694,6 +1689,13 @@ public partial class MainWindow : Window
         if (clip.IsPicture)
             Add(KeyProperty.Opacity, "Opacity", value => value.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%");
 
+        // True 3D (5.2A): a tilted clip's Pitch and Yaw, as Rotation is its Roll.
+        if (clip.HasFilters && clip.IsTilted)
+        {
+            Add(KeyProperty.TiltX, "Tilt X (Pitch)", value => value.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "\u00B0");
+            Add(KeyProperty.TiltY, "Tilt Y (Yaw)", value => value.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "\u00B0");
+        }
+
         foreach (var card in clip.EffectsBypassed ? [] : clip.Effects)
         {
             foreach (var param in card.Definition?.Params ?? [])
@@ -1718,7 +1720,7 @@ public partial class MainWindow : Window
 
     // ----- The panes: where each is, and how large -----
     // The player area is two grids. The outer one has the player in one column and the side panes in another,
-    // over the overview bar; the inner one has the video in one column and the layout pane in another.
+    // over the Sequence Overview Scrubber; the inner one has the video in one column and the layout pane in another.
     // Moving a pane is giving it the other row or column of its grid (and that row or column its size);
     // nothing is taken out of the window or put back. The arrangement belongs to the mode in use.
 
@@ -1754,7 +1756,7 @@ public partial class MainWindow : Window
         ViewsButton.IsChecked = false;
     }
 
-    // The border between the player and the overview bar. What it drags is the bar's height setting,
+    // The border between the player and the Sequence Overview Scrubber. What it drags is the bar's height setting,
     // the one the slider beside the volume sets: the bar is as tall as that says, not as tall as a grid
     // row happens to be, so the row is put back to "as tall as its content" each time the splitter has sized it.
 
@@ -1939,7 +1941,7 @@ public partial class MainWindow : Window
         owner ??= this;
         if (!_viewModel.HasSource)
         {
-            _viewModel.StatusText = "Load a video first: the layers are cut out of it.";
+            _viewModel.StatusText = "Load a video first: the Cutouts are cut out of it.";
             return;
         }
 
@@ -1951,11 +1953,18 @@ public partial class MainWindow : Window
             maskPath = dialog.FileName;
         }
 
-        // The areas already cut out of the video: pieces of the mask that one of them covers start left out.
-        var existing = _viewModel.Layers.Where(l => l.IsVideo && !l.IsDeleted).Select(l => new Rect(l.SourceX, l.SourceY, l.SourceWidth, l.SourceHeight)).ToList();
+        // The areas already cut out of the videos (5.2-AuditB: pieces of their files, cut by their crops): pieces of the mask that one
+        // of them covers start left out.
+        var existing = _viewModel.Layers.Where(_viewModel.IsCutout)
+            .Select(l =>
+            {
+                var (left, top, right, bottom) = Layer.HeldCrop(l.CropLeft, l.CropTop, l.CropRight, l.CropBottom);
+                return new Rect(left, top, 1 - left - right, 1 - top - bottom);
+            })
+            .ToList();
         if (MaskLayersWindow.Open(_viewModel, maskPath, existing) is not { } window)
         {
-            _viewModel.StatusText = "That mask shows nothing to make layers of, or it could not be read: it should be white (or painted, on transparency) where the HUD is.";
+            _viewModel.StatusText = "That mask shows nothing to make Cutouts of, or it could not be read: it should be white (or painted, on transparency) where the HUD is.";
             return;
         }
 
@@ -1973,27 +1982,32 @@ public partial class MainWindow : Window
 
     // ----- Render preview and audio mixer -----
 
-    private void ShowPreview(string path) => new PreviewPlayerWindow(path) { Owner = this }.Show();
+    // The rendered stretch plays in Windows' own player (5.2-Audit: HandPeg's small player window is gone); the file is the session's, gone when it closes.
+    private void ShowPreview(string path)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true })?.Dispose();
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or FileNotFoundException)
+        {
+            AppLog.Write("The rendered preview could not be opened", ex);
+            _viewModel.StatusText = $"The preview is rendered ({path}), but Windows has no player for it: {ex.Message}";
+        }
+    }
 
-    /// <summary>The filters of one audio track, from its row on the timeline or its menu. One step of Undo (4.4: a track's filters are in the step).</summary>
+    /// <summary>
+    /// The filters of one sound, from its row on the timeline or its menu. One step of Undo. An output track has none (5.2A, the user's
+    /// Q6: since 5.2-AuditB each Sub-Lane mixes itself, and an output track keeps only its action, codec, bitrate and title).
+    /// </summary>
     private void TrackFilters_Click(object sender, RoutedEventArgs e)
     {
         switch ((sender as FrameworkElement)?.DataContext)
         {
-            case Models.AudioTrack track:
-                var forTrack = new TrackAudioFiltersDialog(track) { Owner = this };
-                if (forTrack.ShowDialog() == true)
-                {
-                    _viewModel.Checkpoint($"change the audio filters of {track.Title}");
-                    track.Filters = forTrack.Filters;
-                    _viewModel.Log($"Changed the audio filters of {track.Title}");
-                }
-
-                break;
-
             // A sound from a file, or the sound of a video layer: the same filters, kept with the clip.
             case Layer layer:
-                var forClip = new TrackAudioFiltersDialog($"{layer.SourceFileName}   {layer.Description}", layer.AudioFilters) { Owner = this };
+                // Studio Voice's mix keys are timed from the clip's start (5.2B): the playhead is where Add Mix Key puts one.
+                var forClip = new TrackAudioFiltersDialog($"{layer.SourceFileName}   {layer.Description}", layer.AudioFilters, _viewModel.PositionMs / 1000 - layer.StartTime) { Owner = this };
                 if (forClip.ShowDialog() == true)
                 {
                     _viewModel.Checkpoint($"change the audio filters of {layer.Name}");
@@ -2053,12 +2067,14 @@ public partial class MainWindow : Window
         if (PlayerIsPlaying)
             PlayerSetPause(true);
 
-        new FramePreviewDialog(_viewModel, _gpu is { } engine ? at => engine.CaptureFrameAsync(at) : null) { Owner = this }.ShowDialog();
+        // Each still is the GPU engine's capture (5.2-Arm64AndNpu), asked of the engine running then: one that starts, or starts
+        // again, while the dialog is open draws the next.
+        new FramePreviewDialog(_viewModel, at => _gpu?.CaptureFrameAsync(at) ?? Task.FromResult<(byte[] Bgra, int Width, int Height)?>(null)) { Owner = this }.ShowDialog();
     }
 
     // ----- Layout files -----
 
-    private const string LayoutFileFilter = "HandPeg style preset (*.hpstyle)|*.hpstyle|All files|*.*";
+    private const string LayoutFileFilter = "HandPeg Game Preset (*.hpstyle)|*.hpstyle|All files|*.*";
 
 
     /// <summary>Where layout files are kept unless the user picks somewhere else. Made on first use, so the dialog can open in it.</summary>
@@ -2173,7 +2189,7 @@ public partial class MainWindow : Window
 
     private void ManageStyles_Click(object sender, RoutedEventArgs e)
     {
-        switch (AskPresetAction("Style Presets", "A style preset is the layers with their masks, and the color, blur and subtitle settings that go with them, in one .hpstyle file. Save the ones set now to the list, or move a style to or from a file.", nameof(MainViewModel.StyleName)))
+        switch (AskPresetAction("Game Presets", "A Game Preset is the video clips' layout and their Cutouts with their masks, and the color, blur and subtitle settings that go with them, in one .hpstyle file. Save the ones set now to the list, or move one to or from a file.", nameof(MainViewModel.StyleName)))
         {
             case "save":
                 _viewModel.SaveStyle();
@@ -2254,7 +2270,7 @@ public partial class MainWindow : Window
         if (_viewModel.IsListingProjects || sender is not ComboBox { IsDropDownOpen: true } || e.AddedItems is not [string name])
             return;
 
-        var path = Path.Combine(ProjectStore.Folder, name + ProjectStore.Extension);
+        var path = ProjectStore.PathOfName(name);
         var previous = e.RemovedItems is [string before] ? before : null;
         if (!File.Exists(path) || _viewModel.IsBusy
             || (_viewModel.HasUnsavedChanges && !new ConfirmDialog("Swap Project", $"Open \"{name}\" in place of what is open now?\n\nChanges that were not saved as a project will be lost.", "Swap Project") { Owner = this }.ShowDialog().GetValueOrDefault()))
@@ -2309,7 +2325,7 @@ public partial class MainWindow : Window
 
         var dialog = new SaveFileDialog
         {
-            Title = "Export Style Preset", Filter = LayoutFileFilter, FileName = "My Style.hpstyle", DefaultExt = "hpstyle",
+            Title = "Export Game Preset", Filter = LayoutFileFilter, FileName = "My Game Preset.hpstyle", DefaultExt = "hpstyle",
             InitialDirectory = LayoutsFolder(),
         };
         if (dialog.ShowDialog(this) == true)
@@ -2318,7 +2334,7 @@ public partial class MainWindow : Window
 
     private void ImportLayout_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Title = "Import Style Preset", Filter = LayoutFileFilter, InitialDirectory = LayoutsFolder() };
+        var dialog = new OpenFileDialog { Title = "Import Game Preset", Filter = LayoutFileFilter, InitialDirectory = LayoutsFolder() };
         if (dialog.ShowDialog(this) != true || _viewModel.ReadStyle(dialog.FileName) is not { } layout)
             return;
 
@@ -2339,7 +2355,7 @@ public partial class MainWindow : Window
 
     // ----- Timeline hover previews -----
 
-    // The main file's key frames (FFmpeg's hover sheet): what the Overview Bar shows where the GPU cannot draw the
+    // The opened file's key frames (FFmpeg's hover sheet): what the Sequence Overview Scrubber shows where the GPU cannot draw the
     // sequence's own pictures (OverviewSheet, MainWindow.ProgramStrip.cs).
     private ThumbnailSheet? _sourceSheet;
 
@@ -2348,7 +2364,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Loads the thumbnail sheet into memory (so the file itself is not kept open), decoded away from the interface's
-    /// thread, and redraws the overview bar's strip with it. With no sheet (a file closed, or one without a sheet yet)
+    /// thread, and redraws the Sequence Overview Scrubber's strip with it. With no sheet (a file closed, or one without a sheet yet)
     /// the strip is cleared at once (4.4: it kept the last file's pictures until the next change of length).
     /// </summary>
     private async void LoadSpriteSheet()
@@ -2411,7 +2427,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Fills the strip behind the timeline's waveform with pictures cut from the thumbnail sheet (the sequence's own, drawn
-    /// by the GPU engine, else the main file's key frames): as many as fit at their own shape, each showing the moment at
+    /// by the GPU engine, else the opened file's key frames): as many as fit at their own shape, each showing the moment at
     /// the middle of the stretch of timeline it lies over.
     /// </summary>
     private void RebuildFilmstrip()
@@ -2437,21 +2453,12 @@ public partial class MainWindow : Window
         FilmstripList.ItemsSource = pictures;
     }
 
-    // The last picture of a sheet that lies within the sequence (the main file's sheet is a whole grid, longer or shorter than it).
+    // The last picture of a sheet that lies within the sequence (the opened file's sheet is a whole grid, longer or shorter than it).
     private static int LastPicture(ThumbnailSheet sheet, double duration) =>
         Math.Max(Math.Min(sheet.Count, (int)Math.Ceiling(duration / sheet.IntervalSeconds)) - 1, 0);
 
     private void TimelineSlider_MouseMove(object sender, MouseEventArgs e)
     {
-        // A right-drag in progress: the stretch being marked follows the pointer.
-        if (_rangeDragStartMs is { } dragStart)
-        {
-            _rangeDragEndMs = PullToIFrame(TimelineMsAt(e.GetPosition(TimelineSlider).X));
-            _viewModel.StatusText = $"New segment: {TimeDisplay.Format(Math.Min(dragStart, _rangeDragEndMs) / 1000)} to {TimeDisplay.Format(Math.Max(dragStart, _rangeDragEndMs) / 1000)}";
-            RedrawSegments();
-            return;
-        }
-
         if (OverviewSheet is not { } sheet || !_viewModel.ShowHoverPreviews || _viewModel.DurationMs <= 0 || TimelineSlider.ActualWidth <= 0)
         {
             PreviewPopup.IsOpen = false;

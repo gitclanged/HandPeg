@@ -41,6 +41,19 @@ internal sealed unsafe class GpuDevice : IDisposable
     /// <summary>The card's own memory, in bytes (0 for WARP or when it is not known): the 3D view's plane budget grows with it (5.1-Polish, the user's Q8).</summary>
     public long DedicatedVideoMemory { get; private set; }
 
+    /// <summary>The computer's memory DXGI says the card may use besides its own, in bytes (0 for WARP).</summary>
+    public long SharedSystemMemory { get; private set; }
+
+    /// <summary>
+    /// Whether the card shares the computer's memory, as a unified-memory SoC's graphics does (5.2-Arm64AndNpu: the Snapdragon X's
+    /// Adreno has a 128 MB carve-out and 16 GB shared): DXCore's IsIntegrated when the driver says, else DXGI's sizes
+    /// (<see cref="MemoryTier.IsUnifiedMemory"/>). Asked the first time it is wanted (the frame cache's Auto budget, in the worker),
+    /// never as the device is made: a device the editor makes for itself loads no DXCore.
+    /// </summary>
+    public bool UnifiedMemory => _unifiedMemory ??= MemoryTier.IsUnifiedMemory(IsWarp ? null : DxCore.IsIntegratedCard(AdapterLuid), DedicatedVideoMemory, SharedSystemMemory, IsWarp);
+
+    private bool? _unifiedMemory;
+
     public TexturePool Textures { get; }
 
     private GpuDevice() => Textures = new TexturePool(this);
@@ -130,6 +143,7 @@ internal sealed unsafe class GpuDevice : IDisposable
                 VendorId = desc.VendorId;
                 IsWarp |= (desc.Flags & AdapterDesc1.FlagSoftware) != 0;
                 DedicatedVideoMemory = IsWarp ? 0 : (long)desc.DedicatedVideoMemory;
+                SharedSystemMemory = IsWarp ? 0 : (long)desc.SharedSystemMemory;
                 if (AdapterIndex < 0 && !IsWarp)
                     AdapterIndex = IndexOf(factory, desc.Luid);
                 Com.Release(ref used);

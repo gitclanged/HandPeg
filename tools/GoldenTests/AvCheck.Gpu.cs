@@ -23,12 +23,13 @@ public static partial class AvCheck
 
     /// <summary>
     /// The A/V invariant on the GPU engine (5.0-Verify, in place of the live graphs' arm): at the moments the export's check
-    /// follows (and as many into every clip of the main video), every layer <see cref="GpuScenePlan"/> draws from a file is at
+    /// follows (and as many into every clip heard through its Sub-Lanes: the main video's, once a project from before is opened,
+    /// 5.2-AuditB), every layer <see cref="GpuScenePlan"/> draws from a file is at
     /// the moment of that file which <see cref="AudioProgram"/> plays for its clip's sound there, within half a millisecond;
     /// and a clip's picture is at the moment the timeline puts there (its offset plus how far into the clip, at its speed).
     /// Both are in seconds from the file's first video frame (the plan's class comment). A clip whose sound is slipped is
-    /// heard as far from its picture as the slip; a piece cut from the main video, and its blurred background, are its
-    /// picture, so they are held to the main video's sound. The sound a layer is held to is the voice of its file heard then
+    /// heard as far from its picture as the slip; a Cutout of a clip, and the clip's blur fill, are its
+    /// picture, so they are held to the clip's sound. The sound a layer is held to is the voice of its file heard then
     /// that is nearest to it (the main file's streams all play the same moment; two clips of one file rarely overlap), and
     /// which one it was is in the text; where that voice is past its file's end, nothing is heard to be held to (a repeating
     /// clip's sound is played once, in the export too). No worker and no file is needed: the plan and the program are worked out.
@@ -53,7 +54,7 @@ public static partial class AvCheck
                 var program = AudioProgram.Build(state);
                 var clips = state.Timeline.Tracks.SelectMany(t => t.Clips.Select(c => (Clip: c, Track: t))).ToDictionary(p => p.Clip.Id);
                 var times = fixture.Playheads.SelectMany(p => GpuMoments(state, fixture.Files, p)).Select(t => Math.Round(t, 6)).Distinct().Order().ToList();
-                text.Append(CultureInfo.InvariantCulture, $"\n{fixture.Name}: {times.Count} moments, {program.Voices.Count} voices, chain shift {Num(plan.ChainShift)} s\n");
+                text.Append(CultureInfo.InvariantCulture, $"\n{fixture.Name}: {times.Count} moments, {program.Voices.Count} voices\n");
                 foreach (var t in times)
                 {
                     var header = default(FrameSceneHeader);
@@ -65,7 +66,7 @@ public static partial class AvCheck
                     {
                         if (layers[i].SourceKind != (int)GpuSourceKind.Media)
                             continue;
-                        line.Append(separator).Append(Describe(plan, program, state, clips, fixture.Files, layers[i], infos[i], t, fixture.Name, problems));
+                        line.Append(separator).Append(Describe(program, clips, fixture.Files, layers[i], infos[i], t, fixture.Name, problems));
                         separator = "; ";
                     }
 
@@ -85,7 +86,7 @@ public static partial class AvCheck
     }
 
     /// <summary>One layer at a moment: its picture's moment, the sound it is held to, and what is wrong (into the problems).</summary>
-    private static string Describe(GpuScenePlan plan, AudioProgram program, SequenceExportState state, Dictionary<Guid, (TimelineClip Clip, TimelineTrackModel Track)> clips,
+    private static string Describe(AudioProgram program, Dictionary<Guid, (TimelineClip Clip, TimelineTrackModel Track)> clips,
         IReadOnlyList<Media> files, in GpuLayerDescriptor layer, GpuLayerInfo info, double t, string fixture, List<string> problems)
     {
         var picture = layer.MediaSeconds;
@@ -99,18 +100,22 @@ public static partial class AvCheck
         }
 
         var (clip, track) = found;
-        var main = SamePath(clip.SourcePath ?? "", state.LocalMediaPath);
 
-        // A piece cut from the main video (and the chain's blurred background) is the main video's picture: its sound is the main file's.
-        var ownSound = clip.ContentKind is LayerKind.VideoFile or LayerKind.MainVideo;
-        var heard = ownSound ? clip.HasSound && !clip.IsMuted && !track.IsMuted : main;
+        // A Cutout (a piece cut from its clip's picture, on its clock) and a blur fill are their clip's picture: held to its sound.
+        // A clip is heard by its own sound, or by its streams on its Sub-Lanes (sound clips that are its children: 5.2-AuditB, the
+        // main video's once a project from before is opened).
+        var ownSound = clip.ContentKind == LayerKind.VideoFile;
+        var owner = clip.ParentClipId is { } parentId && clips.TryGetValue(parentId, out var parent) && parent.Clip.ContentKind == LayerKind.VideoFile ? parent : found;
+        bool Sounds((TimelineClip Clip, TimelineTrackModel Track) of) =>
+            (of.Clip.HasSound && !of.Clip.IsMuted && !of.Track.IsMuted)
+            || clips.Values.Any(c => c.Clip.ParentClipId == of.Clip.Id && c.Clip.ContentKind == LayerKind.Audio && !c.Clip.IsMuted && !c.Track.IsMuted);
+        var heard = ownSound && (Sounds(found) || (!ReferenceEquals(owner.Clip, clip) && Sounds(owner)));
 
         // Where the timeline puts the picture of a clip that plays its file (in it: a repeating clip's later rounds are its own).
         if (ownSound && t >= clip.Start - 1e-9 && t < clip.End - 1e-9 && !blurred)
         {
             var speed = Math.Clamp(clip.Speed, Layer.SlowestSpeed, Layer.FastestSpeed);
-            // (The main video's offsets count from its container's start: GpuScenePlan.ChainShift.)
-            var due = clip.MediaOffset + (t - clip.Start) * speed - (clip.ContentKind == LayerKind.MainVideo ? plan.ChainShift : 0);
+            var due = clip.MediaOffset + (t - clip.Start) * speed;
             if (Math.Abs(picture - due) > GpuTolerance)
                 problems.Add(string.Create(CultureInfo.InvariantCulture, $"{where}: the picture is at {picture:0.0000} s of its file, the timeline puts {due:0.0000} s there"));
         }
@@ -125,8 +130,6 @@ public static partial class AvCheck
         foreach (var candidate in program.Voices)
         {
             if (!SamePath(candidate.Source.Path, clip.SourcePath ?? "") || at < candidate.SequenceStart - 1e-9 || at >= candidate.End)
-                continue;
-            if (candidate.Silenced.Any(s => at >= s.Start && at < s.End))
                 continue;
             var media = candidate.MediaAt(at);
             if (voice is null || Math.Abs(media - picture) < Math.Abs(sound - picture))
@@ -149,8 +152,8 @@ public static partial class AvCheck
     }
 
     /// <summary>
-    /// The moments followed on a timeline from a playhead: those of the export's check (each heard video clip of another file,
-    /// on its frames) and as many into every clip of the main video (on the sequence's frames).
+    /// The moments followed on a timeline from a playhead: those of the export's check (each video clip heard by its own sound,
+    /// on its file's frames) and as many into every clip heard through its Sub-Lanes, the main video's (on the sequence's frames).
     /// </summary>
     private static IEnumerable<double> GpuMoments(SequenceExportState state, IReadOnlyList<Media> files, double playhead)
     {
@@ -164,7 +167,8 @@ public static partial class AvCheck
         }
 
         var fps = state.SourceFrameRate > 1 ? state.SourceFrameRate : 30;
-        foreach (var clip in state.Timeline.Tracks.SelectMany(t => t.Clips).Where(c => c.ContentKind == LayerKind.MainVideo && !c.IsHidden))
+        var unpacked = Unpacked(state);
+        foreach (var clip in state.Timeline.Tracks.SelectMany(t => t.Clips).Where(c => c.ContentKind == LayerKind.VideoFile && !c.IsHidden && unpacked.Contains(c.Id)))
         {
             var into = Math.Max(playhead - clip.Start, 0);
             foreach (var offset in Offsets)

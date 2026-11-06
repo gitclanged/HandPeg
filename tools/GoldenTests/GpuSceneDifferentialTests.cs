@@ -12,12 +12,12 @@ using HandPegApp.Services.Gpu;
 namespace HandPegGoldenTests;
 
 /// <summary>
-/// The GPU scene against the FFmpeg graph (Pass 5.0-AudioAnd3D, run in 5.0-Verify): timelines written by hand, each
-/// exported by FilterGraphBuilder's own command (FFmpeg, lossless, from real clips made here with HandPeg's FFmpeg) and
-/// drawn by a real compositor worker from <see cref="GpuScenePlan"/> (this program started again with
-/// --compositor-worker), compared frame for frame at sampled moments by PSNR. The cases: a plain main video, a rider with
+/// The GPU scene against the export (Pass 5.0-AudioAnd3D, run in 5.0-Verify; since 5.2-Audit the export is the GPU's own, so
+/// this is the proof that the export is what the preview shows): timelines written by hand, each exported (GpuExport, lossless,
+/// from real clips made here with HandPeg's FFmpeg) and drawn by a real compositor worker from <see cref="GpuScenePlan"/> (this
+/// program started again with --compositor-worker), compared frame for frame at sampled moments by PSNR. The cases: a plain main video, a rider with
 /// keys of its own, a game style (a HUD cut-out with a frame mask over the blurred background), a picture in picture from
-/// another file (cropped, turned, its opacity keyed), a transition, a text clip, a masked layer and an adjustment layer.
+/// another file (cropped, turned, its opacity keyed), a transition, a text clip, a masked clip and an adjustment clip.
 /// Each case's threshold is in the golden file; the measured numbers go to the console (they differ by card and driver).
 /// <para>Before it, with no worker at all (gpu-scene-plan): every scene the plan writes for the same timelines at the same
 /// moments, layer by layer, as text (what is drawn, from where, where, how, with which passes), and the proof that
@@ -35,7 +35,7 @@ public static class GpuSceneDifferentialTests
     {
         yield return Plans();
 
-        var text = new StringBuilder("# The GPU scene (GpuScenePlan) against the FFmpeg export graph of the same timeline, at sampled moments (PSNR, dB).\n");
+        var text = new StringBuilder("# The GPU scene (GpuScenePlan) against the export of the same timeline (the GPU's own since 5.2-Audit), at sampled moments (PSNR, dB).\n");
         var problems = new List<string>();
         try
         {
@@ -122,7 +122,7 @@ public static class GpuSceneDifferentialTests
     }
 
     /// <summary>A layer as the worker is told it (no clip key: clips' ids are new for every run).</summary>
-    private static string Describe(in GpuLayerDescriptor d, GpuLayerInfo info)
+    internal static string Describe(in GpuLayerDescriptor d, GpuLayerInfo info)
     {
         var line = new StringBuilder();
         line.Append(CultureInfo.InvariantCulture, $"{(GpuSourceKind)d.SourceKind}");
@@ -167,7 +167,7 @@ public static class GpuSceneDifferentialTests
             text.Append(string.Create(CultureInfo.InvariantCulture, $"  {c.Name}: {c.Moments.Length} moments, each at least {c.Threshold:0} dB of luma (2 x 2 blocks)\n"));
         if (ffmpeg is null || media is null)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the GPU scene was not compared");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the GPU scene was not compared");
             return;
         }
 
@@ -210,7 +210,7 @@ public static class GpuSceneDifferentialTests
 
     // ----- The two pictures -----
 
-    /// <summary>The case exported by FilterGraphBuilder's own command, lossless, then read back as RGB24 frames (BT.709, limited range).</summary>
+    /// <summary>The case exported (GpuExport, lossless), then read back as RGB24 frames (BT.709, limited range).</summary>
     private static byte[]? Export(string ffmpeg, Case c, string folder)
     {
         var output = Path.Combine(folder, c.Name.Replace(' ', '-') + ".mkv");
@@ -219,11 +219,9 @@ public static class GpuSceneDifferentialTests
             FfmpegExecutable = $"\"{ffmpeg}\"",
             VideoCodecArguments = "-c:v ffv1 -pix_fmt yuv420p",
             OutputPath = output,
-            AudioTracks = [],
         };
 
-        var command = FilterGraphBuilder.BuildExportCommand(state);
-        Task.Run(() => FfmpegRunner.RunAsync(command.CommandLine, new Progress<FfmpegProgress>(), CancellationToken.None, graphInFile: true)).GetAwaiter().GetResult();
+        GpuExportTests.Export(state);
 
         using var process = Process.Start(new ProcessStartInfo(ffmpeg,
             $"-hide_banner -loglevel error -i \"{output}\" -vf \"scale=in_color_matrix=bt709:in_range=tv,format=rgb24\" -f rawvideo -")
@@ -240,7 +238,7 @@ public static class GpuSceneDifferentialTests
     }
 
     /// <summary>The plan's scene at a moment, drawn by the worker and read back as RGB24 (its canvas's size, the black background).</summary>
-    private static byte[]? Draw(CompositorClient client, CompositorFrameReader reader, GpuScenePlan plan, double seconds, List<string> problems, string name)
+    internal static byte[]? Draw(CompositorClient client, CompositorFrameReader reader, GpuScenePlan plan, double seconds, List<string> problems, string name)
     {
         // Twice: the exact frame may come a moment after a stand-in (Instant Seek), so the decoder is let settle and the
         // same moment drawn again. (A hair into the frame, so the decoder never takes the frame before it.)
@@ -250,6 +248,10 @@ public static class GpuSceneDifferentialTests
             ref var header = ref client.Scene;
             var layers = MemoryMarshal.CreateSpan(ref client.Layer(0), CompositorProtocol.MaxLayers);
             plan.Evaluate(seconds + 0.0005, ref header, layers);
+
+            // The exact frame, never a stand-in while it decodes (5.2: on a laptop warm from the tests before it, a cold seek's
+            // frame could come later than the settle below): what is compared is the picture at the moment, not how soon it came.
+            header.Flags |= FrameSceneHeader.FlagExactFrames;
             var sequence = client.Publish();
             if (!client.WaitForFrame(sequence, 10_000))
             {
@@ -349,8 +351,7 @@ public static class GpuSceneDifferentialTests
 
     private static string? FindFfmpeg()
     {
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        foreach (var candidate in new[] { Path.Combine(local, "HandPeg-Data", "deps", "ffmpeg", "ffmpeg.exe"), Path.Combine(local, "HandPeg", "deps", "ffmpeg", "ffmpeg.exe") })
+        foreach (var candidate in GpuExportTests.FfmpegCandidates())
         {
             if (File.Exists(candidate))
                 return candidate;
@@ -389,7 +390,9 @@ public static class GpuSceneDifferentialTests
     {
         var document = Document(W, H);
         Track(document, TimelineTrackKind.Video).Clips.Add(Clip(files.Main, LayerKind.MainVideo, 0, 4, 0, Look(LayerKind.MainVideo, "Main", 0, 0, 1, files.Main)));
-        return new Case("colour sliders with channel balance", State(document, files, (0, 0, W, H)) with { ColorFilters = ["eq=saturation=1.1:gamma_r=1.3:gamma_g=1:gamma_b=0.8"] }, [0.5, 1.5, 3.2], 30);
+        // (5.2-AuditB: the sliders' grade typed, what eq=saturation=1.1:gamma_r=1.3:gamma_g=1:gamma_b=0.8 said.)
+        var grade = new SequenceGrade { Balance = new ColorBalance(Contrast: 1, Brightness: 0, Saturation: 1.1, Gamma: 1, GammaRed: 1.3, GammaGreen: 1, GammaBlue: 0.8) };
+        return new Case("colour sliders with channel balance", State(document, files, (0, 0, W, H)) with { Grade = grade }, [0.5, 1.5, 3.2], 30);
     }
 
     private static Case Rider(Files files)
@@ -420,7 +423,7 @@ public static class GpuSceneDifferentialTests
         (piece.CustomMask, piece.MaskFrame, piece.MaskPath, piece.MaskGrow) = (true, true, files.Mask, 2);
         Track(document, TimelineTrackKind.Video).Clips.Add(new TimelineClip { ContentKind = LayerKind.Video, SourcePath = files.Main, Start = 0, End = 4, State = piece });
 
-        var state = State(document, files, (0, centerY, centerWidth, centerHeight)) with { HasCrop = true, CropFractions = (0.2, 0, 0.2, 0) };
+        var state = State(document, files, (0, centerY, centerWidth, centerHeight));
         return new Case("game style (HUD cut-out, blurred background)", state, [0.7, 2.2], 27);
     }
 
@@ -485,7 +488,7 @@ public static class GpuSceneDifferentialTests
             Effects = [Scene.Effect(EffectRegistry.Grade, 1, new Dictionary<string, object> { ["contrast"] = 1.3, ["saturation"] = 0.5 })],
         };
         Track(document, TimelineTrackKind.Adjustment).Clips.Add(new TimelineClip { ContentKind = LayerKind.Adjustment, Start = 1, End = 3, State = look });
-        return new Case("adjustment layer", State(document, files, (0, 0, W, H)), [0.5, 2.0], 33);
+        return new Case("adjustment clip", State(document, files, (0, 0, W, H)), [0.5, 2.0], 33);
     }
 
     /// <summary>
@@ -545,19 +548,16 @@ public static class GpuSceneDifferentialTests
         ContentKind = kind, SourcePath = file, Start = start, End = end, MediaOffset = offset, SourceDuration = 4, State = look,
     };
 
-    private static SequenceExportState State(TimelineDocument document, Files files, (int X, int Y, int Width, int Height) center) => new()
+    /// <summary>
+    /// The state of a document of the 5.1 kinds (its main video's clips, a piece cut from it) as a project opened now compiles it
+    /// (5.2-AuditB, LegacyFixtures.Opened): converted with the Center box the main video was laid in; no stream of it kept.
+    /// </summary>
+    private static SequenceExportState State(TimelineDocument document, Files files, (int X, int Y, int Width, int Height) center) => LegacyFixtures.Opened(new SequenceExportState
     {
         Timeline = document,
         SourceFrameRate = Rate,
-        SourceWidth = W,
-        SourceHeight = H,
         RequestedSize = (document.Width, document.Height),
         OutputSize = (document.Width, document.Height),
-        LocalMediaPath = files.Main,
-        HasSource = true,
-        MainMediaSeconds = 4,
-        CenterRect = center,
-        FrameEngine = true,
         CaptionLayer = Layer.FromState(new LayerState
         {
             Kind = LayerKind.Captions, Name = "Subtitles", PositionX = 0.05, PositionY = 0.7, SizeWidth = 0.9, SizeHeight = 0.2, LockAspectRatio = false,
@@ -565,5 +565,5 @@ public static class GpuSceneDifferentialTests
         }, W, H, document.Width, document.Height),
         ExistingFiles = new HashSet<string>([files.Mask], StringComparer.OrdinalIgnoreCase),
         MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [files.Main] = 0, [files.Inset] = 0 },
-    };
+    }, new LegacyMain(files.Main) { SourceWidth = W, SourceHeight = H, MediaSeconds = 4, CenterRect = center });
 }

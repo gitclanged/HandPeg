@@ -12,9 +12,9 @@
     <RootNamespace>HandPegApp</RootNamespace>
     <Product>HandPeg</Product>
     <AssemblyTitle>HandPeg</AssemblyTitle>
-    <Version>5.1.0</Version>
-    <AssemblyVersion>5.1.0.0</AssemblyVersion>
-    <FileVersion>5.1.0.0</FileVersion>
+    <Version>5.2.0</Version>
+    <AssemblyVersion>5.2.0.0</AssemblyVersion>
+    <FileVersion>5.2.0.0</FileVersion>
 
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>
@@ -25,7 +25,9 @@
     <!-- 64-bit Intel/AMD, or 64-bit ARM when published for win-arm64 (4.3D): the tools HandPeg downloads are the builds
          for the processor it runs on (DependencyUpdater.IsArm64). -->
     <PlatformTarget>x64</PlatformTarget>
-    <PlatformTarget Condition="'$(RuntimeIdentifier)' == 'win-arm64'">ARM64</PlatformTarget>
+    <!-- A build that names no runtime is for the machine it is made on: on an ARM64 PC the debug build and the tools'
+         builds (golden tests, SeekBench, AvSync) run natively, without an x64 .NET beside the ARM64 one. -->
+    <PlatformTarget Condition="'$(RuntimeIdentifier)' == 'win-arm64' or ('$(RuntimeIdentifier)' == '' and '$(NETCoreSdkRuntimeIdentifier)' == 'win-arm64')">ARM64</PlatformTarget>
     <!-- For the native calls: the compositor's COM by hand (function pointers), Windows through generated [LibraryImport] code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
@@ -51,21 +53,27 @@
     <Using Remove="System.Drawing" />
   </ItemGroup>
 
+  <!-- The golden tests reach the engine's own parts (the sound engine's effects and downmix, the GPU scene's lowering). -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="HandPeg.GoldenTests" />
+  </ItemGroup>
+
   <!--
       App.xaml is built as a Page instead of the application definition: that keeps InitializeComponent and drops the
       generated Main. Living in src\, it is one by default (only a root App.xaml defaults to the application definition).
   -->
 
   <!--
-      Published and packed output, when it is made inside the project folder; and the developer tools, which live
-      beside the program without being part of it (tools\, each a project of its own).
+      Published and packed output, when it is made inside the project folder; the developer tools, which live beside the
+      program without being part of it (tools\, each a project of its own); and the Explorer thumbnail handler, a library of
+      its own (src\ShellThumbnails, built below), its obj\ with it.
   -->
   <ItemGroup>
-    <Compile Remove="publish\**;Releases\**;tools\**" />
-    <None Remove="publish\**;Releases\**;tools\**" />
-    <Page Remove="publish\**;Releases\**;tools\**" />
-    <EmbeddedResource Remove="tools\**" />
-    <Content Remove="tools\**" />
+    <Compile Remove="publish\**;Releases\**;tools\**;src\ShellThumbnails\**" />
+    <None Remove="publish\**;Releases\**;tools\**;src\ShellThumbnails\**" />
+    <Page Remove="publish\**;Releases\**;tools\**;src\ShellThumbnails\**" />
+    <EmbeddedResource Remove="tools\**;src\ShellThumbnails\**" />
+    <Content Remove="tools\**;src\ShellThumbnails\**" />
   </ItemGroup>
 
   <!--
@@ -78,10 +86,6 @@
     <HlslSource Include="src\Compositor\Shaders\*.hlsl" />
     <HlslHeader Include="src\Compositor\Shaders\*.hlsli" />
     <None Remove="src\Compositor\Shaders\**" />
-
-    <!-- WPF's own pixel shaders (5.1-GpuFx: the Media pane's tilt): ps_2_0, entry point main, embedded as HandPegApp.Shaders.<name>.ps. -->
-    <WpfEffectSource Include="src\Controls\*.fx" />
-    <None Remove="src\Controls\*.fx" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -204,6 +208,46 @@ public class CompileHlsl : Microsoft.Build.Utilities.Task
       <_CompiledShader Include="$(HlslOutput)*.cso;$(HlslOutput)*.ps" />
       <EmbeddedResource Include="@(_CompiledShader)" LogicalName="HandPegApp.Shaders.%(Filename)%(Extension)" />
     </ItemGroup>
+  </Target>
+
+  <!--
+      The Explorer thumbnail handler (Pass 5.2D, src\ShellThumbnails): a COM class library that Windows
+      Explorer loads to show the thumbnail a .hproj or .hpb carries as its preview. No part of HandPeg's assembly and no reference of
+      it (Explorer loads it alone): built after HandPeg for the same processor (the runtime being built, else this machine's: an ARM64
+      Explorer loads only an ARM64 handler), framework-dependent, and its four files copied into shell\ beside HandPeg.exe on a build
+      and again on a publish. ExplorerThumbnails registers it from there. It is restored first, in an evaluation of its own (a
+      restore session of its own, as dotnet's -restore makes one), so that its build reads what the restore wrote; nothing else of
+      HandPeg's build changes.
+  -->
+  <PropertyGroup>
+    <ShellThumbnailsProject>$(MSBuildThisFileDirectory)src\ShellThumbnails\HandPeg.ShellThumbnails.csproj</ShellThumbnailsProject>
+  </PropertyGroup>
+
+  <Target Name="BuildShellThumbnails" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true' and Exists('$(ShellThumbnailsProject)')">
+    <PropertyGroup>
+      <_ShellThumbnailsRid>$(RuntimeIdentifier)</_ShellThumbnailsRid>
+      <_ShellThumbnailsRid Condition="'$(_ShellThumbnailsRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</_ShellThumbnailsRid>
+      <_ShellThumbnailsProperties>Configuration=$(Configuration);RuntimeIdentifier=$(_ShellThumbnailsRid);SelfContained=false</_ShellThumbnailsProperties>
+    </PropertyGroup>
+    <MSBuild Projects="$(ShellThumbnailsProject)" Targets="Restore" Properties="$(_ShellThumbnailsProperties);MSBuildRestoreSessionId=$([System.Guid]::NewGuid())" />
+    <MSBuild Projects="$(ShellThumbnailsProject)" Targets="Build" Properties="$(_ShellThumbnailsProperties)">
+      <Output TaskParameter="TargetOutputs" ItemName="_ShellThumbnailsAssembly" />
+    </MSBuild>
+    <PropertyGroup>
+      <_ShellThumbnailsOutput>@(_ShellThumbnailsAssembly->'%(RootDir)%(Directory)')</_ShellThumbnailsOutput>
+    </PropertyGroup>
+    <ItemGroup>
+      <_ShellThumbnailsFile Include="$(_ShellThumbnailsOutput)HandPeg.ShellThumbnails.dll;$(_ShellThumbnailsOutput)HandPeg.ShellThumbnails.comhost.dll" />
+      <_ShellThumbnailsFile Include="$(_ShellThumbnailsOutput)HandPeg.ShellThumbnails.runtimeconfig.json;$(_ShellThumbnailsOutput)HandPeg.ShellThumbnails.deps.json" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ShellThumbnailsFile)" DestinationFolder="$(OutDir)shell\" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="PublishShellThumbnails" AfterTargets="Publish" Condition="'$(DesignTimeBuild)' != 'true' and Exists('$(OutDir)shell\HandPeg.ShellThumbnails.comhost.dll')">
+    <ItemGroup>
+      <_ShellThumbnailsPublished Include="$(OutDir)shell\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ShellThumbnailsPublished)" DestinationFolder="$(PublishDir)shell\" SkipUnchangedFiles="true" />
   </Target>
 
   <ItemGroup>

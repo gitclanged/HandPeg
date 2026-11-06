@@ -325,7 +325,7 @@ internal sealed class DecoderPool : IDisposable
         lock (_gate)
             _layers.TryGetValue(clipKey, out memory);
 
-        // Layers of one source at one moment (the main video, its HUD pieces, its blurred background) share one frame,
+        // Layers of one source at one moment (a video, its Cutouts, its blur fill's twin) share one frame,
         // and its demands: only the first of them in a frame asks (5.0-Verify, the user's bug 5).
         var repeat = false;
         foreach (var (serial, at) in _resolvedNow)
@@ -333,7 +333,9 @@ internal sealed class DecoderPool : IDisposable
         if (!repeat && _resolvedNow.Count < 64)
             _resolvedNow.Add((source.Serial, seconds));
 
-        var exact = _cache.Exact(source.Serial, seconds);
+        // An exact-frame scene (an export, a capture) takes an open frame's last millisecond for the frame after it (CachedFrame.CoverEnd);
+        // the player takes what there is, as it always has.
+        var exact = _cache.Exact(source.Serial, seconds, strictly: _exactOnly);
         if (exact is not null)
         {
             CacheHits++;
@@ -766,6 +768,38 @@ internal sealed class DecoderPool : IDisposable
         }
     }
 
+    // The renderer's turn (5.2-Release, the user's Q1): pacing aside, a chase near the playhead runs at the card's full speed, and a
+    // preview frame drawn meanwhile queued for the device's lock behind its decoder's calls and copies: 13-21 ms a frame where one
+    // takes 0.3 (a 7950X3D and RX 7900 XTX desktop's first plays of a quick-cut project after opening it, AvSync session's trace), and the frame shown late.
+    // So while a preview frame is drawn (from taking its output texture to the flush after it) a lane starts no call to its decoder
+    // (an open, a seek, a frame): only the one under way when the draw began overlaps it. Exports and readbacks draw exact frames with
+    // the lanes reading ahead beside them, never held.
+    private volatile bool _drawing;
+
+    /// <summary>The worker begins drawing a preview frame (true) or is done with it (false): the lanes hold back meanwhile.</summary>
+    public void Drawing(bool drawing)
+    {
+        lock (_drawnGate)
+        {
+            _drawing = drawing;
+            if (!drawing)
+                Monitor.PulseAll(_drawnGate);
+        }
+    }
+
+    /// <summary>Waits while a preview frame is drawn, 20 ms at most (a lane's own thread, before each call to its decoder).</summary>
+    private void WaitWhileDrawing()
+    {
+        if (!_drawing)
+            return;
+        lock (_drawnGate)
+        {
+            var clock = Stopwatch.StartNew();
+            while (_drawing && clock.ElapsedMilliseconds < 20 && !_stopping.WaitOne(0))
+                Monitor.Wait(_drawnGate, Math.Max(20 - (int)clock.ElapsedMilliseconds, 1));
+        }
+    }
+
     // The cuts' stretches the cache holds on to (from the hints): source serial, from, to.
     private readonly List<(int Source, double From, double To)> _held = [];
 
@@ -836,8 +870,8 @@ internal sealed class DecoderPool : IDisposable
             if (IsMissing(source.Serial, seconds))
                 return;
 
-            // One demand per frame of a source, whichever layers want it (the main video, its HUD pieces and its blurred
-            // background read one moment of one file): another layer's demand for the same frame is this one's too.
+            // One demand per frame of a source, whichever layers want it (a video, its Cutouts and its blur fill's twin
+            // read one moment of one file): another layer's demand for the same frame is this one's too.
             if (kind is DemandKind.Visible or DemandKind.PlayAhead)
             {
                 var sameFrame = source.FrameDuration > 0 ? source.FrameDuration * 0.25 : 1e-4;
@@ -987,6 +1021,7 @@ internal sealed class DecoderPool : IDisposable
             {
                 if (decoder is null)
                 {
+                    WaitWhileDrawing();
                     decoder = OpenFor(demand.Source, lane);
                     lock (_gate)
                         demand.Decoder = decoder;
@@ -1370,7 +1405,9 @@ internal sealed class DecoderPool : IDisposable
             Volatile.Write(ref _laneBusySince[lane], 0);
             // On the card unless there is none (WARP) or the client asks for the processor (a driver that shows broken frames).
             var hardware = !_gpu.IsWarp && Volatile.Read(ref _shared.Control.SoftwareDecodeRequest) == 0;
-            var decoder = new MfVideoDecoder(_gpu, source.Path, source.StreamIndex, hardware, _cache, source.Serial);
+            // An export on an ARM64 PC decodes HEVC with FFmpeg, the faster there (5.2C, the user's Q1: MfVideoDecoder.PreferFfmpeg).
+            var decoder = new MfVideoDecoder(_gpu, source.Path, source.StreamIndex, hardware, _cache, source.Serial,
+                preferFfmpeg: _exactOnly && MfVideoDecoder.PrefersFfmpegForHevcExports);
             Volatile.Write(ref _laneBusySince[lane], Stopwatch.GetTimestamp());
             Interlocked.Add(ref _decoded, decoder.FramesDecoded);
             decoder.SetIFrames(source.IFrames);
@@ -1460,14 +1497,16 @@ internal sealed class DecoderPool : IDisposable
     private void WorkOn(int lane, Demand demand, MfVideoDecoder decoder, SourceState source, double target)
     {
         decoder.KeepingAhead = demand.Kind != DemandKind.Visible;
+        WaitWhileDrawing();
         decoder.Prepare(StartOf(demand, decoder, target));
         var frames = 0;
 
-        // Seeks made again for this target because the last one landed after it, or because the reader had passed its frame
-        // (reset when the demand moves).
-        var (lateTries, refetches) = (0, 0);
+        // Seeks made again for this target because the last one landed after it, because the reader had passed its frame, or (an
+        // export) because the decoder gave the frame after it and not it (reset when the demand moves).
+        var (lateTries, refetches, dropTries) = (0, 0, 0);
         while (true)
         {
+            WaitWhileDrawing();
             Volatile.Write(ref _laneBusySince[lane], Stopwatch.GetTimestamp());
             double keepFrom;
             var retarget = double.NaN;
@@ -1483,7 +1522,7 @@ internal sealed class DecoderPool : IDisposable
                     target = demand.Target;
                     decoder.KeepingAhead = demand.Kind != DemandKind.Visible;
                     retarget = StartOf(demand, decoder, target);
-                    (lateTries, refetches) = (0, 0);
+                    (lateTries, refetches, dropTries) = (0, 0, 0);
                 }
 
                 keepFrom = demand.KeepFrom;
@@ -1568,6 +1607,20 @@ internal sealed class DecoderPool : IDisposable
                 // An export never takes the next frame for one it passed: that frame exists, and the picture would be a frame
                 // out. It stays missing, the export fails on it, and FFmpeg makes it (the once-in-many-runs "held over" of
                 // gpu-export-every-frame, 5.1-TrackEqualityAndVram).
+                // Nor, at first, for one the decoder did not give (5.2C, the user's Q1: Media Foundation's HEVC on the Snapdragon gave
+                // the frame after a moment for it, twice in one game-style export, and that frame stood for it: two held frames, counted
+                // as stretches, no late landing): decoded again from a key frame 1, then 2 s further back (counted with the late landings: seeks
+                // made again from further back), so the moment is read in a run of frames rather than just after a seek; only then does
+                // the frame after stand for it (a frame the file lacks).
+                if (_exactOnly && !passedIt && dropTries < 2)
+                {
+                    var key = decoder.KeyAtOrBefore(target);
+                    var back = 1 << dropTries++;
+                    decoder.SeekTo(Math.Max((double.IsNaN(key) ? target : Math.Min(key, target)) - back, 0));
+                    Interlocked.Increment(ref _lateLandings);
+                    continue;
+                }
+
                 if (!(_exactOnly && passedIt) && _cache.StretchBack(source.Serial, time, target, decoder.FrameDuration * 2.5))
                 {
                     Interlocked.Increment(ref _stretches);

@@ -111,15 +111,32 @@ public partial class App : Application
 
     /// <summary>
     /// Debug builds write XAML binding errors to binding-errors.log in the logs folder. They are otherwise
-    /// only visible in a debugger's output window, where a mistyped property name is easy to miss.
+    /// only visible in a debugger's output window, where a mistyped property name is easy to miss. A second copy started while
+    /// the first holds that file writes binding-errors.&lt;process id&gt;.log; with neither, the errors go unlogged: never a fault
+    /// (5.2E: crash report 236eaf85, an IOException out of OnStartup when two development copies started).
     /// </summary>
     [Conditional("DEBUG")]
-    private static void LogBindingErrors()
+    internal static void LogBindingErrors()
     {
         var folder = Services.AppPaths.Logs;
-        Directory.CreateDirectory(folder);
+        StreamWriter? log = null;
+        foreach (var name in new[] { "binding-errors.log", $"binding-errors.{Environment.ProcessId}.log" })
+        {
+            try
+            {
+                Directory.CreateDirectory(folder);
+                log = new StreamWriter(new FileStream(Path.Combine(folder, name), FileMode.Create, FileAccess.Write, FileShare.Read)) { AutoFlush = true };
+                break;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // In use by another copy (or not writable): the next name, or none.
+            }
+        }
 
-        var log = new StreamWriter(Path.Combine(folder, "binding-errors.log"), append: false) { AutoFlush = true };
+        if (log is null)
+            return;
+
         PresentationTraceSources.Refresh();
         PresentationTraceSources.DataBindingSource.Listeners.Add(new TextWriterTraceListener(log));
         PresentationTraceSources.DataBindingSource.Switch.Level = SourceLevels.Error;

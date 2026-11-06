@@ -1,0 +1,29 @@
+<Window x:Class="HandPegApp.PasteAttributesDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Paste Attributes" Width="400" SizeToContent="Height" ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <!-- Ctrl+Alt+V (5.2A): which parts of the copied clip's look go onto the selected clips. The last choice is remembered. -->
+    <StackPanel Margin="16">
+        <TextBlock x:Name="IntroText" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,10" />
+        <StackPanel x:Name="Choices" AutomationProperties.Name="Attributes to Paste">
+            <CheckBox x:Name="TransformBox" Content="Transform: position, size, Rotation (Roll), Tilt X (Pitch), Tilt Y (Yaw), anchor" Margin="0,3"
+                      ToolTip="Where the clip sits on the frame, how large, how far it is turned and tilted in 3D, and the point it turns about." />
+            <CheckBox x:Name="CropBox" Content="Crop" Margin="0,3" ToolTip="How much of each edge of its picture is cut away." />
+            <CheckBox x:Name="OpacityBox" Content="Opacity" Margin="0,3" ToolTip="How solid the picture is." />
+            <CheckBox x:Name="EffectsBox" Content="Effects (the whole stack, in place of each clip's own)" Margin="0,3"
+                      ToolTip="Every effect of the copied clip, with its values and keyframes, in place of the effects each clip has." />
+            <CheckBox x:Name="KeyframesBox" Content="Keyframes of position, size, Rotation, tilt and opacity" Margin="0,3"
+                      ToolTip="The copied clip's motion, counted from each clip's own start, in place of the motion each clip has." />
+            <CheckBox x:Name="MaskBox" Content="Mask and edges (the mask, rounded corners, feather)" Margin="0,3"
+                      ToolTip="The shape the copied clip is cut to, and its edges." />
+            <CheckBox x:Name="FadesBox" Content="Fades in and out" Margin="0,3" ToolTip="How long each clip fades in and out, and how." />
+            <CheckBox x:Name="SoundBox" Content="Sound: gain and audio filters" Margin="0,3" ToolTip="The copied clip's volume and its audio filters, on each clip with sound." />
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button x:Name="PasteButton" Content="Paste" MinWidth="110" IsDefault="True" Click="Paste_Click" />
+            <Button Content="Cancel" MinWidth="88" Margin="6,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

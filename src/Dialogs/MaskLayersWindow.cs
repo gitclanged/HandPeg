@@ -11,12 +11,12 @@ using HandPegApp.ViewModels;
 namespace HandPegApp;
 
 /// <summary>
-/// Layers from a Mask: a mask of the whole frame, white over a game's HUD, taken apart into one layer per HUD
+/// Cutouts from a Mask: a mask of the whole frame, white over a game's HUD, taken apart into one Cutout per HUD
 /// element. Every patch the mask shows is found; patches closer together than the distance set are one
-/// element, so a row of separately traced ability icons becomes one layer and not one each. The pieces are
+/// element, so a row of separately traced ability icons becomes one Cutout and not one each. The parts are
 /// shown over a still of the video as they will be cut, numbered, before anything is added; a click on one
-/// leaves it out or takes it back. Pieces that a layer already cuts out start left out, so the same window
-/// adds the pieces a preset did not (an ultimate meter, say). Built in code.
+/// leaves it out or takes it back. Parts that a Cutout already cuts out start left out, so the same window
+/// adds the Cutouts a Game Preset did not (an ultimate meter, say). Built in code.
 /// </summary>
 public sealed class MaskLayersWindow : Window
 {
@@ -37,7 +37,7 @@ public sealed class MaskLayersWindow : Window
     private readonly Slider _join = new() { Minimum = 0, Maximum = 300, Width = 240, VerticalAlignment = VerticalAlignment.Center, IsSnapToTickEnabled = true, TickFrequency = 2 };
     private readonly TextBlock _joinText = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), MinWidth = 50 };
     private readonly CheckBox _vertical = new() { Content = "Lay out for vertical video", Margin = new Thickness(0, 8, 0, 0) };
-    private readonly CheckBox _replace = new() { Content = "Remove the layers already cut from the video", Margin = new Thickness(0, 4, 0, 0) };
+    private readonly CheckBox _replace = new() { Content = "Remove the Cutouts already cut from the video", Margin = new Thickness(0, 4, 0, 0) };
     private readonly Button _add = new() { MinWidth = 120, Padding = new Thickness(14, 4, 14, 4), IsDefault = true };
     private readonly string _stillPath = Path.Combine(SessionPaths.Previews, $"mask_still_{Guid.NewGuid():N}.png");
     private readonly CancellationTokenSource _closing = new();
@@ -49,7 +49,7 @@ public sealed class MaskLayersWindow : Window
     public bool ReplaceExisting => _replace.IsChecked == true;
 
     /// <summary>Null when the mask cannot be read, or shows nothing: the window is then not shown.</summary>
-    /// <param name="existing">The areas layers already cut out of the video, as fractions of the frame.</param>
+    /// <param name="existing">The areas Cutouts already cut out of the video, as fractions of the frame.</param>
     public static MaskLayersWindow? Open(MainViewModel viewModel, string maskPath, List<Rect> existing) =>
         MaskStore.FindIslands(maskPath) is { Count: > 0 } islands ? new MaskLayersWindow(viewModel, maskPath, islands, existing) : null;
 
@@ -58,7 +58,7 @@ public sealed class MaskLayersWindow : Window
         (_viewModel, _islands, _existing) = (viewModel, islands, existing);
         (_width, _height) = viewModel.SourceWidth > 0 && viewModel.SourceHeight > 0 ? (viewModel.SourceWidth, viewModel.SourceHeight) : (1920.0, 1080.0);
 
-        Title = $"Layers from a Mask: {Path.GetFileName(maskPath)}";
+        Title = $"Cutouts from a Mask: {Path.GetFileName(maskPath)}";
         Width = 1180;
         Height = 820;
         MinWidth = 640;
@@ -101,9 +101,9 @@ public sealed class MaskLayersWindow : Window
 
         var help = new TextBlock
         {
-            Text = "Every patch the mask shows is found, and those closer together than the distance below are one HUD element: one layer each, all sharing this mask. "
+            Text = "Every patch the mask shows is found, and those closer together than the distance below are one HUD element: one Cutout each, all sharing this mask. "
                    + "Raise the distance until each element is one numbered box (a row of ability icons traced one by one, say), and lower it if two elements have run together. "
-                   + "Click a box to leave it out, or to take it back: pieces a layer already cuts out start left out. Ctrl+Z takes back the last click, Ctrl+Y puts it back.",
+                   + "Click a box to leave it out, or to take it back: parts a Cutout already cuts out start left out. Ctrl+Z takes back the last click, Ctrl+Y puts it back.",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -113,13 +113,13 @@ public sealed class MaskLayersWindow : Window
         joinRow.Children.Add(new TextBlock { Text = "Join patches closer than:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
         joinRow.Children.Add(_join);
         joinRow.Children.Add(_joinText);
-        _join.ToolTip = "In pixels of a 2560-wide frame. Patches nearer each other than this, across or down, are one HUD element and one layer.";
+        _join.ToolTip = "In pixels of a 2560-wide frame. Patches nearer each other than this, across or down, are one HUD element and one Cutout.";
         _join.Value = 40;
         _join.ValueChanged += (_, _) => Regroup();
 
         _vertical.IsChecked = viewModel.FrameHeight > viewModel.FrameWidth;
         _vertical.ToolTip = "Makes the frame tall, with the video across its middle and the HUD elements enlarged above and below it. Cleared, each element is laid back where it was cut from.";
-        _replace.ToolTip = "Takes away the layers already cut from the video (into the recycle bin, so Undo brings them back), for a mask that is to replace them. Every piece then starts included.";
+        _replace.ToolTip = "Takes away the Cutouts already cut from the video (into the recycle bin, so Undo brings them back), for a mask that is to replace them. Every part then starts included.";
         _replace.Checked += (_, _) => Regroup();
         _replace.Unchecked += (_, _) => Regroup();
 
@@ -168,7 +168,7 @@ public sealed class MaskLayersWindow : Window
 
         Pieces = _all.Where((_, i) => _included[i]).ToList();
         _joinText.Text = $"{_join.Value:0} px";
-        _add.Content = Pieces.Count == 1 ? "Add 1 Layer" : $"Add {Pieces.Count} Layers";
+        _add.Content = Pieces.Count == 1 ? "Add 1 Cutout" : $"Add {Pieces.Count} Cutouts";
         _add.IsEnabled = Pieces.Count > 0;
         _surface.Show(_all, _included);
     }
@@ -198,20 +198,21 @@ public sealed class MaskLayersWindow : Window
 
     private async Task LoadStillAsync()
     {
-        var source = _viewModel.LocalMediaPath;
+        // The video at the playhead's (5.2-AuditB: whichever file it plays), else the file last opened's start.
+        var (source, seconds) = _viewModel.FileMomentAt(_viewModel.PositionMs / 1000) ?? (_viewModel.LocalMediaPath, 0.0);
         if (string.IsNullOrWhiteSpace(source) || !File.Exists(source))
             return;
 
         try
         {
-            _still.Source = await SourceStill.TakeAsync(source, _viewModel.FileSecondsAt(_viewModel.PositionMs / 1000), _stillPath, _closing.Token);
+            _still.Source = await SourceStill.TakeAsync(source, seconds, _stillPath, _closing.Token);
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
-            AppLog.Write("Layers from a Mask: the still could not be taken", ex);
+            AppLog.Write("Cutouts from a Mask: the still could not be taken", ex);
         }
     }
 

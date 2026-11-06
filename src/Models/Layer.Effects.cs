@@ -5,14 +5,14 @@ using HandPegApp.Models.Effects;
 namespace HandPegApp.Models;
 
 // ----- The effect stack -----
-// A clip's effects are cards in one list, in the order they are applied (within their zone: see EffectZone). The
-// filters that were the layer's own before stacks (flips, LUT, denoise, colour, hue, blur, sharpen) are now views onto
-// the cards: Layer Properties and the Filters tools read and write the stack through them. The key, the mask, the
-// edges and the shadow keep their values on the layer (the layout pane and the mask tools use them); their card says
+// A clip's effects are in one list, in the order they are applied (within their zone: see EffectZone). The
+// filters that were the clip's own before stacks (flips, LUT, denoise, colour, hue, blur, sharpen) are now views onto
+// the effects: Clip Properties and the Filters tools read and write the stack through them. The key, the mask, the
+// edges and the shadow keep their values on the clip (the layout pane and the mask tools use them); their effect says
 // where in the stack they work and whether they are on.
 public sealed partial class Layer
 {
-    /// <summary>Raised (as a property name) when anything in the stack changed: a card, its values, its order.</summary>
+    /// <summary>Raised (as a property name) when anything in the stack changed: an effect, its values, its order.</summary>
     public const string EffectsChanged = "Effects";
 
     /// <summary>The clip's effects, in the order they are applied.</summary>
@@ -302,8 +302,8 @@ public sealed partial class Layer
         Effects.Remove(effect);
     }
 
-    /// <summary>The card of a switch of the layer's that has just been switched on, at the bottom of its zone if there is none yet.</summary>
-    private void EnsureCard(string type)
+    /// <summary>The effect of a switch of the clip's that has just been switched on, at the bottom of its zone if there is none yet.</summary>
+    private void EnsureEffect(string type)
     {
         if (_effects is not null && !_loadingEffects && Find(type) is null)
             AddEffect(new EffectInstance { Type = type });
@@ -312,34 +312,34 @@ public sealed partial class Layer
     partial void OnChromaKeyChanged(bool value)
     {
         if (value)
-            EnsureCard(EffectRegistry.ChromaKey);
+            EnsureEffect(EffectRegistry.ChromaKey);
     }
 
     partial void OnCustomMaskChanged(bool value)
     {
         if (value)
-            EnsureCard(EffectRegistry.Mask);
+            EnsureEffect(EffectRegistry.Mask);
     }
 
     partial void OnCornerRadiusChanged(int value)
     {
         if (value > 0)
-            EnsureCard(EffectRegistry.Edges);
+            EnsureEffect(EffectRegistry.Edges);
     }
 
     partial void OnFeatherChanged(bool value)
     {
         if (value)
-            EnsureCard(EffectRegistry.Edges);
+            EnsureEffect(EffectRegistry.Edges);
     }
 
     partial void OnShadowChanged(bool value)
     {
         if (value)
-            EnsureCard(EffectRegistry.Shadow);
+            EnsureEffect(EffectRegistry.Shadow);
     }
 
-    /// <summary>Whether a switch of the layer's is on: the property a bound card's <see cref="EffectDefinition.Feature"/> names.</summary>
+    /// <summary>Whether a switch of the clip's is on: the property a bound effect's <see cref="EffectDefinition.Feature"/> names.</summary>
     private bool FeatureIsOn(string? feature) => feature switch
     {
         nameof(ChromaKey) => ChromaKey,
@@ -349,7 +349,7 @@ public sealed partial class Layer
         _ => false,
     };
 
-    /// <summary>Replaces the stack with copies of these cards (Paste, a preset, Undo): one notice for the lot.</summary>
+    /// <summary>Replaces the stack with copies of these effects (Paste, a preset, Undo): one notice for the lot.</summary>
     public void SetEffects(IEnumerable<EffectInstance> effects, bool? bypassed = null)
     {
         _loadingEffects = true;
@@ -360,7 +360,7 @@ public sealed partial class Layer
                 Effects.Add(effect);
             if (bypassed is { } value)
                 EffectsBypassed = value;
-            AddMissingFeatureCards();
+            AddMissingFeatureEffects();
         }
         finally
         {
@@ -370,7 +370,7 @@ public sealed partial class Layer
         OnEffectChanged(null, "");
     }
 
-    private void AddMissingFeatureCards()
+    private void AddMissingFeatureEffects()
     {
         foreach (var definition in EffectRegistry.All)
         {
@@ -439,16 +439,16 @@ public sealed partial class Layer
         return cards;
     }
 
-    // ----- Cards that carry their layer's values (copy, paste, presets) -----
+    // ----- Effects that carry their clip's values (copy, paste, presets) -----
 
     private static readonly LayerBinding[] MaskExtras = [.. new[] { nameof(MaskPath), nameof(MaskShapes), nameof(MaskFrame) }.Select(LayerBinding.Of).OfType<LayerBinding>()];
 
     /// <summary>
-    /// A card as Copy Stack and presets keep it: a bound card's values (the key colour, the mask's file and shapes)
+    /// An effect as Copy Stack and presets keep it: a bound effect's values (the key colour, the mask's file and shapes)
     /// are written into it, so that pasting it gives another clip the same look. Read through the parameters'
     /// <see cref="EffectParam.Binding"/>, without reflection (4.3-0B).
     /// </summary>
-    public EffectState CaptureCard(EffectInstance effect)
+    public EffectState CaptureEffect(EffectInstance effect)
     {
         var copy = effect.Clone();
         if (effect.Definition is { } definition)
@@ -471,11 +471,11 @@ public sealed partial class Layer
     }
 
     /// <summary>
-    /// A captured card made into one of this layer's: the values it carries for the layer are set on it, and its switch
+    /// A captured effect made into one of this clip's: the values it carries for the clip are set on it, and its switch
     /// is turned on. Only the bindable properties (<see cref="LayerBinding"/>) are set: a name a preset carries that is
     /// not one of them is dropped.
     /// </summary>
-    public EffectInstance AdoptCard(EffectState state)
+    public EffectInstance AdoptEffect(EffectState state)
     {
         var card = EffectInstance.FromState(state);
         if (card.Unknown is not null)

@@ -12,6 +12,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <PlatformTarget>x64</PlatformTarget>
+    <PlatformTarget Condition="'$(RuntimeIdentifier)' == '' and '$(NETCoreSdkRuntimeIdentifier)' == 'win-arm64'">ARM64</PlatformTarget>
     <AssemblyName>HandPeg.SeekBench</AssemblyName>
     <RootNamespace>HandPegSeekBench</RootNamespace>
   </PropertyGroup>

@@ -198,7 +198,12 @@ public sealed partial class GpuPreviewEngine : IDisposable
             Volatile.Write(ref _plan, plan);
             _state = state;
             Volatile.Write(ref _canvasFps, state.Timeline.FrameRate.IsValid ? state.Timeline.FrameRate.Fps : 0);
-            _audio.SetProgram(audio is null ? AudioProgram.Build(state) : AudioProgram.Build(state, audio));
+            var heard = audio is null ? AudioProgram.Build(state) : AudioProgram.Build(state, audio);
+            _audio.SetProgram(heard);
+            // The bands are of what an export hears (every track): with nothing soloed and the usual buses and ducking, the program just
+            // built is that one (immutable; a render makes its own mixer), so no second one is built here.
+            var exportHears = audio is null or { Duck: null, Buses: null } && !state.Timeline.Tracks.Exists(t => t.IsSoloed);
+            PlanEnergies(state, exportHears ? heard : null);
             plan.PrepareAround(Position);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -222,6 +227,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         _state = null;
         Volatile.Write(ref _canvasFps, 0);
         _audio.SetProgram(AudioProgram.Empty);
+        ForgetEnergies();
         Volatile.Write(ref _prewarm, null);
         Volatile.Write(ref _pointer, double.NaN);
         Volatile.Write(ref _pointerMoved, Stopwatch.GetTimestamp());
@@ -377,7 +383,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// <summary>How many different videos are on screen at a moment of the timeline.</summary>
     public static int VideosAt(SequenceExportState state, double at) =>
         state.Timeline.Tracks.Where(t => !t.IsHidden).SelectMany(t => t.Clips)
-            .Where(c => c.Start <= at && c.End > at && !c.IsHidden && c.ContentKind is Models.LayerKind.MainVideo or Models.LayerKind.VideoFile)
+            .Where(c => c.Start <= at && c.End > at && !c.IsHidden && c.ContentKind == Models.LayerKind.VideoFile)
             .Select(c => c.SourcePath).Distinct(StringComparer.OrdinalIgnoreCase).Count();
 
     /// <summary>
@@ -433,6 +439,10 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 // A one-off picture of the frame (Export Frame): drawn and read back here, the one thread that writes scenes.
                 if (Interlocked.Exchange(ref _capture, null) is { } capture)
                     Capture(capture);
+
+                // A project's thumbnail (a save, Pass 5.2D): drawn small the same way, and never while playing.
+                if (Interlocked.Exchange(ref _thumbnail, null) is { } thumbnail)
+                    CaptureThumbnail(thumbnail);
 
                 if (_playing)
                 {
@@ -570,13 +580,15 @@ public sealed partial class GpuPreviewEngine : IDisposable
         ref var header = ref _client.Scene;
         var layers = MemoryMarshal.CreateSpan(ref _client.Layer(0), CompositorProtocol.MaxLayers);
         if (_sourceView)
-            plan.EvaluateSource(seconds, ref header, layers);
+            plan.EvaluateSource(seconds, Volatile.Read(ref _sourceKey), ref header, layers);
         else
             plan.Evaluate(seconds, ref header, layers);
         header.PlayheadSeconds = seconds;
         header.IsPlaying = playing ? 1 : 0;
         (header.OutputWidth, header.OutputHeight) = (width, height);
         header.Flags |= FrameSceneHeader.FlagLetterbox;
+        if (!_sourceView)
+            WriteAudioBands(ref header, seconds, playing);
         (header.ViewScale, header.ViewPanX, header.ViewPanY) = (_viewScale, _viewPanX, _viewPanY);
         if (!_sourceView && Volatile.Read(ref _loupeKey) is var loupe and not 0)
             (header.LoupeClipKey, header.LoupeKind, header.LoupeZoom) = (loupe, Volatile.Read(ref _loupeKind), LoupeZoom);
@@ -591,14 +603,20 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     private volatile bool _sourceView;
 
+    // The clip whose picture the source view shows (GpuHash.Of its id); 0 for the bottom video at the playhead.
+    private long _sourceKey;
+
     /// <summary>
-    /// Show the primary file's own picture, whole and unfinished, instead of the sequence (true while the crop or a layer's
-    /// place is drawn on the source, and with Live Preview off): the file itself.
+    /// Show a clip's own picture, whole and unfinished, instead of the sequence (true while a crop or a Cutout's place is drawn
+    /// on a clip's source, and with Live Preview off): its file itself (5.2-AuditB: any clip's, where it was the primary
+    /// file's; GpuScenePlan.EvaluateSource). <paramref name="clipId"/> is the clip; empty for the bottom video at the playhead.
     /// </summary>
-    public void ShowSource(bool source)
+    public void ShowSource(bool source, Guid clipId = default)
     {
-        if (_sourceView == source)
+        var key = clipId == Guid.Empty ? 0 : GpuHash.Of(clipId);
+        if (_sourceView == source && Interlocked.Read(ref _sourceKey) == key)
             return;
+        Interlocked.Exchange(ref _sourceKey, key);
         _sourceView = source;
         Invalidate();
     }
@@ -660,11 +678,106 @@ public sealed partial class GpuPreviewEngine : IDisposable
             _client.EnsureReadback(bytes);
             var pixels = new byte[bytes];
             var sequence = _client.Publish();
-            request.TrySetResult(_client.TryReadback(sequence, pixels, out var width, out var height, 20_000) ? (pixels, width, height) : null);
+
+            // The stop event ends the wait (none, at once): a player closed during it is never held past Dispose's join.
+            request.TrySetResult(_client.TryReadback(sequence, pixels, out var width, out var height, 20_000, _stop) ? (pixels, width, height) : null);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             AppLog.Write("GPU engine: the frame could not be read back", ex);
+            request.TrySetResult(null);
+        }
+        finally
+        {
+            // The player's own picture again.
+            Invalidate();
+        }
+    }
+
+    // ----- A small picture of the frame for the project file (Pass 5.2D, ProjectThumbnail) -----
+
+    private TaskCompletionSource<(byte[] Bgra, int Width, int Height)?>? _thumbnail;
+
+    // The plan a thumbnail draws when the player's has fades (the same state without them), and the short side asked for.
+    private GpuScenePlan? _thumbnailPlan;
+    private int _thumbnailShortSide = ProjectThumbnail.ShortSide;
+
+    /// <summary>How long the pump waits for a thumbnail to be read back, ms: one that takes longer gives none (the save keeps the last one).</summary>
+    private const int ThumbnailReadbackMs = 3000;
+
+    /// <summary>
+    /// The frame at the playhead as the player composes it (its proxies, its captions), without the fades (a project that fades in is not
+    /// black at its start), drawn small: the short side <paramref name="shortSide"/> (never more than the canvas's), both sides even, BGRA8
+    /// (alpha meaningless). Its own readback, the size of that picture: the player's is not grown to the canvas for it. A project file's
+    /// thumbnail (ProjectThumbnail). Null at once while playing (no played frame ever waits for one: Law 3) or with nothing loaded, and
+    /// null when it could not be drawn in time. Called on the UI thread (a plan without the fades is made there when the player's has
+    /// them); drawn on the pump's thread, and completed off both.
+    /// </summary>
+    public Task<(byte[] Bgra, int Width, int Height)?> CaptureThumbnailAsync(int shortSide = ProjectThumbnail.ShortSide)
+    {
+        if (_playing || _state is not { } state)
+            return Task.FromResult<(byte[] Bgra, int Width, int Height)?>(null);
+
+        var request = new TaskCompletionSource<(byte[] Bgra, int Width, int Height)?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        GpuScenePlan? unfaded = null;
+        if (state.FadeIn || state.FadeOut)
+        {
+            try
+            {
+                unfaded = GpuScenePlan.Create(state with { FadeIn = false, FadeOut = false }, _broker);
+                unfaded.PrepareAround(Position);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                AppLog.Write("GPU engine: the thumbnail's plan without the fades could not be made (the player's is used)", ex);
+                unfaded = null;
+            }
+        }
+
+        Volatile.Write(ref _thumbnailPlan, unfaded);
+        Volatile.Write(ref _thumbnailShortSide, Math.Max(shortSide, 16));
+        Interlocked.Exchange(ref _thumbnail, request)?.TrySetResult(null);
+        _dirty.Set();
+        return request.Task;
+    }
+
+    private void CaptureThumbnail(TaskCompletionSource<(byte[] Bgra, int Width, int Height)?> request)
+    {
+        var unfaded = Interlocked.Exchange(ref _thumbnailPlan, null);
+
+        // Asked for while paused and playing by now: none, so that the played frame of this turn is not late for it.
+        if (_playing)
+        {
+            request.TrySetResult(null);
+            return;
+        }
+
+        try
+        {
+            var plan = unfaded ?? Volatile.Read(ref _plan);
+            var at = Math.Min(Position, Math.Max(plan.SequenceSeconds - 0.001, 0));
+            _client.ClearScene();
+            ref var header = ref _client.Scene;
+            var layers = MemoryMarshal.CreateSpan(ref _client.Layer(0), CompositorProtocol.MaxLayers);
+            plan.Evaluate(at, ref header, layers);
+            header.PlayheadSeconds = at;
+
+            // Smaller than the canvas, in its shape: without a letterbox the compositor stretches the canvas over the output.
+            (header.OutputWidth, header.OutputHeight) = ProjectThumbnail.ThumbnailSize(header.CanvasWidth, header.CanvasHeight, Volatile.Read(ref _thumbnailShortSide));
+            header.Flags |= FrameSceneHeader.FlagExactFrames | FrameSceneHeader.FlagReadback;
+            var bytes = (long)header.OutputWidth * header.OutputHeight * 4;
+            _client.EnsureReadback(bytes);
+            var pixels = new byte[bytes];
+            var sequence = _client.Publish();
+
+            // Ended by the stop event as Export Frame's is (a save racing the player's close gets none, at once).
+            request.TrySetResult(_client.TryReadback(sequence, pixels, out var width, out var height, ThumbnailReadbackMs, _stop) && width > 0 && height > 0
+                ? (pixels, width, height)
+                : null);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("GPU engine: the project's thumbnail could not be drawn", ex);
             request.TrySetResult(null);
         }
         finally
@@ -754,12 +867,116 @@ public sealed partial class GpuPreviewEngine : IDisposable
         return Math.Clamp((int)Math.Ceiling(wait * 1000), 1, 250);
     }
 
+    // ----- The audio-reactive shader bus (Pass 5.2B) -----
+    // While a card pulses with the sound (AudioReactive.Pulses), a map of the bands of the Sequence's sound (as an export hears it) is made in
+    // the background, and made again only when what is heard changes (AudioReactive.KeyOf): a frame drawn paused or scrubbed carries the
+    // bands the export's frame will. Until the map reaches a moment, a frame played carries the engine's own bands of what it plays.
+
+    private readonly object _energiesGate = new();
+    private AudioEnergyMap? _energies;
+    private CancellationTokenSource? _energiesMaking;
+    private int _energiesKey, _energiesVersion;
+    private volatile bool _pulses;
+
+    /// <summary>
+    /// The state's map (UI thread, SetState): kept while what is heard is the same, made again in the background when not, none when nothing
+    /// pulses. <paramref name="heard"/> is the program SetState built when it is the one an export hears (nothing soloed), else null for
+    /// one made here.
+    /// </summary>
+    private void PlanEnergies(SequenceExportState state, AudioProgram? heard)
+    {
+        if (!AudioReactive.Pulses(state))
+        {
+            ForgetEnergies();
+            return;
+        }
+
+        _pulses = true;
+        var program = heard ?? AudioReactive.ProgramOf(state);
+        var key = AudioReactive.KeyOf(program);
+        if (key == _energiesKey && _energiesMaking is not null)
+            return;
+
+        _energiesMaking?.Cancel();
+        var making = new CancellationTokenSource();
+        (_energiesMaking, _energiesKey) = (making, key);
+        int version;
+        lock (_energiesGate)
+            version = ++_energiesVersion;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                // Filled from the Sequence's start, and drawn with as it fills (TryAt knows what is made). Published only while this is still
+                // the newest plan, under the gate the version moves under, so a task overtaken never covers a newer map (or a forgotten one's null).
+                var map = AudioEnergyMap.Of(0, program.SequenceSeconds);
+                lock (_energiesGate)
+                {
+                    if (_energiesVersion != version)
+                        return;
+                    Volatile.Write(ref _energies, map);
+                }
+
+                map.Fill(program, making.Token);
+                Invalidate();
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                AppLog.Write("GPU engine: the sound's bands could not be measured; the audio-reactive effects follow the playing sound only", ex);
+            }
+        });
+    }
+
+    private void ForgetEnergies()
+    {
+        _pulses = false;
+        _energiesMaking?.Cancel();
+        (_energiesMaking, _energiesKey) = (null, 0);
+        lock (_energiesGate)
+        {
+            _energiesVersion++;
+            Volatile.Write(ref _energies, null);
+        }
+    }
+
+    // The bands at a frame's moment (the pump): the map's where it is made (as the export looks them up), else, playing, the engine's own.
+    private void WriteAudioBands(ref FrameSceneHeader header, double seconds, bool playing)
+    {
+        if (!_pulses || GpuExport.WriteBands(ref header, Volatile.Read(ref _energies), seconds) || !playing)
+            return;
+        (header.AudioBass, header.AudioMid, header.AudioHigh) = _audio.LiveBands;
+    }
+
     public void Dispose()
     {
         if (ReferenceEquals(Current, this))
             Current = null;
+        ForgetEnergies();
+
+        // The stop event also ends a frame's or a thumbnail's readback wait within a slice (TryReadback's abort), so the pump is
+        // out well inside the join (Pass 5.2D).
         _stop.Set();
-        _pump.Join(2000);
+        var pumpEnded = _pump.Join(2000);
+
+        // A frame or a thumbnail asked for and not drawn (the engine stopped first): none, so that what waits on it goes on.
+        Interlocked.Exchange(ref _capture, null)?.TrySetResult(null);
+        Interlocked.Exchange(ref _thumbnail, null)?.TrySetResult(null);
+        if (!pumpEnded)
+        {
+            // Still inside a call that has not returned (a driver hung in a present): nothing it reads is let go under it. The
+            // control plane unmapped, or the swap chain released, under a running thread is an access violation, not an
+            // exception it could catch, and its events disposed would throw out of its loop. The workers are ended and the sound
+            // stopped; the memory, the viewport and the events go with the process.
+            AppLog.Write("GPU engine: the frame pump did not stop within 2 s; the compositor's memory, the viewport and the pump's events are kept");
+            _audio.Dispose();
+            _broker.Dispose();
+            _client.DisposeKeepingMemory();
+            return;
+        }
+
         _viewport.Dispose();
         _audio.Dispose();
         _broker.Dispose();

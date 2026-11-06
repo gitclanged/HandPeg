@@ -1,0 +1,11 @@
+# The parametric equalizer (5.2B): the octave bands as before when nothing moved, and EqualizerResponseDb against the chain's own biquads.
+no band moved: 4 peaking bands at 31, 250, 2000, 16000 Hz, an octave wide
+band 6 moved to 1500 Hz, half an octave wide: in the chain as such
+50 Hz: the curve within 0.05 dB of the biquads
+125 Hz: the curve within 0.05 dB of the biquads
+700 Hz: the curve within 0.05 dB of the biquads
+1500 Hz: the curve within 0.05 dB of the biquads
+3000 Hz: the curve within 0.05 dB of the biquads
+8000 Hz: the curve within 0.05 dB of the biquads
+12000 Hz: the curve within 0.05 dB of the biquads
+nothing on: a flat curve

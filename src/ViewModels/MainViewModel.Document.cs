@@ -1,12 +1,13 @@
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
+using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.ViewModels;
 
 // ----- The timeline is a TimelineDocument (4.3C) -----
-// The view model's timeline is one document: its tracks bottom first, the clips on them (the main video's are clips of
-// kind MainVideo on a track like any other, the lowest video track to begin with), its markers and the Sequence
+// The view model's timeline is one document: its tracks bottom first, the clips on them (5.2-AuditB: every video is a clip
+// of its own file on any track, the file last opened as well, and no track is privileged), its markers and the Sequence
 // Output's effects. Nothing else says where a clip is. Every change to where clips are, how long they last and what of
 // their files they play, to their fades, crossfades, gain, speed, switches and tracks is an edit of the document made in
 // one transaction (Edit), which Undo keeps one step of and after which the rows are brought into line (OnDocumentCommitted).
@@ -91,6 +92,7 @@ public partial class MainViewModel
             SetMarkers(document.Markers);
             SetSequenceEffects(document.SequenceEffects, document.SequenceEffectsBypassed);
             AudioLinked = AllAudioLinked();
+            NoteDocumentShape();
             _liveState = null;
             RefreshLayerRows();
             TimelineChanged?.Invoke();
@@ -107,8 +109,8 @@ public partial class MainViewModel
     public TimelineClip? ClipOf(Layer? view) => view is { ClipId: var id } && id != Guid.Empty ? Document.FindClip(id) : null;
 
     /// <summary>
-    /// Whether a layer's picture is drawn at a moment: never a clip hidden, on a hidden track (a view says only its own switch, the main
-    /// video's excepted), or see-through there. What is not drawn cannot be clicked or dragged, in the player or on the Canvas.
+    /// Whether a layer's picture is drawn at a moment: never a clip hidden, on a hidden track (a view says only its own switch), or
+    /// see-through there. What is not drawn cannot be clicked or dragged, in the player or on the Canvas.
     /// </summary>
     public bool IsPictureDrawn(Layer layer, double seconds)
     {
@@ -253,6 +255,7 @@ public partial class MainViewModel
                     _liveState = null;
                     SyncViews();
                     AudioLinked = AllAudioLinked();
+                    NoteDocumentShape();
                     RefreshLayerRows();
                     TimelineChanged?.Invoke();
                     GenerateCommand();
@@ -309,6 +312,7 @@ public partial class MainViewModel
                 SyncViews(afresh: true);
                 FollowSelection();
                 AudioLinked = AllAudioLinked();
+                NoteDocumentShape();
                 RefreshLayerRows();
                 TimelineChanged?.Invoke();
                 GenerateCommand();
@@ -339,7 +343,7 @@ public partial class MainViewModel
             _taken.Clear();
             _staleLooks.Clear();
             _placedFor.Clear();
-            _centerShown = null;
+            _cropShown = null;
             DrawTargetLayer = null;
         }
 
@@ -412,9 +416,8 @@ public partial class MainViewModel
             DrawTargetLayer = null;
         RefreshAnyKeys();
 
-        // The Center controls and the Crop boxes show the main video's clip they stand for as the document has it now (an
-        // undo step puts back its place and crop, 4.4).
-        ShowCenterTarget();
+        // The Crop boxes show the clip they stand for as the document has it now (an undo step puts back its crop, 4.4).
+        ShowCropTarget();
     }
 
     /// <summary>A clip's view: the one it has, its look taken again when the clip has another; or a new one made from its look.</summary>
@@ -441,14 +444,14 @@ public partial class MainViewModel
             Hook(view);
             _views[clip.Id] = view;
             _taken[clip.Id] = clip.State;
-            if (view.IsMainVideo)
-                view.Filmstrip = _layerFilmstrips.GetValueOrDefault(LocalMediaPath);
 
-            // A clip of the main video made from another (a split's second half): placed by the zoom and offsets that one
-            // was placed by, while its corner, width and crop are that one's, so a frame of another shape keeps the two one
-            // look (worked back from its even-pixel width, it could land two pixels off).
-            if (view.IsMainVideo && _placedFor.FirstOrDefault(p => p.Key.IsMainVideo && p.Value.Wrote == (view.SizeWidth, view.PositionX, view.PositionY) && CropOf(p.Key) == CropOf(view)) is { Key: not null } same)
+            // A clip made from another (a split's second half): kept in place by the middle that one was kept by, while its
+            // corner, width and crop are that one's, so a frame of another shape keeps the two one look.
+            if (_placedFor.FirstOrDefault(p => p.Value.Wrote == (view.SizeWidth, view.PositionX, view.PositionY) && CropOf(p.Key) == CropOf(view)
+                    && p.Key.ImagePath == view.ImagePath) is { Key: not null } same)
+            {
                 _placedFor[view] = same.Value;
+            }
 
             // A video whose file was still being looked at when this clip was kept (an undo step, a save taken during a
             // drop): looked at again, its length and sound filled in, its place kept (4.2.0's SetLayers did the same).
@@ -459,7 +462,7 @@ public partial class MainViewModel
             }
             else if (!_isBackgroundWorker)
             {
-                _ = view.IsMainVideo ? LoadMainFilmstripAsync() : LoadLayerPicturesAsync(view);
+                _ = LoadLayerPicturesAsync(view);
             }
         }
 
@@ -478,8 +481,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Writes a clip's own values (its timing, fades, switches, gain, slip, proxy, track) into its view. The main video's
-    /// picture is hidden by its track's switch (its sound plays on), which its views show as their own.
+    /// Writes a clip's own values (its timing, fades, switches, gain, slip, proxy, track) into its view. A picture is hidden by
+    /// its track's switch (and its parents'), which its views show as their own.
     /// </summary>
     private void TakeClip(Layer view, TimelineClip clip, TimelineTrackModel track)
     {
@@ -488,7 +491,7 @@ public partial class MainViewModel
         view.Speed = clip.Speed;
         (view.FadeInSeconds, view.FadeOutSeconds, view.FadeInStyle, view.FadeOutStyle) = (clip.FadeInSeconds, clip.FadeOutSeconds, clip.FadeInStyle, clip.FadeOutStyle);
         view.TransitionIn = clip.TransitionIn;
-        (view.IsHidden, view.IsSoundMuted, view.AudioGainDb) = (clip.IsHidden || (view.IsMainVideo && track.IsHidden), clip.IsMuted, clip.GainDb);
+        (view.IsHidden, view.IsSoundMuted, view.AudioGainDb) = (clip.IsHidden || (track.Kind != TimelineTrackKind.Audio && Document.IsHiddenWithParents(track)), clip.IsMuted, clip.GainDb);
         (view.AudioOffset, view.ProxyChoice) = (clip.AudioLinked ? 0 : clip.AudioSlipSeconds, clip.ProxyChoice);
         if (clip.SourceDuration > 0)
             view.MediaDuration = clip.SourceDuration;
@@ -543,13 +546,13 @@ public partial class MainViewModel
     private TimelineClip NewClipFor(Layer view, double start, double end) => new()
     {
         ContentKind = view.Kind,
-        SourcePath = view.IsFile || view.IsAudio ? view.ImagePath : view.IsVideo || view.IsMainVideo ? LocalMediaPath : null,
-        AudioStreamIndex = view.CarriesSound || (view.IsMainVideo && _mediaInfo is not { Audio.Count: 0 }) ? 0 : -1,
+        SourcePath = view.IsFile || view.IsAudio ? view.ImagePath : null,
+        AudioStreamIndex = view.CarriesSound ? 0 : -1,
         Start = start,
         End = end,
-        MediaOffset = view.IsVideoFile || view.IsAudio || view.IsMainVideo ? view.MediaOffset : 0,
+        MediaOffset = view.IsVideoFile || view.IsAudio ? view.MediaOffset : 0,
         Speed = view.HasSpeed ? view.Speed : 1,
-        SourceDuration = view.IsVideoFile || view.IsAudio ? view.MediaDuration : view.IsMainVideo ? MainMediaSeconds : 0,
+        SourceDuration = view.IsVideoFile || view.IsAudio ? view.MediaDuration : 0,
         AudioLinked = AudioLinked,
         AudioSlipSeconds = AudioLinked || view.IsAudio ? 0 : view.AudioOffset,
         FadeInSeconds = view.FadeInSeconds,
@@ -588,7 +591,7 @@ public partial class MainViewModel
     /// <summary>
     /// Puts a new clip of a view onto the timeline, by the row it was dropped on: an empty track takes it; a track it
     /// joins (<paramref name="joins"/>) takes it where it is free; otherwise it gets a track of its own just above that row
-    /// (the main video's included), and with no row, a track on top of the pictures (a sound's at the end).
+    /// (Track 1's included), and with no row, a track on top of the pictures (a sound's at the end).
     /// </summary>
     private TimelineClip PlaceNew(ITimelineTransaction edit, Layer view, double start, double end, Layer? onRow, bool joins)
     {
@@ -804,138 +807,171 @@ public partial class MainViewModel
         return copy;
     }
 
-    // ----- The primary chain, as the builder reads it from the document -----
-
-    // The lowering of the live state, made once for each state of the timeline (see SequenceLowering).
-    private SequenceLowering? _lowering;
-
-    /// <summary>The timeline as the graph builder lowers it now: its primary chain (the main video's clips it plays from the main file's stream), its length.</summary>
-    private SequenceLowering Lowering
-    {
-        get
-        {
-            var state = _liveState ??= CompileExportState();
-            if (_lowering is null || !ReferenceEquals(_loweredState, state))
-                (_lowering, _loweredState) = (FilterGraphBuilder.Lowering(state), state);
-            return _lowering;
-        }
-    }
-
-    private SequenceExportState? _loweredState;
-
-    /// <summary>
-    /// The main video's clips the player plays, in the order they come on the sequence (the graph builder's primary chain,
-    /// crossfades laid out): what its sequence for the player, the I-frames on the timeline and the playback bar's edit points
-    /// are made from. Without the Layer Engine the file is the whole timeline.
-    /// </summary>
-    public IReadOnlyList<MainClip> GetMainClips() =>
-        !FrameEngine ? [new MainClip(0, 0, MainMediaSeconds, 0)] : HasSource ? Lowering.MainClips : [];
-
-    /// <summary>From where the main video first appears on the sequence to where it is last seen, in seconds.</summary>
-    public (double Start, double End) GetMainSpan()
-    {
-        var clips = GetMainClips();
-        return clips.Count == 0 ? (0, 0) : (clips[0].Start, clips.Max(c => c.End));
-    }
-
-    /// <summary>Whether the main video plays as more than one stretch of its file, or not from its start: what a whole file is not.</summary>
-    private bool IsMainSpliced => FrameEngine && !IsMainWholeSequence;
-
-    /// <summary>Whether the main video is the whole sequence, untouched: then the file can be played and read as it is.</summary>
-    private bool IsMainWholeSequence => !FrameEngine || MainMediaSeconds <= 0 || Lowering.IsMainWholeSequence;
+    // ----- The Sequence's clips of files (5.2-AuditB) -----
+    // No clip is privileged: there is no main video and no primary chain. What the timeline draws along it (the playback bar's
+    // edit points, snapping, chapters at cuts, the I-frames) is every clip that plays a file's picture (SequenceSpans), each
+    // of its own file; the Sequence's natural size is its own (TimelineDocument.NaturalWidth/Height), given as the first
+    // file's picture lands on it. The file last opened (LocalMediaPath) is a clip like any dropped one once it is placed.
 
     /// <summary>Length of the sequence in seconds: to where its last clip ends (its sound included).</summary>
-    public double SequenceSeconds => FrameEngine ? Document.TotalDuration : MainMediaSeconds;
-
-    /// <summary>The clips of the main video (kind MainVideo), each with its track: the main video wherever it is put.</summary>
-    private IEnumerable<(TimelineTrackModel Track, TimelineClip Clip)> MainVideoClips() =>
-        Document.Tracks.SelectMany(t => t.Clips.Where(c => c.ContentKind == LayerKind.MainVideo).Select(c => (t, c)));
+    public double SequenceSeconds => Document.TotalDuration;
 
     /// <summary>
-    /// Puts the main video on the timeline for a source just loaded: its clips of another file go, and one clip of the
-    /// whole file goes where they were (on their track, at the start), or on the lowest video track when that is free at
-    /// the start, or on a new track at the bottom. What ran to the end of the timeline and has no length of its own (a
-    /// piece cut from the video, a picture, words, an adjustment: what 4.2.0 left "to the end", a style's layout chosen
-    /// before any video among them) runs to the new video's end (4.3D). Not an undo step: loading the source is not an edit.
+    /// Every shown top-level clip that plays a file's picture, by where it starts (SequenceSpans.PictureSpans): what the
+    /// playback bar's edit points, snapping, chapters at cuts, cut fractions and the I-frames along the timeline are made of.
     /// </summary>
-    private void PlaceMainVideo()
+    public IReadOnlyList<ClipSpan> PictureSpans() => SequenceSpans.PictureSpans(Document);
+
+    /// <summary>The file last opened, cleaned as the spans name files; "" for none.</summary>
+    private string OpenedFile => LocalMediaPath.Trim().Trim('"');
+
+    /// <summary>
+    /// Whether the file last opened is the whole Sequence (one clip of it from its start to its end, untouched,
+    /// SequenceSpans.WholeFiles): then what is its own (soft subtitles, an anchored subtitle import) goes with the Sequence.
+    /// </summary>
+    private bool IsOpenedFileWhole => OpenedFile.Length > 0 && SequenceSpans.WholeFiles(Document).Contains(OpenedFile);
+
+    /// <summary>The view of the top-level clip of the file last opened that ends last (what files opened with it follow, in line); null while none is on the timeline.</summary>
+    public Layer? OpenedFileView => Document.Tracks.SelectMany(t => t.Clips)
+        .Where(c => c is { ParentClipId: null, ContentKind: LayerKind.VideoFile or LayerKind.Audio } && SameFile(c.SourcePath, OpenedFile))
+        .OrderBy(c => c.End).Select(ViewOf).LastOrDefault(v => v is not null);
+
+    // A Game Preset or a preset's place, look and Cutouts chosen while no clip could take it (4.3D): the next file opened takes it.
+    private ClipTemplate? _templateToCome;
+
+    // The file opened before one whose length is not known yet (a recording never finished): its clips are replaced once the
+    // new file's I-frames say how long it is (SetSourceIFrames). Null while nothing waits.
+    private string? _openedOver;
+
+    // The clip the file opened last was placed as (its automatic preset goes on it); null when it placed none.
+    private Guid? _openedClip;
+
+    /// <summary>
+    /// Puts a clip of the file just opened on the timeline, made as a dropped file is (5.2-AuditB: no clip is privileged):
+    /// a video-file clip of the whole file (a sound clip for a file with no picture), fitted to the frame as Settings say, its
+    /// blur fill on unless the Blur Fill row's switch is off, its audio streams on Sub-Lanes of their own (UnpackStreams). On an
+    /// empty Sequence it goes on Track 1 at 0. Another file opened over clips of the one opened before takes their place: they
+    /// go, it lies at the start of the first one's track with its look, place and crop (fitted to the frame when that leaves it
+    /// taller than the frame), and what hung from them hangs from it (a Cutout cut from their picture cut from its picture, on
+    /// its clock; their own streams' sound goes with them). On a Sequence holding nothing else it gives the Sequence its rate
+    /// and natural size. What ran to the end of the timeline (a picture, words, an adjustment) runs to its end (4.3D). A Game
+    /// Preset chosen before any clip (<see cref="_templateToCome"/>) goes on it. No undo step: opening a file is not an edit.
+    /// </summary>
+    /// <param name="previous">The file opened before this one ("" for none): its clips are the ones replaced.</param>
+    private void PlaceOpenedFile(string previous)
     {
+        var path = OpenedFile;
         var length = MainMediaSeconds;
-        if (!HasSource || length <= 0.05)
-            return;
-
-        // The timeline ticks at the main video's own rate (as 4.2.0's canvas did): its edits land on its frames.
-        Document.FrameRate = Models.Timeline.FrameRate.OfSource(SourceFrameRate);
-        Edit("put the main video on the timeline", edit =>
+        if (path.Length == 0 || _mediaInfo is not { } info || length <= 0.05)
         {
-            // Its look stays (4.2.0 kept the main video's row through a new source, and "Whole" put back its timing only): its
-            // first clip's, without the keyframes, which were the old timing's. Where it was, or the lowest video track that
-            // holds nothing else (so no layer starts sharing its look), or a new track at the bottom.
-            var old = MainVideoClips().ToList();
-            var look = old.Count > 0 ? TimelineTransaction.CopyOf(old[0].Clip.State)
-                : _mainLookToCome is { } waiting ? TimelineTransaction.CopyOf(waiting) : null;
-            _mainLookToCome = null;
-            if (look is not null)
-            {
-                (look.KeysX, look.KeysY, look.KeysScale, look.KeysRotation, look.KeysOpacity) = (null, null, null, null, null);
-                (look.Kind, look.Name) = (LayerKind.MainVideo, MainVideoName());
-            }
+            _openedOver = path.Length > 0 && _mediaInfo is not null ? previous : null;
+            return;
+        }
 
-            var track = old.Count > 0 ? old[0].Track : Document.VideoTracks.FirstOrDefault(t => t.Clips.Count == 0);
+        _openedOver = null;
+        var before = previous.Trim().Trim('"');
+        var old = before.Length == 0 ? [] : Document.Tracks.Where(t => !t.IsLocked).SelectMany(t => t.Clips
+            .Where(c => c is { ParentClipId: null, ContentKind: LayerKind.VideoFile or LayerKind.Audio } && SameFile(c.SourcePath, before))
+            .Select(c => (Track: t, Clip: c))).ToList();
+        // Empty but for the clips this file takes the place of and what hangs from them: it is as the first file opened.
+        var oldIds = old.Select(o => o.Clip.Id).ToHashSet();
+        var empty = !Document.Tracks.Any(t => t.Clips.Exists(c => !oldIds.Contains(c.Id) && !(c.ParentClipId is { } parent && oldIds.Contains(parent))));
+        var picture = info.Video is { Width: > 0, Height: > 0 };
+        var kind = picture ? LayerKind.VideoFile : LayerKind.Audio;
+
+        // The Sequence ticks at the first file's own rate (as 4.2.0's canvas did), and takes its shape (as the Crop boxes cut
+        // it, a preset's chosen before any video): outside any transaction, as a project's document-level values are.
+        if (empty)
+        {
+            Document.FrameRate = Models.Timeline.FrameRate.OfSource(SourceFrameRate);
+            if (picture)
+                (Document.NaturalWidth, Document.NaturalHeight) = CroppedSize(BoxCrop(), SourceWidth, SourceHeight);
+            NoteDocumentShape();
+        }
+
+        // Its look: the replaced clip's (without the keys, which were its timing's), at its place; or a new clip's, fitted.
+        var name = System.IO.Path.GetFileName(path);
+        var replaced = old.Count > 0 ? ViewOf(old[0].Clip) : null;
+        Layer view;
+        if (old.Count > 0)
+        {
+            var look = TimelineTransaction.CopyOf(old[0].Clip.State);
+            (look.KeysX, look.KeysY, look.KeysScale, look.KeysRotation, look.KeysOpacity) = (null, null, null, null, null);
+            (look.Kind, look.Name, look.ImagePath, look.ImageWidth, look.ImageHeight) = (kind, name, path, info.Video?.Width ?? 0, info.Video?.Height ?? 0);
+            (look.StartTime, look.Duration, look.MediaOffset, look.Speed, look.MediaDuration) = (0, length, 0, 1, length);
+            look.HasAudio = info.Audio.Count > 0;
+            view = Layer.FromState(look, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
+            if (picture && replaced is not null && FrameWidth > 0 && FrameHeight > 0)
+            {
+                var (x, y, width, height) = replaced.GetOutputRect(FrameWidth, FrameHeight, SourceWidth, SourceHeight);
+                PlaceAbout(view, replaced.SizeWidth, (x + width / 2.0) / FrameWidth, (y + height / 2.0) / FrameHeight);
+                if (view.GetOutputRect(FrameWidth, FrameHeight, SourceWidth, SourceHeight).Height > FrameHeight + 2)
+                    FitToFrame(view, AppSettings.Current.NewClipsFill);
+            }
+        }
+        else
+        {
+            view = new Layer
+            {
+                Kind = kind,
+                Name = name,
+                ImagePath = path,
+                ImageWidth = info.Video?.Width ?? 0,
+                ImageHeight = info.Video?.Height ?? 0,
+                HasAudio = info.Audio.Count > 0,
+                MediaDuration = length,
+            };
+
+            if (picture)
+            {
+                if (empty)
+                    (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom) = BoxCrop();
+                view.BlurFill = _backgroundRow.IsHidden ? null : true;
+                FitToFrame(view, AppSettings.Current.NewClipsFill);
+            }
+        }
+
+        DescribeSound(view, info);
+        TimelineClip? made = null;
+        Edit($"open {name}", edit =>
+        {
+            var trackKind = picture ? TimelineTrackKind.Video : TimelineTrackKind.Audio;
+            var track = old.Count > 0 ? old[0].Track
+                : Document.Tracks.FirstOrDefault(t => t.Kind == trackKind && t.Clips.Count == 0 && !t.IsLocked && t.ParentTrackId is null);
             var oldEnd = Document.TotalDuration;
             var toTheEnd = Document.Tracks.Where(t => !t.IsLocked).SelectMany(t => t.Clips)
-                .Where(c => c.ContentKind is LayerKind.Video or LayerKind.Image or LayerKind.Text or LayerKind.Adjustment && Math.Abs(c.End - oldEnd) < 0.0005)
+                .Where(c => c.ContentKind is LayerKind.Image or LayerKind.Text or LayerKind.Adjustment && Math.Abs(c.End - oldEnd) < 0.0005)
                 .ToList();
-            // The old clips go, but not what hangs from them (a style's HUD pieces cut from the video): those stay, and are
-            // given to the new clip below.
-            var oldIds = old.Select(o => o.Clip.Id).ToHashSet();
+
+            // The old clips go, but not what hangs from them (a Game Preset's Cutouts): those are given to the new clip below.
+            var oldEnds = old.ToDictionary(o => o.Clip.Id, o => o.Clip.End);
+            var children = Document.Tracks.Where(t => !t.IsLocked)
+                .SelectMany(t => t.Clips.Where(c => c.ParentClipId is { } parent && oldEnds.ContainsKey(parent))
+                    .Select(c => (Track: t, Clip: c, RanToEnd: Math.Abs(c.End - oldEnds[c.ParentClipId!.Value]) < 0.0005))).ToList();
             foreach (var (_, clip) in old)
                 edit.DeleteClip(clip, withChildren: false);
             if (track is not null && (!Document.Tracks.Contains(track) || track.IsLocked))
                 track = null;
 
-            var view = look is null ? new Layer { Kind = LayerKind.MainVideo, Name = MainVideoName() } : Layer.FromState(look, SourceWidth, SourceHeight, FrameWidth, FrameHeight);
-            view.MediaDuration = length;
-
-            // Where the Center controls say (the clip it replaces, or a style's or preset's), at this file's shape (4.4: a
-            // clip's place is its own, so it is written into it before it is made); the first clip of the main video cropped
-            // as the Crop boxes say (a preset's, chosen before any video).
-            if (old.Count == 0)
-                (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom) = BoxCrop();
-            if (FrameWidth > 0 && FrameHeight > 0)
-            {
-                _placingMain = true;
-                try
-                {
-                    WriteMainPlace(view, CenterZoom, CenterOffsetX, CenterOffsetY);
-                }
-                finally
-                {
-                    _placingMain = false;
-                }
-            }
-
-            var main = NewClipFor(view, 0, length);
-            Adopt(view, main);
-
-            // Its frames on the timeline (an adopted view is not made by ViewFor, which fetches them for a new one).
-            view.Filmstrip = _layerFilmstrips.GetValueOrDefault(LocalMediaPath);
-            if (!_isBackgroundWorker)
-                _ = LoadMainFilmstripAsync();
+            var clipOfFile = NewClipFor(view, 0, length);
+            Adopt(view, clipOfFile);
+            TimelineClip placed;
             try
             {
-                edit.PlaceClip(track ?? edit.InsertTrack(0, TimelineTrackKind.Video), main, allowCrossfadeOverlap: false);
+                placed = edit.PlaceClip(track ?? edit.InsertTrack(picture ? 0 : Document.Tracks.Count, trackKind), clipOfFile, allowCrossfadeOverlap: false);
             }
             catch (TimelineEditException) when (track is not null)
             {
-                edit.PlaceClip(edit.InsertTrack(0, TimelineTrackKind.Video), main, allowCrossfadeOverlap: false);
+                placed = edit.PlaceClip(edit.InsertTrack(picture ? 0 : Document.Tracks.Count, trackKind), clipOfFile, allowCrossfadeOverlap: false);
             }
 
-            foreach (var clip in toTheEnd.Where(c => c.Start < main.End - TimelineDocument.MinimumClipSeconds && Math.Abs(c.End - main.End) > 0.0005))
+            made = placed;
+            _openedClip = placed.Id;
+            foreach (var clip in toTheEnd.Where(c => c.Start < placed.End - TimelineDocument.MinimumClipSeconds && Math.Abs(c.End - placed.End) > 0.0005))
             {
                 try
                 {
-                    edit.TrimClipEnd(clip, main.End);
+                    edit.TrimClipEnd(clip, placed.End);
                 }
                 catch (TimelineEditException)
                 {
@@ -943,60 +979,94 @@ public partial class MainViewModel
                 }
             }
 
-            // What hung from the old clips hangs from the new one now, where it lies over it; anything else lets go. A clip on a
-            // locked track is left as it is (an edit of it would refuse the whole load): a parent that is gone is harmless.
-            if (oldIds.Count > 0)
-            {
-                foreach (var orphan in Document.Tracks.Where(t => !t.IsLocked).SelectMany(t => t.Clips).Where(c => c.ParentClipId is { } parent && oldIds.Contains(parent)).ToList())
-                    edit.SetClipParent(orphan, orphan.Start >= main.Start - 0.0005 && orphan.End <= main.End + 0.0005 ? main.Id : null);
-            }
+            foreach (var (lane, child, ranToEnd) in children)
+                Repoint(edit, lane, child, ranToEnd, placed, view, before);
         }, undoable: false);
+
+        if (made is null)
+            return;
+
+        if (!_isBackgroundWorker)
+            _ = LoadLayerPicturesAsync(view);
+        if (picture)
+            UnpackStreams(view, info, undoable: false);
+
+        // A Game Preset or a preset chosen before there was a clip to take it.
+        if (old.Count == 0 && picture && _templateToCome is { } template)
+        {
+            _templateToCome = null;
+            using var held = HoldLookSteps();
+            PutTemplateOn(made.Id, template, $"put the Game Preset on {name}");
+        }
+
+        // Two pictures side by side on one canvas (5.2C): offered, never done unasked.
+        if (picture)
+            OfferSideBySide(view);
     }
 
     /// <summary>
-    /// What the main video's file is (how long, whether it has sound), written into its clips of that file and their views
-    /// once it has been looked at: what the file is, not an edit, so no undo step.
+    /// A clip that hung from a clip of the file opened before, as the file opened now takes that clip's place: that file's own
+    /// sound goes (the new file's streams are its own Sub-Lanes); a Cutout cut from its picture is cut from the new picture, on
+    /// the new clip's clock, held to the new clip's span (to its end when it ran to the old clip's end; none when nothing of it
+    /// lies over it: a piece of the old file never stays on its own); anything else hangs from the new clip where it lies over
+    /// it, and lets go otherwise.
     /// </summary>
-    private void TakeMainFile(MediaInfo? info)
+    private void Repoint(ITimelineTransaction edit, TimelineTrackModel lane, TimelineClip child, bool ranToEnd, TimelineClip made, Layer view, string before)
     {
-        var length = Math.Max(info?.DurationSeconds ?? 0, 0);
-        foreach (var (_, clip) in MainVideoClips())
+        var inside = child.Start >= made.Start - 0.0005 && child.End <= made.End + 0.0005;
+        var ofOld = SameFile(child.SourcePath, before);
+        if (ofOld && child.ContentKind == LayerKind.Audio)
         {
-            if (!string.Equals(clip.SourcePath, LocalMediaPath, StringComparison.OrdinalIgnoreCase))
-                continue;
-            if (length > 0)
-                clip.SourceDuration = length;
-            clip.AudioStreamIndex = info is { Audio.Count: 0 } ? -1 : 0;
+            edit.DeleteClip(child);
+            return;
         }
 
-        // (Over a copy: what a view's change sets going may change the rows.)
-        foreach (var view in Layers.Where(l => l.IsMainVideo).ToArray())
+        if (!(ofOld && child.ContentKind == LayerKind.VideoFile))
         {
-            view.Name = MainVideoName();
-            if (length > 0)
-                view.MediaDuration = length;
+            edit.SetClipParent(child, inside ? made.Id : null);
+            return;
         }
 
-        _liveState = null;
+        var start = Math.Max(child.Start, made.Start);
+        var end = ranToEnd ? made.End : Math.Min(child.End, made.End);
+        if (end - start < TimelineDocument.MinimumClipSeconds)
+        {
+            edit.DeleteClip(child, withChildren: false);
+            return;
+        }
+
+        // Made anew (a new id, so its view is made anew with its new file).
+        var piece = CopyOfClip(child);
+        (piece.Id, piece.ParentClipId, piece.SourcePath, piece.Start, piece.End) = (Guid.NewGuid(), null, made.SourcePath, start, end);
+        (piece.MediaOffset, piece.Speed, piece.SourceDuration) = (made.MediaOffset + (start - made.Start) * made.Speed, made.Speed, made.SourceDuration);
+        piece.State = OnClockOf(TimelineTransaction.CopyOf(child.State), view, made, start);
+        (piece.State.StartTime, piece.State.Duration) = (start, end - start);
+        edit.DeleteClip(child, withChildren: false);
+        edit.SetClipParent(edit.PlaceClip(lane, piece, allowCrossfadeOverlap: false), made.Id);
     }
 
-    // A preset's or a style's look for the main video while it has no clip (a style chosen before a video is opened, 4.3D):
-    // the next video opened takes it (PlaceMainVideo), as 4.2.0's main row kept it.
-    private LayerState? _mainLookToCome;
+    /// <summary>Whether a clip's file is a file named (both cleaned, the case ignored).</summary>
+    private static bool SameFile(string? path, string file) =>
+        file.Length > 0 && string.Equals((path ?? "").Trim().Trim('"'), file.Trim().Trim('"'), StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>A look put on every clip of the main video (a preset's, a style's), each keeping its own timing and switches; kept for the next video while there is none.</summary>
-    private void TakeMainLook(LayerState? look)
+    /// <summary>
+    /// Puts a picture at a width (a fraction of the frame's) with its middle at a place (fractions of the frame), at its own
+    /// shape as its crop leaves it, its aspect locked: a template's place, or a replaced clip's.
+    /// </summary>
+    private void PlaceAbout(Layer view, double width, double middleX, double middleY)
     {
-        _mainLookToCome = MainVideoClips().Any() || look is null ? null : TimelineTransaction.CopyOf(look);
-        foreach (var (track, clip) in MainVideoClips().ToList())
-        {
-            if (ViewOf(clip) is { } view)
-                TakeLook(view, clip, track, look);
-        }
+        if (ShapeOf(view) is not (> 0 and var tall) || FrameWidth <= 0 || FrameHeight <= 0)
+            return;
 
-        // A style's or a preset's: every clip of the main video takes the Center controls it set.
-        PlaceMainViews(all: true);
-        ShowCenterTarget();
+        var (left, top, right, bottom) = view.CropFractions;
+        var height = width * FrameWidth * tall * (1 - top - bottom) / (1 - left - right) / FrameHeight;
+        view.LockAspectRatio = true;
+        view.FromCorner(() =>
+        {
+            view.SizeWidth = width;
+            view.PositionX = middleX - width / 2;
+            view.PositionY = middleY - height / 2;
+        });
     }
 
     /// <summary>A look put on one clip, which keeps its own timing, switches and crop (a preset's crop is put on its own, ApplyPresetCrop).</summary>
@@ -1018,300 +1088,215 @@ public partial class MainViewModel
         _staleLooks.Add(view);
     }
 
-    /// <summary>What the main video's clips are called: its file's name, or "Main Video".</summary>
-    private string MainVideoName() => _mediaInfo is not null && LocalMediaPath.Length > 0 ? System.IO.Path.GetFileName(LocalMediaPath) : "Main Video";
+    // ----- The Sequence's natural size (5.2-AuditB) -----
 
-    // ----- The main video's place: the Center controls -----
-    // The main video is placed about its middle (zoom and offsets), which keeps it centred when the frame changes shape.
-    // Its place and its crop are each clip's own (4.4): every clip's view holds them as every other layer does, a corner
-    // and a width (and its crop, which reframes its stream), written into its clip as its look (FlushLooks), so an undo step
-    // or a project keeps them. The Center controls and the Crop boxes are a view of one clip, CenterTarget (the selected
-    // one, else the one at the playhead): they are taken from it (ShowCenterTarget) and written into it (PlaceMainViews); a
-    // style, a preset or Reset writes them into every clip. The graph places the chain by its first clip's (CenterRect,
-    // GetCenterRect) and lays a clip placed or cropped otherwise in a box of its own.
-
-    private bool _placingMain;
-
-    // Set while a style, a preset, Reset or a project being opened sets the Center controls: every clip of the main video takes them.
-    private bool _centerForAll;
-
-    // The view the Center controls and the Crop boxes were last taken from (the CenterTarget of then).
-    private Layer? _centerShown;
-
-    // How each view of the main video was last placed: for what frame and source, at what zoom and offsets, and the corner
-    // and width that gave. A frame of another shape places it again about its middle at that zoom and those offsets (worked
-    // back from its corner and width only when they were changed since: a frame being typed, a few pixels wide on the way,
-    // loses nothing). A view not here is taken as placed for the frame as it is when it is first met.
-    private readonly record struct MainPlacement((int FrameWidth, int FrameHeight, int SourceWidth, int SourceHeight) For,
-        double Zoom, double OffsetX, double OffsetY, (double SizeWidth, double PositionX, double PositionY) Wrote);
-
-    private readonly Dictionary<Layer, MainPlacement> _placedFor = new(ReferenceEqualityComparer.Instance);
-
-    // Whether the view model listens to itself for the Center controls' clip changing (ShowCenterTarget).
-    private bool _watchingCenterTarget;
-
-    // Set while a box, a gizmo or a slider is dragged (MainWindow, HoldCenterTarget): the clip the Center controls stand for
-    // stays the one they were taken from.
-    private bool _centerHeld;
+    // The natural size and whether the document holds any clip, as last told (NoteDocumentShape).
+    private (int Width, int Height, bool Filled) _documentShown;
 
     /// <summary>
-    /// The main video's clip the Center controls and the Crop boxes show and set (4.4): the selected one, else the one at
-    /// the playhead (or its first); the hidden stand-in while it has none. While a drag is under way, the one they were
-    /// taken from, so the playhead crossing into another clip during playback does not switch it partway through.
+    /// Tells what follows the document's natural size (the frame's sides, the other side of a size typed on one) and whether it
+    /// holds any clip (<see cref="HasSource"/>) when either has changed: after an edit, an undo step, a document put in place.
     /// </summary>
-    public Layer CenterTarget =>
-        _centerHeld && _centerShown is { ClipId: var heldId } held && heldId != Guid.Empty && _views.TryGetValue(heldId, out var heldView) && ReferenceEquals(heldView, held)
-            ? held
-            : KeyLayer is { IsMainVideo: true, ClipId: var id } selected && id != Guid.Empty && _views.TryGetValue(id, out var view) && ReferenceEquals(view, selected)
-                ? selected
-                : MainLayer;
-
-    /// <summary>
-    /// Holds the clip the Center controls stand for while a drag is under way (a Canvas box, a gizmo, a slider), or lets it
-    /// go: they then show the clip they stand for now.
-    /// </summary>
-    public void HoldCenterTarget(bool hold)
+    private void NoteDocumentShape()
     {
-        _centerHeld = hold;
-        if (!hold && !ReferenceEquals(CenterTarget, _centerShown))
-            ShowCenterTarget();
-    }
+        // The master fader follows the Sequence's gain (5.2B): an edit, an undo, a project opened.
+        NoteMasterGain();
 
-    /// <summary>
-    /// The view of the main video's clip the sequence's place and crop are (the graph's CenterRect and crop): the first shown
-    /// clip of the lowest picture track that plays the main file as the player does, the graph builder's primary chain's
-    /// first clip (FilterGraphBuilder.CanRide); while no clip can ride the chain (each at another speed, another sound
-    /// stream), the main video's first clip, as the builder takes it then, never the one at the playhead; null while it has none.
-    /// </summary>
-    private Layer? AnchorMainView()
-    {
-        if (HasSource)
+        var now = (Document.NaturalWidth, Document.NaturalHeight, Document.Tracks.Any(t => t.Clips.Count > 0));
+        if (now == _documentShown)
+            return;
+
+        var reshaped = (now.NaturalWidth, now.NaturalHeight) != (_documentShown.Width, _documentShown.Height);
+        _documentShown = now;
+        if (reshaped)
         {
-            var primary = LocalMediaPath.Trim().Trim('"');
-            foreach (var track in Document.Tracks)
-            {
-                if (track.Kind is not (TimelineTrackKind.Video or TimelineTrackKind.Switch))
-                    continue;
-
-                foreach (var clip in track.Clips)
-                {
-                    if (!clip.IsHidden && clip.ContentKind == LayerKind.MainVideo && clip.VideoStreamIndex == 0 && clip.AudioStreamIndex <= 0
-                        && Math.Abs(clip.Speed - 1) < 0.0005 && clip.SourcePath is { } path && string.Equals(path.Trim().Trim('"'), primary, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return _views.GetValueOrDefault(clip.Id);
-                    }
-                }
-            }
+            OnPropertyChanged(nameof(FrameWidth));
+            OnPropertyChanged(nameof(FrameHeight));
+            RelinkDimensions();
         }
 
-        return FirstMainView();
+        OnPropertyChanged(nameof(HasSource));
+        OnPropertyChanged(nameof(ShowsCopyNote));
     }
 
-    /// <summary>
-    /// The zoom and offsets a view of the main video is placed by (the Center controls' values for it), worked back from its
-    /// corner and width at the shape its crop leaves of the source: on the frame and source given, or as they are now.
-    /// </summary>
-    private (double Zoom, double OffsetX, double OffsetY) MainPlaceOf(Layer view, (int FrameWidth, int FrameHeight, int SourceWidth, int SourceHeight)? on = null)
-    {
-        var (frameWidth, frameHeight, sourceWidth, sourceHeight) = on ?? (FrameWidth, FrameHeight, SourceWidth, SourceHeight);
-        var (croppedWidth, croppedHeight) = CroppedSize(CropOf(view), sourceWidth, sourceHeight);
-        var zoom = Math.Clamp(view.SizeWidth, SmallestCenterZoom, LargestCenterZoom);
-        return (zoom, Math.Clamp((view.PositionX - (1 - zoom) / 2) * 100, -100, 100),
-            Math.Clamp((view.PositionY - (1 - zoom * Math.Max(frameWidth, 1) * croppedHeight / croppedWidth / Math.Max(frameHeight, 1)) / 2) * 100, -100, 100));
-    }
+    // ----- Every picture keeps its middle as the frame changes shape (5.2-AuditB) -----
+    // A picture's place is its corner and width as fractions of the frame: a frame of another shape would leave the corner where
+    // it was and move the middle. So every picture is kept about its middle (what the main video's Center controls did for it
+    // alone until 5.2-AuditB): its width stays, and its corner moves to put its middle where it was at its height on the new
+    // frame. The middle it was kept at is used as it is while nothing has moved it since (a frame being typed, a few pixels wide
+    // on the way, loses nothing); otherwise it is worked out for the frame it was placed for.
 
-    /// <summary>
-    /// The zoom and offsets a view of the main video is at: those it was last placed by, while nothing has moved it since
-    /// (exact, whatever frame it was placed for); else worked back from its corner and width, for the frame it was placed for.
-    /// </summary>
-    private (double Zoom, double OffsetX, double OffsetY) KeptPlaceOf(Layer view)
-    {
-        if (!_placedFor.TryGetValue(view, out var was))
-            return MainPlaceOf(view);
+    // Set while pictures are being put in place by what follows from a change (a frame reshaped, a template's place): what that
+    // does to them records no keyframe and takes no undo step.
+    private bool _placingViews;
 
-        return was.Wrote == (view.SizeWidth, view.PositionX, view.PositionY) ? (was.Zoom, was.OffsetX, was.OffsetY) : MainPlaceOf(view, was.For);
-    }
+    // How each picture was last kept: for what frame, its middle there (fractions of the frame), and the corner and width it had.
+    private readonly record struct PicturePlacement((int Width, int Height) Frame, double MiddleX, double MiddleY,
+        (double SizeWidth, double PositionX, double PositionY) Wrote);
 
-    /// <summary>
-    /// Writes a place (a zoom and offsets) into a view of the main video as a corner and a width, at the shape its own crop
-    /// leaves of the source; its look is then newer than its clip's. Callers hold <see cref="_placingMain"/>.
-    /// </summary>
-    private void WriteMainPlace(Layer view, double zoom, double offsetX, double offsetY)
+    private readonly Dictionary<Layer, PicturePlacement> _placedFor = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Keeps every picture about its middle as the frame changes shape (see the section above); a picture met for the first time was placed for the frame as it is.</summary>
+    private void KeepPlacesOnReshape()
     {
-        var (frameWidth, frameHeight) = ((double)FrameWidth, (double)FrameHeight);
-        var (x, y, width, _) = CenterRectOf(zoom, offsetX, offsetY, CroppedSizeOf(CropOf(view)));
-        var place = (width / frameWidth, x / frameWidth, y / frameHeight);
-        _placedFor[view] = new MainPlacement((FrameWidth, FrameHeight, SourceWidth, SourceHeight), zoom, offsetX, offsetY, place);
-        if ((view.SizeWidth, view.PositionX, view.PositionY) == place)
+        if (_placingViews || _applyingKeys || FrameWidth <= 0 || FrameHeight <= 0)
             return;
 
-        (view.SizeWidth, view.PositionX, view.PositionY) = place;
-        if (view.ClipId != Guid.Empty)
-            _staleLooks.Add(view);
-    }
+        var now = (Width: FrameWidth, Height: FrameHeight);
 
-    /// <summary>
-    /// Keeps the main video's views in place as the frame changes shape (each about its middle), and writes the Center
-    /// controls into the clip they stand for, or into every clip of the main video (<paramref name="all"/>: a style, a
-    /// preset, Reset). Without either, only the first.
-    /// </summary>
-    /// <param name="moved">The Center controls were set (dragged on the Canvas, typed): what a keyframe may have to record, on that clip at the playhead (or, selected with the playhead outside it, at its nearest moment).</param>
-    private void PlaceMainViews(bool moved = false, bool all = false)
-    {
-        if (_placingMain || _applyingKeys || FrameWidth <= 0 || FrameHeight <= 0)
-            return;
-
-        // A step being put back (4.4-BugHunt) brings every clip's place with it: the Center controls set meanwhile (outside
-        // ShowCenterTarget) write into no clip. Keeping the views in place as the frame changes shape goes on.
-        if ((moved || all) && _restoring > 0)
-            return;
-
-        var target = CenterTarget;
-        var now = (FrameWidth, FrameHeight, SourceWidth, SourceHeight);
-        var active = moved ? MainViewAt(PositionMs / 1000) : null;
-        if (active is not null && !all && !ReferenceEquals(active, target))
-            active = null;
-
-        // The selected clip, with the playhead outside it: its keys are recorded at its moment nearest the playhead (its
-        // first or its last), or they would put it back where they say and the controls would seem to do nothing.
-        double? keyTime = null;
-        if (moved && !all && active is null && target is { IsMainVideo: true } && target.ClipId != Guid.Empty && ReferenceEquals(target, KeyLayer))
-            (active, keyTime) = (target, Math.Clamp(PositionMs / 1000 - target.StartTime, 0, Math.Max(target.Duration, 0)));
-        var before = active is null ? default : (active.SizeWidth, active.PositionX, active.PositionY);
-        _placingMain = true;
+        // The command is built once more after all of them are moved, not once for each.
+        CommandDeferral? deferred = null;
+        _placingViews = true;
         try
         {
-            // A frame (or source) of another shape: each clip keeps its zoom and offsets (those about to take the controls'
-            // values aside). A view met for the first time was placed for the frame as it is. (Over a copy: a view's change
-            // tells the window, whose handlers may commit an edit, which makes the views again.)
+            // (Over a copy: a view's change tells the window, whose handlers may commit an edit, which makes the views again.)
             foreach (var view in _views.Values.ToArray())
             {
-                if (!view.IsMainVideo || all || (moved && ReferenceEquals(view, target)))
+                if (!view.HasPlacement || view.IsCaptions || view.IsLoading)
                     continue;
 
+                var place = (view.SizeWidth, view.PositionX, view.PositionY);
                 if (!_placedFor.TryGetValue(view, out var was))
                 {
-                    var (zoom, offsetX, offsetY) = MainPlaceOf(view);
-                    _placedFor[view] = new MainPlacement(now, zoom, offsetX, offsetY, (view.SizeWidth, view.PositionX, view.PositionY));
+                    var (x, y) = MiddleOf(view, now);
+                    _placedFor[view] = new PicturePlacement(now, x, y, place);
+                    continue;
                 }
-                else if (was.For != now)
-                {
-                    var (zoom, offsetX, offsetY) = KeptPlaceOf(view);
-                    WriteMainPlace(view, zoom, offsetX, offsetY);
-                }
-            }
 
-            // Written into their clips as well (FlushLooks): the graph tells their looks apart by everything a look holds.
-            if (all)
-            {
-                foreach (var view in _views.Values.ToArray())
+                if (was.Frame == now)
+                    continue;
+
+                var (middleX, middleY) = was.Wrote == place ? (was.MiddleX, was.MiddleY) : MiddleOf(view, was.Frame);
+                var (_, _, width, height) = view.GetOutputRect(now.Width, now.Height, SourceWidth, SourceHeight);
+                var corner = (Math.Round(middleX * now.Width - width / 2.0) / now.Width, Math.Round(middleY * now.Height - height / 2.0) / now.Height);
+                if ((view.PositionX, view.PositionY) != corner)
                 {
-                    if (view.IsMainVideo)
-                        WriteMainPlace(view, CenterZoom, CenterOffsetX, CenterOffsetY);
+                    deferred ??= DeferCommand();
+                    (view.PositionX, view.PositionY) = corner;
+                    if (view.ClipId != Guid.Empty)
+                        _staleLooks.Add(view);
                 }
-            }
-            else if (moved && target.ClipId != Guid.Empty && target.IsMainVideo)
-            {
-                WriteMainPlace(target, CenterZoom, CenterOffsetX, CenterOffsetY);
+
+                _placedFor[view] = new PicturePlacement(now, middleX, middleY, (view.SizeWidth, view.PositionX, view.PositionY));
             }
         }
         finally
         {
-            _placingMain = false;
+            _placingViews = false;
+            deferred?.Dispose();
         }
-
-        // The controls stand for another clip than the one they were taken from (the playhead crossed into another while
-        // a layer was selected): they show it now.
-        if (!moved && !all && !ReferenceEquals(target, _centerShown))
-            ShowCenterTarget();
-
-        // Not while a preset or a project is being put in place: that is not the user moving it.
-        if (active is null || _commandDeferrals > 0)
-            return;
-
-        if (active.SizeWidth != before.SizeWidth)
-            RecordKey(active, nameof(Layer.SizeWidth), keyTime);
-        if (active.PositionX != before.PositionX)
-            RecordKey(active, nameof(Layer.PositionX), keyTime);
-        if (active.PositionY != before.PositionY)
-            RecordKey(active, nameof(Layer.PositionY), keyTime);
     }
 
-    // Set by a style or a preset (deferred while it is put in place), by Reset (PlaceEveryMainClip): every clip of the main
-    // video takes them; set by hand, the clip the controls stand for. (An undo step defers the command too, but is no preset.)
-    partial void OnCenterZoomChanged(double value) => PlaceMainViews(moved: true, all: _centerForAll || PresetBeingApplied);
-    partial void OnCenterOffsetXChanged(double value) => PlaceMainViews(moved: true, all: _centerForAll || PresetBeingApplied);
-    partial void OnCenterOffsetYChanged(double value) => PlaceMainViews(moved: true, all: _centerForAll || PresetBeingApplied);
-
-    /// <summary>Sets the Center controls and puts every clip of the main video there (a style's layout, Reset): not only the clip they stand for.</summary>
-    private void PlaceEveryMainClip(double zoom, double offsetX, double offsetY)
+    /// <summary>Where a picture's middle is on a frame of a size, as fractions of it, its height at its width on that frame.</summary>
+    private (double X, double Y) MiddleOf(Layer view, (int Width, int Height) frame)
     {
-        _centerForAll = true;
-        try
-        {
-            (CenterZoom, CenterOffsetX, CenterOffsetY) = (zoom, offsetX, offsetY);
-        }
-        finally
-        {
-            _centerForAll = false;
-        }
+        var (_, _, width, height) = view.GetOutputRect(Math.Max(frame.Width, 2), Math.Max(frame.Height, 2), SourceWidth, SourceHeight);
+        return (view.PositionX + width / 2.0 / Math.Max(frame.Width, 2), view.PositionY + height / 2.0 / Math.Max(frame.Height, 2));
+    }
 
-        // (Values the controls had already are no change of theirs: the clips are placed all the same.)
-        PlaceMainViews(all: true);
+    // ----- The clip the Crop boxes stand for (5.2-AuditB) -----
+    // The Crop boxes (CropLeft..CropBottom, percentages of a picture) and Interactive Crop show and set one clip's own crop: the
+    // selected clip of a file's picture, else the lowest shown top-level video clip at the playhead (or the first). A default of
+    // the interface only: nothing renders by it, and with no clip to stand for they hold what they say for the next file opened.
+
+    // The clip the Crop boxes were last taken from, and whether a drag holds them to it.
+    private Layer? _cropShown;
+    private bool _cropHeld, _watchingCropTarget;
+
+    /// <summary>
+    /// The clip the Crop boxes and Interactive Crop show and set: the selected clip of a file's picture, else the lowest shown
+    /// top-level video clip at the playhead (or the first); null while there is none. While a drag is under way, the one they
+    /// were taken from, so the playhead crossing into another clip during playback does not switch it partway through.
+    /// </summary>
+    public Layer? CropTarget =>
+        _cropHeld && _cropShown is { ClipId: var heldId } held && heldId != Guid.Empty && _views.TryGetValue(heldId, out var heldView) && ReferenceEquals(heldView, held)
+            ? held
+            : KeyLayer is { IsFile: true, ClipId: var id } selected && id != Guid.Empty && _views.TryGetValue(id, out var view) && ReferenceEquals(view, selected)
+                ? selected
+                : VideoViewAt(PositionMs / 1000) ?? FirstVideoView();
+
+    /// <summary>
+    /// The clip whose own picture the player shows while a rectangle is drawn on it, or Live Preview is off (GpuPreviewEngine.ShowSource):
+    /// a region being marked (Draw Target) its video's, else a selected clip's or the one a crop drag holds; otherwise empty, for the
+    /// bottom video at each moment (the clip the Crop boxes stand for then, so the view follows the playhead from clip to clip).
+    /// </summary>
+    public Guid ShownSourceClip => DrawTargetLayer is { } piece && ClipOf(piece) is { ParentClipId: { } parent } ? parent
+        : _cropHeld || KeyLayer is { IsFile: true } ? CropTarget?.ClipId ?? Guid.Empty
+        : Guid.Empty;
+
+    /// <summary>Holds the clip the Crop boxes stand for while a drag is under way (a Canvas box, a gizmo, a slider), or lets it go: they then show the clip they stand for now.</summary>
+    public void HoldCropTarget(bool hold)
+    {
+        _cropHeld = hold;
+        if (!hold && !ReferenceEquals(CropTarget, _cropShown))
+            ShowCropTarget();
     }
 
     /// <summary>
-    /// Shows the clip the Center controls and the Crop boxes stand for (<see cref="CenterTarget"/>) in them: its zoom and
-    /// offsets worked back from its place, its crop. Nothing is written into any clip. After the timeline changed (an edit,
-    /// an undo step, a project opened) and whenever they come to stand for another clip (another selected, the playhead in
-    /// another).
+    /// Shows the crop of the clip the Crop boxes stand for (<see cref="CropTarget"/>) in them; nothing is written into any clip.
+    /// After the timeline changed (an edit, an undo step, a project opened) and whenever they come to stand for another clip.
     /// </summary>
-    private void ShowCenterTarget()
+    private void ShowCropTarget()
     {
-        if (!_watchingCenterTarget)
+        if (!_watchingCropTarget)
         {
             // The view model's own changes tell when the clip they stand for may be another: the selection's, the playhead's.
-            _watchingCenterTarget = true;
+            _watchingCropTarget = true;
             PropertyChanged += (_, e) =>
             {
-                if (e.PropertyName is nameof(ActiveKeyLayer) or nameof(PositionMs) && !_placingMain && !_showingTarget && !ReferenceEquals(CenterTarget, _centerShown))
-                    ShowCenterTarget();
+                if (e.PropertyName is nameof(ActiveKeyLayer) or nameof(PositionMs) && !_placingViews && !_showingTarget && !ReferenceEquals(CropTarget, _cropShown))
+                    ShowCropTarget();
             };
         }
 
-        var target = CenterTarget;
-        _centerShown = target;
-        if (target.ClipId == Guid.Empty || !target.IsMainVideo || FrameWidth <= 0 || FrameHeight <= 0)
+        var target = CropTarget;
+        _cropShown = target;
+        if (target is null)
             return;
 
-        var (zoom, offsetX, offsetY) = KeptPlaceOf(target);
         var crop = CropOf(target);
-        var cropped = CroppedSizeOf(crop);
         using var once = DeferCommand();
-        (_placingMain, _showingTarget) = (true, true);
+        _showingTarget = true;
         try
         {
-            // Values that put it where it is already stay as they were typed (worked back, a place is to the pixel).
-            if (CenterRectOf(CenterZoom, CenterOffsetX, CenterOffsetY, cropped) != CenterRectOf(zoom, offsetX, offsetY, cropped))
-                (CenterZoom, CenterOffsetX, CenterOffsetY) = (zoom, offsetX, offsetY);
             if (BoxCrop() != crop)
                 (CropLeft, CropTop, CropRight, CropBottom) = (Math.Round(crop.Left * 100, 2), Math.Round(crop.Top * 100, 2), Math.Round(crop.Right * 100, 2), Math.Round(crop.Bottom * 100, 2));
         }
         finally
         {
-            (_placingMain, _showingTarget) = (false, false);
+            _showingTarget = false;
         }
     }
 
-    /// <summary>The view of the main video's clip on screen at a moment (the lowest, when two are), or null when none is.</summary>
-    private Layer? MainViewAt(double seconds)
+    /// <summary>The view of the lowest shown top-level video clip on screen at a moment, or null when none is. Looked for at every move of the playhead.</summary>
+    private Layer? VideoViewAt(double seconds)
     {
-        // Looked for at every move of the playhead: no allocation.
+        foreach (var track in Document.Tracks)
+        {
+            if (track.Kind is not (TimelineTrackKind.Video or TimelineTrackKind.Switch) || track.IsHidden)
+                continue;
+
+            foreach (var clip in track.Clips)
+            {
+                if (clip is { ContentKind: LayerKind.VideoFile, ParentClipId: null, IsHidden: false } && clip.Start <= seconds + 0.0005 && clip.End > seconds
+                    && _views.TryGetValue(clip.Id, out var view))
+                {
+                    return view;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The view of the first top-level video clip (the lowest track's), or null while there is none.</summary>
+    private Layer? FirstVideoView()
+    {
         foreach (var track in Document.Tracks)
         {
             foreach (var clip in track.Clips)
             {
-                if (clip.ContentKind == LayerKind.MainVideo && clip.Start <= seconds + 0.0005 && clip.End > seconds && _views.TryGetValue(clip.Id, out var view))
+                if (clip is { ContentKind: LayerKind.VideoFile, ParentClipId: null } && _views.TryGetValue(clip.Id, out var view))
                     return view;
             }
         }
@@ -1319,61 +1304,36 @@ public partial class MainViewModel
         return null;
     }
 
-    /// <summary>The view of the main video's first clip (the lowest track's), or null while it has none.</summary>
-    private Layer? FirstMainView()
-    {
-        foreach (var track in Document.Tracks)
-        {
-            foreach (var clip in track.Clips)
-            {
-                if (clip.ContentKind == LayerKind.MainVideo && _views.TryGetValue(clip.Id, out var view))
-                    return view;
-            }
-        }
+    // The one clip a preset goes on while it is set, whatever is selected: the clip of a file just opened, for its automatic preset.
+    private Guid? _templateTargetOnly;
 
-        return null;
+    /// <summary>
+    /// A preset or Game Preset saved with its blur fill hidden (the Background switch off) takes it from the clips it goes on, as
+    /// it hid the blurred background before 5.2-AuditB; one saved with it shown gives it only with its layout (PutTemplateOn).
+    /// </summary>
+    private void TakeBlurFill(bool hidden)
+    {
+        if (!hidden)
+            return;
+        foreach (var view in TemplateTargets().Where(v => v.BlurFill == true))
+        {
+            view.BlurFill = null;
+            _staleLooks.Add(view);
+        }
     }
 
     /// <summary>
-    /// A view of the main video set to another place or size (by a keyframe applied, or a box): when it is the clip the
-    /// Center controls stand for, they follow it (any other clip's place is its own, 4.4). While keyframes are being
-    /// applied, only the clip on screen at the playhead speaks for it.
+    /// The video clips a Game Preset's layout or a preset's place and crop go on (5.2-AuditB, the per-clip template
+    /// path): those selected on the Timeline (a selected Cutout's clip), or with none selected every top-level video clip.
     /// </summary>
-    private void TakeMainPlace(Layer view, KeyProperty property)
+    private IReadOnlyList<Layer> TemplateTargets()
     {
-        if (_placingMain || !ReferenceEquals(view, CenterTarget) || (_applyingKeys && !ReferenceEquals(view, MainViewAt(PositionMs / 1000))))
-            return;
+        if (_templateTargetOnly is { } only)
+            return Document.FindClip(only) is { } clip && ViewOf(clip) is { } view ? [view] : [];
+        if (TimelineSelection?.Invoke() is { Count: > 0 } selected && GamePresetTargets(selected) is { Count: > 0 } chosen)
+            return chosen;
 
-        _placingMain = true;
-        try
-        {
-            var (zoom, offsetX, offsetY) = MainPlaceOf(view);
-            if (property == KeyProperty.Scale)
-                CenterZoom = zoom;
-            else if (property == KeyProperty.X)
-                CenterOffsetX = offsetX;
-            else
-                CenterOffsetY = offsetY;
-
-            // Resized, it grows about its middle: its corner has moved, and so have the keyframes that hold it.
-            if (property == KeyProperty.Scale && !_applyingKeys)
-                WriteMainPlace(view, CenterZoom, CenterOffsetX, CenterOffsetY);
-        }
-        finally
-        {
-            _placingMain = false;
-        }
-
-        if (property == KeyProperty.Scale && !_applyingKeys)
-        {
-            RecordKey(view, nameof(Layer.PositionX));
-            RecordKey(view, nameof(Layer.PositionY));
-        }
+        return Document.Tracks.SelectMany(t => t.Clips).Where(c => c is { ContentKind: LayerKind.VideoFile, ParentClipId: null })
+            .Select(ViewOf).OfType<Layer>().ToList();
     }
-
-    /// <summary>The main video as a layer: the view of its clip at the playhead (or its first), its look, filters and turn; a hidden stand-in while it has none.</summary>
-    public Layer MainLayer => MainViewAt(PositionMs / 1000) ?? FirstMainView() ?? _mainStandIn;
-
-    // What stands for the main video while it has no clip on the timeline.
-    private readonly Layer _mainStandIn = new() { Kind = LayerKind.MainVideo, Name = "Main Video", IsHidden = true };
 }

@@ -57,6 +57,27 @@
                         Value="{Binding DeNoiseStrength}" AutomationProperties.Name="Strength" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=DeNoiseSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Strength Value" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="1" local:NumericInput.Maximum="40" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
+            <!-- Studio Voice (5.2B): the one-click vocal chain, blended with the dry sound; its mix can follow keys along the clip. -->
+            <CheckBox Content="Studio Voice" IsChecked="{Binding StudioVoice}"
+                      ToolTip="A voice made to sound recorded in a studio: its band isolated, the room and the noise between words gated away, its presence lifted and its level held even like a broadcast. Blended with the dry sound by the mix." />
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Wet/Dry Mix" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="StudioVoiceMixSlider" Minimum="0" Maximum="100" VerticalAlignment="Center"
+                        Value="{Binding StudioVoiceMix}" AutomationProperties.Name="Studio Voice Mix" local:NumericInput.Default="85" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=StudioVoiceMixSlider, StringFormat={}{0:0}}" AutomationProperties.Name="Studio Voice Mix Value" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" /><TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+            <StackPanel Orientation="Horizontal" Margin="146,0,0,4">
+                <Button x:Name="AddMixKeyButton" Content="Add Mix Key at Playhead" Padding="8,2" Click="AddMixKey_Click"
+                        ToolTip="Keeps the mix as it is set now at the playhead's moment: with keys, the mix follows them along the clip (from one to the next in a straight line)." />
+                <Button x:Name="ClearMixKeysButton" Content="Clear Mix Keys" Padding="8,2" Margin="6,0,0,0" Click="ClearMixKeys_Click"
+                        ToolTip="Takes every mix key away: the mix is the one set above all along." />
+                <TextBlock x:Name="MixKeysText" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
+            </StackPanel>
             <CheckBox Content="Compressor" IsChecked="{Binding Compressor}" ToolTip="Evens out loud and quiet: everything above the threshold is turned down by the ratio." />
             <Grid Margin="26,0,0,2">
                 <Grid.ColumnDefinitions>
@@ -79,6 +100,20 @@
                 <Slider Grid.Column="1" x:Name="CompressorRatioSlider" Minimum="1" Maximum="20" VerticalAlignment="Center"
                         Value="{Binding CompressorRatio}" AutomationProperties.Name="Ratio" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=CompressorRatioSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Ratio Value" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="20" /><TextBlock Text=":1" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            </Grid>
+            <!-- De-Esser (5.2B): the sibilance of S and T sounds tamed, 5.5 to 9 kHz, after the compressor. -->
+            <CheckBox Content="De-Esser" IsChecked="{Binding DeEsser}"
+                      ToolTip="Tames harsh S, SH and T sounds: the band where they are (5.5 to 9 kHz) is turned down only while they are loud, the rest of the voice left as it is." />
+            <Grid Margin="26,0,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Amount" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                <Slider Grid.Column="1" x:Name="DeEsserSlider" Minimum="0" Maximum="100" VerticalAlignment="Center"
+                        Value="{Binding DeEsserAmount}" AutomationProperties.Name="De-Esser Amount" local:NumericInput.Default="50" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=DeEsserSlider, StringFormat={}{0:0}}" AutomationProperties.Name="De-Esser Amount Value" local:NumericInput.DragStep="0.5" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" /><TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
             <CheckBox Content="Bass / Treble" IsChecked="{Binding BassTreble}" ToolTip="Lifts or lowers the low and the high end." />
             <Grid Margin="26,0,0,2">
@@ -118,7 +153,10 @@
                         Value="{Binding LimiterCeiling}" AutomationProperties.Name="Ceiling" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Value, ElementName=LimiterSlider, StringFormat={}{0:0.#}}" AutomationProperties.Name="Ceiling Value" local:NumericInput.DragStep="0.1" local:NumericInput.Decimals="1" local:NumericInput.Minimum="-12" local:NumericInput.Maximum="0" /><TextBlock Text="dB" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
             </Grid>
-                <CheckBox Content="10-Band Equalizer" IsChecked="{Binding Equalizer}" ToolTip="Ten bands an octave apart, each from -12 to +12 dB." />
+                <CheckBox x:Name="EqualizerBox" Content="10-Band Equalizer" IsChecked="{Binding Equalizer}"
+                          ToolTip="Ten bands, each from -12 to +12 dB: an octave apart to start with; on the curve, each band's frequency and width can move too (5.2B)." />
+                <!-- The parametric curve (5.2B): the bands' nodes dragged (frequency across, gain up and down), the wheel their width. The sliders follow it. -->
+                <local:ParametricEqControl x:Name="EqCurve" Height="150" Margin="26,4,0,4" />
                 <StackPanel Orientation="Horizontal" Margin="26,2,0,6">
                     <StackPanel Width="42">
                         <Slider Orientation="Vertical" Height="96" x:Name="EqSlider0" Minimum="-12" Maximum="12" HorizontalAlignment="Center"

@@ -40,7 +40,7 @@ public sealed partial class MaskDrawWindow
         {
             (_sourceWidth, _sourceHeight) = (sourceWidth, sourceHeight);
             Cursor = Cursors.SizeAll;
-            ToolTip = "The Game Preset's tall frame. Drag a piece to place it, the wheel over a piece sizes it. Double-click a piece to lay it out again by itself.";
+            ToolTip = "The Game Preset's tall frame. Drag a Cutout to place it, the wheel over a Cutout sizes it. Double-click a Cutout to lay it out again by itself.";
         }
 
         /// <summary>The piece selected in the list: outlined.</summary>

@@ -1,0 +1,4 @@
+# Exports FFmpeg's graph alone used to make (5.2-Audit): two sound tracks kept apart and normalized, a GIF, a WebP.
+two tracks kept apart, normalized: an MP4 with two AAC streams, each -16 LUFS (within 0.6 LU)
+a GIF: every frame of the export, looping
+a WebP: the export's frames (where this FFmpeg has libwebp)

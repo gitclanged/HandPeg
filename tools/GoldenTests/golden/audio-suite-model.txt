@@ -1,0 +1,15 @@
+# The model's new parts (5.2B): the filters' new members, the master gain and beats as undoable steps, the settings' defaults.
+ok: new filters: Studio Voice and the De-Esser off, the mix 85 %, the amount 50 %, nothing moved
+ok: switched on, both count
+ok: a copy's keys and bands are its own
+ok: keys and moved bands left out of the file while there are none
+ok: the master gain is a step: set, and committed with no clip touched
+ok: a copy of the Sequence (an undo step's) has it
+ok: rolled back, it is as it was, and nothing was committed
+ok: the same gain again is no change
+ok: the beats are set in order, finite, from 0, a microsecond apart
+ok: a rollback puts the beats back
+ok: cleared, they are none, a step of their own
+ok: split at its middle: each half has keys of its own, the mix at every moment of the Sequence as it was
+ok: its start trimmed 1 s later: every key 1 s earlier on the clip's own clock, the mix at every moment it still plays as it was
+ok: the settings snap to beats and show the beat grid as they come

@@ -1,0 +1,5 @@
+# An export says what the compositor could not draw (5.2-Audit: no shader-only effect is left out any more; a second LUT on a clip is named).
+ok: nothing to say of a project with no such effect
+ok: the shader-only effects are no longer left out of anything (5.2-Audit: there is no FFmpeg export to leave them out of)
+ok: a second LUT on one clip is named: the compositor draws one
+ok: and the GPU export draws them: it has no reason to refuse

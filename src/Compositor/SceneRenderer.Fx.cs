@@ -31,8 +31,11 @@ internal sealed unsafe partial class SceneRenderer
     /// <summary>A pass of the pyramid's size: half of the one before, at least 2 x 2.</summary>
     internal static int KawaseSide(int side) => Math.Max(side / 2, 2);
 
-    /// <summary>A blur reaching <paramref name="reach"/> texels: a new texture half the size of <paramref name="source"/>, which is left as it was.</summary>
-    private GpuTexture Kawase(GpuTexture source, float reach, int timedAs)
+    /// <summary>
+    /// A blur reaching <paramref name="reach"/> texels: a new texture half the size of <paramref name="source"/> (or smaller by <paramref name="keep"/> more
+    /// halvings, the way back up stopped short: a light spread so wide loses nothing by it), which is left as it was.
+    /// </summary>
+    private GpuTexture Kawase(GpuTexture source, float reach, int timedAs, int keep = 0)
     {
         var (levels, offset) = KawaseShape(reach, source.Width, source.Height);
         var input = source;
@@ -47,13 +50,16 @@ internal sealed unsafe partial class SceneRenderer
             _kawase[level] = input = output;
         }
 
-        for (var level = levels - 1; level >= 1; level--)
+        keep = Math.Clamp(keep, 0, levels - 1);
+        for (var level = levels - 1; level > keep; level--)
         {
             Step("PSKawaseUp", _kawase[level]!, _kawase[level - 1]!, ref constants, timedAs);
             _gpu.Textures.Return(_kawase[level]!);
         }
 
-        return _kawase[0]!;
+        for (var level = 0; level < keep; level++)
+            _gpu.Textures.Return(_kawase[level]!);
+        return _kawase[keep]!;
     }
 
     private void Step(string shader, GpuTexture input, GpuTexture output, ref PassConstants constants, int timedAs, nint aux = 0, nint lut = 0)
@@ -80,8 +86,12 @@ internal sealed unsafe partial class SceneRenderer
     /// <summary>How far a Spread reaches, in px of a 1080-wide frame: a stop of light's spread a step of the slider.</summary>
     internal static float GlowReach(float spread) => MathF.Pow(2, Math.Clamp(spread, 1, 8));
 
-    private GpuTexture Glow(GpuEffectPacket packet, GpuTexture work)
+    // Its second packet (5.2B), its Audio Reactive Pulse's own (marked, sent only while the pulse is in use: else none): the pulse (Q0) and its
+    // band (Q1), which lift the glow's amount (P0). A pulse's packet alone (Q7 the marker, under 0.05 as a Mix) draws nothing.
+    private GpuTexture Glow(GpuEffectPacket packet, GpuEffectPacket second, GpuTexture work)
     {
+        if (GpuEffectPacket.IsPulsePacket(second) && PulseOf(second.P0, second.P1) is var lift && lift != 1)
+            packet = packet with { P0 = packet.P0 * lift };
         if (packet.P0 < 0.001f || packet.P7 < 0.05f)
             return work;
 
@@ -99,10 +109,20 @@ internal sealed unsafe partial class SceneRenderer
     /// <summary>How far apart the streaks' taps go, pass by pass: each pass three times the last, so seven taps reach far.</summary>
     internal const int StreakPasses = 3;
 
-    private GpuTexture Lens(GpuEffectPacket packet, GpuTexture work)
+    // The Impact Shockwave (its second packet, 5.2B, its Audio Reactive Pulse's own: marked, sent only while the pulse is in use, the pulse in
+    // Q0 and its band in Q1, which lift its ripple and shake), or the Anamorphic Lens (P7 its variant; its second packet's Q0 the flares'
+    // Rotation, 5.2).
+    private GpuTexture Lens(GpuEffectPacket packet, GpuEffectPacket second, GpuTexture work)
     {
+        // A pulse's packet alone (its card's first not before it) draws nothing.
+        if (GpuEffectPacket.IsPulsePacket(packet))
+            return work;
         if (packet.P7 < 0.5f)
+        {
+            if (GpuEffectPacket.IsPulsePacket(second) && PulseOf(second.P0, second.P1) is var lift && lift != 1)
+                packet = packet with { P3 = packet.P3 * lift, P6 = packet.P6 * lift };
             return packet.P0 <= 0 || packet.P0 >= 1 ? work : Effect("PSShockwave", packet, default, work);
+        }
         if (packet.P0 < 0.001f && packet.P6 < 0.001f)
             return Effect("PSAnamorphic", packet, default, work);
 
@@ -112,10 +132,12 @@ internal sealed unsafe partial class SceneRenderer
         constants.Params4 = new Vector4(1, 1, 0, (float)_time);
         constants.WholeUv();
         var stride = 0.5f + Math.Clamp(packet.P2, 0, 1) * 1.5f;
+        var turn = second.Slot == GpuShaderSlot.ShockwaveLens ? second.P0 * MathF.PI / 180 : 0;
+        var aspect = work.Width / (float)Math.Max(work.Height, 1);
         for (var pass = 0; pass < StreakPasses; pass++, stride *= 3)
         {
             var output = _gpu.Textures.Rent(streak.Width, streak.Height);
-            constants.Params = new Vector4(_pxScale1080, 0, stride, _pixelScale);
+            constants.Params = new Vector4(_pxScale1080, turn, stride, aspect);
             Step("PSStreak", streak, output, ref constants, slot);
             _gpu.Textures.Return(streak);
             streak = output;
@@ -128,8 +150,21 @@ internal sealed unsafe partial class SceneRenderer
 
     // ----- The procedural effects (slots 26 to 29) -----
 
-    /// <summary>A generator's two packets, which always go together, as Color Balance's do.</summary>
-    private static bool Paired(GpuShaderSlot slot) => slot is GpuShaderSlot.ColorBalance or GpuShaderSlot.Explosion or GpuShaderSlot.Sparks or GpuShaderSlot.AnimeLines or GpuShaderSlot.EnergyField;
+    /// <summary>
+    /// Whether a packet goes with the next one, of its slot: a generator's two, as Color Balance's do, the Anamorphic Lens's (5.2: its Rotation
+    /// in a second packet; P7 its variant, which the Impact Shockwave leaves 0), and since 5.2B a Glow's or an Impact Shockwave's with its
+    /// Audio Reactive Pulse's own packet, only when the next is marked as one (GpuEffectPacket.PulseMarker; sent only while the pulse is in
+    /// use): two cards of one slot side by side at a pulse of 0 are each drawn alone, as before. A packet of one of these slots alone (as a
+    /// test writes one) is drawn alone.
+    /// </summary>
+    private static bool Paired(in GpuEffectPacket packet, in GpuEffectPacket next) =>
+        next.Slot == packet.Slot && packet.Slot switch
+        {
+            GpuShaderSlot.ColorBalance or GpuShaderSlot.Explosion or GpuShaderSlot.Sparks or GpuShaderSlot.AnimeLines or GpuShaderSlot.EnergyField => true,
+            GpuShaderSlot.ShockwaveLens when packet.P7 >= 0.5f => true,
+            GpuShaderSlot.ShockwaveLens or GpuShaderSlot.HalationGlow => GpuEffectPacket.IsPulsePacket(next),
+            _ => false,
+        };
 
     private GpuTexture Generated(GpuEffectPacket packet, GpuEffectPacket second, GpuTexture work)
     {
@@ -141,6 +176,9 @@ internal sealed unsafe partial class SceneRenderer
             case GpuShaderSlot.Sparks when packet.P0 is > 0 and < 1:
                 return Sparks(packet, second, work);
             case GpuShaderSlot.AnimeLines:
+                // (5.2B: its second packet's last two lanes, the audio-reactive pulse and its band, lift the lines' weight and opacity.)
+                if (PulseOf(second.P6, second.P7) is var lift && lift != 1)
+                    packet = packet with { P4 = packet.P4 * lift, P7 = packet.P7 * lift };
                 return packet.P7 < 0.05f ? work : Generator("PSAnimeLines", packet, second, work, second.P3, shrink: 1);
             case GpuShaderSlot.EnergyField when packet.P0 > 0:
                 return Generator(second.P7 > 0.5f ? "PSSaber" : "PSEnergyShield", packet, second, work, second.P0, shrink: 1);
@@ -198,7 +236,7 @@ internal sealed unsafe partial class SceneRenderer
     private GpuTexture Lit(GpuTexture fx, GpuTexture work, float spill, int timedAs)
     {
         var output = _gpu.Textures.Rent(work.Width, work.Height);
-        var light = spill >= 0.005f ? Kawase(fx, Math.Max(fx.Height * 0.4f, 8), timedAs) : null;
+        var light = spill >= 0.005f ? Kawase(fx, Math.Max(fx.Height * 0.4f, 8), timedAs, keep: 2) : null;
         var constants = default(PassConstants);
         constants.Params2 = new Vector4(Math.Clamp(spill, 0, 1), 0, 0, 0);
         constants.Params4 = new Vector4(1, 1, 0, (float)_time);
@@ -289,7 +327,7 @@ internal sealed unsafe partial class SceneRenderer
     // ----- The Motion Blur (slot 22): what moves inside the picture -----
 
     /// <summary>
-    /// The optical flow of a frame of a source, or of a canvas under an adjustment layer: kept a while, since the main video, its HUD pieces and a redraw while
+    /// The optical flow of a frame of a source, or of a canvas under an adjustment layer: kept a while, since a video, its Cutouts and a redraw while
     /// paused all ask for one and the same.
     /// </summary>
     private sealed class FlowEntry : IDisposable
@@ -558,7 +596,7 @@ internal sealed unsafe partial class SceneRenderer
             var (x, y) = (pivotX + Lerp(fromX, toX, at) * _scaleX - anchorX * w, pivotY + Lerp(fromY, toY, at) * _scaleY - anchorY * h);
             var turn = Lerp(layer.ShutterFromRotation, layer.ShutterToRotation, at);
             var constants = default(PassConstants);
-            constants.Transform = Matrix4.Box(x, y, w, h, turn, anchorX, anchorY, _outWidth, _outHeight);
+            constants.Transform = Matrix4.Box(x, y, w, h, turn, anchorX, anchorY, _outWidth, _outHeight, layer.TiltX, layer.TiltY);
             constants.WholeUv();
             constants.Params4 = new Vector4(1f / samples, 1, 0, (float)_time);
             SetWipe(ref constants, wipe, (x, y, w, h));
@@ -569,6 +607,33 @@ internal sealed unsafe partial class SceneRenderer
         _timer.End();
         _gpu.Textures.Return(work);
         return (target, (0, 0, _outWidth, _outHeight), 0.5f, 0.5f, 0);
+    }
+
+    // ----- The audio-reactive pulse (Pass 5.2B) -----
+    // The Sequence's sound at the frame's moment in three bands (FrameSceneHeader.AudioBass / AudioMid / AudioHigh, 0 to 1: Services/Audio/
+    // AudioReactive.cs). The Glow, the Neon Rim, the Shockwave and the Anime Lines carry an Audio Reactive Pulse (%) and a band in lanes after
+    // their own; their strength is multiplied here, before the shader reads it, by 1 + pulse x that band's energy: the glow's amount, the rim's
+    // strength, the ring's ripple and the shake, the lines' weight and opacity. A pulse of 0 (or silence) is a factor of exactly 1, and the
+    // packet goes to the shader untouched.
+
+    private float _audioBass, _audioMid, _audioHigh;
+
+    private static float Band(float energy) => float.IsFinite(energy) ? Math.Clamp(energy, 0, 1) : 0;
+
+    /// <summary>What an effect's strength is multiplied by this frame: 1 + its pulse (0 to 100 %) times its band's energy (0 Bass, 1 Mid, 2 High, 3 the loudest).</summary>
+    private float PulseOf(float pulse, float band)
+    {
+        if (!(pulse > 0))
+            return 1;
+
+        var energy = (int)MathF.Round(band) switch
+        {
+            1 => _audioMid,
+            2 => _audioHigh,
+            3 => MathF.Max(_audioBass, MathF.Max(_audioMid, _audioHigh)),
+            _ => _audioBass,
+        };
+        return energy > 0 ? 1 + Math.Min(pulse, 100) / 100 * energy : 1;
     }
 
     // ----- The Neon Rim Light and Frosted Glass (slot 24) -----
@@ -630,7 +695,8 @@ internal sealed unsafe partial class SceneRenderer
     /// Frosted Glass: the canvas under the layer's shape, blurred, tinted and lit along its edge, laid down before the layer's picture (at what share of it stays). The
     /// canvas is copied and blurred whole, so a turned layer and its neighbours read it the same way.
     /// </summary>
-    private void DrawFrostedGlass(GpuEffectPacket glass, GpuTexture work, (float X, float Y, float W, float H) box, float rotation, float anchorX, float anchorY, float alpha, GpuEffectPacket? wipe)
+    private void DrawFrostedGlass(GpuEffectPacket glass, GpuTexture work, (float X, float Y, float W, float H) box, float rotation, float anchorX, float anchorY, float alpha, GpuEffectPacket? wipe,
+        (float X, float Y) tilt = default)
     {
         if (!_shaders.Has("PSFrostedGlass"))
             return;
@@ -642,7 +708,7 @@ internal sealed unsafe partial class SceneRenderer
 
         var constants = default(PassConstants);
         constants.Packet = glass;
-        constants.Transform = Matrix4.Box(box.X, box.Y, box.W, box.H, rotation, anchorX, anchorY, _outWidth, _outHeight);
+        constants.Transform = Matrix4.Box(box.X, box.Y, box.W, box.H, rotation, anchorX, anchorY, _outWidth, _outHeight, tilt.X, tilt.Y);
         constants.Params = new Vector4(_pxScale1080, 0, 0, _pixelScale);
         constants.Params4 = new Vector4(alpha, 1, 0, (float)_time);
         constants.WholeUv();

@@ -7,19 +7,24 @@ namespace HandPegApp.Services.Audio;
 // ----- The mix (Pass 5.0-AudioAnd3D, 5.0C) -----
 //
 // One mixing core for the device and for the offline render (AudioMixer.Render, the tests): the voices of each strip are
-// read from their rings and summed, each strip is processed as the export's graph processes that sound (FilterGraphBuilder
-// .Audio): a main track's clips placed with their fades and gains, ducked, then its track's processing; a
-// clip's processing and gain, then its fades, then ducked; the voices' sum is the side chain. The strips are summed and the
-// sequence's fades laid over the whole. Nothing on the mixer's thread allocates or locks: the program arrives whole as a
-// new runtime (one reference), and a strip whose settings changed brings its new effects made, taking the old ones' state.
+// read from their rings and summed, each strip is processed as the export's graph processed that sound before 5.2-Audit (the
+// export's sound is this render since then): a track's clips placed with their fades and gains, ducked, then its track's gain and
+// processing, run on across its cuts; a clip with processing of its own: its processing and gain, then its fades, then ducked; the
+// voices' sum is the side chain. The strips are summed and the sequence's fades laid over the whole. Nothing on the mixer's
+// thread allocates or locks: the program arrives whole as a new runtime (one reference), and a strip whose settings changed
+// brings its new effects made, taking the old ones' state.
 
 /// <summary>A strip at work: its effects (the mixer's alone), and the next ones when its settings change.</summary>
 internal sealed class StripState
 {
-    public StripState(string key, AudioEffectSpec[] specs, AudioEffect[] effects, DuckParameters? duck, Ducker? ducker)
+    public StripState(string key, AudioEffectSpec[] specs, AudioEffect[] effects, DuckParameters? duck, Ducker? ducker, int sampleRate)
     {
-        (Key, Specs, Effects, DuckSpec, Duck) = (key, specs, effects, duck, ducker);
+        (Key, Specs, Effects, DuckSpec, Duck, _rate) = (key, specs, effects, duck, ducker, sampleRate);
+        Latency = AudioEffect.LatencyOf(specs, sampleRate);
     }
+
+    // The mixer's rate, which the limiter's lookahead is counted in.
+    private readonly int _rate;
 
     public string Key { get; }
     public AudioEffectSpec[] Specs { get; private set; }
@@ -30,16 +35,19 @@ internal sealed class StripState
 
     public Ducker? Duck;
 
+    /// <summary>How late <see cref="Effects"/> bring the sound out (samples, AudioEffect.LatencyOf): the strip's voices are read that far ahead. The mixer's thread only.</summary>
+    public int Latency;
+
     /// <summary>New settings, made on the caller's thread; the mixer takes them up before its next buffer (<see cref="Adopt"/>).</summary>
     public void Change(AudioEffectSpec[] specs, AudioEffect[] effects, DuckParameters? duck, Ducker? ducker)
     {
         (Specs, DuckSpec) = (specs, duck);
-        Volatile.Write(ref _pendingBox, new PendingBox(effects, ducker));
+        Volatile.Write(ref _pendingBox, new PendingBox(effects, ducker, AudioEffect.LatencyOf(specs, _rate)));
     }
 
     private PendingBox? _pendingBox;
 
-    private sealed record PendingBox(AudioEffect[] Effects, Ducker? Duck);
+    private sealed record PendingBox(AudioEffect[] Effects, Ducker? Duck, int Latency);
 
     /// <summary>The mixer's thread: new effects take the state of the old ones of the same kind, at the same place.</summary>
     public void Adopt()
@@ -54,7 +62,7 @@ internal sealed class StripState
 
         if (next.Duck is { } duck && Duck is { } old)
             duck.TakeState(old);
-        (Effects, Duck) = (next.Effects, next.Duck);
+        (Effects, Duck, Latency) = (next.Effects, next.Duck, next.Latency);
     }
 
     public void Reset()
@@ -174,7 +182,7 @@ public sealed class AudioMixer : IDisposable
                 }
                 else
                 {
-                    _stripStates[strip.Key] = state = new StripState(strip.Key, specs, Make(specs), duck, duck is null ? null : new Ducker(duck, _rate));
+                    _stripStates[strip.Key] = state = new StripState(strip.Key, specs, Make(specs), duck, duck is null ? null : new Ducker(duck, _rate), _rate);
                 }
 
                 strips[i] = state;
@@ -223,7 +231,7 @@ public sealed class AudioMixer : IDisposable
     }
 
     /// <summary>
-    /// What a voice's decoded frames depend on: its file and stream (and where FFmpeg put its start), its rate and pitch, and
+    /// What a voice's decoded frames depend on: its file, stream and channel pair (and where FFmpeg put its start), its rate and pitch, and
     /// its line from sequence to media time. A trim keeps the line, so a trimmed clip keeps what was decoded for it.
     /// </summary>
     private static string VoiceKey(AudioVoice voice)
@@ -231,7 +239,7 @@ public sealed class AudioMixer : IDisposable
         var s = voice.Source;
         var intercept = voice.SequenceStart - voice.MediaStart / voice.Rate;
         return string.Create(CultureInfo.InvariantCulture,
-            $"{s.Path}|{s.Stream}|{s.VideoStart:R}|{voice.Rate:R}|{voice.Pitch:R}|{Math.Round(intercept * 1e6):0}");
+            $"{s.Path}|{s.Stream}|{s.ChannelPair}|{s.VideoStart:R}|{voice.Rate:R}|{voice.Pitch:R}|{Math.Round(intercept * 1e6):0}");
     }
 
     // ----- The transport (the mixer's thread) -----
@@ -313,10 +321,19 @@ public sealed class AudioMixer : IDisposable
     /// Mixes <paramref name="frames"/> (at most <see cref="MaxFrames"/>) output frames from <paramref name="frame"/> into
     /// interleaved stereo. Silence where nothing is heard, while the transport runs backward or stands, and past the end.
     /// </summary>
-    internal void Mix(Span<float> stereo, long frame, int frames)
+    internal void Mix(Span<float> stereo, long frame, int frames) => MixInto(stereo, null, frame, frames);
+
+    /// <summary>
+    /// <see cref="Mix"/>, each strip into the output its <see cref="AudioStrip.Bus"/> names (5.2-Audit: an export's several sound
+    /// tracks in one pass): bus 0 into <paramref name="stereo"/>, bus n into <paramref name="buses"/>[n] (interleaved stereo, frames * 2
+    /// at least; [0] is not used). Every voice is still the ducking's side chain, and the sequence's fades are on every bus.
+    /// </summary>
+    private void MixInto(Span<float> stereo, float[][]? buses, long frame, int frames)
     {
         var output = stereo[..(frames * 2)];
         output.Clear();
+        for (var b = 1; b < (buses?.Length ?? 0); b++)
+            buses![b].AsSpan(0, frames * 2).Clear();
         var runtime = Adopt();
         if (runtime is null || _line.Rate <= 0 || frames <= 0)
             return;
@@ -330,7 +347,7 @@ public sealed class AudioMixer : IDisposable
 
         var program = runtime.Program;
         var (from, to) = (_line.SoundAt(frame, _rate), _line.SoundAt(frame + frames, _rate));
-        if (from >= program.SequenceSeconds || to <= 0)
+        if (from >= program.SequenceSeconds || _line.SoundAt(frame + frames + MostLatency(runtime), _rate) <= 0)
             return;
 
         var key = _key.AsSpan(0, frames * 2);
@@ -340,23 +357,27 @@ public sealed class AudioMixer : IDisposable
         {
             var spec = program.StripArray[index];
             var state = runtime.Strips[index];
-            var heard = Voices(runtime, index, frame, frames, from, to, strip, envelope: !spec.EnvelopeAfterEffects);
-            if (!heard && spec.Kind != AudioStripKind.MainTrack)
+
+            // A strip whose effects bring the sound out late (5.2C: Noise Reduction, Studio Voice; the limiter's lookahead since
+            // 5.2D) reads its voices that much ahead,
+            // so what comes out of them is this block's sound: a clip's sound starts going in that long before the clip (its
+            // pre-roll), and a clip's own strip runs on as long past its last sound going in (its tail), so nothing is cut at
+            // either edge and the sound lands on its picture to the sample.
+            var heard = Voices(runtime, index, frame + state.Latency, frames, strip, envelope: !spec.EnvelopeAfterEffects);
+            if (!heard && spec.Kind != AudioStripKind.Track && !(state.Latency > 0 && OwnVoiceHeard(runtime, index, from, to)))
                 continue;
 
-            if (spec.Kind == AudioStripKind.MainTrack)
+            if (spec.Kind == AudioStripKind.Track)
             {
                 if (spec.IsVoice)
                     AudioMath.Add(key, strip);
                 if (runtime.Ducks && spec.Ducked)
                     state.Duck?.Process(strip, key, frames);
-                foreach (var effect in state.Effects)
-                    effect.Process(strip, frames);
+                Process(state.Effects, strip, frames, from, to);
             }
             else
             {
-                foreach (var effect in state.Effects)
-                    effect.Process(strip, frames);
+                Process(state.Effects, strip, frames, from, to);
                 if (runtime.StripVoices[index] is [var only])
                     Envelope(program.VoiceArray[only], strip, frame, frames);
                 if (spec.IsVoice)
@@ -365,19 +386,56 @@ public sealed class AudioMixer : IDisposable
                     state.Duck?.Process(strip, key, frames);
             }
 
-            AudioMath.Add(output, strip);
+            AudioMath.Add(spec.Bus > 0 && buses is not null && spec.Bus < buses.Length ? buses[spec.Bus].AsSpan(0, frames * 2) : output, strip);
+        }
+
+        // The Sequence's master gain (5.2B): on every bus, after the strips are summed and before the Sequence's fades. 0 dB is a factor
+        // of exactly 1, which multiplies nothing.
+        if (program.MasterGain != 1f)
+        {
+            AudioMath.Scale(output, program.MasterGain);
+            for (var b = 1; b < (buses?.Length ?? 0); b++)
+                AudioMath.Scale(buses![b].AsSpan(0, frames * 2), program.MasterGain);
         }
 
         SequenceFades(program, output, frame, frames, from, to);
+        for (var b = 1; b < (buses?.Length ?? 0); b++)
+            SequenceFades(program, buses![b].AsSpan(0, frames * 2), frame, frames, from, to);
         _feeders?.Wake();
     }
 
-    // A strip's voices summed into its buffer (their fades and gains on them, for a main track). Whether any was heard.
-    private bool Voices(MixerRuntime runtime, int strip, long frame, int frames, double from, double to, Span<float> buffer, bool envelope)
+    // A strip's effects in order, each told the block's moments of the Sequence first (5.2B: a keyed effect follows the Sequence).
+    private static void Process(AudioEffect[] effects, Span<float> strip, int frames, double from, double to)
+    {
+        foreach (var effect in effects)
+        {
+            effect.Moment(from, to);
+            effect.Process(strip, frames);
+        }
+    }
+
+    // The most any strip's effects bring the sound out late (samples): how far ahead of the transport the mix reads.
+    private static int MostLatency(MixerRuntime runtime)
+    {
+        var most = 0;
+        foreach (var strip in runtime.Strips)
+            most = Math.Max(most, strip.Latency);
+        return most;
+    }
+
+    // Whether a clip's own strip's voice is heard over the moments from..to (its tail: the voice read ahead has ended, its sound has not).
+    private static bool OwnVoiceHeard(MixerRuntime runtime, int strip, double from, double to) =>
+        runtime.StripVoices[strip] is [var only] && runtime.Program.VoiceArray[only] is var voice
+        && voice.SequenceStart < to && Math.Min(voice.End, runtime.Program.SequenceSeconds) > from;
+
+    // A strip's voices from frame (the strip's read-ahead in it) summed into its buffer (their fades and gains on them, for a
+    // track's). Whether any was heard.
+    private bool Voices(MixerRuntime runtime, int strip, long frame, int frames, Span<float> buffer, bool envelope)
     {
         buffer.Clear();
         var heard = false;
         var program = runtime.Program;
+        var (from, to) = (_line.SoundAt(frame, _rate), _line.SoundAt(frame + frames, _rate));
         foreach (var index in runtime.StripVoices[strip])
         {
             var voice = program.VoiceArray[index];
@@ -401,7 +459,7 @@ public sealed class AudioMixer : IDisposable
         return heard;
     }
 
-    /// <summary>A voice's gain, fades and silenced stretches over frames of its sound, from <paramref name="frame"/>; nothing outside it.</summary>
+    /// <summary>A voice's gain and fades over frames of its sound, from <paramref name="frame"/>; nothing outside it.</summary>
     private void Envelope(AudioVoice voice, Span<float> stereo, long frame, int frames)
     {
         var from = _line.SoundAt(frame, _rate);
@@ -409,18 +467,6 @@ public sealed class AudioMixer : IDisposable
         var fadeInEnd = voice.FadeIn.IsOn ? voice.SequenceStart + voice.FadeIn.Seconds : double.NegativeInfinity;
         var fadeOutStart = voice.FadeOut.IsOn ? voice.FadeOutEnd - voice.FadeOut.Seconds : double.PositiveInfinity;
         var plain = from >= voice.SequenceStart && to <= voice.End && from >= fadeInEnd && to <= fadeOutStart;
-        if (plain)
-        {
-            foreach (var (start, end) in voice.Silenced)
-            {
-                if (start <= to && end >= from)
-                {
-                    plain = false;
-                    break;
-                }
-            }
-        }
-
         if (plain)
         {
             AudioMath.Scale(stereo[..(frames * 2)], voice.Gain);
@@ -435,16 +481,11 @@ public sealed class AudioMixer : IDisposable
         }
     }
 
-    /// <summary>A voice's gain at a sound moment: 0 outside it and where it is silenced, its fades' curves within them.</summary>
+    /// <summary>A voice's gain at a sound moment: 0 outside it, its fades' curves within them.</summary>
     internal static float Gain(AudioVoice voice, double sound)
     {
         if (sound < voice.SequenceStart || sound >= voice.End)
             return 0;
-        foreach (var (start, end) in voice.Silenced)
-        {
-            if (sound >= start && sound <= end)
-                return 0;
-        }
 
         double g = voice.Gain;
         if (voice.FadeIn.IsOn)
@@ -503,6 +544,7 @@ public sealed class AudioMixer : IDisposable
         using var mixer = new AudioMixer(sampleRate, block, threaded: false);
         mixer.SetProgram(program);
         mixer.SetLine(0, fromSeconds, 1, jump: true);
+        mixer.WarmUp(program, block);
         var total = interleavedStereo.Length / 2;
         for (long frame = 0; frame < total; frame += block)
         {
@@ -513,17 +555,46 @@ public sealed class AudioMixer : IDisposable
         }
     }
 
+    // An offline render's first moment heard as the player hears it on its way through (5.2C): the strips that bring their sound out
+    // late are mixed from that long before it, and what that makes before the first frame is let go of.
+    private void WarmUp(AudioProgram program, int block)
+    {
+        var warm = program.MostLatencyAt(_rate);
+        if (warm <= 0)
+            return;
+        var scratch = new float[block * 2];
+        for (long frame = -warm; frame < 0; frame += block)
+        {
+            var frames = (int)Math.Min(block, -frame);
+            Prime(frame);
+            FeedInline(frame, frames);
+            MixInto(scratch.AsSpan(0, frames * 2), null, frame, frames);
+        }
+    }
+
     /// <summary>
     /// <see cref="Render"/> of a long program into a stream as it goes (interleaved stereo floats, little-endian as the processor keeps
     /// them), one mixer from end to end: an hour of it is 1.3 GB, which no array holds.
     /// </summary>
-    public static void RenderTo(AudioProgram program, double fromSeconds, long frames, int sampleRate, Stream output, Action<double>? progress, CancellationToken token)
+    public static void RenderTo(AudioProgram program, double fromSeconds, long frames, int sampleRate, Stream output, Action<double>? progress, CancellationToken token) =>
+        RenderTo(program, fromSeconds, frames, sampleRate, [output], progress, token);
+
+    /// <summary>
+    /// <see cref="RenderTo(AudioProgram, double, long, int, Stream, Action{double}?, CancellationToken)"/> of every bus at once
+    /// (5.2-Audit: an export's sound tracks, AudioStrip.Bus): bus n into <paramref name="outputs"/>[n], interleaved stereo floats.
+    /// One mixer, one pass: what the strips of one bus duck under may be on another.
+    /// </summary>
+    public static void RenderTo(AudioProgram program, double fromSeconds, long frames, int sampleRate, IReadOnlyList<Stream> outputs, Action<double>? progress, CancellationToken token)
     {
         const int block = 4800, reportEvery = 100;
         using var mixer = new AudioMixer(sampleRate, block, threaded: false);
         mixer.SetProgram(program);
         mixer.SetLine(0, fromSeconds, 1, jump: true);
+        mixer.WarmUp(program, block);
         var buffer = new float[block * 2];
+        var buses = new float[outputs.Count][];
+        for (var b = 1; b < buses.Length; b++)
+            buses[b] = new float[block * 2];
         var blocks = 0;
         for (long frame = 0; frame < frames; frame += block)
         {
@@ -531,24 +602,27 @@ public sealed class AudioMixer : IDisposable
             var count = (int)Math.Min(block, frames - frame);
             mixer.Prime(frame);
             mixer.FeedInline(frame, count);
-            mixer.Mix(buffer.AsSpan(0, count * 2), frame, count);
-            output.Write(System.Runtime.InteropServices.MemoryMarshal.AsBytes(buffer.AsSpan(0, count * 2)));
+            mixer.MixInto(buffer.AsSpan(0, count * 2), buses.Length > 1 ? buses : null, frame, count);
+            outputs[0].Write(System.Runtime.InteropServices.MemoryMarshal.AsBytes(buffer.AsSpan(0, count * 2)));
+            for (var b = 1; b < buses.Length; b++)
+                outputs[b].Write(System.Runtime.InteropServices.MemoryMarshal.AsBytes(buses[b].AsSpan(0, count * 2)));
             if (++blocks % reportEvery == 0)
                 progress?.Invoke((double)frame / Math.Max(frames, 1));
         }
     }
 
-    // The offline render's feeding: every voice asked for, written up to past the block, on this thread.
+    // The offline render's feeding: every voice asked for, written up to past the block (and the strips' read-ahead), on this thread.
     private void FeedInline(long frame, int frames)
     {
         if (_current is not { } runtime)
             return;
+        var lead = frames * 2 + MostLatency(runtime);
         foreach (var state in runtime.Voices)
         {
             if (state.RequestSerial == 0)
                 continue;
             state.Producer ??= new VoiceProducer(_rate);
-            state.Producer.Service(state, _pool, frame, frames * 2, 0, exact: true);
+            state.Producer.Service(state, _pool, frame, lead, 0, exact: true);
         }
     }
 

@@ -164,11 +164,11 @@
         <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
             <TextBlock Text="Audio Encoder:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <ComboBox x:Name="AudioEncoderBox" MinWidth="170" Margin="0" AutomationProperties.Name="Default Audio Encoder"
-                      ToolTip="The audio codec HandPeg starts with. Editing sound (moving it, silencing part of it, mixing in a layer or a voiceover) needs it encoded, so Copy is not offered here; it can still be chosen for any export." />
+                      ToolTip="The audio codec HandPeg starts with. Editing sound (moving it, silencing part of it, mixing in another clip or a voiceover) needs it encoded, so Copy is not offered here; it can still be chosen for any export." />
             <ComboBox x:Name="AudioBitrateBox" MinWidth="90" Margin="8,0,0,0" AutomationProperties.Name="Default Audio Bitrate" ToolTip="The bitrate that goes with it." />
         </StackPanel>
         <TextBlock x:Name="CopyWarningText" Visibility="Collapsed" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0"
-                   Text="Warning: The Frame and Layer Engine features will be unavailable during 'Copy' exports unless the encoder is changed in the project settings." />
+                   Text="Warning: a 'Copy' export writes one file's picture as it is: effects, looks, filters and the other clips are left out unless the encoder is changed in the project settings." />
 
         <!-- ===== The graphics cards: Test & Auto-Tune Hardware (5.0-0) sets the four GPU roles; Settings shows the measurements ===== -->
         <StackPanel Orientation="Horizontal" Margin="0,14,0,0">

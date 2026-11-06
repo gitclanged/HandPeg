@@ -3,6 +3,52 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.2.0 — Track Preset Nodes, Studio Audio & Native ARM64
+
+### User-Facing Highlights
+- **Track Preset Nodes.** Set a Game Preset on a picture track from the pill in its header: every clip on the track gets
+  the preset's frame, HUD Cutouts and blurred background, and a clip dropped or moved onto the track takes it too. Clear it
+  and the clips stay as they are. One step of Undo.
+- **Audio streams on Sub-Lanes.** Each audio stream of a recording sits on its own Sub-Lane under the video clip, with its
+  own volume, mute and effects; a closed stack is one thin bar with every unmuted stream in one waveform.
+- **Studio audio.** Studio Voice (denoise, presence and a broadcast leveller in one card, with a dry/wet mix you can
+  keyframe), a De-Esser, a parametric EQ with its curve, a live Master Meter (momentary, short-term and integrated LUFS,
+  true peak) with a master fader, beat detection with snapping to beats, and GPU effects that react to the sound.
+- **True 3D tilt.** Tilt any layer on two axes (Pitch and Yaw, keyframeable), with handles that follow the tilted plane
+  and clicks that pick the tilted shape. The 3D Exploded View is simpler: the layer stack along its depth rails.
+- **Unpack OBS side-by-side recordings.** A double-wide OBS canvas (gameplay and facecam side by side) becomes the
+  gameplay clip plus a facecam Cutout, laid out for a wide or a tall frame, from the clip's Smart Tools menu.
+- **Smaller project bundles.** Saving a bundle trims a recording longer than two minutes, when the project uses less than
+  60 % of it, to the stretches in use (with 5 s of handles), copied without re-encoding.
+- **Ping-to-Mark and the Clip Library.** Ctrl+J (or Alt + a click on the player) marks a highlight with the point of the
+  frame it is about. "Save Clip to Personal Clip Library..." on a clip's menu saves its stretch, without re-encoding, with
+  a title and tags; the Media pane's Clip Library mode lists them.
+- **Fully portable project saves** (Settings, off at first): Save puts the project and copies of all its media in one
+  folder, hard-linked on the same drive.
+- **Projects show their picture.** Saving a project stores a small frame of the edit: the Project Manager and the start
+  screen show it, and so does Windows Explorer for `.hproj` and `.hpb` files.
+- **Double-click a project to open it.** The installer's HandPeg registers `.hproj` and `.hpb` (and only those) for your
+  user: their icon is HandPeg's and a double-click opens the file in HandPeg.
+- **5.1 projects open and are converted.** A project saved by HandPeg 5.1 is converted as it opens (its main video becomes
+  ordinary clips, its HUD cut-outs Cutouts) and saved back over its own file in the new format.
+- **Native Windows on ARM.** The ARM64 build is native throughout, with shaders tuned for the Snapdragon's Adreno GPU, HEVC
+  decoded through FFmpeg where Windows has no HEVC decoder, and captions with whisper.cpp working on ARM64.
+- **Sharper on high-DPI screens.** On a laptop panel at 150 % scaling or more, HandPeg sizes its UI to the screen (UI Scale
+  in Settings > Appearance still applies), and menus and popups open where they should on touch screens.
+
+### Under the Hood & Fixes
+- Playback no longer shows late frames right after Play on a cold start: while the player draws a frame, the decoders
+  wait for it to finish rather than holding the graphics card, so the first second after Play stays in step with the
+  sound even while the cuts ahead are still being decoded.
+- On a graphics card with its own memory, FFmpeg's decoding (HEVC on a Windows without the HEVC Video Extensions) runs on
+  the card: on a GTX 1070, playback went from every frame late to about one in six.
+- One GPU export path: FFmpeg only encodes and muxes (no filter graphs), and there is no main video or privileged track.
+- A heap corruption in the hardware benchmark on Windows editions without HEVC, VP9 or AV1 decoders is fixed.
+- The busy pointer at start-up ends about 60 ms sooner, and start-up reads its settings through compiled JSON.
+- The limiter's lookahead delay is counted in the audio's latency, so a limited track stays in step with the others, and
+  frames are exact on files with millisecond time stamps (Matroska).
+- The decorative hover tilt on Media Browser tiles is gone (its shader could stop WPF's renderer on some drivers).
+
 ## HandPeg v5.1.0 — Pixel-Zoom Cutout Studio, Game-Engine Shaders & 3D Studio Stage
 
 ### User-Facing Highlights

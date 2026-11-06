@@ -1,10 +1,10 @@
-# A Game Preset on the 2nd or Nth clip: its pieces are that clip's children, over its span, on its file's clock.
+# A Game Preset on the 2nd or Nth clip: its Cutouts are that clip's children, over its span, on its file's clock.
 ok: a preset goes on the 2nd clip
-ok: it has a piece for each of the preset's
+ok: it has a Cutout for each of the preset's
 ok: each over that clip's span, 8 to 12 s
 ok: each a child of that clip
 ok: no other clip took any
-ok: cut from that clip's own file, not the main video's
+ok: cut from that clip's own file, not the file opened first
 ok: on that clip's clock
 ok: and silent: nothing is heard twice
 ok: on tracks that are children of its track
@@ -18,10 +18,10 @@ ok: applied again it takes the place of the first
 ok: the 3rd clip has its own, over its span, from its own file
 ok: on the lanes the 2nd clip's lie on
 ok: the document holds together
-ok: a split of the clip splits its pieces
+ok: a split of the clip splits its Cutouts
 ok: the second half's are its children, at its moment of the file
 ok: and a clip deleted takes them with it
 ok: the document holds together after all of it
-ok: and Undo takes every piece and lane away again
-ok: a style on a video already cut: a set of pieces for each clip
-ok: each set over its clip's span, cut from the main video
+ok: and Undo takes every Cutout and Sub-Lane away again
+ok: a Game Preset on a video already cut: a set of Cutouts for each clip
+ok: each set over its clip's span, cut from the file opened

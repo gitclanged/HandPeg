@@ -51,13 +51,15 @@ public partial class MainWindow
     /// <summary>
     /// Standard Editing (where HandPeg starts, and what Reset Layout puts back): the player at the top left with the
     /// playback controls under it; the Canvas over the effects and keyframes in a column beside it; the header
-    /// joined over the media browser at the right; the overview bar under all of it (shown: AppSettings.ShowMasterTimeline
+    /// joined over the media browser at the right; the Sequence Overview Scrubber under all of it (shown: AppSettings.ShowMasterTimeline
     /// is on by default), and under that the timeline, the first tab of the group of settings tabs (4.4-BugHunt).
     /// </summary>
     private DockLayoutState StandardLayout()
     {
         var player = DockNode.Split(true, (DockNode.Group("Player"), 1), (DockNode.Group("Playback"), 1));
-        var middle = DockNode.Split(true, (DockNode.Group("Layout"), 1), (DockNode.Group("Effects", "Keyframes"), 1.3));
+        // The Master Meter (5.2B) is a tab beside the effects and keyframes: hidden until Tabs and Panes shows it, and taken there by every
+        // arrangement that has no place of its own for it (DockManager.PlaceAsDefault).
+        var middle = DockNode.Split(true, (DockNode.Group("Layout"), 1), (DockNode.Group("Effects", "Keyframes", "Meter"), 1.3));
         var side = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media"), 1));
         var top = DockNode.Split(false, (player, 56), (middle, 22), (side, 22));
         return new DockLayoutState
@@ -73,6 +75,9 @@ public partial class MainWindow
     private DockLayoutState StandardLayoutBeside()
     {
         var state = StandardLayout();
+
+        // 4.4 had no Master Meter (5.2B): its Standard Editing is told by the panes it had.
+        state.Main.GroupOf("Meter")?.Panes.Remove("Meter");
         var tabs = state.Main.Children[^1];
         tabs.Panes.Remove(TimelinePaneId);
         tabs.Active = tabs.Panes.FirstOrDefault();
@@ -82,8 +87,8 @@ public partial class MainWindow
 
     /// <summary>
     /// Color and Effects: a large player with the Canvas beside it; two tall inspector columns at the right, the
-    /// effects and keyframes, and the header joined over the media browser with the Summary; under them the overview
-    /// bar, and the timeline with the other settings tabs at its right.
+    /// effects and keyframes, and the header joined over the media browser with the Summary; under them the Sequence
+    /// Overview Scrubber, and the timeline with the other settings tabs at its right.
     /// </summary>
     private DockLayoutState InspectorLayout()
     {
@@ -99,7 +104,7 @@ public partial class MainWindow
 
     /// <summary>
     /// Assembly and Media: the player at the top left; a wide media column at the right, the header joined over it at
-    /// the top right (as in the other layouts), the Canvas a tab beside the media; the overview bar across the whole
+    /// the top right (as in the other layouts), the Canvas a tab beside the media; the Sequence Overview Scrubber across the whole
     /// window, and under it the timeline, the settings tabs (open on Export) and the effects and keyframes side by side.
     /// </summary>
     private DockLayoutState AssemblyLayout()
@@ -117,7 +122,7 @@ public partial class MainWindow
     /// <summary>
     /// Vertical and Shorts Studio, for 9:16 shorts and highlights: a tall player and the Canvas side by side at the top
     /// left (each a tall frame), with the playback controls under them; the header joined over the media, effects and
-    /// keyframes at the top right; the overview bar across the whole window, and under it the timeline with the
+    /// keyframes at the top right; the Sequence Overview Scrubber across the whole window, and under it the timeline with the
     /// settings tabs at its right, Export and Audio first (the others after them).
     /// </summary>
     private DockLayoutState ShortsLayout()
@@ -136,7 +141,7 @@ public partial class MainWindow
 
     private IEnumerable<LayoutChoice> BuiltInLayouts() =>
     [
-        new("Standard Editing", "The player at the top left, the Canvas and effects beside it, the media at the right; the overview bar, and the timeline below, the first of the settings tabs. Where HandPeg starts.", StandardLayout(), null),
+        new("Standard Editing", "The player at the top left, the Canvas and effects beside it, the media at the right; the Sequence Overview Scrubber, and the timeline below, the first of the settings tabs. Where HandPeg starts.", StandardLayout(), null),
         new("Color & Effects", "A large player, tall effects and keyframes and media and Summary columns at the right; the timeline below, with the other tabs beside it.", InspectorLayout(), null),
         new("Assembly & Media", "The player at the left, a wide media column with the Canvas at the right; the timeline, the settings tabs and the effects and keyframes side by side below.", AssemblyLayout(), null),
         new("Vertical & Shorts Studio", "For 9:16 shorts: a tall player and Canvas side by side, media, effects and keyframes at the right; the timeline below, with the Export and Audio tabs beside it.", ShortsLayout(), null),

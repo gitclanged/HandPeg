@@ -3,6 +3,7 @@ using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using HandPegApp.Models;
+using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
@@ -131,13 +132,14 @@ public partial class MainViewModel
     /// The chapters of the output: one at every edge of a clip on any video track (Chapters at Cut Points: where 4.2.0's
     /// kept segments began, now that cuts are split points; 4.3D: every track alike, edges within half a second of each
     /// other one chapter), and one at each marker (Chapters at Markers), all in the timeline's time, which is the
-    /// output's; a marker where a clip begins names that chapter. A Copy export through the cuts list (the main video's
-    /// clips end to end, <paramref name="throughCuts"/>) has them on its own clock, at its clips: a marker in a gap has none.
+    /// output's; a marker where a clip begins names that chapter. A Copy export through the cuts list (one file's clips end to
+    /// end, SequenceSpans.CopyCutOf, <paramref name="throughCuts"/>) has them on its own clock, at its clips: a marker in a gap
+    /// has none.
     /// </summary>
     private List<(double Start, string Title)> BuildChapters(bool throughCuts = false)
     {
         var chapters = new List<(double Start, string Title)>();
-        var clips = GetMainClips();
+        var clips = throughCuts ? SequenceSpans.CopyCutOf(Document)?.Pieces ?? [] : [];
         double? OutputTime(double seconds)
         {
             if (!throughCuts)
@@ -156,7 +158,7 @@ public partial class MainViewModel
 
         if (ChaptersAtCuts)
         {
-            // Through the cuts list only the main video's clips are there; otherwise every video track's edges, in order.
+            // Through the cuts list only the copied file's clips are there; otherwise every video track's edges, in order.
             var length = SequenceSeconds;
             var edges = throughCuts
                 ? clips.Select(c => c.Start)
@@ -260,7 +262,7 @@ public partial class MainViewModel
         {
             foreach (var chapter in info.Chapters)
             {
-                if (SequenceTimeOfMainSource(chapter.Start) is { } at)
+                if (SequenceTimeOfOpenedFile(chapter.Start) is { } at)
                     Add(at, YouTubeChapterTitle(chapter.Title));
             }
         }
@@ -303,13 +305,14 @@ public partial class MainViewModel
         return title.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? title[prefix.Length..].Trim() : title;
     }
 
-    /// <summary>Where a moment of the main video's file is on the sequence: in the clip of it that holds it, or null when no clip does.</summary>
-    private double? SequenceTimeOfMainSource(double fileSeconds)
+    /// <summary>Where a moment of the file last opened is on the sequence: in the first shown clip of its picture that holds it (SequenceSpans), or null when none does.</summary>
+    private double? SequenceTimeOfOpenedFile(double fileSeconds)
     {
-        foreach (var clip in GetMainClips())
+        foreach (var span in SequenceSpans.SpansOf(Document, OpenedFile))
         {
-            if (fileSeconds >= clip.Offset - 0.0005 && fileSeconds < clip.Offset + (clip.End - clip.Start))
-                return clip.Start + Math.Max(fileSeconds - clip.Offset, 0);
+            var speed = span.Speed > 0 ? span.Speed : 1;
+            if (fileSeconds >= span.MediaOffset - 0.0005 && fileSeconds < span.MediaOffset + (span.End - span.Start) * speed)
+                return span.Start + Math.Max(fileSeconds - span.MediaOffset, 0) / speed;
         }
 
         return null;

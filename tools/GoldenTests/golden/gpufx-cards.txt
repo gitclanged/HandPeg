@@ -1,8 +1,7 @@
-# Every game-engine effect is a card of the registry: its slot, its lanes, its variant, its clock.
+# Every game-engine effect is an effect of the registry: its slot, its lanes, its variant, its clock.
 ok: eleven effects are the compositor's alone
 ok: each in slots 22 to 29
 ok: and every one of those slots has one
-ok: none has an FFmpeg filter string behind it (Law 4)
 ok: every default lies within its range
 ok: each one or two packets
 ok: Anamorphic Lens: its last lane is free for its variant
@@ -11,9 +10,9 @@ ok: Frosted Glass: its last lane is free for its variant
 ok: Frosted Glass: and carries it
 ok: Saber Glow: its last lane is free for its variant
 ok: Saber Glow: and carries it
-ok: a card that runs by itself sends how far through it is: 0.5 s of 2 s is a quarter
+ok: an effect that runs by itself sends how far through it is: 0.5 s of 2 s is a quarter
 ok: past its end, past 1, so the shader knows
-ok: a card with a range counts from the start of it
+ok: an effect with a range counts from the start of it
 ok: a clip takes a Neon Rim
 ok: and only one
 ok: the 3D VFX have a place of their own in the Add Effect menus

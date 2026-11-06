@@ -31,48 +31,6 @@ public sealed class SmartRule
     }
 }
 
-/// <summary>
-/// What the interface looked like in one of the two modes HandPeg had before 4.2 (Encoder Mode left for HandPeg Encoder):
-/// only read, from settings saved then, so that settings last saved in Encoder Mode take up Editor Mode's once
-/// (<see cref="AppSettings.ModeProfiles"/>). Every property here has a property of the same name in <see cref="AppSettings"/>.
-/// </summary>
-public sealed class ModeProfile
-{
-    public int TimelineHeight { get; set; }
-    public int AudioTrackHeight { get; set; }
-    public string PresetBarLocation { get; set; } = "";
-    public bool ShowAdvancedFiltersTab { get; set; }
-    public bool ShowTimelineWaveform { get; set; }
-    public bool ShowAdvancedPlayback { get; set; }
-    public bool ShowCommandPreviewTab { get; set; }
-    public bool GenerateHoverPreviews { get; set; }
-    public bool? ShowTimelineThumbnails { get; set; }
-    public int ThumbnailIntervalSeconds { get; set; }
-    public int HoverPreviewScale { get; set; }
-    public int PreviewDurationSeconds { get; set; }
-    public int PreviewResolutionPercent { get; set; }
-    public bool AutoOpenLayoutPane { get; set; }
-    public bool ShowIFrames { get; set; }
-    public bool SnapTimelineToIFrames { get; set; }
-    public bool AutoToggleTimelineSnap { get; set; }
-    public bool SaveTargetSizeInPresets { get; set; }
-    public bool StartWithSnapToIFrames { get; set; }
-    public bool StartWithChapterMarkers { get; set; }
-    public bool StartWithChaptersAtCuts { get; set; }
-    public bool StartWithFrameEngine { get; set; }
-    public int MasterTimelineHeight { get; set; }
-    public bool ShowKeyframesPane { get; set; }
-    public bool ShowEffectsPane { get; set; } = true;
-    public bool ShowMediaBrowser { get; set; }
-    public string? PlaybackControls { get; set; }
-    public string? DockLayout { get; set; }
-    public List<SavedDockLayout> SavedLayouts { get; set; } = [];
-    public bool ShowClipKeyframes { get; set; }
-    public List<string>? HiddenTabs { get; set; }
-    public bool ShowMasterTimeline { get; set; } = true;
-    public bool ShowStatusBar { get; set; } = true;
-}
-
 /// <summary>A layout of the user's own (Layout button, Save Current Layout): its name, its place (1 to 3), and the arrangement (Docking.DockLayoutState as JSON).</summary>
 public sealed class SavedDockLayout
 {
@@ -92,7 +50,8 @@ public sealed partial class AppSettings
     /// <summary>Where HandPeg's own releases are published. The updater (Velopack) reads them from here.</summary>
     public const string HandPegRepositoryUrl = "https://github.com/gitclanged/HandPeg";
 
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    // The file as it has always been written (indented, the default rules), through the generated metadata (AppSettingsJsonContext).
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true, TypeInfoResolver = AppSettingsJsonContext.Default };
 
     /// <summary>
     /// The list of whisper.cpp releases rather than "the latest": its numbered releases carry no programs,
@@ -105,10 +64,10 @@ public sealed partial class AppSettings
 
     public static string FilePath => AppPaths.SettingsFile;
 
-    // Declared before Current: static fields are set in the order they are written, and loading the settings uses this.
-    private static readonly System.Reflection.PropertyInfo[] ProfileProperties = typeof(ModeProfile).GetProperties();
-
-    /// <summary>Editor Mode's saved views were brought to 4.1.1's (no status bar, the Audio tab after Layers), once (see <see cref="Load"/>).</summary>
+    /// <summary>
+    /// Editor Mode's saved views were brought to 4.1.1's (no status bar, the Audio tab after Layers), once (see <see cref="Load"/>).
+    /// True in every file written since; kept so that a file is read as it was written.
+    /// </summary>
     public bool Migrated411Defaults { get; set; }
 
     /// <summary>The settings in effect. Replaced as a whole when the user saves the settings window.</summary>
@@ -205,7 +164,13 @@ public sealed partial class AppSettings
     public bool SaveTargetSizeInPresets { get; set; }
 
     // Timeline
-    public bool ShowAdvancedPlayback { get; set; }
+    /// <summary>
+    /// The Playback Controls pane of its own (the transport, frame steps and speed), not the transport folded into the Sequence
+    /// Overview Scrubber's row. On by default (5.2E, the user's report): the first-run window always turned it on
+    /// (ApplyEditorDefaults), but a copy whose settings skip that window showed the folded row, a window no user sees. Every settings
+    /// file since 4.2 writes it, so a user's own choice is kept.
+    /// </summary>
+    public bool ShowAdvancedPlayback { get; set; } = true;
 
     /// <summary>True puts the frame-step and speed controls on their own row above the timeline; false keeps them inline.</summary>
     public bool AdvancedPlaybackAboveTimeline { get; set; }
@@ -444,6 +409,9 @@ public sealed partial class AppSettings
     /// <summary>The media browser lists the files the open project uses (Project Media) instead of a folder (Folder Browser).</summary>
     public bool BrowserShowsProject { get; set; }
 
+    /// <summary>The media browser shows the Clip Library (5.2C: the user's own clips, ClipLibrary) rather than the project's files or a folder.</summary>
+    public bool BrowserShowsLibrary { get; set; }
+
     // Interface
     public bool ShowCommandPreviewTab { get; set; }
 
@@ -588,24 +556,9 @@ public sealed partial class AppSettings
     /// </summary>
     public const string EditorMode = "Editor Mode";
 
-    /// <summary>
-    /// Only read, from settings saved before 4.2: the mode that was in use ("Encoder Mode" or "Editor Mode"). <see cref="Load"/>
-    /// brings such settings over once and drops it, so it is never written again.
-    /// </summary>
-    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    public string? UiMode { get; set; }
-
-    /// <summary>Only read, from settings saved before 4.2: each mode's interface settings, by mode name. Dropped by <see cref="Load"/>.</summary>
-    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    public Dictionary<string, ModeProfile>? ModeProfiles { get; set; }
-
-    /// <summary>Takes up a profile kept from before 4.2: its interface settings replace these.</summary>
-    private void TakeProfile(ModeProfile profile)
-    {
-        // A setting since retired (Play Only Cut Segments, the remembered Live Preview) is left behind with the profile.
-        foreach (var property in ProfileProperties)
-            typeof(AppSettings).GetProperty(property.Name)?.SetValue(this, property.GetValue(profile));
-    }
+    // (The two modes' leftovers in settings saved before 4.2, UiMode and ModeProfiles, are not read any more, 5.2-Arm64AndNpu: 4.2
+    // took them up once, Editor Mode's profile into the settings themselves, and wrote neither again. Every file saved since keeps
+    // the values in use at its top level, which is where they are read; a file that still has the two reads without them.)
 
     /// <summary>The style presets the drag-and-drop overlay offers, by file name, in the order they are shown. Empty for the most recent ones.</summary>
     public List<string> SplashStylePresets { get; set; } = [];
@@ -619,12 +572,13 @@ public sealed partial class AppSettings
     public bool StartWithChaptersAtCuts { get; set; }
 
     /// <summary>
-    /// How tall the master timeline is, 1 (a slim bar) to 50: the slider beside the volume. 0 in settings from
-    /// before the slider, which take it from the old five-step <see cref="TimelineHeight"/>.
+    /// How tall the Sequence Overview Scrubber is (named for the master timeline it was until 4.4), 1 (16 px) to 52, 4 px a step
+    /// (two steps lower than before 5.2-AuditB, ViewDefaultsVersion 5). 0 in settings from before the slider, which take it from
+    /// the old five-step <see cref="TimelineHeight"/>.
     /// </summary>
     public int MasterTimelineHeight { get; set; }
 
-    /// <summary>How tall each track's time bar is on the Layers tab, 1 to 50.</summary>
+    /// <summary>How tall each track's time bar is on the timeline, 1 to 50.</summary>
     public int LayerHeight { get; set; } = 25;
 
     /// <summary>How tall each sound's row is on the Audio tab, 1 to 50: taller rows show more of the waveform.</summary>
@@ -633,13 +587,16 @@ public sealed partial class AppSettings
     /// <summary>The panes and what the window starts with were given their defaults once, for settings from before there were any.</summary>
     public int ViewDefaultsVersion { get; set; }
 
-    public const string ResetToStyle = "Active Style Preset";
+    public const string ResetToPreset = "Active Game Preset";
     public const string ResetToSystem = "System Default";
 
-    public static IReadOnlyList<string> ResetTargets { get; } = [ResetToStyle, ResetToSystem];
+    // What ResetToPreset was saved as before 5.2-AuditB (the canonical words: a Game Preset, never a "style"); read as it.
+    private const string LegacyResetToPreset = "Active Style Preset";
 
-    /// <summary>What a double-click on a slider or a number box puts it back to: the value of the style preset in use, or the built-in default.</summary>
-    public string DoubleClickResetsTo { get; set; } = ResetToStyle;
+    public static IReadOnlyList<string> ResetTargets { get; } = [ResetToPreset, ResetToSystem];
+
+    /// <summary>What a double-click on a slider or a number box puts it back to: the value of the Game Preset in use, or the built-in default.</summary>
+    public string DoubleClickResetsTo { get; set; } = ResetToPreset;
 
     /// <summary>
     /// The settings tabs hidden (Tabs and Panes, Pass 4.1B), by pane id ("Tab:Video"); null for the defaults
@@ -654,7 +611,7 @@ public sealed partial class AppSettings
     /// </summary>
     public static IReadOnlyList<string> DefaultHiddenTabs { get; } = ["Tab:Video"];
 
-    /// <summary>The master timeline pane (Tabs and Panes).</summary>
+    /// <summary>The Sequence Overview Scrubber pane (Tabs and Panes; named for the master timeline it was until 4.4).</summary>
     public bool ShowMasterTimeline { get; set; } = true;
 
     /// <summary>
@@ -730,8 +687,8 @@ public sealed partial class AppSettings
     /// </summary>
     public bool EditLayersOnPlayer { get; set; } = true;
 
-    /// <summary>How tall the master timeline starts out, 1 to 50.</summary>
-    public const int DefaultMasterTimelineHeight = 17;
+    /// <summary>How tall the Sequence Overview Scrubber starts out, 1 to 52: 88 px.</summary>
+    public const int DefaultMasterTimelineHeight = 19;
 
     /// <summary>Reset Panes Layout: every pane back where it starts, at the size it starts with.</summary>
     public void ResetPaneLayout()
@@ -740,8 +697,8 @@ public sealed partial class AppSettings
         MasterTimelineHeight = DefaultMasterTimelineHeight;
     }
 
-    /// <summary>A new window starts with the Frame &amp; Layer Engine switched on.</summary>
-    public bool StartWithFrameEngine { get; set; }
+    // (StartWithFrameEngine went in 5.2-AuditB: the sequence is always the compositor's canvas. A settings file that has it
+    // is read without it, as every unknown member is.)
 
     /// <summary>
     /// The video encoder a new window starts with, by its FFmpeg name (libx264, h264_nvenc...), as chosen in
@@ -796,7 +753,7 @@ public sealed partial class AppSettings
     /// <summary>Asks whether to save the project when HandPeg is closed with changes that have not been saved.</summary>
     public bool PromptToSaveOnExit { get; set; } = true;
 
-    /// <summary>The Project Manager shows a picture of each project's main video, scrubbed by the pointer (4.1.1-B).</summary>
+    /// <summary>The Project Manager shows a picture of the video each project was opened with, scrubbed by the pointer (4.1.1-B).</summary>
     public bool ShowProjectPreviews { get; set; } = true;
 
     // ----- The Social Sharing Squisher, on the startup dialog -----
@@ -841,6 +798,20 @@ public sealed partial class AppSettings
     /// <summary>How many minutes pass between autosaves.</summary>
     public int AutosaveMinutes { get; set; } = 5;
 
+    /// <summary>
+    /// Fully portable project saves (5.2A, off at first): a manual save (Ctrl+S, the Project Manager's Save) writes Projects\Name\Name.hproj and
+    /// puts every file the project reads in Projects\Name\media\ (hard-linked on the same drive, copied from another), named by relative paths,
+    /// so the folder can be carried to another PC (PortableProject). Autosaves and Save As to a file chosen by hand are left as they are.
+    /// </summary>
+    public bool FullyPortableProjectSave { get; set; }
+
+    /// <summary>
+    /// A project bundle (.hpb, Save Project Bundle) carries a long recording the Sequence uses little of (over 2 minutes, under 60 % used) as
+    /// the stretches it uses, each a lossless stream copy with 5 s to spare at either end (5.2C, VodTrim); off, every file goes in whole. On
+    /// at first. The project itself and its files are never changed.
+    /// </summary>
+    public bool TrimLongVodsOnBundle { get; set; } = true;
+
     /// <summary>Opens the Canvas by itself as soon as there is a layout to edit.</summary>
     public bool AutoOpenLayoutPane { get; set; }
 
@@ -866,7 +837,6 @@ public sealed partial class AppSettings
         StartWithChaptersAtCuts = true;
         AutoOpenLayoutPane = true;
         ShowTimelineThumbnails = true;
-        StartWithFrameEngine = true;
         (ShowKeyframesPane, ShowClipKeyframes) = (true, true);
         ShowMediaBrowser = true;
         // No status bar (4.1.1): the title bar carries the status and the progress.
@@ -1020,42 +990,37 @@ public sealed partial class AppSettings
         {
             if (File.Exists(FilePath))
             {
-                var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
+                var settings = JsonSerializer.Deserialize(File.ReadAllText(FilePath), AppSettingsJsonContext.Default.AppSettings) ?? new AppSettings();
 
                 // A file that spells these out as null, as one written by hand or by an older version might.
                 settings.SmartRules ??= [];
-                settings.ModeProfiles ??= [];
                 settings.SavedLayouts ??= [];
-                foreach (var profile in settings.ModeProfiles.Values)
-                    profile.SavedLayouts ??= [];
 
                 foreach (var rule in settings.SmartRules)
                     rule.Normalize();
 
-                // Settings saved before the option existed: on where the mode would have switched it on.
-                settings.ShowTimelineThumbnails ??= settings.UiMode is null or EditorMode;
+                // The double-click's reset target as settings from before 5.2-AuditB named it.
+                if (settings.DoubleClickResetsTo == LegacyResetToPreset)
+                    settings.DoubleClickResetsTo = ResetToPreset;
 
-                // Settings from before the panes and the timeline's slider: each mode gets what it would have started with.
+                // Settings saved before the option existed: on (a file of 4.2 or later has it; one saved before 4.2 in Encoder
+                // Mode is read as any other since 5.2-Arm64AndNpu, its mode no longer read).
+                settings.ShowTimelineThumbnails ??= true;
+
+                // Settings from before the panes and the timeline's slider: what they would have started with.
                 if (settings.ViewDefaultsVersion < 1)
                 {
                     settings.ViewDefaultsVersion = 1;
-                    var editor = settings.UiMode == EditorMode;
-                    (settings.ShowKeyframesPane, settings.ShowClipKeyframes) = (editor, true);
+                    (settings.ShowKeyframesPane, settings.ShowClipKeyframes) = (false, true);
                     settings.MasterTimelineHeight = Math.Clamp(4 * settings.TimelineHeight - 3, 1, 50);
-                    foreach (var (mode, profile) in settings.ModeProfiles)
-                    {
-                        (profile.ShowKeyframesPane, profile.ShowClipKeyframes) = (mode == EditorMode, true);
-                        profile.MasterTimelineHeight = Math.Clamp(4 * profile.TimelineHeight - 3, 1, 50);
-                    }
                 }
 
-                // Settings from when Encoder Mode started without the color grading on its Filters tab: it is
-                // switched on there once. It can still be hidden again, under Interface.
+                // Settings from when the color grading was not on the Filters tab to start with: it is switched on there once.
+                // It can still be hidden again, under Interface.
                 if (settings.ViewDefaultsVersion < 2)
                 {
                     settings.ViewDefaultsVersion = 2;
-                    if (settings.UiMode != EditorMode)
-                        settings.ShowAdvancedFiltersTab = true;
+                    settings.ShowAdvancedFiltersTab = true;
                 }
 
                 // Version 3 opened the Source pane, which Editor Mode no longer has (Add Media in its header took its place).
@@ -1074,34 +1039,18 @@ public sealed partial class AppSettings
                     }
                 }
 
-                // Editor Mode as 4.1.1 starts it, once, for settings saved before: no status bar at the bottom (the title
-                // bar carries the status and the progress) and the Audio tab shown, right after Layers. Both stay the
-                // user's to change under Views, Tabs and Panes. The mode in use holds its values here; the other, in its profile.
-                if (!settings.Migrated411Defaults)
+                // The Sequence Overview Scrubber's steps start two lower since 5.2-AuditB (so a drag reaches 16 px): each saved
+                // height keeps its pixels.
+                if (settings.ViewDefaultsVersion < 5)
                 {
-                    settings.Migrated411Defaults = true;
-                    if (settings.UiMode == EditorMode)
-                        (settings.ShowStatusBar, settings.HiddenTabs, settings.DockLayout) = (false, WithAudioTab(settings.HiddenTabs), AudioAfterLayers(settings.DockLayout));
-                    if (settings.ModeProfiles.TryGetValue(EditorMode, out var editorProfile))
-                        (editorProfile.ShowStatusBar, editorProfile.HiddenTabs, editorProfile.DockLayout) = (false, WithAudioTab(editorProfile.HiddenTabs), AudioAfterLayers(editorProfile.DockLayout));
+                    settings.ViewDefaultsVersion = 5;
+                    if (settings.MasterTimelineHeight > 0)
+                        settings.MasterTimelineHeight += 2;
                 }
 
-                // HandPeg is the editor alone since 4.2 (Encoder Mode left for HandPeg Encoder). Settings last saved in Encoder
-                // Mode take up Editor Mode's interface settings, its arrangement and layouts among them, once: from its
-                // profile, or as Editor Mode starts if it was never used; so no one loses an Editor workspace. The two
-                // modes' leftovers are then dropped and never written again.
-                if (settings.UiMode is { } lastMode && lastMode != EditorMode)
-                {
-                    if (settings.ModeProfiles.GetValueOrDefault(EditorMode) is { } editorProfile)
-                        settings.TakeProfile(editorProfile);
-                    else
-                    {
-                        settings.SavedLayouts = [];
-                        settings.ApplyEditorDefaults();
-                    }
-                }
-
-                (settings.UiMode, settings.ModeProfiles) = (null, null);
+                // (4.1.1 brought Editor Mode's saved views to its own once, by the mode a file named. Every file written since
+                // says it was done; one from before is read as it stands, 5.2-Arm64AndNpu.)
+                settings.Migrated411Defaults = true;
 
                 // The keys, the dial and the tour (4.4, AppSettings.Input.cs): a shortcut that can never work is dropped.
                 settings.CleanUpInput();
@@ -1116,39 +1065,6 @@ public sealed partial class AppSettings
         // No settings yet: already as 4.1.1 starts, so there is nothing to bring over. The first-run window comes first.
         NoteFirstRun();
         return new AppSettings { ShowTimelineThumbnails = false, Migrated411Defaults = true };
-    }
-
-    private const string AudioTab = "Tab:Audio", LayersTab = "Tab:Layers";
-
-    /// <summary>The tabs hidden, without the Audio tab (a new list: the profiles share lists); null stays the defaults.</summary>
-    private static List<string>? WithAudioTab(List<string>? hidden) => hidden?.Where(t => t != AudioTab).ToList();
-
-    /// <summary>
-    /// A saved arrangement with the Audio tab right after the Layers tab in Layers' group (4.1.1): moved there from its
-    /// own place unless it is alone in a group (it is shown where it is), or put there when the arrangement lacks it.
-    /// Unchanged when there is no Layers tab or the arrangement cannot be read.
-    /// </summary>
-    private static string? AudioAfterLayers(string? saved)
-    {
-        if (Docking.DockLayoutState.Read(saved) is not { } state)
-            return saved;
-
-        var roots = new[] { state.Main, state.Side, state.SideClosed }.OfType<Docking.DockNode>().ToList();
-        if (roots.Select(r => r.GroupOf(LayersTab)).FirstOrDefault(g => g is not null) is not { } layers)
-            return saved;
-
-        if (roots.Select(r => r.GroupOf(AudioTab)).FirstOrDefault(g => g is not null) is { } audio)
-        {
-            if (!ReferenceEquals(audio, layers) && audio.Panes.Count == 1)
-                return saved;
-
-            audio.Panes.Remove(AudioTab);
-            if (audio.Active == AudioTab)
-                audio.Active = audio.Panes.FirstOrDefault();
-        }
-
-        layers.Panes.Insert(layers.Panes.IndexOf(LayersTab) + 1, AudioTab);
-        return JsonSerializer.Serialize(state);
     }
 
     // Paths are often pasted with the quotes Explorer's "Copy as path" adds.

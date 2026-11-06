@@ -9,12 +9,11 @@ namespace HandPegApp.ViewModels;
 
 /// <summary>
 /// The timeline as Undo keeps it (4.3C): the document (every track and clip, the markers, the Sequence Output's effects),
-/// what was done to the main video's own audio tracks and how each is set, the background's switch, the recycle bin, the
-/// subtitles, the caption box, and (4.4) the sequence's own look: its colour grade, sharpening and blurred background.
-/// Nothing else, and no pictures.
+/// how each output audio track is made, the blur fill's switch for files opened, the recycle bin, the subtitles, the caption
+/// box, and (4.4) the sequence's own look: its colour grade, sharpening and blur fill. Nothing else, and no pictures.
 /// </summary>
 public sealed record TimelineSnapshot(
-    Models.Timeline.TimelineDocument Document, List<AudioEditState> Audio, bool BackgroundHidden = false, List<DeletedClip>? Bin = null,
+    Models.Timeline.TimelineDocument Document, List<AudioOutputEdit> Audio, bool BackgroundHidden = false, List<DeletedClip>? Bin = null,
     SubtitleTrackData? Subtitles = null, LayerState? CaptionLayer = null, CaptionStyle? CaptionStyle = null, SequenceLook? Look = null);
 
 /// <summary>
@@ -77,13 +76,11 @@ public static class UndoSteps
 }
 
 /// <summary>
-/// What was done to one audio track on the timeline (how far it was slipped, and its pieces) and, since 4.4, how it is set:
-/// its gain, what is done with it (muted is Ignore / Drop), its filters, its ducking, whether it is a voice, and its title.
-/// Those are null in a state that did not record them, and are then left as they are.
+/// How one output audio track is made (5.2-AuditB: an output choice, by its stream): what is done with it (copied, encoded again,
+/// or Ignore / Drop) and its title. Null in a state that did not record them, and then left as they are. (A step from before
+/// 5.2-AuditB also held the main video's stream mixing here, by the same name: what is not one of these is not read.)
 /// </summary>
-public sealed record AudioEditState(
-    int Index, double Offset, List<AudioPiece> Pieces, double? GainDb = null, string? Action = null, TrackAudioFilters? Filters = null,
-    bool? AutoDuck = null, bool? IsVoice = null, string? Title = null);
+public sealed record AudioOutputEdit(int Index, string? Action = null, string? Title = null);
 
 /// <summary>What Remove Dead Air does with the silences it finds.</summary>
 public enum DeadAirMode
@@ -177,7 +174,15 @@ public partial class MainViewModel
         try
         {
             if (Unpack(state) is { } step && IsWhole(step))
-                return step;
+            {
+                // A step of the shape before 5.2-AuditB (the old main video) is never put back: none of this version's making
+                // holds one, and a project of that shape is converted as it is opened, its history let go (TakeUpHistory).
+                if (!ProjectStore.HoldsOldKinds(step.Document, step.Bin))
+                    return step;
+
+                AppLog.Write($"The undo step \"{what}\" holds the main video of a HandPeg from before 5.2: it is let go");
+                return null;
+            }
 
             AppLog.Write($"The undo step \"{what}\" holds no timeline that can be put back");
         }
@@ -193,11 +198,10 @@ public partial class MainViewModel
         return null;
     }
 
-    /// <summary>Whether a step read back holds all that putting it back reads: its document, every track's clips with their looks, its audio tracks' edits, its bin's looks.</summary>
+    /// <summary>Whether a step read back holds all that putting it back reads: its document, every track's clips with their looks, its output tracks, its bin's looks.</summary>
     private static bool IsWhole(TimelineSnapshot step) =>
-        step is { Document: { Tracks: { } tracks, Markers: not null, SequenceEffects: not null }, Audio: { } audio }
+        step is { Document: { Tracks: { } tracks, Markers: not null, SequenceEffects: not null }, Audio: not null }
         && tracks.TrueForAll(t => t is { Clips: { } clips } && clips.TrueForAll(c => c is { State: not null }))
-        && audio.TrueForAll(a => a is { Pieces: not null })
         && (step.Bin ?? []).TrueForAll(d => d is not { Clip: { State: null } });
 
     /// <summary>
@@ -210,8 +214,7 @@ public partial class MainViewModel
         FlushLooks();
         return new(
             Document.Clone(),
-            AudioTracks.Select(t => new AudioEditState(
-                t.Index, t.OffsetSeconds, [.. t.Pieces], t.GainDb, t.Action, t.Filters.Clone(), t.AutoDuck, t.IsVoice, t.Title)).ToList(),
+            AudioTracks.Select(t => new AudioOutputEdit(t.Index, t.Action, t.Title)).ToList(),
             _backgroundRow.IsHidden, RecycleBin.Select(i => i.Clip).ToList(),
             CaptureSubtitles(), CaptionLayer.ToState(), CaptionStyle.Clone(), CaptureLook());
     }
@@ -235,7 +238,7 @@ public partial class MainViewModel
 
     /// <summary>
     /// Call before changing what is not an edit of the timeline document (a clip's look, its keyframes and effects, the
-    /// subtitles, the caption box, the video's own audio tracks): what it all looks like now can then be brought back with
+    /// subtitles, the caption box, the output audio tracks): what it all looks like now can then be brought back with
     /// Undo. (An edit of the document keeps its own step.)
     /// </summary>
     /// <param name="what">The change about to be made, in a word or two, for the status bar.</param>
@@ -369,30 +372,20 @@ public partial class MainViewModel
         InstallDocument(snapshot.Document);
         SetBin(snapshot.Bin);
         _backgroundRow.IsHidden = snapshot.BackgroundHidden;
-        foreach (var edit in snapshot.Audio)
+        foreach (var output in snapshot.Audio)
         {
-            if (AudioTracks.FirstOrDefault(t => t.Index == edit.Index) is not { } track)
+            if (AudioTracks.FirstOrDefault(t => t.Index == output.Index) is not { } track)
                 continue;
 
-            track.SetEdits(edit.Offset, edit.Pieces);
-
-            // How it is set (4.4: the ducking's and the Audio section's steps put these back too), each only where it differs.
-            if (edit.GainDb is { } gain)
-                track.GainDb = gain;
-            if (edit.Action is { } action && AudioTrack.AllActions.Contains(action))
+            // How it is made, each only where it differs.
+            if (output.Action is { } action && AudioTrack.AllActions.Contains(action))
                 track.Action = action;
-            if (edit.Filters is { } filters && !SameJson(filters, track.Filters))
-                track.Filters = filters;
-            if (edit.AutoDuck is { } duck)
-                track.AutoDuck = duck;
-            if (edit.IsVoice is { } voice)
-                track.IsVoice = voice;
-            if (edit.Title is { Length: > 0 } title)
+            if (output.Title is { Length: > 0 } title)
                 track.Title = title;
         }
 
         // The sequence's look (4.4), only where it differs: a step that did not touch it leaves the graph's filters as they are.
-        // (Compared as JSON: it holds the blurred background's cards, a list, since 5.0-Release.)
+        // (Compared as JSON: it holds the blur fill's effects, a list, since 5.0-Release.)
         if (snapshot.Look is { } look && !SameJson(look, CaptureLook()))
             ApplyLook(look);
 
@@ -447,13 +440,21 @@ public partial class MainViewModel
 
     /// <summary>
     /// The history a project carries, taken up as it is opened in place of none: each step is read only when it is stepped
-    /// to (one that cannot be is let go then). When the main video is opened from another file than the project was saved
-    /// with (a link's download that moved), the steps are pointed at this one as the timeline is (TimelineToOpen). Takes no
+    /// to (one that cannot be is let go then). When the file opened is another than the project was saved with (a link's
+    /// download that moved), the steps are pointed at this one as the timeline is (TimelineToOpen). A project converted as it was opened
+    /// (a 5.1 project, LegacyMainVideo) keeps none: its steps hold the old main video and its stream mixing, which is not kept. Takes no
     /// step, and changes nothing that counts as a change of the project.
     /// </summary>
-    private void TakeUpHistory(ProjectState state)
+    private void TakeUpHistory(ProjectState state, bool converted)
     {
         ForgetHistory();
+        if (converted)
+        {
+            if ((state.UndoHistory?.Count ?? 0) + (state.RedoHistory?.Count ?? 0) > 0)
+                AppLog.Write("The project's undo history was not taken up: it was saved by a HandPeg from before 5.2, with a main video (the project was converted)");
+            return;
+        }
+
         foreach (var step in (state.UndoHistory ?? []).Where(s => s is { State.Length: > 0 }).TakeLast(UndoDepth))
             _undo.Add((step.What, step.State));
         foreach (var step in (state.RedoHistory ?? []).Where(s => s is { State.Length: > 0 }).TakeLast(UndoDepth))
@@ -483,12 +484,15 @@ public partial class MainViewModel
     /// <summary>
     /// The project as a save writes it: <see cref="CaptureState"/>, with the undo and redo history (4.4-BugHunt). With
     /// <paramref name="moved"/> (downloads kept in a folder of the user's), the steps are written with their files moved as
-    /// the timeline's are, while the history this session goes on with is left as it is.
+    /// the timeline's are, while the history this session goes on with is left as it is. With its thumbnail (Pass
+    /// 5.2D): the Sequence at the playhead as the GPU engine draws it, or the last one taken
+    /// (<see cref="ThumbnailForSave"/>).
     /// </summary>
     public ProjectState CaptureStateForSave(string name = "", Func<string, string>? moved = null)
     {
         var state = CaptureState(name);
         (state.UndoHistory, state.RedoHistory) = (HistoryOf(_undo, moved), HistoryOf(_redo, moved));
+        state.ThumbnailJpeg = ThumbnailForSave();
         return state;
     }
 
@@ -545,7 +549,7 @@ public partial class MainViewModel
 
     // ----- Whatever is selected -----
 
-    /// <summary>Removes the selected clip: it goes to the recycle bin, its time left empty. Any clip, the main video's too.</summary>
+    /// <summary>Removes the selected clip: it goes to the recycle bin, its time left empty. Any clip, on any track.</summary>
     public bool DeleteClip(object? clip)
     {
         if (clip is Layer layer && ClipOf(layer) is not null)
@@ -558,7 +562,7 @@ public partial class MainViewModel
             return true;
         }
 
-        StatusText = "Select a clip to delete: click its block on the Layers tab.";
+        StatusText = "Select a clip to delete: click its block on the timeline.";
         return false;
     }
 
@@ -578,7 +582,7 @@ public partial class MainViewModel
             return;
         }
 
-        // Its streams' lanes and the pieces cut from it are its own file at the same moment: they run at its speed, or they drift off it.
+        // Its streams' lanes and the Cutouts cut from it are its own file at the same moment: they run at its speed, or they drift off it.
         var family = Document.Tracks.SelectMany(t => t.Clips).Where(c => c.ParentClipId == model.Id && c.PlaysFile && string.Equals(c.SourcePath, model.SourcePath, StringComparison.OrdinalIgnoreCase)).ToList();
         if (Edit($"change the speed of {clip.Name}", edit =>
             {
@@ -644,9 +648,6 @@ public partial class MainViewModel
                 var made = CopyOfClip(clip);
                 (made.Id, made.State) = (Guid.NewGuid(), look);
 
-                // A copy of the main video is a picture in picture of its file: a layer of its own.
-                if (made.ContentKind == LayerKind.MainVideo)
-                    made.ContentKind = LayerKind.VideoFile;
                 edit.PlaceClip(copy, made, allowCrossfadeOverlap: false);
             }
         });
@@ -675,13 +676,22 @@ public partial class MainViewModel
     public event Action? LayerVisibilityChanged;
 
     /// <summary>
-    /// Hides a row, or shows it again: the background's blur; the main video's picture (its track's switch: its sound,
-    /// its length and its cuts stay); any other track's clips, picture and sound (as 4.2.0 did).
+    /// Hides a row, or shows it again: the blur fill of every video (the blur fill's settings row, 5.2-AuditB); a picture track
+    /// (its own switch, its stack with it); a sound track's clips.
     /// </summary>
     public void ToggleHidden(Layer layer)
     {
-        var hide = !layer.IsHidden;
-        if (layer.IsBackground || layer.IsCaptions || TrackOfRow(layer) is not { } track)
+        // A picture track's eye is its own switch (5.2), not its first clip's.
+        var hide = !layer.IsAudio && !layer.IsBackground && !layer.IsCaptions && TrackOfRow(layer) is not null ? !IsTrackHidden(layer) : !layer.IsHidden;
+        if (layer.IsBackground)
+        {
+            SetBackgroundShown(!hide);
+            RefreshLayerRows();
+            LayerVisibilityChanged?.Invoke();
+            return;
+        }
+
+        if (layer.IsCaptions || TrackOfRow(layer) is not { } track)
         {
             Checkpoint(hide ? $"hide {layer.Name}" : $"show {layer.Name}");
             layer.IsHidden = hide;
@@ -689,11 +699,24 @@ public partial class MainViewModel
         }
         else if (!Edit(hide ? $"hide {layer.Name}" : $"show {layer.Name}", edit =>
                  {
-                     if (layer.IsMainVideo)
+                     // A picture track's eye is its whole family's (5.2, the user's rule): the track's own switch hides its clips and
+                     // the tracks in its stack with theirs (TimelineDocument.IsHiddenWithParents), and never touches a clip's own switch.
+                     // A track hidden clip by clip before 5.2 is shown again whole. A sound track's is still each of its clips' sound.
+                     if (!layer.IsAudio)
+                     {
+                         var byClips = !track.IsHidden;
                          edit.SetTrack(track, hidden: hide);
+                         if (!hide && byClips && track.Clips.Count > 0 && track.Clips.All(c => c.IsHidden))
+                         {
+                             foreach (var clip in track.Clips)
+                                 edit.SetClipFlags(clip, hidden: false);
+                         }
+                     }
                      else
+                     {
                          foreach (var clip in track.Clips)
                              edit.SetClipFlags(clip, hidden: hide);
+                     }
                  }))
         {
             return;
@@ -702,12 +725,18 @@ public partial class MainViewModel
         RefreshLayerRows();
         LayerVisibilityChanged?.Invoke();
         StatusText = !hide ? $"{layer.Name} is shown again."
-            : layer.IsBackground ? "The blurred background is hidden: the canvas behind the layers is black."
-            : layer.IsMainVideo ? "The main video's picture is hidden. Its sound, its length and its cuts stay as they are."
             : $"{layer.Name} is hidden: it stays in the list but is left out of the picture.";
     }
 
-    /// <summary>Has auto-captions listen to a video layer's own sound.</summary>
+    /// <summary>
+    /// Whether a picture track's header shows it hidden (5.2): by its own switch, or every clip of it turned off (as a header hid a
+    /// track before 5.2, clip by clip), which its eye then shows again whole.
+    /// </summary>
+    public bool IsTrackHidden(Layer row) => TrackOfRow(row) is { } track
+        ? track.IsHidden || (track.Clips.Count > 0 && track.Clips.All(c => c.IsHidden))
+        : row.IsHidden;
+
+    /// <summary>Has auto-captions listen to a video clip's own sound.</summary>
     public void UseLayerAudioForCaptions(Layer layer)
     {
         if (!layer.CarriesSound)
@@ -730,7 +759,7 @@ public partial class MainViewModel
     /// </summary>
     [ObservableProperty] private bool _audioLinked = true;
 
-    /// <summary>Whether the blocks of the Layers tab show the waveform of the sound that is linked to their picture, drawn over them.</summary>
+    /// <summary>Whether the clips' blocks on the timeline show the waveform of the sound that is linked to their picture, drawn over them.</summary>
     [ObservableProperty] private bool _showLinkedAudio = true;
 
     /// <summary>
@@ -744,7 +773,7 @@ public partial class MainViewModel
 
         // Every clip with sound has its own link (the document's); this switch sets them all.
         var clips = Document.Tracks.SelectMany(t => t.Clips.Select(c => (Track: t, Clip: c))).Where(c => c.Clip.HasSound).ToList();
-        var slipped = AudioTracks.Any(t => Math.Abs(t.OffsetSeconds) > 0.001) || clips.Any(c => Math.Abs(c.Clip.AudioSlipSeconds) > 0.001);
+        var slipped = clips.Any(c => Math.Abs(c.Clip.AudioSlipSeconds) > 0.001);
         var choice = 1;
         if (linked && slipped)
         {
@@ -752,7 +781,7 @@ public partial class MainViewModel
             choice = Choose?.Invoke("Link Audio and Video",
                 "The audio has been moved out of step with its video. Linking puts them back together, one way or the other:\n\n"
                 + "Snap Audio to Video: the sound goes back to where its picture is.\n"
-                + "Snap Video to Audio: each clip moves to where its sound was put. (The main video's own audio tracks go back to it.)",
+                + "Snap Video to Audio: each clip moves to where its sound was put.",
                 "Snap Audio to Video", "Snap Video to Audio") ?? 0;
             if (choice == 0)
             {
@@ -760,13 +789,9 @@ public partial class MainViewModel
                 StatusText = "Left unlinked: the audio stays where it was moved to.";
                 return;
             }
-
-            Checkpoint("link audio and video");
-            foreach (var track in AudioTracks)
-                track.OffsetSeconds = 0;
         }
 
-        // The stream rows' slips were put back with a step of their own just above; the clips' links are one edit.
+        // The clips' links are one edit.
         if (!Edit(linked ? "link audio and video" : "unlink audio and video", edit =>
             {
                 foreach (var (track, clip) in clips)
@@ -785,7 +810,7 @@ public partial class MainViewModel
                         }
                     }
                 }
-            }, undoable: !(linked && slipped)))
+            }))
         {
             OnPropertyChanged(nameof(AudioLinked));
             return;
@@ -798,67 +823,12 @@ public partial class MainViewModel
             : "Audio and video are unlinked: an audio block can now be dragged on its own.";
     }
 
-    /// <summary>Slips an audio track in time. Only while unlinked; a track that was being copied is re-encoded from now on, as moved sound has to be.</summary>
-    public bool SlipAudio(AudioTrack track, double offsetSeconds)
-    {
-        if (AudioLinked)
-        {
-            StatusText = "Audio and video are linked. Unlink them (the chain button) to move the audio on its own.";
-            return false;
-        }
 
-        Checkpoint($"move {track.Title}");
-        track.OffsetSeconds = Math.Round(offsetSeconds, 2);
-        MakeEditable(track);
-        StatusText = $"{track.Title} moved {(track.OffsetSeconds >= 0 ? "later" : "earlier")} by {Math.Abs(track.OffsetSeconds):0.00} s.";
-        return true;
-    }
-
-    /// <summary>Cuts an audio track's block in two at a time, so that either part can be silenced on its own.</summary>
-    public bool SplitAudio(AudioTrack track, double seconds)
-    {
-        // The track's pieces are in the file's own time: the moment of the file the main video's clip under the playhead shows there.
-        var total = MainMediaSeconds;
-        var content = GetMainClipAt(seconds) is { } under ? under.Offset + (seconds - under.Start) - track.OffsetSeconds : -1;
-        if (content <= 0.05 || content >= total - 0.05)
-        {
-            StatusText = $"The playhead is not inside {track.Title}.";
-            return false;
-        }
-
-        Checkpoint($"split {track.Title}");
-        track.SplitAt(content, total);
-        Log($"Split clip: {track.Title} at {TimeDisplay.Format(seconds)} (select a part and press Delete to silence it)");
-        return true;
-    }
-
-    /// <summary>Silences one piece of an audio track, or brings it back.</summary>
-    public void ToggleAudioPiece(AudioTrack track, AudioPiece piece)
-    {
-        Checkpoint(piece.Muted ? $"restore part of {track.Title}" : $"silence part of {track.Title}");
-        track.ToggleMuted(piece);
-        MakeEditable(track);
-        StatusText = piece.Muted ? $"That part of {track.Title} plays again." : $"That part of {track.Title} is silenced. Ctrl+Z brings it back.";
-    }
-
-    // Sound that has been moved or silenced in places cannot be copied: it has to be decoded and encoded again.
-    private void MakeEditable(AudioTrack track)
-    {
-        if (track.IsEdited && track.IsPassthrough)
-        {
-            track.Action = AudioTrack.Reencode;
-            if (AudioEncoder != CopyOption)
-                track.Codec = AudioEncoder;
-        }
-
-        GenerateCommand();
-    }
-
-    /// <summary>The video layers whose own sound goes into the output: those that have any, and are not hidden.</summary>
+    /// <summary>The video clips whose own sound goes into the output: those that have any, and are not hidden.</summary>
     private List<Layer> GetLayerAudioSources() =>
         Layers.Where(l => l.CarriesSound && !l.IsHidden && !l.IsSoundMuted && FileState.Exists(l.ImagePath)).ToList();
 
-    /// <summary>Draws the waveform of a video layer's sound, for its block on the Layers tab. In the background; the layer works without it.</summary>
+    /// <summary>Draws the waveform of a video clip's sound, for its block on the timeline. In the background; the clip works without it.</summary>
     private async Task LoadLayerWaveformAsync(Layer layer)
     {
         if (_isBackgroundWorker || !layer.CarriesSound || layer.Waveform is not null || !(ShowWaveforms || layer.IsAudio))
@@ -929,8 +899,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Takes a strip of frames from a video layer's file, evenly spread over its length, for its block on the
-    /// Layers tab. In the background, once for each file; the layer works without it.
+    /// Takes a strip of frames from a video clip's file, evenly spread over its length, for its block on the
+    /// timeline. In the background, once for each file; the clip works without it.
     /// </summary>
     private async Task LoadLayerFilmstripAsync(Layer layer)
     {
@@ -959,27 +929,6 @@ public partial class MainViewModel
             layer.Filmstrip = picture;
     }
 
-    /// <summary>
-    /// The main video's own strip of frames, for its clips on the Layers tab: the main video is a clip like
-    /// any other there, and is drawn like one.
-    /// </summary>
-    private async Task LoadMainFilmstripAsync(string path)
-    {
-        if (_isBackgroundWorker || _mediaInfo?.Video is null || !File.Exists(path))
-            return;
-
-        // More frames than a layer gets: the main video is usually the longest thing on the timeline.
-        var count = Math.Clamp(AppSettings.Current.LayerThumbnailCount * 2, 8, 25);
-        if (await GetFilmstripAsync(path, count, MainMediaSeconds) is not { } picture || !string.Equals(LocalMediaPath, path, StringComparison.OrdinalIgnoreCase))
-            return;
-
-        // Every clip of it, whichever asked: one split while the strip was being made is two by now.
-        foreach (var view in Layers.Where(l => l.IsMainVideo))
-            view.Filmstrip = picture;
-    }
-
-    /// <summary>The main video's strip of frames, for a view of one of its clips that has none yet (made once, kept for the session).</summary>
-    private Task LoadMainFilmstripAsync() => LoadMainFilmstripAsync(LocalMediaPath);
 
     // The strips that are being made right now, by file: a second clip of a file waits for the first one's.
     private readonly Dictionary<string, Task<System.Windows.Media.ImageSource?>> _filmstripsBeingMade = new(StringComparer.OrdinalIgnoreCase);
@@ -1052,9 +1001,9 @@ public partial class MainViewModel
     private DeadAirSource _deadAirSource;
 
     /// <summary>
-    /// Remove Dead Air on what is selected: a video layer (its own sound is listened to and the layer cut up),
-    /// an audio track (it is the one listened to, and the main video is cut), or otherwise the main video. The dead air is
-    /// found by the sound's silences, or by the gaps between the words its captions heard (4.4).
+    /// Remove Dead Air on what is selected: a clip with sound of its own (it is listened to and cut up), or otherwise the sound
+    /// marked as the voice, else the first stream of the video given or at the playhead, every clip of its file cut. The dead air
+    /// is found by the sound's silences, or by the gaps between the words its captions heard (4.4).
     /// </summary>
     public void RunDeadAir(DeadAirMode mode, object? target, DeadAirSource source = DeadAirSource.Audio)
     {
@@ -1067,7 +1016,7 @@ public partial class MainViewModel
     /// Cuts clips at the silences in their sound (found in their file's own time): each is split where a silence it plays
     /// begins and ends, and the silent parts are then folded (<paramref name="fold"/>, 4.3D: taken out, what follows closed
     /// up, each kept at its cut to be put back, <see cref="UnfoldSegment"/>) or taken out. With <paramref name="closeUp"/>
-    /// (the main video's dead air) they go from every unlocked track and what follows on all of them closes up behind them,
+    /// (the dead air of a file's clips) they go from every unlocked track and what follows on all of them closes up behind them,
     /// as a cut list's left-out stretches did; otherwise (a layer's) a fold closes up its own track, and a silence taken out
     /// leaves its time empty, as in 4.2.0. One step of Undo for them all.
     /// </summary>
@@ -1094,14 +1043,14 @@ public partial class MainViewModel
             }
         }
 
+        var name = clips.Count == 1 ? clips[0].View.Name : $"the clips of {Path.GetFileName(clips[0].View.ImagePath)}";
         if (cuts.Count == 0)
-            return $"No silence found in {(clips.Count == 1 ? clips[0].View.Name : "the main video")}.";
-        // A layer is cut into clips of its own, which a few dozen keep usable; the main videos silences are taken out of the
-        // timeline (4.2.0s cut list had no limit), however many a long recording has.
-        if (cuts.Count > (clips.Any(c => c.View.IsMainVideo) ? 5000 : layerLimit))
-            return $"{(clips.Count == 1 ? clips[0].View.Name : "The main video")} has too many silences to cut ({cuts.Count}): raise the shortest silence and try again.";
+            return $"No silence found in {name}.";
+        // A layer is cut into clips of its own, which a few dozen keep usable; a file's silences closed up across the timeline are
+        // taken out of it (4.2.0's cut list had no limit), however many a long recording has.
+        if (cuts.Count > (closeUp ? 5000 : layerLimit))
+            return $"{(clips.Count == 1 ? $"{clips[0].View.Name} has" : $"The clips of {Path.GetFileName(clips[0].View.ImagePath)} have")} too many silences to cut ({cuts.Count}): raise the shortest silence and try again.";
 
-        var name = clips.Count == 1 ? clips[0].View.Name : "the main video";
         var removed = 0.0;
         var marked = 0;
         Edit($"remove dead air from {name}", edit =>

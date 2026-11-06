@@ -19,6 +19,11 @@ public static partial class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // First of all (5.2, the user's Windows on ARM laptop): no Windows error box for HandPeg or for a program it starts. A child process
+        // inherits this error mode, so a tool missing a DLL (whisper-cli.exe without libomp140.aarch64.dll on ARM64) fails with
+        // STATUS_DLL_NOT_FOUND (0xC0000135), which HandPeg reports, instead of stopping on a modal "was not found" box.
+        SetErrorMode(SetErrorMode(0) | FailCriticalErrors | NoGpFaultErrorBox);
+
         if (args.Length > 0 && args[0] == Services.CrashSentinel.Argument)
         {
             Environment.ExitCode = Services.CrashSentinel.Run(args);
@@ -49,9 +54,13 @@ public static partial class Program
         Services.StartupTrace.Mark("Main");
 
         // Windows shows the "working in background" pointer from the moment Explorer starts a windowed program until the
-        // program first asks for its messages. Asked at once (nothing is waiting, nothing is taken), the pointer is back
-        // to an arrow while the window is still being built, not only after the first frame (the user's 5.0 directive 2).
+        // program first calls GetMessage (PeekMessage does not end it: measured on a 7950X3D desktop in 5.2E, the
+        // pointer lasted until WPF's own first GetMessage, 120-160 ms in). A message posted to this thread is taken back at once,
+        // so the call never waits, and the pointer is back to an arrow while the window is still being built, not only after
+        // the first frame (the user's 5.0 directive 2). PeekMessage first makes the thread's message queue.
         _ = PeekMessageW(out _, 0, 0, 0, 0);
+        if (PostThreadMessageW(GetCurrentThreadId(), 0, 0, 0))
+            _ = GetMessageW(out _, 0, 0, 0);
 
         // Multi-core JIT (Pass 4.1C): the methods this start had to compile (mostly generic code over HandPeg's own
         // types, which ReadyToRun cannot compile ahead of time: about 2,500 at each start) are recorded, and from the
@@ -68,7 +77,7 @@ public static partial class Program
             // runs beside the window's start. AppPaths (read just above) finds a portable copy from the disk, not from
             // Velopack's locator, which does not exist until the bootstrap has run.
             if (Environment.GetCommandLineArgs().Skip(1).Any(a => a.StartsWith("--veloapp-", StringComparison.OrdinalIgnoreCase)))
-                Velopack.VelopackApp.Build().Run();
+                VelopackHooks().Run();
             else
                 VelopackStarted = Task.Run(RunVelopack);
 
@@ -159,6 +168,23 @@ public static partial class Program
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool PeekMessageW(out Message message, nint window, uint first, uint last, uint remove);
 
+    [LibraryImport("user32.dll")]
+    private static partial int GetMessageW(out Message message, nint window, uint first, uint last);
+
+    // WM_NULL (0) to this thread: what the first GetMessage above takes back at once.
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PostThreadMessageW(uint thread, uint message, nint wParam, nint lParam);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial uint GetCurrentThreadId();
+
+    // SEM_FAILCRITICALERRORS (no critical-error box, a DLL not found among them) and SEM_NOGPFAULTERRORBOX.
+    private const uint FailCriticalErrors = 0x0001, NoGpFaultErrorBox = 0x0002;
+
+    [LibraryImport("kernel32.dll")]
+    private static partial uint SetErrorMode(uint mode);
+
     /// <summary>
     /// Velopack's bootstrap on an ordinary start, run beside the window's start: the update checker waits for it before
     /// it asks Velopack anything (<see cref="Services.AppUpdater"/>). Done at once where it never ran (a hook start,
@@ -170,11 +196,16 @@ public static partial class Program
     {
         try
         {
-            Velopack.VelopackApp.Build().Run();
+            VelopackHooks().Run();
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             Services.AppLog.Write("Velopack's start-up did not complete", ex);
         }
     }
+
+    // The installer's hooks, the same on both starts (a hook start runs them, an ordinary start only sets up): an uninstall takes out the
+    // Explorer previews this user's HandPeg registered (Pass 5.2D; the registry only, before settings or WPF).
+    private static Velopack.VelopackApp VelopackHooks() =>
+        Velopack.VelopackApp.Build().OnBeforeUninstallFastCallback(_ => Services.ExplorerThumbnails.Unregister());
 }

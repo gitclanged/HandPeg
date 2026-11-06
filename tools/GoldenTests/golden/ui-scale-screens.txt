@@ -1,0 +1,17 @@
+# UiScale.BasePixelsPerDip (5.2): a content DIP in real pixels by monitor (its longer side, Windows' scale), before the UI Scale.
+monitor: off (HandPeg's own, as it comes) / followed (Windows' scale)
+  a 1080p desktop at 100 % (1920 px): 1 / 1, 1920 / 1920 DIPs across
+  a 1080p laptop at 125 % (1920 px): 1 / 1.25, 1920 / 1536 DIPs across
+  a 1080p laptop at 150 % (1920 px): 1 / 1.5, 1920 / 1280 DIPs across
+  a 1440p desktop at 125 % (2560 px): 1 / 1.25, 2560 / 2048 DIPs across
+  a 1440p screen at 150 % (2560 px): 1 / 1.5, 2560 / 1707 DIPs across
+  a 3440 ultrawide at 125 % (3440 px): 1 / 1.25, 3440 / 2752 DIPs across
+  a 2560 x 1600 laptop at 175 % (2560 px): 1.333 / 1.75, 1920 / 1463 DIPs across
+  a 13-inch laptop's 2880 x 1800 at 200 % (2880 px): 1.5 / 2, 1920 / 1440 DIPs across
+  a 4K desktop at 150 % (3840 px): 1.5 / 1.5, 2560 / 2560 DIPs across
+  a 4K screen at 175 % (3840 px): 1.75 / 1.75, 2194 / 2194 DIPs across
+  a 4K screen at 200 % (3840 px): 2 / 2, 1920 / 1920 DIPs across
+a 13-inch laptop at 2880 x 1800 and 200 %: 1.5 pixels a DIP, a workspace 1920 DIPs across (not 1:1, which drew it at half Windows' size)
+a desktop monitor (125 % or less, or 2560 pixels or fewer at 150 % or less): 1:1, every pixel the editor's
+the 13-inch laptop with the UI Scale at 75 %: 1.125 pixels a DIP
+the 13-inch laptop with the UI Scale at 150 %: 2.25 pixels a DIP

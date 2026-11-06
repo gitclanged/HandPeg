@@ -6,7 +6,12 @@ namespace HandPegApp.Models;
 /// <summary>What a layer shows.</summary>
 public enum LayerKind
 {
-    /// <summary>A rectangle cut out of the source video (a minimap, an ammo counter).</summary>
+    /// <summary>
+    /// A rectangle cut out of "the video" (a minimap, an ammo counter): a Game Preset's or a template's Cutout piece, which becomes
+    /// a video-file clip of the clip it goes on, cut to the same part of its picture (MainViewModel.FileCutoutOf). No clip on the
+    /// timeline is of this kind since 5.2-AuditB: a project that holds one (a cut-out of the old main video) is of the shape before
+    /// then, and is converted as it is opened (LegacyMainVideo, MainViewModel.ConvertLegacy). Kinds are saved by name.
+    /// </summary>
     Video,
 
     /// <summary>A picture from a file (a logo, a frame, a caption).</summary>
@@ -15,13 +20,21 @@ public enum LayerKind
     /// <summary>The box the auto-captions are drawn in. There is one, and it is always the top layer.</summary>
     Captions,
 
-    /// <summary>A video from a file, played alongside the main one and repeated when it is shorter.</summary>
+    /// <summary>A video from a file, read at its own moments: every video clip of the Sequence, on any track (5.2-AuditB).</summary>
     VideoFile,
 
-    /// <summary>The main video itself, as a place in the stacking order. There is one; it is placed with the Center controls.</summary>
+    /// <summary>
+    /// Legacy: the main video, the primary file's chain of clips; nothing makes it any more (5.2-AuditB). Kept only so that a project
+    /// that holds it (a 5.1 project) is read and converted as it is opened (LegacyMainVideo, MainViewModel.ConvertLegacy), presets that
+    /// name it still read, and the golden tests' 4.2.0-shaped fixtures can still be made of it (converted the same way).
+    /// </summary>
     MainVideo,
 
-    /// <summary>The blurred copy of the video that fills the frame behind everything. There is one, always at the bottom.</summary>
+    /// <summary>
+    /// Legacy: the blurred copy of the main video that filled the frame behind everything. A clip's blur fill is its own now
+    /// (<see cref="Layer.BlurFill"/>, 5.2-AuditB); nothing draws this kind. Kept so old projects and presets still read, and
+    /// as the kind of the sequence's blur-fill settings row while the view model keeps one.
+    /// </summary>
     Background,
 
     /// <summary>A sound from a file, with no picture: it has a place in time and nothing else.</summary>
@@ -88,6 +101,12 @@ public enum KeyProperty
 
     /// <summary>How solid it is: 100 is solid, 0 is not there.</summary>
     Opacity,
+
+    /// <summary>Degrees it is tilted about its horizontal axis (5.2A, Pitch): its top away from the viewer, -60 to 60.</summary>
+    TiltX,
+
+    /// <summary>Degrees it is swung about its upright axis (5.2A, Yaw): its right edge away from the viewer, -60 to 60.</summary>
+    TiltY,
 }
 
 /// <summary>
@@ -158,12 +177,10 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Which audio stream of its file a lowered clip is heard from.</summary>
     public int AudioStream { get; set; }
 
-    /// <summary>A picture or a video that comes from a file of its own, not from the main video.</summary>
+    /// <summary>A picture or a video that comes from a file of its own.</summary>
     public bool IsFile => IsImage || IsVideoFile;
 
     public bool IsCaptions => Kind == LayerKind.Captions;
-
-    public bool IsMainVideo => Kind == LayerKind.MainVideo;
 
     public bool IsBackground => Kind == LayerKind.Background;
 
@@ -173,7 +190,7 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Has sound of its own that goes into the output: a video from a file that has any, or a sound file.</summary>
     public bool CarriesSound => HasAudio && (IsVideoFile || IsAudio);
 
-    /// <summary>Something added by hand, which can be removed again: the captions, the main video and the background cannot.</summary>
+    /// <summary>Something added by hand, which can be removed again: the captions and the background cannot.</summary>
     public bool IsRemovable => Kind is LayerKind.Video or LayerKind.Image or LayerKind.VideoFile or LayerKind.Audio or LayerKind.Text or LayerKind.Adjustment;
 
     /// <summary>An adjustment layer: its effects work on the picture under it.</summary>
@@ -192,9 +209,9 @@ public sealed partial class Layer : ObservableObject
     public bool CanReorder => !IsCaptions && !IsBackground;
 
     /// <summary>Whether its track can be hidden (the eye on its row, Hide on its menu): the captions have their own switch.</summary>
-    public bool CanHide => IsRemovable || IsMainVideo || IsBackground;
+    public bool CanHide => IsRemovable || IsBackground;
 
-    /// <summary>Can have a color keyed out of it: the main video, and the pictures and videos added by hand.</summary>
+    /// <summary>Can have a color keyed out of it: the pictures and videos.</summary>
     public bool HasKeying => IsPicture && !IsCaptions;
 
     /// <summary>Can have a mask of its own laid on it: those, and the caption box.</summary>
@@ -348,7 +365,7 @@ public sealed partial class Layer : ObservableObject
     /// <summary>
     /// On a copy a graph is built from only (never saved): the picture stays as it is through its fade in (or out), only
     /// its sound fading, because the clip laid over it fades in (or out) across the same stretch and carries the
-    /// picture's side of that crossfade. Set by the graph builder's lowering of the timeline (FilterGraphBuilder.Timeline.cs:
+    /// picture's side of that crossfade. Set by the lowering of the timeline (Services/Gpu/TimelineLowering.cs:
     /// LayOverAcrossCut and PairLayerCrossfades).
     /// </summary>
     public bool PictureFadeInOff { get; set; }
@@ -358,7 +375,7 @@ public sealed partial class Layer : ObservableObject
     /// <summary>
     /// A crossfade from the clip just before it on its track (the one whose end meets its start), this many seconds long,
     /// centred on the cut: both run on into what their files have beyond it, the picture dissolving from the one to the
-    /// other and the sound crossfading. 0 for a plain cut. Laid out by FilterGraphBuilder.Timeline.cs (LayOverAcrossCut).
+    /// other and the sound crossfading. 0 for a plain cut. Laid out by TimelineLowering (LayOverAcrossCut).
     /// </summary>
     [ObservableProperty] private double _transitionIn;
 
@@ -397,14 +414,14 @@ public sealed partial class Layer : ObservableObject
     private string _audioChannels = "";
 
     /// <summary>
-    /// The second line of its row: what it is (a recorded voiceover, the sound of a video layer, the first
+    /// The second line of its row: what it is (a recorded voiceover, the sound of a video clip, the first
     /// stream of a file), what the clip was named when that is not its file's name, and its format.
     /// </summary>
     public string Description
     {
         get
         {
-            var origin = IsVoiceoverRecording ? "Voiceover Recording" : IsVideoFile ? "Stream #1 (video layer)" : "Stream #1";
+            var origin = IsVoiceoverRecording ? "Voiceover Recording" : IsVideoFile ? "Stream #1 (video clip)" : "Stream #1";
             if (!IsVideoFile && Name != SourceFileName && !string.IsNullOrWhiteSpace(Name))
                 origin += $" ({Name})";
             var format = AudioCodec.Length > 0 ? (AudioChannels.Length > 0 ? $"{AudioCodec}, {AudioChannels}" : AudioCodec) : "mixed into the first track";
@@ -470,8 +487,6 @@ public sealed partial class Layer : ObservableObject
     /// <summary>One of the video's own audio streams? No: a clip.</summary>
     public bool IsStream => false;
 
-    public bool IsSolo => false;
-    public object? SoloTarget => null;
     public string FiltersCountText => AudioFilters.ActiveCount > 0 ? AudioFilters.ActiveCount.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
 
     /// <summary>The picture behind a track's whole row. A clip's waveform is drawn on its block instead.</summary>
@@ -481,6 +496,33 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>Degrees the picture is turned clockwise about its middle.</summary>
     [ObservableProperty] private double _rotation;
+
+    /// <summary>
+    /// True 3D (5.2A): degrees the picture is tilted about its horizontal axis through the anchor point (Pitch: its top away from the viewer),
+    /// drawn in perspective by the compositor. With <see cref="TiltY"/> and <see cref="Rotation"/> (the Roll), its Yaw / Pitch / Roll.
+    /// </summary>
+    [ObservableProperty] private double _tiltX;
+
+    /// <summary>True 3D (5.2A): degrees the picture is swung about its upright axis through the anchor point (Yaw: its right edge away from the viewer).</summary>
+    [ObservableProperty] private double _tiltY;
+
+    /// <summary>How far a picture can be tilted either way (5.2A): past it, it is seen too nearly edge-on to read.</summary>
+    public const double TiltLimit = 60;
+
+    /// <summary>A saved or typed tilt, held to <see cref="TiltLimit"/> (0 when it is not a number).</summary>
+    public static double Tilt(double value) => double.IsFinite(value) ? Math.Clamp(value, -TiltLimit, TiltLimit) : 0;
+
+    partial void OnTiltXChanged(double value)
+    {
+        if (Tilt(value) != value)
+            TiltX = Tilt(value);
+    }
+
+    partial void OnTiltYChanged(double value)
+    {
+        if (Tilt(value) != value)
+            TiltY = Tilt(value);
+    }
 
     // Mirroring and the layer's own filters are cards of its effect stack (Layer.Effects.cs): FlipHorizontal,
     // FilterContrast and the rest are views onto those cards.
@@ -492,11 +534,11 @@ public sealed partial class Layer : ObservableObject
     public void ResetFilters() =>
         (FilterContrast, FilterBrightness, FilterSaturation, FilterGamma, FilterHue, FilterSharpen, FilterBlur, FilterDenoise, FilterLut) = (1, 0, 1, 1, 0, 0, 0, false, "");
 
-    public void ResetTransform() => (Rotation, FlipHorizontal, FlipVertical) = (0, false, false);
+    public void ResetTransform() => (Rotation, TiltX, TiltY, FlipHorizontal, FlipVertical) = (0, 0, 0, false, false);
 
     // Growing about the anchor point. A layer is kept by its top-left corner, but when its size is changed (by its
     // slider, its number box, a dialog, the layout pane) it is its anchor point (its middle, unless it was moved) that
-    // stays where it is: the corner is moved to suit. It turns about the same point (FilterGraphBuilder, the layout pane).
+    // stays where it is: the corner is moved to suit. It turns about the same point (the GPU scene plan, the layout pane).
 
     /// <summary>Switched on once the layer is in use; while it is being built, sizes and corners are simply taken as given.</summary>
     public bool AnchorCenter { get; set; }
@@ -592,17 +634,15 @@ public sealed partial class Layer : ObservableObject
         }
     }
 
-    /// <summary>Can be given a time to appear and a time to go: the layers added by hand, and the main video.</summary>
-    public bool HasTiming => IsRemovable || IsMainVideo;
+    /// <summary>Can be given a time to appear and a time to go: the layers added by hand.</summary>
+    public bool HasTiming => IsRemovable;
 
     /// <summary>
     /// The seconds of the timeline the clip covers, on a sequence of the given length. A layer with no length
-    /// of its own stays to the end; the main video is as long as what is left of its file.
+    /// of its own stays to the end.
     /// </summary>
     public (double Start, double End) GetSpan(double totalSeconds) =>
-        Duration > 0.001 ? (StartTime, StartTime + Duration)
-        : IsMainVideo && MediaDuration > 0.001 ? (StartTime, StartTime + Math.Max(MediaDuration - MediaOffset, 0))
-        : (StartTime, Math.Max(totalSeconds, StartTime));
+        Duration > 0.001 ? (StartTime, StartTime + Duration) : (StartTime, Math.Max(totalSeconds, StartTime));
 
     // ----- Keyframes -----
     // A property with keyframes moves between them in straight lines, and holds the first value before the
@@ -612,7 +652,7 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Two keyframes closer together than this are the same one: about half a frame.</summary>
     public const double KeyTolerance = 0.02;
 
-    private readonly List<Keyframe>[] _keys = [[], [], [], [], []];
+    private readonly List<Keyframe>[] _keys = [[], [], [], [], [], [], []];
 
     public IReadOnlyList<Keyframe> GetKeys(KeyProperty property) => _keys[(int)property];
 
@@ -627,6 +667,11 @@ public sealed partial class Layer : ObservableObject
     public bool AnimatesScale => HasKeys(KeyProperty.Scale);
     public bool AnimatesRotation => HasKeys(KeyProperty.Rotation);
     public bool AnimatesOpacity => HasKeys(KeyProperty.Opacity);
+    public bool AnimatesTiltX => HasKeys(KeyProperty.TiltX);
+    public bool AnimatesTiltY => HasKeys(KeyProperty.TiltY);
+
+    /// <summary>Whether it is tilted in 3D (5.2A) anywhere: a tilt set, or keyframes of one.</summary>
+    public bool IsTilted => TiltX != 0 || TiltY != 0 || HasKeys(KeyProperty.TiltX) || HasKeys(KeyProperty.TiltY);
 
     /// <summary>Every moment that has a keyframe of any kind, for the marks on the clip's block.</summary>
     public IEnumerable<double> KeyTimes => _keys.SelectMany(k => k).Select(k => k.Time).Distinct().Order();
@@ -638,6 +683,8 @@ public sealed partial class Layer : ObservableObject
         KeyProperty.Y => PositionY,
         KeyProperty.Scale => SizeWidth,
         KeyProperty.Opacity => Opacity,
+        KeyProperty.TiltX => TiltX,
+        KeyProperty.TiltY => TiltY,
         _ => Rotation,
     };
 
@@ -649,6 +696,8 @@ public sealed partial class Layer : ObservableObject
             case KeyProperty.Y: PositionY = value; break;
             case KeyProperty.Scale: SizeWidth = value; break;
             case KeyProperty.Opacity: Opacity = (int)Math.Round(Math.Clamp(value, 0, 100)); break;
+            case KeyProperty.TiltX: TiltX = Tilt(value); break;
+            case KeyProperty.TiltY: TiltY = Tilt(value); break;
             default: Rotation = value; break;
         }
     }
@@ -661,6 +710,8 @@ public sealed partial class Layer : ObservableObject
         nameof(SizeWidth) => KeyProperty.Scale,
         nameof(Rotation) => KeyProperty.Rotation,
         nameof(Opacity) => KeyProperty.Opacity,
+        nameof(TiltX) => KeyProperty.TiltX,
+        nameof(TiltY) => KeyProperty.TiltY,
         _ => null,
     };
 
@@ -784,7 +835,7 @@ public sealed partial class Layer : ObservableObject
     }
 
     // Writes a keyframe without announcing it. The first keyframe of the place while the size is animated: until then the
-    // place was the anchor's, held still as the size changed about it (FilterGraphBuilder); from then on it is the
+    // place was the anchor's, held still as the size changed about it (the export's graph before 5.2-Audit); from then on it is the
     // corner's, keyframe by keyframe. So that nothing jumps, the corner is first keyed where the anchor puts it at each of
     // the size's keyframes, leaving them as the size does.
     private void PutKey(KeyProperty property, double time, double value)
@@ -860,6 +911,10 @@ public sealed partial class Layer : ObservableObject
             if (property == KeyProperty.Rotation && !HasFilters || property == KeyProperty.Opacity && !IsPicture)
                 continue;
 
+            // A tilt (5.2A) only on a clip that is tilted: a master key does not give every clip two lanes more.
+            if (property is KeyProperty.TiltX or KeyProperty.TiltY && (!HasFilters || (GetValue(property) == 0 && !HasKeys(property))))
+                continue;
+
             PutKey(property, time, GetValue(property));
         }
 
@@ -922,6 +977,15 @@ public sealed partial class Layer : ObservableObject
             if (effect.Range is { } range)
                 effect.SetRange((Math.Max(Math.Round(range.Start + seconds, 3), 0), Math.Max(Math.Round(range.End + seconds, 3), 0.01)));
         }
+
+        // Studio Voice's mix keys (5.2B) count from the clip's start as its motion does: moved with it, in filters of its own (the dialog
+        // replaces them as a whole, so nothing else holding the old ones sees them move).
+        if (AudioFilters.StudioVoiceMixKeys is { Count: > 0 } mix)
+        {
+            var filters = AudioFilters.Clone();
+            filters.StudioVoiceMixKeys = mix.Select(k => k with { Time = Math.Round(k.Time + seconds, 3) }).ToList();
+            AudioFilters = filters;
+        }
     }
 
     public void ClearKeys()
@@ -941,6 +1005,8 @@ public sealed partial class Layer : ObservableObject
             KeyProperty.Y => nameof(AnimatesY),
             KeyProperty.Scale => nameof(AnimatesScale),
             KeyProperty.Opacity => nameof(AnimatesOpacity),
+            KeyProperty.TiltX => nameof(AnimatesTiltX),
+            KeyProperty.TiltY => nameof(AnimatesTiltY),
             _ => nameof(AnimatesRotation),
         });
         OnPropertyChanged(nameof(IsAnimated));
@@ -969,6 +1035,8 @@ public sealed partial class Layer : ObservableObject
         SetKeys(KeyProperty.Scale, state?.KeysScale);
         SetKeys(KeyProperty.Rotation, state?.KeysRotation);
         SetKeys(KeyProperty.Opacity, state?.KeysOpacity);
+        SetKeys(KeyProperty.TiltX, state?.KeysTiltX);
+        SetKeys(KeyProperty.TiltY, state?.KeysTiltY);
     }
 
     // ----- Ducking -----
@@ -1074,11 +1142,10 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>
     /// The crop the clip's picture is cut by, held (<see cref="HeldCrop(double, double, double, double)"/>); none while it is
-    /// not <see cref="IsCropped"/>, and none for what has no picture of its own to cut (the main video, whose crop is
-    /// its stream's and its box the Center controls', an adjustment layer, the caption box).
+    /// not <see cref="IsCropped"/>, and none for what has no picture of its own to cut (an adjustment layer, the caption box).
     /// </summary>
     public (double Left, double Top, double Right, double Bottom) CropFractions =>
-        IsCropped && !IsMainVideo && !IsAdjustment && !IsCaptions ? HeldCrop(CropLeft, CropTop, CropRight, CropBottom) : default;
+        IsCropped && !IsAdjustment && !IsCaptions ? HeldCrop(CropLeft, CropTop, CropRight, CropBottom) : default;
 
     /// <summary>
     /// The part of the source a piece cut from the video shows (<see cref="IsVideo"/>), as fractions of the source frame: its
@@ -1122,10 +1189,10 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
-    /// Whether the frame around the clip is filled with a blurred copy of it (4.4): null leaves it to the clip's kind (the
-    /// main video's clips follow the sequence's Background Blur switch, no other clip has one); true or false says so for
-    /// this clip alone. A clip of the main video's chain shows the blurred background under it; a video from a file is
-    /// given a blurred copy of itself under it, covering the frame.
+    /// Whether the frame around the clip is filled with a blurred copy of it (4.4): true gives a video from a file a blurred
+    /// copy of its whole picture under it, covering the frame (the sequence's blur-fill settings: radius, passes, dim, zoom
+    /// and effects); false or null, none (5.2-AuditB: null no longer follows a switch; the conversion of a project from before
+    /// wrote the old switch into each former main clip).
     /// </summary>
     [ObservableProperty] private bool? _blurFill;
 
@@ -1282,7 +1349,9 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>
     /// The height that keeps the layer's own shape at a given width: the source rectangle's, or the picture's, as its crop
-    /// leaves it (4.4-BugHunt: the crop reframes the picture, and the box takes the shape of what is left).
+    /// leaves it (4.4-BugHunt: the crop reframes the picture, and the box takes the shape of what is left). One rule for every
+    /// clip (5.2-AuditB): a former main clip whose box the crop filter's evened sides drew otherwise has its height of its own
+    /// (as 5.2-AuditB's conversion wrote it; KeepsShape, the golden tests' LegacyMainVideo since 5.2-Arm64AndNpu).
     /// </summary>
     private int GetProportionalHeight(int width, int sourceWidth, int sourceHeight)
     {
@@ -1375,6 +1444,8 @@ public sealed partial class Layer : ObservableObject
         FadeOutStyle = FadeOutStyle,
         TransitionIn = TransitionIn,
         Rotation = Rotation,
+        TiltX = TiltX,
+        TiltY = TiltY,
         AnchorX = AnchorX,
         AnchorY = AnchorY,
         Effects = [.. Effects.Select(e => e.ToState())],
@@ -1390,6 +1461,8 @@ public sealed partial class Layer : ObservableObject
         KeysScale = KeysOrNull(_keys[(int)KeyProperty.Scale]),
         KeysRotation = KeysOrNull(_keys[(int)KeyProperty.Rotation]),
         KeysOpacity = KeysOrNull(_keys[(int)KeyProperty.Opacity]),
+        KeysTiltX = KeysOrNull(_keys[(int)KeyProperty.TiltX]),
+        KeysTiltY = KeysOrNull(_keys[(int)KeyProperty.TiltY]),
     };
 
     /// <summary>How far a mask can be grown or shrunk, in pixels.</summary>
@@ -1424,6 +1497,7 @@ public sealed partial class Layer : ObservableObject
         (MaskOffsetX, MaskOffsetY) = (MaskOffset(state.MaskOffsetX), MaskOffset(state.MaskOffsetY));
         (CropLeft, CropRight, CropTop, CropBottom) = (Crop(state.CropLeft), Crop(state.CropRight), Crop(state.CropTop), Crop(state.CropBottom));
         Rotation = Math.Clamp(state.Rotation, -360, 360);
+        (TiltX, TiltY) = (Tilt(state.TiltX), Tilt(state.TiltY));
         (AnchorX, AnchorY) = (Anchor(state.AnchorX), Anchor(state.AnchorY));
         LoadEffects(state);
     }
@@ -1446,6 +1520,7 @@ public sealed partial class Layer : ObservableObject
             (PositionX, PositionY) = (state.PositionX, state.PositionY);
         });
         Rotation = Math.Clamp(state.Rotation, -360, 360);
+        (TiltX, TiltY) = (Tilt(state.TiltX), Tilt(state.TiltY));
         (AnchorX, AnchorY) = (Anchor(state.AnchorX), Anchor(state.AnchorY));
         (CropLeft, CropRight, CropTop, CropBottom) = (Crop(state.CropLeft), Crop(state.CropRight), Crop(state.CropTop), Crop(state.CropBottom));
         BlurFill = state.BlurFill;
@@ -1519,6 +1594,8 @@ public sealed partial class Layer : ObservableObject
             FadeOutStyle = Style(state.FadeOutStyle),
             TransitionIn = Seconds(state.TransitionIn),
             Rotation = Math.Clamp(state.Rotation, -360, 360),
+            TiltX = Tilt(state.TiltX),
+            TiltY = Tilt(state.TiltY),
             AnchorX = Anchor(state.AnchorX),
             AnchorY = Anchor(state.AnchorY),
             AutoDuck = state.AutoDuck,
@@ -1694,6 +1771,10 @@ public sealed class LayerState
     public double TransitionIn { get; set; }
     public double Rotation { get; set; }
 
+    /// <summary>True 3D (5.2A): its Pitch and Yaw in degrees (see Layer.TiltX); 0, and left out of a project, for a flat one.</summary>
+    public double TiltX { get; set; }
+    public double TiltY { get; set; }
+
     /// <summary>The anchor point (see Layer.AnchorX); what was saved before it was there has the middle.</summary>
     public double AnchorX { get; set; } = 0.5;
     public double AnchorY { get; set; } = 0.5;
@@ -1742,6 +1823,12 @@ public sealed class LayerState
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public List<Keyframe>? KeysRotation { get; set; }
     public List<Keyframe>? KeysOpacity { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<Keyframe>? KeysTiltX { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<Keyframe>? KeysTiltY { get; set; }
 
     // Pixel values from presets saved by earlier versions. Read for conversion, never written.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

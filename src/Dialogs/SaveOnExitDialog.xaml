@@ -7,7 +7,7 @@
     <StackPanel Margin="16">
         <TextBlock Text="You have unsaved changes. Save before closing?" FontWeight="SemiBold" FontSize="14" />
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,12"
-                   Text="The cuts, layers and settings of this video have changed since it was opened or last saved as a project. Saved as a project, they can be opened again with the Project button." />
+                   Text="The cuts, clips and settings of this video have changed since it was opened or last saved as a project. Saved as a project, they can be opened again with the Project button." />
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />

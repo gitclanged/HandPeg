@@ -125,7 +125,7 @@ public static class PictureSubtitleTests
         var ffmpeg = FindFfmpeg();
         if (ffmpeg is null)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): gpu-picture-subtitles uses pictures made here, not decoded");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): gpu-picture-subtitles uses pictures made here, not decoded");
             return null;
         }
 
@@ -249,28 +249,21 @@ public static class PictureSubtitleTests
             (look.CropLeft, look.CropTop, look.CropRight, look.CropBottom) = cut;
         track.Clips.Add(new TimelineClip { ContentKind = LayerKind.MainVideo, SourcePath = Main, Start = 0, End = 6, MediaOffset = 0, SourceDuration = 6, State = look });
 
-        return new SequenceExportState
+        // The main video of a 5.1 project converted as the project is opened (5.2-AuditB): a clip of its file in the Center box, cut
+        // by its crop; the subtitles are its file's (StreamSourcePath), placed where its clip shows it.
+        return LegacyFixtures.Opened(new SequenceExportState
         {
             Timeline = document,
             SourceFrameRate = 30,
-            SourceWidth = sourceWidth,
-            SourceHeight = sourceHeight,
             RequestedSize = (width, height),
             OutputSize = (width, height),
-            LocalMediaPath = Main,
-            HasSource = true,
-            MainMediaSeconds = 6,
-            CenterRect = center,
-            FrameEngine = true,
-            HasCrop = crop is not null,
-            CropFractions = crop ?? default,
             CaptionLayer = Layer.FromState(new LayerState
             {
                 Kind = LayerKind.Captions, Name = "Subtitles", PositionX = 0.05, PositionY = 0.7, SizeWidth = 0.9, SizeHeight = 0.2, LockAspectRatio = false,
                 SourceWidth = 0.25, SourceHeight = 0.25,
             }, sourceWidth, sourceHeight, width, height),
             MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [Main] = 0 },
-        };
+        }, new LegacyMain(Main) { SourceWidth = sourceWidth, SourceHeight = sourceHeight, MediaSeconds = 6, CenterRect = center });
     }
 
     // ----- A PGS file, written by hand -----
@@ -356,8 +349,7 @@ public static class PictureSubtitleTests
 
     private static string? FindFfmpeg()
     {
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        foreach (var candidate in new[] { Path.Combine(local, "HandPeg-Data", "deps", "ffmpeg", "ffmpeg.exe"), Path.Combine(local, "HandPeg", "deps", "ffmpeg", "ffmpeg.exe") })
+        foreach (var candidate in GpuExportTests.FfmpegCandidates())
         {
             if (File.Exists(candidate))
                 return candidate;

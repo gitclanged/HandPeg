@@ -7,7 +7,7 @@ using HandPegApp.Services;
 namespace HandPegApp;
 
 // ----- The panes: arranged freely, in this window and the side window -----
-// Every pane (the player, the playback controls, the timeline, the overview bar, the layout, the header, the side panes,
+// Every pane (the player, the playback controls, the timeline, the Sequence Overview Scrubber, the layout, the header, the side panes,
 // the preset bar and each settings tab) is made in PaneLibrary and put where the arrangement says by the dock
 // manager (Docking/DockManager.cs). The arrangement is kept in AppSettings.DockLayout.
 public partial class MainWindow
@@ -17,12 +17,13 @@ public partial class MainWindow
     // The settings tabs, as panes: their names, by the tab they came from.
     private readonly List<(string Id, TabItem Tab)> _tabPanes = [];
 
-    // The overview bar made taller by the border beside it: what a drag has moved but not yet made a step.
+    // The Sequence Overview Scrubber made taller by the border beside it: what a drag has moved but not yet made a step.
     private double _timelineResizeRest;
 
     /// <summary>
     /// The timeline (4.4: one drawn surface for every track, Views/UnifiedTimelinePane.xaml). Its pane's name is not
-    /// "Timeline": that one is the overview bar's (the master timeline's until 4.4), kept so arrangements keep it where it was.
+    /// "Timeline": that one is the Sequence Overview Scrubber's (the Overview Bar's until 5.2, the master timeline's until
+    /// 4.4), kept so arrangements keep it where it was.
     /// </summary>
     private const string TimelinePaneId = "UnifiedTimeline";
 
@@ -61,9 +62,10 @@ public partial class MainWindow
         // The player floats over its place (DockPane.Floats): the panes are laid out again around it, and its video never blinks.
         Add("Player", "Player", PlayerPane, PaneHandle.Hover, minWidth: () => 320, minHeight: 180, hoverHost: PlayerOverlay, floats: true);
         Add("Playback", "Playback Controls", TransportRow, PaneHandle.Hover, fits: true, shown: () => _viewModel.ShowAdvancedPlayback, minWidth: () => 300);
-        // The overview bar: the whole sequence at a glance, its segments and markers (the master timeline until 4.4; its id
-        // stays "Timeline", so saved arrangements and layouts keep it where they had it).
-        Add("Timeline", "Overview Bar", TimelinePane, PaneHandle.Hover, fits: true, shown: () => AppSettings.Current.ShowMasterTimeline, minWidth: () => 300, resize: ResizeMasterTimeline);
+        // The Sequence Overview Scrubber: the whole sequence at a glance, its segments and markers, scrubbed by a click or a
+        // drag (the Overview Bar until 5.2-AuditB, the master timeline until 4.4; its id stays "Timeline" and its setting
+        // ShowMasterTimeline, so saved arrangements, layouts and settings keep it where and as they had it).
+        Add("Timeline", ScrubberTitle, TimelinePane, PaneHandle.Hover, fits: true, shown: () => AppSettings.Current.ShowMasterTimeline, minWidth: () => 300, resize: ResizeMasterTimeline);
         // The timeline: every track on one drawn surface (4.4). Always shown; its tab is in its own title row.
         Add(TimelinePaneId, "Timeline", UnifiedTimelinePanel, minWidth: () => 300, minHeight: 140);
         // The Canvas: the output frame the layers are arranged on. Its id stays "Layout" (its name until 4.2), so saved
@@ -73,6 +75,9 @@ public partial class MainWindow
         Add("Media", "Media", MediaBrowserPanel, shown: () => _viewModel.IsMediaBrowserVisible, close: () => _viewModel.ShowMediaBrowser = false, minWidth: () => 200, minHeight: 140);
         Add("Keyframes", "Keyframes", KeyframesPane, shown: () => _viewModel.ShowKeyframesPane, close: () => _viewModel.ShowKeyframesPane = false, minWidth: () => 200, minHeight: 110);
         Add("Effects", "Effects", EffectsPanePanel, shown: () => _viewModel.ShowEffectsPane, close: () => _viewModel.ShowEffectsPane = false, minWidth: () => 240, minHeight: 110);
+        // The Master Meter (5.2B): the Sequence's meter and master fader upright. Off to start with, a tab beside the effects and keyframes
+        // (StandardLayout; an arrangement saved without it takes it there), and Tabs and Panes shows it.
+        Add("Meter", "Master Meter", MasterMeterPanel, shown: () => _viewModel.ShowMasterMeter, close: () => _viewModel.ShowMasterMeter = false, minWidth: () => 104, minHeight: 180);
         Add("Presets", "Preset Bar", PresetBarPane, PaneHandle.Hover, fits: true, shown: () => _viewModel.ShowPresetBarAtTop);
 
         // The settings tabs: each a pane with a tab, made when first shown (RealizeTabContent), shown while its tab would be.
@@ -121,7 +126,7 @@ public partial class MainWindow
                     break;
                 case nameof(ViewModels.MainViewModel.ShowAdvancedPlayback) or nameof(ViewModels.MainViewModel.IsArrangeActive)
                     or nameof(ViewModels.MainViewModel.IsMediaBrowserVisible) or nameof(ViewModels.MainViewModel.ShowKeyframesPane) or nameof(ViewModels.MainViewModel.ShowEffectsPane)
-                    or nameof(ViewModels.MainViewModel.ShowPresetBarAtTop):
+                    or nameof(ViewModels.MainViewModel.ShowPresetBarAtTop) or nameof(ViewModels.MainViewModel.ShowMasterMeter):
                     _dock.ScheduleRebuild();
                     break;
             }
@@ -165,7 +170,8 @@ public partial class MainWindow
     /// same, centred and without the room under it, at the right-hand end of the row of boxed tabs of the pane right under
     /// it (Joined: the two headers are one bar); or, beside any other part (and in any slot taller than wide, or too narrow
     /// for a row), an upright 44 px strip of 32 x 32 icon buttons from its top (Column): Add Media, Layout, Project and
-    /// Settings. The flyouts open beside the strip then (PlaceHeaderFlyout).
+    /// Settings. The flyouts open beside the strip then
+    /// (PlaceHeaderFlyout).
     /// </summary>
     private void ApplyHeaderShape(PaneShape shape)
     {
@@ -189,27 +195,47 @@ public partial class MainWindow
         }
     }
 
-    // The Overview Bar's lower edge (5.1-Polish, the user's directive: OverviewGrip): its height setting when the drag began.
+    /// <summary>What the pane of the overview of the whole sequence is called on screen (its id stays "Timeline").</summary>
+    internal const string ScrubberTitle = "Sequence Overview Scrubber";
+
+    // How tall the Sequence Overview Scrubber can be dragged (5.2-AuditB, the user's directive: 16 to 120 px). Its height
+    // setting (MainViewModel.MasterTimelineHeight) is in steps of 4 px over 12 (MainViewModel.TimelineAreaHeight), so the
+    // steps a drag keeps to are those whose bar lies within that: 1 (16 px) to 27 (120 px).
+    private const double ScrubberLeastPixels = 16, ScrubberMostPixels = 120, ScrubberPixelsPerStep = 4, ScrubberBasePixels = 12;
+
+    /// <summary>A height setting for the Sequence Overview Scrubber, kept to the steps a drag can give it.</summary>
+    private static double ScrubberStep(double step) => Math.Clamp(step,
+        Math.Max(1, Math.Ceiling((ScrubberLeastPixels - ScrubberBasePixels) / ScrubberPixelsPerStep)),
+        Math.Floor((ScrubberMostPixels - ScrubberBasePixels) / ScrubberPixelsPerStep));
+
+    // The Sequence Overview Scrubber's lower edge (5.1-Polish, the user's directive: OverviewGrip): its height setting when the drag began.
     private double _overviewHeightAtDrag;
 
     private void OverviewGrip_DragStarted() => _overviewHeightAtDrag = _viewModel.MasterTimelineHeight;
 
-    /// <summary>The Overview Bar's lower edge dragged: its height setting, four pixels a step (TimelineAreaHeight), within its presets' range.</summary>
+    /// <summary>
+    /// The Sequence Overview Scrubber's lower edge dragged (by <paramref name="pixels"/> of the window's content, EdgeGrip): its
+    /// height setting, four pixels a step, so the edge stays under the pointer; kept to 16 to 120 px (ScrubberStep).
+    /// </summary>
     private void OverviewGrip_Dragged(double pixels) =>
-        _viewModel.MasterTimelineHeight = Math.Clamp(_overviewHeightAtDrag + Math.Round(pixels / 4), ViewModels.MainViewModel.CompactMasterTimeline, ViewModels.MainViewModel.TallMasterTimeline);
+        _viewModel.MasterTimelineHeight = ScrubberStep(_overviewHeightAtDrag + Math.Round(pixels / ScrubberPixelsPerStep));
 
     private void OverviewGrip_ResetRequested() => _viewModel.MasterTimelineHeight = AppSettings.DefaultMasterTimelineHeight;
 
-    /// <summary>The border beside the overview bar, Ctrl-dragged: the bar's height setting, four pixels a step.</summary>
+    /// <summary>
+    /// The border under the Sequence Overview Scrubber dragged, or the one above it Ctrl-dragged (plainly dragged, where nothing
+    /// above it shares the room: DockManager.AddBorder), told by how far the pointer moved since the last time: the bar's height
+    /// setting, four pixels a step, kept to 16 to 120 px.
+    /// </summary>
     private void ResizeMasterTimeline(double pixels)
     {
-        _timelineResizeRest += pixels / 4;
+        _timelineResizeRest += pixels / ScrubberPixelsPerStep;
         var steps = Math.Truncate(_timelineResizeRest);
         if (steps == 0)
             return;
 
         _timelineResizeRest -= steps;
-        _viewModel.MasterTimelineHeight = Math.Clamp(_viewModel.MasterTimelineHeight + steps, ViewModels.MainViewModel.CompactMasterTimeline, ViewModels.MainViewModel.TallMasterTimeline);
+        _viewModel.MasterTimelineHeight = ScrubberStep(_viewModel.MasterTimelineHeight + steps);
     }
 
     /// <summary>A pane was put on screen: the Canvas draws its frame once it has a size.</summary>
@@ -246,6 +272,10 @@ public partial class MainWindow
             AudioOptionsButton = (System.Windows.Controls.Primitives.ToggleButton)content.FindName(nameof(AudioOptionsButton));
             AudioPanel = (DockPanel)content.FindName(nameof(AudioPanel));
         }
+
+        // The Audio tab's master meter and fader (5.2B): fed and wired as the pane's is.
+        if (content.FindName("AudioTabMeter") is AudioMeterControl tabMeter)
+            WireMeter(tabMeter);
 
         return content;
     }

@@ -101,8 +101,8 @@ public partial class VoiceoverStudioDialog : Window
         var cuts = _viewModel.GetCutSplitFractions();
         DurationText.Text = string.Create(CultureInfo.InvariantCulture, $"Timeline Duration: {total:0.#}s")
                             + (total <= 0 ? "  (load a video first)"
-                                : cuts.Count == 0 ? "  (the main video in one clip)"
-                                : $"  (the main video in {cuts.Count + 1} clips)");
+                                : cuts.Count == 0 ? "  (one video clip)"
+                                : $"  ({cuts.Count + 1} video clips)");
 
         RecordBar.Children.Clear();
         var (width, height) = (RecordBar.ActualWidth, RecordBar.ActualHeight);

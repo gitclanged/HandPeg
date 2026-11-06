@@ -1,17 +1,40 @@
 # The same with 10-bit on (hevc_nvenc): the tail ends in p010le.
-# reads the cuts list: no; the chapters list: no
+# 1919 x 1079, 1800 frames at 30/1, nv12 piped; the chapters list: no
 
 command:
   ffmpeg
   -hide_banner
   -y
+  -f
+  rawvideo
+  -pix_fmt
+  nv12
+  -video_size
+  1919x1079
+  -framerate
+  30/1
+  -color_range
+  tv
+  -colorspace
+  bt709
+  -color_primaries
+  bt709
+  -color_trc
+  bt709
   -i
-  D:/media/screen.mp4
+  pipe:0
+  -f
+  f32le
+  -ar
+  48000
+  -ch_layout
+  stereo
+  -i
+  {sound:1}
   -map
   0:v:0
   -map
-  0:a:0?
-  -vf <graph 1>
+  1:a:0
   -c:v
   hevc_nvenc
   -preset
@@ -24,28 +47,33 @@ command:
   0
   -pix_fmt
   p010le
-  -metadata:s:a:0
-  title=Track 1
+  -color_range
+  tv
+  -colorspace
+  bt709
+  -color_primaries
+  bt709
+  -color_trc
+  bt709
   -c:a:0
   aac
   -b:a:0
   160k
+  -metadata:s:a:0
+  title=Track 1
   -map_chapters
   -1
   D:/out/hardware-10bit.mp4
 
-graph 1 (-vf): 6 chains, 426 characters
-  1| null[center_in]
-  2| color=c=black:s=1919x1079:r=30:d=60
-   |   ,format=yuv420p[stage0]
-  3| [center_in]scale=1919:1080
-   |   ,format=yuva420p[center_layer]
-  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
-  5| movie='D\:/media/logo.png'
-   |   ,scale=384:192
-   |   ,format=yuva420p[ui1_layer]
-  6| [stage1][ui1_layer]overlay=1439:54:enable='between(t,2,12)'
-   |   ,setsar=1
-   |   ,crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0
-   |   ,scale=flags=bicubic+accurate_rnd+full_chroma_int
-   |   ,format=p010le
+the scene at 0 s: 1 layer
+    Media source 0 at 0.001 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [screen.mp4, track 0]
+
+the scene at 7 s: 1 layer
+    Media source 0 at 7.001 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [screen.mp4, track 0]
+
+the scene at 30 s: 1 layer
+    Media source 0 at 30.001 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [screen.mp4, track 0]
+
+the sound: 1 track (aac stereo), 1 strips, 1 voices
+    track 2 (Track 1) (Track): no effects
+      screen.mp4 a:0 heard 0-60 s from 0 s, rate 1, gain 1

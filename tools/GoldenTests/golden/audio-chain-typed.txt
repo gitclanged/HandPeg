@@ -1,0 +1,60 @@
+# A track's processing typed (AudioChainBuilder.From) against FFmpeg's words for it read back as before 5.2-AuditB (AudioChainOracle): every effect and parameter within 1e-4.
+
+no filters, no gain: no words
+  pitch 1, tempo 1
+
+a gain alone, -6 dB: volume=-6dB
+  Gain(0.5012, 0, 0, 0, 0, 0, 0, 0)
+  pitch 1, tempo 1
+
+a gain too small to write, 0.04 dB: no words
+  pitch 1, tempo 1
+
+filters all off, +3.5 dB: volume=3.5dB
+  Gain(1.4962, 0, 0, 0, 0, 0, 0, 0)
+  pitch 1, tempo 1
+
+every filter on, two bands moved, +1.25 dB: highpass=f=80,agate=threshold=-40dB,afftdn=nr=12,acompressor=threshold=-18dB:ratio=4,bass=g=3,treble=g=-2,equalizer=f=62:t=o:w=1:g=4,equalizer=f=4000:t=o:w=1:g=-6.25,aresample=48000,asetrate=53878.1783,aresample=48000,atempo=0.98,extrastereo=m=1.5,volume=1.25dB,alimiter=limit=0.8913:level=0
+  HighPass(80, 0.707, 3, 0, 0, 0, 0, 0)
+  Gate(0.01, 2, 20, 250, 0.0613, 2.8284, 1, 1)
+  Denoise(12, 0, 0, 0, 0, 0, 0, 0)
+  Compressor(0.1259, 4, 20, 250, 2.8284, 1, 1, 1)
+  LowShelf(100, 0.5, 3, 3, 1, 0, 0, 0)
+  HighShelf(3000, 0.5, 3, -2, 1, 0, 0, 0)
+  Peaking(62, 1, 2, 4, 0, 0, 0, 0)
+  Peaking(4000, 1, 2, -6.25, 0, 0, 0, 0)
+  Widener(1.5, 1, 0, 0, 0, 0, 0, 0)
+  Gain(1.1548, 0, 0, 0, 0, 0, 0, 0)
+  Limiter(0.8913, 5, 50, 1, 1, 0, 0, 0)
+  pitch 1.122462, tempo 0.98
+
+every setting past its ends, -40 dB: highpass=f=1000,agate=threshold=-80dB,afftdn=nr=1,acompressor=threshold=0dB:ratio=20,bass=g=20,treble=g=-20,equalizer=f=31:t=o:w=1:g=20,equalizer=f=62:t=o:w=1:g=20,equalizer=f=125:t=o:w=1:g=20,equalizer=f=250:t=o:w=1:g=20,equalizer=f=500:t=o:w=1:g=20,equalizer=f=1000:t=o:w=1:g=20,equalizer=f=2000:t=o:w=1:g=20,equalizer=f=4000:t=o:w=1:g=20,equalizer=f=8000:t=o:w=1:g=20,equalizer=f=16000:t=o:w=1:g=20,aresample=48000,asetrate=24000,aresample=48000,atempo=4,extrastereo=m=0,volume=-40dB,alimiter=limit=0.0631:level=0
+  HighPass(1000, 0.707, 3, 0, 0, 0, 0, 0)
+  Gate(0.0001, 2, 20, 250, 0.0613, 2.8284, 1, 1)
+  Denoise(1, 0, 0, 0, 0, 0, 0, 0)
+  Compressor(1, 20, 20, 250, 2.8284, 1, 1, 1)
+  LowShelf(100, 0.5, 3, 20, 1, 0, 0, 0)
+  HighShelf(3000, 0.5, 3, -20, 1, 0, 0, 0)
+  Peaking(31, 1, 2, 20, 0, 0, 0, 0)
+  Peaking(62, 1, 2, 20, 0, 0, 0, 0)
+  Peaking(125, 1, 2, 20, 0, 0, 0, 0)
+  Peaking(250, 1, 2, 20, 0, 0, 0, 0)
+  Peaking(500, 1, 2, 20, 0, 0, 0, 0)
+  Peaking(1000, 1, 2, 20, 0, 0, 0, 0)
+  Peaking(2000, 1, 2, 20, 0, 0, 0, 0)
+  Peaking(4000, 1, 2, 20, 0, 0, 0, 0)
+  Peaking(8000, 1, 2, 20, 0, 0, 0, 0)
+  Peaking(16000, 1, 2, 20, 0, 0, 0, 0)
+  Widener(0, 1, 0, 0, 0, 0, 0, 0)
+  Gain(0.01, 0, 0, 0, 0, 0, 0, 0)
+  Limiter(0.0631, 5, 50, 1, 1, 0, 0, 0)
+  pitch 0.5, tempo 4
+
+an octave up at half the tempo (two stretches): aresample=48000,asetrate=96000,aresample=48000,atempo=0.5,atempo=0.5
+  pitch 2, tempo 0.25
+
+7.3 semitones down at 1.7 times: aresample=48000,asetrate=31485.7945,aresample=48000,atempo=2.5916,volume=2dB
+  Gain(1.2589, 0, 0, 0, 0, 0, 0, 0)
+  pitch 0.655954, tempo 2.5916
+
+400 fuzzed settings: 3267 effects, each of the same kind, in the same order, every parameter, the pitch and the tempo within 0.0001 of the words'

@@ -1,0 +1,9 @@
+# Ping-to-Mark (5.2C): Ctrl+J a highlight at the playhead, Alt + a click its focal point too, kept in the project file, one step of Undo.
+ok: Ping-to-Mark Highlight is on Ctrl+J
+ok: Ctrl+J: a highlight at the playhead (2 s), no focal point
+ok: Alt + a click: a highlight with where on the picture it was clicked
+ok: pinged again at a marker: that marker takes the focal point (held to the picture), no second one
+ok: a plain marker (M) is no highlight
+ok: Undo takes back the plain marker, then the second ping's focal point
+ok: a highlight and its focal point come back from the project file
+ok: a plain marker writes no focal point and no highlight

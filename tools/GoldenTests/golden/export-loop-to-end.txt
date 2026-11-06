@@ -1,18 +1,40 @@
 # A 2 s video with sound to the end of a 60 s timeline, fading in and out: written as its rounds (4.2.0's loop as clips), read as the one repeating source 4.2.0 made of it.
-# reads the cuts list: no; the chapters list: no
+# 1920 x 1080, 1800 frames at 30/1, yuv420p piped; the chapters list: no
 
 command:
   ffmpeg
   -hide_banner
   -y
+  -f
+  rawvideo
+  -pix_fmt
+  yuv420p
+  -video_size
+  1920x1080
+  -framerate
+  30/1
+  -color_range
+  tv
+  -colorspace
+  bt709
+  -color_primaries
+  bt709
+  -color_trc
+  bt709
   -i
-  D:/media/main.mp4
-  -filter_complex <graph 1>
+  pipe:0
+  -f
+  f32le
+  -ar
+  48000
+  -ch_layout
+  stereo
+  -i
+  {sound:1}
   -map
   0:v:0
   -map
-  [amixed0]
-  -vf <graph 2>
+  1:a:0
   -c:v
   libx264
   -preset
@@ -21,38 +43,57 @@ command:
   23
   -pix_fmt
   yuv420p
-  -metadata:s:a:0
-  title=Track 1
+  -color_range
+  tv
+  -colorspace
+  bt709
+  -color_primaries
+  bt709
+  -color_trc
+  bt709
   -c:a:0
   aac
   -b:a:0
   160k
+  -metadata:s:a:0
+  title=Track 1
   -map_chapters
   -1
   D:/out/loop.mp4
 
-graph 1 (-filter_complex): 2 chains, 216 characters
-  1| amovie='D\:/media/spinner.mp4'
-   |   ,atrim=start=0.5
-   |   ,asetpts=PTS-0.5/TB
-   |   ,aresample=48000:async=1:first_pts=0
-   |   ,afade=t=in:st=0:d=0.5
-   |   ,adelay=5000:all=1[alayer0]
-  2| [0:a:0][alayer0]amix=inputs=2:duration=first:normalize=0[amixed0]
+the scene at 0 s: 1 layer
+    Media source 0 at 0.001 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
 
-graph 2 (-vf): 6 chains, 512 characters
-  1| null[center_in]
-  2| color=c=black:s=1920x1080:r=30:d=60
-   |   ,format=yuv420p[stage0]
-  3| [center_in]scale=1920:1080
-   |   ,format=yuva420p[center_layer]
-  4| [stage0][center_layer]overlay=0:0:eof_action=pass[stage1]
-  5| movie='D\:/media/spinner.mp4':loop=0
-   |   ,setpts=N/FRAME_RATE/TB
-   |   ,setpts=PTS+4.5/TB
-   |   ,scale=288:162
-   |   ,format=yuva420p
-   |   ,fade=t=in:st=5:d=0.5:alpha=1:enable='between(t,5,5.5)'
-   |   ,fade=t=out:st=59:d=1:alpha=1:enable='between(t,59,60)'[ui1_layer]
-  6| [stage1][ui1_layer]overlay=1536:54:shortest=1:repeatlast=0:enable='between(t,5,1e9)'
-   |   ,setsar=1
+the scene at 5.75 s: 2 layers
+    Media source 0 at 5.751 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Media source 1 at 1.251 box (1536.0, 54.0) 288.0 x 162.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [spinner, track 1]
+
+the scene at 7.5 s: 2 layers
+    Media source 0 at 7.501 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Media source 1 at 1.001 box (1536.0, 54.0) 288.0 x 162.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [spinner, track 1]
+
+the scene at 9.5 s: 2 layers
+    Media source 0 at 9.501 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Media source 1 at 1.001 box (1536.0, 54.0) 288.0 x 162.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [spinner, track 1]
+
+the scene at 11.5 s: 2 layers
+    Media source 0 at 11.501 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Media source 1 at 1.001 box (1536.0, 54.0) 288.0 x 162.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [spinner, track 1]
+
+the scene at 13.5 s: 2 layers
+    Media source 0 at 13.501 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Media source 1 at 1.001 box (1536.0, 54.0) 288.0 x 162.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [spinner, track 1]
+
+the scene at 15.5 s: 2 layers
+    Media source 0 at 15.501 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Media source 1 at 1.001 box (1536.0, 54.0) 288.0 x 162.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [spinner, track 1]
+
+the scene at 17.5 s: 2 layers
+    Media source 0 at 17.501 box (0.0, 0.0) 1920.0 x 1080.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Media source 1 at 1.001 box (1536.0, 54.0) 288.0 x 162.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [spinner, track 1]
+
+the sound: 1 track (aac stereo), 2 strips, 2 voices
+    track 1 (Video 2) (Track): no effects
+      spinner.mp4 a:0 heard 5-Infinity s from 0.5 s, rate 1, gain 1
+    track 2 (Track 1) (Track): no effects
+      main.mp4 a:0 heard 0-60 s from 0 s, rate 1, gain 1

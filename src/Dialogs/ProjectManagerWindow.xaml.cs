@@ -11,8 +11,8 @@ using HandPegApp.ViewModels;
 namespace HandPegApp;
 
 /// <summary>
-/// A saved project as the Project Manager lists it (4.1.1-B): its entry, and the picture of its main video, which the
-/// pointer scrubs through while it is across it.
+/// A saved project as the Project Manager lists it (4.1.1-B): its entry, and its picture (its baked thumbnail since Pass
+/// 5.2D, else its video's poster), which the pointer scrubs through the video's frames while it is across it.
 /// </summary>
 public sealed partial class ProjectRow(ProjectEntry entry) : ObservableObject
 {
@@ -28,7 +28,11 @@ public sealed partial class ProjectRow(ProjectEntry entry) : ObservableObject
 
     [ObservableProperty] private Visibility _pictureVisibility = Visibility.Collapsed;
 
+    /// <summary>What the picture shows when the pointer is not across it: the project's baked thumbnail when it has one, else its video's poster.</summary>
     public BitmapSource? Poster { get; set; }
+
+    /// <summary>The project's own thumbnail (Pass 5.2D: the Sequence as it was saved), decoded; null when its file has none.</summary>
+    public BitmapSource? Baked { get; set; }
 
     /// <summary>The media browser's strip of the main video's frames (its cache's file), and the video's shape.</summary>
     public string? Strip { get; set; }
@@ -153,9 +157,10 @@ public partial class ProjectManagerWindow : Window
     // ----- The pictures -----
 
     /// <summary>
-    /// Each project's picture: from the media browser's cache when it is kept there (read off the interface), otherwise
-    /// made in the background (one piece of work for them all), at the browser's own strip settings so that the browser
-    /// and this list share one strip per video.
+    /// Each project's picture: its baked thumbnail when its file carries one (Pass 5.2D: the Sequence as it was
+    /// saved, decoded off the interface), else its video's poster. The video's strip, which the pointer scrubs, from the media browser's
+    /// cache when it is kept there (read off the interface), otherwise made in the background (one piece of work for them all), at the
+    /// browser's own strip settings so that the browser and this list share one strip per video.
     /// </summary>
     private async Task LoadPicturesAsync(IReadOnlyList<ProjectRow> rows)
     {
@@ -165,6 +170,17 @@ public partial class ProjectManagerWindow : Window
         var missing = new List<ProjectRow>();
         try
         {
+            // The baked thumbnails first, all of them: they are in the listing already, and each takes a moment to decode.
+            foreach (var row in rows)
+            {
+                if (row.Entry.Thumbnail is not { Length: > 0 } jpeg)
+                    continue;
+
+                row.Baked = await Task.Run(() => ProjectThumbnail.Decode(jpeg, PictureHeight), token);
+                if (row.Baked is { } baked && row.Picture is null)
+                    (row.Poster, row.Picture, row.PictureVisibility) = (baked, baked, Visibility.Visible);
+            }
+
             foreach (var row in rows)
             {
                 var path = row.Entry.SourcePath;
@@ -205,11 +221,12 @@ public partial class ProjectManagerWindow : Window
 
     private void Show(ProjectRow row, string strip, double shape, BitmapSource? poster)
     {
-        (row.Strip, row.Shape, row.Poster) = (strip, shape, poster);
-        if (poster is null || !AppSettings.Current.ShowProjectPreviews)
+        // The baked thumbnail stays the picture: the video's strip is for the pointer's scrub, and its poster for a project without one.
+        (row.Strip, row.Shape, row.Poster) = (strip, shape, row.Baked ?? poster);
+        if (row.Poster is null || !AppSettings.Current.ShowProjectPreviews)
             return;
 
-        (row.Picture, row.PictureVisibility) = (poster, Visibility.Visible);
+        (row.Picture, row.PictureVisibility) = (row.Poster, Visibility.Visible);
     }
 
     // The pointer across a picture: the frame at that point of the video (the strip decoded once, on the way in).

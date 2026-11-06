@@ -30,7 +30,7 @@ public static class AudioEngineTests
             yield return Case("audio-engine-program", "# AudioProgram.Build (5.0C): a timeline read into strips and voices with the FFmpeg path's semantics.", ProgramText);
             yield return Case("audio-engine-gain-fades", "# A clip's gain and fades (linear, as afade), on a constant level of 0.5.", (t, p) => GainAndFades(files, t, p));
             yield return Case("audio-engine-crossfade", "# A crossfade on one track keeps the level (the two fades sum to one), as LayOverAcrossCut lays it.", (t, p) => Crossfade(files, t, p));
-            yield return Case("audio-engine-jl-cuts", "# The main file's sound: J and L cuts placed sample for sample (MainSound), mixed where they overlap.", (t, p) => JlCuts(files, t, p));
+            yield return Case("audio-engine-jl-cuts", "# The main file's sound (on its Sub-Lanes since 5.2-AuditB): J and L cuts placed sample for sample, mixed where they overlap.", (t, p) => JlCuts(files, t, p));
             yield return Case("audio-engine-slip", "# An unlinked video clip's slip moves its sound; a sound clip's is ignored (the lowering's rule).", (t, p) => Slip(files, t, p));
             yield return Case("audio-engine-resampler", "# The polyphase resampler: a 1 kHz sine from 44.1 and 96 kHz to 48 kHz, THD+N.", (t, p) => Resampler(files, t, p));
             yield return Case("audio-engine-wsola", "# WSOLA: clips at 2x and 0.5x keep their timing (bursts where the speed puts them) and their pitch.", (t, p) => Wsola(files, t, p));
@@ -99,48 +99,41 @@ public static class AudioEngineTests
         speech.State.IsVoice = true;
         voices.Clips.Add(speech);
 
-        var state = State(document) with
+        // The main file's streams as the Audio tab mixed them in 5.1 (Game: auto-ducked, -2 dB, slipped 0.1 s, silenced from 2 to 2.5 s
+        // of it; Mic: a voice, mono), on Sub-Lanes once the project is opened (5.2-AuditB).
+        var state = Opened(State(document) with
         {
-            LocalMediaPath = main,
-            HasSource = true,
-            MainMediaSeconds = 60,
-            AudioTracks =
-            [
-                new ExportAudioTrack(0, "Game", "aac", "160k", false, false, true, false, false, true, [], ["volume=-2dB"])
-                {
-                    Offset = 0.1,
-                    MutedSpans = [(2.0, 2.5)],
-                },
-                new ExportAudioTrack(1, "Mic", "aac", "160k", false, true, false, true, false, false, [], []),
-            ],
             FadeIn = true,
             MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [main] = 0.033 },
-        };
+        }, main, 60,
+            new LegacyStream(0, "Game") { AutoDuck = true, GainDb = -2, Offset = 0.1, Pieces = [new(0, 2, false), new(2, 2.5, true), new(2.5, 60, false)] },
+            new LegacyStream(1, "Mic") { IsVoice = true, Channels = 1 });
 
         var program = AudioProgram.Build(state);
         Line(text, $"sequence {program.SequenceSeconds:0.###} s, fade in {program.FadeIn}, fade out {program.FadeOut}, duck mix {program.Duck.Mix:0.####}");
         foreach (var strip in program.Strips)
         {
-            Line(text, $"strip {strip.Key.Replace("D:/media/", "", StringComparison.Ordinal)} ({strip.Kind}){(strip.IsVoice ? " voice" : "")}{(strip.Ducked ? " ducked" : "")}");
+            Line(text, $"strip {GoldenText.StripKey(strip, state.Timeline).Replace("D:/media/", "", StringComparison.Ordinal)} ({strip.Kind}){(strip.IsVoice ? " voice" : "")}{(strip.Ducked ? " ducked" : "")}");
             foreach (var effect in strip.Effects)
                 Line(text, $"  effect {effect}");
-            foreach (var name in strip.Unsupported)
-                Line(text, $"  not played: {name}");
         }
 
         foreach (var v in program.Voices)
         {
             Line(text, $"voice {v.Label} -> strip {v.Strip}: {System.IO.Path.GetFileName(v.Source.Path)} a:{v.Source.Stream} (video start {(double.IsNaN(v.Source.VideoStart) ? "?" : v.Source.VideoStart.ToString("0.###", CultureInfo.InvariantCulture))})");
             Line(text, $"  sequence {v.SequenceStart:0.###} to {End(v.SequenceEnd)}, media {v.MediaStart:0.###} to {End(v.MediaEnd)}, rate {v.Rate:0.###}, pitch {v.Pitch:0.###}, gain {AudioMathDb(v.Gain)}");
-            Line(text, $"  fades in {v.FadeIn.Seconds:0.###} out {v.FadeOut.Seconds:0.###} (ending {End(v.FadeOutEnd)}), silenced {string.Join(", ", v.Silenced.Select(s => string.Create(CultureInfo.InvariantCulture, $"{s.Start:0.###}-{s.End:0.###}")))}");
+            Line(text, $"  fades in {v.FadeIn.Seconds:0.###} out {v.FadeOut.Seconds:0.###} (ending {End(v.FadeOutEnd)})");
         }
 
         // The rules the text shows, checked as well.
-        if (program.Strips.Count(s => s.Kind == AudioStripKind.MainTrack) != 2)
-            problems.Add("the main file's two streams are not two strips");
-        if (program.Voices.FirstOrDefault(v => v.Label.EndsWith("clip 1", StringComparison.Ordinal) && v.Source.Stream == 0) is not { } j
-            || Math.Abs(j.SequenceStart - 5.5) > 1e-9 || Math.Abs(j.MediaStart - (19.5 - 0.1)) > 1e-9)
-            problems.Add("the J cut's sound does not start at 5.5 s with the file at 19.4 s (19.5 less the track's slip)");
+        var lanes = program.Strips.Where(s => s.Kind == AudioStripKind.Track).Select(s => s.Label).Distinct().ToList();
+        if (!lanes.Contains("Game") || !lanes.Contains("Mic"))
+            problems.Add($"the main file's two streams are not strips of their Sub-Lanes ({string.Join(", ", lanes)})");
+        bool Stream0(AudioVoice v) => v.Source.Path == main && v.Source.Stream == 0;
+        if (program.Voices.FirstOrDefault(v => Stream0(v) && Math.Abs(v.SequenceStart - 5.5) < 1e-9) is not { } j || Math.Abs(j.MediaStart - (19.5 - 0.1)) > 1e-9)
+            problems.Add("the J cut's sound does not start at 5.5 s with the file at 19.4 s (19.5 less the stream's slip)");
+        if (program.Voices.Any(v => Stream0(v) && v.Overlaps(2.15, 2.55)))
+            problems.Add("the Game stream's silenced piece (2 to 2.5 s of it, 2.1 to 2.6 s of the sequence) is heard");
         if (program.Voices.FirstOrDefault(v => v.Label.StartsWith("clip music", StringComparison.Ordinal)) is not { } m || Math.Abs(m.Rate - 1.25) > 1e-9 || Math.Abs(m.End - 11) > 1e-9)
             problems.Add("the music clip is not at 1.25x ending at 11 s");
     }
@@ -202,13 +195,7 @@ public static class AudioEngineTests
         (second.AudioLeadInSeconds, second.AudioTailOutSeconds) = (0.5, 0.25);
         video.Clips.Add(second);
         video.Clips.Add(MainClip(path, 10, 12, 30));
-        var state = State(document) with
-        {
-            LocalMediaPath = path,
-            HasSource = true,
-            MainMediaSeconds = Files.NoiseSeconds,
-            AudioTracks = [new ExportAudioTrack(0, "Track 1", "aac", "160k", false, false, false, false, false, false, [], [])],
-        };
+        var state = Opened(State(document), path, Files.NoiseSeconds, new LegacyStream(0, "Track 1"));
         var output = Render(state, 0, 12);
 
         // Each moment: which file moments are heard there.
@@ -376,7 +363,7 @@ public static class AudioEngineTests
             ("compressor -20 dB 4:1", new TrackAudioFilters { Compressor = true, CompressorThreshold = -20, CompressorRatio = 4 }, -35),
             ("noise gate -30 dB", new TrackAudioFilters { NoiseGate = true, GateThreshold = -30 }, -30),
             ("stereo widener 1.5", new TrackAudioFilters { StereoWidener = true, StereoWidth = 1.5 }, -80),
-            ("limiter -6 dB (its delay only: the music peaks at -8 dB)", new TrackAudioFilters { Limiter = true, LimiterCeiling = -6 }, -80),
+            ("limiter -6 dB (the music peaks at -8 dB: nothing limited, its lookahead taken back)", new TrackAudioFilters { Limiter = true, LimiterCeiling = -6 }, -80),
             ("limiter -12 dB (limiting)", new TrackAudioFilters { Limiter = true, LimiterCeiling = -12 }, -80),
         ];
 
@@ -387,13 +374,15 @@ public static class AudioEngineTests
         Line(text, $"an MP4 with a picture: its sound on the picture's clock as the export has it (within a sample)");
         if (ffmpeg is null)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the FFmpeg parity checks were not run");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the FFmpeg parity checks were not run");
             return;
         }
 
         foreach (var (name, filters, limit) in chains)
         {
-            var chain = filters.BuildChain(0);
+            // FFmpeg's own words for the same settings (what the export wrote until 5.2-Audit), kept by the test; the limiter with its
+            // lookahead taken back (latency=1), as the mixer reads a limited strip ahead by it since 5.2D.
+            var chain = AudioChainOracle.BuildChain(filters, 0).Select(w => w.StartsWith("alimiter=", StringComparison.Ordinal) ? w + ":latency=1" : w).ToList();
             var document = Document();
             var track = Track(document, TimelineTrackKind.Audio);
             track.AudioFilters = filters;
@@ -440,11 +429,11 @@ public static class AudioEngineTests
         const double seconds = 4;
         const int width = 320, height = 180;
         Line(text, $"the main file's track 1 (music: auto-ducked, -12 dB, a compressor at -24 dB 4:1, bass +6 dB), track 2 (the voice: bursts at 1 and 3 s), a 1 kHz clip at -2 dB from 0.5 to 3.5 s");
-        Line(text, $"the engine's mix against the export's two tracks summed: within -30 dB, correlation over 0.99, no lag");
+        Line(text, $"the engine's mix against the export's two tracks summed (5.2-Audit: each the engine's render on a bus of its own, the ducking across them): within -30 dB, correlation over 0.99, no lag");
         var ffmpeg = FindFfmpeg();
         if (ffmpeg is null)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the export's sound was not compared");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the export's sound was not compared");
             return;
         }
 
@@ -462,33 +451,24 @@ public static class AudioEngineTests
         Track(document, TimelineTrackKind.Audio).Clips.Add(tone);
 
         var processing = new TrackAudioFilters { Compressor = true, CompressorThreshold = -24, CompressorRatio = 4, BassTreble = true, BassGain = 6 };
-        var state = State(document) with
+        var state = Opened(State(document) with
         {
-            SourceWidth = width,
-            SourceHeight = height,
             RequestedSize = (width, height),
             OutputSize = (width, height),
-            CenterRect = (0, 0, width, height),
-            LocalMediaPath = main,
-            HasSource = true,
-            MainMediaSeconds = seconds,
             FfmpegExecutable = $"\"{ffmpeg}\"",
             VideoCodecArguments = "-c:v ffv1 -pix_fmt yuv420p",
             Container = "mkv",
             OutputPath = output,
             MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [main] = 0 },
             CaptionLayer = Layer.FromState(new LayerState { Kind = LayerKind.Captions, Name = "Subtitles", SizeWidth = 0.9, SizeHeight = 0.2 }, width, height, width, height),
-            AudioTracks =
-            [
-                new ExportAudioTrack(0, "Music", "pcm_s16le", "", false, false, AutoDuck: true, IsVoice: false, false, HasProcessing: true, [], processing.BuildChain(-12)),
-                new ExportAudioTrack(1, "Voice", "pcm_s16le", "", false, false, AutoDuck: false, IsVoice: true, false, HasProcessing: false, [], []),
-            ],
-        };
+        }, main, seconds,
+            new LegacyStream(0, "Music", "pcm_s16le", "") { AutoDuck = true, GainDb = -12, Filters = processing },
+            new LegacyStream(1, "Voice", "pcm_s16le", "") { IsVoice = true });
 
-        var command = FilterGraphBuilder.BuildExportCommand(state);
-        Task.Run(() => FfmpegRunner.RunAsync(command.CommandLine, new Progress<FfmpegProgress>(), CancellationToken.None, graphInFile: true)).GetAwaiter().GetResult();
-        var music = FfmpegStream(ffmpeg, output, 0, seconds);
-        var voice = FfmpegStream(ffmpeg, output, 1, seconds);
+        var exported = Exported(state, seconds);
+        if (exported.Length != 2)
+            problems.Add($"the export has {exported.Length} sound tracks, not the two kept apart");
+        var (music, voice) = (exported[0], exported[Math.Min(1, exported.Length - 1)]);
         var theirs = new float[music.Length];
         for (var i = 0; i < theirs.Length; i++)
             theirs[i] = music[i] + voice[i];
@@ -498,7 +478,7 @@ public static class AudioEngineTests
         var (lag, correlation) = Lag(ours, theirs, (int)(0.2 * Rate), (int)(3.5 * Rate), 200);
         Note($"export track scope: {db:0.0} dB from the export, lag {lag}, correlation {correlation:0.0000}");
         if (db > -30)
-            problems.Add(string.Create(CultureInfo.InvariantCulture, $"the engine's mix is {db:0.0} dB from the export's (limit -30 dB)"));
+            problems.Add(string.Create(CultureInfo.InvariantCulture, $"the engine's mix is {db:0.0} dB from the export's tracks summed (limit -30 dB)"));
         if (lag != 0 || correlation < 0.99)
             problems.Add(string.Create(CultureInfo.InvariantCulture, $"the engine's mix is {lag} samples from the export's (correlation {correlation:0.000})"));
     }
@@ -527,7 +507,7 @@ public static class AudioEngineTests
             Line(text, $"{label}: the engine's sound against the export's, video start told and learnt: lag {(within == 0 ? "0" : $"within {within} sample")}, correlation over 0.99");
         if (ffmpeg is null || !File.Exists(ffprobe))
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the containers' starts were not compared");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the containers' starts were not compared");
             return;
         }
 
@@ -577,19 +557,15 @@ public static class AudioEngineTests
         var document = Document();
         var clip = MainClip(main, 0, 10, 0);
         Track(document, TimelineTrackKind.Video).Clips.Add(clip);
-        var state = State(document) with
+        var state = Opened(State(document) with
         {
-            LocalMediaPath = main,
-            HasSource = true,
-            MainMediaSeconds = 10,
             FfmpegExecutable = "ffmpeg",
             Container = "mp4",
             OutputPath = "D:/media/out.mp4",
             MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [main] = 0 },
-            AudioTracks = [new ExportAudioTrack(0, "Track 1", "aac", "160k", false, false, false, false, false, false, [], [])],
             FadeIn = true,
             FadeOut = true,
-        };
+        }, main, 10, new LegacyStream(0, "Track 1"));
 
         var fades = new System.Text.RegularExpressions.Regex(@"(a?setpts=PTS[+-][0-9.]+/TB,)?a?fade=t=(in|out)[^,;""\[\]]*(,a?fade=t=out[^,;""\[\]]*)?(,a?setpts=PTS[+-][0-9.]+/TB)?");
         string Fades(string command) => string.Join(" | ", fades.Matches(command).Select(m => m.Value).Distinct());
@@ -600,36 +576,21 @@ public static class AudioEngineTests
                      ("the middle (4 to 6 s)", [(4, 6)]),
                      ("the end (8.5 to 10 s)", [(8.5, 10)]),
                      ("the whole (0 to 10 s)", [(0, 10)]),
-                     ("two joined (0.5 to 2 s, 9 to 10 s)", [(0.5, 2), (9, 10)]),
                  })
         {
-            var overlapsIn = ranges.Any(r => r.Item1 < 1);
-            var overlapsOut = ranges.Any(r => r.Item2 > 9);
             text.Append(CultureInfo.InvariantCulture, $"\n{name}:\n");
-            if (ranges.Length == 1)
-            {
-                // Since 5.1-Polish the compositor draws the sequence's fades (its plan, at their moments on the sequence, under
-                // the captions as the player has them): the command's picture has none of its own; the sound engine's render
-                // (outside the command) fades the sound.
-                var gpu = FilterGraphBuilder.BuildGpuPreviewCommand(state, "D:/session/preview.mp4", ranges[0].Item1, ranges[0].Item2, 50, null, "D:/session/preview.f32", out var why);
-                var line = gpu is null ? "refused: " + why : Fades(gpu.CommandLine);
-                text.Append("  GPU: ").Append(gpu is { FadesOnGpu: true } ? "the compositor's" : "FFmpeg's").Append(", in the command: ").Append(line.Length == 0 ? "no fade" : line).Append('\n');
-                if (gpu is null)
-                    problems.Add($"{name}: the GPU preview refused it ({why})");
-                else if (!gpu.FadesOnGpu || gpu.CommandLine.Contains("fade=t="))
-                    problems.Add($"{name}: the GPU preview's fades are not the compositor's alone");
-            }
-
-            var ffmpeg = FilterGraphBuilder.BuildPreviewCommand(state, "D:/session/preview.mp4", ranges.ToList(), 50, null);
-            var shown = Fades(ffmpeg);
-            text.Append("  FFmpeg: ").Append(shown.Length == 0 ? "no fade" : shown).Append('\n');
-            foreach (var (filter, expected) in new[] { ("fade=t=in", overlapsIn), ("fade=t=out", overlapsOut) })
-            {
-                if ((ffmpeg.Contains("," + filter) || ffmpeg.Contains("]" + filter)) != expected)
-                    problems.Add($"{name}: the FFmpeg preview's picture {(expected ? "lacks" : "has")} {filter}");
-                if (ffmpeg.Contains("a" + filter) != expected)
-                    problems.Add($"{name}: the FFmpeg preview's sound {(expected ? "lacks" : "has")} a{filter}");
-            }
+            // Since 5.1-Polish the compositor draws the sequence's fades (its plan, at their moments on the sequence, under the
+            // captions as the player has them), and since 5.2-Audit there is no other preview: the command has no fade of its own;
+            // the sound engine's render (outside the command) fades the sound.
+            var timing = GpuExportTiming.Window(ranges[0].Item1, ranges[0].Item2, state.Timeline.FrameRate, null);
+            var gpu = EncoderCommand.BuildPreview(state, "D:/session/preview.mp4", timing, 50, hasSound: true, captionsOnGpu: false);
+            var line = Fades(gpu.CommandLine);
+            text.Append("  GPU: ").Append(gpu.FadesOnGpu ? "the compositor's" : "FFmpeg's").Append(", in the command: ").Append(line.Length == 0 ? "no fade" : line).Append('\n');
+            if (!gpu.FadesOnGpu || gpu.CommandLine.Contains("fade=t=", StringComparison.Ordinal))
+                problems.Add($"{name}: the preview's fades are not the compositor's alone");
+            var program = AudioProgram.Build(state);
+            if (!program.FadeIn || !program.FadeOut)
+                problems.Add($"{name}: the sound engine's program does not fade the sequence's ends");
         }
     }
 
@@ -656,7 +617,7 @@ public static class AudioEngineTests
     }
 
     /// <summary>
-    /// Each of a main file's three sound tracks played alone (AudioBuildOptions.SoloStreams, as the Audio tab's solo) against
+    /// Each of a main file's three sound tracks played alone (its Sub-Lane soloed, 5.2-AuditB; the Audio tab's solo before) against
     /// FFmpeg's decode of the same "0:a:N": the same sound (correlation over 0.99, within a sample), and none of another
     /// track's. Media Foundation's MP4 source lists an MP4's tracks in an order of its own (two or three AAC tracks FFmpeg
     /// wrote came out reversed), so AudioDecoder.Open gives such a file to FFmpeg; Matroska keeps the file's order, and its
@@ -671,7 +632,7 @@ public static class AudioEngineTests
         var ffmpeg = FindFfmpeg();
         if (ffmpeg is null)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the order of sound tracks was not checked");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the order of sound tracks was not checked");
             return;
         }
 
@@ -701,22 +662,19 @@ public static class AudioEngineTests
             var clip = MainClip(path, 0, seconds, 0);
             (clip.SourceDuration, clip.State.MediaDuration, clip.State.ImageWidth, clip.State.ImageHeight) = (seconds, seconds, width, height);
             Track(document, TimelineTrackKind.Video).Clips.Add(clip);
-            var state = State(document) with
+            var state = Opened(State(document) with
             {
-                SourceWidth = width,
-                SourceHeight = height,
-                LocalMediaPath = path,
-                HasSource = true,
-                MainMediaSeconds = seconds,
                 MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [path] = 0 },
-                AudioTracks = [.. Enumerable.Range(0, 3).Select(n => new ExportAudioTrack(n, $"Track {n + 1}", "aac", "160k", false, false, false, false, false, false, [], []))],
-            };
+            }, path, seconds, [.. Enumerable.Range(0, 3).Select(n => new LegacyStream(n, $"Track {n + 1}"))]);
 
+            // Each stream alone: its Sub-Lane soloed, as its header's solo does (5.2-AuditB: the lanes, not the Audio tab).
             var theirs = Enumerable.Range(0, 3).Select(n => FfmpegStream(ffmpeg, path, n, seconds)).ToArray();
             for (var n = 0; n < 3; n++)
             {
+                foreach (var lane in state.Timeline.Tracks)
+                    lane.IsSoloed = lane.StreamOrdinal == n;
                 var ours = new float[(int)Math.Round(seconds * Rate) * 2];
-                AudioMixer.Render(AudioProgram.Build(state, new AudioBuildOptions { SoloStreams = [n] }), 0, ours, Rate);
+                AudioMixer.Render(AudioProgram.Build(state), 0, ours, Rate);
                 for (var k = 0; k < 3; k++)
                 {
                     var (lag, correlation) = Lag(ours, theirs[k], (int)(0.2 * Rate), (int)(2 * Rate), 1500);
@@ -738,7 +696,7 @@ public static class AudioEngineTests
         Line(text, $"a clip of stream a:N of another file: correlation over 0.99 with FFmpeg's 0:a:N, in the engine's mix and the export's");
         if (FindFfmpeg() is not { } ffmpeg)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): a clip's streams were not checked");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): a clip's streams were not checked");
             return;
         }
 
@@ -764,29 +722,20 @@ public static class AudioEngineTests
                 Track(document, TimelineTrackKind.Audio).Clips.Add(sound);
 
                 var output = Path.Combine(files.Folder, $"streams-export{stream}.mkv");
-                var state = State(document) with
+                var state = Opened(State(document) with
                 {
-                    SourceWidth = width,
-                    SourceHeight = height,
                     RequestedSize = (width, height),
                     OutputSize = (width, height),
-                    CenterRect = (0, 0, width, height),
-                    LocalMediaPath = main,
-                    HasSource = true,
-                    MainMediaSeconds = seconds,
                     FfmpegExecutable = $"\"{ffmpeg}\"",
                     VideoCodecArguments = "-c:v ffv1 -pix_fmt yuv420p",
                     Container = "mkv",
                     OutputPath = output,
                     MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [main] = 0, [added] = 0 },
                     CaptionLayer = Layer.FromState(new LayerState { Kind = LayerKind.Captions, Name = "Subtitles", SizeWidth = 0.9, SizeHeight = 0.2 }, width, height, width, height),
-                    AudioTracks = [new ExportAudioTrack(0, "Main", "pcm_s16le", "", false, false, false, false, false, false, [], [])],
-                };
+                }, main, seconds, new LegacyStream(0, "Main", "pcm_s16le", ""));
 
                 var ours = Render(state, 0, seconds);
-                var command = FilterGraphBuilder.BuildExportCommand(state);
-                Task.Run(() => FfmpegRunner.RunAsync(command.CommandLine, new Progress<FfmpegProgress>(), CancellationToken.None, graphInFile: true)).GetAwaiter().GetResult();
-                var exported = FfmpegStream(ffmpeg, output, 0, seconds);
+                var exported = Exported(state, seconds)[0];
                 for (var k = 0; k < 3; k++)
                 {
                     var (_, heard) = Lag(ours, theirs[k], (int)(0.2 * Rate), (int)(2 * Rate), 1500);
@@ -806,6 +755,41 @@ public static class AudioEngineTests
     }
 
     /// <summary>One audio stream of a file as FFmpeg decodes it whole, stereo float at 48 kHz.</summary>
+    /// <summary>
+    /// The export's sound tracks as the engine renders them (5.2-Audit, ExportSoundPlan: each kept track on a bus of its own, the
+    /// clips' sound in the first), each read back as interleaved stereo at the test's rate.
+    /// </summary>
+    private static float[][] Exported(SequenceExportState state, double seconds)
+    {
+        var plan = ExportSoundPlan.For(state, pictureOnly: false);
+        var tracks = plan.Render(state, 0, (long)Math.Round(seconds * plan.SampleRate), null, CancellationToken.None);
+        try
+        {
+            return tracks.Where(t => !t.IsCopy).Select(t =>
+            {
+                var bytes = File.ReadAllBytes(t.RenderPath!);
+                var floats = new float[(int)Math.Round(seconds * Rate) * 2];
+                if (t.Channels == 2)
+                {
+                    Buffer.BlockCopy(bytes, 0, floats, 0, Math.Min(bytes.Length, floats.Length * 4));
+                }
+                else
+                {
+                    var mono = new float[bytes.Length / 4];
+                    Buffer.BlockCopy(bytes, 0, mono, 0, mono.Length * 4);
+                    for (var i = 0; i < Math.Min(mono.Length, floats.Length / 2); i++)
+                        (floats[2 * i], floats[2 * i + 1]) = (mono[i], mono[i]);
+                }
+
+                return floats;
+            }).ToArray();
+        }
+        finally
+        {
+            ExportSoundPlan.DeleteRenders(tracks);
+        }
+    }
+
     private static float[] FfmpegStream(string ffmpeg, string path, int stream, double seconds)
     {
         var raw = Path.Combine(Path.GetDirectoryName(path)!, Guid.NewGuid().ToString("N") + ".f32");
@@ -961,14 +945,24 @@ public static class AudioEngineTests
     {
         Timeline = document,
         SourceFrameRate = 30,
-        SourceWidth = 1920,
-        SourceHeight = 1080,
         RequestedSize = (1920, 1080),
         OutputSize = (1920, 1080),
-        CenterRect = (0, 0, 1920, 1080),
-        FrameEngine = true,
         CaptionLayer = Layer.FromState(new LayerState { Kind = LayerKind.Captions, Name = "Subtitles", SizeWidth = 0.9, SizeHeight = 0.2 }, 1920, 1080, 1920, 1080),
     };
+
+    /// <summary>
+    /// A state whose document holds a main video as 5.1 had one (clips of kind MainVideo, heard through the opened file's streams
+    /// as the Audio tab mixed them), as a project opened now has it (5.2-AuditB, LegacyFixtures.Opened): clips of the file filling
+    /// the frame, its streams on Sub-Lanes with their old mixing, the output choices they leave.
+    /// </summary>
+    private static SequenceExportState Opened(SequenceExportState state, string main, double seconds, params LegacyStream[] streams)
+    {
+        var (width, height) = (state.Timeline.Width, state.Timeline.Height);
+        return LegacyFixtures.Opened(state, new LegacyMain(main)
+        {
+            SourceWidth = width, SourceHeight = height, MediaSeconds = seconds, CenterRect = (0, 0, width, height), Streams = streams,
+        });
+    }
 
     private static TimelineClip SoundClip(string path, double start, double end, double offset) => new()
     {
@@ -992,8 +986,7 @@ public static class AudioEngineTests
 
     private static string? FindFfmpeg()
     {
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        foreach (var candidate in new[] { Path.Combine(local, "HandPeg-Data", "deps", "ffmpeg", "ffmpeg.exe"), Path.Combine(local, "HandPeg", "deps", "ffmpeg", "ffmpeg.exe") })
+        foreach (var candidate in GpuExportTests.FfmpegCandidates())
         {
             if (File.Exists(candidate))
                 return candidate;

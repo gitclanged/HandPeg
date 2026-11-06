@@ -20,7 +20,7 @@ namespace HandPegGoldenTests;
 public static class DogfoodTests
 {
     private const int W = 1920, H = 1080;
-    private const string Main = "D:/media/game.mkv", Second = "D:/media/second.mkv", Third = "D:/media/third.mkv";
+    private const string Main = "D:/media/game.mkv", Second = "D:/media/second.mkv", Third = "D:/media/third.mkv", Short = "D:/media/short.mkv";
     private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
 
     // A piece wider than a crop can leave (the hero), one narrower than a crop's least remainder of 5 % (an icon).
@@ -34,11 +34,12 @@ public static class DogfoodTests
     public static IEnumerable<GraphResult> All()
     {
         yield return Case("clip-instance-masks", "# A mask, a matte and an effect are one clip's alone: never its track's, never its file's.", ClipMasks);
-        yield return Case("game-preset-any-clip", "# A Game Preset on the 2nd or Nth clip: its pieces are that clip's children, over its span, on its file's clock.", PresetOnAnyClip);
-        yield return Case("template-inheritance", "# A clip landing on a template's track takes it: its base look and place, and pieces of its own.", Inheritance);
+        yield return Case("game-preset-any-clip", "# A Game Preset on the 2nd or Nth clip: its Cutouts are that clip's children, over its span, on its file's clock.", PresetOnAnyClip);
+        yield return Case("template-inheritance", "# A clip landing on a template's track takes it: its base look and place, and Cutouts of its own.", Inheritance);
         yield return Case("preset-sequential-drop", "# Clips dropped together follow one another in line, each with the template.", SequentialDrop);
         yield return Case("frame-cache-commit", "# The frame cache leaves Windows' commit a margin: the crash of 2026-11-01, by its own numbers.", CommitRoom);
         yield return Case("encoder-best-steps", "# Hardware encoders start at their slowest, best step; a choice made stands.", EncoderSteps);
+        yield return Case("auditb-review-fixes", "# Pass 5.2-AuditB's review: a Cutout's clip takes a preset, Cutouts are replaced on their own clips, a file opened over a longer one keeps its Cutouts, the source view follows the playhead, a Cutout's own mask moves onto the whole picture, one box rule for every clip.", ReviewFixes);
     }
 
     private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
@@ -81,18 +82,22 @@ public static class DogfoodTests
         ContentKind = LayerKind.VideoFile, SourcePath = path, Start = start, End = end, MediaOffset = offset, SourceDuration = 60, State = FileLook(Path.GetFileName(path), path),
     };
 
-    /// <summary>A view model holding a main video from 0 to 8 s and, on tracks of their own or the same one, clips of files: nothing is probed or decoded.</summary>
+    /// <summary>
+    /// A view model holding the file opened (5.2-AuditB: a clip of it like any other, filling the frame, from 0 to 8 s; the Sequence
+    /// sized by it) and, on tracks of their own or the same one, clips of files: nothing is probed or decoded.
+    /// </summary>
     internal static MainViewModel Open(params TimelineTrackModel[] more)
     {
         var settings = AppSettings.Current;
         (settings.AutoUpdateDependencies, settings.SendCrashReports, settings.EnableExtraAnimations, settings.DroppedClipsJoinTrack) = (false, false, false, false);
-        var vm = new MainViewModel { SourceWidth = W, SourceHeight = H, LocalMediaPath = Main, FrameEngine = true };
+        var vm = new MainViewModel { SourceWidth = W, SourceHeight = H, LocalMediaPath = Main };
         var probed = new MediaInfo("matroska", 8, 0, new VideoStreamInfo(W, H, "h264", 60, "16:9", "1:1", "bt709", "bt709", 0), [], []);
         typeof(MainViewModel).GetField("_mediaInfo", Hidden)!.SetValue(vm, probed);
-        var document = new TimelineDocument { Width = W, Height = H, FrameRate = FrameRate.Fps30 };
+        var document = new TimelineDocument { Width = W, Height = H, NaturalWidth = W, NaturalHeight = H, FrameRate = FrameRate.Fps30 };
         var track = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
-        var look = new LayerState { Kind = LayerKind.MainVideo, Name = "Main", SizeWidth = 1, SourceWidth = 0.25, SourceHeight = 0.25, ImagePath = Main, ImageWidth = W, ImageHeight = H, MediaDuration = 8 };
-        track.Clips.Add(new TimelineClip { ContentKind = LayerKind.MainVideo, SourcePath = Main, Start = 0, End = 8, SourceDuration = 8, State = look });
+        var look = FileLook("Main", Main);
+        look.MediaDuration = 8;
+        track.Clips.Add(new TimelineClip { ContentKind = LayerKind.VideoFile, SourcePath = Main, Start = 0, End = 8, SourceDuration = 8, State = look });
         document.Tracks.Add(track);
         var number = 2;
         foreach (var other in more)
@@ -166,11 +171,11 @@ public static class DogfoodTests
         expect(vm.ApplyGamePreset([fileView], name), "a preset goes on the 2nd clip");
         file = vm.Document.FindClip(fileId)!;
         var pieces = Children(vm, file);
-        expect(pieces.Count == 2, "it has a piece for each of the preset's");
+        expect(pieces.Count == 2, "it has a Cutout for each of the preset's");
         expect(pieces.All(p => p.Start == file.Start && p.End == file.End), "each over that clip's span, 8 to 12 s");
         expect(pieces.All(p => p.ParentClipId == file.Id), "each a child of that clip");
         expect(Children(vm, main).Count == 0 && Children(vm, vm.Document.FindClip(thirdId)!).Count == 0, "no other clip took any");
-        expect(pieces.All(p => p.ContentKind == LayerKind.VideoFile && p.SourcePath == Second), "cut from that clip's own file, not the main video's");
+        expect(pieces.All(p => p.ContentKind == LayerKind.VideoFile && p.SourcePath == Second), "cut from that clip's own file, not the file opened first");
         expect(pieces.All(p => p.MediaOffset == file.MediaOffset && p.Speed == file.Speed), "on that clip's clock");
         expect(pieces.All(p => p.AudioStreamIndex < 0), "and silent: nothing is heard twice");
         expect(pieces.All(p => vm.Document.TrackOf(p)!.ParentTrackId == vm.Document.TrackOf(file)!.Id), "on tracks that are children of its track");
@@ -215,7 +220,7 @@ public static class DogfoodTests
         // Its pieces go with it.
         vm.SplitLayer(vm.ViewOf(vm.Document.FindClip(fileId)!)!, 10);
         file = vm.Document.FindClip(fileId)!;
-        expect(Children(vm, file).All(p => p.End <= file.End + 1e-6) && Children(vm, file).Count == 2, "a split of the clip splits its pieces");
+        expect(Children(vm, file).All(p => p.End <= file.End + 1e-6) && Children(vm, file).Count == 2, "a split of the clip splits its Cutouts");
         var after = vm.Document.Tracks[1].Clips.First(c => Math.Abs(c.Start - 10) < 1e-6);
         expect(Children(vm, after).Count == 2 && Children(vm, after).All(p => Math.Abs(p.MediaOffset - after.MediaOffset) < 1e-6), "the second half's are its children, at its moment of the file");
         vm.DeleteClip(vm.ViewOf(after)!);
@@ -225,7 +230,7 @@ public static class DogfoodTests
         // One step of Undo each: back to where it began.
         for (var i = 0; i < 6 && vm.Layers.Count(l => l.ClipId != Guid.Empty) != undoBefore; i++)
             vm.Undo();
-        expect(vm.Layers.Count(l => l.ClipId != Guid.Empty) == undoBefore && vm.Document.Tracks.Count == tracksBefore, "and Undo takes every piece and lane away again");
+        expect(vm.Layers.Count(l => l.ClipId != Guid.Empty) == undoBefore && vm.Document.Tracks.Count == tracksBefore, "and Undo takes every Cutout and Sub-Lane away again");
 
         // The main video, cut in two: a whole-project style gives each clip its own set.
         var cut = Open();
@@ -233,21 +238,22 @@ public static class DogfoodTests
         var presetName = Preset(cut);
         var style = cut.ReadStyle(Path.Combine(AppPaths.Styles, presetName + StyleFile.Extension))!;
         cut.ApplyStyle(style, layout: true, color: false, blur: true, subtitles: false);
-        var mains = cut.Document.Tracks.SelectMany(t => t.Clips).Where(c => c.ContentKind == LayerKind.MainVideo).ToList();
-        expect(mains.Count == 2 && mains.All(m => Children(cut, m).Count == 2), "a style on a video already cut: a set of pieces for each clip");
-        expect(mains.All(m => Children(cut, m).All(p => p.Start == m.Start && p.End == m.End && p.ContentKind == LayerKind.Video)), "each set over its clip's span, cut from the main video");
+        var mains = cut.Document.Tracks[0].Clips.Where(c => c.ParentClipId is null).ToList();
+        expect(mains.Count == 2 && mains.All(m => Children(cut, m).Count == 2), "a Game Preset on a video already cut: a set of Cutouts for each clip");
+        expect(mains.All(m => Children(cut, m).All(p => p.Start == m.Start && p.End == m.End && p.ContentKind == LayerKind.VideoFile && p.SourcePath == Main)),
+            "each set over its clip's span, cut from the file opened");
     }
 
     private static void Inheritance(Action<bool, string> expect, StringBuilder text)
     {
-        // A style on the main video, and a clip on a track of its own, placed and masked as nothing else is.
+        // A Game Preset on the opened file's clip, and a clip on a track of its own, placed and masked as nothing else is.
         var vm = Open(Lane(FileClip(Second, 8, 12)));
         var name = Preset(vm);
-        var main = vm.Document.Tracks.SelectMany(t => t.Clips).First(c => c.ContentKind == LayerKind.MainVideo);
+        var main = vm.Document.Tracks[0].Clips[0];
         var mainView = vm.ViewOf(main)!;
-        expect(vm.ApplyGamePreset([mainView], name), "the preset goes on the main video's clip");
+        expect(vm.ApplyGamePreset([mainView], name), "the preset goes on the opened file's clip");
         main = vm.ClipOf(mainView)!;
-        expect(Children(vm, main).Count == 2, "which has the preset's pieces");
+        expect(Children(vm, main).Count == 2, "which has the preset's Cutouts");
 
         var file = vm.Document.Tracks.SelectMany(t => t.Clips).First(c => c.SourcePath == Second);
         var fileId = file.Id;
@@ -256,7 +262,7 @@ public static class DogfoodTests
         file = vm.Document.FindClip(fileId)!;
         expect(ReferenceEquals(vm.Document.TrackOf(file), vm.Document.TrackOf(main)), "on its track");
         var pieces = Children(vm, file);
-        expect(pieces.Count == 2 && pieces.All(p => p.Start == 8 && p.End == 12 && p.ParentClipId == file.Id), "with pieces of its own over its own span");
+        expect(pieces.Count == 2 && pieces.All(p => p.Start == 8 && p.End == 12 && p.ParentClipId == file.Id), "with Cutouts of its own over its own span");
         expect(pieces.All(p => p.SourcePath == Second && p.ContentKind == LayerKind.VideoFile), "cut from its own file");
         expect(Children(vm, vm.Document.FindClip(main.Id)!).Count == 2, "the base clip keeps its own");
         expect(Math.Abs(view.SizeWidth - mainView.SizeWidth) < 1e-3, "and takes the base clip's size");
@@ -278,7 +284,7 @@ public static class DogfoodTests
         var vm = Open();
         var name = Preset(vm);
         vm.ApplyStyle(vm.ReadStyle(Path.Combine(AppPaths.Styles, name + StyleFile.Extension))!, layout: true, color: false, blur: true, subtitles: false);
-        var main = vm.Document.Tracks.SelectMany(t => t.Clips).First(c => c.ContentKind == LayerKind.MainVideo);
+        var main = vm.Document.Tracks[0].Clips[0];
         var mainView = vm.ViewOf(main)!;
         if (Ffmpeg() is not { } ffmpeg)
         {
@@ -316,7 +322,7 @@ public static class DogfoodTests
             var line = vm.Document.TrackOf(main)!.Clips.ToList();
             expect(line.Count == 3, "all three on one track: Clip 1, Clip 2, Clip 3");
             expect(Math.Abs(line[1].Start - 8) < 1e-3 && Math.Abs(line[2].Start - line[1].End) < 1e-3, "each where the one before it ends");
-            expect(line.All(c => Children(vm, c).Count == 2), "each with the preset's pieces");
+            expect(line.All(c => Children(vm, c).Count == 2), "each with the preset's Cutouts");
             expect(line.All(c => Children(vm, c).All(p => Math.Abs(p.Start - c.Start) < 1e-3 && Math.Abs(p.End - c.End) < 1e-3)), "over its own span, which its file's length gave it");
             expect(line.Skip(1).All(c => Children(vm, c).All(p => p.SourcePath == c.SourcePath)), "the later two's cut from their own files");
             expect(vm.Document.FindProblems().Count == 0, "the document holds together");
@@ -337,8 +343,7 @@ public static class DogfoodTests
 
     private static string? Ffmpeg()
     {
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return new[] { Path.Combine(local, "HandPeg-Data", "deps", "ffmpeg", "ffmpeg.exe"), Path.Combine(local, "HandPeg", "deps", "ffmpeg", "ffmpeg.exe") }.FirstOrDefault(File.Exists);
+        return GpuExportTests.FfmpegCandidates().FirstOrDefault(File.Exists);
     }
 
     private static void CommitRoom(Action<bool, string> expect, StringBuilder text)
@@ -398,5 +403,64 @@ public static class DogfoodTests
         expect(new EncodingPreset().EncoderPreset.Length == 0, "a preset that names no step leaves it to the encoder");
         expect(KeybindManager.Action("edit.in") is null && KeybindManager.Action("edit.out") is null && KeybindManager.Action("transport.playInToOut") is null,
             "and the in and out points are gone from the key bindings");
+    }
+
+    private static void ReviewFixes(Action<bool, string> expect, StringBuilder text)
+    {
+        // The file opened (0 to 8 s) and a clip of another file on a track of its own (8 to 12 s), each with the preset's Cutouts.
+        var vm = Open(Lane(FileClip(Second, 8, 12)));
+        var name = Preset(vm);
+        var (mainId, otherId) = (vm.Document.Tracks[0].Clips[0].Id, vm.Document.Tracks[1].Clips[0].Id);
+        expect(vm.ApplyGamePreset([vm.ViewOf(vm.Document.FindClip(mainId)!)!], name) && vm.ApplyGamePreset([vm.ViewOf(vm.Document.FindClip(otherId)!)!], name), "a preset on each clip");
+        var cutout = vm.ViewOf(Children(vm, vm.Document.FindClip(mainId)!)[0])!;
+        expect(vm.IsCutout(cutout) && vm.GamePresetTargets([cutout]) is [{ ClipId: var target }] && target == mainId, "a selected Cutout gives a preset to its clip, not to itself");
+
+        // The Studio's Cutouts put on one clip leave the other clip's be.
+        vm.TimelineSelection = () => [vm.ViewOf(vm.Document.FindClip(otherId)!)!];
+        vm.AddCutouts(Pieces, 1.7);
+        vm.TimelineSelection = null;
+        expect(Children(vm, vm.Document.FindClip(mainId)!).Count == 2, "Cutouts added to one clip leave another clip's on it");
+        expect(Children(vm, vm.Document.FindClip(otherId)!).Count == 2, "and take the place of that clip's own");
+
+        // The source view (Live Preview off): the bottom video at each moment, unless a clip is selected.
+        vm.KeyLayer = null;
+        expect(vm.ShownSourceClip == Guid.Empty, "with nothing selected the source view follows the playhead from clip to clip");
+        vm.KeyLayer = vm.ViewOf(vm.Document.FindClip(otherId)!);
+        expect(vm.ShownSourceClip == otherId, "with a clip selected it shows that clip's picture");
+        vm.KeyLayer = null;
+
+        // A shorter file of another rate opened over the first, with nothing else on the Sequence: it takes the first one's place,
+        // its rate is the Sequence's, and the Cutouts that ran to the first one's end are cut from it, held to its 4 s.
+        var alone = Open();
+        expect(alone.ApplyGamePreset([alone.ViewOf(alone.Document.Tracks[0].Clips[0])!], Preset(alone)), "a preset on the file opened");
+        var probe = new MediaInfo("matroska", 4, 0, new VideoStreamInfo(W, H, "h264", 60, "16:9", "1:1", "bt709", "bt709", 0), [], []);
+        typeof(MainViewModel).GetField("_mediaInfo", Hidden)!.SetValue(alone, probe);
+        alone.LocalMediaPath = Short;
+        typeof(MainViewModel).GetMethod("PlaceOpenedFile", Hidden)!.Invoke(alone, [Main]);
+        var clips = alone.Document.Tracks.SelectMany(t => t.Clips).ToList();
+        expect(!clips.Exists(c => c.SourcePath == Main), "nothing of the file opened before is left on the Sequence");
+        var made = clips.Where(c => c is { ParentClipId: null, SourcePath: Short }).ToList();
+        expect(made is [{ Start: 0, End: 4 }], "the new file's clip lies where the first one's did, 4 s long");
+        var held = made.Count == 1 ? Children(alone, made[0]) : [];
+        expect(held.Count == 2 && held.All(c => c.SourcePath == Short && c.Start == 0 && Math.Abs(c.End - 4) < 1e-9), "its Cutouts are cut from it and held to its span");
+        expect(Math.Abs(alone.Document.FrameRate.FrameDuration - 1 / 60.0) < 1e-9, "the Sequence takes the new file's rate, as the first file's");
+        expect(alone.Document.FindProblems().Count == 0, "the document holds together");
+
+        // A Cutout's own mask (not the frame's) drawn over its part of the picture, moved onto the whole picture; a frame's mask
+        // and a mask picture of its own stay as they are.
+        var own = new LayerState { CustomMask = true, MaskFrame = false, MaskShapes = "0,0 1,0 1,1 0,1" };
+        MaskStore.SpreadOverPicture(own, (0.5, 0.25, 0.25, 0.5));
+        expect(own is { MaskShapes: "0.5,0.25 0.75,0.25 0.75,0.75 0.5,0.75", MaskPath: "" }, "a Cutout's own outlines move onto its part of the whole picture");
+        var framed = new LayerState { CustomMask = true, MaskFrame = true, MaskShapes = "0,0 1,0 1,1 0,1" };
+        var picture = new LayerState { CustomMask = true, MaskFrame = false, MaskPath = "D:/masks/own.png" };
+        MaskStore.SpreadOverPicture(framed, (0.5, 0.25, 0.25, 0.5));
+        MaskStore.SpreadOverPicture(picture, (0.5, 0.25, 0.25, 0.5));
+        expect(framed.MaskShapes == "0,0 1,0 1,1 0,1" && picture is { MaskPath: "D:/masks/own.png", MaskShapes: null }, "a mask of the whole frame, or a picture, stays as it is");
+
+        // A cropped clip's box at its picture's exact shape, as a dropped file's always was: 1080 * 1080 / 1920 / 0.877 is 692.7.
+        var cropped = Layer.FromState(new LayerState { Kind = LayerKind.VideoFile, ImageWidth = W, ImageHeight = H, CropLeft = 0.123, SizeWidth = 1, LockAspectRatio = true }, W, H, 1080, 1920);
+        var box = cropped.GetOutputRect(1080, 1920, W, H);
+        text.Append($"a cropped clip 1080 wide: {box.Width} x {box.Height}").Append('\n');
+        expect(box.Height == 692, "a cropped clip keeps its picture's exact shape (692 px, not the crop filter's evened 694)");
     }
 }

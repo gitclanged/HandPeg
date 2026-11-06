@@ -8,7 +8,7 @@ namespace HandPegApp.ViewModels;
 // ----- Clips selected together (5.0, the user's directive 1) -----
 // Ctrl + click and Shift + click on the timeline make a group of clips: a drag of one of them moves (or trims) them all, and
 // Delete, Ripple Delete, Mute and Paste Effects act on all of them; each is one step of Undo. The window keeps the primary
-// selection (the one clip the inspector, the Center controls and the Keyframes pane show); the group is kept here, so that
+// selection (the one clip the inspector, the Crop boxes and the Keyframes pane show); the group is kept here, so that
 // every pane can see it (the Effects pane's Paste Effects). A group is two clips or more of the timeline with times of their
 // own: never the background, the captions or an empty track's stand-in.
 public partial class MainViewModel
@@ -205,7 +205,7 @@ public partial class MainViewModel
         {
             using (Layer.Echo())
             {
-                var pasted = cards.Select(clip.AdoptCard).ToList();
+                var pasted = cards.Select(clip.AdoptEffect).ToList();
                 if (!append)
                 {
                     clip.SetEffects(pasted);

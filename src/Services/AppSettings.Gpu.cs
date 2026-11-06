@@ -3,7 +3,7 @@ namespace HandPegApp.Services;
 // ----- The GPU roles (Pass 5.0-Core, micro-step 5.0-0): which graphics card does what -----
 //
 // Four roles, each a DXGI adapter index (the number GpuAdapters lists and FFmpeg's -hwaccel_device takes), -1 for Auto.
-// Settings > Export & Hardware > GPU Roles shows them; Test & Auto-Tune Hardware (HardwareBenchmarkService) sets all four
+// Settings > Export & Hardware > GPU & NPU Roles shows them; Test & Auto-Tune Hardware (HardwareBenchmarkService) sets all four
 // from what it measured, each still the user's to change. The fourth, Background, is BackgroundGpu (AppSettings.cs).
 
 public sealed partial class AppSettings
@@ -15,7 +15,7 @@ public sealed partial class AppSettings
     public int CompositorGpuAdapter { get; set; } = -1;
 
     /// <summary>
-    /// Timeline Layer Hardware Decode GPU: the card that decodes the timeline's video layers for the compositor. -1 is Auto:
+    /// Timeline Clip Hardware Decode GPU: the card that decodes the timeline's video clips for the compositor. -1 is Auto:
     /// the compositor's own card, so decoded frames never leave its memory (zero-copy). Another card copies each frame across.
     /// </summary>
     public int DecodeGpuAdapter { get; set; } = -1;
@@ -38,9 +38,10 @@ public sealed partial class AppSettings
 
     /// <summary>
     /// Instant Seek's frame cache in video memory, MB: 0 Auto (an eighth of the compositor card's own memory, at most
-    /// 3 GB), -1 off (every frame decoded when shown). Windows' own budget for the process always caps it. Read when the
-    /// player's compositor starts, and put into effect in the running one when Settings is saved
-    /// (<see cref="CompositorClient.FrameCacheBudget"/>).
+    /// 3 GB, or half of what is free on it; a card that shares the computer's memory, an eighth of that, 1.5 to 2.5 GB:
+    /// Compositor.MemoryTier, 5.2-Arm64AndNpu), -1 off (every frame decoded when shown). Windows' own budget for the
+    /// process always caps it. Read when the player's compositor starts, and put into effect in the running one when
+    /// Settings is saved (<see cref="CompositorClient.FrameCacheBudget"/>).
     /// </summary>
     public int GpuFrameCacheMb { get; set; }
 

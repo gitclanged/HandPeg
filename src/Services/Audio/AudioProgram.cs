@@ -5,10 +5,11 @@ namespace HandPegApp.Services.Audio;
 // ----- What is heard: the sound engine's program (Pass 5.0-AudioAnd3D, 5.0C) -----
 //
 // An AudioProgram is everything audible in a sequence, worked out once from a SequenceExportState with the semantics the
-// FFmpeg path writes into its graphs (FilterGraphBuilder.Audio.cs): the main file's audio streams placed as its clips'
-// sound is (J and L cuts, slips, gains, fades), every other clip's sound, the voiceover, each strip's processing and the
-// ducking. It is immutable: the engine takes a new one whole (WasapiAudioEngine.SetProgram) at the next buffer, and what
-// it already decoded for a voice whose timing did not change is kept.
+// FFmpeg path wrote into its graphs until 5.2-Audit (now the export's sound is this program, rendered: ExportSoundPlan): every
+// heard clip's sound from its own file and stream at its own offset (J and L cuts, slips, gains, fades), each track's clips
+// processed as one strip (5.2-AuditB: no file is the "main" one), the voiceover, each strip's processing and the ducking. It is
+// immutable: the engine takes a new one whole (WasapiAudioEngine.SetProgram) at the next buffer, and what it already decoded
+// for a voice whose timing did not change is kept.
 //
 // Media time (AudioVoice.MediaStart) is the GPU compositor's: seconds from the file's first video frame (FFmpeg's pts less
 // the video's start_time, MediaStarts), or, for a file without pictures, the sound's own time. That is the clock a layer's
@@ -24,7 +25,14 @@ public sealed record AudioSource(string Path, int Stream)
 {
     public double VideoStart { get; init; } = double.NaN;
 
-    public override string ToString() => $"{System.IO.Path.GetFileName(Path)} a:{Stream}";
+    /// <summary>
+    /// Which pair of the stream's channels is read as its left and right (5.2-Audit, a surround track exported as it is: pair 0
+    /// is channels 1 and 2, pair 1 channels 3 and 4...; a pair past the last channel is silent, a lone last channel heard on
+    /// both sides); -1, as everything plays, for the whole stream made stereo.
+    /// </summary>
+    public int ChannelPair { get; init; } = -1;
+
+    public override string ToString() => ChannelPair < 0 ? $"{System.IO.Path.GetFileName(Path)} a:{Stream}" : $"{System.IO.Path.GetFileName(Path)} a:{Stream} pair {ChannelPair}";
 }
 
 /// <summary>A fade's length in seconds and its curve (EasingCurves; Linear is FFmpeg's afade, which the export uses).</summary>
@@ -56,7 +64,10 @@ public sealed class AudioVoice
     /// <summary>Its pitch as a factor (a track's Pitch filter: 2^(semitones/12)); the timing stays.</summary>
     public double Pitch { get; init; } = 1;
 
-    /// <summary>Its own gain as a factor: a main clip's (and its track's) gain; a clip's is in its strip's effects, where FFmpeg has it.</summary>
+    /// <summary>
+    /// Its own gain as a factor: on a <see cref="AudioStripKind.Track"/> strip its clip's gain (the track's is in the strip's
+    /// effects); 1 on a <see cref="AudioStripKind.Clip"/> strip, whose effects carry the clip's gain with its track's.
+    /// </summary>
     public float Gain { get; init; } = 1;
 
     /// <summary>In from <see cref="SequenceStart"/>.</summary>
@@ -67,13 +78,10 @@ public sealed class AudioVoice
 
     public double FadeOutEnd { get; init; } = double.PositiveInfinity;
 
-    /// <summary>Stretches of the sequence where it is silenced (a track's muted pieces, in sequence seconds), cut hard as FFmpeg's volume=0 does.</summary>
-    public IReadOnlyList<(double Start, double End)> Silenced { get; init; } = [];
-
     /// <summary>The strip it is mixed into (<see cref="AudioProgram.Strips"/>).</summary>
     public required int Strip { get; init; }
 
-    /// <summary>What it is, for the log ("main a:0 clip 3", "clip music.mp3").</summary>
+    /// <summary>What it is, for the log ("clip game.mkv", "voiceover").</summary>
     public string Label { get; init; } = "";
 
     /// <summary>Where it stops: at its end, or where its file runs out of what it may play.</summary>
@@ -88,10 +96,14 @@ public sealed class AudioVoice
 
 public enum AudioStripKind
 {
-    /// <summary>One of the main file's audio streams: its clips' sound summed, ducked, then its track's processing (the export's order).</summary>
-    MainTrack,
+    /// <summary>
+    /// A track's clips (5.2-AuditB, as the main file's streams were before): each clip's sound with its gain and fades, summed into
+    /// one continuous strip, ducked, then the track's gain and processing (the export's order: its processing's state runs on across
+    /// the cuts).
+    /// </summary>
+    Track,
 
-    /// <summary>A clip's sound: its processing and gain, then its fades, then ducked (BuildLayerAudio's order).</summary>
+    /// <summary>A clip with processing of its own: its processing and gain, then its fades, then ducked (BuildLayerAudio's order).</summary>
     Clip,
 
     /// <summary>The session's voiceover: as a clip.</summary>
@@ -115,17 +127,20 @@ public sealed class AudioStrip
 
     public IReadOnlyList<AudioEffectSpec> Effects { get; init; } = [];
 
-    /// <summary>Filters of its chain this engine does not play (afftdn...), as FFmpeg names them: the export still has them.</summary>
-    public IReadOnlyList<string> Unsupported { get; init; } = [];
-
     public string Label { get; init; } = "";
 
+    /// <summary>
+    /// The output it is mixed into (5.2-Audit, an export's several sound tracks rendered in one pass: AudioMixer.RenderTo with
+    /// buses): 0, the one everything plays through. Its ducking still hears every voice, whichever bus that is on.
+    /// </summary>
+    public int Bus { get; init; }
+
     /// <summary>Its voices' fades and gains come after its processing (a clip's), not before (a track's).</summary>
-    public bool EnvelopeAfterEffects => Kind != AudioStripKind.MainTrack;
+    public bool EnvelopeAfterEffects => Kind != AudioStripKind.Track;
 }
 
 /// <summary>
-/// The ducking, as FFmpeg's sidechaincompress takes it (FilterGraphBuilder.DuckFilter): every raw parameter, the 1-click
+/// The ducking, as FFmpeg's sidechaincompress takes it (as the export's graph had it before 5.2-Audit): every raw parameter, the 1-click
 /// amount being only how <see cref="Mix"/> is worked out.
 /// </summary>
 public sealed record DuckParameters
@@ -150,22 +165,22 @@ public sealed record AudioBuildOptions
 {
     public static AudioBuildOptions Default { get; } = new();
 
-    /// <summary>
-    /// The main file's audio streams played on their own (their "0:a:N" numbers, MainViewModel.SoloedTracks): one or more.
-    /// The rest of the file's streams, every clip's sound and the voiceover are left out, as MainViewModel.Soloed has it.
-    /// Null or empty: no solo.
-    /// </summary>
-    public IReadOnlyCollection<int>? SoloStreams { get; init; }
-
-    /// <summary>
-    /// Seconds added to the main file's media times, beyond the shift both this and the GPU scene make (the main clips'
-    /// offsets are on the container's clock, media time from the first video frame: GpuScenePlan.ChainShift). 0 normally;
-    /// kept for a measured correction (5.0-Verify's A/V check).
-    /// </summary>
-    public double MainMediaShift { get; init; }
-
     /// <summary>The ducking's raw parameters; null for the FFmpeg path's own, from the state's amount.</summary>
     public DuckParameters? Duck { get; init; }
+
+    /// <summary>
+    /// Which bus each strip is mixed into (5.2-Audit: an export's several sound tracks, ExportSoundPlan); null for everything on
+    /// bus 0, as the editor plays. A sound on a Sub-Lane whose stream place the layout has no buses for is not rendered (the
+    /// export copies it, or leaves it out).
+    /// </summary>
+    public AudioBusLayout? Buses { get; init; }
+
+    /// <summary>
+    /// Every track is heard whatever is soloed (5.2-AuditB: an export's, ExportSoundPlan; the Solo switches are for listening
+    /// while editing, as the Audio tab's solo always was). False, the editor's: while any track of the Sequence is soloed
+    /// (TimelineTrackModel.IsSoloed), only the soloed tracks and the Sub-Lanes under them are heard, and the voiceover is not.
+    /// </summary>
+    public bool IgnoresSolo { get; init; }
 }
 
 /// <summary>Everything audible in a sequence, immutable (see the top of this file).</summary>
@@ -179,6 +194,18 @@ public sealed class AudioProgram
         Serial = Interlocked.Increment(ref _serials);
     }
 
+    /// <summary>
+    /// The most any strip's effects bring its sound out late (samples, 5.2C: AudioEffect.LatencyOf): an offline render begins mixing that
+    /// long before its first moment, so a processed clip there has its pre-roll too.
+    /// </summary>
+    internal int MostLatencyAt(int sampleRate)
+    {
+        var most = 0;
+        foreach (var strip in StripArray)
+            most = Math.Max(most, AudioEffect.LatencyOf([.. strip.Effects], sampleRate));
+        return most;
+    }
+
     /// <summary>Nothing to hear: the engine still runs its clock.</summary>
     public static AudioProgram Empty { get; } = new(0, [], [], false, false, new DuckParameters());
 
@@ -187,7 +214,7 @@ public sealed class AudioProgram
 
     public static AudioProgram Build(SequenceExportState state, AudioBuildOptions options) => AudioProgramBuilder.Build(state, options);
 
-    /// <summary>Nothing is heard past it (amix's duration=first: the main track, padded to the sequence's end).</summary>
+    /// <summary>Nothing is heard past it: the Sequence's length.</summary>
     public double SequenceSeconds { get; }
 
     public IReadOnlyList<AudioVoice> Voices => VoiceArray;
@@ -204,6 +231,12 @@ public sealed class AudioProgram
     public const double FadeSeconds = 1;
 
     public DuckParameters Duck { get; }
+
+    /// <summary>
+    /// The Sequence's master output fader as a factor (5.2B: SequenceExportState.MasterGainDb), on every bus after the strips are summed and
+    /// before the Sequence's fades (AudioMixer); exactly 1 at 0 dB, which multiplies nothing.
+    /// </summary>
+    public float MasterGain { get; init; } = 1;
 
     /// <summary>Unique and growing: which program a log line or a test speaks of.</summary>
     public long Serial { get; }

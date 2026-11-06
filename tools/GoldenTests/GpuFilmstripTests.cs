@@ -209,7 +209,7 @@ public static class GpuFilmstripTests
         var ffmpeg = FindFfmpeg();
         if (ffmpeg is null)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the GPU filmstrip was not compared with FFmpeg's");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the GPU filmstrip was not compared with FFmpeg's");
             return;
         }
 
@@ -348,8 +348,7 @@ public static class GpuFilmstripTests
 
     private static string? FindFfmpeg()
     {
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        foreach (var candidate in new[] { Path.Combine(local, "HandPeg-Data", "deps", "ffmpeg", "ffmpeg.exe"), Path.Combine(local, "HandPeg", "deps", "ffmpeg", "ffmpeg.exe") })
+        foreach (var candidate in GpuExportTests.FfmpegCandidates())
         {
             if (File.Exists(candidate) && File.Exists(Path.Combine(Path.GetDirectoryName(candidate)!, "ffprobe.exe")))
                 return candidate;

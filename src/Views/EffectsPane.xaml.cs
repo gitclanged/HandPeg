@@ -21,10 +21,10 @@ using HandPegApp.ViewModels;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Effects pane: one card per effect of the target's stack (the selected clip, the blurred background, or the Sequence
-/// Output), in the order they are applied, with zone headings. Cards are built here, not templated: each parameter kind has
-/// its own row, and the values are read from the card (or, for the effects whose values are the layer's, from the layer).
-/// A card's main values come first; its Advanced ones (EffectParam.IsAdvanced) are folded under a chevron (5.0-Release).
+/// The Effects pane: one panel per effect of the target's stack (the selected clip, the blur fill's settings, or the Sequence
+/// Output), in the order they are applied, with zone headings. The panels are built here, not templated: each parameter kind
+/// has its own row, and the values are read from the effect (or, for the effects whose values are the clip's, from the clip).
+/// An effect's main values come first; its Advanced ones (EffectParam.IsAdvanced) are folded under a chevron (5.0-Release).
 /// What the pane changes is the clip's own (Layer.Echo): the track's other clips do not follow it.
 /// </summary>
 public partial class EffectsPane : UserControl
@@ -36,7 +36,8 @@ public partial class EffectsPane : UserControl
     private ObservableCollection<EffectInstance>? _stack;
 
     // No clip to show (5.0-Verify, the user's bug 2): what the panes would work on is a stand-in that is no clip on the
-    // timeline (the main video's, while it has no clip). Nothing is shown or added then: a card put on it would be drawn nowhere.
+    // timeline (the hidden "No Video" stand-in, while there is no video clip). Nothing is shown or added then: an effect put on
+    // it would be drawn nowhere.
     private bool _noClip;
 
     private readonly List<ParamModel> _params = [];
@@ -121,7 +122,7 @@ public partial class EffectsPane : UserControl
                     UpdateHeader();
                     break;
 
-                // The blurred background's own values, set elsewhere (Blur Settings..., the timeline's inspector, Undo).
+                // The blur fill's own values, set elsewhere (Blur Settings..., the timeline's inspector, Undo).
                 case nameof(MainViewModel.BlurRadius) or nameof(MainViewModel.BlurPasses) or nameof(MainViewModel.BackgroundDim) or nameof(MainViewModel.BackgroundZoom)
                     when _layer is { IsBackground: true }:
                     QueueRefresh();
@@ -144,7 +145,8 @@ public partial class EffectsPane : UserControl
         if (_vm is null)
             return;
 
-        // The blurred background (5.0-Release) is no clip of the timeline, and is one all the same: the main video's video-only child.
+        // The blur fill's settings row (5.0-Release; 5.2-AuditB: the look every video clip's own blur fill takes) is no clip of the
+        // timeline, and has a stack of effects all the same.
         var layer = IsSequence ? null : _vm.BackgroundSelected ? _vm.BackgroundLayer : _vm.ActiveKeyLayer;
         var noClip = layer is { IsBackground: false } && !_vm.Layers.Contains(layer);
         if (noClip)
@@ -154,6 +156,7 @@ public partial class EffectsPane : UserControl
             return;
 
         FlushDragWrite();
+        FlushAudioWrite();
         if (_stack is not null)
             _stack.CollectionChanged -= Stack_CollectionChanged;
         if (_layer is not null)
@@ -187,6 +190,9 @@ public partial class EffectsPane : UserControl
         {
             case nameof(Layer.Name) or nameof(Layer.EffectsBypassed):
                 UpdateHeader();
+                break;
+            case nameof(Layer.AudioFilters) when _layer is { IsAudio: true }:
+                AudioFiltersChangedElsewhere();
                 break;
             case Layer.EffectsChanged or Layer.KeysChanged or nameof(Layer.Opacity) or nameof(Layer.ChromaColor) or nameof(Layer.ChromaSimilarity) or nameof(Layer.ChromaBlend)
                 or nameof(Layer.MaskGrow) or nameof(Layer.MaskInvert) or nameof(Layer.MaskOffsetX) or nameof(Layer.MaskOffsetY) or nameof(Layer.CornerRadius) or nameof(Layer.Feather) or nameof(Layer.FeatherRadius)
@@ -246,9 +252,10 @@ public partial class EffectsPane : UserControl
 
         EmptyHint.Text = _stack.Count > 0 ? ""
             : _layer is null ? "No effects on the Sequence Output. Add Effect puts one on the finished picture, over the whole sequence."
-            : _layer.IsBackground ? "Add Effect puts colour, a LUT, a vignette or any other look on the blurred background alone."
-            : _layer.IsAdjustment ? "This adjustment layer has no effects yet: Add Effect, and they work on everything under it while it lasts."
+            : _layer.IsBackground ? "Add Effect puts colour, a LUT, a vignette or any other look on the blur fill alone."
+            : _layer.IsAdjustment ? "This adjustment clip has no effects yet: Add Effect, and they work on everything under it while it lasts."
             : _layer.HasFilters ? "No effects on this clip yet. Add Effect, or select another clip on the timeline (or Sequence Output)."
+            : _layer.IsAudio ? ""
             : "This clip takes no effects: select a video, picture or text clip, or Sequence Output.";
         EmptyHint.Visibility = EmptyHint.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
@@ -264,13 +271,19 @@ public partial class EffectsPane : UserControl
             CardsPanel.Children.Add(BuildCard(card));
         }
 
-        // The opacity: always there for a picture, animated by the layer's own Opacity keyframes.
+        // The opacity: always there for a picture, animated by the clip's own Opacity keyframes.
         if (_layer is { HasStyle: true, IsAdjustment: false } && EffectRegistry.Find(EffectRegistry.Opacity) is { } opacity)
             PinnedPanel.Children.Add(BuildCard(null, opacity));
 
-        // The blurred background's own blur and zoom (5.0-Release): the sequence's, at the top of its stack.
+        // The blur fill's own blur and zoom (5.0-Release): the sequence's, at the top of its stack.
         if (_layer is { IsBackground: true } && EffectRegistry.Find(EffectRegistry.BackgroundBlur) is { } blur)
             CardsPanel.Children.Insert(0, BuildCard(null, blur));
+
+        // A sound's own filters (5.2B): Studio Voice, the De-Esser, the Equalizer and the dynamics, as cards of their own (EffectsPane.Audio.cs).
+        if (_layer is { IsAudio: true } sound)
+            AddAudioCards(sound);
+        else
+            (_audioLayer, _audio) = (null, null);
     }
 
     private TextBlock ZoneHeading(EffectZone zone)
@@ -281,9 +294,9 @@ public partial class EffectsPane : UserControl
             FontSize = 10, FontWeight = FontWeights.SemiBold, Margin = new Thickness(2, 4, 0, 3),
             ToolTip = zone switch
             {
-                EffectZone.Look => "Colour and detail, applied first, in this order. Drag a card's grip to change the order.",
+                EffectZone.Look => "Colour and detail, applied first, in this order. Drag an effect's grip to change the order.",
                 EffectZone.KeyAndMatte => "Keys and everything that works on the transparency, after the colour, in this order.",
-                _ => "How the layer is laid on the picture under it: a fixed order.",
+                _ => "How the clip is laid on the picture under it: a fixed order.",
             },
         };
         heading.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
@@ -421,7 +434,7 @@ public partial class EffectsPane : UserControl
         {
             IsChecked = open, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(2, 1, 6, 1), Background = Brushes.Transparent,
             BorderThickness = new Thickness(0), Content = new StackPanel { Orientation = Orientation.Horizontal, Children = { chevron, label } },
-            ToolTip = "Shows or hides this effect's deeper controls (kept open or folded for every card of this effect while HandPeg runs).",
+            ToolTip = "Shows or hides this effect's deeper controls (kept open or folded for this effect on every clip while HandPeg runs).",
         };
         AutomationProperties.SetName(header, $"{title} Advanced");
         section.Children.Add(header);
@@ -662,7 +675,7 @@ public partial class EffectsPane : UserControl
     }
 
     /// <summary>
-    /// The blurred background's own values (the pinned Background Blur card, 5.0-Release): the sequence's blur radius, zoom,
+    /// The blur fill's own values (the pinned Blur Fill effect, 5.0-Release): the sequence's blur radius, zoom,
     /// passes and dimming, read from and written to the view model, which takes their undo steps.
     /// </summary>
     private static (Func<double> Get, Action<double> Set)? BackgroundValue(MainViewModel vm, string key) => key switch
@@ -729,7 +742,7 @@ public partial class EffectsPane : UserControl
         if (Math.Abs(value - model.Value) < 1e-9)
             return;
 
-        // A value of the view model's own (the blurred background's blur): it takes its own undo step.
+        // A value of the view model's own (the blur fill's blur): it takes its own undo step.
         if (model.Bound is { } own)
         {
             own.Set(value);
@@ -860,7 +873,7 @@ public partial class EffectsPane : UserControl
             _vm.Checkpoint($"add {definition.Name}");
             using (Layer.Echo())
             {
-                var card = definition.NewCard();
+                var card = definition.NewEffect();
                 _stack.Insert(Layer.InsertionIndex(_stack, card), card);
             }
 
@@ -868,9 +881,9 @@ public partial class EffectsPane : UserControl
             return;
         }
 
-        // A clip's (or the background's) card, with its visible starting values: the same as a track's Add Effect menu.
+        // A clip's (or the blur fill's) effect, with its visible starting values: the same as a track's Add Effect menu.
         var layer = _layer;
-        if (_vm.AddEffectCard(layer, definition) is not null && definition.Type == EffectRegistry.Mask && !layer.CustomMask)
+        if (_vm.AddEffect(layer, definition) is not null && definition.Type == EffectRegistry.Mask && !layer.CustomMask)
             EditMaskRequested?.Invoke(layer);
     }
 
@@ -975,7 +988,7 @@ public partial class EffectsPane : UserControl
     /// <summary>Puts what was copied on the clip the pane shows, or the clips selected with it (a clip's menu).</summary>
     public void PasteCopiedEffects() => PasteEffects(toTrack: false);
 
-    private List<EffectState> CaptureStack() => _stack is null ? [] : [.. _stack.Select(c => _layer?.CaptureCard(c) ?? c.ToState())];
+    private List<EffectState> CaptureStack() => _stack is null ? [] : [.. _stack.Select(c => _layer?.CaptureEffect(c) ?? c.ToState())];
 
     private void CopyStack()
     {
@@ -984,7 +997,7 @@ public partial class EffectsPane : UserControl
             _vm.StatusText = $"Copied {_clipboard.Count} effect{(_clipboard.Count == 1 ? "" : "s")}: Paste Effects puts them on another clip.";
     }
 
-    /// <summary>Whether the target is a clip on a track (the main video and the Sequence Output are not).</summary>
+    /// <summary>Whether the target is a clip on a track (the blur fill's settings and the Sequence Output are not).</summary>
     private bool CanPasteToTrack => _layer is not null && _vm?.Layers.Contains(_layer) == true;
 
     /// <summary>Paste Effects (4.1.1-B, Paste Stack and Paste to Track in one): the copied stack replaces the clip's, or every clip's on its track.</summary>
@@ -1064,7 +1077,7 @@ public partial class EffectsPane : UserControl
                     keep.RemoveAt(present);
                 }
 
-                cards.Add(_layer?.AdoptCard(state) ?? EffectInstance.FromState(state));
+                cards.Add(_layer?.AdoptEffect(state) ?? EffectInstance.FromState(state));
             }
 
             // Each in its zone, the order within a zone kept.
@@ -1320,7 +1333,7 @@ public partial class EffectsPane : UserControl
 
         public EffectInstance? Card => card;
 
-        /// <summary>A value of the view model's (the blurred background's blur) rather than a card's or a layer's.</summary>
+        /// <summary>A value of the view model's (the blur fill's blur) rather than an effect's or a clip's.</summary>
         public (Func<double> Get, Action<double> Set)? Bound => bound;
 
         /// <summary>A value a slider's drag has given and that is not written yet (<see cref="WriteValue"/>): shown meanwhile.</summary>
@@ -1376,7 +1389,7 @@ public partial class EffectsPane : UserControl
     {
         public event PropertyChangedEventHandler? PropertyChanged;
 
-        // How long the target is, for a range switched on: the clip's length (the blurred background's: the sequence's), or 5 s for one with none.
+        // How long the target is, for a range switched on: the clip's length (the blur fill's: the sequence's), or 5 s for one with none.
         private double Length => pane._layer is { IsBackground: true } && pane._vm is { SequenceSeconds: > 0.01 } vm ? vm.SequenceSeconds
             : pane._layer is { Duration: > 0.01 } clip ? clip.Duration : 5;
 

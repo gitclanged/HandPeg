@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+      HandPeg's Explorer thumbnail handler (Pass 5.2D): a COM class that Windows Explorer loads (in its
+      thumbnail surrogate, never in HandPeg) to show the baked thumbnail a .hproj or a .hpb carries as the file's preview. A library
+      of its own with no reference to HandPeg, so that Explorer loads only it and .NET. HandPegApp.csproj builds it after HandPeg for
+      the same processor and copies it into shell\ beside HandPeg.exe; ExplorerThumbnails registers it for the user alone (HKCU, no
+      administrator). The golden tests compile its sources into their own program (tools\GoldenTests\GoldenTests.csproj).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>HandPeg.ShellThumbnails</AssemblyName>
+    <RootNamespace>HandPegApp.ShellThumbnails</RootNamespace>
+
+    <!-- A COM server: HandPeg.ShellThumbnails.comhost.dll (the class's CLSID in it) is what Explorer loads, and it starts .NET with
+         the runtime configuration beside it. Framework-dependent, as HandPeg is. -->
+    <EnableComHosting>true</EnableComHosting>
+    <SelfContained>false</SelfContained>
+
+    <!-- System.Drawing (GDI+), to decode the JPEG and draw it at the size Explorer asks for. -->
+    <UseWindowsForms>true</UseWindowsForms>
+
+    <!-- For the generated [LibraryImport] code (GDI) and the IStream's counts read through pointers. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- The processor of HandPeg's build (HandPegApp.csproj passes its runtime): Explorer's surrogate is the machine's own, and an
+         ARM64 one loads only an ARM64 handler. -->
+    <PlatformTarget>x64</PlatformTarget>
+    <PlatformTarget Condition="'$(RuntimeIdentifier)' == 'win-arm64' or ('$(RuntimeIdentifier)' == '' and '$(NETCoreSdkRuntimeIdentifier)' == 'win-arm64')">ARM64</PlatformTarget>
+  </PropertyGroup>
+
+  <!-- Their namespaces are not imported everywhere, as in HandPeg's own projects. -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+</Project>

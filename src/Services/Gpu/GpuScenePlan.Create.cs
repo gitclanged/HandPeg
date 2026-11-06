@@ -10,13 +10,7 @@ public sealed partial class GpuScenePlan
 {
     private enum EntryKind : byte
     {
-        /// <summary>The primary chain's one piece (the main layer), in the main video's box.</summary>
-        Center,
-
-        /// <summary>A layer cut whole from the chain's stream (a rider) or a piece cut out of it (a HUD cut-out, LayerKind.Video).</summary>
-        Piece,
-
-        /// <summary>A video read from its own file.</summary>
+        /// <summary>A video read from its own file: every video clip, a Cutout too (5.2-AuditB: no clip is read from a primary chain's stream).</summary>
         File,
 
         /// <summary>A picture from a file.</summary>
@@ -28,10 +22,7 @@ public sealed partial class GpuScenePlan
         /// <summary>An adjustment clip: its Look effects on the picture under its box.</summary>
         Adjustment,
 
-        /// <summary>The blurred background, made of the chain's frames, under everything.</summary>
-        Background,
-
-        /// <summary>A video's blurred copy covering the frame, just under it (its blur fill).</summary>
+        /// <summary>A video's blurred copy covering the frame, under its track's pictures (its blur fill, drawn as the sequence's blurred background was).</summary>
         Twin,
 
         /// <summary>What is done to the whole finished picture: the denoise, the LUT, the colour sliders, the Sequence Output's effects.</summary>
@@ -40,7 +31,7 @@ public sealed partial class GpuScenePlan
         /// <summary>The whole picture's fade from and to black.</summary>
         Fade,
 
-        /// <summary>The subtitle track's pictures (a PGS or VobSub track: the preview's alone), over the main video's picture.</summary>
+        /// <summary>The subtitle track's pictures (a PGS or VobSub track, or burned subtitles), each over the picture of the clip it is shown in.</summary>
         PictureSubtitles,
 
         /// <summary>The captions, on top of everything.</summary>
@@ -74,12 +65,19 @@ public sealed partial class GpuScenePlan
         public bool Loops;
         public GpuResourceRef Still = GpuResourceRef.None;
 
+        // A video's own picture size, in its pixels (the source view's canvas; 1920 x 1080 while it is not known).
+        public int PictureWidth = 1920, PictureHeight = 1080;
+
         // Where: its box on the canvas as set, its keys (counted from KeyStart), its anchor, turn and opacity.
         public float X, Y, W, H;
         public double Shape = 1, KeyStart;
         public float AnchorX = 0.5f, AnchorY = 0.5f, Rotation, Opacity = 1;
         public bool Turns;
         public Keyframe[]? KeysX, KeysY, KeysScale, KeysRotation, KeysOpacity;
+
+        // True 3D (5.2A): its Pitch and Yaw in degrees, and their keys (a picture that turns only).
+        public float TiltX, TiltY;
+        public Keyframe[]? KeysTiltX, KeysTiltY;
 
         // The part of its source shown, as fractions: left, top, right and bottom edges.
         public float CropLeft, CropTop, CropRight = 1, CropBottom = 1;
@@ -97,137 +95,16 @@ public sealed partial class GpuScenePlan
         public GpuResourceRef Lut = GpuResourceRef.None, Curve = GpuResourceRef.None, Mask = GpuResourceRef.None, MaskStandIn = GpuResourceRef.None;
         public Fade[] Fades = [];
 
-        // A blurred background's or a twin's blur (BlurRadius, BlurPasses, BackgroundDim).
+        // A twin's blur (BlurRadius, BlurPasses, BackgroundDim), and its video when that hides every pixel of it whenever it is
+        // on and not fading (the twin is then not drawn: GpuScenePlan.Hides).
         public float BlurRadius, BlurDim;
         public int BlurPasses;
+        public Entry? CoveredBy;
 
         // The whole picture's fade; the captions; the subtitle track's pictures.
         public bool FadesIn, FadesOut;
         public TextRasterizer? Captions;
         public PictureLane? Pictures;
-    }
-
-    /// <summary>
-    /// The primary chain on the sequence: its clips (the stream every piece of the main video is cut from), those of its one
-    /// piece and of the blurred background, its crossfades, the document's clips it was made from, and where its moments
-    /// lie from its file's own time. Binary searches over arrays: nothing allocated.
-    /// </summary>
-    private sealed class ChainMap(MainClip[] clips, MainClip[] center, MainClip[] blur, MainCrossfade[] crossfades, TimelineClip[] document, double shift)
-    {
-        public static ChainMap None { get; } = new([], [], [], [], [], 0);
-
-        public MainClip[] Clips { get; } = clips;
-        public MainClip[] Center { get; } = center;
-        public MainClip[] Blur { get; } = blur;
-        public MainCrossfade[] Crossfades { get; } = crossfades;
-        public TimelineClip[] Document { get; } = document;
-        public double Shift { get; } = shift;
-        private readonly long[] _keys = Keys(document);
-
-        /// <summary>The one piece, when it hides every pixel of the blurred background whenever it is on (BuildFrameEngine's hidesBackground).</summary>
-        public Entry? CoveringCenter { get; set; }
-
-        private static long[] Keys(TimelineClip[] document)
-        {
-            var keys = new long[document.Length];
-            for (var i = 0; i < keys.Length; i++)
-                keys[i] = GpuHash.Of(document[i].Id);
-            return keys;
-        }
-
-        /// <summary>The clip of a list (in order, apart) that is on at a moment, from its start (in) to its end (not); -1 for none.</summary>
-        public static int IndexAt(MainClip[] clips, double t)
-        {
-            int low = 0, high = clips.Length - 1, found = -1;
-            while (low <= high)
-            {
-                var middle = (low + high) >>> 1;
-                if (clips[middle].Start <= t)
-                    (found, low) = (middle, middle + 1);
-                else
-                    high = middle - 1;
-            }
-
-            return found >= 0 && t < clips[found].End ? found : -1;
-        }
-
-        /// <summary>The stream's moment at a moment of the sequence (the player's time-pos of the primary file); false between its clips.</summary>
-        public bool StreamAt(double t, out double moment)
-        {
-            var at = IndexAt(Clips, t);
-            moment = at >= 0 ? Clips[at].Offset + (t - Clips[at].Start) : 0;
-            return at >= 0;
-        }
-
-        /// <summary>A crossfade's head at a moment: the later clip's moment of the stream, and how far it has come up (0 to 1).</summary>
-        public bool HeadAt(double t, out double head, out double ramp)
-        {
-            for (var k = 0; k < Crossfades.Length; k++)
-            {
-                var crossfade = Crossfades[k];
-                if (t >= crossfade.From && t < crossfade.To)
-                {
-                    head = crossfade.Source + (t - crossfade.From);
-                    ramp = Math.Clamp((t - crossfade.From) / Math.Max(crossfade.To - crossfade.From, 0.001), 0, 1);
-                    return true;
-                }
-            }
-
-            (head, ramp) = (0, 0);
-            return false;
-        }
-
-        /// <summary>The first start of a clip of the stream after a moment; infinity for none.</summary>
-        public double NextStartAfter(double t)
-        {
-            int low = 0, high = Clips.Length - 1, found = Clips.Length;
-            while (low <= high)
-            {
-                var middle = (low + high) >>> 1;
-                if (Clips[middle].Start > t)
-                    (found, high) = (middle, middle - 1);
-                else
-                    low = middle + 1;
-            }
-
-            return found < Clips.Length ? Clips[found].Start : double.PositiveInfinity;
-        }
-
-        /// <summary>The document's clip of the chain under a moment (the first when none is).</summary>
-        public int DocumentAt(double t)
-        {
-            int low = 0, high = Document.Length - 1, found = -1;
-            while (low <= high)
-            {
-                var middle = (low + high) >>> 1;
-                if (Document[middle].Start <= t)
-                    (found, low) = (middle, middle + 1);
-                else
-                    high = middle - 1;
-            }
-
-            return found >= 0 && t < Document[found].End ? found : Document.Length > 0 ? 0 : -1;
-        }
-
-        public long KeyAt(double t) => DocumentAt(t) is >= 0 and var at ? _keys[at] : 0;
-
-        public long HeadKeyAt(double t) => HeadAt(t, out _, out _) && HeadIndex(t) is >= 0 and var at ? _keys[at] : KeyAt(t);
-
-        public TimelineClip? ClipAt(double t) => DocumentAt(t) is >= 0 and var at ? Document[at] : null;
-
-        public TimelineClip? HeadClipAt(double t) => HeadIndex(t) is >= 0 and var at ? Document[at] : ClipAt(t);
-
-        // The later clip of the crossfade at a moment: the one on at its end.
-        private int HeadIndex(double t)
-        {
-            for (var k = 0; k < Crossfades.Length; k++)
-            {
-                if (t >= Crossfades[k].From && t < Crossfades[k].To)
-                    return DocumentAt(Crossfades[k].To);
-            }
-
-            return -1;
-        }
     }
 
     // ----- Create -----
@@ -259,10 +136,12 @@ public sealed partial class GpuScenePlan
     /// <summary>The making of one plan: the state, its lowering, and the entries it is read into.</summary>
     private sealed class Maker(SequenceExportState state, GpuResourceBroker resources)
     {
-        private readonly GpuSceneLowering _low = FilterGraphBuilder.LowerForGpu(state);
+        private readonly GpuSceneLowering _low = TimelineLowering.LowerForGpu(state);
         private readonly int _width = Math.Max(state.Timeline.Width, 2);
         private readonly int _height = Math.Max(state.Timeline.Height, 2);
-        private int _primary = -1;
+
+        // The blur fill's own effects (the sequence's BackgroundEffects), made once and shared by every twin's entry.
+        private EffectInstance[]? _blurFillCards;
 
         // What has been said in the log about what the GPU engine leaves to the export: once a session, not once an edit.
         private static int _told;
@@ -276,36 +155,22 @@ public sealed partial class GpuScenePlan
         public GpuScenePlan Make()
         {
             resources.BeginPlan();
-            var primary = state.HasSource ? state.LocalMediaPath.Trim().Trim('"') : "";
-            if (primary.Length > 0 && _low.MainClips.Count > 0 && !state.SourceHasNoVideo)
-                _primary = resources.SourceFor(primary, 0);
-
-            var blurClips = state.BackgroundHidden ? _low.ForcedBlurClips : _low.BlurClips;
-            var chain = new ChainMap(Sorted(_low.MainClips), Sorted(_low.CenterClips), Sorted(blurClips), [.. _low.MainCrossfades], [.. _low.ChainClips],
-                ChainShiftOf(primary));
-
             var entries = new List<Entry>(_low.Stack.Count + 6);
 
-            // The blurred background, under everything: made of the chain's frames, while its clips that want it are on.
-            if (_primary >= 0 && blurClips.Count > 0)
-                entries.Add(Background());
-
-            // The captions among the layers when they are put under a track (5.1-Polish, the user's Q2: FilterGraphBuilder's
-            // CaptionsAt, the same place the export's graph lays them), else over everything as they always were.
+            // The captions among the layers when they are put under a track (5.1-Polish, the user's Q2: the lowering's
+            // CaptionsAt, the same place the export lays them), else over everything as they always were.
             var captionsAt = state.AutoCaptions ? _low.CaptionsAt : -1;
             for (var n = 0; n < _low.Stack.Count; n++)
             {
                 if (n == captionsAt)
                     entries.Add(Captions());
-                if (Picture(_low.Stack[n]) is not { } entry)
-                    continue;
-                if (entry.Kind == EntryKind.Center && n == 0 && CoversWhenOn(_low.Stack[n]))
-                    chain.CoveringCenter = entry;
-                entries.Add(entry);
+                if (Picture(_low.Stack[n]) is { } entry)
+                    entries.Add(entry);
             }
 
             if (captionsAt >= _low.Stack.Count)
                 entries.Add(Captions());
+            CoverTwins(entries);
 
             // The whole finished picture: the denoise, the LUT and the colour sliders, then the Sequence Output's own effects.
             if (Whole() is { } whole)
@@ -315,7 +180,7 @@ public sealed partial class GpuScenePlan
             if (state.FadeIn || state.FadeOut)
                 entries.Add(new Entry { Kind = EntryKind.Fade, FadesIn = state.FadeIn, FadesOut = state.FadeOut, Name = "Fade", ClipKey = FadeKey });
             if (state.PictureSubtitles is { Cues.Count: > 0 } pictureTrack)
-                entries.Add(PictureSubtitlesEntry(pictureTrack, state, _width, _height, _primary >= 0));
+                entries.Add(PictureSubtitlesEntry(pictureTrack, entries, state.StreamSourcePath, _width, _height));
             if (state.AutoCaptions && captionsAt < 0)
                 entries.Add(Captions());
 
@@ -325,54 +190,30 @@ public sealed partial class GpuScenePlan
                     entry.PathHash = resources.PathHashOf(entry.SourceId);
             }
 
-            return new GpuScenePlan(_width, _height, _low.SequenceSeconds, [.. entries], chain, resources)
+            return new GpuScenePlan(_width, _height, _low.SequenceSeconds, [.. entries], resources)
             {
                 FrameSeconds = _low.FrameSeconds,
-                PrimarySource = _primary,
-                PrimaryPathHash = _primary >= 0 ? resources.PathHashOf(_primary) : 0,
-                SourceWidth = Math.Max(state.SourceWidth, 2),
-                SourceHeight = Math.Max(state.SourceHeight, 2),
+                MediaFlags = (state.Deinterlace ? GpuLayerDescriptor.FlagDeinterlace : 0) | (state.TonemapToSdr ? GpuLayerDescriptor.FlagToneMapSdr : 0),
             };
         }
 
         private static readonly long FadeKey = default(GpuHash).Add("fade").Value, CaptionKey = CaptionClipKey,
-            WholeKey = default(GpuHash).Add("whole").Value, BackgroundKey = default(GpuHash).Add("background").Value;
-
-        private static MainClip[] Sorted(IReadOnlyList<MainClip> clips)
-        {
-            var sorted = clips.ToArray();
-            Array.Sort(sorted, static (a, b) => a.Start.CompareTo(b.Start));
-            return sorted;
-        }
-
-        /// <summary>
-        /// Where the primary chain's moments lie from its file's own time: its picture's start less its container's (the
-        /// export's first input counts from the container's start, the worker from the first frame). 0 while either is not known.
-        /// </summary>
-        private double ChainShiftOf(string primary)
-        {
-            if (primary.Length == 0)
-                return 0;
-            double? video = state.MediaStarts.TryGetValue(primary, out var known) ? known : MediaProbe.KnownVideoStart(primary);
-            double? container = state.SeekIndexes.TryGetValue(primary, out var index) ? index.ContainerStart : MediaProbe.KnownContainerStart(primary);
-            return video is { } start && container is { } clock && double.IsFinite(start - clock) ? start - clock : 0;
-        }
+            WholeKey = default(GpuHash).Add("whole").Value;
 
         // ----- The stack -----
 
         private Entry? Picture(Layer layer)
         {
-            if (layer.IsMainVideo)
-                return Center(layer);
             if (_low.BlurTwins.Contains(layer))
                 return Twin(layer);
+            if (layer.Kind is LayerKind.Video or LayerKind.MainVideo)
+                return Legacy(layer);
             if (!layer.IsUsable)
                 return null;
 
             return layer.Kind switch
             {
                 LayerKind.Adjustment => Adjustment(layer),
-                LayerKind.Video when _primary >= 0 => Piece(layer),
                 LayerKind.VideoFile => File(layer),
                 LayerKind.Image => Still(layer),
                 LayerKind.Text => Text(layer),
@@ -380,47 +221,13 @@ public sealed partial class GpuScenePlan
             };
         }
 
-        /// <summary>The main video in one piece: in its box (the Center controls', CenterRect), cut by the sequence's crop.</summary>
-        private Entry? Center(Layer layer)
-        {
-            var (x, y, w, h) = state.CenterRect;
-            if (layer.IsHidden || _primary < 0 || _low.CenterClips.Count == 0 || w <= 0 || h <= 0)
-                return null;
+        /// <summary>A layer's box on the frame, in its pixels, at its own picture's shape (Layer.GetOutputRect).</summary>
+        private (int X, int Y, int Width, int Height) BoxOf(Layer layer) => layer.GetOutputRect(_width, _height, layer.ImageWidth, layer.ImageHeight);
 
-            var entry = new Entry { Kind = EntryKind.Center, SourceId = _primary };
-            Picture(entry, layer, (x, y, w, h));
-            Crop(entry, state.HasCrop ? state.CropFractions : default);
-            entry.BlendMode = 0;
-            entry.Fades = [];
-            Masks(entry, layer, BuiltSize(entry, layer), state.CropFractions);
-            return entry;
-        }
-
-        /// <summary>A clip of the chain riding alone (cut by its own crop or the sequence's), or a piece cut out of the frame (its source rectangle less its crop).</summary>
-        private Entry Piece(Layer layer)
-        {
-            var entry = new Entry { Kind = EntryKind.Piece, SourceId = _primary };
-            var rect = layer.GetOutputRect(_width, _height, state.SourceWidth, state.SourceHeight);
-            Picture(entry, layer, rect);
-            (double Left, double Top, double Right, double Bottom) pictureCrop;
-            if (_low.Riders.Contains(layer))
-            {
-                pictureCrop = _low.StreamCrops.TryGetValue(layer, out var own) ? own : state.CropFractions;
-                Crop(entry, _low.StreamCrops.ContainsKey(layer) ? own : state.HasCrop ? state.CropFractions : default);
-            }
-            else
-            {
-                pictureCrop = layer.CropFractions;
-                var (sx, sy, sw, sh) = layer.CroppedSource;
-                (entry.CropLeft, entry.CropTop) = ((float)Math.Clamp(sx, 0, 1), (float)Math.Clamp(sy, 0, 1));
-                (entry.CropRight, entry.CropBottom) = ((float)Math.Clamp(sx + sw, 0, 1), (float)Math.Clamp(sy + sh, 0, 1));
-            }
-
-            Masks(entry, layer, BuiltSize(entry, layer), pictureCrop);
-            return entry;
-        }
-
-        /// <summary>A video from its file (AppendVideoFile), cut by its crop (a clip of the main video laid as a file: its stream's own).</summary>
+        /// <summary>
+        /// A video from its own file (AppendVideoFile): its clip's stream at its clip's moments, cut by its crop, in its box. A
+        /// legacy cut-out (<see cref="Legacy"/>) is cut by its piece of the picture (its source rectangle less its crop).
+        /// </summary>
         private Entry? File(Layer layer)
         {
             var clip = _low.ClipOf.GetValueOrDefault(layer);
@@ -429,12 +236,42 @@ public sealed partial class GpuScenePlan
                 return null;
 
             var entry = new Entry { Kind = EntryKind.File, SourceId = source };
-            Picture(entry, layer, layer.GetOutputRect(_width, _height, state.SourceWidth, state.SourceHeight));
+            Picture(entry, layer, BoxOf(layer));
             Timing(entry, layer);
-            var crop = FileCrop(layer);
-            Crop(entry, crop);
-            Masks(entry, layer, BuiltSize(entry, layer), _low.StreamCrops.TryGetValue(layer, out var own) ? own : layer.CropFractions);
+            if (layer.ImageWidth > 0 && layer.ImageHeight > 0)
+                (entry.PictureWidth, entry.PictureHeight) = (layer.ImageWidth, layer.ImageHeight);
+            if (layer.IsVideo)
+            {
+                var (sx, sy, sw, sh) = layer.CroppedSource;
+                (entry.CropLeft, entry.CropTop) = ((float)Math.Clamp(sx, 0, 1), (float)Math.Clamp(sy, 0, 1));
+                (entry.CropRight, entry.CropBottom) = ((float)Math.Clamp(sx + sw, 0, 1), (float)Math.Clamp(sy + sh, 0, 1));
+            }
+            else
+            {
+                Crop(entry, FileCrop(layer));
+            }
+
+            Masks(entry, layer, BuiltSize(entry, layer), layer.CropFractions);
             return entry;
+        }
+
+        /// <summary>
+        /// A clip of a legacy kind (a cut-out of the main video, LayerKind.Video, or the main video itself) that reached the plan
+        /// unconverted: a project that holds one is converted as it is opened (LegacyMainVideo, MainViewModel.ConvertLegacy), so none
+        /// should. Read as a video from its clip's file (<see cref="File"/>); left out, said once, when it has none.
+        /// </summary>
+        private Entry? Legacy(Layer layer)
+        {
+            if (layer.IsHidden || layer.IsDeleted || layer.IsLoading || layer.SizeWidth <= 0)
+                return null;
+            if (layer.ImagePath.Trim().Trim('"').Length == 0)
+            {
+                TellOnce(4, $"A clip of a legacy kind ({layer.Kind}) with no file of its own reached the GPU engine unconverted: it is not drawn.");
+                return null;
+            }
+
+            TellOnce(8, $"A clip of a legacy kind ({layer.Kind}) reached the GPU engine unconverted: it is drawn as a video from its file.");
+            return File(layer);
         }
 
         /// <summary>
@@ -448,7 +285,13 @@ public sealed partial class GpuScenePlan
             state.IsPreview && (clip?.ProxyChoice ?? layer.ProxyChoice) == ProxyChoice.Make && (clip?.VideoStreamIndex ?? 0) == 0
             && state.PreviewPaths.TryGetValue(layer.ImagePath.Trim().Trim('"'), out var proxy) ? proxy : layer.ImagePath;
 
-        /// <summary>The blurred copy a video from a file fills the frame with, just under it (TwinBlur): its file, timing, opacity and fades.</summary>
+        /// <summary>
+        /// The blurred copy a video from a file fills the frame with, under its track's pictures (TwinBlur; 5.2-AuditB: drawn as
+        /// the sequence's blurred background was, for every clip whose blur fill is on): its file and timing, its whole picture,
+        /// uncropped, at the blur fill's zoom, blur and darkening (<see cref="Blur"/>), the blur fill's own Look cards (keys and
+        /// ranges in seconds of the sequence, as BackgroundRecipe makes them), its video's opacity, and its video's fades as
+        /// dissolves, whatever their style. Left out while its video hides it (<see cref="CoverTwins"/>).
+        /// </summary>
         private Entry? Twin(Layer layer)
         {
             if (layer.IsHidden || layer.ImagePath.Length == 0)
@@ -465,47 +308,64 @@ public sealed partial class GpuScenePlan
             (entry.KeyStart, entry.Opacity) = (layer.StartTime, Math.Clamp(layer.Opacity, 0, 100) / 100f);
             entry.KeysOpacity = Keys(layer, KeyProperty.Opacity);
             entry.Fades = Fades(layer, adjustment: false);
+            for (var k = 0; k < entry.Fades.Length; k++)
+                entry.Fades[k] = entry.Fades[k] with { Style = TransitionStyle.Dissolve };
 
-            // Its file cut by the clip's crop first, as AppendLayer cuts it before TwinBlur.
-            Blur(entry, FileCrop(layer));
+            Blur(entry);
+            if (state.BackgroundEffects.Count > 0)
+                entry.Look = LookCards(entry, _blurFillCards ??= state.BackgroundEffects.Select(EffectInstance.FromState).ToArray());
             entry.Name = layer.Name;
             return entry;
         }
 
         /// <summary>
-        /// The blurred background (5.0-Release: the main video's video-only child): its blur and zoom (<see cref="Blur"/>) and its
-        /// own Look cards (keys and ranges in seconds of the sequence), as BackgroundRecipe makes it.
+        /// A twin's blur: its radius in canvas pixels (0, sharp, to 64, continuous), passes and darkening, and its zoom as the
+        /// part of the picture it covers the frame with: the middle 1 / zoom, each way, of the whole picture.
         /// </summary>
-        private Entry Background()
-        {
-            var entry = new Entry { Kind = EntryKind.Background, SourceId = _primary, Name = "Blurred Background", ClipKey = BackgroundKey, TrackIndex = _low.PrimaryTrackIndex };
-            Blur(entry);
-            if (state.BackgroundEffects.Count > 0)
-                entry.Look = LookCards(entry, state.BackgroundEffects.Select(EffectInstance.FromState));
-            return entry;
-        }
-
-        /// <summary>
-        /// A blurred background's or a twin's blur: its radius in canvas pixels (0, sharp, to 64, continuous), passes and
-        /// darkening, and its zoom as the part of the picture it covers the frame with: the middle 1 / zoom, each way, of the
-        /// picture, or of the part a twin's crop (<paramref name="cut"/>, its file's) keeps of it.
-        /// </summary>
-        private void Blur(Entry entry, (double Left, double Top, double Right, double Bottom) cut = default)
+        private void Blur(Entry entry)
         {
             var radius = double.IsFinite(state.BlurRadius) ? Math.Clamp(state.BlurRadius, 0, EffectRegistry.BackgroundMostRadius) : 20;
             (entry.BlurRadius, entry.BlurPasses, entry.BlurDim) = ((float)radius, Math.Clamp(state.BlurPasses, 1, 4), (float)Math.Clamp(state.BackgroundDim, -0.5, 0));
             var zoom = Math.Clamp(double.IsFinite(state.BackgroundZoom) ? state.BackgroundZoom : 1, 1, 4);
-            Crop(entry, cut);
+            Crop(entry, default);
             var (middleX, middleY) = ((entry.CropLeft + entry.CropRight) / 2, (entry.CropTop + entry.CropBottom) / 2);
             var (halfX, halfY) = ((float)((entry.CropRight - entry.CropLeft) / 2.0 / zoom), (float)((entry.CropBottom - entry.CropTop) / 2.0 / zoom));
             (entry.CropLeft, entry.CropTop, entry.CropRight, entry.CropBottom) = (middleX - halfX, middleY - halfY, middleX + halfX, middleY + halfY);
+        }
+
+        /// <summary>
+        /// Each twin's video, when that hides every pixel of the twin whenever it is on and not fading (<see cref="CoversWhenOn"/>):
+        /// the twin is then left out moment by moment (GpuScenePlan.Hides), as the blurred background was under a main video that
+        /// covered the frame (Law 3: a full-frame video never pays for a blur pass no one sees).
+        /// </summary>
+        private void CoverTwins(List<Entry> entries)
+        {
+            Dictionary<long, Entry>? videos = null;
+            foreach (var twin in entries)
+            {
+                if (twin.Kind != EntryKind.Twin || twin.ClipKey == 0)
+                    continue;
+
+                if (videos is null)
+                {
+                    videos = [];
+                    foreach (var entry in entries)
+                    {
+                        if (entry.Kind == EntryKind.File && entry.ClipKey != 0)
+                            videos.TryAdd(entry.ClipKey, entry);
+                    }
+                }
+
+                if (videos.TryGetValue(twin.ClipKey, out var video) && CoversWhenOn(video))
+                    twin.CoveredBy = video;
+            }
         }
 
         /// <summary>A picture from a file, read at its own size, cut by its crop and scaled to its box by the worker.</summary>
         private Entry Still(Layer layer)
         {
             var entry = new Entry { Kind = EntryKind.Still, Still = resources.StillFromFile(layer.ImagePath) };
-            Picture(entry, layer, layer.GetOutputRect(_width, _height, state.SourceWidth, state.SourceHeight));
+            Picture(entry, layer, BoxOf(layer));
             Crop(entry, FileCrop(layer));
             Masks(entry, layer, BuiltSize(entry, layer), layer.CropFractions);
             return entry;
@@ -518,7 +378,7 @@ public sealed partial class GpuScenePlan
         private Entry Text(Layer layer)
         {
             var entry = new Entry { Kind = EntryKind.Text };
-            Picture(entry, layer, layer.GetOutputRect(_width, _height, state.SourceWidth, state.SourceHeight));
+            Picture(entry, layer, BoxOf(layer));
             var (built, builtHeight) = BuiltSize(entry, layer);
             var (left, top, right, bottom) = layer.CropFractions;
             var (wholeWidth, wholeHeight) = (Math.Max((int)Math.Round(built / (1 - left - right)), built), Math.Max((int)Math.Round(builtHeight / (1 - top - bottom)), builtHeight));
@@ -533,7 +393,7 @@ public sealed partial class GpuScenePlan
         /// <summary>An adjustment clip: its Look effects on the picture under its box (held to the frame, even sides), while it lasts, coming and going by its fades.</summary>
         private Entry? Adjustment(Layer layer)
         {
-            var (x, y, w, h) = layer.GetOutputRect(_width, _height, state.SourceWidth, state.SourceHeight);
+            var (x, y, w, h) = BoxOf(layer);
             var (left, top) = (Math.Clamp(x, 0, _width), Math.Clamp(y, 0, _height));
             var (right, bottom) = (Math.Clamp(x + w, 0, _width), Math.Clamp(y + h, 0, _height));
             var (cutWidth, cutHeight) = ((right - left) / 2 * 2, (bottom - top) / 2 * 2);
@@ -558,7 +418,7 @@ public sealed partial class GpuScenePlan
         {
             Identify(entry, layer);
             entry.Layer = layer;
-            if (!layer.IsMainVideo && layer.HasTiming && (layer.StartTime > 0.001 || layer.Duration > 0.001))
+            if (layer.HasTiming && (layer.StartTime > 0.001 || layer.Duration > 0.001))
                 (entry.From, entry.To) = (layer.StartTime, layer.Duration > 0.001 ? layer.StartTime + layer.Duration : double.PositiveInfinity);
 
             (entry.X, entry.Y, entry.W, entry.H) = (rect.X, rect.Y, Math.Max(rect.Width, 1), Math.Max(rect.Height, 1));
@@ -573,8 +433,10 @@ public sealed partial class GpuScenePlan
             entry.KeysScale = Keys(layer, KeyProperty.Scale);
             entry.KeysRotation = layer.HasFilters ? Keys(layer, KeyProperty.Rotation) : null;
             entry.KeysOpacity = layer.IsPicture ? Keys(layer, KeyProperty.Opacity) : null;
+            (entry.TiltX, entry.TiltY) = layer.HasFilters ? ((float)Layer.Tilt(layer.TiltX), (float)Layer.Tilt(layer.TiltY)) : (0f, 0f);
+            (entry.KeysTiltX, entry.KeysTiltY) = layer.HasFilters ? (Keys(layer, KeyProperty.TiltX), Keys(layer, KeyProperty.TiltY)) : (null, null);
 
-            entry.BlendMode = layer.IsMainVideo ? 0 : BlendIndex(layer.BlendModeName);
+            entry.BlendMode = BlendIndex(layer.BlendModeName);
             entry.Look = Look(entry, layer);
             if (layer.Shadow && layer.FxOn(EffectRegistry.Shadow))
                 entry.Shadow = layer.Find(EffectRegistry.Shadow) is { Enabled: true } card ? card : new EffectInstance { Type = EffectRegistry.Shadow };
@@ -623,9 +485,8 @@ public sealed partial class GpuScenePlan
 
         private static int Even(double value) => Math.Max((int)Math.Round(value / 2) * 2, 2);
 
-        /// <summary>The crop a picture read from a file is cut by (FileCropOf): a clip of the main video laid as a file, its own; any other clip, its own crop.</summary>
-        private (double Left, double Top, double Right, double Bottom) FileCrop(Layer layer) =>
-            _low.StreamCrops.TryGetValue(layer, out var own) ? own : layer.IsCropped ? layer.CropFractions : default;
+        /// <summary>The crop a picture read from a file is cut by (FileCropOf): its clip's own (4.4-BugHunt; 5.2-AuditB: a former main clip's too).</summary>
+        private static (double Left, double Top, double Right, double Bottom) FileCrop(Layer layer) => layer.IsCropped ? layer.CropFractions : default;
 
         private static void Crop(Entry entry, (double Left, double Top, double Right, double Bottom) crop)
         {
@@ -682,12 +543,12 @@ public sealed partial class GpuScenePlan
             return [.. look];
         }
 
-        // One LUT and one curve a layer (the descriptor has room for one of each): a second card of either is left out, said once.
+        // One LUT and one curve a layer (the descriptor has room for one of each): a second effect of either is left out, said once.
         private bool TakeTable(ref GpuResourceRef slot, Func<GpuResourceRef> make)
         {
             if (!slot.IsNone)
             {
-                TellOnce(1, "A layer with two LUT or two Curves cards: the GPU engine draws the first of each.");
+                TellOnce(1, "A clip with two LUT or two Curves effects: the GPU engine draws the first of each.");
                 return false;
             }
 
@@ -773,7 +634,7 @@ public sealed partial class GpuScenePlan
             return corner > 0 || feather ? new GpuEffectPacket(GpuShaderSlot.CornerFeather, corner, feather ? 1 : 0, layer.FeatherRadius, 0, 0, 0, 0, 0) : default;
         }
 
-        /// <summary>The radius of a box blur that, run twice, spreads as a Gaussian of the given sigma (FilterGraphBuilder's BoxRadius).</summary>
+        /// <summary>The radius of a box blur that, run twice, spreads as a Gaussian of the given sigma (the box radius the export's graph used before 5.2-Audit).</summary>
         private static int BoxRadius(double sigma, int width, int height)
         {
             var radius = (int)Math.Round((Math.Sqrt(6 * sigma * sigma + 1) - 1) / 2);
@@ -804,25 +665,39 @@ public sealed partial class GpuScenePlan
         }
 
         /// <summary>
-        /// Whether the main layer, the bottom of the stack, hides every pixel of the blurred background whenever it is on:
-        /// covering the frame, solid, square-cornered, unturned, nothing keyed or masked out (IsOpaque), and still.
+        /// Whether a video hides every pixel of its twin whenever it is on and not fading (the blurred background's test,
+        /// BuildFrameEngine's hidesBackground, made for each twin in 5.2-AuditB): its box covering the frame, solid, square
+        /// cornered, unturned, nothing keyed, masked or matted out (IsOpaque), laid on as it is with nothing laid on it, only
+        /// colour on its Look (<see cref="ColourOnly"/>), and still.
         /// </summary>
-        private bool CoversWhenOn(Layer main)
+        private bool CoversWhenOn(Entry video)
         {
-            var (x, y, w, h) = state.CenterRect;
-            var covers = x <= 0 && y <= 0 && x + w >= _width && y + h >= _height;
-            var mask = main.MaskSource;
-            var opaque = main.Opacity >= 100 && !main.HasKeys(KeyProperty.Opacity) && !main.ChromaKey && !(main.CustomMask && state.ExistingFiles.Contains(mask))
-                         && main.CornerRadius == 0 && !main.Feather && Math.Abs(main.Rotation % 360) < 0.05;
-            return covers && opaque && !main.IsAnimated;
+            if (video.Layer is not { } layer)
+                return false;
+
+            var covers = video.X <= 0 && video.Y <= 0 && video.X + video.W >= _width && video.Y + video.H >= _height;
+            var mask = layer.MaskSource;
+            var opaque = layer.Opacity >= 100 && !layer.HasKeys(KeyProperty.Opacity) && !layer.ChromaKey && !(layer.CustomMask && state.ExistingFiles.Contains(mask))
+                         && layer.CornerRadius == 0 && !layer.Feather && Math.Abs(layer.Rotation % 360) < 0.05 && !layer.IsTilted;
+            var plain = video.Mask.IsNone && video.Edges.Slot == GpuShaderSlot.None && Array.TrueForAll(video.Matte, static step => step.Card is null)
+                        && video.BlendMode == 0 && video.LaidOn.Length == 0 && Array.TrueForAll(video.Look, KeepsOpaque);
+            return covers && opaque && plain && !layer.IsAnimated;
         }
+
+        /// <summary>
+        /// A Look card that never lets anything through an opaque picture: one that changes only its pixels' colour, or a blur
+        /// (PSBoxBlur samples clamped at the picture's edges, so the edges stay as solid as the rest).
+        /// </summary>
+        private static bool KeepsOpaque(EffectInstance card) => card.Definition?.GpuSlot is GpuShaderSlot.BoxBlur or GpuShaderSlot.Flip or GpuShaderSlot.Lut3D or GpuShaderSlot.Denoise
+            or GpuShaderSlot.ColorGrade or GpuShaderSlot.ColorBalance or GpuShaderSlot.ColorTemperature or GpuShaderSlot.Vignette or GpuShaderSlot.FilmGrain
+            or GpuShaderSlot.HueSaturation or GpuShaderSlot.ToneCurve or GpuShaderSlot.Sharpen or GpuShaderSlot.HalationGlow or GpuShaderSlot.MotionBlur;
 
         // ----- The whole picture -----
 
         /// <summary>
-        /// What BuildVideoFilters does to the finished picture before the Sequence Output's effects: the denoise (hqdn3d at
-        /// its default strength), the LUT, and the colour sliders (their eq, hue and cas, read back from the filters the view
-        /// model wrote), as one adjustment of the whole frame. None when there is nothing.
+        /// What BuildVideoFilters did to the finished picture before the Sequence Output's effects: the denoise (hqdn3d at its
+        /// default strength), the LUT, and the colour sliders' grade (<see cref="SequenceExportState.Grade"/>: its balance, hue
+        /// turn and sharpening), as one adjustment of the whole frame. None when there is nothing.
         /// </summary>
         private Entry? Whole()
         {
@@ -838,9 +713,7 @@ public sealed partial class GpuScenePlan
                 packets.Add(new GpuEffectPacket(GpuShaderSlot.Lut3D, 0, 0, 0, 0, 0, 0, 0, 0));
             }
 
-            foreach (var filter in state.ColorFilters)
-                ColorFilter(filter, packets, _width);
-
+            GradePackets(state.Grade, packets, _width);
             entry.Packets = [.. packets];
             return entry.Packets.Length > 0 ? entry : null;
         }
@@ -854,42 +727,25 @@ public sealed partial class GpuScenePlan
         }
 
         /// <summary>
-        /// One of the colour sliders' filters (MainViewModel.BuildColorFilters writes eq, hue and unsharp) as its GPU packet: the
-        /// sharpening's square (unsharp's lx, in pixels of the export's frame, <paramref name="frameWidth"/> wide) as the Sharpen
-        /// card's radius, which is given in pixels of a 1080-wide frame.
+        /// The colour sliders' grade as its GPU packets, in the order eq, hue and unsharp were applied: the balance as Color
+        /// Grade (green's gamma goes to luma's, red and blue to the chroma planes' as eq has it, their lanes 0 while the channels
+        /// are even), the hue turn as Hue/Saturation, and the sharpening at unsharp's 5 x 5 square in pixels of the export's
+        /// frame (<paramref name="frameWidth"/> wide), given as the Sharpen card's radius, in pixels of a 1080-wide frame.
         /// </summary>
-        private static void ColorFilter(string filter, List<GpuEffectPacket> packets, int frameWidth)
+        private static void GradePackets(in SequenceGrade grade, List<GpuEffectPacket> packets, int frameWidth)
         {
-            var equals = filter.IndexOf('=');
-            if (equals <= 0)
-                return;
-
-            var options = new Dictionary<string, double>(StringComparer.Ordinal);
-            foreach (var option in filter[(equals + 1)..].Split(':'))
+            if (grade.Balance is { } balance)
             {
-                var at = option.IndexOf('=');
-                if (at > 0 && double.TryParse(option[(at + 1)..], NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
-                    options[option[..at]] = value;
+                var (red, green, blue) = (balance.GammaRed, balance.GammaGreen, balance.GammaBlue);
+                var balanced = Math.Abs(red - 1) > 0.005 || Math.Abs(green - 1) > 0.005 || Math.Abs(blue - 1) > 0.005;
+                packets.Add(new GpuEffectPacket(GpuShaderSlot.ColorGrade, (float)balance.Contrast, (float)balance.Brightness, (float)balance.Saturation, (float)(balance.Gamma * green),
+                    balanced ? (float)Math.Sqrt(blue / green) : 0, balanced ? (float)Math.Sqrt(red / green) : 0, 0, 0));
             }
 
-            double Get(string key, double fallback) => options.TryGetValue(key, out var value) ? value : fallback;
-            switch (filter[..equals])
-            {
-                case "eq":
-                    // The channel balance as eq has it: green goes to luma's gamma, red and blue to the chroma planes' (none: their lanes stay 0).
-                    var (red, green, blue) = (Get("gamma_r", 1), Get("gamma_g", 1), Get("gamma_b", 1));
-                    var balanced = Math.Abs(red - 1) > 0.005 || Math.Abs(green - 1) > 0.005 || Math.Abs(blue - 1) > 0.005;
-                    packets.Add(new GpuEffectPacket(GpuShaderSlot.ColorGrade, (float)Get("contrast", 1), (float)Get("brightness", 0), (float)Get("saturation", 1), (float)(Get("gamma", 1) * green),
-                        balanced ? (float)Math.Sqrt(blue / green) : 0, balanced ? (float)Math.Sqrt(red / green) : 0, 0, 0));
-                    break;
-                case "hue":
-                    packets.Add(new GpuEffectPacket(GpuShaderSlot.HueSaturation, (float)Get("h", 0), (float)Get("s", 1), 0, 0, 0, 0, 0, 0));
-                    break;
-                case "unsharp":
-                    var radius = (Get("lx", 5) - 1) / 2 * 1080.0 / Math.Max(frameWidth, 1);
-                    packets.Add(new GpuEffectPacket(GpuShaderSlot.Sharpen, (float)(Get("la", 0) / EffectRegistry.SharpenAmount), (float)radius, 0, 0, 0, 0, 0, 0));
-                    break;
-            }
+            if (grade.Hue is { } hue)
+                packets.Add(new GpuEffectPacket(GpuShaderSlot.HueSaturation, (float)hue, 1, 0, 0, 0, 0, 0, 0));
+            if (grade.Sharpen is { } strength)
+                packets.Add(new GpuEffectPacket(GpuShaderSlot.Sharpen, (float)strength, (float)(2 * 1080.0 / Math.Max(frameWidth, 1)), 0, 0, 0, 0, 0, 0));
         }
 
         // ----- The captions -----

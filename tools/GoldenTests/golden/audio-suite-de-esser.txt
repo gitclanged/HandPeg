@@ -1,0 +1,4 @@
+# The De-Esser (5.2B): a split-band compressor on 5.5-9 kHz takes a 7 kHz burst down and leaves a 1 kHz tone as it is.
+a 7 kHz burst at -6 dBFS, amount 50 %: at least 6 dB down
+a 1 kHz tone at -6 dBFS: within 0.1 dB of what it was
+switched off: not in the chain

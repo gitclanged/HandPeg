@@ -292,7 +292,7 @@ internal sealed unsafe class MfAudioDecoder : AudioDecoder
             if (rate == 0 || channels == 0 || channels > 32)
                 throw new InvalidOperationException("the decoder gave no usable format");
             (_rate, _channels) = ((int)rate, (int)channels);
-            _matrix = AudioDownmix.ToStereo(_channels, mask);
+            _matrix = Source.ChannelPair >= 0 ? AudioDownmix.Pair(_channels, Source.ChannelPair) : AudioDownmix.ToStereo(_channels, mask);
         }
         finally
         {
@@ -500,9 +500,19 @@ internal sealed class FfmpegPipeDecoder : AudioDecoder
         private long _silence;
         private volatile bool _done;
 
+        // The channels FFmpeg writes a frame of, and which of them are left and right: a pair of a surround stream read as it is
+        // (5.2-Audit), else the stream made stereo by FFmpeg (-ac 2).
+        private readonly int _channels = 2, _left, _right = 1;
+
         public Run(AudioSource source, double from, bool absolute, int rate, long silence)
         {
             _silence = silence;
+            var native = source.ChannelPair >= 0 && MediaProbe.KnownInfo(source.Path)?.Audio is { } streams && source.Stream < streams.Count ? streams[source.Stream].Channels : 0;
+            if (native > 2)
+            {
+                _channels = native;
+                (_left, _right) = (Math.Min(2 * source.ChannelPair, native - 1), Math.Min(2 * source.ChannelPair + 1, native - 1));
+            }
 
             // Begun exactly at the moment, as the export's BuildLayerAudio begins at its cut (aresample's first_pts): a sound
             // that starts after it is preceded by silence, which the raw output alone leaves out.
@@ -513,8 +523,11 @@ internal sealed class FfmpegPipeDecoder : AudioDecoder
             [
                 "-ss", from.ToString("0.######", CultureInfo.InvariantCulture), "-i", source.Path,
                 "-map", string.Create(CultureInfo.InvariantCulture, $"0:a:{source.Stream}"), "-vn", "-sn", "-dn",
-                "-af", string.Create(CultureInfo.InvariantCulture, $"aresample={rate}:async=1:first_pts=0"), "-ac", "2", "-f", "f32le", "pipe:1",
+                "-af", string.Create(CultureInfo.InvariantCulture, $"aresample={rate}:async=1:first_pts=0"),
             ]);
+            if (_channels == 2)
+                arguments.AddRange(["-ac", "2"]);
+            arguments.AddRange(["-f", "f32le", "pipe:1"]);
             var command = Cli.Wrap(DependencyUpdater.FfmpegPath).WithArguments(arguments)
                 .WithStandardOutputPipe(PipeTarget.Create(ReadAsync))
                 .WithValidation(CommandResultValidation.None);
@@ -550,8 +563,9 @@ internal sealed class FfmpegPipeDecoder : AudioDecoder
                 if (read == 0)
                     break;
                 var total = carry + read;
-                var whole = total / 8 * 8;
-                for (var at = 0; at < whole; at += 8)
+                var frameBytes = 4 * _channels;
+                var whole = total / frameBytes * frameBytes;
+                for (var at = 0; at < whole; at += frameBytes)
                 {
                     while (Volatile.Read(ref _written) - Volatile.Read(ref _taken) >= Capacity)
                     {
@@ -560,8 +574,8 @@ internal sealed class FfmpegPipeDecoder : AudioDecoder
                     }
 
                     var slot = (int)(_written % Capacity) * 2;
-                    _frames[slot] = BitConverter.ToSingle(bytes, at);
-                    _frames[slot + 1] = BitConverter.ToSingle(bytes, at + 4);
+                    _frames[slot] = BitConverter.ToSingle(bytes, at + 4 * _left);
+                    _frames[slot + 1] = BitConverter.ToSingle(bytes, at + 4 * _right);
                     Volatile.Write(ref _written, _written + 1);
                 }
 
@@ -672,6 +686,26 @@ internal static class AudioDownmix
 
     private static int CountBits(uint mask) => System.Numerics.BitOperations.PopCount(mask);
 
+    /// <summary>
+    /// The weights that read one pair of a stream's channels as they are (5.2-Audit, surround exported as it is): channels 2p and
+    /// 2p + 1 as left and right; a lone last channel on both sides; a mono stream's pair 0 is the stream as everything hears it.
+    /// </summary>
+    public static float[] Pair(int channels, int pair)
+    {
+        if (channels <= 2)
+            return pair == 0 ? ToStereo(channels, 0) : new float[channels * 2];
+
+        var matrix = new float[channels * 2];
+        var (left, right) = (2 * pair, 2 * pair + 1);
+        if (left < channels)
+            matrix[2 * left] = 1;
+        if (right < channels)
+            matrix[2 * right + 1] = 1;
+        else if (left < channels)
+            matrix[2 * left + 1] = 1;
+        return matrix;
+    }
+
     public static void Apply(ReadOnlySpan<float> interleaved, int channels, float[] matrix, Span<float> left, Span<float> right, int frames)
     {
         if (channels == 2 && matrix[0] == 1 && matrix[1] == 0 && matrix[2] == 0 && matrix[3] == 1)
@@ -693,7 +727,7 @@ internal static class AudioDownmix
 }
 
 /// <summary>
-/// Decoders not in use, by source, so that the next clip of the same file (the main video cut into many) seeks one that is
+/// Decoders not in use, by source, so that the next clip of the same file (a recording cut into many) seeks one that is
 /// open instead of opening the file again. The least recently returned go first past the limit.
 /// </summary>
 internal sealed class AudioDecoderPool : IDisposable

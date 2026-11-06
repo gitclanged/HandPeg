@@ -156,6 +156,19 @@ public interface ITimelineTransaction : IDisposable
     void SetClipProxy(TimelineClip clip, ProxyChoice choice);
 
     /// <summary>
+    /// The beats found in a clip's sound (5.2B, <see cref="TimelineClip.BeatTimes"/>): seconds of its file, kept finite, at or after 0, in order
+    /// and apart; null takes them away (Clear Audio Beats). The same beats again change nothing.
+    /// </summary>
+    void SetClipBeats(TimelineClip clip, double[]? beats);
+
+    /// <summary>
+    /// The Sequence's master output fader (5.2B, <see cref="TimelineDocument.MasterGainDb"/>), in decibels from -40 to +12; a value that is not a
+    /// number is 0. Not a clip's or a track's: a change of it alone still raises <see cref="TimelineDocument.Committed"/> (with no clip or
+    /// track touched), so it is a step of Undo like any other.
+    /// </summary>
+    void SetMasterGain(double decibels);
+
+    /// <summary>
     /// How fast a clip that plays its file runs (<see cref="Layer.SlowestSpeed"/> to <see cref="Layer.FastestSpeed"/>):
     /// it plays the same stretch of its file, so its end moves; the clips after it on its track that it would run into
     /// move on as far as it grew; its keyframes, its effects' keyframes and ranges and its J/L cut are scaled with it.
@@ -254,6 +267,14 @@ public interface ITimelineTransaction : IDisposable
     /// again. A locked track takes this too (it is how the track is looked at, not what it holds).
     /// </summary>
     void SetTrackHeight(TimelineTrackModel track, double? height);
+
+    /// <summary>
+    /// Gives a picture track a Game Preset of its own (5.2A, a Track Preset Node: <see cref="TimelineTrackModel.PresetNodeName"/>), or
+    /// none with null. Only the node: the preset is put on the track's clips by the caller. A locked track takes this too (it is what the
+    /// track gives clips that come onto it, not a change to the ones it holds). Refused for a track not on this timeline, and for one
+    /// that holds no pictures.
+    /// </summary>
+    void SetTrackPreset(TimelineTrackModel track, string? presetName);
 }
 
 internal sealed class TimelineTransaction : ITimelineTransaction
@@ -271,6 +292,10 @@ internal sealed class TimelineTransaction : ITimelineTransaction
     private List<FoldedSegment>? _foldsBefore;
     private List<RestoredFold>? _restoredBefore;
     private bool _foldsRemembered;
+
+    // The Sequence's own values (5.2B: its master gain), as they were before this transaction first changed them, and whether it changed any.
+    private double? _masterGainBefore;
+    private bool _documentTouched;
 
     /// <summary>While set, every split made records its two halves (ResizeFold, folding more at a fold's tail, swaps their ids).</summary>
     private List<(TimelineClip First, TimelineClip Second)>? _splits;
@@ -306,8 +331,9 @@ internal sealed class TimelineTransaction : ITimelineTransaction
                 outer.TouchHere(id);
             foreach (var id in _touchedTracks)
                 outer.TouchTrackHere(id);
+            outer._documentTouched |= _documentTouched;
         }
-        else if (_touched.Count > 0 || _touchedTracks.Count > 0)
+        else if (_touched.Count > 0 || _touchedTracks.Count > 0 || _documentTouched)
         {
             _doc.RaiseCommitted(new TimelineCommit(Label, [.. _touched], [.. _touchedTracks]));
         }
@@ -337,6 +363,8 @@ internal sealed class TimelineTransaction : ITimelineTransaction
             clip.Restore(before);
         if (_foldsRemembered)
             (_doc.Folds, _doc.RestoredFolds) = (_foldsBefore, _restoredBefore);
+        if (_masterGainBefore is { } gain)
+            _doc.MasterGainDb = gain;
         Close();
     }
 
@@ -391,6 +419,14 @@ internal sealed class TimelineTransaction : ITimelineTransaction
                 open._foldsRemembered = true;
             }
         }
+    }
+
+    /// <summary>The Sequence's master gain as it is before this change writes it (5.2B); the change is the innermost transaction's to report.</summary>
+    private void RememberMasterGain()
+    {
+        foreach (var open in _doc.OpenTransactions)
+            open._masterGainBefore ??= _doc.MasterGainDb;
+        _doc.OpenTransactions[^1]._documentTouched = true;
     }
 
     /// <summary>Lets go of the stretches put back whose stretch is no longer there (<see cref="RestoredFold.SpanIn"/> null).</summary>
@@ -688,6 +724,38 @@ internal sealed class TimelineTransaction : ITimelineTransaction
 
     public void SetClipProxy(TimelineClip clip, ProxyChoice choice) => Step(() => Change(clip, c => c.ProxyChoice = choice));
 
+    public void SetClipBeats(TimelineClip clip, double[]? beats) => Step(() =>
+    {
+        // A new array of its own (the clip's is never changed in place): finite, from 0, in order, a microsecond apart at least.
+        double[]? kept = null;
+        if (beats is not null)
+        {
+            var times = new List<double>(beats.Length);
+            foreach (var time in beats.Where(double.IsFinite).Select(t => Math.Max(t, 0)).Order())
+            {
+                if (times.Count == 0 || time - times[^1] >= Slack)
+                    times.Add(time);
+            }
+
+            kept = [.. times];
+        }
+
+        if (kept is null ? clip.BeatTimes is null : clip.BeatTimes is { } had && had.AsSpan().SequenceEqual(kept.AsSpan()))
+            return false;
+        return Change(clip, c => c.BeatTimes = kept);
+    });
+
+    public void SetMasterGain(double decibels) => Step(() =>
+    {
+        var gain = double.IsFinite(decibels) ? Math.Clamp(decibels, TimelineDocument.QuietestMasterGainDb, TimelineDocument.LoudestMasterGainDb) : 0;
+        if (gain == _doc.MasterGainDb)
+            return false;
+
+        RememberMasterGain();
+        _doc.MasterGainDb = gain;
+        return true;
+    });
+
     public double SetClipSpeed(TimelineClip clip, double speed, bool freeUnquantized = false) => Step(() => Respeed(clip, speed, freeUnquantized));
 
     public void SetAudioLink(TimelineClip clip, bool linked, double slipSeconds) => Step(() => Change(clip, c =>
@@ -840,6 +908,22 @@ internal sealed class TimelineTransaction : ITimelineTransaction
 
         Remember(track);
         track.Height = height;
+        return true;
+    });
+
+    public void SetTrackPreset(TimelineTrackModel track, string? presetName) => Step(() =>
+    {
+        if (!_doc.Tracks.Contains(track))
+            throw new TimelineEditException($"{track.DisplayName} is not a track of this timeline.");
+        if (!ShowsPictures(track))
+            throw new TimelineEditException($"{track.DisplayName} holds no pictures: a Game Preset goes on a video track.");
+
+        var name = string.IsNullOrWhiteSpace(presetName) ? null : presetName.Trim();
+        if (track.PresetNodeName == name)
+            return false;
+
+        Remember(track);
+        track.PresetNodeName = name;
         return true;
     });
 
@@ -2407,17 +2491,25 @@ internal sealed class TimelineTransaction : ITimelineTransaction
             if (effect.Range is [var from, var to] && double.IsFinite(from + seconds) && double.IsFinite(to + seconds))
                 effect.Range = [Math.Round(from + seconds, 6), Math.Round(to + seconds, 6)];
         }
+
+        // Studio Voice's mix keys (5.2B) count from the clip's start as its motion does, so they stay on the same moments of its sound.
+        if (look.AudioFilters is { } filters)
+            filters.StudioVoiceMixKeys = Shift(filters.StudioVoiceMixKeys);
         return look;
 
         List<Keyframe>? Shift(List<Keyframe>? keys) =>
             keys?.Select(k => k with { Time = Math.Round(k.Time + seconds, 6) }).ToList();
     }
 
-    /// <summary>Whether a look has anything placed in time: keyframes, an effect's keyframes or its range.</summary>
+    /// <summary>
+    /// Whether a look has anything placed in time: keyframes, an effect's keyframes or its range, Studio Voice's mix keys (5.2B: on the
+    /// clip's clock, as its motion is).
+    /// </summary>
     private static bool IsTimed(LayerState state) =>
         state.KeysX is { Count: > 0 } || state.KeysY is { Count: > 0 } || state.KeysScale is { Count: > 0 }
         || state.KeysRotation is { Count: > 0 } || state.KeysOpacity is { Count: > 0 }
-        || state.Effects?.Any(e => e.Keys is { Count: > 0 } || e.Range is not null) == true;
+        || state.Effects?.Any(e => e.Keys is { Count: > 0 } || e.Range is not null) == true
+        || state.AudioFilters?.StudioVoiceMixKeys is { Count: > 0 };
 
     // ----- A look split with its clip (4.3D): each half keeps its own keyframes, baked at the cut -----
 
@@ -2461,6 +2553,10 @@ internal sealed class TimelineTransaction : ITimelineTransaction
                     secondEffect.Range = [Math.Round(from - cut, 6), Math.Round(to - cut, 6)];
             }
         }
+
+        // Studio Voice's mix keys (5.2B), on the clip's clock: each half keeps its own, so its automation stays on its sound.
+        if (state.AudioFilters is { } filters && first.AudioFilters is { } firstFilters && second.AudioFilters is { } secondFilters)
+            (firstFilters.StudioVoiceMixKeys, secondFilters.StudioVoiceMixKeys) = SplitKeys(filters.StudioVoiceMixKeys, cut);
 
         return (first, second);
     }
@@ -2517,13 +2613,16 @@ internal sealed class TimelineTransaction : ITimelineTransaction
 
         if (!JoinKeys(first.KeysX, second.KeysX, cut, out var x) || !JoinKeys(first.KeysY, second.KeysY, cut, out var y)
             || !JoinKeys(first.KeysScale, second.KeysScale, cut, out var scale) || !JoinKeys(first.KeysRotation, second.KeysRotation, cut, out var rotation)
-            || !JoinKeys(first.KeysOpacity, second.KeysOpacity, cut, out var opacity))
+            || !JoinKeys(first.KeysOpacity, second.KeysOpacity, cut, out var opacity)
+            || !JoinKeys(first.AudioFilters?.StudioVoiceMixKeys, second.AudioFilters?.StudioVoiceMixKeys, cut, out var mix))
         {
             return null;
         }
 
         var look = CopyOf(first);
         (look.KeysX, look.KeysY, look.KeysScale, look.KeysRotation, look.KeysOpacity) = (x, y, scale, rotation, opacity);
+        if (look.AudioFilters is { } filters)
+            filters.StudioVoiceMixKeys = mix;
         for (var i = 0; i < (look.Effects?.Count ?? 0); i++)
         {
             var (a, b, joined) = (first.Effects![i], second.Effects![i], look.Effects![i]);
@@ -2554,6 +2653,8 @@ internal sealed class TimelineTransaction : ITimelineTransaction
         {
             foreach (var name in (string[])[nameof(LayerState.KeysX), nameof(LayerState.KeysY), nameof(LayerState.KeysScale), nameof(LayerState.KeysRotation), nameof(LayerState.KeysOpacity)])
                 json.Remove(name);
+            if (json[nameof(LayerState.AudioFilters)] is JsonObject filters)
+                filters.Remove(nameof(TrackAudioFilters.StudioVoiceMixKeys));
 
             if (json[nameof(LayerState.Effects)] is JsonArray effects)
             {
@@ -2693,6 +2794,10 @@ internal sealed class TimelineTransaction : ITimelineTransaction
             if (effect.Range is [var from, var to])
                 effect.Range = [Math.Round(from * stretch, 6), Math.Round(to * stretch, 6)];
         }
+
+        // Studio Voice's mix keys (5.2B) too: on the clip's clock, they stay on the moments of its sound they were set on.
+        if (look.AudioFilters is { } filters)
+            filters.StudioVoiceMixKeys = Scale(filters.StudioVoiceMixKeys);
         return look;
 
         List<Keyframe>? Scale(List<Keyframe>? keys) =>

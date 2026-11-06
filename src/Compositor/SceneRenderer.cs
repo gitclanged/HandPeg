@@ -46,6 +46,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     {
         _frame++;
         _playing = header.IsPlaying != 0;
+        (_audioBass, _audioMid, _audioHigh) = (Band(header.AudioBass), Band(header.AudioMid), Band(header.AudioHigh));
         _decoders.BeginFrame(_frame, _playing, header.PlayheadSeconds, exactOnly: (header.Flags & FrameSceneHeader.FlagExactFrames) != 0);
         try
         {
@@ -159,7 +160,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         var box = (X: layer.X * _scaleX + _offsetX, Y: layer.Y * _scaleY + _offsetY, W: layer.Width * _scaleX, H: layer.Height * _scaleY);
         var workWidth = (int)Math.Clamp(MathF.Round(MathF.Abs(box.W)), 2, 8192);
         var workHeight = (int)Math.Clamp(MathF.Round(MathF.Abs(box.H)), 2, 8192);
-        if (OffScreen(box, layer.Rotation))
+        if (OffScreen(box, layer.Rotation, tilted: layer.TiltX != 0 || layer.TiltY != 0))
             return;
 
         // What lays it on, gathered from its packets wherever they stand.
@@ -207,8 +208,23 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                 case GpuShaderSlot.RimGlass when packet.P7 > 0.5f:
                     glass = packet;
                     break;
+                case GpuShaderSlot.RimGlass when GpuEffectPacket.IsPulsePacket(packet):
+                    // An Audio Reactive Pulse's own packet whose card's first is not before it: nothing to lift.
+                    break;
                 case GpuShaderSlot.RimGlass:
-                    rim = packet;
+                    // Its Audio Reactive Pulse's own packet after it (5.2B, marked: GpuEffectPacket.PulseMarker; sent only while the pulse is in
+                    // use): the pulse and its band, which lift its strength.
+                    if (k + 1 < count && effects[k + 1] is { Slot: GpuShaderSlot.RimGlass } pulse && GpuEffectPacket.IsPulsePacket(pulse))
+                    {
+                        var lift = PulseOf(pulse.P0, pulse.P1);
+                        rim = lift == 1 ? packet : packet with { P5 = packet.P5 * lift };
+                        k++;
+                    }
+                    else
+                    {
+                        rim = packet;
+                    }
+
                     break;
                 case GpuShaderSlot.MotionBlur when packet.P3 >= 0.5f && packet.P4 >= 0.5f && (layer.Flags & GpuLayerDescriptor.FlagShutterPlace) != 0:
                     shutter = packet;
@@ -227,7 +243,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         if (opacity * dissolve <= 0.0005f)
             return;
 
-        // Only its blurred background (the chain's, a blur twin's): over the whole frame, at its place in the stack.
+        // Only its blurred background (a clip's blur fill, its twin): over the whole frame, at its place in the stack.
         // (5.0-Release: a radius of 0 is a sharp background, drawn all the same.)
         if ((layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0)
         {
@@ -245,8 +261,9 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         for (var k = 0; k < count; k++)
         {
             var packet = effects[k];
-            var second = k + 1 < count && effects[k + 1].Slot == packet.Slot ? effects[k + 1] : default;
-            if (Paired(packet.Slot) && second.Slot == packet.Slot)
+            // The packet that goes with it (Paired), or none: a card alone is never handed the next card's packet (5.2B).
+            var second = k + 1 < count && Paired(packet, effects[k + 1]) ? effects[k + 1] : default;
+            if (second.Slot != GpuShaderSlot.None)
                 k++;
             work = RunEffect(layer, packet, second, work);
         }
@@ -296,7 +313,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         var share = 1f;
         if (glass is { } frost)
         {
-            DrawFrostedGlass(frost, work, box, rotation, anchorX, anchorY, opacity * dissolve, wipe);
+            DrawFrostedGlass(frost, work, box, rotation, anchorX, anchorY, opacity * dissolve, wipe, (layer.TiltX, layer.TiltY));
             share = Math.Clamp(frost.P5, 0, 1);
         }
 
@@ -314,9 +331,9 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             wipe = null;
         }
 
-        // Zone 4: laid on.
+        // Zone 4: laid on (5.2A: tilted in 3D, in perspective).
         var constants = default(PassConstants);
-        constants.Transform = Matrix4.Box(box.X, box.Y, box.W, box.H, rotation, anchorX, anchorY, _outWidth, _outHeight);
+        constants.Transform = Matrix4.Box(box.X, box.Y, box.W, box.H, rotation, anchorX, anchorY, _outWidth, _outHeight, layer.TiltX, layer.TiltY);
         constants.WholeUv();
         constants.Params4 = new Vector4(opacity, dissolve, Math.Clamp(blendMode, 0, 7), (float)_time);
         SetWipe(ref constants, wipe, box);
@@ -373,7 +390,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     // The room round a snapped picture for its embers, as a share of its size each way.
     private const float SnapRoom = 0.3f;
 
-    /// <summary>How far a slide must carry the box to be wholly off the frame (FilterGraphBuilder.Video.cs WithTransitions).</summary>
+    /// <summary>How far a slide must carry the box to be wholly off the frame (the slide transition's reach, as the export's graph had it before 5.2-Audit).</summary>
     private static float Beyond(float toward, float at, float size, float frame) => toward > 0 ? frame - at + 2 : -(at + size) - 2;
 
     private void SetWipe(ref PassConstants constants, GpuEffectPacket? wipe, (float X, float Y, float W, float H) box)
@@ -388,11 +405,11 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         constants.Params3 = new Vector4(Math.Max(2, MathF.Round(Math.Max(size.Item1, size.Item2) * 0.02f)), 0, size.Item1, size.Item2);
     }
 
-    private bool OffScreen((float X, float Y, float W, float H) box, float rotation)
+    private bool OffScreen((float X, float Y, float W, float H) box, float rotation, bool tilted = false)
     {
-        // A generous test: the box's circumscribed circle against the frame.
+        // A generous test: the box's circumscribed circle against the frame (twice as wide for a box tilted in 3D, whose near side is drawn larger).
         var (cx, cy) = (box.X + box.W / 2, box.Y + box.H / 2);
-        var radius = MathF.Sqrt(box.W * box.W + box.H * box.H) / 2 + 2;
+        var radius = MathF.Sqrt(box.W * box.W + box.H * box.H) / 2 * (tilted ? 2 : 1) + 2;
         return cx + radius < 0 || cy + radius < 0 || cx - radius > _outWidth || cy - radius > _outHeight;
     }
 
@@ -426,7 +443,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                         _layerStep = double.IsFinite(frame.Until) && frame.Until > frame.Time ? frame.Until - frame.Time : 0;
                     if (cover)
                         uv = Cover(uv, frame.Width, frame.Height, target.Width, target.Height);
-                    DrawFrame(frame, target, uv);
+                    DrawFrame(frame, target, uv, layer.Flags);
                     return true;
                 }
 
@@ -472,8 +489,11 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         }
     }
 
-    /// <summary>The part <paramref name="uv"/> names of a decoded frame, into a target.</summary>
-    private void DrawFrame(CachedFrame frame, GpuTexture target, Vector4 uv)
+    /// <summary>
+    /// The part <paramref name="uv"/> names of a decoded frame, into a target: deinterlaced and tone-mapped to SDR when the layer's
+    /// flags say (<see cref="GpuLayerDescriptor.FlagDeinterlace"/>, <see cref="GpuLayerDescriptor.FlagToneMapSdr"/>: only a PQ or HLG frame is).
+    /// </summary>
+    private void DrawFrame(CachedFrame frame, GpuTexture target, Vector4 uv, int layerFlags = 0)
     {
         var constants = default(PassConstants);
         constants.Params4 = new Vector4(1, 1, 0, (float)_time);
@@ -483,7 +503,9 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         constants.U1 = uv.Z;
         constants.V1 = uv.W;
         constants.Params2 = new Vector4(frame.Width, frame.Height, frame.Width / 2, frame.Height / 2);
-        constants.Params3 = new Vector4((uv.Z - uv.X) * frame.Width / target.Width, (uv.W - uv.Y) * frame.Height / target.Height, 0, 0);
+        var toneMap = (layerFlags & GpuLayerDescriptor.FlagToneMapSdr) != 0 && frame.Transfer is 15 or 16 ? frame.Transfer : 0;
+        constants.Params3 = new Vector4((uv.Z - uv.X) * frame.Width / target.Width, (uv.W - uv.Y) * frame.Height / target.Height,
+            (layerFlags & GpuLayerDescriptor.FlagDeinterlace) != 0 ? 1 : 0, toneMap);
         var planes = stackalloc nint[2] { frame.LumaSrv, frame.ChromaSrv };
         _gpu.Context.PSSetShaderResources(3, 2, planes);
         _timer.Begin(0);
@@ -685,10 +707,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                 return MotionBlur(layer, packet, work);
 
             case GpuShaderSlot.HalationGlow:
-                return Glow(packet, work);
+                return Glow(packet, second, work);
 
             case GpuShaderSlot.ShockwaveLens:
-                return Lens(packet, work);
+                return Lens(packet, second, work);
 
             case GpuShaderSlot.Explosion or GpuShaderSlot.Sparks or GpuShaderSlot.AnimeLines or GpuShaderSlot.EnergyField:
                 return Generated(packet, second, work);
@@ -1007,7 +1029,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         var anchorX = w == 0 ? 0.5f : (layer.AnchorX * box.W + roomX) / w;
         var anchorY = h == 0 ? 0.5f : (layer.AnchorY * box.H + roomY) / h;
         var place = default(PassConstants);
-        place.Transform = Matrix4.Box(box.X - roomX + shiftX, box.Y - roomY + shiftY, w, h, layer.Rotation, anchorX, anchorY, _outWidth, _outHeight);
+        place.Transform = Matrix4.Box(box.X - roomX + shiftX, box.Y - roomY + shiftY, w, h, layer.Rotation, anchorX, anchorY, _outWidth, _outHeight, layer.TiltX, layer.TiltY);
         place.WholeUv();
         place.Params4 = new Vector4(alpha, 1, 0, (float)_time);
         SetWipe(ref place, wipe, (box.X, box.Y, w, h));
@@ -1017,7 +1039,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// The blurred background made of the layer's picture (FilterGraphBuilder.Video.cs BackgroundRecipe): the part its crop
+    /// The blurred background made of the layer's picture (GpuScenePlan.Create.cs Blur: the recipe the export's graph followed before 5.2-Audit): the part its crop
     /// names (the background's zoom) cut to the frame's shape, drawn smaller the more it is blurred (a half from 6 output
     /// pixels of radius, a quarter from 16: the box stays narrow and cheap and the blur hides the smaller picture), box-blurred
     /// BlurFillPasses times with the radius's fraction its own (5.0-Release: continuous from 0, sharp, and drawn whole then),
@@ -1052,8 +1074,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             for (var k = 0; k < count; k++)
             {
                 var packet = effects[k];
-                var second = k + 1 < count && effects[k + 1].Slot == packet.Slot ? effects[k + 1] : default;
-                if (Paired(packet.Slot) && second.Slot == packet.Slot)
+                var second = k + 1 < count && Paired(packet, effects[k + 1]) ? effects[k + 1] : default;
+                if (second.Slot != GpuShaderSlot.None)
                     k++;
                 work = RunEffect(layer, packet, second, work);
             }

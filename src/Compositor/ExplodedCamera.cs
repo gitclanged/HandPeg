@@ -144,10 +144,27 @@ public readonly struct ExplodedCamera
 
     /// <summary>
     /// A box's quad corner (0..1, 0..1, 0, 1) to clip space: the box of the flat picture (canvas pixels, turned degrees
-    /// clockwise about its anchor, as Matrix4.Box has it) laid at depth <paramref name="z"/>, seen by this camera.
+    /// clockwise about its anchor, as Matrix4.Box has it) laid at depth <paramref name="z"/>, seen by this camera. Tilted (5.2B, the
+    /// user's Q4: <paramref name="tiltX"/> its Pitch, <paramref name="tiltY"/> its Yaw, in degrees) it is also turned out of its plane about
+    /// its anchor as Matrix4.Tilted turns it (the same turns in the same order, Matrix4.Turned), with no perspective of its own: this camera
+    /// gives it its perspective. Untilted, the matrix is the flat one, number for number.
     /// </summary>
-    public Matrix4x4 PlaneMatrix(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float z)
+    public Matrix4x4 PlaneMatrix(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float z,
+        float tiltX = 0, float tiltY = 0)
     {
+        if (tiltX != 0 || tiltY != 0)
+        {
+            // The turned columns' depth is away from the viewer; the world's z comes towards it.
+            var (u, v, o) = Matrix4.Turned(width, height, rotationDegrees, anchorX, anchorY, tiltX, tiltY);
+            var (pivotX, pivotY) = (x + anchorX * width, y + anchorY * height);
+            var turned = new Matrix4x4(
+                u.X, u.Y, -u.Z, 0,
+                v.X, v.Y, -v.Z, 0,
+                0, 0, 1, 0,
+                pivotX + o.X, pivotY + o.Y, z - o.Z, 1);
+            return turned * ViewProjection;
+        }
+
         var (sin, cos) = MathF.SinCos(rotationDegrees * MathF.PI / 180f);
         var (ax, ay) = (x + anchorX * width, y + anchorY * height);
         var (ox, oy) = (-anchorX * width, -anchorY * height);
@@ -157,33 +174,6 @@ public readonly struct ExplodedCamera
             0, 0, 1, 0,
             ax + ox * cos - oy * sin, ay + ox * sin + oy * cos, z, 1);
         return place * ViewProjection;
-    }
-
-    /// <summary>The Studio Stage's floor (5.1-GpuFx): a quad's corner to clip space, lying flat at height <paramref name="y"/> from <paramref name="x"/>, <paramref name="z"/>, so wide and deep.</summary>
-    public Matrix4x4 FloorMatrix(float x, float z, float width, float depth, float y)
-    {
-        var place = new Matrix4x4(
-            width, 0, 0, 0,
-            0, 0, depth, 0,
-            0, 0, 1, 0,
-            x, y, z, 1);
-        return place * ViewProjection;
-    }
-
-    /// <summary>A plane of the stack, unturned, mirrored in a floor at world height <paramref name="floorY"/>: its reflection.</summary>
-    public Matrix4x4 MirroredPlaneMatrix(float x, float y, float width, float height, float z, float floorY)
-    {
-        var place = new Matrix4x4(
-            width, 0, 0, 0,
-            0, height, 0, 0,
-            0, 0, 1, 0,
-            x, y, z, 1);
-        var mirror = new Matrix4x4(
-            1, 0, 0, 0,
-            0, -1, 0, 0,
-            0, 0, 1, 0,
-            0, 2 * floorY, 0, 1);
-        return place * mirror * ViewProjection;
     }
 
     /// <summary>A hairline between two world points: a quad's corner to clip space, facing the camera, about <paramref name="pixels"/> output pixels wide at its middle.</summary>
@@ -254,6 +244,63 @@ public readonly struct ExplodedCamera
         var hit = origin + direction * t;
         canvas = new Vector2(hit.X, hit.Y);
         return true;
+    }
+
+    /// <summary>
+    /// Where the ray through an output point meets a box's plane as <see cref="PlaneMatrix"/> lays it at depth <paramref name="z"/> (tilted
+    /// by <paramref name="tiltX"/> / <paramref name="tiltY"/> about its anchor, 5.2C: the user's Q4): the place on the box (<paramref name="uv"/>,
+    /// 0 to 1 across and down it, the box's own whatever it is turned or tilted to) and the world point there. False when the ray meets
+    /// that plane behind the camera or not at all (seen edge on). Untilted, it is <see cref="HitPlane"/>'s point.
+    /// </summary>
+    public bool HitBox(float screenX, float screenY, float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY,
+        float z, float tiltX, float tiltY, out Vector2 uv, out Vector3 world)
+    {
+        (uv, world) = (default, default);
+        Ray(screenX, screenY, out var origin, out var direction);
+
+        // The plane's corner (cu, cv) is at P + cu * U + cv * V (PlaneMatrix's rows): solved with the ray, origin + t * direction.
+        Vector3 u3, v3, p;
+        if (tiltX != 0 || tiltY != 0)
+        {
+            var (u, v, o) = Matrix4.Turned(width, height, rotationDegrees, anchorX, anchorY, tiltX, tiltY);
+            (u3, v3) = (new Vector3(u.X, u.Y, -u.Z), new Vector3(v.X, v.Y, -v.Z));
+            p = new Vector3(x + anchorX * width + o.X, y + anchorY * height + o.Y, z - o.Z);
+        }
+        else
+        {
+            var (sin, cos) = MathF.SinCos(rotationDegrees * MathF.PI / 180f);
+            (u3, v3) = (new Vector3(width * cos, width * sin, 0), new Vector3(-height * sin, height * cos, 0));
+            var corner = BoxPoint(x, y, width, height, rotationDegrees, anchorX, anchorY, 0, 0);
+            p = new Vector3(corner.X, corner.Y, z);
+        }
+
+        // a U + b V - t D = O - P, by Cramer's rule (the determinant of three columns is the first dotted with the others' cross).
+        var against = -direction;
+        var determinant = Vector3.Dot(u3, Vector3.Cross(v3, against));
+        if (MathF.Abs(determinant) < 1e-6f * MathF.Max(u3.Length() * v3.Length(), 1))
+            return false;
+        var r = origin - p;
+        var a = Vector3.Dot(r, Vector3.Cross(v3, against)) / determinant;
+        var b = Vector3.Dot(u3, Vector3.Cross(r, against)) / determinant;
+        var t = Vector3.Dot(u3, Vector3.Cross(v3, r)) / determinant;
+        if (!(t > 0) || !float.IsFinite(a) || !float.IsFinite(b))
+            return false;
+        (uv, world) = (new Vector2(a, b), origin + direction * t);
+        return true;
+    }
+
+    /// <summary>A world point on a box's (tilted) plane as <see cref="PlaneMatrix"/> lays it: its corner (u, v) at depth <paramref name="z"/>.</summary>
+    public static Vector3 OnBox(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float z,
+        float tiltX, float tiltY, float u, float v)
+    {
+        if (tiltX == 0 && tiltY == 0)
+        {
+            var flat = BoxPoint(x, y, width, height, rotationDegrees, anchorX, anchorY, u, v);
+            return new Vector3(flat.X, flat.Y, z);
+        }
+
+        var (cu, cv, o) = Matrix4.Turned(width, height, rotationDegrees, anchorX, anchorY, tiltX, tiltY);
+        return new Vector3(x + anchorX * width + o.X + u * cu.X + v * cv.X, y + anchorY * height + o.Y + u * cu.Y + v * cv.Y, z - o.Z - u * cu.Z - v * cv.Z);
     }
 
     /// <summary>A point of a box (u, v from 0 to 1 across and down it) on the canvas, the box turned about its anchor as drawn.</summary>

@@ -241,7 +241,7 @@ public partial class MainWindow
     {
         var engine = _gpu;
 
-        // The engine gone (fallen back to libmpv) or the video closed: the view is over.
+        // The engine gone (stopped, or faulted and not yet back) or the video closed: the view is over.
         if (_explodedUi && (engine is null || !_viewModel.HasSource))
         {
             SetExplodedView(false);
@@ -390,7 +390,7 @@ public partial class MainWindow
         PlaceExplodedGizmo(camera, toX, toY);
     }
 
-    // ----- The Studio Stage's 3-axis gizmo (5.1-GpuFx) -----
+    // ----- The 3D view's 3-axis gizmo (5.1-GpuFx; a tool, so shown whatever Extra Animations says since 5.2) -----
 
     // Across in red, down the picture in green, through the stack in blue. Drawn in vector (Section 1), on the selected plane; a press on an arrow moves along it alone.
     private (Line Shaft, Polygon Head)[]? _gizmoAxes;
@@ -421,12 +421,12 @@ public partial class MainWindow
         return axes;
     }
 
-    /// <summary>The arrows at the selected plane's middle, from the scene drawn last. None without Extra Animations: the plain view is as it was.</summary>
+    /// <summary>The arrows at the selected plane's middle, from the scene drawn last.</summary>
     private void PlaceExplodedGizmo(in ExplodedCamera camera, double toX, double toY)
     {
         var axes = _gizmoAxes ??= MakeExplodedGizmo();
         _gizmoShown = false;
-        if (AppSettings.Current.EnableExtraAnimations && _gpu is { } engine && SelectedExplodedHandle(engine, out var plane, out _))
+        if (_gpu is { } engine && SelectedExplodedHandle(engine, out var plane, out _))
         {
             var z = camera.DepthOf(plane.ZDepth);
             var middle = ExplodedCamera.BoxPoint(plane.X, plane.Y, plane.Width, plane.Height, plane.Rotation, plane.AnchorX, plane.AnchorY, 0.5f, 0.5f);
@@ -651,7 +651,7 @@ public partial class MainWindow
                 }
             }
 
-            if (!PickExplodedPlane(engine, at, out var plane, out var view, out var hit))
+            if (!PickExplodedPlane(engine, at, out var plane, out var view, out var hit, out var hitDepth))
             {
                 // The empty space: a double-click puts the camera back; a press there does nothing else (the left button
                 // never orbits: the right one does).
@@ -669,15 +669,18 @@ public partial class MainWindow
                 return;
 
             var depth = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
-            BeginExplodedPlaneDrag(plane, view, hit, depth ? ExplodedDragKind.Depth : ExplodedDragKind.Move, $"move {view.Name}", at);
+            BeginExplodedPlaneDrag(plane, view, hit, depth ? ExplodedDragKind.Depth : ExplodedDragKind.Move, $"move {view.Name}", at, hitDepth);
         });
     }
 
-    /// <summary>A plane's drag begins: its layer, the camera it was pressed under, where on the plane the pointer is, one undo step.</summary>
-    private void BeginExplodedPlaneDrag(in ExplodedPlane plane, Layer view, Vector2 hit, ExplodedDragKind kind, string step, Point at)
+    /// <summary>
+    /// A plane's drag begins: its layer, the camera it was pressed under, where on the plane the pointer is (at the depth it is at:
+    /// <paramref name="depth"/>, a tilted plane's point, 5.2C; NaN its plane's), one undo step.
+    /// </summary>
+    private void BeginExplodedPlaneDrag(in ExplodedPlane plane, Layer view, Vector2 hit, ExplodedDragKind kind, string step, Point at, float depth = float.NaN)
     {
         (_explodedPlane, _explodedView, _explodedCamera, _explodedHit) = (plane, view, _explodedScene.Camera, hit);
-        _explodedPlaneZ = _explodedCamera.DepthOf(plane.ZDepth);
+        _explodedPlaneZ = float.IsFinite(depth) ? depth : _explodedCamera.DepthOf(plane.ZDepth);
         _explodedLift = 0;
         _explodedStep = new DragStep(_viewModel, step);
         _explodedStep.Pressed();
@@ -694,12 +697,12 @@ public partial class MainWindow
             return;
         }
 
-        // An orbit is drawn every refresh while it is held; a plane's drag holds the clip the Center controls stand for (as
-        // a box's drag on the flat player does), so the main video's plane keeps moving the clip it was pressed on.
+        // An orbit is drawn every refresh while it is held; a plane's drag holds the clip the Crop boxes stand for (as a box's
+        // drag on the flat player does), so the plane keeps moving the clip it was pressed on.
         if (kind == ExplodedDragKind.Orbit)
             _gpu?.SetOrbiting(true);
         else
-            _viewModel.HoldCenterTarget(true);
+            _viewModel.HoldCropTarget(true);
     }
 
     private void ExplodedLayer_MouseMove(object sender, MouseEventArgs e)
@@ -816,7 +819,7 @@ public partial class MainWindow
             if (kind == ExplodedDragKind.Depth)
                 _gpu?.LiftLayer(0, 0);
             if (kind != ExplodedDragKind.Orbit)
-                _viewModel.HoldCenterTarget(false);
+                _viewModel.HoldCropTarget(false);
             (_explodedView, _explodedStep) = (null, null);
         }
     }
@@ -844,12 +847,13 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The layer under a point: the nearest plane (along the planes' normal, which is along the ray) whose box the ray meets,
-    /// among those that are a clip's (not a blurred background); its view and where on the plane the point is.
+    /// The layer under a point: the nearest plane (along the planes' normal, which is along the ray: the order they are drawn in) whose
+    /// box the ray meets, a tilted one's box on its tilted plane (5.2C, the user's Q4), among those that are a clip's (not a blurred
+    /// background); its view and where the point is (canvas pixels at the depth <paramref name="depth"/>, the plane's own for a flat one).
     /// </summary>
-    private bool PickExplodedPlane(GpuPreviewEngine engine, Point at, out ExplodedPlane picked, out Layer view, out Vector2 hit)
+    private bool PickExplodedPlane(GpuPreviewEngine engine, Point at, out ExplodedPlane picked, out Layer view, out Vector2 hit, out float depth)
     {
-        (picked, view, hit) = (default, null!, default);
+        (picked, view, hit, depth) = (default, null!, default, float.NaN);
         engine.TryGetExplodedScene(_explodedScene);
         var scene = _explodedScene;
         if (scene.Count == 0)
@@ -872,17 +876,37 @@ public partial class MainWindow
             var z = camera.DepthOf(plane.ZDepth);
             var distance = camera.DistanceTo(z);
             var isSelected = selected != 0 && plane.ClipKey == selected;
-            if (!isSelected && distance > nearest || !camera.HitPlane(point.X, point.Y, z, out var onPlane)
-                || !ExplodedCamera.InBox(onPlane, plane.X, plane.Y, plane.Width, plane.Height, plane.Rotation, plane.AnchorX, plane.AnchorY)
+            if (!isSelected && distance > nearest || !OnExplodedBox(camera, point, plane, z, out var onPlane, out var onDepth)
                 || ExplodedViewOf(plane) is not { } layer)
                 continue;
 
-            (nearest, found, picked, view, hit) = (distance, true, plane, layer, onPlane);
+            (nearest, found, picked, view, hit, depth) = (distance, true, plane, layer, onPlane, onDepth);
             if (isSelected)
                 return true;
         }
 
         return found;
+    }
+
+    /// <summary>
+    /// Whether the ray through an output point meets a plane's box: a flat plane's on its depth, a tilted one's on its tilted plane (5.2C);
+    /// where (canvas pixels) and at what depth.
+    /// </summary>
+    internal static bool OnExplodedBox(in ExplodedCamera camera, Vector2 point, in ExplodedPlane plane, float z, out Vector2 hit, out float depth)
+    {
+        (hit, depth) = (default, z);
+        if (!plane.Tilted)
+        {
+            return camera.HitPlane(point.X, point.Y, z, out hit)
+                && ExplodedCamera.InBox(hit, plane.X, plane.Y, plane.Width, plane.Height, plane.Rotation, plane.AnchorX, plane.AnchorY);
+        }
+
+        if (!camera.HitBox(point.X, point.Y, plane.X, plane.Y, plane.Width, plane.Height, plane.Rotation, plane.AnchorX, plane.AnchorY, z,
+                plane.TiltX, plane.TiltY, out var uv, out var world)
+            || uv.X < 0 || uv.X > 1 || uv.Y < 0 || uv.Y > 1)
+            return false;
+        (hit, depth) = (new Vector2(world.X, world.Y), world.Z);
+        return true;
     }
 
     /// <summary>How near (DIPs) the pointer must be to the selected plane's corner handle to take it.</summary>
@@ -897,7 +921,18 @@ public partial class MainWindow
 
         var camera = _explodedScene.Camera;
         var point = ExplodedOutputPoint(at, _explodedScene.OutputWidth, _explodedScene.OutputHeight);
-        if (!camera.HitPlane(point.X, point.Y, camera.DepthOf(plane.ZDepth), out var onPlane))
+        var z = camera.DepthOf(plane.ZDepth);
+        if (plane.Tilted)
+        {
+            // On its tilted plane (5.2C): the resize reads the pointer's place on the box itself (ResizeExplodedPlane).
+            if (!camera.HitBox(point.X, point.Y, plane.X, plane.Y, plane.Width, plane.Height, plane.Rotation, plane.AnchorX, plane.AnchorY, z,
+                    plane.TiltX, plane.TiltY, out var uv, out _))
+                return false;
+            (picked, view, hit) = (plane, layer, uv);
+            return true;
+        }
+
+        if (!camera.HitPlane(point.X, point.Y, z, out var onPlane))
             return false;
         (picked, view, hit) = (plane, layer, onPlane);
         return true;
@@ -921,10 +956,11 @@ public partial class MainWindow
             if (candidate.BlurFillOnly || candidate.ClipKey != selected)
                 continue;
 
+            // Its box's far corner where it is drawn: on its tilted plane for a tilted one (5.2C).
             var camera = scene.Camera;
-            var far = ExplodedCamera.BoxPoint(candidate.X, candidate.Y, candidate.Width, candidate.Height, candidate.Rotation, candidate.AnchorX, candidate.AnchorY, 1, 1);
-            var on = camera.Project(far.X, far.Y, camera.DepthOf(candidate.ZDepth));
-            if (!float.IsFinite(on.X) || !float.IsFinite(on.Y))
+            var far = ExplodedCamera.OnBox(candidate.X, candidate.Y, candidate.Width, candidate.Height, candidate.Rotation, candidate.AnchorX, candidate.AnchorY,
+                camera.DepthOf(candidate.ZDepth), candidate.TiltX, candidate.TiltY, 1, 1);
+            if (!camera.TryProject(far, out var on))
                 return false;
             var (toX, toY) = (ExplodedLayer.ActualWidth / Math.Max(scene.OutputWidth, 1), ExplodedLayer.ActualHeight / Math.Max(scene.OutputHeight, 1));
             (plane, corner) = (candidate, new Point(on.X * toX, on.Y * toY));
@@ -936,7 +972,8 @@ public partial class MainWindow
 
     /// <summary>
     /// The selected plane's corner handle dragged: the layer grows by the pointer's move on its plane, turned into the box's
-    /// own axes (a turned layer grows along its own sides), as the flat player's handle grows it (ResizeTrackLayer).
+    /// own axes (a turned layer grows along its own sides), as the flat player's handle grows it (ResizeTrackLayer). A tilted
+    /// plane's (5.2C) is read on its tilted plane as it was pressed: the move across and down the box itself.
     /// </summary>
     private void ResizeExplodedPlane(Point at)
     {
@@ -945,6 +982,22 @@ public partial class MainWindow
 
         var camera = _explodedCamera;
         var point = ExplodedOutputPoint(at, camera.OutputWidth, camera.OutputHeight);
+        var (frameWidth, frameHeight) = (Math.Max(_viewModel.FrameWidth, 1), Math.Max(_viewModel.FrameHeight, 1));
+        if (_explodedPlane.Tilted)
+        {
+            var plane = _explodedPlane;
+            if (!camera.HitBox(point.X, point.Y, plane.X, plane.Y, plane.Width, plane.Height, plane.Rotation, plane.AnchorX, plane.AnchorY, _explodedPlaneZ,
+                    plane.TiltX, plane.TiltY, out var uv, out _))
+                return;
+            var across = (uv - _explodedHit) * new Vector2(plane.Width, plane.Height);
+            _explodedHit = uv;
+            if (across == Vector2.Zero || !float.IsFinite(across.X) || !float.IsFinite(across.Y))
+                return;
+            _explodedStep?.Changing();
+            ResizeTrackLayer(view, across.X * (double)frameWidth / camera.CanvasWidth, across.Y * (double)frameHeight / camera.CanvasHeight);
+            return;
+        }
+
         if (!camera.HitPlane(point.X, point.Y, _explodedPlaneZ, out var onPlane))
             return;
 
@@ -956,7 +1009,6 @@ public partial class MainWindow
         var turn = -_explodedPlane.Rotation * MathF.PI / 180;
         var (cos, sin) = (MathF.Cos(turn), MathF.Sin(turn));
         var local = new Vector2(moved.X * cos - moved.Y * sin, moved.X * sin + moved.Y * cos);
-        var (frameWidth, frameHeight) = (Math.Max(_viewModel.FrameWidth, 1), Math.Max(_viewModel.FrameHeight, 1));
         _explodedStep?.Changing();
         ResizeTrackLayer(view, local.X * (double)frameWidth / camera.CanvasWidth, local.Y * (double)frameHeight / camera.CanvasHeight);
     }

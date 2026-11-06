@@ -120,9 +120,15 @@ public static partial class CaptionGenerator
     /// The voice activity detection model, or null to listen to everything. With it, whisper is given only
     /// the stretches that have speech in them, which stops it writing words into the silences.
     /// </param>
-    public static async Task<List<CaptionWord>> TranscribeAsync(
+    public static Task<List<CaptionWord>> TranscribeAsync(
         string wavPath, string modelPath, string language, string prompt, bool translate, string? vadModelPath, CancellationToken cancellationToken,
-        IProgress<double>? progress = null, WhisperOptions? options = null)
+        IProgress<double>? progress = null, WhisperOptions? options = null) =>
+        RunWhisperAsync(wavPath, modelPath, language, prompt, translate, vadModelPath, cancellationToken, progress, options, onProcessor: false);
+
+    /// <param name="onProcessor">Run on the processor whatever is chosen: the graphics card fell over on this very audio.</param>
+    private static async Task<List<CaptionWord>> RunWhisperAsync(
+        string wavPath, string modelPath, string language, string prompt, bool translate, string? vadModelPath, CancellationToken cancellationToken,
+        IProgress<double>? progress, WhisperOptions? options, bool onProcessor)
     {
         var useVad = !string.IsNullOrWhiteSpace(vadModelPath);
         var said = 0;
@@ -162,6 +168,16 @@ public static partial class CaptionGenerator
         // Settings > Performance, "Whisper threads": Auto leaves it to whisper (at most 4). It changes how fast, not what is heard.
         if (AppSettings.Current.WhisperThreads > 0)
             Option("--threads", Math.Clamp(AppSettings.Current.WhisperThreads, 1, 64).ToString(CultureInfo.InvariantCulture));
+
+        // What it runs on (5.2-Arm64AndNpu): whisper uses its graphics back end unless told not to (--no-gpu); the silence
+        // detection runs inside it, on the same one. It changes how fast, not what is heard.
+        var plan = onProcessor
+            ? new SpeechPlan(AppSettings.SpeechOnCpu, true, "On the processor: whisper.exe fell over on the graphics card, so the audio was transcribed again.")
+            : PlanSpeech();
+        if (plan.NoGpu && help.Contains("--no-gpu", StringComparison.Ordinal))
+            arguments.Add("--no-gpu");
+        AppLog.Write($"Auto-Captions: {plan.Why}");
+        var fellOver = false;
         if (useVad)
         {
             if (set.VadThreshold != standard.VadThreshold)
@@ -221,25 +237,135 @@ public static partial class CaptionGenerator
                 .WithStandardErrorPipe(ProcessPipes.Lines(OnLine)),
                 cancellationToken);
 
-            if (result.ExitCode != 0 || !File.Exists(jsonPath))
+            // Crashed (an NTSTATUS, not an exit code of its own) while on the graphics card: transcribed again on the processor,
+            // and Auto keeps to the processor with this build and these drivers (AppSettings.WhisperGpuFailedOn).
+            fellOver = result.ExitCode < 0 && !plan.NoGpu && plan.Device == AppSettings.SpeechOnGpu;
+            if (!fellOver && (result.ExitCode != 0 || !File.Exists(jsonPath)))
                 throw new InvalidOperationException($"whisper.exe exited with code {result.ExitCode}: {string.Join(" | ", lastLines.TakeLast(3))}");
 
-            if (!useVad)
+            if (fellOver)
+            {
+                AppLog.Write(FormattableString.Invariant($"whisper.exe fell over on the graphics card (exit code 0x{result.ExitCode:X8}): {string.Join(" | ", lastLines.TakeLast(3))}"));
+            }
+            else if (!useVad)
+            {
                 return ParseWhisperJson(File.ReadAllText(jsonPath));
-
-            // The word times are on the shortened clock; without knowing where the speech was they cannot
-            // be put back, and captions at the wrong moments are worse than captions in a silence.
-            if (speech.Count > 0)
+            }
+            else if (speech.Count > 0)
+            {
+                // The word times are on the shortened clock; without knowing where the speech was they cannot
+                // be put back, and captions at the wrong moments are worse than captions in a silence.
                 return ParseWhisperJson(File.ReadAllText(jsonPath), (from, to) => ToOriginalWord(speech, from, to));
-
-            AppLog.Write("whisper.exe did not say where the speech was, so the audio was transcribed again without silence detection.");
+            }
+            else
+            {
+                AppLog.Write("whisper.exe did not say where the speech was, so the audio was transcribed again without silence detection.");
+            }
         }
         finally
         {
             File.Delete(jsonPath);
         }
 
-        return await TranscribeAsync(wavPath, modelPath, language, prompt, translate, vadModelPath: null, cancellationToken, progress, options);
+        if (fellOver)
+        {
+            // The card is kept off only once the processor has done the same work: a crash there too was the audio's or the model's.
+            var words = await RunWhisperAsync(wavPath, modelPath, language, prompt, translate, vadModelPath, cancellationToken, progress, options, onProcessor: true);
+            NoteGpuFellOver();
+            return words;
+        }
+
+        return await RunWhisperAsync(wavPath, modelPath, language, prompt, translate, vadModelPath: null, cancellationToken, progress, options, onProcessor);
+    }
+
+    // ----- What whisper runs on (5.2-Arm64AndNpu) -----
+
+    /// <summary>
+    /// Where a transcription runs: <c>Device</c> "npu", "gpu" or "cpu" (AppSettings' SpeechOn names), whether whisper is
+    /// told to keep off the graphics card (--no-gpu), and why, in a sentence (the log, Settings, the Auto-Captions window).
+    /// </summary>
+    public readonly record struct SpeechPlan(string Device, bool NoGpu, string Why);
+
+    /// <summary>
+    /// What a transcription runs on, from the choice (<see cref="AppSettings.CaptionAccelerator"/>) and what is installed.
+    /// Auto: the NPU when a speech build for it is installed (<see cref="DependencyUpdater.NpuSpeechBuildInstalled"/>: none is
+    /// yet), else the graphics card when the whisper.cpp build in use has a back end for one (<see cref="DependencyUpdater.WhisperGpuBackend"/>:
+    /// the Adreno OpenCL build on a Snapdragon PC) that has not fallen over here, else the processor. The NPU chosen without a
+    /// build for it is Auto's choice, said so. The processor is asked for with --no-gpu only where the build has a graphics
+    /// back end or the user chose it: a build that keeps its back ends inside (one set by hand) decides for itself, as before.
+    /// Pure: the golden tests check it (hardware-tier).
+    /// </summary>
+    public static SpeechPlan ChooseSpeechAccelerator(string choice, bool npuBuild, string gpuBackend, bool gpuFellOverHere)
+    {
+        var gpu = gpuBackend.Length > 0;
+        if (choice == AppSettings.SpeechOnCpu)
+            return new(AppSettings.SpeechOnCpu, true, "On the processor, as chosen.");
+        if (choice == AppSettings.SpeechOnGpu)
+        {
+            return gpu
+                ? new(AppSettings.SpeechOnGpu, false, $"On the graphics card ({gpuBackend}), as chosen.")
+                : new(AppSettings.SpeechOnCpu, false, "On the processor: the whisper.cpp build in use shows no graphics back end (it decides for itself).");
+        }
+
+        if (npuBuild)
+            return new(AppSettings.SpeechOnNpu, true, choice == AppSettings.SpeechOnNpu ? "On the NPU, as chosen." : "On the NPU (Auto).");
+
+        // Auto, or the NPU chosen with no build for it: the graphics card, else the processor.
+        var npu = choice == AppSettings.SpeechOnNpu ? " (no speech build for the NPU is installed yet)" : " (Auto)";
+        return gpu && !gpuFellOverHere ? new(AppSettings.SpeechOnGpu, false, $"On the graphics card, whisper's {gpuBackend} back end{npu}.")
+            : gpu ? new(AppSettings.SpeechOnCpu, true, $"On the processor{npu}: whisper's {gpuBackend} back end fell over on this computer before.")
+            : new(AppSettings.SpeechOnCpu, false, $"On the processor{npu}: the whisper.cpp build in use has no graphics back end.");
+    }
+
+    /// <summary>
+    /// What a transcription started now would run on, with <paramref name="choice"/> (the setting in effect when null). A few
+    /// file checks and the cards' list: off the UI thread.
+    /// </summary>
+    public static SpeechPlan PlanSpeech(string? choice = null) =>
+        ChooseSpeechAccelerator(choice ?? AppSettings.Current.CaptionAccelerator, DependencyUpdater.NpuSpeechBuildInstalled, DependencyUpdater.WhisperGpuBackend,
+            AppSettings.Current.WhisperGpuFailedOn.Length > 0 && AppSettings.Current.WhisperGpuFailedOn == GpuStamp());
+
+    // The whisper.exe in use and the cards and drivers there are: what a fall on the graphics card is remembered against.
+    private static string GpuStamp()
+    {
+        var path = DependencyUpdater.WhisperPath;
+        long written;
+        try
+        {
+            written = File.GetLastWriteTimeUtc(path).Ticks;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            written = 0;
+        }
+
+        return string.Create(CultureInfo.InvariantCulture, $"{path}|{written}|{GpuAdapters.Fingerprint}");
+    }
+
+    /// <summary>Remembers (and saves) that whisper fell over on the graphics card with this build and these drivers: Auto keeps to the processor.</summary>
+    private static void NoteGpuFellOver()
+    {
+        var stamp = GpuStamp();
+        void Save()
+        {
+            var settings = AppSettings.Current;
+            settings.WhisperGpuFailedOn = stamp;
+            try
+            {
+                settings.SaveAsCurrent();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                // Remembered for this session.
+                AppLog.Write("The settings could not be saved after whisper fell over on the graphics card", ex);
+            }
+        }
+
+        // Saved on the window's thread, the one that changes the settings' lists: written from here, one could change under the writer.
+        if (System.Windows.Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
+            dispatcher.BeginInvoke(Save);
+        else
+            Save();
     }
 
     private static double Seconds(Group group) => double.Parse(group.Value, CultureInfo.InvariantCulture);

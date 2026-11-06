@@ -1,0 +1,7 @@
+# The chains' latency (5.2C): a processed clip's sound read 512 samples ahead, so it lands on its picture to the sample and keeps its edges.
+Noise Reduction and Studio Voice 512 samples late each, the limiter (5 ms) 239 at 48 kHz, 219 at 44.1 kHz, 479 at 96 kHz: a chain of the three 1263
+two clips cut at 1 s, each with its own Studio Voice keyed to 0: each on a strip of its own, the render from 0 the plain one bit for bit
+the render from 0.5 s (a range's export) and from 0.99 s (the cut 10 ms in): the plain ones bit for bit
+a track's Noise Reduction: lag 0 against the plain render
+a clip's own Noise Reduction after the cut: its first 10 ms within 3 dB of the plain sound, the clip at lag 0
+a limiter at -6 dB the sound never reaches, a track's and each clip's own: the render from 0 and from 0.5 s the plain one bit for bit

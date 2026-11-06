@@ -1,0 +1,6 @@
+# The engine's noise reduction (afftdn's place): steady noise taken down, a tone over it kept, the sound 512 samples late.
+ok: afftdn is the engine's own now: nothing it does not play
+  white noise at -40 dBFS: down by at least 12 dB; a -10 dBFS 1 kHz tone over it: within 1 dB
+ok: steady noise is taken down by 12 dB or more (24 asked)
+ok: a tone well over the noise keeps its level
+ok: the sound comes out 512 samples late (the impulse at 512)

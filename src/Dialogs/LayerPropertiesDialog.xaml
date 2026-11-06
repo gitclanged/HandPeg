@@ -2,33 +2,33 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:HandPegApp"
-        Title="{Binding Name, StringFormat=Layer Properties: {0}}" Width="500" SizeToContent="Height" ResizeMode="NoResize"
+        Title="{Binding Name, StringFormat=Clip Properties: {0}}" Width="500" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
     </Window.Resources>
-    <!-- Bound straight to the layer: every change shows in the command at once. -->
+    <!-- Bound straight to the clip: every change shows in the command at once. -->
     <StackPanel Margin="16">
         <DockPanel Margin="0,0,0,12">
-            <!-- Toggle Visibility: the eye on the layer's row, here too -->
+            <!-- Toggle Visibility: the eye on the clip's track, here too -->
             <Button DockPanel.Dock="Right" Padding="7,4" Margin="12,0,0,0" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Top"
                     Click="Visibility_Click" AutomationProperties.Name="Toggle Visibility" Visibility="{Binding CanHide, Converter={StaticResource BoolToVisibility}}">
                 <Button.Style>
                     <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
                         <Setter Property="Content" Value="&#xE890;" />
-                        <Setter Property="ToolTip" Value="Visible: click to hide this layer from Live Preview, the export and the Canvas." />
+                        <Setter Property="ToolTip" Value="Visible: click to hide this clip from Live Preview, the export and the Canvas." />
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding IsHidden}" Value="True">
                                 <Setter Property="Content" Value="&#xED1A;" />
-                                <Setter Property="ToolTip" Value="Hidden: click to show this layer again." />
+                                <Setter Property="ToolTip" Value="Hidden: click to show this clip again." />
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>
                 </Button.Style>
             </Button>
             <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"
-                       Text="How the layer sits on the picture. Live Preview shows the result as you change it." />
+                       Text="How the clip sits on the picture. Live Preview shows the result as you change it." />
         </DockPanel>
 
         <!-- Shape and transparency: always available -->
@@ -45,20 +45,20 @@
             <TextBlock Text="Corner Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <Slider Grid.Column="1" Minimum="0" Maximum="50" VerticalAlignment="Center"
                     Value="{Binding CornerRadius}" AutomationProperties.Name="Corner Radius" local:NumericInput.Default="0"
-                    ToolTip="Rounds the corners, as a percentage of the layer's shorter side: 0 is square, 50 turns the short sides into half-circles." />
+                    ToolTip="Rounds the corners, as a percentage of the clip's shorter side: 0 is square, 50 turns the short sides into half-circles." />
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding CornerRadius, StringFormat={}{0:0}}" AutomationProperties.Name="Corner Radius Value" local:NumericInput.Default="0" local:NumericInput.DragStep="0.2" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="50" /><TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
 
             <TextBlock Grid.Row="1" Text="Opacity:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="100" VerticalAlignment="Center"
-                    Value="{Binding Opacity}" AutomationProperties.Name="Layer Opacity" local:NumericInput.Default="100"
+                    Value="{Binding Opacity}" AutomationProperties.Name="Clip Opacity" local:NumericInput.Default="100"
                     ToolTip="100 is solid. Lower lets the picture underneath show through, as a watermark does." />
-            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Opacity, StringFormat={}{0:0}}" AutomationProperties.Name="Layer Opacity Value" local:NumericInput.Default="100" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" /><TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
+            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Opacity, StringFormat={}{0:0}}" AutomationProperties.Name="Clip Opacity Value" local:NumericInput.Default="100" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" /><TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
         </Grid>
 
         <!-- Shaping a picture: not for the caption box, which has only its opacity -->
         <StackPanel x:Name="ShapePanel">
         <CheckBox Content="Feather / Blurred Edges" IsChecked="{Binding Feather}"
-                  ToolTip="Fades the layer out towards its edges instead of ending in a hard line." />
+                  ToolTip="Fades the clip out towards its edges instead of ending in a hard line." />
         <Grid IsEnabled="{Binding Feather}" Margin="26,0,0,10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
@@ -68,12 +68,12 @@
             <TextBlock Text="Feather Radius:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <Slider Grid.Column="1" Minimum="1" Maximum="100" VerticalAlignment="Center"
                     Value="{Binding FeatherRadius}" AutomationProperties.Name="Feather Radius" local:NumericInput.Default="12"
-                    ToolTip="Width of the fade, in output pixels. It is held to less than half the layer's size." />
+                    ToolTip="Width of the fade, in output pixels. It is held to less than half the clip's size." />
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding FeatherRadius, StringFormat={}{0:0}}" AutomationProperties.Name="Feather Radius Value" local:NumericInput.Default="12" local:NumericInput.DragStep="0.396" local:NumericInput.Decimals="0" local:NumericInput.Minimum="1" local:NumericInput.Maximum="100" /><TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
         </Grid>
 
         <CheckBox Content="Drop Shadow" IsChecked="{Binding Shadow}"
-                  ToolTip="Lays a copy of the layer's outline underneath it in the shadow's colour: Distance and Angle say where it falls, Softness feathers its edge." />
+                  ToolTip="Lays a copy of the clip's outline underneath it in the shadow's colour: Distance and Angle say where it falls, Softness feathers its edge." />
         <Grid IsEnabled="{Binding Shadow}" Margin="26,0,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
@@ -95,13 +95,13 @@
             <TextBlock Grid.Row="1" Text="Distance:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="100" VerticalAlignment="Center" IsSnapToTickEnabled="True" TickFrequency="1"
                     Value="{Binding ShadowDistance}" AutomationProperties.Name="Shadow Distance" local:NumericInput.Default="14"
-                    ToolTip="How far the shadow falls from the layer, in output pixels." />
+                    ToolTip="How far the shadow falls from the clip, in output pixels." />
             <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowDistance, StringFormat={}{0:0}}" AutomationProperties.Name="Shadow Distance Value" local:NumericInput.Default="14" local:NumericInput.DragStep="0.4" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" /><TextBlock Text="px" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
 
             <TextBlock Grid.Row="2" Text="Angle:" VerticalAlignment="Center" Margin="0,0,12,0" />
             <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="360" VerticalAlignment="Center" IsSnapToTickEnabled="True" TickFrequency="1"
                     Value="{Binding ShadowAngle}" AutomationProperties.Name="Shadow Angle" local:NumericInput.Default="135"
-                    ToolTip="Where the light comes from: 135 degrees lights the layer from the upper left, so the shadow falls right and down; 45 from the upper right." />
+                    ToolTip="Where the light comes from: 135 degrees lights the clip from the upper left, so the shadow falls right and down; 45 from the upper right." />
             <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding ShadowAngle, StringFormat={}{0:0}}" AutomationProperties.Name="Shadow Angle Value" local:NumericInput.Default="135" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="360" /><TextBlock Text="&#x00B0;" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
 
             <TextBlock Grid.Row="3" Text="Softness:" VerticalAlignment="Center" Margin="0,0,12,0" />
@@ -123,23 +123,23 @@
 
         </StackPanel>
 
-        <!-- For the layers added by hand: when the layer is on screen -->
+        <!-- For the clips added by hand: when the clip is on screen -->
         <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="{Binding HasTiming, Converter={StaticResource BoolToVisibility}}">
             <TextBlock Text="Appears at (s):" VerticalAlignment="Center" Margin="0,0,8,0" />
-            <TextBox Style="{StaticResource ValueBox}" Width="62" Text="{Binding StartTime, StringFormat={}{0:0.00}}" AutomationProperties.Name="Layer Start"
+            <TextBox Style="{StaticResource ValueBox}" Width="62" Text="{Binding StartTime, StringFormat={}{0:0.00}}" AutomationProperties.Name="Clip Start"
                      local:NumericInput.Default="0" local:NumericInput.DragStep="0.05" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="86400"
-                     ToolTip="When the layer appears, in seconds from the start of the video. It can also be dragged on the layer's time bar on the Layers tab." />
+                     ToolTip="When the clip appears, in seconds from the start of the Sequence. It can also be dragged on the clip's block on the timeline." />
             <TextBlock Text="Stays for (s):" VerticalAlignment="Center" Margin="20,0,8,0" />
-            <TextBox Style="{StaticResource ValueBox}" Width="62" Text="{Binding Duration, StringFormat={}{0:0.00}}" AutomationProperties.Name="Layer Duration"
+            <TextBox Style="{StaticResource ValueBox}" Width="62" Text="{Binding Duration, StringFormat={}{0:0.00}}" AutomationProperties.Name="Clip Duration"
                      local:NumericInput.Default="0" local:NumericInput.DragStep="0.05" local:NumericInput.Decimals="2" local:NumericInput.Minimum="0" local:NumericInput.Maximum="86400"
-                     ToolTip="How long the layer stays on screen. 0 keeps it until the end of the video." />
+                     ToolTip="How long the clip stays on screen. 0 keeps it until the end of the Sequence." />
             <TextBlock Text="0 = to the end" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
         </StackPanel>
 
-        <!-- For the pictures and videos added by hand: making part of the layer see-through -->
+        <!-- For the pictures and videos added by hand: making part of the clip see-through -->
         <StackPanel Visibility="{Binding HasMask, Converter={StaticResource BoolToVisibility}}" Margin="0,12,0,0">
             <CheckBox Content="Chroma Key" IsChecked="{Binding ChromaKey}" Visibility="{Binding HasKeying, Converter={StaticResource BoolToVisibility}}"
-                      ToolTip="Makes one color of the layer transparent: the green or blue of a screen behind a presenter, or of a game overlay recorded on a plain background." />
+                      ToolTip="Makes one color of the clip transparent: the green or blue of a screen behind a presenter, or of a game overlay recorded on a plain background." />
             <Grid Margin="26,0,0,10" Visibility="{Binding ChromaKey, Converter={StaticResource BoolToVisibility}}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -175,11 +175,11 @@
             </Grid>
 
             <CheckBox Content="Custom Mask" IsChecked="{Binding CustomMask}"
-                      ToolTip="Cuts the layer to a shape of your own: a black-and-white picture stretched over the layer, which shows where the picture is white and is see-through where it is black. Greys are in between. For a HUD of any outline." />
+                      ToolTip="Cuts the clip to a shape of your own: a black-and-white picture stretched over the clip, which shows where the picture is white and is see-through where it is black. Greys are in between. For a HUD of any outline." />
             <DockPanel Margin="26,2,0,0" Visibility="{Binding CustomMask, Converter={StaticResource BoolToVisibility}}">
                 <Button DockPanel.Dock="Right" Content="Browse..." Margin="6,0,0,0" Click="BrowseMask_Click" />
                 <TextBox Text="{Binding MaskPath, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center" AutomationProperties.Name="Mask File"
-                         ToolTip="A .png or .jpg in black and white. It is stretched to the size of the layer." />
+                         ToolTip="A .png or .jpg in black and white. It is stretched to the size of the clip." />
             </DockPanel>
         </StackPanel>
         <Button Content="Close" MinWidth="88" HorizontalAlignment="Right" Margin="0,16,0,0" IsDefault="True" IsCancel="True" />

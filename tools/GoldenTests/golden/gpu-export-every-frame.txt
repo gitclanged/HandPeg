@@ -1,4 +1,4 @@
-# The GPU export of recorders' sources (long key frame intervals, B-frames), every frame against FFmpeg's export.
+# The GPU export of recorders' sources (long key frame intervals, B-frames), every frame against the scene drawn at its moment.
 canvas 640 x 360, 6 s exported at 60 fps; frames compared at 320 x 180, each the same frame as FFmpeg's at 30 dB or better (the game style 20 dB), none held over
   H.264, 60 fps, a key frame every 4 s, B-frames (MP4)
   HEVC, 60 fps, full range, a key frame every 4 s, B-frames (Matroska)

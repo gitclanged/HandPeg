@@ -21,4 +21,15 @@ public sealed partial class AppSettings
     /// For a speaker or headset whose own delay Windows does not report (Bluetooth), measured by eye and ear.
     /// </summary>
     public double AudioSyncOffsetMs { get; set; }
+
+    // ----- Audio beats (Pass 5.2B): Detect & Snap to Audio Beats (BeatDetector, TimelineClip.BeatTimes) -----
+
+    /// <summary>A clip's detected beats are among the times the Timeline snaps to (on by default; a file without the setting reads it on).</summary>
+    public bool SnapToBeats { get; set; } = true;
+
+    /// <summary>A clip with detected beats shows them as faint ticks on its block (on by default).</summary>
+    public bool ShowBeatGrid { get; set; } = true;
+
+    /// <summary>The Master Meter pane is open (5.2B: the meter and the master fader upright, a pane of its own; off to start with).</summary>
+    public bool ShowMasterMeter { get; set; }
 }

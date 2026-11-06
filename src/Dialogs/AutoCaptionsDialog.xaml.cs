@@ -10,15 +10,27 @@ namespace HandPegApp;
 
 /// <summary>
 /// Generate Auto-Captions (4.4): what the Subtitles tab held for making captions, asked where they are made. What to
-/// listen to (the voice clip or the Voice track by default; any track of the main video, any sound clip, a separate
+/// listen to (the voice clip or the Voice track by default; any audio stream of a video clip, any sound clip, a separate
 /// recording or the voiceover), the speech model, the language, translation and words to expect. Nothing is changed until
 /// Generate is pressed: the choices are then handed back for the main window to apply and run, so one click on Generate
-/// makes captions with the defaults.
+/// makes captions with the defaults. What it runs on (the NPU, the graphics card, the processor: 5.2-Arm64AndNpu) is the
+/// setting's (AppSettings.CaptionAccelerator), shown with what it comes to here, and kept when changed.
 /// </summary>
 public partial class AutoCaptionsDialog : Window
 {
     /// <summary>One entry of the Listen To box: a source, or (null) the choice to pick a separate file.</summary>
     private sealed record SourceItem(string Label, CaptionSource? Source);
+
+    /// <summary>One entry of the Runs On box: the setting's value and its name.</summary>
+    private sealed record AcceleratorItem(string Name, string Display);
+
+    private static readonly AcceleratorItem[] Accelerators =
+    [
+        new(AppSettings.SpeechOnAuto, "Auto"),
+        new(AppSettings.SpeechOnNpu, "NPU"),
+        new(AppSettings.SpeechOnGpu, "Graphics Card"),
+        new(AppSettings.SpeechOnCpu, "Processor"),
+    ];
 
     private readonly MainViewModel _viewModel;
     private SourceItem? _lastChosen;
@@ -31,29 +43,23 @@ public partial class AutoCaptionsDialog : Window
     public bool Translate => TranslateBox.IsChecked == true;
     public string Prompt => PromptBox.Text.Trim();
 
-    /// <param name="requested">What was asked for (a track of the main video, a clip with sound), or null for what is set.</param>
+    /// <param name="requested">What was asked for (a video's or a sound's track, a clip with sound), or null for what is set.</param>
     public AutoCaptionsDialog(MainViewModel viewModel, object? requested = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
 
         // A track's or a clip's own menu: all of its audio streams, and nothing else (the user's directive). Otherwise every sound the
-        // timeline can make captions from: the main video's tracks, each sound clip's file and stream once, the voiceover.
+        // timeline can make captions from (5.2-AuditB: a file's streams are its clips' Sub-Lanes): each clip's file and stream once,
+        // the voiceover.
         var items = new List<SourceItem>();
         var scoped = viewModel.CaptionStreamsOf(requested);
         if (scoped is { Count: > 0 })
-        {
             items.AddRange(scoped.Select(Item));
-        }
-        else if (viewModel.HasSource)
-        {
-            foreach (var track in viewModel.AudioTracks)
-                items.Add(Item(new CaptionSource(CaptionSourceKind.MainFile, viewModel.LocalMediaPath, track.Index)));
-        }
 
         if (scoped is not { Count: > 0 })
         {
-            var sounds = viewModel.Layers.Where(l => l is { CarriesSound: true, IsMainVideo: false }).Select(l => viewModel.ResolveCaptionSource(l)).OfType<CaptionSource>();
+            var sounds = viewModel.Layers.Where(l => l.CarriesSound).Select(l => viewModel.ResolveCaptionSource(l)).OfType<CaptionSource>();
             foreach (var source in sounds.Where(s => s.Kind == CaptionSourceKind.Clip).DistinctBy(s => (s.Path.ToUpperInvariant(), s.Stream)))
                 items.Add(Item(source));
 
@@ -78,6 +84,9 @@ public partial class AutoCaptionsDialog : Window
         LanguageBox.SelectedItem = viewModel.WhisperLanguage;
         TranslateBox.IsChecked = viewModel.WhisperTranslate;
         PromptBox.Text = viewModel.WhisperPrompt;
+        AcceleratorBox.ItemsSource = Accelerators;
+        AcceleratorBox.SelectedValue = AppSettings.CaptionAccelerators.Contains(AppSettings.Current.CaptionAccelerator)
+            ? AppSettings.Current.CaptionAccelerator : AppSettings.SpeechOnAuto;
 
         NoteText.Text = viewModel.HasSubtitleCues
             ? "The captions made replace the subtitle track there is now, and what was edited in it."
@@ -120,6 +129,23 @@ public partial class AutoCaptionsDialog : Window
         GenerateButton.IsEnabled = _lastChosen is not null;
     }
 
+    /// <summary>What the choice comes to here (the NPU, the graphics card, the processor) and why, worked out on a pool thread.</summary>
+    private async void Accelerator_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var choice = AcceleratorBox.SelectedValue as string ?? AppSettings.SpeechOnAuto;
+        try
+        {
+            var plan = await Task.Run(() => CaptionGenerator.PlanSpeech(choice));
+            if ((AcceleratorBox.SelectedValue as string ?? AppSettings.SpeechOnAuto) == choice)
+                AcceleratorText.Text = plan.Why;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("What Auto-Captions run on could not be worked out", ex);
+            AcceleratorText.Text = "";
+        }
+    }
+
     private void Generate_Click(object sender, RoutedEventArgs e)
     {
         if (SourceBox.SelectedItem is not SourceItem { Source: { } source })
@@ -129,6 +155,21 @@ public partial class AutoCaptionsDialog : Window
         {
             NoteText.Text = $"The file was not found: {source.Path}";
             return;
+        }
+
+        // A changed choice of what it runs on is kept (the same setting as Settings' GPU & NPU Roles).
+        if (AcceleratorBox.SelectedValue is string chosen && chosen != AppSettings.Current.CaptionAccelerator)
+        {
+            AppSettings.Current.CaptionAccelerator = chosen;
+            try
+            {
+                AppSettings.Current.SaveAsCurrent();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // It holds for this session.
+                AppLog.Write("The Auto-Captions accelerator could not be saved", ex);
+            }
         }
 
         Source = source;

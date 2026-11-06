@@ -1,7 +1,10 @@
+using System.Globalization;
 using System.Text;
 using HandPegApp.Models;
 using HandPegApp.Models.Effects;
 using HandPegApp.Services;
+using HandPegApp.Services.Audio;
+using HandPegApp.Services.Gpu;
 
 namespace HandPegGoldenTests;
 
@@ -13,10 +16,9 @@ public sealed record GraphResult(string Golden, string Text, IReadOnlyList<strin
 }
 
 /// <summary>
-/// The fixtures of FilterGraphBuilder: timelines written in code (neutral paths, files that need not exist), each made into
-/// an export command or a Render Preview command. Exports with sound are also run through the A/V check
-/// (<see cref="AvCheck"/>), and the same timelines through its GPU side (<see cref="GpuAvInvariant"/>: the player has no
-/// graph since 5.0-Verify).
+/// The fixtures of the export: timelines written in code (neutral paths, files that need not exist), each made into an export
+/// (its encode, its GPU scenes, its sound program: 5.2-Audit, no filter graph) or a Render Preview command, and the same
+/// timelines through the A/V check (<see cref="GpuAvInvariant"/>: the GPU scene against the sound engine's program).
 /// </summary>
 public static class GraphCases
 {
@@ -35,7 +37,7 @@ public static class GraphCases
         // ----- Layers -----
         yield return Export(LayersScene(), "export-layers", "Vertical frame: a video clip with sound, a picture (rotated, see-through, a quote in its name), words (quotes, a colon, two lines) and music.");
         yield return Export(RecordingScene(), "export-recording", "A clip of an MPEG-TS recording (its clock starts at 1.4 s), cut into and played at double speed, with its sound.");
-        yield return Export(EffectsScene(), "export-effects", "Effect cards in every zone: a grade with keyframes, a blur over part of the clip, a flip, a chroma key, rounded and soft edges, a shadow, a blend mode; an adjustment layer; the Sequence Output's own effects.");
+        yield return Export(EffectsScene(), "export-effects", "Effects in every zone: a grade with keyframes, a blur over part of the clip, a flip, a chroma key, rounded and soft edges, a shadow, a blend mode; an adjustment clip; the Sequence Output's own effects.");
         yield return Export(KeyframesScene(), "export-keyframes", "Keyframes on place, size, turn and opacity with every kind of easing (closed form, pieced, a custom Bezier), about an anchor point off the middle.");
         yield return Export(TransitionsScene(), "export-transitions", "Fades in and out in each family of style: dissolve, wipe, slide, zoom, blur dissolve; the main video fading too.");
         yield return Export(ParticleSnapScene(), "export-particle-snap", "The Thanos Snap as a filter graph writes it, without the card: grains going in the card's sweep, in place.");
@@ -43,10 +45,10 @@ public static class GraphCases
         yield return Export(HardwareScene(tenBit: false), "export-hardware", "A hardware encoder (h264_nvenc) on an odd-sized 4:4:4 screen recording: the picture ends cropped to even sides and converted to yuv420p with full chroma filtering.");
         yield return Export(HardwareScene(tenBit: true), "export-hardware-10bit", "The same with 10-bit on (hevc_nvenc): the tail ends in p010le.");
         yield return Export(LoopScene(), "export-loop-to-end", "A 2 s video with sound to the end of a 60 s timeline, fading in and out: written as its rounds (4.2.0's loop as clips), read as the one repeating source 4.2.0 made of it.");
-        yield return Export(TrackProcessingScene(), "export-track-processing-scope", "A main track's own processing (5.0-Verify Q1) is that track's alone: the game track ducked, then its gain, compressor and EQ, then the clips' sound mixed in; the microphone's chain on its own stream; the music clip's on itself.");
+        yield return Export(TrackProcessingScene(), "export-track-processing-scope", "A main track's own processing (5.0-Verify Q1; its Sub-Lane's since 5.2-AuditB) is that lane's alone: the game stream ducked, then its gain, compressor and EQ; the microphone's chain on its own stream; the clips' sound and the music clip's on themselves.");
 
         // ----- Render Preview -----
-        yield return Preview(LayersScene(), "preview-layers", "Render Preview of two stretches of the layered timeline at half size.", null);
+        yield return Preview(LayersScene(), "preview-layers", "Render Preview of a stretch of the layered timeline at half size.", null);
         yield return Preview(LayersScene(), "preview-timeline-proxy", "The composed timeline proxy: the same graph, silent, with the proxy encoder.", "-c:v libx264 -preset veryfast -crf 26");
     }
 
@@ -196,8 +198,8 @@ public static class GraphCases
         var game = new TrackAudioFilters { Compressor = true, CompressorThreshold = -18, CompressorRatio = 3, Equalizer = true };
         game.EqualizerGains[2] = 4;
         var mic = new TrackAudioFilters { HighPass = true, HighPassHz = 90, NoiseGate = true, GateThreshold = -40 };
-        scene.AudioTracks.Add(new ExportAudioTrack(0, "Game", "aac", "160k", false, false, AutoDuck: true, IsVoice: false, false, HasProcessing: true, [], game.BuildChain(-3)));
-        scene.AudioTracks.Add(new ExportAudioTrack(1, "Microphone", "aac", "160k", false, false, AutoDuck: false, IsVoice: true, false, HasProcessing: true, [], mic.BuildChain(2)));
+        scene.AudioTracks.Add(new LegacyStream(0, "Game") { AutoDuck = true, GainDb = -3, Filters = game });
+        scene.AudioTracks.Add(new LegacyStream(1, "Microphone") { IsVoice = true, GainDb = 2, Filters = mic });
         scene.AddVideo(1, Clip1, start: 10, duration: 12, offset: 3, place: (0.05, 0.05, 0.4));
         var music = scene.AddSound(2, Music, 0, 60);
         (music.AudioGainDb, music.AutoDuck) = (-8, true);
@@ -229,19 +231,80 @@ public static class GraphCases
     private static GraphResult Export(Scene scene, string golden, string description) =>
         Export(scene.Compile(), scene.Clips.Select(c => c.Media).OfType<Media>(), golden, description);
 
-    /// <summary>An export of a state made by hand (a timeline written as a document), its files given for the A/V check.</summary>
+    /// <summary>
+    /// An export of a state made by hand (a timeline written as a document), as it is made since 5.2-Audit (no filter graph):
+    /// the encode's command, the frames, the GPU scene the compositor is told to draw at a few moments (layer by layer), and the
+    /// sound engine's program (each strip and its voices). Its files are kept for the A/V check, which is the GPU's side alone
+    /// (<see cref="GpuAvInvariant"/>).
+    /// </summary>
     internal static GraphResult Export(SequenceExportState state, IEnumerable<Media> files, string golden, string description)
     {
-        var command = FilterGraphBuilder.BuildExportCommand(state);
-        var graphs = new List<string>();
+        var problems = new List<string>();
         var text = new StringBuilder();
         text.Append("# ").AppendLine(description);
-        text.Append("# reads the cuts list: ").Append(command.UsesCutsFile ? "yes" : "no").Append("; the chapters list: ").AppendLine(command.UsesChaptersFile ? "yes" : "no");
-        text.AppendLine().Append(GoldenText.Command(command.CommandLine, graphs));
+        string? line = null;
+        if (state.CopyVideoEncoder)
+        {
+            var copy = EncoderCommand.BuildCopy(state);
+            line = copy.CommandLine;
+            text.Append("# a Copy export; reads the cuts list: ").Append(copy.UsesCutsFile ? "yes" : "no").Append("; the chapters list: ").AppendLine(copy.UsesChaptersFile ? "yes" : "no");
+            text.AppendLine().Append(GoldenText.Command(copy.CommandLine));
+        }
+        else if (GpuExport.CommandFor(state, out var why) is not { } command)
+        {
+            text.Append("# refused: ").AppendLine(why);
+            problems.Add($"the export was refused: {why}");
+        }
+        else
+        {
+            line = command.CommandLine;
+            var timing = command.Timing;
+            text.Append(CultureInfo.InvariantCulture, $"# {command.Width} x {command.Height}, {timing.OutputFrames} frames at {timing.OutputRate}, {command.PipeFormat} piped; the chapters list: {(command.UsesChaptersFile ? "yes" : "no")}\n");
+            text.AppendLine().Append(GoldenText.Command(command.CommandLine));
+            if (command.Arguments.Any(a => a is "-vf" or "-af" or "-filter_complex" or "-filter:a" or "-filter:v"))
+                problems.Add("the export's command writes a filter graph");
+            Scenes(text, state, timing.CanvasSeconds(timing.CanvasFrames));
+        }
 
-        // The A/V check follows the sequence's clock through the graph, which is the output's.
-        var problems = AvCheck.Check(files, state, graphs, out var moments);
-        return new GraphResult(golden, text.ToString(), problems, moments) { CommandLine = command.CommandLine };
+        Sound(text, state);
+        return new GraphResult(golden, text.ToString(), problems, 0) { CommandLine = line };
+    }
+
+    /// <summary>The GPU scene at the start and in the middle of each clip: each layer as the worker is told it.</summary>
+    private static void Scenes(StringBuilder text, SequenceExportState state, double seconds)
+    {
+        using var broker = new GpuResourceBroker(null, bakeOnCallingThread: true);
+        var plan = GpuScenePlan.Create(state, broker);
+        var layers = new GpuLayerDescriptor[CompositorProtocol.MaxLayers];
+        var infos = new GpuLayerInfo[CompositorProtocol.MaxLayers];
+        // The start and the middle of each clip (at most eight moments): every clip is seen in its scene at least once. (Not the sound
+        // of a Sub-Lane: it lies under its video's clip, whose middle is asked for.)
+        var moments = state.Timeline.Tracks.Where(t => t.StreamOrdinal is null).SelectMany(t => t.Clips).Select(c => Math.Round((c.Start + Math.Min(c.End, seconds)) / 2, 3))
+            .Prepend(0).Where(t => t < seconds).Distinct().Order().Take(8).ToList();
+        foreach (var t in moments)
+        {
+            var header = default(FrameSceneHeader);
+            var on = plan.Evaluate(t + 0.0005, ref header, layers);
+            var described = plan.LayerInfoAt(t + 0.0005, infos);
+            text.Append(CultureInfo.InvariantCulture, $"\nthe scene at {t:0.###} s: {on} layer{(on == 1 ? "" : "s")}\n");
+            for (var i = 0; i < on; i++)
+                text.Append("    ").Append(GpuSceneDifferentialTests.Describe(layers[i], i < described ? infos[i] : default)).Append('\n');
+        }
+    }
+
+    /// <summary>The sound engine's program of the export: its strips (their effects) and voices (where each is heard, from where in its file).</summary>
+    private static void Sound(StringBuilder text, SequenceExportState state)
+    {
+        var program = AudioProgram.Build(state);
+        var plan = ExportSoundPlan.For(state, EncoderCommand.IsPictureOnly(state));
+        text.Append(CultureInfo.InvariantCulture, $"\nthe sound: {plan.Tracks.Count} track{(plan.Tracks.Count == 1 ? "" : "s")} ({string.Join("; ", plan.Tracks.Select(t => t.IsCopy ? $"a:{t.CopyStream} copied" : $"{t.Codec} {t.Layout}"))}), {program.Strips.Count} strips, {program.Voices.Count} voices{(program.FadeIn || program.FadeOut ? ", the sequence's fades" : "")}\n");
+        for (var s = 0; s < program.Strips.Count; s++)
+        {
+            var strip = program.Strips[s];
+            text.Append(CultureInfo.InvariantCulture, $"    {GoldenText.StripKey(strip, state.Timeline)} ({strip.Kind}{(strip.IsVoice ? ", a voice" : "")}{(strip.Ducked ? ", ducked" : "")}): {(strip.Effects.Count == 0 ? "no effects" : string.Join(", ", strip.Effects))}\n");
+            foreach (var voice in program.Voices.Where(v => v.Strip == s))
+                text.Append(CultureInfo.InvariantCulture, $"      {voice.Source} heard {voice.SequenceStart:0.###}-{voice.End:0.###} s from {voice.MediaStart:0.###} s, rate {voice.Rate:0.###}, gain {voice.Gain:0.###}\n");
+        }
     }
 
     /// <summary>
@@ -271,11 +334,13 @@ public static class GraphCases
 
     private static GraphResult Preview(Scene scene, string golden, string description, string? videoEncode)
     {
+        // Render Preview of a stretch (the GPU's since 5.2-Audit: one stretch, the compositor drawing it at the preview's size).
         var state = scene.Compile();
-        var command = FilterGraphBuilder.BuildPreviewCommand(state, "D:/session/previews/preview.mp4", [(10, 14), (60, 62)], 50, null, videoEncode);
+        var timing = GpuExportTiming.Window(10, 14, state.Timeline.FrameRate, EncoderCommand.ParseFrameRate(state.TargetFramerate));
+        var command = EncoderCommand.BuildPreview(state, "D:/session/previews/preview.mp4", timing, 50, hasSound: videoEncode is null, captionsOnGpu: false);
         var text = new StringBuilder();
         text.Append("# ").AppendLine(description);
-        text.AppendLine().Append(GoldenText.Command(command));
-        return new GraphResult(golden, text.ToString(), [], 0) { CommandLine = command };
+        text.AppendLine().Append(GoldenText.Command(command.CommandLine));
+        return new GraphResult(golden, text.ToString(), [], 0) { CommandLine = command.CommandLine };
     }
 }

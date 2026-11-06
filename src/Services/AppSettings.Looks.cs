@@ -29,18 +29,20 @@ public sealed partial class AppSettings
 
     /// <summary>
     /// Whether HandPeg is drawn at Windows' display scaling (125 %, 150 %...), as Windows scales every program. Off (the
-    /// default), it is drawn at the monitor's own pixels, 1:1, with as much more room (UiScale). Settings > General >
-    /// Appearance; applied when the settings are saved.
+    /// default), it is drawn at a scale of its own (UiScale.BasePixelsPerDip, screen-aware since 5.2): 1:1 at the monitor's own
+    /// pixels on a desktop monitor, with as much more room, and about 1920 DIPs across on a high-PPI screen (1.5 pixels a DIP
+    /// on a 2880 x 1800 laptop at 200 %). Settings > General > Appearance; applied when the settings are saved.
     /// </summary>
     public bool FollowWindowsDpiScaling { get; set; }
 
-    /// <summary>HandPeg's own scale on top of that, in percent (75 to 150; 100 as it is drawn). Settings > General > Appearance.</summary>
+    /// <summary>HandPeg's own scale on top of that, in percent (75 to 150; 100 as the setting above draws it). Settings > General > Appearance.</summary>
     public int UiScalePercent { get; set; } = 100;
 
     /// <summary>
-    /// The interface's extra motion and the GPU's visual flair (5.1-AutoHud-Part1). Off, the Timeline's stacks and folds snap in
-    /// 0 ms, and what later passes add (the 3D view's reflections) is skipped. Settings > General >
-    /// Appearance.
+    /// The interface's extra motion (5.1-AutoHud-Part1): short, bounded transitions only (the Timeline's stacks and folds, the
+    /// Cutout Studio's eased zoom). Off, they snap in 0 ms. Since 5.2 nothing decorative hangs off it: the Media pane's tile tilt
+    /// and the 3D view's Studio Stage are gone, and the 3D view's depth rails and gizmo are tools, always shown. Settings >
+    /// General > Appearance.
     /// </summary>
     public bool EnableExtraAnimations { get; set; } = true;
 

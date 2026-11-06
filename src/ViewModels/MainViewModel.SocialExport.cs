@@ -46,7 +46,7 @@ public partial class MainViewModel
             sizeMb = target.SizesMb[0];
 
         using var whole = DeferCommand();
-        var source = GetCroppedSourceSize();
+        var source = GetSequenceSize();
         switch (target.Id)
         {
             case SocialShortForm:
@@ -61,7 +61,7 @@ public partial class MainViewModel
 
             case SocialChat:
             {
-                // The short side capped (720 under 10 MB, 1080 above), never above the source's own.
+                // The short side capped (720 under 10 MB, 1080 above), never above the Sequence's own.
                 var cap = sizeMb <= 10 ? 720 : 1080;
                 if (source is { } size)
                     cap = Math.Min(cap, Even(Math.Min(size.Width, size.Height)));

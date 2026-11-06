@@ -63,10 +63,16 @@ internal struct Matrix4
 
     /// <summary>
     /// The quad's corner (0..1, 0..1) to clip space for a box on a target: scaled to the box, turned about its anchor
-    /// (degrees clockwise, y down), moved into place, then pixels to clip space.
+    /// (degrees clockwise, y down), moved into place, then pixels to clip space. Tilted (5.2A, true 3D: <paramref name="tiltX"/> its
+    /// Pitch, <paramref name="tiltY"/> its Yaw, in degrees), it is also turned out of the frame's plane about its anchor and seen in
+    /// perspective (<see cref="Tilted"/>); untilted, the matrix is the flat one, number for number.
     /// </summary>
-    public static Matrix4 Box(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float targetWidth, float targetHeight)
+    public static Matrix4 Box(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float targetWidth, float targetHeight,
+        float tiltX = 0, float tiltY = 0)
     {
+        if (tiltX != 0 || tiltY != 0)
+            return Tilted(x, y, width, height, rotationDegrees, anchorX, anchorY, targetWidth, targetHeight, tiltX, tiltY);
+
         var radians = rotationDegrees * MathF.PI / 180f;
         var (cos, sin) = (MathF.Cos(radians), MathF.Sin(radians));
         var (ax, ay) = (x + anchorX * width, y + anchorY * height);
@@ -91,6 +97,113 @@ internal struct Matrix4
             M42 = py0 * sy + 1,
             M44 = 1,
         };
+    }
+
+    /// <summary>
+    /// A box turned in 3D (5.2A) and seen in perspective: its local point (u*w - anchorX*w, v*h - anchorY*h, 0) is turned by its Roll in its
+    /// own plane (as the flat box is), swung by its Yaw about the upright axis (its right edge away for a positive one), tilted by its Pitch
+    /// about the horizontal one (its top away), and seen by a camera on the anchor's line a distance D in front of the frame: a point at depth
+    /// z lands at anchor + (x, y) * D / (D + z). As a homogeneous matrix: w' = 1 + z / D, so the card divides and interpolates the quad's uv
+    /// in perspective (VSQuad: nothing else changes). D is 1.2 times the target's diagonal (a moderate lens), further back for a box so
+    /// large that a corner would come near the camera.
+    /// </summary>
+    private static Matrix4 Tilted(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float targetWidth, float targetHeight,
+        float tiltX, float tiltY)
+    {
+        // The corner (u, v) is u * U + v * V + O, each turned: the three columns of the linear map.
+        var (u, v, o) = Turned(width, height, rotationDegrees, anchorX, anchorY, tiltX, tiltY);
+        var (ax, ay) = (x + anchorX * width, y + anchorY * height);
+        var distance = TiltDistance(u, v, o, targetWidth, targetHeight);
+
+        // Clip space: X = sx * px * w' - w', Y = sy * py * w' + w', with px * w' = ax * w' + x, py * w' = ay * w' + y.
+        var (sx, sy) = (2f / targetWidth, -2f / targetHeight);
+        var (wu, wv, wo) = (u.Z / distance, v.Z / distance, 1 + o.Z / distance);
+        var (kx, ky) = (sx * ax - 1, sy * ay + 1);
+        return new Matrix4
+        {
+            M11 = sx * u.X + kx * wu,
+            M12 = sy * u.Y + ky * wu,
+            M14 = wu,
+            M21 = sx * v.X + kx * wv,
+            M22 = sy * v.Y + ky * wv,
+            M24 = wv,
+            M33 = 1,
+            M41 = sx * o.X + kx * wo,
+            M42 = sy * o.Y + ky * wo,
+            M44 = wo,
+        };
+    }
+
+    /// <summary>
+    /// A box's three columns turned in 3D about its anchor (5.2A): its local point (u*w - anchorX*w, v*h - anchorY*h, 0) through its Roll in its
+    /// own plane, its Yaw about the upright axis (its right edge away) and its Pitch about the horizontal one (its top away), each tilt held to
+    /// 89 degrees. The corner (u, v) lies at anchor + u * U + v * V + O, Z its depth away from the viewer. <see cref="Tilted"/> and the 3D exploded
+    /// view's planes (ExplodedCamera.PlaneMatrix, 5.2B) turn a box by these, so the two lay it alike.
+    /// </summary>
+    internal static ((float X, float Y, float Z) U, (float X, float Y, float Z) V, (float X, float Y, float Z) O) Turned(float width, float height,
+        float rotationDegrees, float anchorX, float anchorY, float tiltX, float tiltY)
+    {
+        var roll = rotationDegrees * MathF.PI / 180f;
+        var yaw = Math.Clamp(tiltY, -89f, 89f) * MathF.PI / 180f;
+        var pitch = Math.Clamp(tiltX, -89f, 89f) * MathF.PI / 180f;
+        var (cosR, sinR) = (MathF.Cos(roll), MathF.Sin(roll));
+        var (cosY, sinY) = (MathF.Cos(yaw), MathF.Sin(yaw));
+        var (cosP, sinP) = (MathF.Cos(pitch), MathF.Sin(pitch));
+
+        // A local vector (y down) through the three turns: roll in the plane, yaw about the upright axis, pitch about the horizontal one.
+        (float X, float Y, float Z) Turn(float lx, float ly)
+        {
+            var (x1, y1) = (lx * cosR - ly * sinR, lx * sinR + ly * cosR);
+            var (x2, z2) = (x1 * cosY, x1 * sinY);
+            return (x2, y1 * cosP + z2 * sinP, -y1 * sinP + z2 * cosP);
+        }
+
+        return (Turn(width, 0), Turn(0, height), Turn(-anchorX * width, -anchorY * height));
+    }
+
+    // The distance a tilted box is seen from (Tilted): 1.2 times the target's diagonal, further back for a box so large that a corner would come near.
+    private static float TiltDistance(in (float X, float Y, float Z) u, in (float X, float Y, float Z) v, in (float X, float Y, float Z) o, float targetWidth, float targetHeight)
+    {
+        var deepest = MathF.Max(MathF.Max(MathF.Abs(o.Z), MathF.Abs(o.Z + u.Z)), MathF.Max(MathF.Abs(o.Z + v.Z), MathF.Abs(o.Z + u.Z + v.Z)));
+        return MathF.Max(1.2f * MathF.Sqrt(targetWidth * targetWidth + targetHeight * targetHeight), 1.5f * deepest + 1);
+    }
+
+    /// <summary>
+    /// The four corners (TL, TR, BR, BL) of a box, in the target's pixels, as Box/Tilted lay them (perspective divided); untilted it is the
+    /// flat turned box (5.2B, the user's Q4: the Canvas's and the player's outlines and handles of a tilted clip follow its picture).
+    /// </summary>
+    internal static (float X, float Y)[] Corners(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY,
+        float targetWidth, float targetHeight, float tiltX = 0, float tiltY = 0)
+    {
+        var corners = new (float X, float Y)[4];
+        var (ax, ay) = (x + anchorX * width, y + anchorY * height);
+        if (tiltX == 0 && tiltY == 0)
+        {
+            // As Box turns it: the local point about the anchor, turned clockwise in a y-down frame.
+            var radians = rotationDegrees * MathF.PI / 180f;
+            var (cos, sin) = (MathF.Cos(radians), MathF.Sin(radians));
+            for (var k = 0; k < 4; k++)
+            {
+                var (lx, ly) = (((k is 1 or 2) ? 1 : 0) * width - anchorX * width, (k >= 2 ? 1 : 0) * height - anchorY * height);
+                corners[k] = (ax + lx * cos - ly * sin, ay + lx * sin + ly * cos);
+            }
+
+            return corners;
+        }
+
+        // As Tilted sees it: a point at depth z lands at anchor + (x, y) * D / (D + z), D its distance (never behind the eye: the depth is held
+        // short of it, as no corner of a box Tilted draws comes so near).
+        var (u, v, o) = Turned(width, height, rotationDegrees, anchorX, anchorY, tiltX, tiltY);
+        var distance = TiltDistance(u, v, o, Math.Max(targetWidth, 1), Math.Max(targetHeight, 1));
+        for (var k = 0; k < 4; k++)
+        {
+            var (cu, cv) = ((k is 1 or 2) ? 1f : 0f, k >= 2 ? 1f : 0f);
+            var (px, py, pz) = (cu * u.X + cv * v.X + o.X, cu * u.Y + cv * v.Y + o.Y, cu * u.Z + cv * v.Z + o.Z);
+            var scale = distance / Math.Max(distance + pz, distance * 0.05f);
+            corners[k] = (ax + px * scale, ay + py * scale);
+        }
+
+        return corners;
     }
 }
 

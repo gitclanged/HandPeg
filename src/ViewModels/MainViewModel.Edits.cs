@@ -5,12 +5,12 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// The time bars' edits beyond moving a clip and trimming its end (see TimelineTrack): trimming its start, ripple (the
+// The time bars' edits beyond moving a clip and trimming its end (see UnifiedTimelineControl): trimming its start, ripple (the
 // later clips follow), roll (two clips' cut moved together), slip (what of its file a clip plays), ripple delete; a
 // clip's gain line; its fades and their transition styles (picture and sound); crossfades between clips that meet on a
 // track and between clips on separate tracks that overlap; and solo as a set of tracks. Each is an edit of the timeline
-// document (Edit, 4.3C), the main video's clips the same as any other: no track is privileged. The video's own audio
-// tracks keep their own edits (the Audio tab's).
+// document (Edit, 4.3C), every clip the same as any other: no track is privileged (5.2-AuditB: a file's streams are Sub-Lanes
+// of clips, edited as any clip is).
 public partial class MainViewModel
 {
     /// <summary>
@@ -398,69 +398,45 @@ public partial class MainViewModel
             $"Crossfade of {seconds:0.##} s between {(atStart ? other.Name : clip.Name)} and {(atStart ? clip.Name : other.Name)}, across separate tracks"));
     }
 
-    // ----- Solo: a set of tracks -----
-
-    private readonly HashSet<AudioTrack> _soloed = [];
-    private bool _applyingSolo;
-
-    /// <summary>The video's audio tracks played on their own: none, one (the player plays it), or several (mixed live without the rest).</summary>
-    public IReadOnlyCollection<AudioTrack> SoloedTracks => _soloed;
+    // ----- Solo: a set of tracks (5.2-AuditB: the document's, TimelineTrackModel.IsSoloed) -----
 
     /// <summary>
-    /// A track's Solo button: the track joins the set of those played on their own, or leaves it. Alt-click (or Settings,
-    /// Solo is exclusive) plays it alone, the others' solo going off; pressed again, it goes off too.
+    /// The tracks played on their own: none, one or several. While any is, the preview's sound engine hears only them (and the
+    /// Sub-Lanes under them), and no voiceover; an export hears everything.
+    /// </summary>
+    public IReadOnlyList<TimelineTrackModel> SoloedTracks => Document.Tracks.Where(t => t.IsSoloed).ToList();
+
+    /// <summary>
+    /// A track's Solo button (a row: its track): the track joins the set of those played on their own, or leaves it. Alt-click (or
+    /// Settings, Solo is exclusive) plays it alone, the others' solo going off; pressed again, it goes off too. With no row, every
+    /// solo goes off. One step of Undo.
     /// </summary>
     [CommunityToolkit.Mvvm.Input.RelayCommand]
-    private void ToggleSolo(AudioTrack? track)
+    private void ToggleSolo(Layer? row)
     {
         var alone = AppSettings.Current.SoloIsExclusive || Keyboard.Modifiers.HasFlag(ModifierKeys.Alt);
-        if (track is null)
+        var track = TrackOfRow(row);
+        var soloed = Document.Tracks.Where(t => t.IsSoloed).ToList();
+        if (track is null && soloed.Count == 0)
+            return;
+
+        var only = track is not null && soloed.Count == 1 && ReferenceEquals(soloed[0], track);
+        var on = track is not null && (alone ? !only : !track.IsSoloed);
+        if (!Edit(track is null ? "take every solo off" : on ? $"solo {track.DisplayName}" : $"take the solo off {track.DisplayName}", edit =>
+            {
+                foreach (var other in soloed.Where(t => track is null || (alone && !ReferenceEquals(t, track))))
+                    edit.SetTrack(other, soloed: false);
+                if (track is not null)
+                    edit.SetTrack(track, soloed: on);
+            }))
         {
-            _soloed.Clear();
-        }
-        else if (alone)
-        {
-            var only = _soloed.Count == 1 && _soloed.Contains(track);
-            _soloed.Clear();
-            if (!only)
-                _soloed.Add(track);
-        }
-        else if (!_soloed.Remove(track))
-        {
-            _soloed.Add(track);
+            return;
         }
 
-        ApplySolo();
-    }
-
-    /// <summary>Puts the set of soloed tracks into effect: the buttons, the player's track (one) or the live mix (several).</summary>
-    private void ApplySolo()
-    {
-        _applyingSolo = true;
-        try
-        {
-            SoloTrack = _soloed.Count == 1 ? _soloed.First() : null;
-        }
-        finally
-        {
-            _applyingSolo = false;
-        }
-
-        foreach (var track in AudioTracks)
-            track.IsSolo = _soloed.Contains(track);
         OnPropertyChanged(nameof(SoloedTracks));
-        InvalidateLiveFilter();
-        if (_soloed.Count > 1)
-            StatusText = $"Playing {string.Join(", ", _soloed.Select(t => t.Title))} together, without the rest. Alt-click a track's button to hear it alone.";
-    }
-
-    /// <summary>The live state with only the soloed tracks' sound, while several are soloed: the rest is left out of the mix.</summary>
-    private SequenceExportState Soloed(SequenceExportState state)
-    {
-        if (_soloed.Count < 2)
-            return state;
-
-        var indexes = _soloed.Select(t => t.Index).ToHashSet();
-        return state with { AudioTracks = [.. state.AudioTracks.Where(t => indexes.Contains(t.Index))], MixClipSound = false, IncludeVoiceover = false };
+        var now = SoloedTracks;
+        StatusText = now.Count == 0 ? "Every track is heard again."
+            : now.Count == 1 ? $"Playing {now[0].DisplayName} on its own. Press its button again to stop; click another's to hear them together (Alt-click: alone)."
+            : $"Playing {string.Join(", ", now.Select(t => t.DisplayName))} together, without the rest. Alt-click a track's button to hear it alone.";
     }
 }

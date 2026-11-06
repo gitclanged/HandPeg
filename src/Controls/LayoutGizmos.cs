@@ -10,20 +10,35 @@ using System.Windows.Shapes;
 
 namespace HandPegApp;
 
+/// <summary>A corner of a clip's box, in the order its corners are listed (<see cref="LayerGizmoAdorner.TiltedCorners"/>).</summary>
+internal enum GripCorner
+{
+    TopLeft,
+    TopRight,
+    BottomRight,
+    BottomLeft,
+}
+
 /// <summary>
-/// The handles on a layer's box in the layout pane (and, 4.1.1-B, over the player): the resize grip on its bottom-right
+/// The handles on a clip's box in the layout pane (and, 4.1.1-B, over the player): the resize grip on its bottom-right
 /// corner, the rotation handle on a stalk above its top edge, and its anchor point (the dot it turns and grows about).
 /// Living in the adorner layer, they follow the box wherever it is moved and however it is turned, and lie above every
 /// box. A stalk that would stand outside the surface the box is on (a box at the top of the frame) is turned down into
 /// the box instead, so the handle can always be reached. While the handle is dragged, a ring round the anchor point
-/// and the angle in degrees are shown.
+/// and the angle in degrees are shown. A tilted clip's (5.2C, the user's Q4: <see cref="TiltedCorners"/>) grips are on the
+/// corners its picture is drawn at, all four of them (Pass 5.2D, the user's Q3: any corner of a tilted
+/// clip can be taken), and its stalk stands off its drawn top edge; a grip's drag is told as that corner of the flat box would
+/// have moved (<see cref="FlatDelta"/>). A flat clip keeps its one bottom-right grip.
 /// </summary>
 internal sealed class LayerGizmoAdorner : Adorner
 {
     private const double Stalk = 22;
 
     private readonly VisualCollection _visuals;
-    private readonly Thumb _grip, _turn, _anchor;
+    private readonly Thumb _turn, _anchor;
+
+    // A grip on each corner, in GripCorner's order: only the bottom right one is shown on a flat clip.
+    private readonly Thumb[] _grips = new Thumb[4];
     private readonly Line _stalk;
     private readonly Ellipse _ring;
     private readonly Border _readout;
@@ -31,10 +46,10 @@ internal sealed class LayerGizmoAdorner : Adorner
     private readonly Func<Point> _anchorAt;
     private bool _turning;
 
-    /// <summary>The corner grip dragged, with the distance moved in screen units.</summary>
-    public event DragDeltaEventHandler? ResizeDelta;
+    /// <summary>A corner grip dragged: which corner, and how far that corner of the flat box moved (its own frame, in screen units).</summary>
+    public event Action<GripCorner, Vector>? ResizeDelta;
 
-    public event DragStartedEventHandler? ResizeStarted;
+    public event Action<GripCorner>? ResizeStarted;
 
     /// <summary>The rotation handle dragged: the pointer is read by the window, against the anchor point.</summary>
     public event Action? TurnStarted;
@@ -58,12 +73,26 @@ internal sealed class LayerGizmoAdorner : Adorner
             IsHitTestVisible = false, Visibility = Visibility.Collapsed,
         };
 
-        _grip = new Thumb { Style = gripStyle, Cursor = Cursors.SizeNWSE, ToolTip = "Drag to resize about the anchor point. Ctrl: the opposite corner stays where it is." };
-        System.Windows.Automation.AutomationProperties.SetName(_grip, $"Resize {name}");
-        _grip.DragDelta += (_, e) => ResizeDelta?.Invoke(this, e);
-        _grip.DragStarted += (_, e) => ResizeStarted?.Invoke(this, e);
+        // The bottom right grip is the one a flat clip has always had (its name and words as they were); the other three are a tilted clip's.
+        for (var k = 0; k < _grips.Length; k++)
+        {
+            var corner = (GripCorner)k;
+            var words = CornerWords(corner);
+            var grip = _grips[k] = new Thumb
+            {
+                Style = gripStyle,
+                Cursor = corner is GripCorner.TopLeft or GripCorner.BottomRight ? Cursors.SizeNWSE : Cursors.SizeNESW,
+                ToolTip = corner == GripCorner.BottomRight
+                    ? "Drag to resize about the anchor point. Ctrl: the opposite corner stays where it is."
+                    : $"Drag the {words.ToLowerInvariant()} corner, where the tilted picture is drawn, to resize about the anchor point. Ctrl: the opposite corner stays where it is.",
+                Visibility = corner == GripCorner.BottomRight ? Visibility.Visible : Visibility.Collapsed,
+            };
+            System.Windows.Automation.AutomationProperties.SetName(grip, corner == GripCorner.BottomRight ? $"Resize {name}" : $"Resize {name} from Its {words} Corner");
+            grip.DragDelta += (_, e) => ResizeDelta?.Invoke(corner, Flattened(e, corner));
+            grip.DragStarted += (_, _) => ResizeStarted?.Invoke(corner);
+        }
 
-        _turn = new Thumb { Width = 12, Height = 12, Cursor = Cursors.Hand, Template = RoundTemplate(Brushes.White, Brushes.DodgerBlue), ToolTip = "Drag to turn the layer about its anchor point. Shift: in steps of 15 degrees." };
+        _turn = new Thumb { Width = 12, Height = 12, Cursor = Cursors.Hand, Template = RoundTemplate(Brushes.White, Brushes.DodgerBlue), ToolTip = "Drag to turn the clip about its anchor point. Shift: in steps of 15 degrees." };
         System.Windows.Automation.AutomationProperties.SetName(_turn, $"Rotate {name}");
         _turn.DragStarted += (_, _) =>
         {
@@ -78,14 +107,36 @@ internal sealed class LayerGizmoAdorner : Adorner
             (_ring.Visibility, _readout.Visibility) = (Visibility.Collapsed, Visibility.Collapsed);
         };
 
-        _anchor = new Thumb { Width = 11, Height = 11, Cursor = Cursors.Cross, Template = RoundTemplate(Brushes.Gold, Brushes.Black), ToolTip = "The anchor point: the layer turns and grows about it. Drag it to move it; the layer stays where it is." };
+        _anchor = new Thumb { Width = 11, Height = 11, Cursor = Cursors.Cross, Template = RoundTemplate(Brushes.Gold, Brushes.Black), ToolTip = "The anchor point: the clip turns and grows about it. Drag it to move it; the clip stays where it is." };
         System.Windows.Automation.AutomationProperties.SetName(_anchor, $"Anchor Point of {name}");
         _anchor.DragStarted += (_, _) => AnchorStarted?.Invoke();
         _anchor.DragDelta += (_, _) => AnchorDelta?.Invoke();
 
         _stalk = new Line { Stroke = Brushes.White, StrokeThickness = 1, IsHitTestVisible = false, Opacity = 0.8 };
-        _visuals = new VisualCollection(this) { _ring, _stalk, _grip, _turn, _anchor, _readout };
+        _visuals = new VisualCollection(this) { _ring, _stalk };
+        foreach (var grip in _grips)
+            _visuals.Add(grip);
+        _visuals.Add(_turn);
+        _visuals.Add(_anchor);
+        _visuals.Add(_readout);
     }
+
+    private static string CornerWords(GripCorner corner) => corner switch
+    {
+        GripCorner.TopLeft => "Top Left",
+        GripCorner.TopRight => "Top Right",
+        GripCorner.BottomRight => "Bottom Right",
+        _ => "Bottom Left",
+    };
+
+    /// <summary>Which sides of the box a corner is on: (1, 1) for the bottom right one, (0, 0) for the top left.</summary>
+    internal static (int X, int Y) SidesOf(GripCorner corner) => corner switch
+    {
+        GripCorner.TopLeft => (0, 0),
+        GripCorner.TopRight => (1, 0),
+        GripCorner.BottomRight => (1, 1),
+        _ => (0, 1),
+    };
 
     private static readonly SolidColorBrush ReadoutBack = FrozenBrush(Color.FromArgb(0xD0, 0x10, 0x10, 0x14));
 
@@ -96,7 +147,59 @@ internal sealed class LayerGizmoAdorner : Adorner
         return brush;
     }
 
-    /// <summary>Shows the angle the layer is turned to, beside the rotation handle, while it is dragged.</summary>
+    /// <summary>
+    /// A tilted clip's four corners (top left, top right, bottom right, bottom left) on the surface the box lies on, as its picture is
+    /// drawn (MainWindow.TiltedCorners); null, or a null answer, for a flat clip, whose handles are on its box.
+    /// </summary>
+    public Func<PointCollection?>? TiltedCorners { get; set; }
+
+    // The tilted corners in the box's own (unturned) frame, as the box is placed now; null for a flat clip.
+    private Point[]? LocalCorners(Size size)
+    {
+        if (TiltedCorners?.Invoke() is not { Count: 4 } corners)
+            return null;
+        var (left, top) = (Canvas.GetLeft(AdornedElement), Canvas.GetTop(AdornedElement));
+        if (double.IsNaN(left) || double.IsNaN(top))
+            return null;
+
+        // HandleInside's way back: the surface point less the box's place and its turn about its origin.
+        var origin = new Point(AdornedElement.RenderTransformOrigin.X * size.Width, AdornedElement.RenderTransformOrigin.Y * size.Height);
+        var back = AdornedElement.RenderTransform.Inverse;
+        var local = new Point[4];
+        for (var k = 0; k < 4; k++)
+        {
+            var relative = new Point(corners[k].X - left - origin.X, corners[k].Y - top - origin.Y);
+            var turned = back?.Transform(relative) ?? relative;
+            local[k] = new Point(turned.X + origin.X, turned.Y + origin.Y);
+        }
+
+        return local;
+    }
+
+    private Vector Flattened(DragDeltaEventArgs e, GripCorner corner)
+    {
+        var moved = new Vector(e.HorizontalChange, e.VerticalChange);
+        return LocalCorners(AdornedElement.RenderSize) is { } corners ? FlatDelta(corners, AdornedElement.RenderSize, moved, corner) : moved;
+    }
+
+    /// <summary>
+    /// How far a corner of the flat box (the bottom right one unless <paramref name="corner"/> says another; its own frame) moves for that
+    /// drawn corner of a tilted one to move by <paramref name="moved"/>: the two drawn edges that meet at it (the top or bottom one across,
+    /// the left or right one down), a box's pixel of each, are the corner's two ways (at the corner, perspective is near enough a linear
+    /// map); a flat box's edges are its own, so its move is the move. A box seen edge on keeps the move as it is.
+    /// </summary>
+    internal static Vector FlatDelta(Point[] corners, Size size, Vector moved, GripCorner corner = GripCorner.BottomRight)
+    {
+        var (right, bottom) = SidesOf(corner);
+        var across = (bottom == 1 ? corners[2] - corners[3] : corners[1] - corners[0]) / Math.Max(size.Width, 1);
+        var down = (right == 1 ? corners[2] - corners[1] : corners[3] - corners[0]) / Math.Max(size.Height, 1);
+        var determinant = across.X * down.Y - across.Y * down.X;
+        if (Math.Abs(determinant) < 0.05)
+            return moved;
+        return new Vector((moved.X * down.Y - moved.Y * down.X) / determinant, (across.X * moved.Y - across.Y * moved.X) / determinant);
+    }
+
+    /// <summary>Shows the angle the clip is turned to, beside the rotation handle, while it is dragged.</summary>
     public void ShowAngle(double degrees)
     {
         _readoutText.Text = degrees.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "\u00B0";
@@ -109,7 +212,7 @@ internal sealed class LayerGizmoAdorner : Adorner
     /// the box lies on). Worked out from the box's place and turn as they are set, not as last laid out: the box is
     /// placed (Canvas.Left/Top) just before this adorner is told to lay itself out again.
     /// </summary>
-    private bool HandleInside(Size size)
+    private bool HandleInside(Size size, Point tip)
     {
         if (VisualTreeHelper.GetParent(AdornedElement) is not FrameworkElement { ActualWidth: > 0, ActualHeight: > 0 } surface)
             return false;
@@ -119,7 +222,6 @@ internal sealed class LayerGizmoAdorner : Adorner
             return false;
 
         var origin = new Point(AdornedElement.RenderTransformOrigin.X * size.Width, AdornedElement.RenderTransformOrigin.Y * size.Height);
-        var tip = new Point(size.Width / 2, -Stalk - 7);
         var turned = AdornedElement.RenderTransform.Transform(new Point(tip.X - origin.X, tip.Y - origin.Y));
         var (x, y) = (left + origin.X + turned.X, top + origin.Y + turned.Y);
         return x < 0 || y < 0 || x > surface.ActualWidth || y > surface.ActualHeight;
@@ -142,8 +244,10 @@ internal sealed class LayerGizmoAdorner : Adorner
 
     protected override Size MeasureOverride(Size constraint)
     {
-        foreach (var thumb in new[] { _grip, _turn, _anchor })
-            thumb.Measure(constraint);
+        foreach (var grip in _grips)
+            grip.Measure(constraint);
+        _turn.Measure(constraint);
+        _anchor.Measure(constraint);
         _stalk.Measure(constraint);
         _ring.Measure(constraint);
         _readout.Measure(constraint);
@@ -153,23 +257,46 @@ internal sealed class LayerGizmoAdorner : Adorner
     protected override Size ArrangeOverride(Size finalSize)
     {
         var size = AdornedElement.RenderSize;
-        _grip.Arrange(new Rect(size.Width - _grip.Width / 2, size.Height - _grip.Height / 2, _grip.Width, _grip.Height));
 
-        // Above the top edge, or (with no room there) turned down into the box: never further in than a quarter of it,
-        // so it keeps clear of the anchor point in the middle.
-        var handleY = HandleInside(size) ? Math.Min(Stalk, Math.Max(size.Height * 0.25, 9)) : -Stalk;
-        _turn.Arrange(new Rect(size.Width / 2 - _turn.Width / 2, handleY - _turn.Height / 2, _turn.Width, _turn.Height));
-        (_stalk.X1, _stalk.Y1, _stalk.X2, _stalk.Y2) = (size.Width / 2, 0, size.Width / 2, handleY - Math.Sign(handleY) * _turn.Height / 2);
+        // The grips' corners and the top edge the stalk stands off: the box's (its bottom right grip alone), or a tilted clip's as its
+        // picture is drawn (5.2C), a grip on each of its four corners.
+        var corners = LocalCorners(size);
+        var (edgeFrom, edgeTo) = corners is null ? (new Point(0, 0), new Point(size.Width, 0)) : (corners[0], corners[1]);
+        for (var k = 0; k < _grips.Length; k++)
+        {
+            var grip = _grips[k];
+            var shown = corners is not null || (GripCorner)k == GripCorner.BottomRight;
+            grip.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+            if (!shown)
+                continue;
+
+            var at = corners?[k] ?? new Point(size.Width, size.Height);
+            grip.Arrange(new Rect(at.X - grip.Width / 2, at.Y - grip.Height / 2, grip.Width, grip.Height));
+        }
+
+        // Off the top edge's middle, away from the box (the edge's normal, turned to point away from the box's middle), or (with no room
+        // there) turned down into the box: never further in than a quarter of it, so it keeps clear of the anchor point in the middle.
+        var middle = new Point((edgeFrom.X + edgeTo.X) / 2, (edgeFrom.Y + edgeTo.Y) / 2);
+        var edge = edgeTo - edgeFrom;
+        var outward = edge.Length > 1e-6 ? new Vector(edge.Y, -edge.X) / edge.Length : new Vector(0, -1);
+        var centre = corners is null ? new Point(size.Width / 2, size.Height / 2) : new Point(corners.Average(c => c.X), corners.Average(c => c.Y));
+        if (Vector.Multiply(middle - centre, outward) < 0)
+            outward = -outward;
+        var reach = HandleInside(size, middle + outward * (Stalk + 7)) ? -Math.Min(Stalk, Math.Max(size.Height * 0.25, 9)) : Stalk;
+        var handle = middle + outward * reach;
+        _turn.Arrange(new Rect(handle.X - _turn.Width / 2, handle.Y - _turn.Height / 2, _turn.Width, _turn.Height));
+        var stalkEnd = handle - outward * Math.Sign(reach) * _turn.Height / 2;
+        (_stalk.X1, _stalk.Y1, _stalk.X2, _stalk.Y2) = (middle.X, middle.Y, stalkEnd.X, stalkEnd.Y);
         _stalk.Arrange(new Rect(0, 0, Math.Max(size.Width, 1), Math.Max(size.Height, 1)));
         var anchor = _anchorAt();
         var anchorPoint = new Point(anchor.X * size.Width, anchor.Y * size.Height);
         _anchor.Arrange(new Rect(anchorPoint.X - _anchor.Width / 2, anchorPoint.Y - _anchor.Height / 2, _anchor.Width, _anchor.Height));
 
         // While turning: the ring the handle goes round, about the anchor point, and the angle beside the handle.
-        var radius = Math.Max(Math.Sqrt(Math.Pow(size.Width / 2 - anchorPoint.X, 2) + Math.Pow(handleY - anchorPoint.Y, 2)), 8);
+        var radius = Math.Max((handle - anchorPoint).Length, 8);
         _ring.Arrange(new Rect(anchorPoint.X - radius, anchorPoint.Y - radius, 2 * radius, 2 * radius));
         _readout.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        _readout.Arrange(new Rect(new Point(size.Width / 2 + _turn.Width, handleY - _readout.DesiredSize.Height / 2), _readout.DesiredSize));
+        _readout.Arrange(new Rect(new Point(handle.X + _turn.Width, handle.Y - _readout.DesiredSize.Height / 2), _readout.DesiredSize));
         return finalSize;
     }
 }

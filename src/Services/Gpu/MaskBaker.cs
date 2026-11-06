@@ -5,7 +5,7 @@ using System.Windows.Media.Imaging;
 namespace HandPegApp.Services.Gpu;
 
 /// <summary>
-/// What a layer's mask is baked from, as the graph builder makes it (FilterGraphBuilder.Video.cs BuildMaskSource), step
+/// What a layer's mask is baked from, as the export's graph made it before 5.2-Audit (BuildMaskSource), step
 /// for step: the picture read by its brightness or its transparency, the part of it under the layer cut out, scaled to the
 /// layer's size, turned inside out, grown or shrunk by so many passes, nudged, and its outline softened. All in the
 /// layer's own pixels, as the export builds it.

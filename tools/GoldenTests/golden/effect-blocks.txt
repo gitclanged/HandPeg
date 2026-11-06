@@ -1,0 +1,14 @@
+# An effect's block: locked to its clip's span, or unlocked to a stretch of its own the GPU engine keeps to; its On/Off.
+ok: locked (as it comes): it works over its whole clip
+ok: unlocked: a stretch of its own, at first all of the clip
+ok: its block dragged and trimmed: the stretch it works in
+ok: the GPU engine draws it in its stretch and nowhere else, as FFmpeg's graph gates it
+ok: never past its clip's ends
+ok: its own On/Off: off, it draws nothing
+ok: locked again: its clip's whole span
+ok: taken off its clip from its block
+ok: taken out of its clip
+ok: an Effect Clip over the stretch it was let go at, past its clip's end
+ok: its effect works over all of its clip, each key at the same moment of the sequence
+ok: on a track of its own
+  detached: an Effect Clip from 0.5 s to 11 s, keys at 0.5, 1.5

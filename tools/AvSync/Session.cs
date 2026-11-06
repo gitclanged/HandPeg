@@ -38,7 +38,7 @@ internal static class Session
 
         using var project = ProjectSession.Open(Path.GetFullPath(options.Get("project")), Console.Out);
         project.WaitForFacts(TimeSpan.FromSeconds(90));
-        project.UseProxies(proxies, proxies && options.Has("main-proxy") ? Path.GetFullPath(options.Get("main-proxy")) : null);
+        project.UseProxies(proxies);
         var state = project.State();
 
         using var window = OffscreenWindow.Create((int)options.Number("width", 1280), (int)options.Number("height", 720));
@@ -216,6 +216,21 @@ internal static class Session
         // DWM's vblank grid, last read.
         private long _vblank, _refreshTicks;
 
+        // The pipeline's turns (--dump's .trace.csv, Pass 5.2-Release): a row whenever the newest scene the pump published, the
+        // frames the worker rendered or the viewport's presents change, with the worker's counters then. Publish to render is
+        // the worker's latency, render to present the pump's, and a gap between publishes a pump that did not get its turn.
+        private const int TraceCapacity = 60_000;
+        private readonly TraceRow[] _trace = new TraceRow[TraceCapacity];
+        private int _traced;
+
+        private struct TraceRow
+        {
+            public long Ticks, Published, PresentedSequence, Presents, Seeks, Decoded, Approximate, Misses;
+            public int Rendered, Opens, Busy, Exact, Ahead, DrawDecodes;
+            public float CpuMs, GpuMs, AcquireMs, DrawMs, FlushMs;
+            public double Heard;
+        }
+
         private Sampler(GpuPreviewEngine engine)
         {
             _engine = engine;
@@ -264,6 +279,7 @@ internal static class Session
         {
             var lastPresents = _presents();
             var lastSeen = 0u;
+            var (tracedPublished, tracedRendered, tracedPresents) = (-1L, -1, -1L);
             var (nextClock, nextStatistics, nextDwm) = (0L, 0L, 0L);
             var client = _engine.Client;
             while (!_stop)
@@ -313,8 +329,33 @@ internal static class Session
                     nextDwm = now + Stopwatch.Frequency / 500;
                 }
 
+                var published = NewestPublished(client);
+                ref var control = ref client.Memory.Control;
+                var rendered = Volatile.Read(ref control.FramesRendered);
+                if ((published != tracedPublished || rendered != tracedRendered || presents != tracedPresents) && _traced < TraceCapacity)
+                {
+                    (tracedPublished, tracedRendered, tracedPresents) = (published, rendered, presents);
+                    _trace[_traced++] = new TraceRow
+                    {
+                        Ticks = now, Published = published, Rendered = rendered, PresentedSequence = Volatile.Read(ref control.PresentedSequence), Presents = presents,
+                        CpuMs = control.LastFrameCpuMs, GpuMs = control.LastFrameGpuMs, Busy = control.BusyDecodeThreads, Opens = control.DecoderOpens,
+                        Seeks = control.DecoderSeeks, Decoded = control.DecodedFrames, Approximate = control.ApproximatePresents, Misses = control.CacheMisses,
+                        Exact = control.PresentedExact, Ahead = control.PresentedAhead, Heard = _engine.IsPlaying ? _engine.Audio.Position : double.NaN,
+                        AcquireMs = control.LastAcquireMs, DrawMs = control.LastDrawMs, FlushMs = control.LastFlushMs, DrawDecodes = control.LastDrawDecodes,
+                    };
+                }
+
                 Thread.SpinWait(20);
             }
+        }
+
+        // The newest scene the pump published: the highest sequence of the shared memory's slots.
+        private static long NewestPublished(CompositorClient client)
+        {
+            var newest = 0L;
+            for (var slot = 0; slot < CompositorProtocol.SceneSlots; slot++)
+                newest = Math.Max(newest, Volatile.Read(ref client.Memory.SceneHeader(slot).FrameSequenceNumber));
+            return newest;
         }
 
         // The moment the scene of a sequence was evaluated at: the slot of the shared memory that holds it (three slots: it is
@@ -349,6 +390,16 @@ internal static class Session
             {
                 writer.WriteLine(string.Create(CultureInfo.InvariantCulture,
                     $"{Ms(_presentTicks[i] - origin):0.000},{_presentIds[i]},{_sceneSequences[i]},{_sceneSeconds[i]:0.000000},{(_shownTicks[i] == 0 ? double.NaN : Ms(_shownTicks[i] - origin)):0.000},{SoundAt(_presentTicks[i]) ?? double.NaN:0.000000},{(ShownAt(i, latency) is { } shown ? SoundAt(shown) : null) ?? double.NaN:0.000000}"));
+            }
+
+            // The pipeline's turns, on the same clock.
+            using var trace = new StreamWriter(Path.ChangeExtension(path, ".trace.csv"));
+            trace.WriteLine("ms,published,rendered,presented_seq,presents,worker_cpu_ms,worker_gpu_ms,busy_lanes,opens,seeks,decoded,approximate,misses,exact,ahead,heard_s,acquire_ms,draw_ms,flush_ms,draw_decodes");
+            for (var i = 0; i < _traced; i++)
+            {
+                var row = _trace[i];
+                trace.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                    $"{Ms(row.Ticks - origin):0.000},{row.Published},{row.Rendered},{row.PresentedSequence},{row.Presents},{row.CpuMs:0.###},{row.GpuMs:0.###},{row.Busy},{row.Opens},{row.Seeks},{row.Decoded},{row.Approximate},{row.Misses},{row.Exact},{row.Ahead},{row.Heard:0.000000},{row.AcquireMs:0.###},{row.DrawMs:0.###},{row.FlushMs:0.###},{row.DrawDecodes}"));
             }
         }
 

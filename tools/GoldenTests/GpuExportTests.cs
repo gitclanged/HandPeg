@@ -5,19 +5,21 @@ using System.Text;
 using HandPegApp.Models;
 using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
+using HandPegApp.Services.Gpu;
+using HandPegApp.Services.Audio;
 
 namespace HandPegGoldenTests;
 
 /// <summary>
-/// The GPU export (Pass 5.0-AudioAnd3D, run in 5.0-Verify) against the FFmpeg export of the same timeline.
-/// <para>gpu-export-command, with no worker: the command the GPU export runs (FilterGraphBuilder.BuildGpuExportCommand) for
-/// hand-written states, what is refused and why, and the frames each pair of rates pipes (GpuExportTiming), checked against
-/// FFmpeg's color source and fps filter as they count, frame by frame.</para>
-/// <para>gpu-export, with a real worker and HandPeg's FFmpeg: a main video in two clips with a crossfade, a picture in
-/// picture with place and opacity keys, and a title, exported both ways (lossless: FFV1 and 16-bit PCM in Matroska) at the
-/// timeline's rate, at a lower one and at a higher one. Every frame's PSNR must reach a floor (and their mean another), the
-/// frame counts, the sample counts and the durations must be equal, and the sound must be the FFmpeg export's to 1 LSB. The
-/// measured numbers go to the console (they differ by card and driver).</para>
+/// The export (Pass 5.0-AudioAnd3D, run in 5.0-Verify; since 5.2-Audit the only one: the compositor's frames, the sound engine's
+/// tracks, FFmpeg an encoder and a muxer alone).
+/// <para>gpu-export-command, with no worker: the command the export runs (EncoderCommand) for hand-written states, that no
+/// filter graph is in it, what FFmpeg's graph used to make that is now taken, the sound's tracks and buses, and the frames each
+/// pair of rates pipes (GpuExportTiming), checked against FFmpeg's color source and fps filter as they count, frame by frame.</para>
+/// <para>gpu-export, with a real worker and HandPeg's FFmpeg: a main video in two clips with a crossfade, a picture in picture
+/// with place and opacity keys, and a title, exported losslessly (FFV1 and 16-bit PCM in Matroska) at the timeline's rate: every
+/// frame against the scene the preview draws at its moment, the sound against the engine's render to 1 LSB; then at a lower and a
+/// higher rate, each frame the 30 fps export's frame its slot shows. The measured numbers go to the console.</para>
 /// </summary>
 public static partial class GpuExportTests
 {
@@ -46,17 +48,18 @@ public static partial class GpuExportTests
 
     // ----- The command and the frames, without a worker -----
 
-    /// <summary>gpu-export-command: the commands, the refusals and the frame timing (no worker, no FFmpeg).</summary>
+    /// <summary>gpu-export-command: the commands, what is left to the compositor, and the frame timing (no worker, no FFmpeg).</summary>
     public static GraphResult Commands()
     {
-        var text = new StringBuilder("# The GPU export's FFmpeg command (the export's own, its picture piped), what it refuses, and the frames it pipes.\n");
+        var text = new StringBuilder("# The export's FFmpeg command (5.2-Audit: an encoder and a muxer, the picture piped, the sound the engine's tracks), and the frames it pipes.\n");
         var problems = new List<string>();
         try
         {
             var files = new Files("D:/media/main.mp4", "D:/media/inset.mp4");
 
             // The full timeline: two main clips with a crossfade, a picture in picture, a title; fades, auto-captions, a mixed track.
-            var full = State(Timeline(files), files, "D:/media/out.mkv") with
+            // (A fresh document for each set of streams: the conversion puts them on Sub-Lanes of the document it is given.)
+            SequenceExportState Full(params LegacyStream[] streams) => State(Timeline(files), files, "D:/media/out.mkv", streams) with
             {
                 FfmpegExecutable = "ffmpeg",
                 VideoCodecArguments = "-c:v libx264 -preset medium -crf 18",
@@ -64,13 +67,13 @@ public static partial class GpuExportTests
                 FadeOut = true,
                 AutoCaptions = true,
                 CaptionsFilePath = "D:/media/captions.ass",
-                AudioTracks = [Track("aac", "160k")],
             };
+            var full = Full(Stream("aac", "160k"));
             Describe(text, problems, "the whole timeline, fades, auto-captions", full);
 
             // One clip of the whole file: a hardware encoder's own format, the source's subtitles burned in, chapters at the
-            // markers (an input before the pipe's), another rate.
-            var single = State(SingleClip(files), files, "D:/media/out.mp4") with
+            // markers (an input after the pipe's), another rate.
+            var single = State(SingleClip(files), files, "D:/media/out.mp4", Stream("aac", "160k")) with
             {
                 FfmpegExecutable = "ffmpeg",
                 VideoCodecArguments = "-c:v h264_nvenc -preset p5 -rc vbr -cq 21 -b:v 0 -pix_fmt yuv420p",
@@ -79,59 +82,73 @@ public static partial class GpuExportTests
                 ChaptersAtMarkers = true,
                 ChaptersFilePath = "D:/media/chapters.txt",
                 TargetFramerate = "24",
-                AudioTracks = [Track("aac", "160k")],
             };
             Describe(text, problems, "one whole clip, NVENC, burned subtitles, chapters, 24 fps", single);
 
-            // What is refused, and the words for it.
-            text.Append("\nrefused:\n");
+            // What FFmpeg's graph used to make, the compositor and the sound engine make now: each of these is taken.
+            text.Append("\nonce FFmpeg's, now taken:\n");
             foreach (var (name, state) in new (string, SequenceExportState)[]
                      {
-                         ("Copy", full with { CopyVideoEncoder = true, VideoCodecArguments = "-c:v copy" }),
-                         ("GIF", full with { OutputPath = "D:/media/out.gif", IsAnimatedOutput = true }),
                          ("deinterlaced", full with { Deinterlace = true }),
                          ("tone-mapped", full with { TonemapToSdr = true }),
                          ("burned subtitles on a spliced main video", full with { BurnedSubtitleStreams = [0] }),
-                         ("no known length", full with { MainMediaSeconds = 0 }),
+                         ("no known length", full with { Timeline = Unmeasured(full.Timeline) }),
+                         ("WebP", full with { OutputPath = "D:/media/out.webp", IsAnimatedOutput = true }),
                      })
             {
                 var reason = GpuExport.WhyNot(state);
-                text.Append(CultureInfo.InvariantCulture, $"  {name}: {reason ?? "(taken: wrong)"}\n");
-                if (reason is null)
-                    problems.Add($"the GPU export took a state it cannot draw ({name})");
+                var command = GpuExport.CommandFor(state, out _);
+                text.Append(CultureInfo.InvariantCulture, $"  {name}: {reason ?? "taken"}{(command is null ? "" : $", {command.PipeFormat} piped")}\n");
+                if (reason is not null)
+                    problems.Add($"the export refused what it draws now ({name}: {reason})");
+                if (command is not null && command.Arguments.Any(a => a is "-vf" or "-af" or "-filter_complex" or "-filter:a" or "-filter:v"))
+                    problems.Add($"{name}: the command writes a filter graph");
             }
 
-            if (GpuExport.WhyNot(full) is { } refused)
-                problems.Add($"the GPU export refused the whole timeline: {refused}");
-            if (GpuExport.WhyNot(full with { ColorFilters = ["eq=gamma_r=1.2:gamma_g=1:gamma_b=0.9"] }) is { } balance)
-                problems.Add($"the GPU export refused the colour sliders' channel balance: {balance}");
+            // A GIF is HandPeg's own: no FFmpeg at all.
+            var gif = GpuExport.CommandFor(full with { OutputPath = "D:/media/out.gif", IsAnimatedOutput = true }, out _);
+            text.Append("  GIF: ").Append(gif?.CommandLine ?? "refused").Append('\n');
+            if (gif is not { Encoder: ExportEncoder.Gif, PipeFormat: EncoderCommand.PipeBgra })
+                problems.Add("a GIF is not HandPeg's own encoder's");
 
-            // The sound by the sound engine (5.1-CleanupStudioAndFfmpegPurge): the graph and its maps give way to the rendered file; FFmpeg only encodes it.
-            text.Append("\nthe sound rendered by the engine:\n");
-            if (FilterGraphBuilder.BuildGpuExportCommand(full, false, "D:/session/sound.f32", out var noSound) is { } rendered)
-            {
-                text.Append("  ").Append(rendered.CommandLine.Split(" -vf ")[0]).Append('\n');
-                if (rendered.Arguments.Contains("-filter_complex"))
-                    problems.Add("the rendered sound left FFmpeg's sound graph in the command");
-            }
-            else
-            {
-                problems.Add($"the rendered sound was refused: {noSound}");
-            }
+            // What is still refused: a frame the compositor cannot render.
+            text.Append("\nrefused:\n");
+            var huge = full with { Timeline = Resized(full.Timeline, 9000, 5000) };
+            var refused = GpuExport.WhyNot(huge);
+            text.Append("  a 9000 x 5000 frame: ").Append(refused ?? "(taken: wrong)").Append('\n');
+            if (refused is null)
+                problems.Add("the export took a frame the compositor cannot render");
 
-            text.Append(CultureInfo.InvariantCulture, $"  as it stands: {FilterGraphBuilder.GpuSoundWhyNot(full) ?? "the engine's"}\n");
+            // The sound: the engine's tracks, mixed or kept apart, copied where they are kept as they are, normalized here.
+            text.Append("\nthe sound (each track the engine's render, named by its token until it is made):\n");
             foreach (var (name, state) in new (string, SequenceExportState)[]
                      {
+                         ("as it stands", full),
                          ("normalized", full with { NormalizeAudio = true }),
-                         ("no sound", full with { AudioTracks = [] }),
-                         ("several tracks kept", full with { AudioTracks = [Track("aac", "160k"), Track("aac", "160k")], MergeAudioTracks = false }),
-                         ("a copied track", full with { AudioTracks = [Track("aac", "160k") with { IsPassthrough = true }] }),
+                         ("no sound", Full()),
+                         ("two tracks kept apart", Full(Stream("aac", "160k"), Stream("libopus", "96k") with { Index = 1, Title = "Mic" }) with { MergeAudioTracks = false }),
+                         ("two tracks merged", Full(Stream("aac", "160k"), Stream("aac", "160k") with { Index = 1 }) with { MergeAudioTracks = true }),
+                         ("a 5.1 track as the source has it", Full(Stream("aac", "320k") with { Channels = 6 }) with { AudioChannels = AudioChannelChoice.Source }),
+                         ("a copied track of the whole file", State(SingleClip(files), files, "D:/media/out.mkv", Stream("aac", "160k") with { Passthrough = true }) with { FfmpegExecutable = "ffmpeg" }),
                      })
             {
-                var reason = FilterGraphBuilder.GpuSoundWhyNot(state);
-                text.Append(CultureInfo.InvariantCulture, $"  {name}: {reason ?? "(the engine's: wrong)"}\n");
-                if (reason is null)
-                    problems.Add($"the sound engine took a sound it cannot make ({name})");
+                var command = GpuExport.CommandFor(state, out var why);
+                text.Append(CultureInfo.InvariantCulture, $"  {name}: ");
+                if (command is null)
+                {
+                    text.Append("refused: ").Append(why).Append('\n');
+                    problems.Add($"{name}: refused ({why})");
+                    continue;
+                }
+
+                var tracks = command.Sound;
+                text.Append(tracks.Count == 0 ? "silent" : string.Join("; ", tracks.Select(t => t.IsCopy
+                    ? string.Create(CultureInfo.InvariantCulture, $"a:{t.CopyStream} copied")
+                    : string.Create(CultureInfo.InvariantCulture, $"{t.Codec} {t.Layout} on bus{(t.Buses.Length > 1 ? "es" : "")} {string.Join(",", t.Buses)}"))));
+                var plan = ExportSoundPlan.For(state, false);
+                text.Append(plan.Normalize ? ", normalized to -16 LUFS" : "").Append('\n');
+                var maps = SoundMaps(command.Arguments);
+                text.Append("    ").Append(maps).Append('\n');
             }
 
             // The frames each pair of rates pipes, against FFmpeg's own counting.
@@ -143,7 +160,7 @@ public static partial class GpuExportTests
                      })
             {
                 var micros = (long)Math.Round(double.Parse(seconds.ToString("0.###", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture) * 1_000_000);
-                var rate = FilterGraphBuilder.ParseFrameRate(output);
+                var rate = EncoderCommand.ParseFrameRate(output);
                 var timing = GpuExportTiming.Of(micros, canvas, rate);
                 var first = string.Join(" ", Enumerable.Range(0, (int)Math.Min(timing.OutputFrames, 12)).Select(k => timing.CanvasFrameOf(k).ToString(CultureInfo.InvariantCulture)));
                 text.Append(CultureInfo.InvariantCulture,
@@ -159,39 +176,126 @@ public static partial class GpuExportTests
         return new GraphResult("gpu-export-command", text.ToString(), problems, 0);
     }
 
+    // The sound inputs and maps of a command, as one line.
+    private static string SoundMaps(IReadOnlyList<string> arguments)
+    {
+        var parts = new List<string>();
+        for (var i = 0; i + 1 < arguments.Count; i++)
+        {
+            if ((arguments[i] == "-i" && arguments[i + 1].Contains(EncoderCommand.SoundToken, StringComparison.Ordinal))
+                || (arguments[i] == "-map" && arguments[i + 1].Contains(":a:", StringComparison.Ordinal))
+                || arguments[i].StartsWith("-c:a", StringComparison.Ordinal) || arguments[i].StartsWith("-b:a", StringComparison.Ordinal) || arguments[i] == "-ch_layout")
+            {
+                parts.Add(arguments[i] + " " + arguments[i + 1]);
+            }
+        }
+
+        return parts.Count == 0 ? "(no sound in the command)" : string.Join(" ", parts);
+    }
+
+    private static TimelineDocument Resized(TimelineDocument document, int width, int height)
+    {
+        var copy = document.Clone();
+        (copy.Width, copy.Height) = (width, height);
+        return copy;
+    }
+
+    // The same timeline with no file's length known (5.2-AuditB: the main video's was the state's; now each clip's own).
+    private static TimelineDocument Unmeasured(TimelineDocument document)
+    {
+        var copy = document.Clone(deep: true);
+        foreach (var clip in copy.Tracks.SelectMany(t => t.Clips))
+            (clip.SourceDuration, clip.State.MediaDuration) = (0, 0);
+        return copy;
+    }
+
+    // ----- A Copy export that cannot cut (5.2-Arm64AndNpu, the user's answer 5) -----
+
+    /// <summary>
+    /// copy-export-refused: a Copy export that cannot cut is refused before it starts, with the reason (EncoderCommand.WhyCopyCannotCut,
+    /// which the view model asks before an export or a queued job starts): a Sequence with no clip of a file's picture (nothing to copy),
+    /// one whose file's clips all play at another speed (a stream copy cannot cut them), and an empty one; refused by neither, a file cut
+    /// into clips at speed 1 (a cuts list) and a file whole. No worker, no FFmpeg. Every line says what it proved.
+    /// </summary>
+    public static GraphResult CopyRefusals()
+    {
+        var text = new StringBuilder("# A Copy export that cannot cut is refused before it starts, with the reason (EncoderCommand.WhyCopyCannotCut).\n");
+        var problems = new List<string>();
+        void Expect(bool holds, string what)
+        {
+            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
+            if (!holds)
+                problems.Add(what);
+        }
+
+        try
+        {
+            static TimelineDocument Sequence(params TimelineClip[] clips)
+            {
+                var document = new TimelineDocument { FrameRate = FrameRate.Fps30 };
+                var track = new TimelineTrackModel { Kind = TimelineTrackKind.Video, TrackNumber = 1 };
+                track.Clips.AddRange(clips);
+                document.Tracks.Add(track);
+                return document;
+            }
+
+            static TimelineClip Clip(LayerKind kind, double start, double end, double offset, double speed = 1) => new()
+            {
+                ContentKind = kind, SourcePath = kind == LayerKind.VideoFile ? "D:/media/match.mkv" : "D:/media/logo.png",
+                Start = start, End = end, MediaOffset = offset, Speed = speed, SourceDuration = kind == LayerKind.VideoFile ? 60 : 0,
+                State = new LayerState { Kind = kind, Name = kind == LayerKind.VideoFile ? "match.mkv" : "logo.png" },
+            };
+
+            var nothing = EncoderCommand.WhyCopyCannotCut(Sequence(Clip(LayerKind.Image, 0, 5, 0)));
+            text.Append("a picture alone: ").Append(nothing ?? "(made)").Append('\n');
+            Expect(nothing is not null, "a Sequence with no clip of a file's picture (a picture alone) is refused: there is nothing to copy");
+
+            var speeds = EncoderCommand.WhyCopyCannotCut(Sequence(Clip(LayerKind.VideoFile, 0, 5, 0, 2), Clip(LayerKind.VideoFile, 5, 8, 20, 0.5)));
+            text.Append("the file at other speeds: ").Append(speeds ?? "(made)").Append('\n');
+            Expect(speeds is not null, "a Sequence whose file's clips all play at another speed is refused: a stream copy cannot cut them");
+
+            var empty = EncoderCommand.WhyCopyCannotCut(new TimelineDocument());
+            Expect(empty is not null && empty == nothing, "an empty Sequence is refused as having nothing to copy");
+
+            Expect(EncoderCommand.WhyCopyCannotCut(Sequence(Clip(LayerKind.VideoFile, 0, 5, 10), Clip(LayerKind.VideoFile, 5, 9, 30))) is null,
+                "a file cut into clips at speed 1 is not refused: it is copied through its cuts list");
+            Expect(EncoderCommand.WhyCopyCannotCut(Sequence(Clip(LayerKind.VideoFile, 0, 60, 0))) is null, "a file played whole is not refused: it is copied as it is");
+        }
+        catch (Exception ex)
+        {
+            problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+        }
+
+        return new GraphResult("copy-export-refused", text.ToString(), problems, 0);
+    }
+
     // ----- Render Preview on the GPU (5.0-Verify Q5) -----
 
-    /// <summary>gpu-preview-command: Render Preview's command on the GPU (BuildGpuPreviewCommand) and its stretch's frames (GpuExportTiming.Window); no worker.</summary>
+    /// <summary>gpu-preview-command: Render Preview's command (EncoderCommand.BuildPreview) and its stretch's frames (GpuExportTiming.Window); no worker.</summary>
     public static GraphResult PreviewCommands()
     {
-        var text = new StringBuilder("# Render Preview on the GPU compositor (5.0-Verify Q5): its FFmpeg command (the piped stretch, the sound engine's sound, the preview's finishing) and the frames of its stretch.\n");
+        var text = new StringBuilder("# Render Preview on the GPU compositor (5.0-Verify Q5): its FFmpeg command (the piped stretch at the preview's size, the sound engine's sound) and the frames of its stretch.\n");
         var problems = new List<string>();
         try
         {
             var files = new Files("D:/media/main.mp4", "D:/media/inset.mp4");
-            var state = State(Timeline(files), files, "D:/media/out.mp4") with { FfmpegExecutable = "ffmpeg", AudioTracks = [Track("aac", "160k")] };
-            const string output = "D:/session/previews/preview.mp4", captions = "D:/session/previews/captions_preview.ass", sound = "D:/session/previews/preview.mp4.sound.f32";
-            foreach (var (name, stateOf, from, to, percent, captionsPath, soundPath, first, frames, outputFrames) in new (string, SequenceExportState, double, double, int, string?, string?, long, long, long)[]
+            var state = State(Timeline(files), files, "D:/media/out.mp4", Stream("aac", "160k")) with { FfmpegExecutable = "ffmpeg" };
+            const string output = "D:/session/previews/preview.mp4";
+            foreach (var (name, stateOf, from, to, percent, sound, first, frames, outputFrames) in new (string, SequenceExportState, double, double, int, bool, long, long, long)[]
                      {
-                         ("2 s from 1 s, half size, captions and sound", state, 1, 3, 50, captions, sound, 30, 60, 60),
-                         ("from between two frames (1.01 s): the captions' clock set back to the stretch's start", state, 1.01, 3.01, 50, captions, sound, 31, 60, 60),
-                         ("at 24 fps, full size, silent", state with { TargetFramerate = "24" }, 0.5, 2.5, 100, null, null, 15, 60, 48),
-                         ("past the end (3 to 6 s of a 4 s timeline)", state, 3, 6, 50, null, sound, 90, 30, 30),
+                         ("2 s from 1 s, half size, with sound", state, 1, 3, 50, true, 30, 60, 60),
+                         ("from between two frames (1.01 s)", state, 1.01, 3.01, 50, true, 31, 60, 60),
+                         ("at 24 fps, full size, silent", state with { TargetFramerate = "24" }, 0.5, 2.5, 100, false, 15, 60, 48),
+                         ("past the end (3 to 6 s of a 4 s timeline)", state, 3, 6, 50, true, 90, 30, 30),
                      })
             {
-                var command = FilterGraphBuilder.BuildGpuPreviewCommand(stateOf, output, from, to, percent, captionsPath, soundPath, out var why);
+                var length = TimelineLowering.Lowering(stateOf).SequenceSeconds;
+                var timing = GpuExportTiming.Window(from, Math.Min(to, length), stateOf.Timeline.FrameRate, EncoderCommand.ParseFrameRate(stateOf.TargetFramerate));
+                var command = EncoderCommand.BuildPreview(stateOf, output, timing, percent, sound, captionsOnGpu: false);
                 text.Append(CultureInfo.InvariantCulture, $"\n{name}:\n");
-                if (command is null)
-                {
-                    text.Append("  refused: ").Append(why).Append('\n');
-                    problems.Add($"{name}: refused ({why})");
-                    continue;
-                }
-
-                var timing = command.Timing;
                 var shown = string.Join(" ", Enumerable.Range(0, (int)Math.Min(timing.OutputFrames, 8)).Select(k => timing.CanvasFrameOf(k).ToString(CultureInfo.InvariantCulture)));
                 text.Append(CultureInfo.InvariantCulture,
-                    $"  {command.Width} x {command.Height}: canvas frames {timing.FirstCanvasFrame} on ({timing.CanvasFrames}), {timing.OutputFrames} frames at {timing.OutputRate}: {shown}\n");
+                    $"  {command.Width} x {command.Height} (the {command.CanvasWidth} x {command.CanvasHeight} canvas drawn into it): canvas frames {timing.FirstCanvasFrame} on ({timing.CanvasFrames}), {timing.OutputFrames} frames at {timing.OutputRate}: {shown}\n");
                 text.Append("  ").Append(command.CommandLine).Append('\n');
                 if (timing.FirstCanvasFrame != first || timing.CanvasFrames != frames || timing.OutputFrames != outputFrames)
                     problems.Add(string.Create(CultureInfo.InvariantCulture, $"{name}: frames {timing.FirstCanvasFrame} on ({timing.CanvasFrames}, {timing.OutputFrames} out), not {first} on ({frames}, {outputFrames} out)"));
@@ -200,24 +304,10 @@ public static partial class GpuExportTests
                 var arguments = command.Arguments.ToList();
                 if (arguments.IndexOf("-map") is var map && (map < 0 || arguments[map + 1] != "0:v:0"))
                     problems.Add($"{name}: the picture is not the pipe's");
-                if (soundPath is not null != arguments.Contains("1:a:0"))
+                if (sound != arguments.Contains("1:a:0"))
                     problems.Add($"{name}: the sound is not the rendered file's");
-            }
-
-            // What is refused: the export's reasons, and the source's burned subtitles.
-            text.Append("\nrefused:\n");
-            foreach (var (name, refused) in new (string, SequenceExportState)[]
-                     {
-                         ("the source's burned subtitles", state with { BurnedSubtitleStreams = [0] }),
-                         ("Copy", state with { CopyVideoEncoder = true, VideoCodecArguments = "-c:v copy" }),
-                         ("a stretch past the end", state),
-                     })
-            {
-                var (from, to) = name == "a stretch past the end" ? (5.0, 7.0) : (1.0, 3.0);
-                var command = FilterGraphBuilder.BuildGpuPreviewCommand(refused, output, from, to, 50, null, null, out var why);
-                text.Append(CultureInfo.InvariantCulture, $"  {name}: {(command is null ? why : "(taken: wrong)")}\n");
-                if (command is not null)
-                    problems.Add($"the GPU preview took a stretch it cannot draw ({name})");
+                if (arguments.Any(a => a is "-vf" or "-af" or "-filter_complex"))
+                    problems.Add($"{name}: the preview writes a filter graph");
             }
         }
         catch (Exception ex)
@@ -230,13 +320,13 @@ public static partial class GpuExportTests
 
     /// <summary>
     /// gpu-preview-window, with a real worker and HandPeg's FFmpeg: a 2 s stretch from 1 s of the gpu-export timeline made by
-    /// GpuExport.TryRunPreviewAsync (the view model's way in, on this STA thread: its awaits come back here, as to the UI
-    /// thread), at full size. Its frame count, the moment of its first and last frames (each the FFmpeg export's frame it
-    /// matches best, within 10), and its sound's length.
+    /// GpuExport.RunPreviewAsync (the view model's way in, on this STA thread: its awaits come back here, as to the UI thread), at
+    /// full size, against the export of the whole timeline (5.2-Audit: the export is the GPU's too). Its frame count, the moment of
+    /// its first and last frames (each the export's frame it matches best, within 10), and its sound's length.
     /// </summary>
     public static GraphResult PreviewWindow()
     {
-        var text = new StringBuilder("# Render Preview on the GPU compositor (5.0-Verify Q5): a 2 s stretch of the gpu-export timeline, its frames against the FFmpeg export's.\n");
+        var text = new StringBuilder("# Render Preview on the GPU compositor (5.0-Verify Q5): a 2 s stretch of the gpu-export timeline, its frames against the export's.\n");
         var problems = new List<string>();
         try
         {
@@ -244,31 +334,27 @@ public static partial class GpuExportTests
             var ffmpeg = FindFfmpeg();
             if (ffmpeg is null)
             {
-                Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the GPU preview was not made");
+                Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the GPU preview was not made");
                 return new GraphResult("gpu-preview-window", text.ToString(), problems, 0);
             }
 
             var folder = Path.Combine(Path.GetTempPath(), "HandPeg.GoldenTests.GpuPreview");
             Directory.CreateDirectory(folder);
             var files = MakeMedia(ffmpeg, folder);
-            var state = State(Timeline(files), files, Path.Combine(folder, "reference.mkv")) with
+            var state = State(Timeline(files), files, Path.Combine(folder, "reference.mkv"), Stream("pcm_s16le", "")) with
             {
                 FfmpegExecutable = $"\"{ffmpeg}\"",
                 VideoCodecArguments = "-c:v ffv1 -pix_fmt yuv420p",
-                AudioTracks = [Track("pcm_s16le", "")],
             };
 
-            var reference = FilterGraphBuilder.BuildExportCommand(state);
-            Task.Run(() => FfmpegRunner.RunAsync(reference.CommandLine, new Progress<FfmpegProgress>(), CancellationToken.None, graphInFile: true)).GetAwaiter().GetResult();
-
+            Export(state);
             var preview = Path.Combine(folder, "preview.mp4");
             var clock = Stopwatch.StartNew();
-            var made = OnThisThread(() => GpuExport.TryRunPreviewAsync(state, preview, 1, 3, 100, null, new Progress<FfmpegProgress>(), CancellationToken.None));
-            if (!made)
+            OnThisThread(async () =>
             {
-                problems.Add($"the GPU preview was not made ({GpuExport.WhyNot(state) ?? "its compositor did not start, or could not plan it: the log says"})");
-                return new GraphResult("gpu-preview-window", text.ToString(), problems, 0);
-            }
+                await GpuExport.RunPreviewAsync(state, preview, 1, 3, 100, null, new Progress<FfmpegProgress>(), CancellationToken.None);
+                return true;
+            });
 
             Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        gpu preview: 2 s made in {clock.Elapsed.TotalSeconds:0.00} s"));
             var size = W * H * 3;
@@ -313,7 +399,7 @@ public static partial class GpuExportTests
     /// Runs an asynchronous piece of the view model's on this STA thread as the UI thread runs it: its awaits come back here
     /// (a dispatcher frame pumped until it ends), so what must be on an STA thread (GpuExport.Prepare: WPF draws the titles) is.
     /// </summary>
-    private static T OnThisThread<T>(Func<Task<T>> work)
+    internal static T OnThisThread<T>(Func<Task<T>> work)
     {
         var previous = SynchronizationContext.Current;
         var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
@@ -332,9 +418,17 @@ public static partial class GpuExportTests
         }
     }
 
+    /// <summary>The export of a state as the view model makes it (GpuExport.RunAsync on this STA thread), into its OutputPath.</summary>
+    internal static void Export(SequenceExportState state) =>
+        OnThisThread(async () =>
+        {
+            await GpuExport.RunAsync(state, null, new Progress<FfmpegProgress>(), CancellationToken.None);
+            return true;
+        });
+
     private static void Describe(StringBuilder text, List<string> problems, string name, SequenceExportState state)
     {
-        var command = FilterGraphBuilder.BuildGpuExportCommand(state, out var whyNot);
+        var command = GpuExport.CommandFor(state, out var whyNot);
         text.Append(CultureInfo.InvariantCulture, $"\n{name}:\n");
         if (command is null)
         {
@@ -344,23 +438,13 @@ public static partial class GpuExportTests
         }
 
         var timing = command.Timing;
-        text.Append(CultureInfo.InvariantCulture, $"  {command.Width} x {command.Height}, {timing.OutputFrames} frames at {timing.OutputRate} ({timing.CanvasFrames} on the canvas), chapters file: {command.UsesChaptersFile}\n");
+        text.Append(CultureInfo.InvariantCulture, $"  {command.Width} x {command.Height}, {timing.OutputFrames} frames at {timing.OutputRate} ({timing.CanvasFrames} on the canvas), {command.PipeFormat} piped, chapters file: {command.UsesChaptersFile}\n");
         text.Append("  ").Append(command.CommandLine).Append('\n');
-
-        // The sound is the FFmpeg export's: its whole -filter_complex, every -map but the picture's, every option after them.
-        var export = FfmpegRunner.SplitArguments(FilterGraphBuilder.BuildExportCommand(state with { OpenClBlur = false, HardwareDecodeArguments = "" }).CommandLine[(state.FfmpegExecutable.Length + 1)..]);
-        var graph = Value(export, "-filter_complex");
-        if (graph != Value([.. command.Arguments], "-filter_complex"))
-            problems.Add($"{name}: the sound's graph is not the FFmpeg export's");
-        var pipe = command.Arguments.Count(a => a == "-i") - 1;
-        if (!command.Arguments.Contains(string.Create(CultureInfo.InvariantCulture, $"{pipe}:v:0")) || command.Arguments[^1] != export[^1])
-            problems.Add($"{name}: the picture is not mapped from the pipe (input {pipe}), or the output is not the export's");
-    }
-
-    private static string? Value(List<string> arguments, string option)
-    {
-        var at = arguments.IndexOf(option);
-        return at >= 0 && at + 1 < arguments.Count ? arguments[at + 1] : null;
+        if (command.Arguments.Any(a => a is "-vf" or "-af" or "-filter_complex" or "-filter:a" or "-filter:v"))
+            problems.Add($"{name}: the command writes a filter graph");
+        var arguments = command.Arguments.ToList();
+        if (arguments.IndexOf("pipe:0") is var pipe && (pipe < 0 || arguments.IndexOf("0:v:0") < 0) || arguments[^1] != state.OutputPath)
+            problems.Add($"{name}: the picture is not mapped from the pipe (input 0), or the output is not the export's");
     }
 
     /// <summary>The timing against FFmpeg's counting: the color source's frames (time in microseconds before d) and the fps filter's choice, simulated frame by frame.</summary>
@@ -388,35 +472,45 @@ public static partial class GpuExportTests
         }
     }
 
-    // ----- Both ways, with a worker -----
+    // ----- The export, with a worker -----
 
     private sealed record Variant(string Name, string? Framerate);
 
     private static void Run(StringBuilder text, List<string> problems)
     {
-        Variant[] variants = [new("at the timeline's 30 fps", null), new("at 24 fps (frames the fps filter drops)", "24"), new("at 60 fps (frames it repeats)", "60")];
+        Variant[] variants = [new("at 24 fps (frames the timeline's rate drops)", "24"), new("at 60 fps (frames it repeats)", "60")];
         text.Append(CultureInfo.InvariantCulture, $"timeline: {W} x {H} at {Rate:0} fps, {Seconds:0} s: the main video in two clips (a 1 s crossfade at 2 s), a picture in picture (place and opacity keys), a title\n");
+        text.Append(CultureInfo.InvariantCulture, $"  at the timeline's 30 fps: every frame the scene the preview draws at its moment (at least {FrameFloor:0} dB, on average {MeanFloor:0} dB); the sound the engine's render to 1 LSB\n");
         foreach (var variant in variants)
         {
-            var timing = GpuExportTiming.Of((long)(Seconds * 1_000_000), FrameRate.Fps30, FilterGraphBuilder.ParseFrameRate(variant.Framerate));
-            text.Append(CultureInfo.InvariantCulture, $"  {variant.Name}: {timing.OutputFrames} frames, each at least {FrameFloor:0} dB, on average at least {MeanFloor:0} dB; the sound to 1 LSB\n");
+            var timing = GpuExportTiming.Of((long)(Seconds * 1_000_000), FrameRate.Fps30, EncoderCommand.ParseFrameRate(variant.Framerate));
+            text.Append(CultureInfo.InvariantCulture, $"  {variant.Name}: {timing.OutputFrames} frames, each the 30 fps export's frame its slot shows (at least {SameFrameFloor:0} dB); the sound the same\n");
         }
 
         var ffmpeg = FindFfmpeg();
         if (ffmpeg is null)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the GPU export was not compared");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the GPU export was not made");
             return;
         }
 
         var folder = Path.Combine(Path.GetTempPath(), "HandPeg.GoldenTests.GpuExport");
         Directory.CreateDirectory(folder);
         var files = MakeMedia(ffmpeg, folder);
+        var reference = StateAt(files, folder, null);
+        var clock = Stopwatch.StartNew();
+        Export(reference);
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        the 30 fps export took {clock.Elapsed.TotalSeconds:0.00} s"));
+        AgainstThePreview(ffmpeg, reference, problems);
+        AgainstTheEngine(ffmpeg, reference, problems);
         foreach (var variant in variants)
         {
             try
             {
-                Both(ffmpeg, folder, files, variant, problems);
+                var state = StateAt(files, folder, variant.Framerate);
+                Export(state);
+                AgainstTheReference(ffmpeg, variant.Name, reference.OutputPath, state.OutputPath,
+                    GpuExportTiming.Of((long)(Seconds * 1_000_000), FrameRate.Fps30, EncoderCommand.ParseFrameRate(variant.Framerate)), problems);
             }
             catch (Exception ex)
             {
@@ -425,127 +519,102 @@ public static partial class GpuExportTests
         }
     }
 
-    /// <summary>One variant exported by FFmpeg's graph, then by the GPU compositor with the same command's sound, and the two compared.</summary>
-    private static void Both(string ffmpeg, string folder, Files files, Variant variant, List<string> problems)
-    {
-        var slug = variant.Framerate ?? "same";
-        var state = State(Timeline(files), files, Path.Combine(folder, $"ffmpeg-{slug}.mkv")) with
+    /// <summary>The PSNR (dB) an export at another rate must reach against the frame of the 30 fps export it shows: the same frame, encoded losslessly.</summary>
+    private const double SameFrameFloor = 45;
+
+    private static SequenceExportState StateAt(Files files, string folder, string? framerate) =>
+        State(Timeline(files), files, Path.Combine(folder, $"gpu-{framerate ?? "same"}.mkv"), Stream("pcm_s16le", "")) with
         {
-            FfmpegExecutable = $"\"{ffmpeg}\"",
+            FfmpegExecutable = $"\"{FindFfmpeg()}\"",
             VideoCodecArguments = "-c:v ffv1 -pix_fmt yuv420p",
-            TargetFramerate = variant.Framerate,
-            AudioTracks = [Track("pcm_s16le", "")],
+            TargetFramerate = framerate,
         };
 
-        // FFmpeg's graph.
-        var command = FilterGraphBuilder.BuildExportCommand(state);
-        Task.Run(() => FfmpegRunner.RunAsync(command.CommandLine, new Progress<FfmpegProgress>(), CancellationToken.None, graphInFile: true)).GetAwaiter().GetResult();
-
-        // The GPU compositor's frames, through the same command's sound: the plan made here, on this STA thread, as the UI thread makes it.
-        var gpuState = state with { OutputPath = Path.Combine(folder, $"gpu-{slug}.mkv") };
-        if (GpuExport.WhyNot(gpuState) is { } refused)
-        {
-            problems.Add($"{variant.Name}: refused ({refused})");
-            return;
-        }
-
-        var client = GpuExport.StartCompositor(out var why);
-        if (client is null)
-        {
-            problems.Add($"{variant.Name}: {why}");
-            return;
-        }
-
-        var export = GpuExport.Prepare(gpuState, client, out why);
-        if (export is null)
-        {
-            client.Dispose();
-            problems.Add($"{variant.Name}: not prepared ({why})");
-            return;
-        }
-
-        var clock = Stopwatch.StartNew();
-        using (export)
-            Task.Run(() => export.RunAsync(new Progress<FfmpegProgress>(), CancellationToken.None)).GetAwaiter().GetResult();
-        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        {variant.Name}: the GPU export took {clock.Elapsed.TotalSeconds:0.00} s, {export.FramesPiped} frames piped"));
-
-        Compare(ffmpeg, variant.Name, state.OutputPath, gpuState.OutputPath, export.Command.Timing.OutputFrames, problems);
-
-        // The whole way, as the view model goes (once): the sound the sound engine's, FFmpeg only encoding it.
-        if (variant.Framerate is null)
-            RenderedSound(ffmpeg, folder, state, problems);
-    }
-
-    /// <summary>The export with its sound rendered by AudioMixer, against FFmpeg's graph's: as long, and the same sound.</summary>
-    private static void RenderedSound(string ffmpeg, string folder, SequenceExportState state, List<string> problems)
-    {
-        const double loudestDifference = -40;
-        var native = state with { OutputPath = Path.Combine(folder, "gpu-rendered-sound.mkv") };
-        if (!OnThisThread(() => GpuExport.TryRunAsync(native, new Progress<FfmpegProgress>(), CancellationToken.None)))
-        {
-            problems.Add("the rendered sound: the export did not run");
-            return;
-        }
-
-        var (theirs, ours) = (Read(ffmpeg, state.OutputPath, Sound), Read(ffmpeg, native.OutputPath, Sound));
-        if (Math.Abs(theirs.Length - ours.Length) > 4 * 1024)
-            problems.Add($"the rendered sound is {ours.Length / 4} sample frames, FFmpeg's {theirs.Length / 4}");
-
-        var (signal, difference) = (0.0, 0.0);
-        for (var i = 0; i + 1 < Math.Min(theirs.Length, ours.Length); i += 2)
-        {
-            var (a, b) = ((double)BitConverter.ToInt16(theirs, i), (double)BitConverter.ToInt16(ours, i));
-            signal += a * a;
-            difference += (a - b) * (a - b);
-        }
-
-        var db = 10 * Math.Log10(Math.Max(difference, 1e-9) / Math.Max(signal, 1e-9));
-        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        the rendered sound: {db:0.0} dB from FFmpeg's graph's"));
-        if (signal <= 0)
-            problems.Add("the rendered sound's reference is silent: nothing was compared");
-        if (db > loudestDifference)
-            problems.Add(string.Create(CultureInfo.InvariantCulture, $"the rendered sound is {db:0.0} dB from FFmpeg's graph's"));
-    }
-
-    private static void Compare(string ffmpeg, string name, string reference, string gpu, long expectedFrames, List<string> problems)
+    /// <summary>Every frame of the 30 fps export against the scene the preview's plan draws at its moment (a compositor of its own, exact frames).</summary>
+    private static void AgainstThePreview(string ffmpeg, SequenceExportState state, List<string> problems)
     {
         var size = W * H * 3;
-        var (a, b) = (Read(ffmpeg, reference, Picture), Read(ffmpeg, gpu, Picture));
-        if (a.Length % size != 0 || b.Length % size != 0)
-            problems.Add($"{name}: the frames read back are not whole ({a.Length}, {b.Length} bytes)");
-        var (framesA, framesB) = (a.Length / size, b.Length / size);
-        if (framesA != framesB || framesB != expectedFrames)
-            problems.Add($"{name}: FFmpeg's export has {framesA} frames, the GPU's {framesB}, its timing {expectedFrames}");
+        var exported = Read(ffmpeg, state.OutputPath, Picture);
+        var frames = exported.Length / size;
+        var timing = EncoderCommand.Timing(state)!.Value;
+        if (frames != timing.OutputFrames)
+            problems.Add($"the 30 fps export has {frames} frames, its timing {timing.OutputFrames}");
 
-        var (worst, sum, at) = (double.MaxValue, 0.0, -1);
-        for (var f = 0; f < Math.Min(framesA, framesB); f++)
+        using var client = new CompositorClient(adapter: -1, keepStandby: false);
+        using var reader = new CompositorFrameReader(client);
+        using var broker = new GpuResourceBroker(client, bakeOnCallingThread: true);
+        var plan = GpuScenePlan.Create(state, broker);
+        plan.PrepareAround(0);
+        var (worst, sum, at, compared) = (double.MaxValue, 0.0, -1, 0);
+        for (var f = 0; f < frames; f += 3)
         {
-            var psnr = Psnr(a.AsSpan(f * size, size), b.AsSpan(f * size, size));
-            sum += psnr;
+            if (GpuSceneDifferentialTests.Draw(client, reader, plan, timing.CanvasSeconds(timing.CanvasFrameOf(f)), problems, "the preview's scene") is not { } drawn)
+                continue;
+            var psnr = Psnr(exported.AsSpan(f * size, size), drawn);
+            (sum, compared) = (sum + psnr, compared + 1);
             if (psnr < worst)
                 (worst, at) = (psnr, f);
         }
 
-        var mean = framesA > 0 ? sum / Math.Min(framesA, framesB) : 0;
-        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        {name}: {Math.Min(framesA, framesB)} frames, worst {worst:0.0} dB (frame {at}), mean {mean:0.0} dB"));
+        var mean = compared > 0 ? sum / compared : 0;
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        the export against the preview's scene: {compared} frames, worst {worst:0.0} dB (frame {at}), mean {mean:0.0} dB"));
         if (worst < FrameFloor)
-            problems.Add(string.Create(CultureInfo.InvariantCulture, $"{name}: frame {at} at {worst:0.0} dB, under {FrameFloor:0} dB"));
+            problems.Add(string.Create(CultureInfo.InvariantCulture, $"export frame {at} is {worst:0.0} dB from the preview's scene, under {FrameFloor:0} dB"));
         if (mean < MeanFloor)
-            problems.Add(string.Create(CultureInfo.InvariantCulture, $"{name}: the mean is {mean:0.0} dB, under {MeanFloor:0} dB"));
+            problems.Add(string.Create(CultureInfo.InvariantCulture, $"the export is on average {mean:0.0} dB from the preview's scene, under {MeanFloor:0} dB"));
+    }
 
-        // The sound: the same graph and encoder, so the same samples (to 1 LSB, should a resampler round differently).
-        var (soundA, soundB) = (Read(ffmpeg, reference, Sound), Read(ffmpeg, gpu, Sound));
-        if (soundA.Length != soundB.Length)
-            problems.Add($"{name}: FFmpeg's export has {soundA.Length / 4} sample frames of sound, the GPU's {soundB.Length / 4}");
+    /// <summary>The export's sound against the engine's render of the same program (16-bit, so to 1 LSB), and as long as the picture.</summary>
+    private static void AgainstTheEngine(string ffmpeg, SequenceExportState state, List<string> problems)
+    {
+        var timing = EncoderCommand.Timing(state)!.Value;
+        var seconds = timing.OutputSeconds(timing.OutputFrames);
+        var engine = new float[(int)Math.Round(seconds * 48000) * 2];
+        AudioMixer.Render(AudioProgram.Build(state), 0, engine, 48000);
+        var heard = Read(ffmpeg, state.OutputPath, Sound);
+        if (Math.Abs(heard.Length / 4 - engine.Length / 2) > 1)
+            problems.Add($"the export has {heard.Length / 4} sample frames of sound, the engine renders {engine.Length / 2}");
         var largest = 0;
-        for (var i = 0; i + 1 < Math.Min(soundA.Length, soundB.Length); i += 2)
-            largest = Math.Max(largest, Math.Abs(BitConverter.ToInt16(soundA, i) - BitConverter.ToInt16(soundB, i)));
-        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        {name}: the sound differs by at most {largest} LSB"));
-        if (largest > 1)
-            problems.Add($"{name}: the sound differs by up to {largest} LSB");
+        for (var i = 0; i < Math.Min(heard.Length / 2, engine.Length); i++)
+        {
+            var expected = (int)Math.Clamp(Math.Round(engine[i] * 32768.0), short.MinValue, short.MaxValue);
+            largest = Math.Max(largest, Math.Abs(BitConverter.ToInt16(heard, 2 * i) - expected));
+        }
 
-        if (Duration(ffmpeg, reference) is { } durationA && Duration(ffmpeg, gpu) is { } durationB && Math.Abs(durationA - durationB) > 0.0015)
-            problems.Add(string.Create(CultureInfo.InvariantCulture, $"{name}: FFmpeg's export lasts {durationA:0.000} s, the GPU's {durationB:0.000} s"));
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        the export's sound against the engine's render: at most {largest} LSB apart"));
+        if (largest > 1)
+            problems.Add($"the export's sound differs from the engine's render by up to {largest} LSB");
+        if (Duration(ffmpeg, state.OutputPath) is { } duration && Math.Abs(duration - seconds) > 0.0015)
+            problems.Add(string.Create(CultureInfo.InvariantCulture, $"the export lasts {duration:0.000} s, its frames {seconds:0.000} s"));
+    }
+
+    /// <summary>An export at another rate: each of its frames the 30 fps export's frame its slot shows, its sound as long as its picture.</summary>
+    private static void AgainstTheReference(string ffmpeg, string name, string reference, string export, GpuExportTiming timing, List<string> problems)
+    {
+        var size = W * H * 3;
+        var (a, b) = (Read(ffmpeg, reference, Picture), Read(ffmpeg, export, Picture));
+        var frames = b.Length / size;
+        if (b.Length % size != 0 || frames != timing.OutputFrames)
+            problems.Add($"{name}: {frames} frames, its timing {timing.OutputFrames}");
+
+        var (worst, at) = (double.MaxValue, -1);
+        for (var k = 0; k < frames; k++)
+        {
+            var shown = (int)timing.CanvasFrameOf(k);
+            if ((shown + 1) * size > a.Length)
+                break;
+            var psnr = Psnr(a.AsSpan(shown * size, size), b.AsSpan(k * size, size));
+            if (psnr < worst)
+                (worst, at) = (psnr, k);
+        }
+
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        {name}: {frames} frames, the worst {worst:0.0} dB from the frame it shows (frame {at})"));
+        if (worst < SameFrameFloor)
+            problems.Add(string.Create(CultureInfo.InvariantCulture, $"{name}: frame {at} is {worst:0.0} dB from the 30 fps export's frame it shows, under {SameFrameFloor:0} dB"));
+
+        var heard = Read(ffmpeg, export, Sound).Length / 4 / 48000.0;
+        if (Math.Abs(heard - timing.OutputSeconds(timing.OutputFrames)) > 0.002)
+            problems.Add(string.Create(CultureInfo.InvariantCulture, $"{name}: {heard:0.000} s of sound for {timing.OutputSeconds(timing.OutputFrames):0.000} s of picture"));
     }
 
     private const string Picture = "-map 0:v:0 -vf \"scale=in_color_matrix=bt709:in_range=tv,format=rgb24\" -f rawvideo -";
@@ -621,14 +690,32 @@ public static partial class GpuExportTests
 
     internal static string? FindFfmpeg()
     {
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        foreach (var candidate in new[] { Path.Combine(local, "HandPeg-Data", "deps", "ffmpeg", "ffmpeg.exe"), Path.Combine(local, "HandPeg", "deps", "ffmpeg", "ffmpeg.exe") })
+        foreach (var candidate in FfmpegCandidates())
         {
             if (File.Exists(candidate))
                 return candidate;
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Where the tests look for an FFmpeg, in order: HANDPEG_FFMPEG when it is set (a portable copy's
+    /// portable\deps\ffmpeg-arm64\ffmpeg.exe, say), then HandPeg's own tool folders: the ARM64 build's ffmpeg-arm64 first
+    /// on an ARM64 PC (DependencyUpdater.ToolFolder), the x64 build's ffmpeg after it.
+    /// </summary>
+    internal static IEnumerable<string> FfmpegCandidates()
+    {
+        if (Environment.GetEnvironmentVariable("HANDPEG_FFMPEG") is { Length: > 0 } named)
+            yield return named;
+
+        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var folders = DependencyUpdater.IsArm64 ? new[] { "ffmpeg-" + DependencyUpdater.Arm64Variant, "ffmpeg" } : ["ffmpeg"];
+        foreach (var data in new[] { "HandPeg-Data", "HandPeg" })
+        {
+            foreach (var folder in folders)
+                yield return Path.Combine(local, data, "deps", folder, "ffmpeg.exe");
+        }
     }
 
     /// <summary>The main video in two clips (the second crossfading in over 1 s at 2 s), a picture in picture moving and fading by its keys, a title from 0.5 to 3.5 s.</summary>
@@ -683,22 +770,20 @@ public static partial class GpuExportTests
         ContentKind = kind, SourcePath = file, AudioStreamIndex = kind == LayerKind.MainVideo ? 0 : -1, Start = start, End = end, MediaOffset = offset, SourceDuration = 5, State = look,
     };
 
-    private static ExportAudioTrack Track(string codec, string bitrate) =>
-        new(0, "Track 1", codec, bitrate, false, false, false, false, false, false, [], []);
+    /// <summary>The main file's first audio stream as the Audio tab kept it, encoded as asked.</summary>
+    private static LegacyStream Stream(string codec, string bitrate) => new(0, "Track 1", codec, bitrate);
 
-    private static SequenceExportState State(TimelineDocument document, Files files, string output) => new()
+    /// <summary>
+    /// The state of a document of the 5.1 kinds (its main video's clips) as a project opened now compiles it (5.2-AuditB,
+    /// LegacyFixtures.Opened): the main video's clips made clips of its file in the Center box (the whole frame), its streams on
+    /// Sub-Lanes and the outputs they leave; with no stream, nothing of the main video is heard.
+    /// </summary>
+    private static SequenceExportState State(TimelineDocument document, Files files, string output, params LegacyStream[] streams) => LegacyFixtures.Opened(new SequenceExportState
     {
         Timeline = document,
         SourceFrameRate = Rate,
-        SourceWidth = W,
-        SourceHeight = H,
         RequestedSize = (document.Width, document.Height),
         OutputSize = (document.Width, document.Height),
-        LocalMediaPath = files.Main,
-        HasSource = true,
-        MainMediaSeconds = 5,
-        CenterRect = (0, 0, W, H),
-        FrameEngine = true,
         Container = Path.GetExtension(output).TrimStart('.'),
         OutputPath = output,
         CaptionLayer = Layer.FromState(new LayerState
@@ -707,5 +792,5 @@ public static partial class GpuExportTests
             SourceWidth = 0.25, SourceHeight = 0.25,
         }, W, H, document.Width, document.Height),
         MediaStarts = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [files.Main] = 0, [files.Inset] = 0 },
-    };
+    }, new LegacyMain(files.Main) { SourceWidth = W, SourceHeight = H, MediaSeconds = 5, CenterRect = (0, 0, W, H), Streams = streams });
 }

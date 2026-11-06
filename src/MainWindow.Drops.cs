@@ -18,8 +18,8 @@ using Microsoft.Win32;
 namespace HandPegApp;
 
 // ----- Drops: the drop overlay's targets, and files and links dropped on the window -----
-// A file dragged in shows the drop overlay (style presets, the Social Squisher's presets); one dropped on the
-// window (or a link, or a tile from the Media pane) is routed to the timeline, the layers or the player.
+// A file dragged in shows the drop overlay (Game Presets, the Social Squisher's presets); one dropped on the
+// window (or a link, or a tile from the Media pane) is routed to the timeline, the Canvas or the player.
 public partial class MainWindow
 {
     // ----- The drop overlay: targets for a file that is being dragged in -----
@@ -28,7 +28,7 @@ public partial class MainWindow
     private string _dropTargetsMode = "";
 
     /// <summary>
-    /// Makes the overlay's targets: the style presets and the Social Squisher's presets. Their background is the
+    /// Makes the overlay's targets: the Game Presets and the Social Squisher's presets. Their background is the
     /// accent colour, toned down, so that a whole screen of them does not shout.
     /// </summary>
     private void BuildDropTargets()
@@ -39,7 +39,7 @@ public partial class MainWindow
             ? settings.SquisherPresets.Where(p => p.TargetSizeMb > 0).Take(Math.Clamp(settings.SquisherPresetCount, 1, 12)).Select(p => new DropTargetItem(p.Name, p.IconData, p)).ToList()
             : [];
         (DropPresetList.ItemsSource, DropSquishList.ItemsSource) = (presets, squish);
-        DropPresetTitle.Text = "Open with a style preset";
+        DropPresetTitle.Text = "Open with a Game Preset";
         DropPresetSection.Visibility = presets.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         DropSquishSection.Visibility = squish.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
@@ -95,11 +95,11 @@ public partial class MainWindow
             return;
 
         // Only into an empty window. With a video or a project open, a file dragged in is on its way to the
-        // timeline, the layers or the audio tab, and nothing is put in its way.
+        // timeline, the Canvas or the Audio tab, and nothing is put in its way.
         if (_viewModel.HasSource || _viewModel.IsBusy)
             return;
 
-        // A file on its way to a style: what its drop will need is made ready while it is carried (on a fast drive).
+        // A file on its way to a Game Preset: what its drop will need is made ready while it is carried (on a fast drive).
         if (Dragged(e.Data).File is { } carried)
             PrewarmDrop(carried, carried: true);
 
@@ -143,7 +143,7 @@ public partial class MainWindow
         if (sender is UIElement target)
             target.Opacity = 0.7;
 
-        // Over a style: its drop is near.
+        // Over a Game Preset: its drop is near.
         if (sender is FrameworkElement { DataContext: DropTargetItem { Target: StyleFile } } && Dragged(e.Data).File is { } carried)
             PrewarmDrop(carried, carried: true);
     }
@@ -155,11 +155,11 @@ public partial class MainWindow
     }
 
     // ----- Ahead of a drop (Pass 5.0-Release, the user's directive 5) -----
-    // A video likely to be dropped (its Media tile rested on, a drag of it begun, carried over the drop overlay's styles):
+    // A video likely to be dropped (its Media tile rested on, a drag of it begun, carried over the drop overlay's Game Presets):
     // on a fast local drive (DriveKind), what its drop will ask for first is done now. Its inspection (MediaProbe keeps
-    // it by FileState) and its key frames (kept by the seek index); the Overview Bar's worker started and the file opened
+    // it by FileState) and its key frames (kept by the seek index); the Sequence Overview Scrubber's worker started and the file opened
     // in it; the player's worker opening it and decoding its first frames. A drop is urgent and never waits behind any of
-    // it; when no drop follows, the player lets go of it (UnPrewarm) and the Overview Bar's worker ends as ever when idle.
+    // it; when no drop follows, the player lets go of it (UnPrewarm) and the Sequence Overview Scrubber's worker ends as ever when idle.
 
     // The file made ready last, and when (Environment.TickCount64): asked again within this long, nothing is done again.
     private string? _prewarmed;
@@ -170,7 +170,7 @@ public partial class MainWindow
     // The inspection asked for the file made ready last (cancelled when another is made ready, or it is let go of).
     private CancellationTokenSource? _prewarmProbe;
 
-    // When the last drop on a style was let go (the timing line written when its Overview Bar sheet comes), and whether a
+    // When the last drop on a Game Preset was let go (the timing line written when its Sequence Overview Scrubber sheet comes), and whether a
     // drop on a target is being routed (the overlay is put away for it, and what was made ready is kept).
     private System.Diagnostics.Stopwatch? _dropClock;
     private bool _routingDrop;
@@ -211,7 +211,7 @@ public partial class MainWindow
         if (carried)
             _ = Task.Run(() => FfmpegRunner.GetIFramesAsync(path, CancellationToken.None));
 
-        // Opened in the Overview Bar's worker (started when it is not running) and in the player's.
+        // Opened in the Sequence Overview Scrubber's worker (started when it is not running) and in the player's.
         if (GpuProgramStrip.IsWanted && (_viewModel.ShowTimelineThumbnails || _viewModel.ShowHoverPreviews))
             ProgramStrip().Prewarm(path);
         _gpu?.Prewarm(path);
@@ -239,7 +239,7 @@ public partial class MainWindow
         _prewarmProbe = null;
     }
 
-    /// <summary>A file let go on a target: opened with that style, opened and given that encoding preset, or squished for that preset.</summary>
+    /// <summary>A file let go on a target: opened with that Game Preset, opened and given that encoding preset, or squished for that preset.</summary>
     private void DropTarget_Drop(object sender, DragEventArgs e)
     {
         if (sender is UIElement target)
@@ -255,7 +255,7 @@ public partial class MainWindow
         HideDropOverlay();
         _routingDrop = false;
 
-        // A file, or a link, which is downloaded on the way: a style is given to the video the link loads, and the
+        // A file, or a link, which is downloaded on the way: a Game Preset is given to the video the link loads, and the
         // Squisher squishes the download.
         var (dropped, link) = Dragged(e.Data);
         var source = dropped is not null && File.Exists(dropped) ? dropped : link;
@@ -277,11 +277,11 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The first file opened with a style, and those dropped with it after it, in line, each with the style's template (5.1-DogfoodPolish).</summary>
+    /// <summary>The first file opened with a Game Preset, and those dropped with it after it, in line, each with the Game Preset's template (5.1-DogfoodPolish).</summary>
     private async Task OpenWithStyleAsync(string first, string style, string[] rest)
     {
         await _viewModel.LoadFileWithStyleAsync(first, style);
-        await FollowMainVideoAsync(rest);
+        await FollowOpenedFileAsync(rest);
     }
 
     /// <summary>The pictures a drag carries after its first file: what follows it in line when it is opened. Sounds and projects are no such thing.</summary>
@@ -290,24 +290,24 @@ public partial class MainWindow
             ? files.Skip(1).Where(f => !f.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) && MediaBrowserItem.KindOf(f) != MediaBrowserKind.Audio).ToArray()
             : [];
 
-    /// <summary>Files put after the main video just opened, one after another on its track: Clip 1, Clip 2, Clip 3.</summary>
-    private async Task FollowMainVideoAsync(string[] files)
+    /// <summary>Files put after the file just opened, one after another on its clip's track: Clip 1, Clip 2, Clip 3.</summary>
+    private async Task FollowOpenedFileAsync(string[] files)
     {
         if (files.Length > 0 && _viewModel.HasSource)
-            await AddDroppedLayersAsync(files, _viewModel.DurationMs / 1000, _viewModel.MainLayer, inLine: true);
+            await AddDroppedLayersAsync(files, _viewModel.DurationMs / 1000, _viewModel.OpenedFileView, inLine: true);
     }
 
-    /// <summary>How long a drop on a style took to open its file with the style (the log; the Overview Bar's sheet adds its own line).</summary>
+    /// <summary>How long a drop on a Game Preset took to open its file with it (the log; the Sequence Overview Scrubber's sheet adds its own line).</summary>
     private static async Task TimeStyleDropAsync(Task loading, System.Diagnostics.Stopwatch clock)
     {
         try
         {
             await loading;
-            AppLog.Write(string.Create(CultureInfo.InvariantCulture, $"Drop on a style: opened with the style in {clock.ElapsedMilliseconds} ms."));
+            AppLog.Write(string.Create(CultureInfo.InvariantCulture, $"Drop on a Game Preset: opened with the Game Preset in {clock.ElapsedMilliseconds} ms."));
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            AppLog.Write("Drop on a style", ex);
+            AppLog.Write("Drop on a Game Preset", ex);
         }
     }
 
@@ -396,7 +396,7 @@ public partial class MainWindow
     }
 
     // Files from Explorer are answered on the way down to whatever they are over, not on the way back up.
-    // The rows of the Layers and Audio tabs are full of number boxes, and a text box answers a drag itself
+    // The rows of the Audio tab are full of number boxes, and a text box answers a drag itself
     // ("no" to files) before the window is asked: over those, a drop was refused. Seen first, here, a file is
     // accepted wherever on the window it is, and the boxes keep their own dragging of text.
 
@@ -482,7 +482,7 @@ public partial class MainWindow
         }
 
         // From the media browser, with a video or project open (4.1.1-B): the files go onto the timeline at
-        // the playhead, wherever they are let go (the player, the master timeline, a pane), never over what is open.
+        // the playhead, wherever they are let go (the player, the Sequence Overview Scrubber, a pane), never over what is open.
         // A project file is still opened as one.
         if (_viewModel.HasSource && e.Data.GetDataPresent(Views.MediaBrowserPane.DragFormat)
             && files.Where(f => !f.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase)).ToArray() is { Length: > 0 } media)
@@ -498,7 +498,7 @@ public partial class MainWindow
             DropLater("a drop of several files", async () =>
             {
                 await _viewModel.LoadFileAsync(file);
-                await FollowMainVideoAsync(rest);
+                await FollowOpenedFileAsync(rest);
             });
             return;
         }
@@ -573,12 +573,12 @@ public partial class MainWindow
     private static readonly string[] ImageExtensions = [".png", ".jpg", ".jpeg"];
 
     /// <summary>
-    /// Adds dropped files as clips: pictures as image layers, anything else as video layers. Each goes on a track of
+    /// Adds dropped files as clips: pictures as image clips, anything else as video clips. Each goes on a track of
     /// its own just above the row (or fills an empty track, or joins the row's track when Settings allow and there is
-    /// room: MainViewModel.PlaceClip); on the main video's row it takes the main video's place. Several videos dropped
+    /// room: MainViewModel.PlaceClip). Several videos dropped
     /// at once follow each other on one track, end to end, from the moment dropped on (a Sequence Drop); stacked
     /// (<paramref name="stack"/>, 4.4: a Stack Drop), each goes on a track of its own just above the one before, all at that
-    /// moment. A clip dropped onto a track with a template takes that template, with pieces of its own over its own span
+    /// moment. A clip dropped onto a track with a template takes that template, with Cutouts of its own over its own span
     /// (5.1-DogfoodPolish, <see cref="MainViewModel.InheritTemplate"/>). Background work is held back until they are on it and filled
     /// in (4.3E: each video's probe is urgent, never behind the media browser's posters and strips), and whether the files are there
     /// is asked away from the interface.
@@ -590,7 +590,7 @@ public partial class MainWindow
         Activate();
         if (!_viewModel.IsVideoReencoded)
         {
-            _viewModel.StatusText = "Layers need the video to be encoded: choose a video encoder other than Copy on the Video tab, then drop the file again.";
+            _viewModel.StatusText = "Clips on other tracks need the video to be encoded: choose a video encoder other than Copy on the Video tab, then drop the file again.";
             return;
         }
 
@@ -664,6 +664,6 @@ public partial class MainWindow
 /// <summary>One target of the drop overlay: a preset to drop a file on, with the icon it is drawn with.</summary>
 public sealed record DropTargetItem(string Name, string IconData, object Target)
 {
-    /// <summary>A card with a header: a style.</summary>
+    /// <summary>A card with a header: a Game Preset.</summary>
     public const string StyleIcon = "M 3,5 H 23 V 21 H 3 Z M 3,10 H 23 M 7,14 H 15 M 7,17 H 12";
 }

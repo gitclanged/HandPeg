@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -8,7 +7,8 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// The Advanced tab: colour grading and sharpening, the single-frame preview that shows them, and layout files.
+// The Advanced tab: colour grading and sharpening (the single-frame preview that shows them is the GPU engine's capture,
+// FramePreviewDialog), and layout files.
 public partial class MainViewModel
 {
     // What each control is at when it does nothing.
@@ -43,92 +43,63 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The grading filters for the current sliders: eq (with the RGB balance), hue, then cas. A control left where
-    /// it does nothing adds no filter, so untouched video is not processed for no reason.
+    /// The colour sliders' grade of the whole picture (5.2-AuditB: typed, it was FFmpeg eq / hue / unsharp text, with exactly the
+    /// numbers that text wrote: each to three decimals): contrast, brightness, saturation, gamma and the RGB balance's per-channel
+    /// gammas, a hue turn, the Sharpen strength. A control left where it does nothing adds nothing, so untouched video is not
+    /// processed for no reason.
     /// </summary>
-    private List<string> BuildColorFilters()
+    public SequenceGrade GetSequenceGrade()
     {
-        var filters = new List<string>();
-
         var contrast = Math.Clamp(ColorContrast, 0, 2);
         var brightness = Math.Clamp(ColorBrightness, -1, 1);
         var saturation = Math.Clamp(ColorSaturation, 0, 3);
         var gamma = Math.Clamp(ColorGamma, 0.1, 3);
-        // The RGB balance goes through eq's per-channel gammas. They work on the video as it is; a filter
-        // such as colorbalance would turn it into RGB, and the encoder would then be handed RGB video.
+        // The RGB balance is per-channel gammas: a slider at 0 is a gamma of 1; the ends, -1 and 1, are a gamma of a half and of two.
         var (red, green, blue) = (Math.Clamp(ColorRed, -1, 1), Math.Clamp(ColorGreen, -1, 1), Math.Clamp(ColorBlue, -1, 1));
         var isBalanced = IsChanged(red, 0) || IsChanged(green, 0) || IsChanged(blue, 0);
 
-        if (isBalanced || IsChanged(contrast, NeutralContrast) || IsChanged(brightness, NeutralBrightness)
-            || IsChanged(saturation, NeutralSaturation) || IsChanged(gamma, NeutralGamma))
-        {
-            var eq = $"eq=contrast={Number(contrast)}:brightness={Number(brightness)}:saturation={Number(saturation)}:gamma={Number(gamma)}";
-
-            // A slider at 0 is a gamma of 1; the ends, -1 and 1, are a gamma of a half and of two.
-            if (isBalanced)
-                eq += $":gamma_r={Number(Math.Pow(2, red))}:gamma_g={Number(Math.Pow(2, green))}:gamma_b={Number(Math.Pow(2, blue))}";
-            filters.Add(eq);
-        }
+        ColorBalance? balance = isBalanced || IsChanged(contrast, NeutralContrast) || IsChanged(brightness, NeutralBrightness)
+            || IsChanged(saturation, NeutralSaturation) || IsChanged(gamma, NeutralGamma)
+            ? new ColorBalance(Math.Round(contrast, 3), Math.Round(brightness, 3), Math.Round(saturation, 3), Math.Round(gamma, 3),
+                isBalanced ? Math.Round(Math.Pow(2, red), 3) : 1, isBalanced ? Math.Round(Math.Pow(2, green), 3) : 1, isBalanced ? Math.Round(Math.Pow(2, blue), 3) : 1)
+            : null;
 
         var hue = Math.Clamp(ColorHue, -180, 180);
-        if (Math.Abs(hue) >= 0.05)
-            filters.Add($"hue=h={Number(hue)}");
 
-        // The Sharpen card's unsharp mask (5.1-Polish) at its own radius on the export's picture: unsharp's 5 x 5 square.
+        // The Sharpen effect's strength (5.1-Polish), as its amount was written (Models.Effects.EffectRegistry.SharpenAmount times it).
         var sharpen = Math.Clamp(SharpenStrength, 0, 1);
-        if (IsChanged(sharpen, 0))
-            filters.Add($"unsharp=lx=5:ly=5:la={Number(Models.Effects.EffectRegistry.SharpenAmount * sharpen)}");
-
-        return filters;
+        return new SequenceGrade
+        {
+            Balance = balance,
+            Hue = Math.Abs(hue) >= 0.05 ? Math.Round(hue, 3) : null,
+            Sharpen = IsChanged(sharpen, 0) ? Math.Round(Models.Effects.EffectRegistry.SharpenAmount * sharpen, 3) / Models.Effects.EffectRegistry.SharpenAmount : null,
+        };
 
         // The controls move in hundredths; anything closer to neutral than that is neutral.
         static bool IsChanged(double value, double neutral) => Math.Abs(value - neutral) >= 0.005;
-    }
-
-    /// <summary>
-    /// The command that writes one frame of the source, taken at a given time and passed through the
-    /// grading filters, to a picture file. Seeking before the input makes it quick.
-    /// </summary>
-    /// <param name="showHistogram">Draws a histogram of the graded frame in its bottom-right corner.</param>
-    public string BuildFramePreviewCommand(double seconds, string outputPath, bool showHistogram)
-    {
-        var ffmpeg = DependencyUpdater.IsFfmpegOverridden ? Quote(DependencyUpdater.FfmpegPath) : "ffmpeg";
-        var filters = BuildColorFilters();
-
-        if (showHistogram)
-        {
-            // Measured after the grading, so it shows what the sliders have done. A fifth of the frame wide,
-            // but never smaller than the histogram is drawn, so it stays readable on any source.
-            var width = Math.Max(SourceWidth / 5 / 2 * 2, 256);
-            var margin = Math.Max(SourceWidth / 100, 10);
-            filters.Add($"split[frame][scope_in];[scope_in]histogram=display_mode=overlay,scale={width}:-2[scope];"
-                        + $"[frame][scope]overlay=W-w-{margin}:H-h-{margin}");
-        }
-
-        var filterOption = filters.Count > 0 ? $" -vf \"{string.Join(",", filters)}\"" : "";
-        var time = Math.Max(seconds, 0).ToString("0.###", CultureInfo.InvariantCulture);
-
-        return $"{ffmpeg} -hide_banner{(HardwareDecoding ? " " + GpuAdapters.DecodeArguments.TrimEnd() : "")} -ss {time} -i {Quote(LocalMediaPath)} -frames:v 1{filterOption} -q:v 3 -y {Quote(outputPath)}";
     }
 
     // ----- Layout files -----
 
     private static readonly JsonSerializerOptions LayoutJsonOptions = new() { WriteIndented = true };
 
-    /// <summary>The engine's layers, the grading and the background blur as they are now.</summary>
+    /// <summary>
+    /// The layout (5.2-AuditB: the template of the clip it is taken from, TemplateBase: its Cutouts, its look, and its place
+    /// written as the Game Preset file's Center values), the grading and the blur fill as they are now.
+    /// </summary>
     private StylePreset CaptureLayout() => new()
     {
         Layout = new LayoutSection
         {
-            CenterZoom = CenterZoom,
-            CenterOffsetX = CenterOffsetX,
-            CenterOffsetY = CenterOffsetY,
+            CenterZoom = TemplatePlace(selected: true).Zoom,
+            CenterOffsetX = TemplatePlace(selected: true).OffsetX,
+            CenterOffsetY = TemplatePlace(selected: true).OffsetY,
             SourceAspectRatio = GetLayoutSourceAspect(),
             Vertical = UseVerticalResolution,
-            MainVideoIndex = TemplateMainIndex(),
-            MainLayer = MainLayer.ToState(),
+            MainVideoIndex = TemplateMainIndex(selected: true),
+            MainLayer = TemplateBase(selected: true)?.ToState(),
             BackgroundHidden = _backgroundRow.IsHidden,
-            Layers = TemplateLayers(),
+            Layers = TemplateLayers(selected: true),
         },
         Color = new ColorSection
         {
@@ -174,7 +145,7 @@ public partial class MainViewModel
         if (!subtitles)
             settings.Subtitles = null;
 
-        var parts = new[] { layout ? "layers" : null, color ? "color filters" : null, blur ? "blur settings" : null, subtitles ? "subtitle settings" : null }
+        var parts = new[] { layout ? "layout and Cutouts" : null, color ? "color filters" : null, blur ? "blur settings" : null, subtitles ? "subtitle settings" : null }
             .Where(p => p is not null).ToList();
         if (parts.Count == 0)
             return StatusText = "Nothing was chosen to export.";
@@ -185,7 +156,7 @@ public partial class MainViewModel
         try
         {
             File.WriteAllText(path, JsonSerializer.Serialize(settings, LayoutJsonOptions));
-            return StatusText = $"Style preset exported ({string.Join(", ", parts)}{(settings.Masks is { Count: > 0 } m ? $", {m.Count} mask{(m.Count == 1 ? "" : "s")} inside" : "")}) to {path}";
+            return StatusText = $"Game Preset exported ({string.Join(", ", parts)}{(settings.Masks is { Count: > 0 } m ? $", {m.Count} mask{(m.Count == 1 ? "" : "s")} inside" : "")}) to {path}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -193,7 +164,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>The style as it is now, with the mask pictures of its layers inside it: what Export writes, whole.</summary>
+    /// <summary>The Game Preset as it is now, with the mask pictures of its Cutouts inside it: what Export writes, whole.</summary>
     public StylePreset CaptureStyleWithMasks()
     {
         var style = CaptureLayout();
@@ -202,7 +173,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts the mask pictures the layers use into the style itself, as Base64, and has the layers name them
+    /// Puts the mask pictures its Cutouts use into the Game Preset itself, as Base64, and has the Cutouts name them
     /// by file name alone: the file then needs nothing beside it.
     /// </summary>
     private static void EmbedMasks(StylePreset style)
@@ -213,7 +184,7 @@ public partial class MainViewModel
         style.Masks = masks.Count > 0 ? masks : null;
     }
 
-    /// <summary>Everything in a style that can carry a mask: its layers, the main video, and the caption box.</summary>
+    /// <summary>Everything in a Game Preset that can carry a mask: its Cutouts, its video's look, and the caption box.</summary>
     private static IEnumerable<LayerState> StyleLayers(StylePreset style)
     {
         foreach (var layer in style.Layout?.Layers ?? [])
@@ -224,7 +195,7 @@ public partial class MainViewModel
             yield return captions;
     }
 
-    /// <summary>Writes the masks a style carries into the masks folder, and points its layers at them there.</summary>
+    /// <summary>Writes the masks a Game Preset carries into the masks folder, and points its Cutouts at them there.</summary>
     private void ExtractMasks(StylePreset style)
     {
         if (style.Masks is not { Count: > 0 } masks)
@@ -259,22 +230,22 @@ public partial class MainViewModel
     }
 
     /// <summary>Takes over the chosen parts of a layout file. Parts the file does not have are skipped.</summary>
-    // The style preset in use: the last one applied. A double-click on a slider goes back to its values.
+    // The Game Preset in use: the last one applied. A double-click on a slider goes back to its values.
     private StylePreset? _activeStyle;
 
-    /// <summary>The style presets in the Styles folder, by name, newest first.</summary>
+    /// <summary>The Game Presets in the Styles folder, by name, newest first.</summary>
     public System.Collections.ObjectModel.ObservableCollection<string> StylePresets { get; } = [];
 
-    /// <summary>The style preset chosen from the list. Choosing one applies all of it.</summary>
+    /// <summary>The Game Preset chosen from the list. Choosing one applies all of it.</summary>
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private string? _selectedStylePreset;
 
     private bool _listingStyles;
 
-    /// <summary>The name a style preset is saved under, as typed in its dialog.</summary>
+    /// <summary>The name a Game Preset is saved under, as typed in its dialog.</summary>
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private string _styleName = "";
 
     /// <summary>
-    /// Saves the layers, color, blur and subtitle settings as they are now as a style preset of the list: a
+    /// Saves the layout and Cutouts, color, blur and subtitle settings as they are now as a Game Preset of the list: a
     /// .hpstyle file in the Styles folder, under the name typed. An existing one of that name is replaced.
     /// </summary>
     public void SaveStyle()
@@ -282,14 +253,14 @@ public partial class MainViewModel
         var name = string.Concat(StyleName.Trim().Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
         if (name.Length == 0)
         {
-            StatusText = "Type a name for the style preset first.";
+            StatusText = "Type a name for the Game Preset first.";
             return;
         }
 
         Directory.CreateDirectory(AppPaths.Styles);
         ExportStyle(Path.Combine(AppPaths.Styles, name + ".hpstyle"), layout: true, color: true, blur: true, subtitles: true);
 
-        // It is now the style in use, and shown as chosen without being applied over itself.
+        // It is now the Game Preset in use, and shown as chosen without being applied over itself.
         _activeStyle = CaptureStyle();
         RefreshStylePresets();
         _listingStyles = true;
@@ -337,29 +308,24 @@ public partial class MainViewModel
             return;
         }
 
-        // A style is layers: the Layer Engine is what shows them.
-        FrameEngine = true;
         ApplyStyle(style, layout: true, color: true, blur: true, subtitles: true);
     }
 
     /// <summary>
-    /// What a double-click puts a slider or a number box back to: the value the style preset in use has for
-    /// it, when the settings ask for that and the style has one. Null leaves it to the built-in default.
+    /// What a double-click puts a slider or a number box back to: the value the Game Preset in use has for
+    /// it, when the settings ask for that and the Game Preset has one. Null leaves it to the built-in default.
     /// </summary>
-    /// <param name="source">What the control is bound to: this view model, or a layer.</param>
+    /// <param name="source">What the control is bound to: this view model, or a clip.</param>
     /// <param name="property">The property it is bound to.</param>
     public double? GetResetValue(object? source, string? property)
     {
-        if (_activeStyle is not { } style || property is null || AppSettings.Current.DoubleClickResetsTo != AppSettings.ResetToStyle)
+        if (_activeStyle is not { } style || property is null || AppSettings.Current.DoubleClickResetsTo != AppSettings.ResetToPreset)
             return null;
 
         if (ReferenceEquals(source, this))
         {
             return property switch
             {
-                nameof(CenterZoom) => style.Layout?.CenterZoom,
-                nameof(CenterOffsetX) => style.Layout?.CenterOffsetX,
-                nameof(CenterOffsetY) => style.Layout?.CenterOffsetY,
                 nameof(BlurRadius) => style.Blur?.Radius,
                 nameof(BlurPasses) => style.Blur?.Passes,
                 nameof(BackgroundDim) => style.Blur?.Dim,
@@ -380,20 +346,23 @@ public partial class MainViewModel
         if (source is not Layer layer)
             return null;
 
-        // The layer as the style has it: the main video, the caption box, or the layer of the same name and kind.
-        var saved = layer.IsMainVideo ? style.Layout?.MainLayer
-            : layer.IsCaptions ? style.Subtitles?.Layer
+        // The clip as the Game Preset has it: the caption box, the Cutout of the same name and kind, or (a video clip the Game
+        // Preset goes on, 5.2-AuditB) its video's look, placed by the file's Center values.
+        var isBase = false;
+        var saved = layer.IsCaptions ? style.Subtitles?.Layer
             : style.Layout?.Layers.FirstOrDefault(l => l.Kind == layer.Kind && l.Name == layer.Name);
+        if (saved is null && layer.IsVideoFile && ClipOf(layer) is { ParentClipId: null })
+            (saved, isBase) = (style.Layout?.MainLayer, true);
         if (saved is null)
             return null;
 
         return property switch
         {
-            nameof(Layer.PositionXPercent) => layer.IsMainVideo ? null : saved.PositionX * 100,
-            nameof(Layer.PositionYPercent) => layer.IsMainVideo ? null : saved.PositionY * 100,
-            nameof(Layer.SizePercent) => layer.IsMainVideo ? style.Layout?.CenterZoom * 100 : saved.SizeWidth * 100,
+            nameof(Layer.PositionXPercent) => isBase ? null : saved.PositionX * 100,
+            nameof(Layer.PositionYPercent) => isBase ? null : saved.PositionY * 100,
+            nameof(Layer.SizePercent) => isBase ? style.Layout?.CenterZoom * 100 : saved.SizeWidth * 100,
             nameof(Layer.SizeHeightPercent) => saved.SizeHeight * 100,
-            nameof(Layer.PositionX) or nameof(Layer.PositionY) or nameof(Layer.SizeWidth) when layer.IsMainVideo => null,
+            nameof(Layer.PositionX) or nameof(Layer.PositionY) or nameof(Layer.SizeWidth) when isBase => null,
             _ => typeof(LayerState).GetProperty(property)?.GetValue(saved) switch
             {
                 double number => number,
@@ -404,13 +373,13 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts a style preset's parts in place: one undo step for all of it, its colour grade and blur included (4.4: they are
+    /// Puts a Game Preset's parts in place: one undo step for all of it, its colour grade and blur included (4.4: they are
     /// in the step), and no step of their own for the looks it sets on the way.
     /// </summary>
     public void ApplyStyle(StylePreset preset, bool layout, bool color, bool blur, bool subtitles)
     {
         if (layout || subtitles || color || blur)
-            Checkpoint("apply a style preset");
+            Checkpoint("apply a Game Preset");
         using var held = HoldLookSteps();
 
         _activeStyle = preset;
@@ -418,24 +387,22 @@ public partial class MainViewModel
 
         if (layout && preset.Layout is { } layers)
         {
-            CenterZoom = layers.CenterZoom is > 0 and var zoom ? Math.Clamp(zoom, SmallestCenterZoom, LargestCenterZoom) : 1;
-            CenterOffsetX = Math.Clamp(layers.CenterOffsetX, -100, 100);
-            CenterOffsetY = Math.Clamp(layers.CenterOffsetY, -100, 100);
-            // The shape of the frame first: the layers are placed by fractions of it.
+            // The shape of the frame first: the clips are placed by fractions of it.
             if (layers.Vertical is { } vertical && vertical != UseVerticalResolution)
                 UseVerticalResolution = vertical;
 
+            // On the selected video clips, or every top-level one (5.2-AuditB: the per-clip template path); with none, the next
+            // file opened takes it. Its blur fill is the one a file opened from now on gets.
             ExtractMasks(preset);
-            PlaceTemplate(layers.Layers ?? [], Math.Max(layers.MainVideoIndex ?? (layers.Layers?.Count ?? 0), 0));
-            TakeMainLook(layers.MainLayer);
             _backgroundRow.IsHidden = layers.BackgroundHidden;
+            TakeBlurFill(layers.BackgroundHidden);
+            var on = TemplateFrom(preset) is { } template ? PutTemplate(template, "apply a Game Preset") : 0;
             _layoutSourceAspect = layers.SourceAspectRatio;
 
-            // A layout is only seen through the engine, and in the player only with Live Preview (4.3E: always on with a style).
-            FrameEngine = true;
+            // A layout is seen in the player only with Live Preview (4.3E: always on with a Game Preset).
             if (!_isBackgroundWorker && HasSource)
                 LivePreview = true;
-            applied.Add($"layout with {Layers.Count} layer{(Layers.Count == 1 ? "" : "s")}");
+            applied.Add(on == 0 ? "layout, for the next video opened" : $"layout on {on} clip{(on == 1 ? "" : "s")}");
         }
 
         if (color && preset.Color is { } grade)
@@ -469,15 +436,15 @@ public partial class MainViewModel
             applied.Add("subtitle settings");
         }
 
-        // Settings may say the default encoding settings win over what a style sets (a tall frame, say).
+        // Settings may say the default encoding settings win over what a Game Preset sets (a tall frame, say).
         ApplyEncodingDefaultsOverStyle();
 
-        Log(applied.Count > 0 ? $"Applied style preset: {string.Join(", ", applied)}" : "Nothing was imported");
+        Log(applied.Count > 0 ? $"Applied Game Preset: {string.Join(", ", applied)}" : "Nothing was imported");
         if (GetLayoutAspectWarning() is { } warning)
             StatusText += " " + warning;
     }
 
-    /// <summary>A preset's settings for the sequence's one blur.</summary>
+    /// <summary>A preset's settings for the blur fill's look (the sequence's one, every clip's that has a blur fill).</summary>
     private void TakeBlur(BlurSection background)
     {
         BlurRadius = Math.Clamp(background.Radius, 0, Models.Effects.EffectRegistry.BackgroundMostRadius);
@@ -489,14 +456,14 @@ public partial class MainViewModel
 
     // ----- The shape of video a layout was made on -----
 
-    // Width over height of the video the current layers were marked on; 0 when not known.
+    // Width over height of the video the current Cutouts were marked on; 0 when not known.
     private double _layoutSourceAspect;
 
     private double CurrentSourceAspect => SourceWidth > 0 && SourceHeight > 0 ? (double)SourceWidth / SourceHeight : 0;
 
-    /// <summary>What a saved layout records: the shape its layers were marked on, or failing that the loaded video's.</summary>
+    /// <summary>What a saved layout records: the shape its Cutouts were marked on, or failing that the loaded video's.</summary>
     private double GetLayoutSourceAspect() =>
-        Math.Round(_layoutSourceAspect > 0 && Layers.Any(e => e.IsVideo) ? _layoutSourceAspect : CurrentSourceAspect, 4);
+        Math.Round(_layoutSourceAspect > 0 && Layers.Any(IsCutout) ? _layoutSourceAspect : CurrentSourceAspect, 4);
 
     /// <summary>
     /// The warning for a layout made on a video of another shape than the one loaded; null when they agree,
@@ -506,8 +473,8 @@ public partial class MainViewModel
     {
         var current = CurrentSourceAspect;
         var differs = _layoutSourceAspect > 0 && current > 0 && Math.Abs(_layoutSourceAspect - current) / current > 0.01;
-        return differs && Layers.Any(e => e.IsVideo)
-            ? "Layout aspect ratio mismatch: UI layer crops may require manual adjustment."
+        return differs && Layers.Any(IsCutout)
+            ? "Layout aspect ratio mismatch: the Cutouts' crops may need adjusting by hand."
             : null;
     }
 }

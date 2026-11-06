@@ -1,0 +1,12 @@
+# A press on empty timeline space seeks at once; the rubber band starts only past the drag distance, and leaves the playhead where the press put it.
+ok: laid out without a window: 10 s across the time area
+ok: a press on empty space seeks to its moment at once (4.5 s)
+ok: and draws no band yet
+ok: moved less than the system's drag distance, the press draws no band
+ok: let go there, it selects nothing and seeks no more: the press's seek stands
+ok: and once let go, a move is no press's any more
+ok: the second press seeks at once too
+ok: dragged past the drag distance, the rubber band is drawn
+ok: let go, the band selects the clip it touches (1 to 3 s), not the other
+ok: and the playhead stays where the press put it (4.5 s): the band seeks nothing
+ok: the band is gone once let go

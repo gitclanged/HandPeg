@@ -28,7 +28,9 @@ internal static class MfGuids
     public static readonly Guid H264 = new("34363248-0000-0010-8000-00aa00389b71");
     public static readonly Guid Hevc = new("43564548-0000-0010-8000-00aa00389b71");
     public static readonly Guid Av1 = new("31305641-0000-0010-8000-00aa00389b71");
+    public static readonly Guid Vp9 = new("30395056-0000-0010-8000-00aa00389b71");
     public static readonly Guid VideoEncoderCategory = new("f79eac7d-e545-4387-bdee-d647d7bde42a");
+    public static readonly Guid VideoDecoderCategory = new("d6c02d4b-6833-45b4-971a-05a4b04bab91");
     public static readonly Guid EnumAdapterLuid = new("1d39518c-e220-4da8-a07f-ba172552d6b1");
     public static readonly Guid FriendlyName = new("314ffbae-5b41-4c95-9c19-4e7d586face3");
 }
@@ -67,6 +69,9 @@ internal static unsafe partial class Mf
     public const uint FirstVideoStream = 0xFFFFFFFC, AllStreams = 0xFFFFFFFE, MediaSource = 0xFFFFFFFF;
     public const uint ReaderError = 0x1, ReaderEndOfStream = 0x2, ReaderNewStream = 0x4, ReaderCurrentMediaTypeChanged = 0x20, ReaderStreamTick = 0x100;
     public const uint EnumHardware = 0x4, EnumSortAndFilter = 0x40;
+
+    /// <summary>MFT_ENUM_FLAG_ALL (synchronous, asynchronous, hardware, field-of-use, local, transcode-only): every kind of transform.</summary>
+    public const uint EnumAll = 0x3F;
 
     [LibraryImport("mfplat.dll")]
     public static partial int MFStartup(uint version, uint flags);

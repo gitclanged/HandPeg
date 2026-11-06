@@ -6,7 +6,7 @@ using System.Text;
 namespace HandPegGoldenTests;
 
 /// <summary>
-/// HandPeg's golden-file tests: what FilterGraphBuilder writes for each fixture, the .hproj format's reading and writing,
+/// HandPeg's golden-file tests: the export made of each fixture (its encode, its GPU scenes, its sound), the .hproj format's reading and writing,
 /// and FfmpegRunner's handling of a command, compared with the files under golden\, plus the checks made by code (the
 /// A/V invariant, the project round trip). Run by tools\GoldenTests.ps1; "--update" writes the golden files anew.
 /// </summary>
@@ -64,9 +64,30 @@ public static class Program
         results.AddRange(CutoutTests.All());
         results.AddRange(DogfoodTests.All());
         results.AddRange(GpuFxTests.All());
+        results.AddRange(TimelineErgonomicsTests.All());
+        results.AddRange(TimelineInputTests.All());
+        results.AddRange(TimelineLaneTests.All());
         results.AddRange(PeMachineTests.All());
         results.AddRange(MediaFoundationTests.All());
+        results.AddRange(HardwareTierTests.All());
         results.AddRange(AudioEngineTests.All());
+        results.AddRange(AudioSuiteTests.All());
+        results.AddRange(StreamerToolsTests.All());
+        results.AddRange(CleaveTests.All());
+        // startup-json-source-generation (5.2D): the start-up reads through generated metadata, byte for byte as reflection's.
+        results.Add(StartupJsonTests.Run());
+        // project-thumbnail, explorer-thumbnails (5.2D): baked project thumbnails, and Explorer's preview of them.
+        results.Add(ProjectThumbnailTests.ProjectThumbnails());
+        results.Add(ProjectThumbnailTests.ExplorerPreviews());
+        // audio-chain-typed: a track's processing made typed (AudioChainBuilder.From) against the FFmpeg words it replaced, read back as before (5.2-AuditB).
+        results.Add(MigrationTests.AudioChainTyped());
+        // hproj-format6-clips (5.2-Arm64AndNpu, in place of hproj-main-video-migration): a project of clips written and opened again, and
+        // a 5.1 project's main video read as it is and told apart (LegacyMainVideo converts it as the view model opens it).
+        results.Add(MigrationTests.Format6Clips());
+        // hproj-51-import (5.2E, the user's answer): a 5.1 project opened in the view model, converted, and written over its
+        // own file under the same name by the window only (a harness's opening leaves it as it was).
+        if (filter is null || "hproj-51-import".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(MigrationTests.Import51());
         if (filter is null || "compositor-parity".Contains(filter, StringComparison.OrdinalIgnoreCase))
             results.AddRange(CompositorParityTests.All());
         if (filter is null || "gpu-scene-differential".Contains(filter, StringComparison.OrdinalIgnoreCase) || "gpu-scene-plan".Contains(filter, StringComparison.OrdinalIgnoreCase))
@@ -75,6 +96,10 @@ public static class Program
             results.Add(GpuExportTests.Commands());
         if (filter is null || "gpu-export".Contains(filter, StringComparison.OrdinalIgnoreCase))
             results.Add(GpuExportTests.Exports());
+        if (filter is null || "gpu-export-formats".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(GpuExportTests.Formats());
+        // copy-export-refused (5.2-Arm64AndNpu, the user's answer 5): a Copy export that cannot cut is refused before it starts.
+        results.Add(GpuExportTests.CopyRefusals());
         if (filter is null || "gpu-preview-command".Contains(filter, StringComparison.OrdinalIgnoreCase))
             results.Add(GpuExportTests.PreviewCommands());
         if (filter is null || "gpu-preview-window".Contains(filter, StringComparison.OrdinalIgnoreCase))
@@ -89,6 +114,9 @@ public static class Program
             results.Add(GpuSceneClipEffectTests.Run());
         if (filter is null || "gpu-picture-subtitles".Contains(filter, StringComparison.OrdinalIgnoreCase))
             results.Add(PictureSubtitleTests.Run());
+        // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
+        // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
+        results.AddRange(UiScaleTests.All());
         if (filter is not null)
             results = results.Where(r => r.Golden.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 

@@ -73,7 +73,7 @@ public static class EncoderProber
                 continue;
             }
 
-            var result = await TestEncodeAsync(encoder, "yuv420p", [], cancellationToken);
+            var result = await TestEncodeAsync(encoder, MediaFoundationEncoder.Is(encoder) ? MediaFoundationEncoder.PixelFormat(false) : "yuv420p", [], cancellationToken);
             if (result.ExitCode == 0)
             {
                 supported.Add(encoder);
@@ -121,7 +121,7 @@ public static class EncoderProber
         }
 
         (_refused, NvencNeedsOlderFfmpeg) = (refused, driverTooOld);
-        (_lastSupported, _lastProblems, _openClKnown) = (supported, problems, false);
+        (_lastSupported, _lastProblems) = (supported, problems);
         SaveResult();
         return (supported, problems);
     }
@@ -131,15 +131,15 @@ public static class EncoderProber
     // that only changes with FFmpeg or a driver. The answer is kept, with what it was found for (the FFmpeg
     // executable and each card's driver), and asked again only when one of those has changed, or from Settings.
 
-    private sealed record SavedResult(string Key, List<string> Supported, List<string> Problems, List<string> Refused, bool NvencNeedsOlderFfmpeg,
-        bool OpenClKnown, bool OpenClBlur, string OpenClDevice);
+    // (A result saved before 5.2-Arm64AndNpu also says whether FFmpeg's OpenCL blur ran: read without it, as unknown members are.)
+    // Internal for its generated metadata (AppSettingsJsonContext: read before the first frame).
+    internal sealed record SavedResult(string Key, List<string> Supported, List<string> Problems, List<string> Refused, bool NvencNeedsOlderFfmpeg);
 
     // Raised when what the tests check changes, so that a result saved by an older HandPeg is not used (2: the Media
-    // Foundation encoders, 5.0).
-    private const int TestsVersion = 2;
+    // Foundation encoders, 5.0; 3: tested in NV12, 5.2, so a Snapdragon's "none found" from before is asked again).
+    private const int TestsVersion = 3;
 
     private static List<string> _lastSupported = [], _lastProblems = [];
-    private static bool _openClKnown;
 
     private static string SavedPath => Path.Combine(AppPaths.Cache, "encoder-probe.json");
 
@@ -182,7 +182,7 @@ public static class EncoderProber
 
     /// <summary>
     /// The result saved by an earlier probe for this FFmpeg and these drivers, put back in place (what each
-    /// encoder can do, the OpenCL blur); null when there is none or it was found for something else.
+    /// encoder can do); null when there is none or it was found for something else.
     /// </summary>
     public static (List<string> Supported, List<string> Problems)? LoadSavedResult() => LoadSaved(checkCards: true);
 
@@ -190,16 +190,14 @@ public static class EncoderProber
     {
         try
         {
-            if (!File.Exists(SavedPath) || System.Text.Json.JsonSerializer.Deserialize<SavedResult>(File.ReadAllText(SavedPath)) is not { } saved
+            if (!File.Exists(SavedPath) || System.Text.Json.JsonSerializer.Deserialize(File.ReadAllText(SavedPath), AppSettingsJsonContext.Default.SavedResult) is not { } saved
                 || !(checkCards ? saved.Key == MachineKey() : saved.Key.LastIndexOf('|') is var bar and >= 0 && saved.Key[..bar] == FfmpegKey()))
             {
                 return null;
             }
 
             (_refused, NvencNeedsOlderFfmpeg) = ([.. saved.Refused], saved.NvencNeedsOlderFfmpeg);
-            (_lastSupported, _lastProblems, _openClKnown) = (saved.Supported, saved.Problems, saved.OpenClKnown);
-            if (saved.OpenClKnown)
-                (OpenClBlurAvailable, _openClDevice) = (saved.OpenClBlur, OpenClDevices.Contains(saved.OpenClDevice) ? saved.OpenClDevice : OpenClDevices[0]);
+            (_lastSupported, _lastProblems) = (saved.Supported, saved.Problems);
             _cardsUnchecked = checkCards ? null : saved.Key;
             Log($"Hardware encoders as found before for this FFmpeg{(checkCards ? " and these drivers" : " (its cards compared after the first frame)")}: {(saved.Supported.Count > 0 ? string.Join(", ", saved.Supported) : "none")}.");
             return (saved.Supported, saved.Problems);
@@ -209,9 +207,6 @@ public static class EncoderProber
             return null;
         }
     }
-
-    /// <summary>Whether the OpenCL blur's test has been made for the result in place, or has yet to be.</summary>
-    public static bool OpenClKnown => _openClKnown;
 
     /// <summary>Forgets the saved result: the next probe tests every encoder again (Settings, "Check Hardware Again").</summary>
     public static void ForgetSavedResult()
@@ -230,8 +225,8 @@ public static class EncoderProber
         try
         {
             Directory.CreateDirectory(AppPaths.Cache);
-            var saved = new SavedResult(MachineKey(), _lastSupported, _lastProblems, [.. _refused], NvencNeedsOlderFfmpeg, _openClKnown, OpenClBlurAvailable, _openClDevice);
-            File.WriteAllText(SavedPath, System.Text.Json.JsonSerializer.Serialize(saved));
+            var saved = new SavedResult(MachineKey(), _lastSupported, _lastProblems, [.. _refused], NvencNeedsOlderFfmpeg);
+            File.WriteAllText(SavedPath, System.Text.Json.JsonSerializer.Serialize(saved, AppSettingsJsonContext.Default.SavedResult));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -270,8 +265,9 @@ public static class EncoderProber
 
     // A real frame size and rate, in a pixel format the encodes use: NVENC and AMF reject frames below their
     // minimum size, and NVENC ones in a format it was not told to expect, which would make a working GPU
-    // look unsupported. A Media Foundation encoder is held to the hardware ("-hw_encoding 1"), as every export holds it:
-    // Windows' software encoder passing the test would offer a "hardware" encoder there is not.
+    // look unsupported. A Media Foundation encoder is tested in NV12 (MediaFoundationEncoder.PixelFormat: the Adreno's
+    // refuse yuv420p) and held to the hardware ("-hw_encoding 1"), as every export holds it: Windows' software encoder
+    // passing the test would offer a "hardware" encoder there is not.
     private static Task<BufferedCommandResult> TestEncodeAsync(string encoder, string pixelFormat, string[] options, CancellationToken cancellationToken,
         bool warnings = false) =>
         ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
@@ -293,56 +289,5 @@ public static class EncoderProber
     {
         System.Diagnostics.Trace.WriteLine($"[EncoderProber] {message}");
         AppLog.Write(message);
-    }
-
-    // The OpenCL devices to try, in order: whichever there is, and then, for a machine with more than one
-    // (where FFmpeg will not choose), each of the first few by its platform and device number.
-    private static readonly string[] OpenClDevices = ["opencl=ocl", "opencl=ocl:0.0", "opencl=ocl:1.0", "opencl=ocl:0.1"];
-
-    // The one of them that worked here.
-    private static string _openClDevice = OpenClDevices[0];
-
-    /// <summary>The filter options that give a graph an OpenCL device to upload its frames to.</summary>
-    public static string OpenClDeviceArguments => $"-init_hw_device {_openClDevice} -filter_hw_device ocl";
-
-    /// <summary>Whether the background blur can be done on the graphics card here: set by <see cref="ProbeOpenClBlurAsync"/>.</summary>
-    public static bool OpenClBlurAvailable { get; private set; }
-
-    /// <summary>
-    /// Finds out whether boxblur_opencl runs on this machine, the same way the encoders are tested: by blurring
-    /// a frame with it. FFmpeg having the filter says nothing about there being an OpenCL driver to run it.
-    /// </summary>
-    public static async Task<bool> ProbeOpenClBlurAsync(CancellationToken cancellationToken)
-    {
-        if (!File.Exists(DependencyUpdater.FfmpegPath))
-            return OpenClBlurAvailable = false;
-
-        var reason = "";
-        foreach (var device in OpenClDevices)
-        {
-            var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
-                .WithArguments(["-hide_banner", "-loglevel", "error", "-init_hw_device", device, "-filter_hw_device", "ocl",
-                    "-f", "lavfi", "-i", "color=size=640x360:rate=30", "-frames:v", "2",
-                    "-vf", "format=yuv420p,hwupload,boxblur_opencl=8:2,hwdownload,format=yuv420p", "-f", "null", "-"])
-                .WithValidation(CommandResultValidation.None), cancellationToken);
-
-            if (result.ExitCode == 0)
-            {
-                (_openClDevice, OpenClBlurAvailable, _openClKnown) = (device, true, true);
-                SaveResult();
-                return true;
-            }
-
-            reason = result.StandardError.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? $"exit code {result.ExitCode}";
-
-            // Only a machine with several devices is worth asking again, one device at a time.
-            if (!reason.Contains("More than one", StringComparison.OrdinalIgnoreCase) && device == OpenClDevices[0])
-                break;
-        }
-
-        AppLog.Write($"The OpenCL blur is not available, and the processor blurs instead: {reason}");
-        (OpenClBlurAvailable, _openClKnown) = (false, true);
-        SaveResult();
-        return false;
     }
 }

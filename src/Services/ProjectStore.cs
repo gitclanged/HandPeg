@@ -12,7 +12,8 @@ namespace HandPegApp.Services;
 /// <param name="FilePath">The project file itself.</param>
 /// <param name="SourceName">File name of the video the project was made from.</param>
 /// <param name="SourcePath">Full path (or URL) of that video.</param>
-public sealed record ProjectEntry(string FilePath, string Name, string SourceName, string SourcePath, DateTime SavedAt)
+/// <param name="Thumbnail">The project's baked thumbnail (a JPEG, Pass 5.2D); null when its file has none.</param>
+public sealed record ProjectEntry(string FilePath, string Name, string SourceName, string SourcePath, DateTime SavedAt, byte[]? Thumbnail = null)
 {
     public string SavedText => $"Saved {SavedAt:g}";
 }
@@ -36,6 +37,21 @@ public sealed record ProjectEntry(string FilePath, string Name, string SourceNam
 // Ctrl+Z goes on where the save left it. It is optional and left out when empty. Read leniently: a history of another
 // shape, or one that is not a history at all, is let go, never the project. A project bundle (.hpb, ProjectBundle) is a
 // format 6 project with the files it reads, in one archive.
+//
+// Pass 5.2D keeps format 6 too: a save carries a small JPEG of the Sequence at the playhead (thumbnailJpeg,
+// Base64, right after the header, where Explorer's preview reads it from the first kilobytes), optional and left out when there is none.
+//
+// 5.2-AuditB (no track is privileged, no file is "the main video") keeps format 6. What it adds is optional and left out
+// while unset (the timeline's naturalWidth and naturalHeight), and what it stops writing (the settings' VerticalFramer, the
+// clips of the legacy kinds) every reader of format 6 reads without. A project of 5.1's is told by what it holds, not by its
+// number (OldShapeOf): its clips of the main video (kind MainVideo), the cut-outs of it (kind Video), captions heard from
+// the main video's file. Such a project is read as it is and converted once, as it is opened (LegacyMainVideo, run by the view
+// model, which has the probed facts of the file it opens: 5.2-AuditB, refused from 5.2-Arm64AndNpu, converted again since
+// 5.2E, the user's answer); the window then writes the converted project over its own file. Its main streams' mixing
+// in sequence.audio (gain, filters, ducking, voice, slip, silenced pieces) is that conversion's input only: since 5.2-AuditB an
+// entry there is only what is made of a stream place in the output. Source.Path and
+// Source.LocalPath stay what they are: the file last opened (its Info, Streams and Download panes, the default output name),
+// which plays only through clips of it on the timeline.
 
 /// <summary>A project as it is written to disk.</summary>
 public sealed class ProjectFile
@@ -52,6 +68,15 @@ public sealed class ProjectFile
 
     /// <summary>The HandPeg that wrote the file ("HandPeg 4.3.0"). Named when a version too old for the file refuses it.</summary>
     public string? WrittenBy { get; set; }
+
+    /// <summary>
+    /// The project's thumbnail (Pass 5.2D): a small JPEG of the Sequence at the playhead as it was saved, in Base64,
+    /// for the Project Manager, the launch window and Windows Explorer's preview (ProjectThumbnail, the HandPeg.ShellThumbnails handler).
+    /// Right after the three above, so that a reader finds it in the file's first hundred kilobytes or so without reading the rest
+    /// (PeekHeader has stopped by then). Absent when the save had none; an older HandPeg reads past it.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThumbnailJpeg { get; set; }
 
     public string Name { get; set; } = "";
     public DateTime SavedAt { get; set; }
@@ -72,7 +97,7 @@ public sealed class ProjectFile
     public Dictionary<string, string>? Masks { get; set; }
 
     /// <summary>
-    /// What is known about seeking in the project's video files (the main video and every clip's video file), as it was at
+    /// What is known about seeking in the project's video files (every clip's video file), as it was at
     /// the save: taken up again on opening, for each file still exactly as it was, so the first graph can seek in them before
     /// anything is probed. Absent when nothing was known.
     /// </summary>
@@ -232,9 +257,10 @@ public sealed class ProjectSequence
     public ProjectBackground Background { get; set; } = new();
 
     /// <summary>
-    /// The main video's own audio streams, each as it is heard wherever the main video's clips are: what is done with it in
-    /// the output (copied, encoded again, dropped; its codec, bitrate and title), its place in the mix (its gain, filters,
-    /// ducking, and whether it is the voice), and its edits (its slip and its silenced stretches, in the file's own seconds).
+    /// The output's audio tracks by stream place (5.2-AuditB): what is done with each in the output (copied, encoded again,
+    /// dropped; its codec, bitrate and title). In a project from before, also each of the main video's own streams as it
+    /// was heard (its gain, filters, ducking, voice, slip and silenced stretches): the input of the conversion that put them
+    /// on the Sub-Lanes of its clips (5.2-AuditB), which the app no longer makes (5.2-Arm64AndNpu); kept as it is written.
     /// </summary>
     public List<AudioTrackState> Audio { get; set; } = [];
 
@@ -503,13 +529,37 @@ public static class ProjectStore
 
     /// <param name="unpackMasks">Write the masks the project carries into the masks folder and point its looks at them, take up the seek indexes of its video files, and read its undo history (4.4): when it is being opened, not when it is only being listed.</param>
     /// <param name="allowNewer">Read a file of a newer format too, as far as this version knows it, instead of refusing it: for when the user asked to open it anyway.</param>
-    public static ProjectState Load(string filePath, bool unpackMasks = true, bool allowNewer = false) => Deserialize(File.ReadAllText(filePath), unpackMasks, allowNewer);
+    public static ProjectState Load(string filePath, bool unpackMasks = true, bool allowNewer = false) =>
+        Deserialize(PortableProject.Resolve(File.ReadAllText(filePath), filePath), unpackMasks, allowNewer);
+
+    /// <summary>
+    /// The file of a saved project by its name (the Swap Project list): Projects\Name.hproj, or a fully portable one's
+    /// Projects\Name\Name.hproj (5.2A); the first when neither is there.
+    /// </summary>
+    public static string PathOfName(string name)
+    {
+        var flat = Path.Combine(Folder, name + Extension);
+        var portable = PortableProject.PathFor(name);
+        return !File.Exists(flat) && File.Exists(portable) ? portable : flat;
+    }
+
+    /// <summary>The saved projects in the Projects folder: its .hproj files, and each fully portable project's in a folder of its own (5.2A).</summary>
+    public static IEnumerable<FileInfo> ProjectFiles()
+    {
+        if (!Directory.Exists(Folder))
+            return [];
+
+        var folder = new DirectoryInfo(Folder);
+        var portable = folder.EnumerateDirectories().Select(d => new FileInfo(Path.Combine(d.FullName, d.Name + Extension))).Where(f => f.Exists);
+        return folder.EnumerateFiles("*" + Extension).Concat(portable);
+    }
 
     /// <summary>
     /// Reads a format 6 project from its text, its timeline with it (<see cref="ProjectState.Timeline"/>). What the text says
     /// it is is read first, before anything else of it: a file that is not a HandPeg project, or one of formats 1 to 5 (which
     /// are not converted), is refused with <see cref="InvalidDataException"/> saying so, and one of a newer format with
     /// <see cref="NewerProjectFormatException"/> unless <paramref name="allowNewer"/>. A project without its timeline is refused.
+    /// One of the shape before 5.2-AuditB (<see cref="OldShapeOf"/>) is read as it is: the view model converts it as it opens it.
     /// </summary>
     public static ProjectState Deserialize(string json, bool unpackMasks = false, bool allowNewer = false)
     {
@@ -530,7 +580,56 @@ public static class ProjectStore
         var file = JsonSerializer.Deserialize<ProjectFile>(json, JsonOptions) ?? throw new InvalidDataException("The project file is empty.");
         if (file.Timeline is not { } timeline)
             throw new InvalidDataException("This project has no timeline: a format 6 project keeps its tracks and clips there.");
+
         return FromFile(file, timeline, unpackMasks);
+    }
+
+    // ----- Projects of the shape before 5.2-AuditB (converted as they are opened: MainViewModel.ConvertLegacy) -----
+
+    /// <summary>A clip of the kinds only a project from before 5.2-AuditB holds: the main video (MainVideo) or a cut-out of it (Video).</summary>
+    public static bool IsOldKind(TimelineClip? clip) => clip?.ContentKind is LayerKind.MainVideo or LayerKind.Video;
+
+    /// <summary>
+    /// Whether a timeline (with its recycle bin) holds a clip of the old kinds (<see cref="IsOldKind"/>): on a track, in a fold, or
+    /// in the bin, with whatever went there with a clip. What a project of 5.2-AuditB and since never holds: a Game Preset's
+    /// cut-out of the video becomes a clip of the video's own file as it is put on the timeline.
+    /// </summary>
+    public static bool HoldsOldKinds(TimelineDocument timeline, IEnumerable<DeletedClip?>? bin)
+    {
+        static bool Holds(DeletedClip? deleted) => deleted is not null && (IsOldKind(deleted.Clip) || (deleted.Children ?? []).Any(Holds));
+        return (timeline.Tracks ?? []).Exists(t => (t?.Clips ?? []).Exists(IsOldKind))
+               || (timeline.Folds ?? []).Exists(f => (f?.Clips ?? []).Any(c => IsOldKind(c?.Clip)))
+               || (bin ?? []).Any(Holds);
+    }
+
+    /// <summary>
+    /// What makes a project one of the shape before 5.2-AuditB, in words for the log and the status line as it is converted: a clip of the main video or
+    /// a cut-out of it (<see cref="HoldsOldKinds"/>), or captions heard from the main video's file (a subtitle track's
+    /// <see cref="CaptionSourceKind.MainFile"/> source). Null for a project of the current shape. The old stream mixing a 5.1
+    /// project kept in sequence.audio (gain, filters, ducking, voice, slip, silenced pieces) is not a sign of it: only the
+    /// conversion read it, and a project of 5.2 may still carry the duck a preset once set there, which nothing reads.
+    /// </summary>
+    public static string? OldShapeOf(TimelineDocument timeline, IEnumerable<DeletedClip?>? bin, SubtitleTrackData? subtitles)
+    {
+        var clips = new List<TimelineClip>();
+        foreach (var track in timeline.Tracks ?? [])
+            clips.AddRange((track?.Clips ?? []).Where(IsOldKind));
+        foreach (var fold in timeline.Folds ?? [])
+            clips.AddRange((fold?.Clips ?? []).Select(c => c?.Clip).Where(IsOldKind).OfType<TimelineClip>());
+
+        if (clips.Count == 0 && HoldsOldKinds(timeline, bin))
+            return "clips of the main video in its recycle bin";
+        if (clips.Count > 0)
+        {
+            var (main, cut) = (clips.Count(c => c.ContentKind == LayerKind.MainVideo), clips.Count(c => c.ContentKind == LayerKind.Video));
+            return string.Join(" and ", new[]
+            {
+                main > 0 ? $"{main} clip{(main == 1 ? "" : "s")} of the main video" : null,
+                cut > 0 ? $"{cut} cut-out{(cut == 1 ? "" : "s")} of it" : null,
+            }.OfType<string>());
+        }
+
+        return subtitles?.Source is { Kind: CaptionSourceKind.MainFile } ? "its captions are heard from the main video's file" : null;
     }
 
     /// <summary>A timeline as a format 6 file writes it: camel case, enums by name, nothing at its default.</summary>
@@ -603,6 +702,7 @@ public static class ProjectStore
             Format = ProjectFile.FormatName,
             Version = ProjectFile.CurrentVersion,
             WrittenBy = WriterName,
+            ThumbnailJpeg = state.ThumbnailJpeg is { Length: > 0 } thumbnail ? Convert.ToBase64String(thumbnail) : null,
             Name = state.Name,
             SavedAt = state.SavedAt,
             Source = new ProjectSource
@@ -736,10 +836,13 @@ public static class ProjectStore
         return history;
     }
 
-    /// <summary>The video files a project plays: the main video, and the file of every clip that plays one (the main video's clips, video files), once each.</summary>
+    /// <summary>
+    /// The video files a project plays: the file of every clip that plays one, once each (5.2-AuditB: from the clips alone; the
+    /// file last opened is one only while a clip plays it). A project of the shape before 5.2-AuditB, read but not opened (the
+    /// golden tests' fixtures, which are converted after), still names its main video by its clips of the legacy kind.
+    /// </summary>
     private static IEnumerable<string> VideoFiles(ProjectState state) =>
         state.Timeline.Tracks.SelectMany(t => t.Clips).Where(c => c.ContentKind is LayerKind.VideoFile or LayerKind.MainVideo).Select(c => c.SourcePath)
-            .Prepend(state.LocalMediaPath)
             .Select(p => (p ?? "").Trim().Trim('"')).Where(p => p.Length > 0 && !p.Contains("://", StringComparison.Ordinal)).Distinct(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -823,6 +926,7 @@ public static class ProjectStore
             CaptionAudioPath = sequence.CaptionAudioPath,
             CaptionUseExternalAudio = sequence.CaptionUseExternalAudio,
             CaptionAudioTrackIndex = sequence.CaptionAudioTrack,
+            ThumbnailJpeg = ThumbnailOf(file.ThumbnailJpeg),
         };
 
         // Opened (not only listed): its video files are made ready to be seeked in now, before the first graph is built, and
@@ -836,6 +940,22 @@ public static class ProjectStore
         return state;
     }
 
+    /// <summary>The project's thumbnail as the file carries it (Base64 of a JPEG); none when it is not Base64 (read leniently: the picture is let go, never the project).</summary>
+    private static byte[]? ThumbnailOf(string? base64)
+    {
+        if (string.IsNullOrEmpty(base64))
+            return null;
+
+        try
+        {
+            return Convert.FromBase64String(base64);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>
     /// Saved projects (the .hproj files), most recently saved first: format 6's, and a newer format's (which asks before it
     /// opens). Files that cannot be read are left out, and so are projects of formats 2 to 5, which this version does not open.
@@ -846,7 +966,7 @@ public static class ProjectStore
         if (!Directory.Exists(Folder))
             return entries;
 
-        foreach (var file in new DirectoryInfo(Folder).EnumerateFiles("*" + Extension).OrderByDescending(f => f.LastWriteTime))
+        foreach (var file in ProjectFiles().OrderByDescending(f => f.LastWriteTime))
         {
             try
             {
@@ -857,7 +977,8 @@ public static class ProjectStore
                     Path.GetFileNameWithoutExtension(file.Name),
                     isUrl ? Path.GetFileName(state.LocalMediaPath) : Path.GetFileName(state.SourcePath),
                     state.SourcePath,
-                    file.LastWriteTime));
+                    file.LastWriteTime,
+                    state.ThumbnailJpeg));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
             {

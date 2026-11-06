@@ -20,7 +20,7 @@ public static partial class EffectRegistry
 
     private static EffectParam RunsFor(double seconds, double most = 10) =>
         new("duration", "Duration", Min: 0.05, Max: most, Default: seconds, Step: 0.05, Unit: "s")
-            { GpuProgress = true, Tip = "How long it takes to play through, from the start of its clip (or of the card's range)." };
+            { GpuProgress = true, Tip = "How long it takes to play through, from the start of its clip (or of the effect's range)." };
 
     private static EffectParam LightSpill(double value) =>
         new("spill", "Light Spill", Default: value, Animation: ParamAnimation.Expression)
@@ -28,6 +28,49 @@ public static partial class EffectRegistry
 
     private static EffectParam Seed() =>
         new("seed", "Variation", Min: 0, Max: 100, Default: 7, Step: 1) { IsAdvanced = true, Tip = "A different one each number, the same one every time for any number." };
+
+    // Its turn about its middle (5.2, the user's call), clockwise on the picture: the last lane its shader reads (Vfx.hlsl, Light.hlsl's PSStreak).
+    private static EffectParam Rotation(string what) =>
+        new("rotation", "Rotation", Min: -180, Max: 180, Default: 0, Step: 1, Unit: "°", Animation: ParamAnimation.Expression)
+            { Tip = $"Turns {what} about its middle, clockwise on the picture: 0° as it comes. Keyframe it to spin it." };
+
+    // The audio-reactive pulse (5.2B, Services/Audio/AudioReactive.cs): how much the Sequence's sound in a band lifts the effect's strength frame
+    // by frame, 1 + pulse x the band's energy (SceneRenderer.Fx.cs, Pulse). In the lanes after the effect's own: its second packet's first two
+    // (the Glow, the Neon Rim, the Shockwave: a packet sent only while the pulse is in use, EffectDefinition.GpuPulsePacket), the Anime Lines'
+    // last two. 0, as it comes, sends the shader what it always had, in the packets it always had.
+
+    /// <summary>The keys of the Audio Reactive Pulse (%) and its Pulse Band (Bass, Mid, High, All) on the cards that carry them.</summary>
+    public const string AudioPulseKey = "audioPulse", AudioBandKey = "audioBand";
+
+    /// <summary>
+    /// Whether an Audio Reactive Pulse is in use (5.2B): with keyframes, any of them above 0 (keys all at 0 hold it at 0 throughout), else its
+    /// value above 0; as the card's packet reads it (its keys first). One test for the card's packets (EffectInstance.EvaluateGpuPacket) and
+    /// for whether a map of the sound is worth making (AudioReactive.Pulses). Nothing allocated.
+    /// </summary>
+    public static bool PulseInUse(IReadOnlyList<Keyframe>? keys, double value)
+    {
+        if (keys is not { Count: > 0 })
+            return value > 0;
+        for (var k = 0; k < keys.Count; k++)
+        {
+            if (keys[k].Value > 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static EffectParam AudioPulse(string what) =>
+        new(AudioPulseKey, "Audio Reactive Pulse", Min: 0, Max: 100, Default: 0, Step: 1, Unit: "%", Animation: ParamAnimation.Expression)
+            { Tip = $"How much the Sequence's sound lifts {what}, frame by frame: at 100 % a full beat in the Pulse Band doubles it. 0 % leaves it as set." };
+
+    private static EffectParam AudioBand() =>
+        new(AudioBandKey, "Pulse Band", ParamKind.Choice)
+        {
+            TextDefault = "bass",
+            Choices = [("bass", "Bass"), ("mid", "Mid"), ("high", "High"), ("all", "All")],
+            Tip = "Which part of the sound it follows: the kick and the bass (20-160 Hz), voices and most instruments (160 Hz-2 kHz), cymbals and hiss (2-10 kHz), or the loudest of the three.",
+        };
 
     private static void RegisterGpuFx()
     {
@@ -55,9 +98,12 @@ public static partial class EffectRegistry
                 new("halation", "Halation", Default: 0, Animation: ParamAnimation.Expression) { Starting = 0.6, Tip = "0 the highlights' own colour; 1 film's halo, in the Halation Color." },
                 new("color", "Halation Color", ParamKind.Color) { TextDefault = "#FF4A1C", IsAdvanced = true },
                 new("mix", "Mix", Min: 0, Max: 100, Default: 100, Step: 1, Unit: "%", Animation: ParamAnimation.Expression) { IsAdvanced = true, Tip = "How much of the glow's picture is laid over the original." },
+                AudioPulse("the glow"),
+                AudioBand(),
             ], EffectCost.Amber)
         {
-            GpuSlot = GpuShaderSlot.HalationGlow, GpuOnly = true, Description = "Light blooming from the highlights in linear light, with film's warm halo round them.",
+            // Its Audio Reactive Pulse in a second packet, sent only while the pulse is in use (5.2B).
+            GpuSlot = GpuShaderSlot.HalationGlow, GpuPulsePacket = 1, GpuOnly = true, Description = "Light blooming from the highlights in linear light, with film's warm halo round them.",
         });
 
         Register(new(AnamorphicLens, "Anamorphic Lens", "Look", EffectZone.Look,
@@ -67,9 +113,11 @@ public static partial class EffectRegistry
                 new("length", "Streak Length", Default: 0.6) { Tip = "How far the flares run across the picture." },
                 new("color", "Streak Color", ParamKind.Color) { TextDefault = "#3A7BFF" },
                 new("lens", "Barrel & Fringe", Default: 0, Animation: ParamAnimation.Expression) { Starting = 0.3, Tip = "The lens's bow and the colour fringe towards its corners." },
+                Rotation("the flares"),
             ], EffectCost.Amber)
         {
-            GpuSlot = GpuShaderSlot.ShockwaveLens, GpuVariant = 1, GpuOnly = true, Description = "A cinema lens: long blue flares off bright lights, a slight bow and a colour fringe at the corners.",
+            GpuSlot = GpuShaderSlot.ShockwaveLens, GpuVariant = 1, GpuVariantLane = GpuEffectPacket.Lanes - 1, GpuOnly = true,
+            Description = "A cinema lens: long blue flares off bright lights, a slight bow and a colour fringe at the corners.",
         });
 
         Register(new(NeonRim, "Neon Rim Light", "Composite", EffectZone.Composite,
@@ -79,9 +127,13 @@ public static partial class EffectRegistry
                 new("glow", "Glow Reach", Min: 0, Max: 128, Default: 24, Step: 1, Unit: "px", Animation: ParamAnimation.Expression) { Tip = "How far the light falls off the line." },
                 new("strength", "Strength", Min: 0, Max: 4, Default: 1.5, Animation: ParamAnimation.Expression) { Tip = "Keyframe it to make the sign flicker." },
                 new("inward", "Inner Light", Default: 0.25) { IsAdvanced = true, Tip = "How much of the light also falls inside the shape." },
+                AudioPulse("the rim's light"),
+                AudioBand(),
             ], EffectCost.Amber)
         {
-            GpuSlot = GpuShaderSlot.RimGlass, GpuOnly = true, Once = true,
+            // Its first packet's last lane stays its variant's (0: Frosted Glass's is 1), so the pulse goes on in a second packet, sent only while
+            // the pulse is in use (5.2B).
+            GpuSlot = GpuShaderSlot.RimGlass, GpuVariantLane = GpuEffectPacket.Lanes - 1, GpuPulsePacket = 1, GpuOnly = true, Once = true,
             Description = "A neon line and its glow round the clip's exact shape: its mask, its key, its rounded corners, drawn from a distance field. The glow runs off the clip's box.",
         });
 
@@ -107,9 +159,13 @@ public static partial class EffectRegistry
                 new("reach", "Reach", Min: 5, Max: 150, Default: 90, Step: 1, Unit: "%") { Tip = "How far the ring gets, in % of the picture's height." },
                 new("ring", "Ring Width", Min: 2, Max: 60, Default: 22, Step: 1, Unit: "%") { IsAdvanced = true, Tip = "How thick the ring is, as a share of how far it has got." },
                 new("shake", "Camera Shake", Min: 0, Max: 120, Default: 24, Step: 1, Unit: "px", Animation: ParamAnimation.Expression) { Tip = "How hard the frame shakes, dying away as the ring goes out." },
+                AudioPulse("the ring and the shake"),
+                AudioBand(),
             ], EffectCost.Green)
         {
-            GpuSlot = GpuShaderSlot.ShockwaveLens, GpuOnly = true,
+            // Its first packet's last lane stays its variant's (0: the Anamorphic Lens's is 1), so the pulse goes on in a second packet, sent only
+            // while the pulse is in use (5.2B).
+            GpuSlot = GpuShaderSlot.ShockwaveLens, GpuVariantLane = GpuEffectPacket.Lanes - 1, GpuPulsePacket = 1, GpuOnly = true,
             Description = "A ring of bent air going out from a point, and a camera shake. Works on what is under it on an adjustment clip.",
         });
 
@@ -123,6 +179,7 @@ public static partial class EffectRegistry
                 new("smoke", "Smoke", Default: 0.7) { Tip = "How much dark smoke it leaves." },
                 LightSpill(0.7),
                 Seed(),
+                Rotation("the fireball"),
             ], EffectCost.Red)
         {
             GpuSlot = GpuShaderSlot.Explosion, GpuOnly = true, Description = "A raymarched 3D fireball that bursts, rolls, cools and leaves smoke, and lights what is under it.",
@@ -143,6 +200,7 @@ public static partial class EffectRegistry
                 LightSpill(0.5),
                 Seed(),
                 new("direction", "Direction", Min: -180, Max: 180, Default: -90, Step: 1, Unit: "°") { IsAdvanced = true, Tip = "Where the fan points: -90° straight up, 0° to the right." },
+                Rotation("the whole burst, its fall too,"),
             ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.Sparks, GpuOnly = true, Description = "Sparks and tumbling debris flying out in 3D, falling, cooling, lighting what is under them.",
@@ -161,6 +219,9 @@ public static partial class EffectRegistry
                 new("color", "Line Color", ParamKind.Color) { TextDefault = "#FFFFFF" },
                 LightSpill(0.1),
                 Seed(),
+                Rotation("the lines"),
+                AudioPulse("the lines' weight"),
+                AudioBand(),
             ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.AnimeLines, GpuOnly = true, Description = "Hand-drawn looking impact or speed lines, new ones several times a second.",
@@ -177,6 +238,7 @@ public static partial class EffectRegistry
                 LightSpill(0.5),
                 new("pulse", "Pulse Rate", Min: 0, Max: 4, Default: 0.8) { IsAdvanced = true, Tip = "Waves of light across it, each second." },
                 Seed(),
+                Rotation("the shield's hexagons"),
             ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.EnergyField, GpuOnly = true, Description = "A dome of hexagons with a bright rim, lighting what is round it.",
@@ -194,6 +256,7 @@ public static partial class EffectRegistry
                 new("width", "Core Width", Min: 1, Max: 60, Default: 9, Step: 0.5, Unit: "px", Animation: ParamAnimation.Expression),
                 new("glow", "Glow", Min: 0, Max: 3, Default: 1, Animation: ParamAnimation.Expression),
                 new("flicker", "Flicker", Default: 0.3) { IsAdvanced = true },
+                Rotation("the blade"),
             ], EffectCost.Green)
         {
             GpuSlot = GpuShaderSlot.EnergyField, GpuVariant = 1, GpuOnly = true, Description = "A blade of light with a white core: keyframe its two ends to swing it. Lights what is under it.",

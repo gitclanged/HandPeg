@@ -47,6 +47,8 @@ internal sealed class ProjectSession : IDisposable
             throw new TimeoutException("The project did not open within two minutes.");
         loading.GetAwaiter().GetResult();
         log.WriteLine($"Opened: {ViewModel.StatusText}");
+        if (ViewModel.ConvertedFrom is { } from)
+            log.WriteLine($"Converted as it was opened, in memory only (the file is left as it is): {from}");
     }
 
     public static ProjectSession Open(string project, TextWriter log) => new(project, log);
@@ -60,7 +62,7 @@ internal sealed class ProjectSession : IDisposable
         List<string> Missing()
         {
             var missing = new List<string>();
-            var timeline = FilterGraphBuilder.Lowering(State());
+            var timeline = HandPegApp.Services.Gpu.TimelineLowering.Lowering(State());
             foreach (var layer in timeline.Stack.Where(l => l.IsVideoFile))
             {
                 var file = layer.ImagePath.Trim().Trim('"');
@@ -80,24 +82,16 @@ internal sealed class ProjectSession : IDisposable
 
     /// <summary>
     /// Switches the proxies on or off (in this process): the clips whose file has a proxy made already are set to Optimize
-    /// Long-GOP Clip for Scrubbing (on) or back (off), the main video's too when <paramref name="mainProxy"/> names a file
-    /// to stand for it (5.0-Verify: proxies are asked for clip by clip, nothing is made by itself; a file with no proxy is
-    /// left alone, so none is made while the harness runs); then lets the app bring its proxies in line, as it does after
-    /// every change. Returns the proxies the app now plays, by the file they stand for.
+    /// Long-GOP Clip for Scrubbing (on) or back (off) (5.0-Verify: proxies are asked for clip by clip, nothing is made by itself;
+    /// a file with no proxy is left alone, so none is made while the harness runs; 5.2-AuditB: the file opened is a clip's file
+    /// like any other, with no proxy of its own); then lets the app bring its proxies in line, as it does after every change.
+    /// Returns the proxies the app now plays, by the file they stand for.
     /// </summary>
-    public IReadOnlyDictionary<string, string> UseProxies(bool on, string? mainProxy)
+    public IReadOnlyDictionary<string, string> UseProxies(bool on)
     {
-        if (mainProxy is not null)
+        foreach (var clip in ViewModel.Layers.Where(l => !l.IsDeleted && l.IsVideoFile).ToList())
         {
-            var made = (Dictionary<string, string>)typeof(MainViewModel).GetField("_proxies", Hidden)!.GetValue(ViewModel)!;
-            made[ViewModel.LocalMediaPath.Trim().Trim('"')] = mainProxy;
-        }
-
-        foreach (var clip in ViewModel.Layers.Where(l => !l.IsDeleted).ToList())
-        {
-            var hasProxy = clip.IsVideoFile ? ProxyCache.Find(clip.ImagePath.Trim().Trim('"'), ViewModel.CurrentProjectPath) is not null
-                : clip.IsMainVideo && mainProxy is not null;
-            if (hasProxy)
+            if (ProxyCache.Find(clip.ImagePath.Trim().Trim('"'), ViewModel.CurrentProjectPath) is not null)
                 ViewModel.SetProxyChoice(clip, on ? ProxyChoice.Make : ProxyChoice.Auto);
         }
 

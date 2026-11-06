@@ -1,0 +1,7 @@
+# Studio Voice (5.2B): left out at a mix of 0, the input exactly Latency late when keyed to 0, a voice's noise floor down and its harmonics kept at 100 %.
+switched on at a mix of 0 with no keys: no effect in the chain
+switched on as it comes: one effect, at a mix of 0.85
+a track's render with it at 0: the same samples, bit for bit
+a clip's own Studio Voice on at 0 with no keys: the clip stays on its track's strip, its render (clip +2 dB, track -6 dB) bit for bit the one without it
+keyed to 0: every sample the input's 512 samples before (silence before them), bit for bit
+at 100 %: the pauses' noise at least 8 dB lower, the 300-3400 Hz harmonics within 2 dB of what they were

@@ -12,23 +12,13 @@ namespace HandPegApp;
 public partial class MainWindow
 {
     /// <summary>
-    /// Remove Dead Air on what is given: a video layer or a sound clip, an audio track, or (null) the main video. The dialog
-    /// asks how (by the sound's silences, or the gaps between captioned words, 4.4) and whether to mark or delete.
+    /// Remove Dead Air on what is given: a clip with sound of its own, a video (its file's clips, by its first stream), or (null) the
+    /// sound marked as the voice, else the video at the playhead (5.2-AuditB). The dialog asks how (by the sound's silences, or the
+    /// gaps between captioned words, 4.4) and whether to mark or delete.
     /// </summary>
     internal void RunDeadAir(object? target)
     {
-        // A clip of the main video is the main video: heard through its file's tracks, and cut on every unlocked track.
-        if (target is Layer { IsMainVideo: true })
-            target = null;
-
-        // With nothing chosen, the main video listens to its Voice track when one is marked (4.3E).
-        var name = (target ?? _viewModel.AudioTracks.FirstOrDefault(t => t.IsVoice)) switch
-        {
-            Layer layer => layer.Name,
-            AudioTrack track => $"the video, listening to {track.Title}",
-            _ => "the video",
-        };
-        var dialog = new DeadAirDialog(name) { Owner = this };
+        var dialog = new DeadAirDialog(_viewModel.DeadAirTargetName(target)) { Owner = this };
         if (dialog.ShowDialog() == true)
             _viewModel.RunDeadAir(dialog.Mode, target, dialog.Source);
     }
@@ -91,7 +81,7 @@ public partial class MainWindow
         menu.Items.Add(burn);
         Add("Caption Style...", OpenCaptionStyle, true, "The font, its size and colours, the outline, and how the words appear (Karaoke Sweep, TikTok Pop).");
         Add("Caption Position & Look...", () => ShowLayerProperties(_viewModel.CaptionLayer), true,
-            "The caption box as a layer: its opacity, corners, soft edges and drop shadow. Move and size it on the Canvas.");
+            "The caption box as a clip: its opacity, corners, soft edges and drop shadow. Move and size it on the Canvas.");
         Add("Restore Caption Position", () => _viewModel.ResetCaptionLayerCommand.Execute(null), true,
             "Puts the caption box back where it starts: across the lower part of the frame.");
 
@@ -103,7 +93,7 @@ public partial class MainWindow
         Add("Send Captions Back", () => _viewModel.MoveCaptionsInStack(-1), hasSource && _viewModel.CaptionsPlace > 0,
             $"Puts the captions under the next track down: a HUD or a picture over them covers them, in the preview and in every export. {_viewModel.CaptionsPlaceText()}");
         Add("Captions Over Everything", () => _viewModel.PutCaptionsAt(int.MaxValue, "put the captions over everything"), hasSource && !onTop,
-            "Puts the captions back over every layer and the fades, where they start.");
+            "Puts the captions back over every track and the fades, where they start.");
         Add("Split Caption at Playhead", () => SplitCaptionAt(_viewModel.PositionMs / 1000), hasSource && _viewModel.HasTextCues,
             "Splits the caption under the playhead in two at the word there: the words said before it stay, the rest are a caption of their own.");
         menu.Items.Add(new Separator());

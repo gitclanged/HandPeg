@@ -1,0 +1,9 @@
+# A clip's own On/Off is its alone; a track header's takes its family; a child's Lock to its clip.
+ok: a clip turned off by its own switch: left out of the picture
+ok: its Cutout keeps its own switch: still drawn
+ok: the track header's eye hides the family: the track and its stack, no clip's own switch touched
+ok: the stack's tracks are hidden through their parent
+ok: shown again, the clip turned off alone stays off; its Cutout shows
+ok: a Cutout has a Lock, locked to its clip; its clip has none
+ok: unlocked: no longer its clip's child, free on its own
+ok: locked again to the clip it lies over

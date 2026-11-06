@@ -81,10 +81,13 @@ public partial class SettingsWindow
         UpdateTitleStatus();
     }
 
-    // Maximized, a window that draws its own frame reaches past the screen's edges by its frame: its content is kept inside.
+    // Maximized, a window that draws its own frame reaches past the screen's edges by its frame: its content is kept inside,
+    // and its client area short of a taskbar that hides itself (made maximized before its hook was there: CoverWindow).
     private void ApplyFrame()
     {
         var maximized = WindowState == WindowState.Maximized;
+        if (maximized)
+            MainWindow.KeepClearOfHiddenTaskbarNow(new WindowInteropHelper(this).Handle);
         ScreenRoot.Margin = maximized ? MainWindow.MaximizedFrameInset(this) : new Thickness(0);
         MaximizeButton.Content = maximized ? "" : "";
         MaximizeButton.ToolTip = maximized ? "Restore Down" : "Maximize";

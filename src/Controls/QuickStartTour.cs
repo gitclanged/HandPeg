@@ -78,7 +78,11 @@ public sealed class QuickStartTour
 
         var ring = new Border { CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(2), IsHitTestVisible = false };
         ring.SetResourceReference(Border.BorderBrushProperty, "AccentBrush");
-        _ring = new Popup { AllowsTransparency = true, StaysOpen = true, Placement = PlacementMode.Relative, IsHitTestVisible = false, Child = ring };
+        _ring = new Popup { AllowsTransparency = true, StaysOpen = true, IsHitTestVisible = false, Child = ring };
+
+        // Popups made here are windows of their own: drawn at the editor's own scale (5.2), not at the monitor's.
+        Services.UiScale.Track(_card);
+        Services.UiScale.Track(_ring);
     }
 
     /// <summary>Raised once when the tour ends, finished or skipped (<c>true</c>), or stopped from outside (<c>false</c>).</summary>
@@ -128,7 +132,10 @@ public sealed class QuickStartTour
     }
 
     // Beside what the card is about (below it, above it, or over its middle: the first that fits on the screen), with the
-    // ring around it; on the window's middle when it is not shown.
+    // ring around it; on the window's middle when it is not shown. Both are placed in the target's own device pixels (5.2):
+    // the ring by UiScale.PlaceRelative (Relative placement is mirrored on a touch PC set right-handed, which put it beside
+    // its target), the card by PlaceCard. The ring is as large as the target is on the screen (PointToScreen, device pixels)
+    // in the editor's pixels per DIP (VisualTreeHelper.GetDpi), which the ring's popup is drawn at (UiScale.Track).
     private void Place()
     {
         if (_index < 0 || _hidden)
@@ -147,16 +154,19 @@ public sealed class QuickStartTour
         if (shown)
         {
             const double Pad = 4;
-            _ring.PlacementTarget = target;
-            (_ring.HorizontalOffset, _ring.VerticalOffset) = (-Pad, -Pad);
+            var perDip = VisualTreeHelper.GetDpi(_owner).DpiScaleX;
+            var (from, to) = (target.PointToScreen(new Point(0, 0)), target.PointToScreen(new Point(target.ActualWidth, target.ActualHeight)));
             var ring = (Border)_ring.Child;
-            (ring.Width, ring.Height) = (target.ActualWidth + 2 * Pad, target.ActualHeight + 2 * Pad);
+            (ring.Width, ring.Height) = (Math.Abs(to.X - from.X) / perDip + 2 * Pad, Math.Abs(to.Y - from.Y) / perDip + 2 * Pad);
+            var targetPerDip = target.ActualWidth > 0 ? Math.Abs(to.X - from.X) / target.ActualWidth : perDip;
+            Services.UiScale.PlaceRelative(_ring, target, -Pad * perDip / targetPerDip, -Pad * perDip / targetPerDip);
             _ring.IsOpen = true;
         }
 
         _card.IsOpen = true;
     }
 
+    // Sizes and points in device pixels, as WPF hands them over: the 12 DIP gap is the editor's 12 DIPs.
     private CustomPopupPlacement[] PlaceCard(Size popup, Size target, Point offset)
     {
         var centredX = (target.Width - popup.Width) / 2;
@@ -164,10 +174,11 @@ public sealed class QuickStartTour
         if (_card.Tag is not true)
             return [middle];
 
+        var gap = 12 * VisualTreeHelper.GetDpi(_owner).DpiScaleX;
         return
         [
-            new(new Point(centredX, target.Height + 12), PopupPrimaryAxis.Horizontal),
-            new(new Point(centredX, -popup.Height - 12), PopupPrimaryAxis.Horizontal),
+            new(new Point(centredX, target.Height + gap), PopupPrimaryAxis.Horizontal),
+            new(new Point(centredX, -popup.Height - gap), PopupPrimaryAxis.Horizontal),
             middle,
         ];
     }

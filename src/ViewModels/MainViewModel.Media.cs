@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using HandPegApp.Models;
+using HandPegApp.Models.Timeline;
 using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
@@ -10,6 +11,44 @@ namespace HandPegApp.ViewModels;
 // What is known about the loaded source: its tracks, the Properties tab, and the size estimate.
 public partial class MainViewModel
 {
+    // ----- HEVC on the processor (5.2A, the user's Q5: a hint, never a dialog) -----
+
+    // Whether Windows has an HEVC decoder of its own (Media Foundation's: the Store's HEVC Video Extensions), asked once a session off this
+    // thread; and whether the hint has been given this session.
+    private static Task<bool>? _hevcInWindows;
+    private bool _hevcHinted;
+
+    /// <summary>
+    /// A video of HEVC opened where Windows has no HEVC decoder: it plays at once, through the compositor's processor decoder (FFmpeg, 5.2-Arm64AndNpu),
+    /// and the status bar says so once a session, with what would put its decoding on the graphics card. No dialog, nothing to answer.
+    /// </summary>
+    private void NoteHevcDecoder(VideoStreamInfo? video)
+    {
+        if (_hevcHinted || _isBackgroundWorker || video is null || !(video.Codec.Equals("hevc", StringComparison.OrdinalIgnoreCase) || video.Codec.Equals("h265", StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        _hevcHinted = true;
+        _ = HintHevcAsync();
+    }
+
+    private async Task HintHevcAsync()
+    {
+        try
+        {
+            _hevcInWindows ??= Task.Run(() => Compositor.HardwareBenchmark.MediaFoundationDecoders().Contains("HEVC"));
+            if (await _hevcInWindows)
+                return;
+
+            // After what the opening itself says (its own line comes first, then this one).
+            await Task.Delay(1500);
+            StatusText = "HEVC plays here through HandPeg's processor decoder, at full speed. Tip: Windows' \"HEVC Video Extensions\" (Microsoft Store) let the graphics card decode it instead.";
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Asking Windows for an HEVC decoder failed", ex);
+        }
+    }
+
     private MediaInfo? _mediaInfo;
 
     public ObservableCollection<AudioTrack> AudioTracks { get; } = [];
@@ -162,21 +201,19 @@ public partial class MainViewModel
             UseVerticalResolution = settings.DefaultVerticalVideo;
     }
 
-    /// <summary>Takes over the result of inspecting a newly loaded source (null when it could not be inspected).</summary>
+    /// <summary>
+    /// Takes over the result of inspecting a newly opened file (null when it could not be inspected): what the Info, Streams and
+    /// Download panels show, and its streams as the output audio tracks' choices (5.2-AuditB: its sound plays through its clips).
+    /// </summary>
     private void SetMediaInfo(MediaInfo? info)
     {
         _mediaInfo = info;
-
-        // The main video is clips like the others: as long as its file is, with its sound or none (what the file is, not
-        // an edit: no undo step).
-        TakeMainFile(info);
         (SourceWidth, SourceHeight, IsSourceHdr) = (info?.Video?.Width ?? 0, info?.Video?.Height ?? 0, info?.Video?.IsHdr ?? false);
 
         foreach (var track in AudioTracks)
             track.PropertyChanged -= OnTrackChanged;
         foreach (var track in SubtitleTracks)
             track.PropertyChanged -= OnTrackChanged;
-        SoloTrack = null;
         AudioTracks.Clear();
         SubtitleTracks.Clear();
 
@@ -185,14 +222,12 @@ public partial class MainViewModel
             var track = new AudioTrack(stream)
             {
                 WaveformColor = WaveformPalette[AudioTracks.Count % WaveformPalette.Length],
-                SourceFileName = HasSource ? System.IO.Path.GetFileName(LocalMediaPath) : "",
+                SourceFileName = OpenedFile.Length > 0 ? System.IO.Path.GetFileName(OpenedFile) : "",
             };
             ApplyAudioDefaults(track);
             track.PropertyChanged += OnTrackChanged;
             AudioTracks.Add(track);
         }
-
-        ApplyLegacyDuck();
 
         // A caption preview is of the video it was made for.
         PreviewSubtitles = false;
@@ -227,32 +262,8 @@ public partial class MainViewModel
         if (e.PropertyName == nameof(AudioTrack.Action) && HideDroppedTracks)
             RefreshAudioRows();
 
-        // Set back to a copy while it is ducked: a copied track cannot be turned down, so the ducking goes.
-        if (e.PropertyName == nameof(AudioTrack.Action) && sender is AudioTrack { AutoDuck: true, IsPassthrough: true } copied)
-        {
-            copied.AutoDuck = false;
-            StatusText = $"{copied.Title} is copied as it is, so Auto-Duck was switched off for it: a ducked track has to be re-encoded.";
-        }
-
-        // A sound that is ducked is changed, and sound that is changed cannot be copied.
-        if (e.PropertyName == nameof(AudioTrack.AutoDuck) && sender is AudioTrack { AutoDuck: true, IsPassthrough: true } ducked)
-        {
-            ducked.Action = AudioTrack.Reencode;
-            if (AudioEncoder != CopyOption)
-                ducked.Codec = AudioEncoder;
-        }
-
-        // Marked as the voice (a tick, its menu, a preset, or found by its name on loading): Auto-Captions listen to it (4.3E).
-        if (e.PropertyName == nameof(AudioTrack.IsVoice) && sender is AudioTrack { IsVoice: true } voice)
-            ListenToVoice(voice);
-
-        // Slipped (its edits set again): captions heard in the main file follow its sound where it now plays (4.4).
-        if (e.PropertyName == nameof(AudioTrack.Pieces) && CaptionsFollowMainFile)
-            ReprojectCaptions();
-
-        // (The command is what the time bars listen to as well: a slipped or split track redraws through it.)
-        // A picture arriving is not a change of settings, and nor is which track the player plays.
-        if (e.PropertyName is not (nameof(AudioTrack.Waveform) or nameof(AudioTrack.IsSolo) or nameof(AudioTrack.TrackWaveform)
+        // A picture arriving is not a change of settings.
+        if (e.PropertyName is not (nameof(AudioTrack.Waveform) or nameof(AudioTrack.TrackWaveform)
             or nameof(AudioTrack.Description) or nameof(AudioTrack.SourceFileName) or nameof(AudioTrack.HasOwnFormat)))
             GenerateCommand();
     }
@@ -427,34 +438,20 @@ public partial class MainViewModel
         return double.TryParse(bitrate.TrimEnd('k', 'K'), NumberStyles.Float, CultureInfo.InvariantCulture, out var kbps) ? kbps : 160;
     }
 
-    /// <summary>Frame size of the output after cropping and scaling, or null when the source size is not known.</summary>
+    /// <summary>
+    /// Frame size of the output: the frame the compositor draws (Resolution &amp; Cropping, else the Sequence's own), or for a Copy
+    /// export the copied file's own picture (SequenceSpans.CopyCutOf); null when that is not known.
+    /// </summary>
     private (int Width, int Height)? GetOutputSize()
     {
-        var hasWidth = int.TryParse(OutputWidth, out var width) && width > 0;
-        var hasHeight = int.TryParse(OutputHeight, out var height) && height > 0;
-        var copyVideo = !IsAnimatedOutput && VideoEncoder.Family == EncoderFamily.Copy;
-        if (!copyVideo && (FrameEngine || UseVerticalResolution))
+        if (IsAnimatedOutput || VideoEncoder.Family != EncoderFamily.Copy)
             return (FrameWidth, FrameHeight);
-        if (!copyVideo && hasWidth && hasHeight)
-            return (width, height);
 
-        if (SourceWidth <= 0 || SourceHeight <= 0)
+        if (SequenceSpans.CopyCutOf(Document) is not { } copy)
             return null;
-        if (copyVideo)
-            return (SourceWidth, SourceHeight);
-
-        var (_, _, croppedWidth, croppedHeight) = GetCropRect();
-        if (croppedWidth <= 0 || croppedHeight <= 0)
-            return null;
-
-        // One dimension given: the other follows the cropped shape, rounded to an even number like scale=-2.
-        if (hasWidth)
-            return (width, Even((double)width * croppedHeight / croppedWidth));
-        if (hasHeight)
-            return (Even((double)height * croppedWidth / croppedHeight), height);
-        return (croppedWidth, croppedHeight);
-
-        static int Even(double value) => Math.Max(2, (int)Math.Round(value / 2) * 2);
+        if (copy.Pieces.Select(p => _views.GetValueOrDefault(p.ClipId)).FirstOrDefault(v => v is { ImageWidth: > 0, ImageHeight: > 0 }) is { } view)
+            return (view.ImageWidth, view.ImageHeight);
+        return SameFile(copy.Path, OpenedFile) && SourceWidth > 0 && SourceHeight > 0 ? (SourceWidth, SourceHeight) : null;
     }
 
     private double GetOutputFrameRate()
@@ -470,17 +467,13 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Length of the output in seconds: the timeline's (4.3C: nothing is cut out of it on the way), or, for a Copy export
-    /// of a main video in clips (joined end to end from its file: FilterGraphBuilder.BuildCutsList), those clips end to end.
+    /// Length of the output in seconds: the timeline's (4.3C: nothing is cut out of it on the way), or, for a Copy export of a
+    /// file's clips (joined end to end from its file: EncoderCommand.BuildCutsList, SequenceSpans.CopyCutOf), those clips end to end.
     /// </summary>
     private double GetOutputDuration() =>
-        VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput && FrameEngine && GetMainClips() is { Count: > 0 } clips && !IsWholePicture(clips)
-            ? clips.Sum(c => c.End - c.Start)
+        VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput && SequenceSpans.CopyCutOf(Document) is { IsCut: true, Pieces.Count: > 0 } copy
+            ? copy.Pieces.Sum(p => p.End - p.Start)
             : SequenceSeconds;
-
-    /// <summary>Whether the main video plays as one clip of its whole file from the timeline's start (what a Copy export reads as it is, as the builder decides it).</summary>
-    private bool IsWholePicture(IReadOnlyList<MainClip> clips) =>
-        clips is [var only] && only.Start < 0.001 && only.Offset < 0.001 && (MainMediaSeconds <= 0 || Math.Abs(only.End - only.Start - MainMediaSeconds) < 0.02);
 
     /// <summary>Size of the loaded file, in the same MB/GB form as the estimate it sits beside.</summary>
     private string GetSourceFileSize()

@@ -1,10 +1,11 @@
-using System.Globalization;
+using System.Text.Json.Serialization;
 
 namespace HandPegApp.Models;
 
 /// <summary>
 /// The processing applied to one audio track before it is encoded: each filter can be switched on by
-/// itself, and the ones that are on run in a fixed, sensible order.
+/// itself, and the ones that are on run in a fixed, sensible order (the sound engine's effects made of them:
+/// Services/Audio/AudioEffects.cs, AudioChainBuilder).
 /// </summary>
 public sealed class TrackAudioFilters
 {
@@ -45,87 +46,65 @@ public sealed class TrackAudioFilters
     public bool StereoWidener { get; set; }
     public double StereoWidth { get; set; } = 1.5;
 
-    public bool IsActive => Compressor || NoiseGate || DeNoise || BassTreble || HighPass || Limiter || Equalizer || PitchTempo || StereoWidener;
+    // Studio Voice (Pass 5.2B): the one-click vocal chain, blended with the dry sound (Services/Audio/StudioVoice.cs).
+    public bool StudioVoice { get; set; }
+
+    /// <summary>How much of the chain's sound is heard, in percent (0 the dry sound, 100 the chain's alone).</summary>
+    public double StudioVoiceMix { get; set; } = 85;
+
+    /// <summary>
+    /// The mix's keyframes (percent values), or null (or none) for the plain <see cref="StudioVoiceMix"/>. Times are seconds from the start of
+    /// what the filters belong to: a clip's filters from the clip's Start on the Sequence, a track's from the Sequence's 0. Left out of the
+    /// file while null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<Keyframe>? StudioVoiceMixKeys { get; set; }
+
+    // De-Esser (Pass 5.2B): a split-band compressor on 5.5 to 9 kHz, how hard it works in percent.
+    public bool DeEsser { get; set; }
+    public double DeEsserAmount { get; set; } = 50;
+
+    /// <summary>
+    /// The parametric equalizer (Pass 5.2B): where each of the ten bands is, in Hz (each held to 20..20000), or null for the octave centres
+    /// (<see cref="EqualizerBands"/>), as before. Left out of the file while null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double[]? EqualizerFrequencies { get; set; }
+
+    /// <summary>How wide each band is, in octaves (each held to 0.1..4), or null for one octave each, as before. Left out of the file while null.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double[]? EqualizerWidths { get; set; }
+
+    public bool IsActive => Compressor || NoiseGate || DeNoise || BassTreble || HighPass || Limiter || Equalizer || PitchTempo || StereoWidener || StudioVoice || DeEsser;
+
+    /// <summary>
+    /// Whether Studio Voice is in the chain (5.2B): switched on, with mix keys or a mix above 0 (to the four decimals the chain writes it
+    /// with). At a mix of 0 with no keys AudioChainBuilder leaves it out, so the dry sound is untouched. Not written to the file.
+    /// </summary>
+    [JsonIgnore]
+    public bool StudioVoiceInChain =>
+        StudioVoice && (StudioVoiceMixKeys is { Count: > 0 } || Math.Round(Math.Clamp(StudioVoiceMix, 0, 100), 4, MidpointRounding.AwayFromZero) > 0);
+
+    /// <summary>
+    /// Whether the filters change the sound at all (5.2B): <see cref="IsActive"/>, with Studio Voice counted only while it is in the chain
+    /// (<see cref="StudioVoiceInChain"/>). What the sound engine decides by: a clip's strip of its own, a sound copied as it is, the chain
+    /// itself. <see cref="IsActive"/> and <see cref="ActiveCount"/> stay for the button's badge (a switch the user turned on). Not written to the file.
+    /// </summary>
+    [JsonIgnore]
+    public bool Processes =>
+        Compressor || NoiseGate || DeNoise || BassTreble || HighPass || Limiter || Equalizer || PitchTempo || StereoWidener || StudioVoiceInChain || DeEsser;
 
     /// <summary>How many filters are switched on, for the button that opens the dialog to show.</summary>
     public int ActiveCount =>
-        new[] { Compressor, NoiseGate, DeNoise, BassTreble, HighPass, Limiter, Equalizer, PitchTempo, StereoWidener }.Count(on => on);
+        new[] { Compressor, NoiseGate, DeNoise, BassTreble, HighPass, Limiter, Equalizer, PitchTempo, StereoWidener, StudioVoice, DeEsser }.Count(on => on);
 
     public TrackAudioFilters Clone()
     {
         var copy = (TrackAudioFilters)MemberwiseClone();
         copy.EqualizerGains = [.. EqualizerGains.Concat(new double[10]).Take(10)];
+        copy.StudioVoiceMixKeys = StudioVoiceMixKeys is null ? null : [.. StudioVoiceMixKeys];
+        copy.EqualizerFrequencies = EqualizerFrequencies is null ? null : [.. EqualizerFrequencies];
+        copy.EqualizerWidths = EqualizerWidths is null ? null : [.. EqualizerWidths];
         return copy;
     }
-
-    /// <summary>
-    /// The FFmpeg audio filters for what is switched on. Cleaning comes first (rumble, noise between words,
-    /// steady noise), then dynamics, then tone, then the effects; a gain is applied after them, and the
-    /// limiter last of all so that nothing before it can push the track into clipping.
-    /// </summary>
-    /// <param name="gainDb">The track's gain from the mixer; 0 adds no filter.</param>
-    public List<string> BuildChain(double gainDb)
-    {
-        var chain = new List<string>();
-
-        if (HighPass)
-            chain.Add($"highpass=f={Number(Math.Clamp(HighPassHz, 20, 1000))}");
-        if (NoiseGate)
-            chain.Add($"agate=threshold={Number(Math.Clamp(GateThreshold, -80, 0))}dB");
-        if (DeNoise)
-            chain.Add($"afftdn=nr={Number(Math.Clamp(DeNoiseStrength, 1, 60))}");
-        if (Compressor)
-            chain.Add($"acompressor=threshold={Number(Math.Clamp(CompressorThreshold, -60, 0))}dB:ratio={Number(Math.Clamp(CompressorRatio, 1, 20))}");
-
-        if (BassTreble)
-        {
-            if (Math.Abs(BassGain) >= 0.05)
-                chain.Add($"bass=g={Number(Math.Clamp(BassGain, -20, 20))}");
-            if (Math.Abs(TrebleGain) >= 0.05)
-                chain.Add($"treble=g={Number(Math.Clamp(TrebleGain, -20, 20))}");
-        }
-
-        if (Equalizer)
-        {
-            // One band filter per slider that has been moved, each an octave wide.
-            for (var band = 0; band < EqualizerBands.Count && band < EqualizerGains.Length; band++)
-            {
-                if (Math.Abs(EqualizerGains[band]) >= 0.05)
-                    chain.Add($"equalizer=f={EqualizerBands[band]}:t=o:w=1:g={Number(Math.Clamp(EqualizerGains[band], -20, 20))}");
-            }
-        }
-
-        if (PitchTempo)
-        {
-            // Playing the samples faster raises the pitch and shortens the sound together; atempo then puts
-            // the speed where it is wanted without touching the pitch again.
-            var pitch = Math.Pow(2, Math.Clamp(PitchSemitones, -12, 12) / 12);
-            var speed = Math.Clamp(Tempo, 0.5, 2) / pitch;
-            if (Math.Abs(pitch - 1) >= 0.001)
-                chain.Add($"aresample=48000,asetrate={Number(48000 * pitch)},aresample=48000");
-
-            // One atempo covers 0.5 to 100; slower than that takes two.
-            if (speed < 0.5)
-            {
-                chain.Add("atempo=0.5");
-                speed /= 0.5;
-            }
-
-            if (Math.Abs(speed - 1) >= 0.001)
-                chain.Add($"atempo={Number(speed)}");
-        }
-
-        if (StereoWidener)
-            chain.Add($"extrastereo=m={Number(Math.Clamp(StereoWidth, 0, 4))}");
-
-        if (Math.Abs(gainDb) >= 0.05)
-            chain.Add($"volume={Number(gainDb)}dB");
-
-        if (Limiter)
-            chain.Add($"alimiter=limit={Number(Math.Pow(10, Math.Clamp(LimiterCeiling, -24, 0) / 20))}:level=0");
-
-        return chain;
-    }
-
-    private static string Number(double value) => value.ToString("0.####", CultureInfo.InvariantCulture);
 }

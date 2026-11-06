@@ -1,0 +1,60 @@
+# Explorer's preview of a project (5.2D): the thumbnail handler over a .hproj and a .hpb, and its registration for the user.
+ok: the handler class's CLSID is the one HandPeg registers
+ok: and the ShellEx key it is registered under is IThumbnailProvider's
+ok: the two test thumbnails are made (640 x 360, 360 x 640)
+.hproj 16:9: HRESULT 0x00000000, 256 x 144, 32 bits, top-down True, alpha type 1
+ok: a .hproj 16:9 gives a 256 x 144 bitmap: it fits 256 x 256 in the thumbnail's shape
+ok: a 32-bit DIB section, its alpha meaning nothing (WTSAT_RGB) (.hproj 16:9)
+ok: top-down, in the thumbnail's colours: its first rows the top's, within 8 levels (.hproj 16:9)
+.hpb 9:16: HRESULT 0x00000000, 144 x 256, 32 bits, top-down True, alpha type 1
+ok: a .hpb 9:16 gives a 144 x 256 bitmap: it fits 256 x 256 in the thumbnail's shape
+ok: a 32-bit DIB section, its alpha meaning nothing (WTSAT_RGB) (.hpb 9:16)
+ok: top-down, in the thumbnail's colours: its first rows the top's, within 8 levels (.hpb 9:16)
+ok: asked for 96 it draws 96 x 54
+ok: a project without a thumbnail gets E_FAIL and no bitmap (Explorer shows its icon)
+ok: a file that is not a project gets E_FAIL too
+ok: a second Initialize is refused (the handler is for one file)
+ok: Register writes the handler's keys
+  value: .hpb\ShellEx\{e357fccd-a995-4576-b01f-234630154e96} [(default)] = {de4a57e8-2ca1-4db5-a7e2-af1299207a9e}
+  value: .hproj\ShellEx\{e357fccd-a995-4576-b01f-234630154e96} [(default)] = {de4a57e8-2ca1-4db5-a7e2-af1299207a9e}
+  value: CLSID\{de4a57e8-2ca1-4db5-a7e2-af1299207a9e} [(default)] = HandPeg Project Previews
+  value: CLSID\{de4a57e8-2ca1-4db5-a7e2-af1299207a9e}\InprocServer32 [(default)] = X:\HandPeg-Data\shell\0123456789abcdef\HandPeg.ShellThumbnails.comhost.dll
+  value: CLSID\{de4a57e8-2ca1-4db5-a7e2-af1299207a9e}\InprocServer32 [ThreadingModel] = Apartment
+ok: its class is named
+ok: its server is the COM host in the handler's folder, Apartment-threaded
+ok: .hproj and .hpb name it as their thumbnail handler
+ok: a second Register writes nothing (and Explorer is told nothing)
+ok: a handler in another folder (a new version): its server's path is written again
+ok: Unregister takes the handler out
+  value: .hpb\ShellEx\{e357fccd-a995-4576-b01f-234630154e96} [(default)] = {00000000-0000-0000-0000-000000000001}
+  key: CLSID
+ok: its class is gone, and so is the .hproj key it made (left empty)
+ok: another class's handler for .hpb stays
+ok: a second Unregister finds nothing of HandPeg's
+ok: Associate writes the open command
+  value: .hpb [(default)] = HandPeg.Bundle
+  value: .hpb\OpenWithProgids [HandPeg.Bundle] = 
+  value: .hpb\ShellEx\{e357fccd-a995-4576-b01f-234630154e96} [(default)] = {00000000-0000-0000-0000-000000000001}
+  value: .hproj [(default)] = HandPeg.Project
+  value: .hproj\OpenWithProgids [HandPeg.Project] = 
+  key: CLSID
+  value: HandPeg.Bundle [(default)] = HandPeg Project Bundle
+  value: HandPeg.Bundle\DefaultIcon [(default)] = "X:\HandPeg\current\HandPeg.exe",0
+  value: HandPeg.Bundle\shell\open\command [(default)] = "X:\HandPeg\current\HandPeg.exe" "%1"
+  value: HandPeg.Project [(default)] = HandPeg Project
+  value: HandPeg.Project\DefaultIcon [(default)] = "X:\HandPeg\current\HandPeg.exe",0
+  value: HandPeg.Project\shell\open\command [(default)] = "X:\HandPeg\current\HandPeg.exe" "%1"
+ok: .hproj and .hpb open with HandPeg's ProgIDs
+ok: each ProgID's open command starts HandPeg.exe with the file
+ok: its icon is HandPeg.exe's own
+ok: each extension lists its ProgID in its Open With list
+ok: a second Associate writes nothing (and Explorer is told nothing)
+ok: no media extension is touched
+ok: another program's claim on .hpb stays
+ok: Dissociate takes the open command out
+  value: .hpb [(default)] = Other.Bundle
+  value: .hpb\ShellEx\{e357fccd-a995-4576-b01f-234630154e96} [(default)] = {00000000-0000-0000-0000-000000000001}
+  key: CLSID
+ok: HandPeg's ProgIDs are gone, and so is the .hproj key (left empty)
+ok: the other program's claim on .hpb stays; HandPeg's Open With entry is gone
+ok: a second Dissociate finds nothing of HandPeg's

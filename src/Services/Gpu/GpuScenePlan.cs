@@ -1,7 +1,5 @@
-using System.Globalization;
 using HandPegApp.Models;
 using HandPegApp.Models.Effects;
-using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.Services.Gpu;
 
@@ -27,19 +25,17 @@ public readonly record struct GpuLayerInfo(long ClipKey, string ClipId, int Trac
 /// What the GPU engine draws (Pass 5.0-AudioAnd3D): made once per edit from a <see cref="SequenceExportState"/>, on the UI
 /// thread, then evaluated for every frame (at the display's rate while playing, up to some hundreds of times a second while
 /// scrubbing) into the compositor's <see cref="FrameSceneHeader"/> and <see cref="GpuLayerDescriptor"/>s.
-/// <para>It is built on the very lowering the FFmpeg path writes its graph from (<c>FilterGraphBuilder.LowerForGpu</c>:
-/// the primary chain, its one piece and riders, the blurred background, the twins, the stack), and follows
-/// FilterGraphBuilder.Video.cs lane for lane (BuildFrameEngine, AppendMainClips, AppendLayer, AppendVideoFile,
-/// AppendKeyAndMatte, BuildLayerMask, PictureFades, WithTransitions, TwinBlur, StreamCropOf, PictureCropOf): the GPU and
-/// the graph cannot disagree about which layers exist, where they are, or what is done to them.</para>
+/// <para>It is built on the timeline's lowering (<c>TimelineLowering.LowerForGpu</c>: every clip a layer of its own, the blur
+/// twins, the stack), which the sound engine's program reads too, and it is what the export draws (5.2-Audit: the FFmpeg graph
+/// it was written to follow, lane for lane, is gone): the preview and the export cannot disagree about which layers exist,
+/// where they are, or what is done to them.</para>
 /// <para>Media time (A/V sync): <see cref="GpuLayerDescriptor.MediaSeconds"/> is the file's own time with 0 at its first
 /// decoded video frame (the worker's MfVideoDecoder takes its first sample's time as 0), which is where FFmpeg's video
-/// stream starts (MediaProbe's VideoStartSeconds, the stream's start_time). A clip read from its file (AppendVideoFile:
-/// trim on the file's own time stamps from MediaStarts[file] = that start) is at MediaOffset + (t - start) x speed of it
-/// directly. The primary chain is read from the export's first input, whose frames FFmpeg counts from the container's
-/// start (the player's time-pos, which the timeline's main clips are in), so its moment m is m - (VideoStart -
-/// ContainerStart) of the file's own time (<see cref="ChainShift"/>; 0 for nearly every file). The worker's I-frame list is
-/// given in the same time (GpuResourceBroker.SourceFor). 5.0-Verify checks this frame for frame.</para>
+/// stream starts (MediaProbe's VideoStartSeconds, the stream's start_time). Every clip is read from its own file at
+/// MediaOffset + (t - start) x speed of that time (5.2-AuditB: no clip is read on a container's clock any more; the old main
+/// video's offsets were moved onto its picture's clock by the conversion of its project, which the app no longer makes:
+/// 5.2-Arm64AndNpu refuses such a project). The worker's
+/// I-frame list is given in the same time (GpuResourceBroker.SourceFor). 5.0-Verify checks this frame for frame.</para>
 /// <para>Threads: immutable once made. <see cref="Evaluate"/>, <see cref="MediaAt"/>, <see cref="NextCutAfter"/> and <see cref="Cuts"/> may run
 /// on one other thread while the UI thread makes the next plan; they allocate nothing (no LINQ, no closures, no
 /// enumerators: arrays walked by index) and read what the lowering made, which nothing changes after. <see cref="LayerInfoAt"/>
@@ -48,27 +44,26 @@ public readonly record struct GpuLayerInfo(long ClipKey, string ClipId, int Trac
 public sealed partial class GpuScenePlan
 {
     /// <summary>
-    /// The flag a blurred background is written with (a proposed <see cref="GpuLayerDescriptor"/> flag, bit 2: the worker
-    /// draws only the layer's blurred background, made of its whole source picture cut to the frame's shape, at its opacity
-    /// and dissolve, not the picture itself): the chain's background under everything, and a twin under its video.
+    /// The flag a blur fill is written with (a proposed <see cref="GpuLayerDescriptor"/> flag, bit 2: the worker draws only
+    /// the layer's blurred background, made of its whole source picture cut to the frame's shape, at its opacity and
+    /// dissolve, not the picture itself): a video's twin under its track's pictures.
     /// </summary>
     public const int FlagBlurFillOnly = GpuLayerDescriptor.FlagBlurFillOnly;
 
     private readonly Entry[] _entries;
-    private readonly ChainMap _chain;
     private readonly GpuResourceBroker? _resources;
     private readonly GpuCutEntry[] _cuts;
     private int _warned;
 
-    private GpuScenePlan(int width, int height, double sequenceSeconds, Entry[] entries, ChainMap chain, GpuResourceBroker? resources)
+    private GpuScenePlan(int width, int height, double sequenceSeconds, Entry[] entries, GpuResourceBroker? resources)
     {
         (CanvasWidth, CanvasHeight, SequenceSeconds) = (width, height, sequenceSeconds);
-        (_entries, _chain, _resources) = (entries, chain, resources);
-        _cuts = CutsOf(entries, chain);
+        (_entries, _resources) = (entries, resources);
+        _cuts = CutsOf(entries);
     }
 
     /// <summary>A plan that draws nothing (a black frame of 1920 x 1080).</summary>
-    public static GpuScenePlan Empty { get; } = new(1920, 1080, 0, [], ChainMap.None, null);
+    public static GpuScenePlan Empty { get; } = new(1920, 1080, 0, [], null);
 
     /// <summary>How long the sequence is, in seconds (the lowering's).</summary>
     public double SequenceSeconds { get; }
@@ -81,40 +76,64 @@ public sealed partial class GpuScenePlan
 
     public int CanvasHeight { get; }
 
-    /// <summary>Where the primary chain's moments (the player's time-pos) lie from its file's own time: VideoStart - ContainerStart.</summary>
-    public double ChainShift => _chain.Shift;
-
-    /// <summary>The primary file in the source table (-1 none), and its picture's size: the source view (<see cref="EvaluateSource"/>).</summary>
-    public int PrimarySource { get; private init; } = -1;
-    public long PrimaryPathHash { get; private init; }
-    public int SourceWidth { get; private init; } = 1920;
-    public int SourceHeight { get; private init; } = 1080;
+    /// <summary>
+    /// What every video's picture is drawn with (5.2-Audit: the sequence's Deinterlace and Tone Map to SDR, the compositor's now):
+    /// <see cref="GpuLayerDescriptor.FlagDeinterlace"/>, <see cref="GpuLayerDescriptor.FlagToneMapSdr"/>.
+    /// </summary>
+    public int MediaFlags { get; private init; }
 
     /// <summary>
-    /// The primary file's own picture at a moment of the sequence, whole and unfinished (no crop, no effects, no other
-    /// layer), on a canvas of the source's own size: what the player shows while a rectangle is drawn on the source (the
-    /// crop, a layer's place) and with Live Preview off. The player's crop overlay maps onto exactly this picture. Writes
-    /// nothing but the header between the chain's clips. Allocation-free.
+    /// A clip's own picture at a moment of the sequence, whole and unfinished (no crop, no effects, no other layer), on a
+    /// canvas of that picture's own size: what the player shows while a rectangle is drawn on a clip's source (its crop, a
+    /// Cutout's place) and with Live Preview off (5.2-AuditB: any clip's, where it was the primary file's). The player's crop
+    /// overlay maps onto exactly this picture. <paramref name="clipKey"/> is the clip's (<see cref="GpuHash.Of(Guid)"/>): its
+    /// video; 0, or a clip the plan reads no video for, the bottom video on at the moment. Writes nothing but the header
+    /// while that video is not on (the frame's own size when there is none). Allocation-free.
     /// </summary>
-    public int EvaluateSource(double sequenceSeconds, ref FrameSceneHeader header, Span<GpuLayerDescriptor> layers)
+    public int EvaluateSource(double sequenceSeconds, long clipKey, ref FrameSceneHeader header, Span<GpuLayerDescriptor> layers)
     {
-        (header.CanvasWidth, header.CanvasHeight, header.PlayheadSeconds) = (SourceWidth, SourceHeight, sequenceSeconds);
+        var t = sequenceSeconds;
+        var entry = SourceEntry(t, clipKey);
+        (header.CanvasWidth, header.CanvasHeight) = entry is null ? (CanvasWidth, CanvasHeight) : (entry.PictureWidth, entry.PictureHeight);
+        header.PlayheadSeconds = t;
         (header.BackgroundR, header.BackgroundG, header.BackgroundB) = (0, 0, 0);
         header.ActiveLayerCount = 0;
-        if (PrimarySource < 0 || layers.Length == 0 || !_chain.StreamAt(sequenceSeconds, out var moment))
+        if (entry is null || layers.Length == 0 || !IsOn(entry, t) || !MediaOf(entry, t, out var source, out var media))
             return 0;
 
         ref var d = ref layers[0];
         d = default;
-        (d.SourceKind, d.SourceId, d.SourcePathHash, d.MediaSeconds) = ((int)GpuSourceKind.Media, PrimarySource, PrimaryPathHash, Math.Max(moment - _chain.Shift, 0));
+        (d.SourceKind, d.SourceId, d.SourcePathHash, d.MediaSeconds) = ((int)GpuSourceKind.Media, source, entry.PathHash, media);
         (d.CropLeft, d.CropTop, d.CropRight, d.CropBottom) = (0, 0, 1, 1);
-        (d.X, d.Y, d.Width, d.Height) = (0, 0, SourceWidth, SourceHeight);
+        (d.X, d.Y, d.Width, d.Height) = (0, 0, entry.PictureWidth, entry.PictureHeight);
         (d.AnchorX, d.AnchorY, d.Opacity) = (0.5f, 0.5f, 1);
         (d.MaskResourceId, d.LutResourceId, d.CurveResourceId, d.StillResourceId) = (-1, -1, -1, -1);
-        d.ClipKey = _chain.KeyAt(sequenceSeconds);
+        d.ClipKey = entry.ClipKey;
         d.Flags = GpuLayerDescriptor.FlagVisible;
         header.ActiveLayerCount = 1;
         return 1;
+    }
+
+    /// <summary>The video the source view shows: the clip's of a key, else the bottom one on at a moment; null for none.</summary>
+    private Entry? SourceEntry(double t, long clipKey)
+    {
+        Entry? bottom = null;
+        for (var i = 0; i < _entries.Length; i++)
+        {
+            var entry = _entries[i];
+            if (entry.Kind != EntryKind.File)
+                continue;
+            if (clipKey != 0 && entry.ClipKey == clipKey)
+                return entry;
+            if (bottom is null && IsOn(entry, t))
+            {
+                bottom = entry;
+                if (clipKey == 0)
+                    break;
+            }
+        }
+
+        return bottom;
     }
 
     /// <summary>How many things the plan may draw (layers, before the moment decides which are on).</summary>
@@ -154,8 +173,6 @@ public sealed partial class GpuScenePlan
             if (!IsOn(entry, t) || !MediaOf(entry, t, out var source, out var media))
                 continue;
             count = Hint(into, count, source, media);
-            if (entry.Kind == EntryKind.Center && _chain.HeadAt(t, out var head, out _))
-                count = Hint(into, count, source, head - _chain.Shift);
         }
 
         return count;
@@ -175,16 +192,16 @@ public sealed partial class GpuScenePlan
     }
 
     /// <summary>
-    /// The next moment after <paramref name="sequenceSeconds"/> at which a layer that reads a file comes on, or the
-    /// primary chain goes on to another clip (where to decode ahead: next-cut hints); infinity when none does.
+    /// The next moment after <paramref name="sequenceSeconds"/> at which a layer that reads a file comes on (where to decode
+    /// ahead: next-cut hints); infinity when none does.
     /// </summary>
     public double NextCutAfter(double sequenceSeconds)
     {
-        var next = _chain.NextStartAfter(sequenceSeconds);
+        var next = double.PositiveInfinity;
         for (var i = 0; i < _entries.Length; i++)
         {
             var entry = _entries[i];
-            if (entry.Kind is EntryKind.File or EntryKind.Twin or EntryKind.Piece && entry.From > sequenceSeconds && entry.From < next)
+            if (entry.Kind is EntryKind.File or EntryKind.Twin && entry.From > sequenceSeconds && entry.From < next)
                 next = entry.From;
         }
 
@@ -195,10 +212,9 @@ public sealed partial class GpuScenePlan
 
     /// <summary>
     /// Every place the sequence starts reading a file at a moment of its own, by its start (then source and moment): each
-    /// clip of the primary chain (the stream the main video, its pieces and its blurred background are cut from), each
-    /// crossfade's head (the later clip, read from where it starts under the earlier one), and each video read from its own
-    /// file (its blurred twin reads it at the same moments: one entry). Made once with the plan; what the worker decodes
-    /// ahead of the playhead (GpuHintWriter: every cut within the lookahead horizon, not only the next).
+    /// video read from its own file, a crossfade's later clip from where it starts under the earlier one (its blurred twin
+    /// reads it at the same moments: one entry). Made once with the plan; what the worker decodes ahead of the playhead
+    /// (GpuHintWriter: every cut within the lookahead horizon, not only the next).
     /// </summary>
     public ReadOnlySpan<GpuCutEntry> Cuts => _cuts;
 
@@ -218,35 +234,9 @@ public sealed partial class GpuScenePlan
         return found;
     }
 
-    private static GpuCutEntry[] CutsOf(Entry[] entries, ChainMap chain)
+    private static GpuCutEntry[] CutsOf(Entry[] entries)
     {
-        var cuts = new List<GpuCutEntry>(chain.Clips.Length + chain.Crossfades.Length + 8);
-
-        // The chain: read by whichever of its layers there are (the one piece, the riders and cut-outs, the background).
-        var (source, hash) = (-1, 0L);
-        foreach (var entry in entries)
-        {
-            if (entry.Kind is EntryKind.Center or EntryKind.Piece or EntryKind.Background && entry.SourceId >= 0)
-            {
-                (source, hash) = (entry.SourceId, entry.PathHash);
-                break;
-            }
-        }
-
-        if (source >= 0)
-        {
-            foreach (var clip in chain.Clips)
-            {
-                if (clip.End > clip.Start)
-                    cuts.Add(new GpuCutEntry(clip.Start, clip.End, source, hash, Math.Max(clip.Offset - chain.Shift, 0), Math.Max(clip.Offset + (clip.End - clip.Start) - chain.Shift, 0), 1));
-            }
-
-            foreach (var fade in chain.Crossfades)
-            {
-                if (fade.To > fade.From)
-                    cuts.Add(new GpuCutEntry(fade.From, fade.To, source, hash, Math.Max(fade.Source - chain.Shift, 0), Math.Max(fade.Source + (fade.To - fade.From) - chain.Shift, 0), 1));
-            }
-        }
+        var cuts = new List<GpuCutEntry>(entries.Length);
 
         // A video read from its own file, from its first moment on the sequence (MediaOf's moment there).
         foreach (var entry in entries)
@@ -371,7 +361,7 @@ public sealed partial class GpuScenePlan
             {
                 layers[k].ZDepth = k;
                 if (k < infos.Length)
-                    infos[k] = Describe(entry, t, k - n);
+                    infos[k] = Describe(entry);
             }
 
             n += wrote;
@@ -398,13 +388,9 @@ public sealed partial class GpuScenePlan
 
         switch (e.Kind)
         {
-            case EntryKind.Center:
-                return ChainMap.IndexAt(_chain.Center, t) >= 0;
-            case EntryKind.Piece:
-                return ChainMap.IndexAt(_chain.Clips, t) >= 0;
-            case EntryKind.Background:
-                return ChainMap.IndexAt(_chain.Blur, t) >= 0 && !HidesBackground(t);
             case EntryKind.File or EntryKind.Twin:
+                if (e.Kind == EntryKind.Twin && e.CoveredBy is { } cover && Hides(cover, t))
+                    return false;
                 if (e.Loops)
                     return true;
                 var media = e.MediaOffset + (t - e.MediaStart) * e.Speed;
@@ -421,39 +407,29 @@ public sealed partial class GpuScenePlan
     }
 
     /// <summary>
-    /// The blurred background is not drawn where the main video hides every pixel of it (BuildFrameEngine's hidesBackground,
-    /// moment by moment): the bottom layer, solid, square, unturned and still, covering the frame, and not fading.
+    /// A twin is not drawn where its video hides every pixel of it (5.2-AuditB, each twin as the blurred background was, moment
+    /// by moment; Law 3: a full-frame video never pays for a blur no one sees): its video (<see cref="Entry.CoveredBy"/>, set
+    /// only when it is solid, square, unturned, unmasked and still, covering the frame) is on, and none of its fades is at work.
     /// </summary>
-    private bool HidesBackground(double t)
+    private bool Hides(Entry cover, double t)
     {
-        if (_chain.CoveringCenter is not { } center)
+        if (!IsOn(cover, t))
             return false;
-        var at = ChainMap.IndexAt(_chain.Center, t);
-        if (at < 0)
-            return false;
-
-        Span<Fade> fades = stackalloc Fade[2];
-        var count = CenterFades(_chain.Center[at], fades, dissolve: false);
-        for (var k = 0; k < count; k++)
+        for (var k = 0; k < cover.Fades.Length; k++)
         {
-            if (fades[k].Holds(t))
+            if (cover.Fades[k].Holds(t))
                 return false;
         }
 
-        return t >= center.From && t <= center.To;
+        return true;
     }
 
     /// <summary>The source and moment an entry reads at a moment, for those that read a file.</summary>
-    private bool MediaOf(Entry e, double t, out int source, out double media)
+    private static bool MediaOf(Entry e, double t, out int source, out double media)
     {
         (source, media) = (e.SourceId, 0);
         switch (e.Kind)
         {
-            case EntryKind.Center or EntryKind.Piece or EntryKind.Background:
-                if (!_chain.StreamAt(t, out var moment))
-                    return false;
-                media = moment - _chain.Shift;
-                return source >= 0;
             case EntryKind.File or EntryKind.Twin:
                 var into = (t - e.MediaStart) * e.Speed;
                 media = e.Loops && e.MediaDuration > 0.05 ? Repeat(e.MediaOffset + into, e.MediaDuration) : e.MediaOffset + Math.Max(into, 0);
@@ -472,7 +448,7 @@ public sealed partial class GpuScenePlan
 
     // ----- Writing -----
 
-    /// <summary>Writes an entry's layers (a crossfade's head is a second one) at <paramref name="n"/>; how many, or -1 for no room.</summary>
+    /// <summary>Writes an entry's layers (a karaoke line's sung part is a second one) at <paramref name="n"/>; how many, or -1 for no room.</summary>
     private int Write(Entry e, double t, Span<GpuLayerDescriptor> layers, int n, int room)
     {
         if (n >= room)
@@ -488,10 +464,7 @@ public sealed partial class GpuScenePlan
 
         switch (e.Kind)
         {
-            case EntryKind.Center:
-                return WriteCenter(e, t, layers, n, room);
-
-            case EntryKind.Piece or EntryKind.File:
+            case EntryKind.File:
                 if (!MediaOf(e, t, out var source, out var media) || !UsableMask(e, ref d))
                     return 0;
                 Media(ref d, e, source, media);
@@ -513,7 +486,7 @@ public sealed partial class GpuScenePlan
                 SequenceShutter(e, t, ref d);
                 return d.EffectCount > 0 ? 1 : 0;
 
-            case EntryKind.Background or EntryKind.Twin:
+            case EntryKind.Twin:
             {
                 if (!MediaOf(e, t, out var from, out var moment))
                     return 0;
@@ -525,21 +498,12 @@ public sealed partial class GpuScenePlan
                 d.Flags |= FlagBlurFillOnly;
                 (d.BlurFillRadius, d.BlurFillPasses, d.BlurFillDim) = (e.BlurRadius, e.BlurPasses, e.BlurDim);
 
-                // The background's own Look cards, after its blur (keys and ranges in seconds of the sequence).
+                // The blur fill's own Look cards, after its blur (keys and ranges in seconds of the sequence); its video's
+                // opacity, and its fades as dissolves (Create's Twin).
                 for (var k = 0; k < e.Look.Length; k++)
                     AddCard(e, e.Look[k], t, null, ref d);
-                if (e.Kind == EntryKind.Twin)
-                {
-                    d.Opacity = OpacityAt(e, t);
-                    AddFades(e.Fades, t, ref d);
-                }
-                else if (ChainMap.IndexAt(_chain.Center, t) is >= 0 and var at)
-                {
-                    // Made of the main video, it comes on and goes with it: from black, by a dissolve whatever its style.
-                    Span<Fade> fades = stackalloc Fade[2];
-                    AddFades(fades[..CenterFades(_chain.Center[at], fades, dissolve: true)], t, ref d);
-                }
-
+                d.Opacity = OpacityAt(e, t);
+                AddFades(e.Fades, t, ref d);
                 return d.Opacity > 0.0005f ? 1 : 0;
             }
 
@@ -582,46 +546,14 @@ public sealed partial class GpuScenePlan
         }
     }
 
-    private static void Media(ref GpuLayerDescriptor d, Entry e, int source, double media)
+    private void Media(ref GpuLayerDescriptor d, Entry e, int source, double media)
     {
         d.SourceKind = (int)GpuSourceKind.Media;
         (d.SourceId, d.MediaSeconds, d.SourcePathHash) = (source, media, e.PathHash);
+        d.Flags |= MediaFlags;
     }
 
-    /// <summary>The main video in one piece, and over it the later clip's head while two of its clips crossfade (AppendMainCrossfades).</summary>
-    private int WriteCenter(Entry e, double t, Span<GpuLayerDescriptor> layers, int n, int room)
-    {
-        ref var d = ref layers[n];
-        var at = ChainMap.IndexAt(_chain.Center, t);
-        if (at < 0 || !MediaOf(e, t, out var source, out var media) || !UsableMask(e, ref d))
-            return 0;
-
-        d.ClipKey = _chain.KeyAt(t);
-        Media(ref d, e, source, media);
-        Place(e, t, ref d);
-        AddEffects(e, t - e.KeyStart, ref d);
-        Shutter(e, t, ref d);
-        Span<Fade> fades = stackalloc Fade[2];
-        AddFades(fades[..CenterFades(_chain.Center[at], fades, dissolve: false)], t, ref d);
-        if (d.Opacity <= 0.0005f)
-            return 0;
-
-        // The later clip's head, read again from the file and coming up over the earlier one by an opacity ramp.
-        if (!_chain.HeadAt(t, out var head, out var ramp))
-            return 1;
-        if (n + 1 >= room)
-            return 1;
-
-        ref var over = ref layers[n + 1];
-        over = d;
-        over.MediaSeconds = head - _chain.Shift;
-        over.Opacity = d.Opacity * (float)ramp;
-        over.ClipKey = _chain.HeadKeyAt(t);
-        Without(ref over, GpuShaderSlot.DropShadow);
-        return 2;
-    }
-
-    /// <summary>A layer's packets but those of a slot: a copy laid over its original (a crossfade's head, a sung caption) casts no second shadow.</summary>
+    /// <summary>A layer's packets but those of a slot: a copy laid over its original (a sung caption) casts no second shadow.</summary>
     private static void Without(ref GpuLayerDescriptor d, GpuShaderSlot slot)
     {
         var kept = 0;
@@ -715,7 +647,7 @@ public sealed partial class GpuScenePlan
             return;
 
         // Across a cut or a loop's wrap the moment a frame ago is another shot: no motion to speak of, however fast it looks. (A ramp's own speed is well within this.)
-        if (MediaOf(e, t - FrameSeconds, out var source, out var before) && source == d.SourceId && Math.Abs(d.MediaSeconds - before) <= FrameSeconds * MostShutterSpeed)
+        if (MomentAgo(e, t - FrameSeconds, out var source, out var before) && source == d.SourceId && Math.Abs(d.MediaSeconds - before) <= FrameSeconds * MostShutterSpeed)
         {
             d.PreviousMoment = before;
             d.Flags |= GpuLayerDescriptor.FlagPreviousMoment;
@@ -732,6 +664,27 @@ public sealed partial class GpuScenePlan
         (d.ShutterFromX, d.ShutterFromY, d.ShutterFromWidth, d.ShutterFromHeight, d.ShutterFromRotation) = from;
         (d.ShutterToX, d.ShutterToY, d.ShutterToWidth, d.ShutterToHeight, d.ShutterToRotation) = to;
         d.Flags |= GpuLayerDescriptor.FlagShutterPlace;
+    }
+
+    /// <summary>
+    /// The moment of a file a picture's track showed at <paramref name="t"/>, for its shutter: the entry's own while it was on, else that
+    /// of the clip of its track on then (a clip split where it plays on is still one shot: 5.2-AuditB, every clip its own entry); false
+    /// for none. Allocation-free.
+    /// </summary>
+    private bool MomentAgo(Entry e, double t, out int source, out double media)
+    {
+        if (IsOn(e, t))
+            return MediaOf(e, t, out source, out media);
+
+        for (var i = 0; e.TrackIndex >= 0 && i < _entries.Length; i++)
+        {
+            var other = _entries[i];
+            if (other != e && other.Kind == e.Kind && other.TrackIndex == e.TrackIndex && IsOn(other, t))
+                return MediaOf(other, t, out source, out media);
+        }
+
+        (source, media) = (-1, 0);
+        return false;
     }
 
     /// <summary>An adjustment layer's or the finished picture's shutter: the moment of the sequence a frame ago, which tells its next frame from a jump (SceneRenderer.CanvasFlow).</summary>
@@ -755,7 +708,12 @@ public sealed partial class GpuScenePlan
         (d.X, d.Y, d.Width, d.Height, d.Rotation) = BoxAt(e, t);
         (d.AnchorX, d.AnchorY) = (e.AnchorX, e.AnchorY);
         d.Opacity = OpacityAt(e, t);
+        (d.TiltX, d.TiltY) = (TiltAt(e.KeysTiltX, e.TiltX, t - e.KeyStart), TiltAt(e.KeysTiltY, e.TiltY, t - e.KeyStart));
     }
+
+    // A tilt at a moment of the clip (5.2A): its keys', or as set; held to the limit either way.
+    private static float TiltAt(Keyframe[]? keys, float set, double at) =>
+        keys is { Length: > 0 } ? (float)Layer.Tilt(EasingCurves.ValueAt(keys, at)) : set;
 
     /// <summary>A layer's box and turn at a moment (<see cref="Place"/>).</summary>
     private (float X, float Y, float Width, float Height, float Rotation) BoxAt(Entry e, double t)
@@ -900,20 +858,6 @@ public sealed partial class GpuScenePlan
         }
     }
 
-    /// <summary>A clip of the main video's fades (PictureFades of the main layer: its fade in from its start, its fade out to its end); as dissolves for the blurred background.</summary>
-    private static int CenterFades(in MainClip clip, Span<Fade> into, bool dissolve)
-    {
-        var count = 0;
-        var length = clip.End - clip.Start;
-        var fadeIn = Math.Min(clip.FadeIn, length);
-        if (fadeIn > 0.01)
-            into[count++] = new Fade(clip.Start, fadeIn, true, dissolve ? TransitionStyle.Dissolve : clip.FadeInStyle);
-        var fadeOut = Math.Min(clip.FadeOut, Math.Max(length - clip.FadeIn, 0));
-        if (fadeOut > 0.01)
-            into[count++] = new Fade(clip.End - fadeOut, fadeOut, false, dissolve ? TransitionStyle.Dissolve : clip.FadeOutStyle);
-        return count;
-    }
-
     /// <summary>How black the whole picture's fade makes it at a moment (BuildWholeVideoFilters: a second in from black, a second out to it).</summary>
     private double FadeLevel(Entry e, double t)
     {
@@ -925,20 +869,10 @@ public sealed partial class GpuScenePlan
         return level;
     }
 
-    /// <summary>The whole picture's fade in and out, in seconds (FilterGraphBuilder's FadeSeconds).</summary>
+    /// <summary>The whole picture's fade in and out, in seconds (the sound engine's too: AudioProgram.FadeSeconds).</summary>
     private const double WholeFadeSeconds = 1;
 
     // ----- Descriptions -----
 
-    private GpuLayerInfo Describe(Entry e, double t, int part)
-    {
-        if (e.Kind is EntryKind.Center or EntryKind.Background)
-        {
-            var clip = part == 1 ? _chain.HeadClipAt(t) : _chain.ClipAt(t);
-            var key = clip is null ? e.ClipKey : GpuHash.Of(clip.Id);
-            return new GpuLayerInfo(key, clip?.Id.ToString("D", CultureInfo.InvariantCulture) ?? e.ClipId, e.TrackIndex, e.Name, e.HasMask);
-        }
-
-        return new GpuLayerInfo(e.ClipKey, e.ClipId, e.TrackIndex, e.Name, e.HasMask);
-    }
+    private static GpuLayerInfo Describe(Entry e) => new(e.ClipKey, e.ClipId, e.TrackIndex, e.Name, e.HasMask);
 }

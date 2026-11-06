@@ -5,7 +5,7 @@ using HandPegApp.Services;
 namespace HandPegApp.ViewModels;
 
 // ----- Links, places and blur fills of clips, for the timeline's rows and menus (4.4) -----
-// A track can be a child of another (its mini-stack: a style's HUD cut-outs under the main video's track), and a clip a child
+// A track can be a child of another (its mini-stack: a style's HUD cut-outs under their video's track), and a clip a child
 // of the clip it lies over; edits of the parent carry its children along (TimelineTransaction). A clip's place, crop and
 // blur fill are its own, as all of its look is: these give one clip's place to its track, fit a clip to the frame, and set
 // its blur fill, each as one step of Undo.
@@ -66,24 +66,20 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>
-    /// Whether the frame around a clip is filled with a blurred copy of it: its own say (<see cref="Layer.BlurFill"/>), or its
-    /// kind's (the main video's clips follow the sequence's Background Blur switch; no other clip has one).
-    /// </summary>
-    public bool IsBlurFilled(Layer clip) => clip.BlurFill ?? (clip.IsMainVideo && !_backgroundRow.IsHidden);
+    /// <summary>Whether the frame around a clip is filled with a blurred copy of it: its own say (<see cref="Layer.BlurFill"/>; null is none, 5.2-AuditB).</summary>
+    public bool IsBlurFilled(Layer clip) => clip.BlurFill ?? false;
 
     /// <summary>
-    /// Fills the frame around a clip with a blurred copy of it, or stops: a clip of the main video shows the blurred
-    /// background under it, a video from a file is given a blurred copy of itself under it (one more decoder while it plays).
-    /// One step of Undo.
+    /// Fills the frame around a clip with a blurred copy of it, or stops: a video from a file is given a blurred copy of its whole
+    /// picture under it (one more decoder while it plays, skipped while the clip covers the frame). One step of Undo.
     /// </summary>
     public void SetBlurFill(Layer clip, bool on)
     {
-        if (ClipOf(clip) is null || clip.BlurFill == on)
+        if (ClipOf(clip) is null || IsBlurFilled(clip) == on)
             return;
-        if (!clip.IsMainVideo && !clip.IsVideoFile)
+        if (!clip.IsVideoFile)
         {
-            StatusText = "Blur fill is for videos: the main video's clips and videos from files.";
+            StatusText = "Blur fill is for videos from files.";
             return;
         }
 
@@ -108,10 +104,9 @@ public partial class MainViewModel
         }
 
         Checkpoint($"apply the placement of {source.Name} to its track");
-        var placement = _placedFor.TryGetValue(source, out var placed) ? placed : (MainPlacement?)null;
         using (DeferCommand())
         {
-            (_settingQuietly, _placingMain) = (true, true);
+            (_settingQuietly, _placingViews) = (true, true);
             try
             {
                 foreach (var other in others)
@@ -124,22 +119,21 @@ public partial class MainViewModel
                         (other.PositionX, other.PositionY) = (source.PositionX, source.PositionY);
                     });
                     (other.Rotation, other.AnchorX, other.AnchorY) = (source.Rotation, source.AnchorX, source.AnchorY);
+                    (other.TiltX, other.TiltY) = (source.TiltX, source.TiltY);
                     (other.CropLeft, other.CropTop, other.CropRight, other.CropBottom) = (source.CropLeft, source.CropTop, source.CropRight, source.CropBottom);
-                    // A clip of the main video placed as the source was, for the same frame (or met afresh).
-                    if (other.IsMainVideo && placement is { } same)
-                        _placedFor[other] = same;
-                    else
-                        _placedFor.Remove(other);
+
+                    // Kept about its middle from the frame as it is (met afresh).
+                    _placedFor.Remove(other);
                 }
             }
             finally
             {
-                (_settingQuietly, _placingMain) = (false, false);
+                (_settingQuietly, _placingViews) = (false, false);
             }
 
-            // The Center controls and the Crop boxes show what their clip has now.
-            _centerShown = null;
-            ShowCenterTarget();
+            // The Crop boxes show what their clip has now.
+            _cropShown = null;
+            ShowCropTarget();
             GenerateCommand();
         }
 
@@ -153,12 +147,6 @@ public partial class MainViewModel
             return;
 
         Checkpoint($"center {clip.Name}");
-        if (clip.IsMainVideo)
-        {
-            PlaceMainClip(clip, KeptPlaceOf(clip).Zoom);
-            return;
-        }
-
         var (_, _, width, height) = clip.GetOutputRect(FrameWidth, FrameHeight, SourceWidth, SourceHeight);
         (clip.PositionX, clip.PositionY) = ((FrameWidth - width) / 2.0 / FrameWidth, (FrameHeight - height) / 2.0 / FrameHeight);
     }
@@ -172,29 +160,30 @@ public partial class MainViewModel
         Checkpoint($"reset the transform of {clip.Name}");
         clip.ResetTransform();
         (clip.CropLeft, clip.CropTop, clip.CropRight, clip.CropBottom) = (0, 0, 0, 0);
-        if (clip.IsMainVideo)
-            PlaceMainClip(clip, 1);
-        else
-            FitToFrame(clip, AppSettings.Current.NewClipsFill);
+        FitToFrame(clip, AppSettings.Current.NewClipsFill);
     }
 
-    // One clip of the main video in the middle of the frame at a zoom; the Center controls show what it has now.
-    private void PlaceMainClip(Layer clip, double zoom)
+    /// <summary>
+    /// The blur fill's settings row's eye (5.2-AuditB: the Background switch): shown, every top-level video clip is given a blur
+    /// fill; hidden, none is. One step of Undo. It stays what a file opened from now on is given (PlaceOpenedFile).
+    /// </summary>
+    public void SetBackgroundShown(bool shown)
     {
-        var placing = _placingMain;
-        _placingMain = true;
-        try
+        var videos = Document.Tracks.SelectMany(t => t.Clips).Where(c => c is { ContentKind: LayerKind.VideoFile, ParentClipId: null })
+            .Select(ViewOf).OfType<Layer>().Where(v => IsBlurFilled(v) != shown).ToList();
+        if (videos.Count > 0)
+            Checkpoint(shown ? "fill the frame around every video" : "take the blur fill from every video");
+
+        using (HoldLookSteps())
         {
-            WriteMainPlace(clip, zoom, 0, 0);
-        }
-        finally
-        {
-            _placingMain = placing;
+            _backgroundRow.IsHidden = !shown;
+            foreach (var view in videos)
+                view.BlurFill = shown ? true : null;
         }
 
-        _centerShown = null;
-        ShowCenterTarget();
-        GenerateCommand();
+        StatusText = shown
+            ? $"Every video is filled around with a blurred copy of itself{(videos.Count > 0 ? "" : " already")}; videos opened from now on are too."
+            : $"No video is filled around with a blurred copy of itself{(videos.Count > 0 ? "" : " already")}; videos opened from now on are not either.";
     }
 
     /// <summary>

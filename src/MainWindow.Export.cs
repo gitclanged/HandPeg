@@ -290,62 +290,8 @@ public partial class MainWindow
     private FrameworkElement ExportContent()
     {
         var content = RealizeTabContent(ExportTab);
-        AddExportRendererChoice();
         FillExportSection();
         return content;
-    }
-
-    // ----- What renders the export's frames (5.0, AppSettings.ExportRenderer) -----
-
-    private ComboBox? _exportRendererBox;
-
-    /// <summary>
-    /// The Export tab's Render choice, after Easy Social Export | Advanced Export: the GPU compositor or FFmpeg's filter
-    /// graph, the very setting Settings' Export Renderer row shows (shown afresh whenever the window is active again, so a
-    /// change made there is seen here).
-    /// </summary>
-    private void AddExportRendererChoice()
-    {
-        if (_exportRendererBox is not null)
-            return;
-
-        var label = new TextBlock { Text = "Render:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 6, 0) };
-        label.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
-        var box = new ComboBox
-        {
-            ItemsSource = AppSettings.ExportRenderers,
-            DisplayMemberPath = nameof(ExportRendererChoice.Display),
-            SelectedValuePath = nameof(ExportRendererChoice.Value),
-            MinWidth = 150,
-            VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = "What draws the export's frames. GPU Compositor: the engine that draws the player renders every frame on the graphics card, "
-                      + "and FFmpeg encodes them with the export's own sound, captions and subtitles. FFmpeg Filter Graph: FFmpeg composes the picture "
-                      + "itself, as the Command Preview shows (the bit-exact reference). A Copy export, a GIF or WebP, a hand-edited command and anything "
-                      + "the compositor cannot draw yet always go through FFmpeg, and so does a GPU export that fails, from the start. The same setting "
-                      + "as Settings > Export & Hardware > Export Renderer.",
-        };
-        AutomationProperties.SetName(box, "Export Renderer");
-        _exportRendererBox = box;
-        SyncExportRenderer();
-        box.SelectionChanged += (_, _) =>
-        {
-            if (box.SelectedValue is string value && !string.Equals(value, AppSettings.Current.ExportRenderer, StringComparison.Ordinal))
-                _viewModel.SetViewSetting(s => s.ExportRenderer = value);
-        };
-
-        ExportModeBar.Children.Add(label);
-        ExportModeBar.Children.Add(box);
-        Activated += (_, _) => SyncExportRenderer();
-    }
-
-    /// <summary>The Render choice as the setting is now; one saved as neither shows the GPU (what it is taken as).</summary>
-    private void SyncExportRenderer()
-    {
-        if (_exportRendererBox is not { } box)
-            return;
-        var value = AppSettings.Current.WantsGpuExport ? AppSettings.ExportRendererGpu : AppSettings.ExportRendererFfmpeg;
-        if (!Equals(box.SelectedValue, value))
-            box.SelectedValue = value;
     }
 
     /// <summary>
@@ -397,9 +343,9 @@ public partial class MainWindow
         void Refresh() => _dock.ScheduleRebuild();
         return
         [
-            new("Overview Bar", () => AppSettings.Current.ShowMasterTimeline,
+            new(ScrubberTitle, () => AppSettings.Current.ShowMasterTimeline,
                 on => { _viewModel.SavePaneLayout(s => s.ShowMasterTimeline = on); Refresh(); },
-                "The overview bar under the player: the whole sequence at a glance, its cut segments, markers and thumbnails (the timeline itself is a pane of its own)."),
+                "The Sequence Overview Scrubber under the player: the whole sequence at a glance, its cut segments, markers and thumbnails, scrubbed by a click or a drag; its lower edge dragged makes it taller or shorter (the timeline itself is a pane of its own)."),
             new("Playback Controls", () => _viewModel.ShowAdvancedPlayback,
                 on => _viewModel.SetViewSetting(s => s.ShowAdvancedPlayback = on, nameof(MainViewModel.ShowAdvancedPlayback), nameof(MainViewModel.ShowSimplePlayback)),
                 "The playback controls under the player: play, the edit points, the speed and volume."),
@@ -408,7 +354,7 @@ public partial class MainWindow
                     nameof(MainViewModel.ShowPresetBarAtTop), nameof(MainViewModel.ShowPresetBarInSummary)),
                 "The preset bar as a pane of its own. Hidden, it is on the Summary tab."),
             new("Canvas", () => _viewModel.IsArrangeActive, on => _viewModel.IsArrangeActive = on,
-                "The Canvas beside the video: the output frame with the main video, the layers and the caption box. Drag to move, drag a corner handle to resize, double-click to center.",
+                "The Canvas beside the video: the output frame with its clips and the caption box. Drag to move, drag a corner handle to resize, double-click to center.",
                 () => _viewModel.CanEditLayout),
             new("Media Browser", () => _viewModel.ShowMediaBrowser, on => _viewModel.ShowMediaBrowser = on,
                 "The media browser: a folder's videos, sounds and pictures, to drag onto the timeline."),
@@ -416,6 +362,8 @@ public partial class MainWindow
                 "The selected clip's keyframes on a timeline of their own, with the keyframe controls and its place, size and rotation at the playhead."),
             new("Effects", () => _viewModel.ShowEffectsPane, on => _viewModel.ShowEffectsPane = on,
                 "The selected clip's effect stack (or the Sequence Output's), in the order the effects are applied."),
+            new("Master Meter", () => _viewModel.ShowMasterMeter, on => _viewModel.ShowMasterMeter = on,
+                "The Sequence's master meter and fader, upright: each side's peak and RMS, the loudness in LUFS with the -14 and -16 targets, the true peak, and the master gain (the Audio tab has the same meter across)."),
             new("Status Bar", () => AppSettings.Current.ShowStatusBar, SetStatusBarShown,
                 "The bar along the bottom of the window. Hidden, the status and the progress of background work are in the title bar."),
         ];
@@ -430,7 +378,8 @@ public partial class MainWindow
             foreach (var toggle in toggles)
             {
                 var box = new CheckBox { Content = toggle.Name, IsChecked = toggle.IsOn(), Margin = new Thickness(0, 2, 0, 2), ToolTip = toggle.About, IsEnabled = toggle.Enabled?.Invoke() ?? true };
-                var kind = list.Name == nameof(ViewsTabList) ? " Tab" : toggle.Name.EndsWith("Pane", StringComparison.Ordinal) || toggle.Name.EndsWith("Bar", StringComparison.Ordinal) ? "" : " Pane";
+                var kind = list.Name == nameof(ViewsTabList) ? " Tab" : toggle.Name.EndsWith("Pane", StringComparison.Ordinal) || toggle.Name.EndsWith("Bar", StringComparison.Ordinal)
+                    || toggle.Name == ScrubberTitle ? "" : " Pane";
                 AutomationProperties.SetName(box, toggle.Name + kind);
 
                 // Checked and Unchecked, not Click: the keyboard and UI Automation change a box without a click.

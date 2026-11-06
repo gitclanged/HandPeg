@@ -8,7 +8,7 @@ using System.Windows.Media;
 
 namespace HandPegApp;
 
-/// <summary>What a row of the unified timeline is: a video layer (or the main video's track), a sound, the captions, the blurred background, or an empty row to drop on.</summary>
+/// <summary>What a row of the unified timeline is: a picture track, a sound, the captions, the blur fill's settings, or an empty row to drop on.</summary>
 public enum TimelineRowKind { Video, Audio, Captions, Background, Empty }
 
 /// <summary>The switches a row's header can show (and which of them are on).</summary>
@@ -30,14 +30,14 @@ public readonly record struct SeamMark(double Seconds, double FoldedSeconds, obj
 public readonly record struct RevealMark(double From, double To, object Restored, IReadOnlyCollection<object>? Rows = null);
 
 /// <summary>
-/// Which of its parent's mini-stacks a child row is in (4.4 BugHunt): the layers that go with the parent (HUD cut-outs and
-/// masks, the captions) or its sound (an unlinked sound's lane, the main file's audio streams). Each opens and closes by itself.
+/// Which of its parent's mini-stacks a child row is in (4.4 BugHunt): its Visual Sub-Lanes (HUD Cutouts and masks, the
+/// captions) or its Audio Sub-Lanes (an unlinked sound's lane, its file's audio streams). Each opens and closes by itself.
 /// </summary>
 public enum ChildStack { Visual, Audio }
 
 /// <summary>
 /// One row of the unified timeline: a track, with its blocks laid out in pixels (seconds times the control's
-/// PixelsPerSecond), and the rows that belong to it (its mini-stack: HUD cut-outs, the main file's sound streams, the
+/// PixelsPerSecond), and the rows that belong to it (its mini-stack: HUD Cutouts, its file's sound streams, the
 /// captions), drawn under it as thin lanes until it is expanded (then those in front of it above it, <see cref="InFront"/>).
 /// </summary>
 public sealed class TimelineRow
@@ -103,6 +103,15 @@ public sealed class TimelineRow
 
     /// <summary>Whether a click closes the gaps between its blocks (the pill shows in the gap the pointer is in): the host's say, for the rows of unlocked tracks.</summary>
     public bool ClosesGaps { get; set; }
+
+    /// <summary>
+    /// Its header's preset badge (5.2A, a Track Preset Node): the name of the Game Preset its track gives its clips, drawn as a pill a click
+    /// opens the presets from (<see cref="UnifiedTimelineControl.BadgePressed"/>); null for none.
+    /// </summary>
+    public string? Badge { get; set; }
+
+    /// <summary>Its track can carry a preset: with no <see cref="Badge"/>, a faint "+ Preset" pill on a tall lane sets one.</summary>
+    public bool OffersBadge { get; set; }
 
     // The control's own: the name laid out as words (and the name, size and colour it was laid out from), and the gaps
     // between its blocks (laid-out pixels) that a pill can close.
@@ -364,8 +373,11 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     /// </summary>
     public event Action? ScaleChanged;
 
-    /// <summary>The moments a dragged edge, block or fade snaps to, in seconds; asked once, when a drag begins.</summary>
-    public Func<IReadOnlyList<double>>? SnapTimes { get; set; }
+    /// <summary>
+    /// The moments a dragged edge, block or fade snaps to, in seconds; asked once, when a drag begins, with the blocks whose sound the drag
+    /// takes along (5.2B: a move's or a slip's; none for any other drag): their clips' beats go with them, so they are left out.
+    /// </summary>
+    public Func<IReadOnlyList<TimelineBlock>, IReadOnlyList<double>>? SnapTimes { get; set; }
 
     /// <summary>The sequence's frame rate: while Shift is held, drags step from frame to frame of it, with no snapping.</summary>
     public Func<double>? FrameRate { get; set; }
@@ -470,6 +482,15 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
     /// <summary>A row's name in its header was clicked with the left button (not its chevron or a switch; 5.0-Verify).</summary>
     public event Action<TimelineRow>? HeaderClicked;
+
+    /// <summary>A header's preset badge was clicked (5.2A): the row, and the badge's box on the control, for a list of presets to drop from it.</summary>
+    public event Action<TimelineRow, Rect>? BadgePressed;
+
+    /// <summary>
+    /// A rubber band was drawn over empty space on the rows and let go (5.2A): the blocks it touched, top to bottom, on lanes drawn in full,
+    /// and whether Ctrl or Shift was held (they join what was selected rather than take its place).
+    /// </summary>
+    public event Action<IReadOnlyList<TimelineBlock>, bool>? MarqueeSelected;
 
     /// <summary>
     /// Makes several edits as one (5.0: a group of selected blocks dragged together): the step's label and what makes them;
@@ -644,7 +665,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     /// stack's strip is drawn under, null below them all; the
     /// moment under it (seconds, never before 0); and whether it is over the headers (it then goes after the row's last clip).
     /// The captions' strip in a collapsed stack is the captions' row itself (4.4 BugHunt): a file let go on it is never
-    /// taken for one let go on the row above it (on the main video's, that would take the main video's place).
+    /// taken for one let go on the row above it (on a video's, that would take that video's place).
     /// </summary>
     public (TimelineRow? Row, double Seconds, bool LeftEdgeZone) HitTestDrop(Point p)
     {

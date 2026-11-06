@@ -245,34 +245,29 @@ float4 PSMatteChoke(VsOut i) : SV_Target
     if (abs(P0) < 0.5)
         return c;
 
-    int r = max(PassRadius(), 1);
+    // The loops run to the radius itself (the same for every pixel), and the erosion's and the dilation's apart: a loop to the most radius left by a
+    // branch, with both kinds inside it, cost an Adreno twice its taps (5.2-Arm64AndNpu).
+    int r = clamp(PassRadius(), 1, MaxRadius);
     float2 step = PassStep();
-    bool erode = P0 > 0;
     float best = c.a;
     float4 from = c;
-    [loop] for (int n = 1; n <= MaxRadius; n++)
+    if (P0 > 0)
     {
-        if (n > r)
-            break;
+        [loop] for (int n = 1; n <= r; n++)
+            best = min(best, min(SampleAt(i.Uv, -step * n).a, SampleAt(i.Uv, step * n).a));
+        return Premul(Unpremul(c).rgb, best);
+    }
+
+    [loop] for (int n = 1; n <= r; n++)
+    {
         float4 before = SampleAt(i.Uv, -step * n);
         float4 after = SampleAt(i.Uv, step * n);
-        if (erode)
-        {
-            best = min(best, min(before.a, after.a));
-        }
-        else
-        {
-            if (before.a > best)
-            {
-                best = before.a;
-                from = before;
-            }
-            if (after.a > best)
-            {
-                best = after.a;
-                from = after;
-            }
-        }
+        bool nearer = before.a > best;
+        best = nearer ? before.a : best;
+        from = nearer ? before : from;
+        nearer = after.a > best;
+        best = nearer ? after.a : best;
+        from = nearer ? after : from;
     }
 
     return Premul(Unpremul(c.a > 1e-5 ? c : from).rgb, best);
@@ -398,14 +393,12 @@ float4 PSBoxBlur(VsOut i) : SV_Target
     if (r < 1 && f < 0.001)
         return Here(i);
 
+    // The taps two at a time (5.2-Arm64AndNpu): a bilinear tap halfway between two texels is their mean, exactly (a half is a whole step of the filter's
+    // sub-texel grid, and the clamp repeats the edge texel as the point taps did), so -r .. r - 1 take r taps and r its own: half the fetches.
     float2 step = PassStep();
-    float4 sum = float4(0, 0, 0, 0);
-    [loop] for (int n = 0; n <= 2 * MaxRadius; n++)
-    {
-        if (n > 2 * r)
-            break;
-        sum += SampleAt(i.Uv, step * (n - r));
-    }
+    float4 sum = SampleAt(i.Uv, step * r);
+    [loop] for (int n = 0; n < r; n++)
+        sum += Input.SampleLevel(LinearClamp, i.Uv + step * ((2 * n - r) + 0.5) * SrcTexel, 0) * 2;
 
     if (f >= 0.001)
         sum += (SampleAt(i.Uv, step * -(r + 1)) + SampleAt(i.Uv, step * (r + 1))) * f;

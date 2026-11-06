@@ -1,18 +1,40 @@
 # Vertical frame: a video clip with sound, a picture (rotated, see-through, a quote in its name), words (quotes, a colon, two lines) and music.
-# reads the cuts list: no; the chapters list: no
+# 1080 x 1920, 3600 frames at 30/1, yuv420p piped; the chapters list: no
 
 command:
   ffmpeg
   -hide_banner
   -y
+  -f
+  rawvideo
+  -pix_fmt
+  yuv420p
+  -video_size
+  1080x1920
+  -framerate
+  30/1
+  -color_range
+  tv
+  -colorspace
+  bt709
+  -color_primaries
+  bt709
+  -color_trc
+  bt709
   -i
-  D:/media/main.mp4
-  -filter_complex <graph 1>
+  pipe:0
+  -f
+  f32le
+  -ar
+  48000
+  -ch_layout
+  stereo
+  -i
+  {sound:1}
   -map
   0:v:0
   -map
-  [amixed0]
-  -vf <graph 2>
+  1:a:0
   -c:v
   libx264
   -preset
@@ -21,59 +43,50 @@ command:
   23
   -pix_fmt
   yuv420p
-  -metadata:s:a:0
-  title=Track 1
+  -color_range
+  tv
+  -colorspace
+  bt709
+  -color_primaries
+  bt709
+  -color_trc
+  bt709
   -c:a:0
   aac
   -b:a:0
   160k
+  -metadata:s:a:0
+  title=Track 1
   -map_chapters
   -1
   D:/out/layers.mp4
 
-graph 1 (-filter_complex): 3 chains, 346 characters
-  1| amovie='D\:/media/clip1.mp4'
-   |   ,atrim=start=3:end=15
-   |   ,asetpts=PTS-3/TB
-   |   ,aresample=48000:async=1:first_pts=0
-   |   ,adelay=10000:all=1[alayer0]
-  2| amovie='D\:/media/music.m4a'
-   |   ,atrim=end=60
-   |   ,aresample=48000:async=1:first_pts=0
-   |   ,volume=-6dB
-   |   ,afade=t=in:st=0:d=2
-   |   ,afade=t=out:st=57:d=3[alayer1]
-  3| [0:a:0][alayer0][alayer1]amix=inputs=3:duration=first:normalize=0[amixed0]
+the scene at 0 s: 2 layers
+    Media source 0 at 0.001 box (0.0, 0.0) 1080.0 x 1920.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, flags 5, blur 20/2/-0.15  [main.mp4 (blur fill), track 0]
+    Media source 0 at 0.001 box (0.0, 656.0) 1080.0 x 608.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
 
-graph 2 (-vf): 12 chains, 1292 characters
-  1| split=2[bg_in][center_in]
-  2| color=c=black:s=1080x1920:r=30:d=120
-   |   ,format=yuv420p[base]
-  3| [bg_in]scale=1080:1920:force_original_aspect_ratio=increase
-   |   ,crop=1080:1920
-   |   ,boxblur=20:2
-   |   ,eq=brightness=-0.15[bg]
-  4| [base][bg]overlay=0:0:eof_action=pass[stage0]
-  5| [center_in]scale=1080:608
-   |   ,format=yuva420p[center_layer]
-  6| [stage0][center_layer]overlay=0:656:eof_action=pass[stage1]
-  7| movie='D\:/media/clip1.mp4':sp=2
-   |   ,trim=start=3:end=15
-   |   ,setpts=PTS+7/TB
-   |   ,scale=972:546
-   |   ,format=yuva420p[ui1_layer]
-  8| [stage1][ui1_layer]overlay=54:96:eof_action=pass:enable='between(t,10,22)'[stage2]
-  9| movie='D\:/media/it'\\\''s logo.png'
-   |   ,scale=270:136
-   |   ,format=yuva420p
-   |   ,lutyuv=a=val*0.8
-   |   ,rotate=12*PI/180:ow=294:oh=190:c=black@0[ui2_layer]
- 10| [stage2][ui2_layer]overlay=744:11:enable='between(t,0,120)'[stage3]
- 11| color=c=0x000000@0:s=864x218:r=1
-   |   ,format=yuva444p
-   |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Hello, “world”\: it\'\''s 50%':expansion=none:fontsize=81.75:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=2:x=(w-text_w)/2:y=90.339-ascent
-   |   ,drawtext=fontfile='<fonts>/ARIAL.TTF':text='Second line':expansion=none:fontsize=81.75:fontcolor=0xFFFFFF:bordercolor=0x000000:borderw=2:x=(w-text_w)/2:y=184.343-ascent
-   |   ,trim=end_frame=1
-   |   ,format=yuva420p[ui3_layer]
- 12| [stage3][ui3_layer]overlay=108:1440:enable='between(t,2,10)'
-   |   ,setsar=1
+the scene at 6 s: 3 layers
+    Media source 0 at 6.001 box (0.0, 0.0) 1080.0 x 1920.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, flags 5, blur 20/2/-0.15  [main.mp4 (blur fill), track 0]
+    Media source 0 at 6.001 box (0.0, 656.0) 1080.0 x 608.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Still still 0 box (108.0, 1440.0) 864.0 x 218.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [Text, track 3]
+
+the scene at 16 s: 3 layers
+    Media source 0 at 16.001 box (0.0, 0.0) 1080.0 x 1920.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, flags 5, blur 20/2/-0.15  [main.mp4 (blur fill), track 0]
+    Media source 0 at 16.001 box (0.0, 656.0) 1080.0 x 608.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+    Media source 1 at 9.001 box (54.0, 96.0) 972.0 x 546.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [clip1, track 1]
+
+the scene at 30 s: 2 layers
+    Media source 0 at 30.001 box (0.0, 0.0) 1080.0 x 1920.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, flags 5, blur 20/2/-0.15  [main.mp4 (blur fill), track 0]
+    Media source 0 at 30.001 box (0.0, 656.0) 1080.0 x 608.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+
+the scene at 60 s: 2 layers
+    Media source 0 at 60.001 box (0.0, 0.0) 1080.0 x 1920.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000, flags 5, blur 20/2/-0.15  [main.mp4 (blur fill), track 0]
+    Media source 0 at 60.001 box (0.0, 656.0) 1080.0 x 608.0, crop (0.000, 0.000)-(1.000, 1.000), opacity 1.000  [main.mp4, track 0]
+
+the sound: 1 track (aac stereo), 3 strips, 3 voices
+    track 1 (Video 2) (Track): no effects
+      clip1.mp4 a:0 heard 10-22 s from 3 s, rate 1, gain 1
+    track 4 (Audio 1) (Track): no effects
+      music.m4a a:0 heard 0-60 s from 0 s, rate 1, gain 0.501
+    track 5 (Track 1) (Track): no effects
+      main.mp4 a:0 heard 0-120 s from 0 s, rate 1, gain 1

@@ -9,7 +9,7 @@ using HandPegApp.Services;
 namespace HandPegGoldenTests;
 
 /// <summary>
-/// gpu-program-strip (Pass 5.0-Verify, the user's call: the Overview Bar drawn from what the GPU engine renders). The
+/// gpu-program-strip (Pass 5.0-Verify, the user's call: the Sequence Overview Scrubber drawn from what the GPU engine renders). The
 /// game style after Remove Dead Air (a vertical frame, four main clips, three HUD cut-outs with masks, the blurred
 /// background) on the made HEVC 60 fps source: its sheet is drawn by a compositor of its own, each picture the finished
 /// frame at its moment (against FFmpeg's export of the same timeline, shrunk the same way); drawn again unchanged it
@@ -21,18 +21,42 @@ public static partial class GpuExportTests
     // How alike a picture and FFmpeg's frame at its moment must be (both shrunk to the picture's size), dB of luma.
     private const double StripFloor = 22;
 
-    /// <summary>gpu-program-strip: the Overview Bar's sheet of the game style, its pictures, its redraws and its moments.</summary>
+    /// <summary>gpu-program-strip: the Sequence Overview Scrubber's sheet of the game style, its pictures, its redraws and its moments.</summary>
     public static GraphResult ProgramStrip()
     {
-        var text = new StringBuilder("# The Overview Bar's pictures drawn from the sequence by the GPU engine (GpuProgramStrip).\n");
+        var text = new StringBuilder("# The Sequence Overview Scrubber's pictures drawn from the sequence by the GPU engine (GpuProgramStrip).\n");
         var problems = new List<string>();
+        var settings = AppSettings.Current;
+        var (savedFfmpeg, savedFfprobe) = (settings.FfmpegPath, settings.FfprobePath);
+
+        // Progressive filling (5.2-Audit): every picture once, coarse to fine, so a half-drawn sheet covers the whole sequence.
+        foreach (var count in new[] { 1, 7, 40, 100 })
+        {
+            var order = GpuProgramStrip.DrawingOrder(count);
+            if (order.Length != count || order.Distinct().Count() != count || order.Any(i => i < 0 || i >= count) || order[0] != 0)
+                problems.Add($"the drawing order of {count} pictures is not each picture once from the first: {string.Join(",", order)}");
+            var half = order.Take((count + 1) / 2).Order().ToArray();
+            var widest = half.Length < 2 ? 0 : Math.Max(half.Zip(half.Skip(1), (a, b) => b - a).Max(), count - half[^1]);
+            if (count >= 7 && widest > 4)
+                problems.Add($"half of the {count} pictures drawn leave a gap of {widest} (at most 4 expected)");
+        }
+
+        text.Append($"drawing order of 10: {string.Join(" ", GpuProgramStrip.DrawingOrder(10))}\n");
         try
         {
+            // The tests' FFmpeg is the app's while the sheet is drawn: the workers' FFmpeg fallback decodes the HEVC source where
+            // Media Foundation has no HEVC decoder (5.2-Arm64AndNpu).
+            if (FindFfmpeg() is { } ffmpeg)
+                (settings.FfmpegPath, settings.FfprobePath) = (ffmpeg, FfprobeBeside(ffmpeg));
             OnThisThread(() => RunProgramStrip(text, problems));
         }
         catch (Exception ex)
         {
             problems.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+        }
+        finally
+        {
+            (settings.FfmpegPath, settings.FfprobePath) = (savedFfmpeg, savedFfprobe);
         }
 
         return new GraphResult("gpu-program-strip", text.ToString(), problems, 0);
@@ -43,7 +67,7 @@ public static partial class GpuExportTests
         var ffmpeg = FindFfmpeg();
         if (ffmpeg is null)
         {
-            Console.WriteLine("  note  no FFmpeg found (%LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg): the Overview Bar's pictures were not checked");
+            Console.WriteLine("  note  no FFmpeg found (HANDPEG_FFMPEG, or %LOCALAPPDATA%\\HandPeg-Data\\deps\\ffmpeg or ffmpeg-arm64): the Sequence Overview Scrubber's pictures were not checked");
             return false;
         }
 
@@ -59,12 +83,31 @@ public static partial class GpuExportTests
             ]);
         }
 
+        // No HEVC decoder in Media Foundation on this PC (HEVC Video Extensions): the workers decode the HEVC source with the FFmpeg
+        // fallback (5.2-Arm64AndNpu). Only without that too (no ffprobe beside FFmpeg) is the sheet drawn from an H.264 copy made
+        // the same way (13 s at 60 fps, full range, a key frame every 240 frames, B-frames), so its pictures, redraws and key-frame
+        // moments are the same as the HEVC source's.
+        if (!MediaFoundationDecodesHevc && FallbackDecodes(ffmpeg))
+            Console.WriteLine("  note  no HEVC decoder in Media Foundation on this PC (HEVC Video Extensions): the sheet's HEVC source is decoded by the FFmpeg fallback");
+        if (!MediaFoundationDecodesHevc && !FallbackDecodes(ffmpeg))
+        {
+            file = Path.Combine(folder, "h264-60-long.mp4");
+            source = source with { File = file };
+            if (!File.Exists(file))
+            {
+                const string pc = "-vf \"scale=out_color_matrix=bt709:out_range=pc,format=yuvj420p\" -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range pc";
+                FfmpegOnce(ffmpeg, $"-f lavfi -i \"testsrc2=s=1280x720:r=60:d=13\" {pc} -c:v libx264 -preset veryfast -crf 16 -g 240 -keyint_min 240 -sc_threshold 0 -bf 2 -an -y \"{file}\"");
+            }
+
+            Console.WriteLine("  note  no HEVC decoder in Media Foundation on this PC (HEVC Video Extensions) and no ffprobe beside FFmpeg for the fallback: the sheet is drawn from an H.264 copy of the HEVC source");
+        }
+
         var (width, height, fps, seconds) = Probe(ffmpeg, file);
         var state = EveryState(ffmpeg, folder, source, width, height, fps, seconds, StyleLengths.Sum());
 
-        // FFmpeg's export of the same timeline: what each picture must be.
+        // The export of the same timeline (the GPU's own since 5.2-Audit): what each picture must be, shrunk.
         if (!File.Exists(state.OutputPath) || new FileInfo(state.OutputPath).Length == 0)
-            await FfmpegRunner.RunAsync(FilterGraphBuilder.BuildExportCommand(state).CommandLine, new Progress<FfmpegProgress>(), CancellationToken.None, graphInFile: true);
+            await GpuExport.RunAsync(state, null, new Progress<FfmpegProgress>(), CancellationToken.None);
 
         using var strip = new GpuProgramStrip();
         var clock = Stopwatch.StartNew();
@@ -106,9 +149,10 @@ public static partial class GpuExportTests
         if (again is null || strip.LastDrawn != 0)
             problems.Add($"the same state drew {strip.LastDrawn} pictures again (none expected)");
 
-        // The third main clip moved: only the pictures over it are drawn.
+        // The third main clip moved: only the pictures over it are drawn. (Its clips are clips of the file since 5.2-AuditB: those
+        // the Sequence shows the file's picture by, its Cutouts not among them.)
         var moved = state.Timeline.Clone();
-        var mains = moved.Tracks.SelectMany(t => t.Clips).Where(c => c.ContentKind == LayerKind.MainVideo).OrderBy(c => c.Start).ToList();
+        var mains = SequenceSpans.PictureSpans(moved).Select(s => moved.FindClip(s.ClipId)!).OrderBy(c => c.Start).ToList();
         var third = mains[2];
         // (A look is never changed in place: a copy of it, moved.)
         var look = System.Text.Json.JsonSerializer.Deserialize<LayerState>(System.Text.Json.JsonSerializer.Serialize(third.State))!;

@@ -1,0 +1,8 @@
+# The start-up reads through generated metadata: every file the same bytes as reflection writes it, and read back to them.
+settings as a first start makes them: written the same, read back to the same
+settings in long use: written the same, read back to the same
+the built-in export presets (12): written the same, read back to the same
+the presets as PresetStore.Save writes them: written the same, read back to the same
+a preset with layers, keys, effects, captions and sound tracks: written the same, read back to the same
+the encoders found before: written the same, read back to the same
+the panes' arrangement: written the same, read back to the same

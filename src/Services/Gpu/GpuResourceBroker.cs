@@ -167,7 +167,7 @@ public sealed class GpuResourceBroker : IDisposable
     public long PathHashOf(int sourceId) => sourceId is >= 0 and < CompositorProtocol.MaxSources && _sources[sourceId] is { } slot ? slot.PathHash : 0;
 
     /// <summary>
-    /// A source's I-frames in the worker's time, when HandPeg knows them (null when it does not): the Overview Bar's
+    /// A source's I-frames in the worker's time, when HandPeg knows them (null when it does not): the Sequence Overview Scrubber's
     /// pictures are taken on them (<see cref="GpuProgramStrip"/>), one decoded frame each.
     /// </summary>
     public double[]? IFramesOfSource(int sourceId) => sourceId is >= 0 and < CompositorProtocol.MaxSources && _sources[sourceId] is { } slot ? IFramesOf(slot.Path) : null;
