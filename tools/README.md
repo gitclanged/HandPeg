@@ -162,6 +162,12 @@ reads +10 ms) and `--video-shift-ms 40` (the picture drawn 40 ms late: the video
 is only read, and `appsettings.json` is put back byte for byte when the harness ends; set `HANDPEG_DATA_DIR` to a folder of
 the run's own (with `deps\ffmpeg` in it) to keep the app's caches and settings out of it altogether.
 
+## MakeIcon.ps1 (HandPeg.exe's icon)
+`powershell -NoProfile -ExecutionPolicy Bypass -STA -File tools\MakeIcon.ps1 [-Preview <folder>]` draws HandPeg's mark (a rounded
+square in the accent blue, a white peg beside a play triangle) from vector geometry with WPF and writes `src\handpeg.ico` at 16, 24,
+32, 48, 64, 128 and 256 px (PNG frames). `HandPegApp.csproj` names it as the ApplicationIcon; `vpk pack --icon` takes it for Setup.exe.
+`-Preview` also writes each size as a PNG to look at. Run it again only when the mark changes, and commit the new icon.
+
 ## StartupBench.ps1 (how long does a launch take, as a user sees it?)
 `powershell -NoProfile -File tools\StartupBench.ps1 -Builds "<baseline>\HandPeg.exe;<candidate>\HandPeg.exe" [-Rounds 5] [-Seconds 8] [-Warm]`
 

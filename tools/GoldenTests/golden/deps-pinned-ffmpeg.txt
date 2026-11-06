@@ -1,0 +1,11 @@
+# DependencyUpdater.PinnedBuilds for FFmpeg (5.2.0's re-cut): each variant's tested build is a month's last (kept two years),
+# of its own kind, checked by SHA-256 and never a known-broken build; online, GitHub still has each pin with that digest.
+variant "": 2 listed
+  tested N-128227 (2026-10-31): autobuild-2026-10-31-12-59 ffmpeg-N-128227-g4811625b5f-win64-gpl.zip (201662768 bytes), month's last build yes
+  stand-in N-127021 (2026-09-30): autobuild-2026-09-30-13-08 ffmpeg-N-127021-ge0c94b2d1c-win64-gpl.zip (198589424 bytes), month's last build yes
+variant "8.1": 2 listed
+  tested 8.1.3-27 (2026-10-31): autobuild-2026-10-31-12-59 ffmpeg-n8.1.3-27-g8dca1586f4-win64-gpl-8.1.zip (194182300 bytes), month's last build yes
+  stand-in 8.1.3-9 (2026-09-30): autobuild-2026-09-30-13-08 ffmpeg-n8.1.3-9-g29e619e767-win64-gpl-8.1.zip (193109593 bytes), month's last build yes
+variant "arm64": 1 listed
+  tested N-128227 (2026-10-31, ARM64): autobuild-2026-10-31-12-59 ffmpeg-N-128227-g4811625b5f-winarm64-gpl.zip (142303693 bytes), month's last build yes
+never taken: ffmpeg-N-127021-ge0c94b2d1c-winarm64-gpl.zip

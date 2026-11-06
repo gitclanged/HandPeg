@@ -322,6 +322,12 @@ public sealed partial class GpuScenePlan
     /// <summary>The captions' layer's key (<see cref="GpuLayerDescriptor.ClipKey"/>): what the 3D view knows their plane by.</summary>
     public static readonly long CaptionClipKey = default(GpuHash).Add("captions").Value;
 
+    /// <summary>
+    /// The 3D view's selection key for the Background Blur (the Timeline's row of the blur fill's look, MainViewModel.BackgroundLayer):
+    /// selected, every clip's blur fill plane is outlined. No layer has it as its own ClipKey (a twin carries its video's).
+    /// </summary>
+    public static readonly long BlurFillKey = default(GpuHash).Add("blur-fill").Value;
+
     /// <summary>The captions' entry, wherever it is in the stack (5.1-Polish: among the layers, or over everything); null for none.</summary>
     private Entry? CaptionEntry => _captionEntry ??= Array.Find(_entries, static e => e.Kind == EntryKind.Caption) ?? NoCaptions;
 

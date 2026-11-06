@@ -7,7 +7,7 @@ namespace HandPegApp.Services;
 /// <summary>
 /// The developer flight recorder (4.4.0): on only on a PC that has the flag file <see cref="FlagPath"/>
 /// (%AppData%\HandPeg\dev-verbose.flag) or "devVerboseLogging": true in appsettings.json (Settings > General > Diagnostics >
-/// Developer Options since Pass 5.2D, which switches it on and off at once: <see cref="Follow"/>). While on,
+/// Verbose flight recorder, which switches it on and off as Settings are saved: <see cref="Follow"/>). While on,
 /// it keeps the last <see cref="Capacity"/> events (every breadcrumb, log line, key and click, bound action, timeline edit,
 /// refusal, undo step, project and media path, each with the playhead and the selection) in a lock-free ring, written to
 /// <see cref="LogPath"/> about once a second off the window's thread, and a snapshot of the open project (its path, its

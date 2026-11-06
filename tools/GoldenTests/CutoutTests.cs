@@ -78,6 +78,179 @@ public static class CutoutTests
         }
 
         yield return new GraphResult("game-presets-builtin", builtIn.ToString(), wrong, 0);
+
+        var order = new StringBuilder("# A Game Preset's family in the stack (5.2.0's re-cut, the user's P0): the Background Blur at the bottom, the clip over it,\n"
+                                      + "# its Cutouts over both, in the picture (2D), in the 3D view's planes and on the Timeline's rows.\n");
+        var disorder = new List<string>();
+        try
+        {
+            BlurOrder(order, disorder);
+        }
+        catch (Exception ex)
+        {
+            disorder.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+        }
+
+        yield return new GraphResult("game-preset-blur-order", order.ToString(), disorder, 0);
+    }
+
+    private static void BlurOrder(StringBuilder text, List<string> problems)
+    {
+        void Expect(bool holds, string what)
+        {
+            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
+            if (!holds)
+                problems.Add(what);
+        }
+
+        var ffmpeg = GpuExportTests.FindFfmpeg();
+        if (ffmpeg is null)
+        {
+            problems.Add("no FFmpeg to make the recording with (HANDPEG_FFMPEG)");
+            return;
+        }
+
+        // A real recording (a moving test picture, colourful everywhere, so a blur over a Cutout can never look like it).
+        const int W = 1280, H = 720;
+        var folder = Path.Combine(Path.GetTempPath(), $"handpeg-blur-order-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var file = Path.Combine(folder, "overwatch.mp4");
+            GpuExportTests.FfmpegOnce(ffmpeg, $"-f lavfi -i \"testsrc2=s={W}x{H}:r=30:d=3\" -c:v libx264 -pix_fmt yuv420p -g 30 -an -y \"{file}\"");
+
+            // Dropped: the Cutout lanes over the clip's track, as ApplyGamePreset makes them.
+            var dropped = WithPreset(file, W, H);
+            Family(text, Expect, dropped, "dropped", cutoutsOverClip: true);
+
+            // Converted from 5.1: the clip's track over its Cutout lanes (LegacyMainVideo keeps 5.1's order; SAMPLE QUICK CUTS' shape,
+            // where the twin under the clip's track alone hid every Cutout).
+            var converted = WithPreset(file, W, H);
+            var tracks = converted.Vm.Document.Tracks;
+            var own = converted.Vm.Document.TrackOf(converted.Parent)!;
+            tracks.Remove(own);
+            tracks.Add(own);
+            Family(text, Expect, converted, "converted", cutoutsOverClip: false);
+
+            // The Timeline's rows: the Sub-Lanes are the clip's track's family, so its blur fill's row goes in that family's stack.
+            Expect(converted.Vm.Document.Tracks.All(t => TimelineLowering.FamilyOf(t, converted.Vm.Document) == own),
+                "every Sub-Lane of the clip is its track's family (TimelineLowering.FamilyOf), where its Background Blur's row goes");
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(folder, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    private sealed record PresetFamily(MainViewModel Vm, Layer View, TimelineClip Parent, List<TimelineClip> Cutouts);
+
+    private static PresetFamily WithPreset(string file, int width, int height)
+    {
+        var vm = Opened(file, width, height, "h264");
+        vm.RefreshStylePresets();
+        var view = vm.Layers.First(l => l.ClipId != Guid.Empty);
+        if (!vm.ApplyGamePreset([view], "Overwatch 2 Vertical HUD"))
+            throw new InvalidOperationException("Overwatch 2 Vertical HUD could not be applied");
+        var parent = vm.ClipOf(view)!;
+        return new PresetFamily(vm, view, parent, vm.Document.ChildrenOf(parent).Where(c => c.Track.Kind == TimelineTrackKind.Video).Select(c => c.Clip).ToList());
+    }
+
+    /// <summary>
+    /// One Game Preset's family at 1 s: its 2D stack and 3D places from the plan, then its pixels drawn by a real compositor with its blur
+    /// fill on and off. Whatever of the clip and its Cutouts is drawn over the Background Blur is the same in both; drawn under it, none is.
+    /// </summary>
+    private static void Family(StringBuilder text, Action<bool, string> expect, PresetFamily family, string shape, bool cutoutsOverClip)
+    {
+        var (vm, view, parent, cutouts) = family;
+        foreach (var track in vm.Document.Tracks.Where(t => t.Kind == TimelineTrackKind.Video))
+            text.Append(CultureInfo.InvariantCulture, $"{shape}: track {vm.Document.Tracks.IndexOf(track)}{(track.ParentTrackId is null ? "" : " (a Sub-Lane)")}: ")
+                .AppendJoin(", ", track.Clips.Select(c => c.State.Name)).Append('\n');
+
+        var blurOn = vm.LivePreviewState();
+        using var described = new GpuResourceBroker(null, bakeOnCallingThread: true);
+        var plan = GpuScenePlan.Create(blurOn, described);
+        var layers = new GpuLayerDescriptor[CompositorProtocol.MaxLayers];
+        var header = default(FrameSceneHeader);
+        var count = plan.Evaluate(1, ref header, layers);
+        plan.PlaceLayers(layers, count);
+        var parentKey = GpuHash.Of(parent.Id);
+        string NameOf(GpuLayerDescriptor d) => (d.Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0 ? "Background Blur"
+            : d.ClipKey == parentKey ? "the clip" : cutouts.FirstOrDefault(c => GpuHash.Of(c.Id) == d.ClipKey)?.State.Name ?? "other";
+        var drawn = Enumerable.Range(0, count).Select(k => (Name: NameOf(layers[k]), Depth: layers[k].ZDepth)).ToList();
+        text.Append(CultureInfo.InvariantCulture, $"{shape}: 2D stack at 1 s, bottom first, with 3D places: ").AppendJoin(" | ", drawn.Select(d => $"{d.Name} {d.Depth:0}")).Append('\n');
+
+        var blur = drawn.FindIndex(d => d.Name == "Background Blur");
+        var main = drawn.FindIndex(d => d.Name == "the clip");
+        var pieces = Enumerable.Range(0, count).Where(k => drawn[k].Name is not ("Background Blur" or "the clip" or "other")).ToList();
+        expect(blur >= 0 && main >= 0 && pieces.Count == 3 && drawn.Count(d => d.Name == "Background Blur") == 1,
+            $"{shape}: one Background Blur, the clip and its three Cutouts drawn");
+        expect(blur == 0, $"{shape}: the Background Blur at the bottom of the stack, under the clip and every Cutout");
+        expect(pieces.All(k => cutoutsOverClip ? k > main : k < main), $"{shape}: the Cutouts {(cutoutsOverClip ? "over" : "under")} the clip, as their lanes lie");
+        expect(blur >= 0 && pieces.All(k => drawn[k].Depth > drawn[blur].Depth) && drawn[main].Depth > drawn[blur].Depth
+               && drawn.Count(d => d.Depth == drawn[blur].Depth) == 1,
+            $"{shape}: 3D: the Background Blur a plane of its own, behind the clip's and every Cutout's");
+
+        // Pixels: the same scene with the clip's blur fill off (black behind everything).
+        vm.SetBlurFill(view, false);
+        var blurOff = vm.LivePreviewState();
+        using var client = new CompositorClient(adapter: -1, keepStandby: false);
+        using var reader = new CompositorFrameReader(client);
+        using var broker = new GpuResourceBroker(client, bakeOnCallingThread: true);
+        var problems = new List<string>();
+        var (onPlan, offPlan) = (GpuScenePlan.Create(blurOn, broker), GpuScenePlan.Create(blurOff, broker));
+        onPlan.PrepareAround(1);
+        var on = GpuSceneDifferentialTests.Draw(client, reader, onPlan, 1, problems, $"{shape}, blur fill on");
+        var off = GpuSceneDifferentialTests.Draw(client, reader, offPlan, 1, problems, $"{shape}, blur fill off");
+        if (on is null || off is null)
+        {
+            expect(false, $"{shape}: both pictures drawn ({string.Join("; ", problems)})");
+            return;
+        }
+
+        offPlan.PrepareAround(1);
+        var (width, height) = (onPlan.CanvasWidth, onPlan.CanvasHeight);
+        (int X, int Y, int W, int H) BoxOf(Layer layer) => layer.GetOutputRect(width, height, layer.ImageWidth, layer.ImageHeight);
+        var clipBox = BoxOf(vm.ViewOf(parent)!);
+
+        // The share of a box's pixels that are the same in both pictures; a Cutout's counted outside the clip's box alone, where only it
+        // and the Background Blur can be.
+        double Kept(Layer? layer, bool outsideClip = false)
+        {
+            var (x, y, w, h) = layer is not null ? BoxOf(layer) : (0, 0, width, height);
+            var (kept, all) = (0, 0);
+            for (var row = Math.Max(y, 0); row < Math.Min(y + h, height); row++)
+            {
+                for (var column = Math.Max(x, 0); column < Math.Min(x + w, width); column++)
+                {
+                    if (outsideClip && column >= clipBox.X && column < clipBox.X + clipBox.W && row >= clipBox.Y && row < clipBox.Y + clipBox.H)
+                        continue;
+
+                    var at = (row * width + column) * 3;
+                    all++;
+                    if (Math.Abs(on[at] - off[at]) <= 3 && Math.Abs(on[at + 1] - off[at + 1]) <= 3 && Math.Abs(on[at + 2] - off[at + 2]) <= 3)
+                        kept++;
+                }
+            }
+
+            return all > 0 ? kept / (double)all : 0;
+        }
+
+        // Outside every box the Background Blur shows (black with it off); in the clip's box, the clip; in a Cutout's, what its mask shows.
+        // (The shares go to the console, not the golden file: a card's rounding may move them a little.)
+        var background = Kept(null);
+        var clipKept = Kept(vm.ViewOf(parent));
+        var cutoutKept = cutouts.Select(c => (c.State.Name, Kept: Kept(vm.ViewOf(c), outsideClip: true))).ToList();
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        {shape}: the same with the blur fill on and off: the frame {background:P0}, the clip's box {clipKept:P0}, ")
+                          + string.Join(", ", cutoutKept.Select(c => string.Create(CultureInfo.InvariantCulture, $"{c.Name}'s box past the clip's {c.Kept:P0}"))));
+        expect(background < 0.9, $"{shape}: pixels: the Background Blur is drawn (the frame differs with it off)");
+        expect(clipKept > 0.9, $"{shape}: pixels: the clip over the Background Blur, its box drawn the same with it on and off");
+        expect(cutoutKept.All(c => c.Kept > 0.05), $"{shape}: pixels: every Cutout over the Background Blur, what its mask shows drawn the same with it on and off");
     }
 
     private static void BuiltIns(StringBuilder text, List<string> problems)

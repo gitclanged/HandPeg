@@ -77,13 +77,14 @@ public static class GpuSceneDifferentialTests
                     if (described != count || header.ActiveLayerCount != count || header.CanvasWidth != plan.CanvasWidth)
                         problems.Add(string.Create(CultureInfo.InvariantCulture, $"{c.Name} at {moment} s: {count} layers written, {described} described, the header says {header.ActiveLayerCount}"));
 
-                    // The 3D view's places (5.0-Release): each clip at one place whatever else is on, in the order drawn, the
-                    // stack as deep at every moment.
+                    // The 3D view's places (5.0-Release): each clip at one place whatever else is on, and its blur fill at one of its
+                    // own (5.2.0's re-cut: a twin carries its video's key), in the order drawn, the stack as deep at every moment.
                     var depth = plan.PlaceLayers(layers, count);
                     depths.Add(depth);
                     for (var i = 0; i < count; i++)
                     {
-                        var (key, place) = (layers[i].ClipKey, layers[i].ZDepth);
+                        var twin = (layers[i].Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0;
+                        var (key, place) = (twin ? ~layers[i].ClipKey : layers[i].ClipKey, layers[i].ZDepth);
                         if (places.TryGetValue(key, out var known) && known != place || i > 0 && place < layers[i - 1].ZDepth || place >= depth)
                             problems.Add(string.Create(CultureInfo.InvariantCulture, $"{c.Name} at {moment} s: layer {i} at place {place} (before {known}, depth {depth})"));
                         places[key] = place;

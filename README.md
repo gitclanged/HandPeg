@@ -35,6 +35,8 @@ without the timeline lagging.
 From the [latest release](https://github.com/gitclanged/HandPeg/releases/latest):
 
 - `HandPeg-win-Setup.exe`: the installer (Windows 10 or 11, x64, with the .NET 8 Desktop Runtime). It updates itself.
+- `HandPeg-win-arm64-Setup.exe`: the native installer for Windows on ARM (Snapdragon PCs). It updates itself from the ARM64
+  releases.
 - `HandPeg-5.2.0-win-x64-Portable.zip` (about 6 MB): unzip and run.
 - `HandPeg-5.2.0-win-arm64-Portable.zip` (about 6 MB): the same for Windows on ARM.
 

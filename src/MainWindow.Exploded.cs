@@ -59,6 +59,7 @@ public partial class MainWindow
     // The label badges (made as needed, kept), the flat picture's overlays hidden under the 3D view (with their opacity),
     // and the player's own zoom matrix the 3D layer last cancelled.
     private readonly List<(Border Badge, TextBlock Text)> _explodedBadges = [];
+    private readonly List<Rect> _explodedBadgeBoxes = [];
     private readonly List<(UIElement Element, double Opacity)> _explodedHidden = [];
     private Matrix _explodedUnder = Matrix.Identity;
 
@@ -233,7 +234,11 @@ public partial class MainWindow
 
     /// <summary>The clip selected (the timeline's selection) as the engine's key (the captions' own, selected); 0 none.</summary>
     private long SelectedExplodedKey() => _selectedClip is Layer { IsCaptions: true } ? GpuScenePlan.CaptionClipKey
+        : _selectedClip is Layer { IsBackground: true } ? GpuScenePlan.BlurFillKey
         : _selectedClip is Layer { ClipId: var id } && id != Guid.Empty ? GpuHash.Of(id) : 0;
+
+    /// <summary>The name a Background Blur plane goes by in the 3D view (its badge, the status line).</summary>
+    private const string ExplodedBlurName = "Background Blur";
 
     // ----- Every frame while the 3D view is up -----
 
@@ -341,7 +346,11 @@ public partial class MainWindow
 
         var (toX, toY) = (width / Math.Max(scene.OutputWidth, 1), height / Math.Max(scene.OutputHeight, 1));
         var shown = 0;
-        for (var k = 0; k < scene.Count; k++)
+
+        // Front to back, so a plane's badge that would lie over one nearer the camera yields (5.2.0's re-cut: the Background Blur's, whose
+        // corner is the frame's, met a top Cutout's), moved up past it, or down where there is no room above.
+        _explodedBadgeBoxes.Clear();
+        for (var k = scene.Count - 1; k >= 0; k--)
         {
             ref readonly var plane = ref scene.Planes[k];
             if (ExplodedInfoOf(plane) is not { Name.Length: > 0 } info)
@@ -353,20 +362,31 @@ public partial class MainWindow
                 continue;
 
             var (badge, text) = ExplodedBadge(shown++);
-            var selected = (plane.Flags & GpuLayerDescriptor.FlagSelected) != 0 && !plane.BlurFillOnly;
-            text.Text = selected ? "▲ " + info.Name : info.Name;
+            var selected = (plane.Flags & GpuLayerDescriptor.FlagSelected) != 0;
+            var name = plane.BlurFillOnly ? ExplodedBlurName : info.Name;
+            text.Text = selected ? "▲ " + name : name;
 
             // The selected layer's badge is filled with the accent (its plane's box is too), so a drag's layer is never in doubt;
             // another clip of its track, playing while it is not, has the accent's edge (its plane's fainter outline).
             var selectedTrack = (plane.Flags & GpuLayerDescriptor.FlagSelectedTrack) != 0;
             badge.Background = selected ? ExplodedSelectedEdge : ExplodedBadgeFill;
-            badge.BorderBrush = selected || selectedTrack ? ExplodedSelectedEdge : info.HasMask ? ExplodedMaskEdge : ExplodedBadgeEdge;
+            badge.BorderBrush = selected || selectedTrack ? ExplodedSelectedEdge : info.HasMask && !plane.BlurFillOnly ? ExplodedMaskEdge : ExplodedBadgeEdge;
             text.Foreground = selected ? ExplodedSelectedText : plane.BlurFillOnly ? ExplodedMutedText : ExplodedBadgeText;
             text.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
             Panel.SetZIndex(badge, selected ? 1 : 0);
             badge.Opacity = camera.Amount;
-            Canvas.SetLeft(badge, Math.Clamp(at.X * toX, 2, Math.Max(width - 60, 2)));
-            Canvas.SetTop(badge, Math.Clamp(at.Y * toY - 21, 2, Math.Max(height - 20, 2)));
+            badge.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            var size = badge.DesiredSize;
+            var box = new Rect(Math.Clamp(at.X * toX, 2, Math.Max(width - 60, 2)), Math.Clamp(at.Y * toY - 21, 2, Math.Max(height - 20, 2)), size.Width, size.Height);
+            for (var tries = 0; tries < 8 && _explodedBadgeBoxes.FindIndex(placed => placed.IntersectsWith(box)) is >= 0 and var hit; tries++)
+            {
+                var over = _explodedBadgeBoxes[hit];
+                box.Y = over.Top - box.Height - 2 >= 2 ? over.Top - box.Height - 2 : over.Bottom + 2;
+            }
+
+            _explodedBadgeBoxes.Add(box);
+            Canvas.SetLeft(badge, box.X);
+            Canvas.SetTop(badge, box.Y);
             badge.Visibility = Visibility.Visible;
         }
 
@@ -664,6 +684,15 @@ public partial class MainWindow
             // a drag on the timeline, which nothing may change the project under).
             if (!ReferenceEquals(_selectedClip, view))
                 SelectClip(view);
+
+            // The Background Blur: selected (its row, and its look in the inspector), never dragged: it covers the frame by itself.
+            if (plane.BlurFillOnly)
+            {
+                engine.SelectedClipKey = GpuScenePlan.BlurFillKey;
+                _viewModel.StatusText = $"Selected the {ExplodedBlurName}: under its clip and every Cutout of it. Its blur, zoom and dimming are in the inspector; each clip's menu turns its Blur Fill on or off.";
+                return;
+            }
+
             engine.SelectedClipKey = plane.ClipKey;
             if (TimelineDragHeld || e.ClickCount > 1)
                 return;
@@ -774,13 +803,14 @@ public partial class MainWindow
         var scene = _explodedScene;
         TakeExplodedInfos(scene);
 
-        // The clips' planes from the back of the stack to the front (their place in it, then the order drawn).
+        // The clips' planes from the back of the stack to the front (their place in it, then the order drawn); the Background Blur
+        // once, at its first plane's place.
         var planes = new List<(float Depth, int Index, long Key, Layer View)>();
         for (var k = 0; k < scene.Count; k++)
         {
             ref readonly var plane = ref scene.Planes[k];
-            var clipKey = plane.ClipKey;
-            if (plane.BlurFillOnly || ExplodedViewOf(plane) is not { } view || planes.Exists(p => p.Key == clipKey))
+            var clipKey = plane.BlurFillOnly ? GpuScenePlan.BlurFillKey : plane.ClipKey;
+            if (ExplodedViewOf(plane) is not { } view || planes.Exists(p => p.Key == clipKey))
                 continue;
             planes.Add((plane.ZDepth, k, clipKey, view));
         }
@@ -848,8 +878,9 @@ public partial class MainWindow
 
     /// <summary>
     /// The layer under a point: the nearest plane (along the planes' normal, which is along the ray: the order they are drawn in) whose
-    /// box the ray meets, a tilted one's box on its tilted plane (5.2C, the user's Q4), among those that are a clip's (not a blurred
-    /// background); its view and where the point is (canvas pixels at the depth <paramref name="depth"/>, the plane's own for a flat one).
+    /// box the ray meets, a tilted one's box on its tilted plane (5.2C, the user's Q4); a blur fill's plane (behind its video's family,
+    /// so only where nothing in front of it is pressed) is the Background Blur (5.2.0's re-cut). Its view and where the point is (canvas
+    /// pixels at the depth <paramref name="depth"/>, the plane's own for a flat one).
     /// </summary>
     private bool PickExplodedPlane(GpuPreviewEngine engine, Point at, out ExplodedPlane picked, out Layer view, out Vector2 hit, out float depth)
     {
@@ -868,14 +899,12 @@ public partial class MainWindow
         for (var k = 0; k < scene.Count; k++)
         {
             ref readonly var plane = ref scene.Planes[k];
-            if (plane.BlurFillOnly)
-                continue;
 
             // Of planes as near (no spread yet), the later in the stack: it is drawn over the earlier. The selected
-            // layer wins wherever its box is under the pointer.
+            // layer wins wherever its box is under the pointer (the Background Blur, the whole frame, only where nothing is in front).
             var z = camera.DepthOf(plane.ZDepth);
             var distance = camera.DistanceTo(z);
-            var isSelected = selected != 0 && plane.ClipKey == selected;
+            var isSelected = selected != 0 && plane.ClipKey == selected && !plane.BlurFillOnly;
             if (!isSelected && distance > nearest || !OnExplodedBox(camera, point, plane, z, out var onPlane, out var onDepth)
                 || ExplodedViewOf(plane) is not { } layer)
                 continue;
@@ -1021,6 +1050,8 @@ public partial class MainWindow
     {
         if (plane.ClipKey == GpuScenePlan.CaptionClipKey)
             return _viewModel.CaptionLayer;
+        if (plane.BlurFillOnly)
+            return _viewModel.BackgroundLayer;
         if (ExplodedInfoOf(plane) is not { ClipId.Length: > 0 } info || !Guid.TryParse(info.ClipId, out var id)
             || _viewModel.Document.FindClip(id) is not { } clip)
             return null;

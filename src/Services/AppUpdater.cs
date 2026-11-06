@@ -63,7 +63,7 @@ public static class AppUpdater
 
             if (!AppPaths.IsSelfContained)
             {
-                var manager = new UpdateManager(new GithubSource(AppSettings.HandPegRepositoryUrl, accessToken: null, prerelease: false));
+                var manager = NewManager();
                 if (manager.IsInstalled)
                 {
                     var update = await manager.CheckForUpdatesAsync();
@@ -108,6 +108,16 @@ public static class AppUpdater
 
     private static UpdateManager? _manager;
 
+    /// <summary>
+    /// The Velopack channel of this copy's build (5.2.0's re-cut): "win-arm64" for the ARM64 installer's HandPeg (releases.win-arm64.json),
+    /// "win" for the x64 one's (releases.win.json, which an x64 copy run emulated on an ARM64 PC keeps). Named, never left to the copy's own
+    /// package, so an ARM64 copy is never offered the x64 release, nor the other way round.
+    /// </summary>
+    public static string Channel => System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.Arm64 ? "win-arm64" : "win";
+
+    private static UpdateManager NewManager() =>
+        new(new GithubSource(AppSettings.HandPegRepositoryUrl, accessToken: null, prerelease: false), new UpdateOptions { ExplicitChannel = Channel });
+
     // A newer release that has been found and not downloaded yet; and the one downloaded, waiting to be put in.
     private static UpdateInfo? _found;
     private static VelopackAsset? _ready;
@@ -137,7 +147,7 @@ public static class AppUpdater
             if (ReadyVersion is { } waiting)
                 return (waiting, true);
 
-            var manager = new UpdateManager(new GithubSource(AppSettings.HandPegRepositoryUrl, accessToken: null, prerelease: false));
+            var manager = NewManager();
             if (!manager.IsInstalled)
                 return null;
 

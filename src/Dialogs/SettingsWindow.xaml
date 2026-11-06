@@ -386,6 +386,9 @@
                                 ToolTip="Deletes every crash report in the folder, at once (not when you press Save)." />
                         <TextBlock x:Name="CrashReportsUsage" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
+                    <!-- The developer flight recorder (DevFlightRecorder; 5.2.0's re-cut, the user's answer: a checkbox again, no flag file needed) -->
+                    <CheckBox Content="Verbose flight recorder" IsChecked="{Binding DevVerboseLogging}" Margin="0,6,0,2" AutomationProperties.Name="Verbose Flight Recorder"
+                              ToolTip="Off by default. On: HandPeg keeps its last 500 steps (every key and click, action, timeline edit, undo step, log line, and the project and media paths, each with the playhead and the selection) in the logs folder, written about once a second, with a snapshot of the open project, and a crash report carries all of it unredacted, so a bug can be replayed exactly. Meant for chasing a bug with the developer: the reports then hold your file names and paths. Off: none of it runs and crash reports stay as anonymous as ever. Switched on or off when you press Save. (A dev-verbose.flag file in the settings folder turns it on as well.)" />
 
                 </StackPanel>
             </TabItem>

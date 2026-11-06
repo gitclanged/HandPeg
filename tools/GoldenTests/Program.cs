@@ -32,9 +32,13 @@ public static class Program
         thread.Start();
         thread.Join();
 
+        // HANDPEG_GOLDEN_KEEP_DATA=1 keeps it, the app's own log among it (logs\HandPeg.log), to read after a failure.
         try
         {
-            Directory.Delete(data, recursive: true);
+            if (Environment.GetEnvironmentVariable("HANDPEG_GOLDEN_KEEP_DATA") == "1")
+                Console.WriteLine($"  note  the data folder is kept: {data}");
+            else
+                Directory.Delete(data, recursive: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

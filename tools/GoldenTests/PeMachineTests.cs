@@ -19,7 +19,93 @@ public static class PeMachineTests
         yield return Case("deps-pe-machine",
             "# DependencyUpdater.PeMachineOf and IsMachineAccepted (5.0): x64 takes x64 only; ARM64 runs ARM64 or x64 programs.",
             Machines);
+        yield return Case("deps-pinned-ffmpeg",
+            "# DependencyUpdater.PinnedBuilds for FFmpeg (5.2.0's re-cut): each variant's tested build is a month's last (kept two years),\n"
+            + "# of its own kind, checked by SHA-256 and never a known-broken build; online, GitHub still has each pin with that digest.",
+            PinnedFfmpeg);
     }
+
+    private static void PinnedFfmpeg(StringBuilder text, List<string> problems)
+    {
+        // x64 (the plain build and the 8.1 line for older NVIDIA drivers) and ARM64.
+        string[] variants = ["", DependencyUpdater.OlderNvidiaVariant, DependencyUpdater.Arm64Variant];
+        var pins = DependencyUpdater.PinnedBuilds.Where(b => b.Tool == DependencyUpdater.Ffmpeg).ToList();
+        foreach (var variant in variants)
+        {
+            var builds = pins.Where(b => b.Variant == variant).ToList();
+            Line(text, $"variant \"{variant}\": {builds.Count} listed");
+            if (builds.Count == 0)
+            {
+                problems.Add($"no pinned FFmpeg for the variant \"{variant}\"");
+                continue;
+            }
+
+            for (var rank = 0; rank < builds.Count; rank++)
+            {
+                var build = builds[rank];
+                var monthEnd = MonthEndTag(build.Tag);
+                Line(text, $"  {(rank == 0 ? "tested" : "stand-in")} {build.Label}: {build.Tag} {build.Asset} ({build.Size} bytes), month's last build {(monthEnd ? "yes" : "no")}");
+                if (!DependencyUpdater.IsVariantAsset(DependencyUpdater.Ffmpeg, variant, build.Asset))
+                    problems.Add($"{build.Asset} is not a build of the variant \"{variant}\"");
+                if (build.Sha256.Length != 64 || !build.Sha256.All(Uri.IsHexDigit))
+                    problems.Add($"{build.Asset} has no SHA-256");
+                if (DependencyUpdater.BrokenAssets.Contains(build.Asset) || DependencyUpdater.IsPassedOver(build.Asset))
+                    problems.Add($"{build.Asset} is pinned but known not to start");
+                if (!monthEnd)
+                    problems.Add($"{build.Tag} is a daily build, which BtbN keeps only two weeks");
+                if (!build.Version.EndsWith(build.Tag.Substring("autobuild-".Length, 10).Replace("-", "", StringComparison.Ordinal), StringComparison.Ordinal))
+                    problems.Add($"{build.Label}'s version {build.Version} is not of its release's day");
+            }
+        }
+
+        foreach (var broken in DependencyUpdater.BrokenAssets.Order(StringComparer.Ordinal))
+            Line(text, $"never taken: {broken}");
+
+        // Online: each pinned release still holds its file, with the digest and size pinned. Only GitHub's definite answers
+        // count (gone, or a different file); no connection or the hourly limit is a note, so an offline run still passes.
+        using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("HandPeg-GoldenTests/1.0");
+        foreach (var tag in pins.Select(b => b.Tag).Distinct())
+        {
+            try
+            {
+                using var response = http.GetAsync($"https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/{tag}").GetAwaiter().GetResult();
+                if ((int)response.StatusCode == 404)
+                {
+                    problems.Add($"GitHub no longer has the release {tag}");
+                    continue;
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"  deps-pinned-ffmpeg: GitHub answered {(int)response.StatusCode} for {tag}; not checked online");
+                    continue;
+                }
+
+                using var json = System.Text.Json.JsonDocument.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult());
+                var assets = json.RootElement.GetProperty("assets").EnumerateArray()
+                    .ToDictionary(a => a.GetProperty("name").GetString() ?? "", a => a);
+                foreach (var build in pins.Where(b => b.Tag == tag))
+                {
+                    if (!assets.TryGetValue(build.Asset, out var asset))
+                        problems.Add($"the release {tag} no longer has {build.Asset}");
+                    else if (asset.GetProperty("digest").GetString() is var digest && !string.Equals(digest, "sha256:" + build.Sha256, StringComparison.OrdinalIgnoreCase))
+                        problems.Add($"{build.Asset}: GitHub's digest {digest} is not the pinned SHA-256");
+                    else if (asset.GetProperty("size").GetInt64() != build.Size)
+                        problems.Add($"{build.Asset}: GitHub's size {asset.GetProperty("size").GetInt64()} is not the pinned {build.Size}");
+                }
+            }
+            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TaskCanceledException)
+            {
+                Console.WriteLine($"  deps-pinned-ffmpeg: GitHub could not be reached ({ex.Message}); not checked online");
+            }
+        }
+    }
+
+    // "autobuild-2026-10-31-12-59": built on the last day of its month, the build BtbN keeps for two years.
+    private static bool MonthEndTag(string tag) =>
+        DateTime.TryParseExact(tag.AsSpan("autobuild-".Length, 10), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)
+        && day.AddDays(1).Month != day.Month;
 
     private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
     {

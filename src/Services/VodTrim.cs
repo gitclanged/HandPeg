@@ -237,26 +237,43 @@ public static class VodTrim
                 return null;
         }
 
-        // From the key frame (a hair past it, and past FFmpeg's 3/23 s step back for B-frames in a container that does not seek by
-        // presentation time, so the seek lands on it and on no earlier one), to the stretch's end, every stream as it is.
+        // From the key frame, to the stretch's end, every stream as it is. FFmpeg's seek steps back before the point asked for (for B-frames,
+        // in a container that does not seek by presentation time), and by how much changes between its builds (5.2.0's re-cut: 3/23 s, then
+        // more than 0.13 s on Matroska and a hair on MP4 from its 2026-10-31 build on). So the seek goes a hair past the key frame, then further
+        // towards the next one, until the copy is seen to begin on it; never past the next key frame, so it lands on no later one.
         var from = key?.Time - videoStart ?? 0;
         var length = stretch.To - from;
-        var seek = key is { } k ? string.Create(CultureInfo.InvariantCulture, $"-seek_timestamp 1 -ss {k.Time + Math.Min(0.131, ((nextKey ?? k.Time + 1) - k.Time) / 2):0.######} ") : "";
+        var gap = key is { } found ? (nextKey ?? found.Time + 1) - found.Time : 0;
+        double[] margins = key is null ? [0] : [.. new[] { Math.Min(0.131, gap / 2), gap / 2, gap * 0.9 }.Distinct()];
         var partial = target + ".part" + Path.GetExtension(target);
-        var ran = Run(DependencyUpdater.FfmpegPath, string.Create(CultureInfo.InvariantCulture,
-            $"-hide_banner -loglevel error -y {seek}-t {length:0.######} -i \"{source}\" -map 0 -dn -c copy -avoid_negative_ts make_zero -map_metadata 0 \"{partial}\""), cancel);
         try
         {
-            if (ran is null || !File.Exists(partial))
-                return null;
-
-            // Its first picture is that key frame: the same packet (its size), a key frame.
-            if (key is { } landed)
+            var landed = false;
+            foreach (var margin in margins)
             {
-                var first = Probe(partial, "-select_streams v:0 -read_intervals %+2 -show_entries packet=size,flags", cancel);
-                if (first is null || !(Field(first, "flags") ?? "").Contains('K') || Field(first, "size") != landed.Size.ToString(CultureInfo.InvariantCulture))
+                var seek = key is { } k ? string.Create(CultureInfo.InvariantCulture, $"-seek_timestamp 1 -ss {k.Time + margin:0.######} ") : "";
+                var ran = Run(DependencyUpdater.FfmpegPath, string.Create(CultureInfo.InvariantCulture,
+                    $"-hide_banner -loglevel error -y {seek}-t {length:0.######} -i \"{source}\" -map 0 -dn -c copy -avoid_negative_ts make_zero -map_metadata 0 \"{partial}\""), cancel);
+                if (ran is null || !File.Exists(partial))
                     return null;
+
+                // Its first picture is that key frame: the same packet (its size), a key frame.
+                if (key is not { } wanted)
+                {
+                    landed = true;
+                    break;
+                }
+
+                var first = Probe(partial, "-select_streams v:0 -read_intervals %+2 -show_entries packet=size,flags", cancel);
+                if (first is not null && (Field(first, "flags") ?? "").Contains('K') && Field(first, "size") == wanted.Size.ToString(CultureInfo.InvariantCulture))
+                {
+                    landed = true;
+                    break;
+                }
             }
+
+            if (!landed)
+                return null;
 
             var lasts = Probe(partial, "-show_entries format=duration", cancel);
             if (double.TryParse(Field(lasts ?? "", "duration"), NumberStyles.Float, CultureInfo.InvariantCulture, out var duration) && duration > 0)

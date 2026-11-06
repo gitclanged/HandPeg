@@ -47,8 +47,9 @@ public sealed partial class AppSettings
     public bool PanTimelineWhenNotZoomed { get; set; }
 
     /// <summary>
-    /// The developer flight recorder (<see cref="DevFlightRecorder"/>, 4.4.0), also on while %AppData%\HandPeg\dev-verbose.flag exists.
-    /// Never written unless set: "devVerboseLogging": true in appsettings.json.
+    /// The developer flight recorder (<see cref="DevFlightRecorder"/>, 4.4.0), also on while %AppData%\HandPeg\dev-verbose.flag exists:
+    /// Settings > General > Diagnostics > Verbose flight recorder (5.2.0's re-cut, the user's answer), off by default. Never written
+    /// unless set: "devVerboseLogging": true in appsettings.json.
     /// </summary>
     [System.Text.Json.Serialization.JsonPropertyName("devVerboseLogging")]
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]

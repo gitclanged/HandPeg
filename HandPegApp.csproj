@@ -19,6 +19,10 @@
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>
 
+    <!-- HandPeg.exe's icon (5.2.0's re-cut, the user's answer): drawn from vector geometry by tools\MakeIcon.ps1, 16 to 256 px. Its windows,
+         the taskbar, Alt+Tab, Setup.exe and the .hproj / .hpb files Explorer shows (DefaultIcon "<exe>",0) take it from the exe. -->
+    <ApplicationIcon>src\handpeg.ico</ApplicationIcon>
+
     <!-- Windows Forms is referenced for two things WPF lacks: the system colour picker and tray notifications. -->
     <UseWindowsForms>true</UseWindowsForms>
 

@@ -87,6 +87,13 @@ public static partial class Program
             Services.StartupTrace.Mark("data migration");
         }
 
+        // A project or bundle double-clicked while HandPeg is open (5.2.0's re-cut, the user's answer): handed to the copy open, which asks
+        // about its unsaved changes, opens it and comes to the front, and this process ends. Otherwise this copy is the one later ones hand
+        // theirs to (a named mutex here; its pipe after the first frame). A start with no project looks for no other copy.
+        if (Services.SingleInstance.LaunchFile() is { } launched && Services.SingleInstance.HandOff(launched))
+            return;
+        Services.SingleInstance.Claim();
+
         // What makes HandPeg fall over is caught from here on (the handlers and the native fault filter only: cheap;
         // the shared memory and the sentinel wait for the first frame). The version is in every report already.
         Services.CrashReporter.Install();

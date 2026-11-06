@@ -1117,6 +1117,9 @@ public partial class SettingsWindow : Window
         // does the GPU frame cache's budget (SettingsWindow.GpuEngine.cs).
         KeybindManager.Reload(_settings);
         ApplyGpuEngine();
+
+        // The verbose flight recorder follows its box at once (5.2.0's re-cut), off this thread: it reads the disk.
+        _ = Task.Run(DevFlightRecorder.Follow);
         DialogResult = true;
     }
 }

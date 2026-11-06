@@ -679,7 +679,7 @@ public static partial class GpuExportTests
         return files;
     }
 
-    private static void FfmpegOnce(string ffmpeg, string arguments)
+    internal static void FfmpegOnce(string ffmpeg, string arguments)
     {
         using var process = Process.Start(new ProcessStartInfo(ffmpeg, "-hide_banner -loglevel error " + arguments) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true })!;
         var errors = process.StandardError.ReadToEnd();

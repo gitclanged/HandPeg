@@ -27,7 +27,7 @@ public struct ExplodedPlane
 
     public readonly bool Tilted => TiltX != 0 || TiltY != 0;
 
-    /// <summary>Only a blurred background (a whole-frame blur under its video): drawn, never picked.</summary>
+    /// <summary>Only a blurred background (a whole-frame blur under its video's family): a plane of its own, picked as the Background Blur.</summary>
     public readonly bool BlurFillOnly => (Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0;
 
     public readonly bool Adjustment => (Flags & GpuLayerDescriptor.FlagAdjustment) != 0;
@@ -336,7 +336,13 @@ public sealed partial class GpuPreviewEngine
             for (var k = 0; k < count; k++)
             {
                 ref var layer = ref layers[k];
-                if ((layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) == 0 && selected != 0)
+                if ((layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0)
+                {
+                    // A blur fill's own plane (5.2.0's re-cut): outlined while the Background Blur is selected.
+                    if (selected == GpuScenePlan.BlurFillKey)
+                        layer.Flags |= GpuLayerDescriptor.FlagSelected;
+                }
+                else if (selected != 0)
                 {
                     if (layer.ClipKey == selected)
                         layer.Flags |= GpuLayerDescriptor.FlagSelected;
@@ -344,7 +350,7 @@ public sealed partial class GpuPreviewEngine
                         layer.Flags |= GpuLayerDescriptor.FlagSelectedTrack;
                 }
 
-                if (_liftedKey != 0 && layer.ClipKey == _liftedKey)
+                if (_liftedKey != 0 && layer.ClipKey == _liftedKey && (layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) == 0)
                     layer.ZDepth += (float)_liftedBy;
             }
 

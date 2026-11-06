@@ -1,0 +1,27 @@
+# A Game Preset's family in the stack (5.2.0's re-cut, the user's P0): the Background Blur at the bottom, the clip over it,
+# its Cutouts over both, in the picture (2D), in the 3D view's planes and on the Timeline's rows.
+dropped: track 0: Main
+dropped: track 1 (a Sub-Lane): Killfeed
+dropped: track 2 (a Sub-Lane): Health & Name
+dropped: track 3 (a Sub-Lane): Abilities & Ammo
+dropped: 2D stack at 1 s, bottom first, with 3D places: Background Blur 0 | the clip 1 | Killfeed 2 | Health & Name 3 | Abilities & Ammo 4
+ok: dropped: one Background Blur, the clip and its three Cutouts drawn
+ok: dropped: the Background Blur at the bottom of the stack, under the clip and every Cutout
+ok: dropped: the Cutouts over the clip, as their lanes lie
+ok: dropped: 3D: the Background Blur a plane of its own, behind the clip's and every Cutout's
+ok: dropped: pixels: the Background Blur is drawn (the frame differs with it off)
+ok: dropped: pixels: the clip over the Background Blur, its box drawn the same with it on and off
+ok: dropped: pixels: every Cutout over the Background Blur, what its mask shows drawn the same with it on and off
+converted: track 0 (a Sub-Lane): Killfeed
+converted: track 1 (a Sub-Lane): Health & Name
+converted: track 2 (a Sub-Lane): Abilities & Ammo
+converted: track 3: Main
+converted: 2D stack at 1 s, bottom first, with 3D places: Background Blur 0 | Killfeed 1 | Health & Name 2 | Abilities & Ammo 3 | the clip 4
+ok: converted: one Background Blur, the clip and its three Cutouts drawn
+ok: converted: the Background Blur at the bottom of the stack, under the clip and every Cutout
+ok: converted: the Cutouts under the clip, as their lanes lie
+ok: converted: 3D: the Background Blur a plane of its own, behind the clip's and every Cutout's
+ok: converted: pixels: the Background Blur is drawn (the frame differs with it off)
+ok: converted: pixels: the clip over the Background Blur, its box drawn the same with it on and off
+ok: converted: pixels: every Cutout over the Background Blur, what its mask shows drawn the same with it on and off
+ok: every Sub-Lane of the clip is its track's family (TimelineLowering.FamilyOf), where its Background Blur's row goes

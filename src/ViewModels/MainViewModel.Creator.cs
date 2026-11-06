@@ -851,7 +851,7 @@ public partial class MainViewModel
     // The blur fill's settings row (5.0-Release; 5.2-AuditB: every video clip's own blur fill is drawn with its look). The
     // sequence's, not a clip of the document: its row stands for it, and it carries its own effect stack (Look effects only);
     // its blur and zoom are the view model's (BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom).
-    private readonly Layer _backgroundRow = new() { Kind = LayerKind.Background, Name = "Blur Fill" };
+    private readonly Layer _backgroundRow = new() { Kind = LayerKind.Background, Name = "Background Blur" };
 
     /// <summary>The pictures, bottom first: every clip's view on the picture tracks. Sounds have no place in it.</summary>
     private List<Layer> GetStack() => Layers.Where(l => !l.IsAudio).ToList();

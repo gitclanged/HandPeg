@@ -32,11 +32,26 @@ Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 - **5.1 projects open and are converted.** A project saved by HandPeg 5.1 is converted as it opens (its main video becomes
   ordinary clips, its HUD cut-outs Cutouts) and saved back over its own file in the new format.
 - **Native Windows on ARM.** The ARM64 build is native throughout, with shaders tuned for the Snapdragon's Adreno GPU, HEVC
-  decoded through FFmpeg where Windows has no HEVC decoder, and captions with whisper.cpp working on ARM64.
+  decoded through FFmpeg where Windows has no HEVC decoder, and captions with whisper.cpp working on ARM64. It now has an
+  installer of its own, `HandPeg-win-arm64-Setup.exe`, which updates itself from the ARM64 releases.
+- **The blurred background stays behind.** A Game Preset's Background Blur is drawn under its clip and every one of its HUD
+  Cutouts, wherever their lanes are (a converted 5.1 project's Cutouts were hidden under it). In the 3D Exploded View it is
+  a plane of its own at the back of its clip's stack, labelled "Background Blur": click it to select it and set its blur.
+- **A project double-clicked while HandPeg is open** opens in the HandPeg that is open: it comes to the front, asks about
+  unsaved changes, and opens the project, instead of starting a second editor.
+- **HandPeg has an icon** for its window, the taskbar, Alt+Tab, the installer and its project files.
+- **Verbose flight recorder** is a checkbox again (Settings > General > Diagnostics), for chasing a bug with the developer.
 - **Sharper on high-DPI screens.** On a laptop panel at 150 % scaling or more, HandPeg sizes its UI to the screen (UI Scale
   in Settings > Appearance still applies), and menus and popups open where they should on touch screens.
 
 ### Under the Hood & Fixes
+- The first-run download of FFmpeg works again on ARM64: the pinned build had gone from GitHub, and the build that stood in
+  for it crashes on Snapdragon PCs. FFmpeg is now pinned to October's month-end build (kept by its publisher for two years),
+  a build that downloads and checks out but will not start is passed over for the next one, and a stand-in is only ever
+  installed with a published checksum.
+- Trimmed recordings in project bundles and Clip Library saves start on the right key frame with every FFmpeg build: the
+  newer builds seek a little further back, so the cut now moves its seek forward until the copy is seen to begin on the
+  key frame it wants.
 - Playback no longer shows late frames right after Play on a cold start: while the player draws a frame, the decoders
   wait for it to finish rather than holding the graphics card, so the first second after Play stays in step with the
   sound even while the cuts ahead are still being decoded.

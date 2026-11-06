@@ -338,6 +338,10 @@ public partial class MainWindow
             rows.Insert(rows.IndexOf(top) + 1, captionRow!);
         }
 
+        // Where the Background Blur is drawn (5.2.0's re-cut, the user's P0): under one clip family's pictures, its row the last of that
+        // family's stack, under its Cutouts; under several families', the last of the picture rows, under them all.
+        if (backgroundRow is { Parent: null } && BlurFamilyRow(byTrack) is { } family)
+            Adopt(family, backgroundRow);
         if (backgroundRow is { Parent: null })
             rows.Add(backgroundRow);
         rows.AddRange(sounds.Where(s => s.Row.Parent is null).Select(s => s.Row));
@@ -567,6 +571,28 @@ public partial class MainWindow
         };
         BuildRowBlocks(row, scale, seconds);
         return row;
+    }
+
+    /// <summary>
+    /// The row of the one track family (a track and the Sub-Lanes made to go with it, TimelineLowering.FamilyOf) whose clips have every
+    /// blur fill there is; null when none has one, or several do.
+    /// </summary>
+    private TimelineRow? BlurFamilyRow(Dictionary<Guid, TimelineRow> byTrack)
+    {
+        var document = _viewModel.Document;
+        TimelineTrackModel? family = null;
+        foreach (var view in _viewModel.Layers)
+        {
+            if (!_viewModel.IsBlurFilled(view) || _viewModel.ClipOf(view) is not { } clip || document.TrackOf(clip) is not { } track)
+                continue;
+
+            var root = Services.Gpu.TimelineLowering.FamilyOf(track, document);
+            if (family is not null && !ReferenceEquals(family, root))
+                return null;
+            family = root;
+        }
+
+        return family is not null && byTrack.TryGetValue(family.Id, out var row) ? row : null;
     }
 
     private TimelineRow BackgroundRow(Layer background, double scale, double seconds)

@@ -148,13 +148,14 @@ public static partial class DependencyUpdater
     // FFmpeg and whisper.cpp publish new builds every day, and a new FFmpeg can rename a filter's option. So these two
     // are installed from the builds HandPeg was tested with, each checked against its SHA-256, and yt-dlp alone follows
     // its newest release (sites change under it, and an old yt-dlp simply stops downloading). How long each upstream
-    // keeps a build (as of 2026-10-24):
+    // keeps a build (as of 2026-11-06):
     //   BtbN/FFmpeg-Builds: the last 14 daily builds, and the last build of each month for two years.
     //   ggml-org/whisper.cpp: every release so far, with its files (back to 2022).
-    // So the tested FFmpeg (a daily build) goes from GitHub within weeks: it has a stand-in listed after it that is kept
-    // far longer (the month's last build), and past that the dated build nearest the tested one is taken. A stand-in is
-    // logged and named in the dependency list, never taken silently, and the newest nightly is only ever installed when
-    // the user has allowed it.
+    // So the tested FFmpeg is a month's last build (since 5.2.0's re-cut: the daily build 5.2.0 first pinned was gone
+    // from GitHub two weeks later), with the month before it listed as a stand-in; past those the dated build nearest the
+    // tested one is taken, checked against the SHA-256 GitHub publishes for it. A stand-in is logged and named in the
+    // dependency list, never taken silently, and the newest nightly is only ever installed when the user has allowed it.
+    // A build that checks out but will not start on this computer is passed over for the next one (InstallToolAsync).
 
     /// <summary>The FFmpeg build for NVIDIA drivers before 610 (see <see cref="AppSettings.UseFfmpegForOlderNvidiaDrivers"/>): the 8.1 line.</summary>
     public const string OlderNvidiaVariant = "8.1";
@@ -165,32 +166,31 @@ public static partial class DependencyUpdater
     // What a stand-in from outside the list says in its stamp, so that it is recognised as one when it is installed.
     private const string StandInMark = "stand-in";
 
-    private static readonly DateTime TestedFfmpegDate = new(2026, 10, 23, 13, 5, 34, DateTimeKind.Utc);
+    private static readonly DateTime TestedFfmpegDate = new(2026, 10, 31, 12, 59, 47, DateTimeKind.Utc);
     private static readonly DateTime MonthEndFfmpegDate = new(2026, 9, 30, 13, 9, 24, DateTimeKind.Utc);
     private static readonly DateTime TestedWhisperDate = new(2026, 10, 6, 16, 51, 27, DateTimeKind.Utc);
 
     // The ARM64 builds of the same releases (4.3D), their SHA-256 as GitHub reports it for each file (the x64 pins agree).
-    private static readonly DateTime TestedFfmpegArm64Date = new(2026, 10, 23, 13, 4, 36, DateTimeKind.Utc);
-    private static readonly DateTime MonthEndFfmpegArm64Date = new(2026, 9, 30, 13, 8, 23, DateTimeKind.Utc);
+    private static readonly DateTime TestedFfmpegArm64Date = new(2026, 10, 31, 12, 59, 47, DateTimeKind.Utc);
 
     /// <summary>
-    /// The builds HandPeg 4.1 installs, a list per tool and variant, the tested build first and its stand-ins after it in
+    /// The builds HandPeg installs, a list per tool and variant, the tested build first and its stand-ins after it in
     /// the order they are taken. Raised with each version of HandPeg, once the new builds have been tested with it.
     /// </summary>
     public static IReadOnlyList<PinnedBuild> PinnedBuilds { get; } =
     [
-        // FFmpeg: the master build of 2026-10-23, then September's last build, which BtbN keeps until 2028.
-        new(Ffmpeg, "", "BtbN/FFmpeg-Builds", "autobuild-2026-10-23-13-04", "ffmpeg-N-127957-g935f29eaae-win64-gpl.zip",
-            "fcf14fbbf9937ead11f464c6ecc73bc30400441ab6048c8cf3c55d77fd1c1042", 200466434, "N-127957-g935f29eaae-20261023", TestedFfmpegDate,
-            "N-127957 (2026-10-23)"),
+        // FFmpeg: October's last build, then September's, which BtbN keeps until 2028.
+        new(Ffmpeg, "", "BtbN/FFmpeg-Builds", "autobuild-2026-10-31-12-59", "ffmpeg-N-128227-g4811625b5f-win64-gpl.zip",
+            "3a5cdb3b83dd1b62b29d946d3655a14d787e5e81d947ad68202a1a400095d2f8", 201662768, "N-128227-g4811625b5f-20261031", TestedFfmpegDate,
+            "N-128227 (2026-10-31)"),
         new(Ffmpeg, "", "BtbN/FFmpeg-Builds", "autobuild-2026-09-30-13-08", "ffmpeg-N-127021-ge0c94b2d1c-win64-gpl.zip",
             "85c4a4636b93d681a07588ffa6f1d8f5c064d9c3fb0622066662906b6fd718a1", 198589424, "N-127021-ge0c94b2d1c-20260930", MonthEndFfmpegDate,
             "N-127021 (2026-09-30)"),
 
         // FFmpeg for older NVIDIA drivers: the 8.1 line, built the same days.
-        new(Ffmpeg, OlderNvidiaVariant, "BtbN/FFmpeg-Builds", "autobuild-2026-10-23-13-04", "ffmpeg-n8.1.3-24-g92611900bb-win64-gpl-8.1.zip",
-            "ec297d65145f71686498436bb7d5281f540d26fb6791072ba73b194498581b22", 193050071, "n8.1.3-24-g92611900bb-20261023", TestedFfmpegDate,
-            "8.1.3-24 (2026-10-23)"),
+        new(Ffmpeg, OlderNvidiaVariant, "BtbN/FFmpeg-Builds", "autobuild-2026-10-31-12-59", "ffmpeg-n8.1.3-27-g8dca1586f4-win64-gpl-8.1.zip",
+            "401dffcf14c301082e1fc03b0bc876b92ea676bfc521fc56e80a1537d137034f", 194182300, "n8.1.3-27-g8dca1586f4-20261031", TestedFfmpegDate,
+            "8.1.3-27 (2026-10-31)"),
         new(Ffmpeg, OlderNvidiaVariant, "BtbN/FFmpeg-Builds", "autobuild-2026-09-30-13-08", "ffmpeg-n8.1.3-9-g29e619e767-win64-gpl-8.1.zip",
             "7b801cdd3a1a0bb54ae6f572187e68b4ed54f52086cfee133fab2180bfb429fa", 193109593, "n8.1.3-9-g29e619e767-20260930", MonthEndFfmpegDate,
             "8.1.3-9 (2026-09-30)"),
@@ -203,13 +203,11 @@ public static partial class DependencyUpdater
         new(Whisper, WhisperX64AssetName, "ggml-org/whisper.cpp", "b5454", WhisperX64AssetName,
             "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb", 8928640, "b5454", TestedWhisperDate, "b5454"),
 
-        // ARM64 (4.3D): FFmpeg's master build of the same two days.
-        new(Ffmpeg, Arm64Variant, "BtbN/FFmpeg-Builds", "autobuild-2026-10-23-13-04", "ffmpeg-N-127957-g935f29eaae-winarm64-gpl.zip",
-            "b5b208ab10d60e0d7a920823d6e9688041a951a2b9f7f6ee063805324373946d", 141597500, "N-127957-g935f29eaae-20261023", TestedFfmpegArm64Date,
-            "N-127957 (2026-10-23, ARM64)"),
-        new(Ffmpeg, Arm64Variant, "BtbN/FFmpeg-Builds", "autobuild-2026-09-30-13-08", "ffmpeg-N-127021-ge0c94b2d1c-winarm64-gpl.zip",
-            "5e6560100382843f6bc6e163c958ed4f0f5a2e479e63faf101b998d349915a43", 139295788, "N-127021-ge0c94b2d1c-20260930", MonthEndFfmpegArm64Date,
-            "N-127021 (2026-09-30, ARM64)"),
+        // ARM64 (4.3D): FFmpeg's master build of October's last day. September's (N-127021) is not listed: it ends at once
+        // with 0xC0000005 on a Snapdragon X (BrokenAssets), which is what 5.2.0's ARM64 first run fell back to.
+        new(Ffmpeg, Arm64Variant, "BtbN/FFmpeg-Builds", "autobuild-2026-10-31-12-59", "ffmpeg-N-128227-g4811625b5f-winarm64-gpl.zip",
+            "7d2bc069f7eda052fac7d4d9ff40eabda5d9fd8b6105d479129547ad3b822919", 142303693, "N-128227-g4811625b5f-20261031", TestedFfmpegArm64Date,
+            "N-128227 (2026-10-31, ARM64)"),
 
         // whisper.cpp b5454 for ARM64: CUDA (an NVIDIA card), OpenCL on Qualcomm's Adreno graphics, and the processor alone.
         new(Whisper, WhisperArm64CudaAssetName, "ggml-org/whisper.cpp", "b5454", WhisperArm64CudaAssetName,
@@ -229,6 +227,26 @@ public static partial class DependencyUpdater
 
     [GeneratedRegex(@"^ffmpeg-N-\d+-g[0-9a-f]+-winarm64-gpl\.zip$")]
     private static partial Regex FfmpegArm64AssetRegex();
+
+    /// <summary>Upstream builds known not to start: never taken, listed or found as a stand-in.</summary>
+    public static IReadOnlySet<string> BrokenAssets { get; } = new HashSet<string>(StringComparer.Ordinal)
+    {
+        // BtbN's 2026-09-30 ARM64 build: ffmpeg.exe and ffprobe.exe end at once with 0xC0000005, even for -version.
+        "ffmpeg-N-127021-ge0c94b2d1c-winarm64-gpl.zip",
+    };
+
+    // Builds downloaded and checked out this session that would not start here (InstallToolAsync): passed over like BrokenAssets.
+    private static readonly HashSet<string> WontStartHere = new(StringComparer.Ordinal);
+
+    // How many builds an install tries, one after another, when each in turn will not start.
+    private const int MostBuildsTried = 3;
+
+    /// <summary>Whether a build is never to be taken on this computer: known broken, or it would not start here.</summary>
+    public static bool IsPassedOver(string assetName)
+    {
+        lock (WontStartHere)
+            return BrokenAssets.Contains(assetName) || WontStartHere.Contains(assetName);
+    }
 
     /// <summary>The speech models offered for download: English-only ones first (smaller and better for English), then multilingual.</summary>
     public static IReadOnlyList<string> WhisperModels { get; } =
@@ -508,7 +526,7 @@ public static partial class DependencyUpdater
     private static List<PinnedBuild> PinnedFor(string tool, string variant) => PinnedBuilds.Where(b => b.Tool == tool && b.Variant == variant).ToList();
 
     /// <summary>Whether a file of a release is the same kind of build as a variant's pinned ones: what a stand-in from outside the list may be.</summary>
-    private static bool IsVariantAsset(string tool, string variant, string name) => tool switch
+    internal static bool IsVariantAsset(string tool, string variant, string name) => tool switch
     {
         Ffmpeg => variant switch
         {
@@ -557,17 +575,36 @@ public static partial class DependencyUpdater
     /// </summary>
     private static async Task<string> ProbeVersionAsync(string tool, string folder, CancellationToken cancellationToken)
     {
-        var (program, argument) = tool switch
+        var result = tool switch
         {
-            Ffmpeg => ("ffmpeg.exe", "-version"),
-            YtDlp => ("yt-dlp.exe", "--version"),
-            _ => ("whisper.exe", "--help"),
+            Ffmpeg => await RunOnceAsync(folder, "ffmpeg.exe", "-version", cancellationToken),
+            YtDlp => await RunOnceAsync(folder, "yt-dlp.exe", "--version", cancellationToken),
+            _ => await RunOnceAsync(folder, "whisper.exe", "--help", cancellationToken),
         };
 
+        // ffprobe comes in the same archive and is run as often (every file opened): it has to start too.
+        if (tool == Ffmpeg)
+            await RunOnceAsync(folder, "ffprobe.exe", "-version", cancellationToken);
+
+        return tool switch
+        {
+            Ffmpeg => Regex.Match(result.StandardOutput, @"ffmpeg version (\S+)") is { Success: true } match
+                ? match.Groups[1].Value
+                : throw new InvalidOperationException("ffmpeg.exe did not report a version."),
+            YtDlp => result.StandardOutput.Trim() is { Length: > 0 } version
+                ? version
+                : throw new InvalidOperationException("yt-dlp.exe did not report a version."),
+            _ => (ReadText(StampPath(folder, tool)) ?? "").Split('|')[0],
+        };
+    }
+
+    /// <summary>Runs one of a tool's programs once and returns what it wrote; throws <see cref="WontStartException"/> when it cannot start here.</summary>
+    private static async Task<BufferedCommandResult> RunOnceAsync(string folder, string program, string argument, CancellationToken cancellationToken)
+    {
         // Looked at before it is run: Windows answers an attempt to start a file that is not a program for
         // this machine with a dialog of its own, which nobody asked for.
         if (!IsBinaryForThisMachine(Path.Combine(folder, program)))
-            throw new InvalidOperationException($"{program} is not a {ExpectedMachine} Windows program.");
+            throw new WontStartException($"{program} is not a {ExpectedMachine} Windows program.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(60));
@@ -582,7 +619,7 @@ public static partial class DependencyUpdater
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new InvalidOperationException($"{program} did not answer.");
+            throw new WontStartException($"{program} did not answer.");
         }
 
         // A program that could not load (a missing library, the wrong architecture) ends with a Windows error code: the
@@ -594,21 +631,14 @@ public static partial class DependencyUpdater
                 0xC0000135 => "a library it needs is missing",
                 0xC000007B => "it or a library it loads is not a program for this processor",
                 0xC0000139 => "a library it loads is the wrong version",
+                0xC0000005 => "it crashed as it started (an access violation)",
+                0xC000001D => "it uses an instruction this processor does not have",
                 _ => "it ended with a Windows error",
             };
-            throw new InvalidOperationException($"{program} could not start: {why} (code 0x{result.ExitCode:X8}).");
+            throw new WontStartException($"{program} could not start: {why} (code 0x{result.ExitCode:X8}).");
         }
 
-        return tool switch
-        {
-            Ffmpeg => Regex.Match(result.StandardOutput, @"ffmpeg version (\S+)") is { Success: true } match
-                ? match.Groups[1].Value
-                : throw new InvalidOperationException("ffmpeg.exe did not report a version."),
-            YtDlp => result.StandardOutput.Trim() is { Length: > 0 } version
-                ? version
-                : throw new InvalidOperationException("yt-dlp.exe did not report a version."),
-            _ => (ReadText(StampPath(folder, tool)) ?? "").Split('|')[0],
-        };
+        return result;
     }
 
     /// <summary>The PE machine types HandPeg's tools are built for: 64-bit Intel/AMD and 64-bit ARM.</summary>
@@ -762,6 +792,9 @@ public static partial class DependencyUpdater
             for (var rank = 0; rank < builds.Count && found is null; rank++)
             {
                 var build = builds[rank];
+                if (IsPassedOver(build.Asset))
+                    continue;
+
                 var url = await IsPublishedAsync(build.DownloadUrl, cancellationToken) ? build.DownloadUrl
                     : build.Mirror is { } mirror && await IsPublishedAsync(mirror, cancellationToken) ? mirror
                     : null;
@@ -774,7 +807,8 @@ public static partial class DependencyUpdater
                     PinRank = rank,
                     Variant = variant,
                     Label = build.Label,
-                    Note = rank == 0 ? "" : $"the pinned {builds[0].Label} is no longer published",
+                    Note = rank == 0 ? "" : IsPassedOver(builds[0].Asset) ? $"the pinned {builds[0].Label} does not start on this computer"
+                        : $"the pinned {builds[0].Label} is no longer published",
                 };
             }
 
@@ -854,15 +888,19 @@ public static partial class DependencyUpdater
             foreach (var asset in assets)
             {
                 var name = asset.GetProperty("name").GetString() ?? "";
-                if (!IsVariantAsset(tool, variant, name))
+                if (!IsVariantAsset(tool, variant, name) || IsPassedOver(name))
                     continue;
 
-                // Releases from before GitHub published digests are checked against their checksum list, where they have one.
+                // Releases from before GitHub published digests are checked against their checksum list; one with neither is
+                // never a stand-in, since nothing could say the download is the file the release holds.
                 var digest = asset.TryGetProperty("digest", out var digestValue) && digestValue.ValueKind == JsonValueKind.String ? digestValue.GetString() : null;
+                var sha256 = digest is not null && digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) && IsSha256(digest[7..]) ? digest[7..] : null;
+                var sumsUrl = sums.ValueKind == JsonValueKind.Object ? sums.GetProperty("browser_download_url").GetString() : null;
+                if (sha256 is null && sumsUrl is null)
+                    continue;
+
                 nearest = new RemoteAsset(name, asset.GetProperty("browser_download_url").GetString()!, $"{tag}|{name}|{StandInMark}", tag,
-                    asset.TryGetProperty("size", out var sizeValue) && sizeValue.TryGetInt64(out var bytes) ? bytes : 0,
-                    digest is not null && digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) ? digest[7..] : null,
-                    sums.ValueKind == JsonValueKind.Object ? sums.GetProperty("browser_download_url").GetString() : null)
+                    asset.TryGetProperty("size", out var sizeValue) && sizeValue.TryGetInt64(out var bytes) ? bytes : 0, sha256, sumsUrl)
                 {
                     Pin = PinState.StandIn,
                     Variant = variant,
@@ -999,13 +1037,34 @@ public static partial class DependencyUpdater
             if (GetLocalState(tool) != DependencyState.Missing && !IsOutdated(tool, asset))
                 return;
 
-            await InstallToolNowAsync(tool, asset, progress, cancellationToken);
+            // A pinned build (or its stand-in) that checks out but will not start here is passed over for the next one, so
+            // that one bad upstream build never ends a first run (5.2.0's ARM64 FFmpeg stand-in, 0xC0000005 on -version).
+            for (var tried = 1; ; tried++)
+            {
+                try
+                {
+                    await InstallToolNowAsync(tool, asset, progress, cancellationToken);
+                    return;
+                }
+                catch (WontStartException ex) when (asset.Pin != PinState.Unpinned && IsPinned(tool) && tried < MostBuildsTried)
+                {
+                    lock (WontStartHere)
+                        WontStartHere.Add(asset.Name);
+                    AppLog.Write($"{DisplayName(tool)} {asset.Label} ({asset.Name}) will not start on this computer: {ex.Message} Looking for another build.");
+                    progress.Report(new InstallProgress(-1, $"{asset.Label} does not start on this computer; looking for another build..."));
+                    ForgetAnswers();
+                    asset = await GetPinnedAsync(tool, cancellationToken);
+                }
+            }
         }
         finally
         {
             Installing.Release();
         }
     }
+
+    /// <summary>A downloaded tool that checked out but would not start on this computer: another build may.</summary>
+    private sealed class WontStartException(string message) : InvalidOperationException(message);
 
     private static readonly SemaphoreSlim Installing = new(1, 1);
 
@@ -1021,6 +1080,8 @@ public static partial class DependencyUpdater
 
             var hash = await DownloadAsync(asset.DownloadUrl, download, name, progress, cancellationToken);
             var expected = asset.Sha256 ?? await FindInSumsAsync(asset, cancellationToken);
+            if (expected is null && asset.Pin == PinState.StandIn)
+                throw new InvalidDataException($"No checksum is published for {asset.Name}, so it cannot stand in for the tested {name}.");
             Verify(name, hash, expected);
 
             progress.Report(new InstallProgress(1, $"Unpacking {name}..."));

@@ -13,7 +13,8 @@ namespace HandPegApp.Services.Gpu;
 // own file (SourcePath) at its own moment (MediaOffset, on the file's own clock: MediaStarts, SeekIndexes), its sound cut at
 // the same origin and heard from its own stream. A Cutout is a clip of its file like any other, on its parent's clock. A
 // video whose blur fill is on (BlurFill true) has a blurred copy of its whole picture covering the frame under its track's
-// pictures (its twin), drawn as the sequence's blurred background used to be; the scene plan leaves a twin out while the
+// pictures and its Sub-Lanes' (its twin, under its whole family: FamilyOf), drawn as the sequence's blurred background used to
+// be; the scene plan leaves a twin out while the
 // clip over it hides every pixel of it. A project of the old shape never reaches this (it is converted as it is opened,
 // LegacyMainVideo; the golden tests' fixtures the same way): the legacy kinds MainVideo and Video are never made here.
 //
@@ -28,7 +29,7 @@ namespace HandPegApp.Services.Gpu;
 /// </summary>
 /// <param name="SequenceSeconds">How long the sequence is: the canvas's length (the document's TotalDuration).</param>
 /// <param name="Stack">
-/// The pictures as layers, bottom first, a track's in the order of its clips, the blur twins under their track's pictures.
+/// The pictures as layers, bottom first, a track's in the order of its clips, the blur twins under their track's family (its Sub-Lanes too).
 /// Every layer carries the id of the clip it was made from (<see cref="Layer.ClipId"/>; a twin, its video's).
 /// </param>
 /// <param name="LayerAudio">
@@ -239,22 +240,43 @@ public static partial class TimelineLowering
         PairLayerCrossfades(pictures);
 
         // A video from a file whose blur fill is on (4.4; 5.2-AuditB: any clip's, the former main video's too): a blurred copy
-        // of its whole picture covering the frame, while it can be seen, under its track's pictures. Each track's twins go in
-        // the order of its clips, under all of its pictures: at a moment a track shows one clip, whose twin is then just under
-        // it, and while two of its clips crossfade their fills crossfade under both (as the blurred background lay under the
-        // main video's crossfades). Captions put under a track stay above that track's twins, as they were above the blurred
-        // background.
-        var twins = new HashSet<Layer>(ReferenceEqualityComparer.Instance);
-        var stack = new List<Layer>(pictures.Count + 4);
-        var stackCaptionsAt = -1;
-        foreach (var (track, from, to) in tracksAt)
+        // of its whole picture covering the frame, while it can be seen, under its whole family: its track's pictures and those
+        // of the Sub-Lanes made to go with that track (5.2.0's re-cut, the user's P0: a Cutout lane under its clip's track, as a
+        // converted 5.1 project keeps it, was under the twin too, which hid it; 5.1 drew the blurred background under everything).
+        // A family's twins go in the order of its tracks and their clips, under the first of its tracks: at a moment a track
+        // shows one clip, whose twin is then under it and its Cutouts, and while two of its clips crossfade their fills crossfade
+        // under both (as the blurred background lay under the main video's crossfades). Captions put under a track stay above
+        // that family's twins, as they were above the blurred background.
+        var familyTwins = new Dictionary<Guid, List<Layer>>();
+        var familyFirst = new Dictionary<Guid, int>();
+        for (var at = 0; at < tracksAt.Count; at++)
         {
+            var track = tracksAt[at].Track;
+            var family = FamilyOf(track, document).Id;
+            familyFirst.TryAdd(family, at);
             foreach (var clip in track.Clips)
             {
                 if (layers.TryGetValue(clip, out var layer) && layer is { IsVideoFile: true, IsHidden: false } && (layer.Opacity > 0 || layer.AnimatesOpacity)
                     && LookOf(clip, track).BlurFill == true)
                 {
-                    var twin = BlurTwinOf(layer, document);
+                    if (!familyTwins.TryGetValue(family, out var list))
+                        familyTwins[family] = list = [];
+                    list.Add(BlurTwinOf(layer, document));
+                }
+            }
+        }
+
+        var twins = new HashSet<Layer>(ReferenceEqualityComparer.Instance);
+        var stack = new List<Layer>(pictures.Count + 4);
+        var stackCaptionsAt = -1;
+        for (var at = 0; at < tracksAt.Count; at++)
+        {
+            var (track, from, to) = tracksAt[at];
+            var family = FamilyOf(track, document).Id;
+            if (familyFirst[family] == at && familyTwins.TryGetValue(family, out var underFamily))
+            {
+                foreach (var twin in underFamily)
+                {
                     stack.Add(twin);
                     twins.Add(twin);
                 }
@@ -297,6 +319,18 @@ public static partial class TimelineLowering
 
     /// <summary>A track whose clips are pictures laid on the canvas (a switch track holds what a video track holds).</summary>
     private static bool ShowsPictures(TimelineTrackModel track) => track.Kind is TimelineTrackKind.Video or TimelineTrackKind.Switch;
+
+    /// <summary>
+    /// The track a track's family is known by: the one it was made to go with (its ParentTrackId), up to one made for none; itself
+    /// for a track of its own (and for one whose parent is gone).
+    /// </summary>
+    internal static TimelineTrackModel FamilyOf(TimelineTrackModel track, TimelineDocument document)
+    {
+        var at = track;
+        for (var depth = 0; depth < 64 && at.ParentTrackId is { } parent && document.Tracks.FirstOrDefault(t => t.Id == parent) is { } over; depth++)
+            at = over;
+        return at;
+    }
 
     /// <summary>
     /// Whether a clip's sound reaches the output: it has some, from whichever stream of its file it plays (each a sound of its

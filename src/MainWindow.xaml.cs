@@ -346,8 +346,11 @@ public partial class MainWindow : Window
 
             // A project or bundle HandPeg was started with (a double-click in Explorer: ExplorerThumbnails' open command, 5.2-Release):
             // opened once the window is up, as a choice in the launch window is.
-            if (LaunchFile() is { } launched)
+            if (SingleInstance.LaunchFile() is { } launched)
                 Dispatcher.BeginInvoke(() => _ = OpenLaunchRequestAsync(new LaunchRequest(LaunchKind.Project, launched)), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+
+            // And one double-clicked from now on, while this copy is open, is handed to it (5.2.0's re-cut, the user's answer).
+            SingleInstance.Listen(path => Dispatcher.InvokeAsync(() => _ = OpenHandedProjectAsync(path)), _windowClosing.Token);
 
             // How long the launch took, for the log: from the process starting to the window being on screen.
             var sinceStart = (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalMilliseconds;
@@ -489,10 +492,62 @@ public partial class MainWindow : Window
         splash.Show();
     }
 
-    /// <summary>The .hproj or .hpb on the command line (<c>HandPeg.exe "x.hproj"</c>: Explorer's open command), or null.</summary>
-    private static string? LaunchFile() =>
-        Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(arg => !arg.StartsWith('-')
-            && (arg.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) || arg.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase)));
+    /// <summary>
+    /// A project double-clicked while this copy was open (SingleInstance): the window comes to the front (restored from the taskbar), any
+    /// dialog open is answered first, unsaved changes are saved or let go as the user says, then it opens as a launch's project does.
+    /// </summary>
+    private async Task OpenHandedProjectAsync(string path)
+    {
+        try
+        {
+            var handle = new WindowInteropHelper(this).Handle;
+            if (handle != 0 && IsIconic(handle))
+                _ = ShowWindow(handle, ShowWindowRestore);
+            Activate();
+
+            // A dialog of this window's up (Settings, a save prompt): the project waits for it to be closed.
+            while (System.Windows.Interop.ComponentDispatcher.IsThreadModal && !_windowClosing.IsCancellationRequested)
+                await Task.Delay(250);
+            if (_windowClosing.IsCancellationRequested
+                || !SaveOrLetGoFirst("Open Project", $"Open \"{Path.GetFileNameWithoutExtension(path)}\", which was double-clicked?", "Save, then Open", "Discard and Open"))
+                return;
+
+            await OpenLaunchRequestAsync(new LaunchRequest(LaunchKind.Project, path));
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("A project handed over by another HandPeg could not be opened", ex);
+            _viewModel.StatusText = $"{Path.GetFileName(path)} could not be opened: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Before what is open is put away (+ New Project, a project double-clicked): its unsaved changes are saved or let go, as the user says.
+    /// False when they chose to stay with it, or it could not be saved (what it was meant to keep is never lost by a step after it).
+    /// </summary>
+    private bool SaveOrLetGoFirst(string title, string question, string saveText, string discardText)
+    {
+        if (!_viewModel.HasUnsavedChanges)
+            return true;
+
+        var name = _viewModel.CurrentProjectPath.Length > 0 ? Path.GetFileNameWithoutExtension(_viewModel.CurrentProjectPath)
+            : _viewModel.HasSource ? Path.GetFileNameWithoutExtension(_viewModel.LocalMediaPath) : "";
+        var ask = new ConfirmDialog(title, $"{question}\n\nWhat is open has changes that were not saved as a project. Save them first, or let them go?", saveText, discardText) { Owner = this };
+        if (ask.ShowDialog() != true)
+            return false;
+
+        return ask.ChoseOther || _viewModel.SaveProject(name.Length > 0 ? name : $"Project {DateTime.Now:yyyy-MM-dd HH.mm}").StartsWith("Project saved", StringComparison.Ordinal);
+    }
+
+    private const int ShowWindowRestore = 9;
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static partial bool IsIconic(nint window);
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static partial bool ShowWindow(nint window, int command);
 
     /// <summary>
     /// Opens what was chosen in the launch window, once nothing else is running: an operation asked for while
@@ -700,6 +755,7 @@ public partial class MainWindow : Window
         // behind in the background and nothing still holds a file in the session folder. Each step on its own: one that
         // fails leaves the others to run.
         Guarded("cancel the window's work", _windowClosing.Cancel);
+        Guarded("let projects double-clicked from now on start a copy of their own", SingleInstance.Release);
         Guarded("end the tools still running", ProcessPipes.KillAll);
         Guarded("shut the view model down", _viewModel.Shutdown);
         Guarded("stop following the player", () => FollowPlayerByFrame(false));
@@ -873,21 +929,8 @@ public partial class MainWindow : Window
     /// <summary>+ New Project: unsaved changes are saved or let go first, as the user says; then the session is emptied.</summary>
     private void StartNewProject()
     {
-        if (_viewModel.HasUnsavedChanges)
-        {
-            var name = _viewModel.CurrentProjectPath.Length > 0 ? Path.GetFileNameWithoutExtension(_viewModel.CurrentProjectPath)
-                : _viewModel.HasSource ? Path.GetFileNameWithoutExtension(_viewModel.LocalMediaPath) : "";
-            var ask = new ConfirmDialog("New Project",
-                "What is open has changes that were not saved as a project.\n\nSave them first, or let them go?", "Save, then Start New", "Discard and Start New") { Owner = this };
-            if (ask.ShowDialog() != true)
-                return;
-
-            // A project that could not be saved must not be followed by losing what it was meant to keep.
-            if (!ask.ChoseOther && !_viewModel.SaveProject(name.Length > 0 ? name : $"Project {DateTime.Now:yyyy-MM-dd HH.mm}").StartsWith("Project saved", StringComparison.Ordinal))
-                return;
-        }
-
-        _viewModel.NewProject();
+        if (SaveOrLetGoFirst("New Project", "Start a new project?", "Save, then Start New", "Discard and Start New"))
+            _viewModel.NewProject();
     }
 
     // The session emptied (+ New Project): the player lets its file go, and the drop hint is back where the video was.
