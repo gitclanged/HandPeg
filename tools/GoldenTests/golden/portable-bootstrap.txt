@@ -1,0 +1,21 @@
+# The portable zips' HandPeg.exe (5.2.1): .NET 8 found (this copy's own first) or Microsoft's downloaded; no script.
+ok: an empty folder is no root
+ok: nor a .NET with no Windows Desktop runtime
+ok: nor one of another major version (HandPeg asks for 8)
+ok: nor one with no hostfxr.dll
+ok: nor one whose framework folder is empty (a download cut off)
+ok: a root with several hostfxr versions runs on the newest (as .NET's own host does)
+ok: a preview's folder reads as its version; a name that is none is passed over
+ok: a copy with no .NET of its own runs on DOTNET_ROOT_ARM64 first (an ARM64 copy)
+ok: then on DOTNET_ROOT
+ok: then on the .NET its installer registered
+ok: then on Program Files\dotnet
+ok: an x64 copy on an ARM64 PC: Program Files\dotnet\x64, the x64 .NET's place there
+ok: looking only in the copy's own folder (HANDPEG_BOOTSTRAP_NO_SYSTEM_DOTNET), none: it downloads
+ok: 5.2.0's script's layout (hostfxr.dll and shared\ beside HandPeg.exe) is this copy's own, before the PC's
+ok: and portable\dotnet, where the download puts it, first of all
+ok: ARM64: the newest release with both zips for win-arm64 (one without its Windows Desktop zip is passed over)
+ok: x64: the same release, its x64 zips
+ok: a zip from an http address, or with no SHA-512 to check, is never taken
+ok: a list with no release offers nothing
+ok: each published HandPeg.exe is a native window program of its processor (x64 0x8664, ARM64 0xAA64), with no .NET header, under 4 MB

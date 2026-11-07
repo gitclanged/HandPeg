@@ -168,6 +168,26 @@ square in the accent blue, a white peg beside a play triangle) from vector geome
 32, 48, 64, 128 and 256 px (PNG frames). `HandPegApp.csproj` names it as the ApplicationIcon; `vpk pack --icon` takes it for Setup.exe.
 `-Preview` also writes each size as a PNG to look at. Run it again only when the mark changes, and commit the new icon.
 
+## PortableBootstrap (the portable zips' HandPeg.exe)
+
+A native program (NativeAOT, `HandPegBootstrap.csproj`) that stands in for .NET's apphost in the portable zips: it finds a .NET 8
+Desktop Runtime for its processor (the copy's `portable\dotnet`, 5.2.0's `hostfxr.dll` and `shared\` beside it, `DOTNET_ROOT_<ARCH>`,
+`DOTNET_ROOT`, the installed one) and runs `HandPeg.dll` in its own process through that runtime's `hostfxr`; with none, it
+downloads Microsoft's runtime and Windows Desktop runtime zips (SHA-512 checked) into `portable\dotnet` in a window of its own,
+then runs it. Published once per processor:
+
+```
+dotnet publish tools\PortableBootstrap\HandPegBootstrap.csproj -c Release -r win-arm64
+dotnet publish tools\PortableBootstrap\HandPegBootstrap.csproj -c Release -r win-x64
+```
+
+which needs Visual Studio's C++ build tools (the ARM64 and x64 compilers and a Windows SDK) for the linker, found through
+`vswhere.exe`: put `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer` on PATH first (the installer does not). The release copies
+`bin\Release\net8.0\<rid>\publish\HandPegBootstrap.exe` over the publish's `HandPeg.exe` in each zip (the installers keep the
+apphost). `HANDPEG_BOOTSTRAP_NO_SYSTEM_DOTNET=1` makes it look only in its own folder, to try the download on a PC that has .NET.
+The `portable-bootstrap` golden test checks where it looks, what it takes from Microsoft's list and, once published, both programs'
+headers.
+
 ## StartupBench.ps1 (how long does a launch take, as a user sees it?)
 `powershell -NoProfile -File tools\StartupBench.ps1 -Builds "<baseline>\HandPeg.exe;<candidate>\HandPeg.exe" [-Rounds 5] [-Seconds 8] [-Warm]`
 

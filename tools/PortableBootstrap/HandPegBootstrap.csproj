@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    HandPeg.exe of the portable zips (Pass 5.2.1): a native program (NativeAOT: no .NET needed to start it) that runs HandPeg.dll in
+    its own process through hostfxr when a .NET 8 Desktop Runtime for its processor is on the PC or in the folder, and otherwise
+    downloads Microsoft's own into portable\dotnet (no admin, no script) and then runs it. Published once per processor:
+      dotnet publish tools\PortableBootstrap\HandPegBootstrap.csproj -c Release -r win-x64    (and -r win-arm64)
+    which needs the C++ build tools (Visual Studio's "Desktop development with C++", with the ARM64 and x64 compilers) for the
+    linker. Release.ps1 copies the result over the publish's HandPeg.exe in each zip. The installer keeps .NET's own apphost.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>HandPegBootstrap</AssemblyName>
+    <RootNamespace>HandPegBootstrap</RootNamespace>
+    <Product>HandPeg</Product>
+    <AssemblyTitle>HandPeg</AssemblyTitle>
+    <Company>HandPeg</Company>
+    <Version>5.2.1</Version>
+    <AssemblyVersion>5.2.1.0</AssemblyVersion>
+    <FileVersion>5.2.1.0</FileVersion>
+    <ApplicationIcon>..\..\src\handpeg.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- Native, small, quick to start: no stack trace data, no globalization data, resource keys for messages, no background GC thread. -->
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Size</OptimizationPreference>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <StackTraceSupport>false</StackTraceSupport>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <EventSourceSupport>false</EventSourceSupport>
+    <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+</Project>

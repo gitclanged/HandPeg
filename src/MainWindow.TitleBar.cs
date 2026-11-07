@@ -425,6 +425,61 @@ public partial class MainWindow
     // The edges of a monitor with a taskbar that hides itself, as InHiddenTaskbarStrip last asked (when, in milliseconds).
     private static (IntPtr Monitor, int Edges, long At) _stripEdges;
 
+    // WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME (undocumented): what the themed DefWindowProc sends a window to draw its classic
+    // caption and frame, after a title, icon or style change, outside WM_NCPAINT.
+    private const int WmNcPaint = 0x0085, WmNcUahDrawCaption = 0x00AE, WmNcUahDrawFrame = 0x00AF;
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr GetWindowDC(IntPtr window);
+
+    [LibraryImport("user32.dll")]
+    private static partial int ReleaseDC(IntPtr window, IntPtr dc);
+
+    [LibraryImport("user32.dll")]
+    private static partial int FillRect(IntPtr dc, in NativeRect rect, IntPtr brush);
+
+    [LibraryImport("gdi32.dll")]
+    private static partial int ExcludeClipRect(IntPtr dc, int left, int top, int right, int bottom);
+
+    [LibraryImport("gdi32.dll")]
+    private static partial IntPtr CreateSolidBrush(int color);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DeleteObject(IntPtr gdiObject);
+
+    /// <summary>
+    /// A window that draws its own frame never lets Windows paint one: Windows paints the classic caption and frame through the
+    /// window's whole DC, over the picture (5.2.1, the user's bug: an old-style title bar and border flashing as the window was
+    /// maximized, restored, minimized or retitled). Maximized beside a taskbar that hides itself, the strip kept clear of it
+    /// (HiddenTaskbarStrip) is frame, which Windows painted white (a bright line along the bottom of the screen, measured
+    /// 255,255,255 on both rows). Whatever frame there is, in every state, is filled with the window's own background; the
+    /// client area is left to the window. Whether the message was answered (always, for a WPF window).
+    /// </summary>
+    private static bool PaintFrameStrip(IntPtr hwnd)
+    {
+        if (HwndSource.FromHwnd(hwnd)?.RootVisual is not Window window)
+            return false;
+        // Minimized, or no frame outside the client area (restored, WindowChrome's): nothing to paint.
+        if (IsIconic(hwnd) || !GetWindowRect(hwnd, out var frame) || !ClientOnScreen(hwnd, out var client)
+            || (client.Left <= frame.Left && client.Top <= frame.Top && client.Right >= frame.Right && client.Bottom >= frame.Bottom))
+            return true;
+
+        var dc = GetWindowDC(hwnd);
+        if (dc == IntPtr.Zero)
+            return true;
+
+        var color = window.Background is System.Windows.Media.SolidColorBrush background ? background.Color : System.Windows.Media.Colors.Black;
+        var brush = CreateSolidBrush(color.R | color.G << 8 | color.B << 16);
+
+        // The window's DC counts from its own top left corner; the client area is left to the window.
+        ExcludeClipRect(dc, client.Left - frame.Left, client.Top - frame.Top, client.Right - frame.Left, client.Bottom - frame.Top);
+        FillRect(dc, new NativeRect { Right = frame.Right - frame.Left, Bottom = frame.Bottom - frame.Top }, brush);
+        DeleteObject(brush);
+        ReleaseDC(hwnd, dc);
+        return true;
+    }
+
     /// <summary>
     /// The window hook of another window that draws its own frame (the Settings screen, 4.4): the same strip kept clear of a
     /// taskbar that hides itself, which its inset (MaximizedFrameInset) counts on, and its frame hit-tested in real pixels
@@ -436,6 +491,10 @@ public partial class MainWindow
         {
             case WmNcCalcSize:
                 OnNcCalcSize(hwnd, lParam);
+                break;
+            case WmNcPaint when PaintFrameStrip(hwnd):
+            case WmNcUahDrawCaption or WmNcUahDrawFrame:
+                handled = true;
                 break;
             case WmNcHitTest when HwndSource.FromHwnd(hwnd)?.RootVisual is Window window && FrameHitTest(window, hwnd, lParam) is { } hit:
                 handled = true;
@@ -473,6 +532,10 @@ public partial class MainWindow
         {
             case WmNcCalcSize:
                 OnNcCalcSize(hwnd, lParam);
+                break;
+            case WmNcPaint when PaintFrameStrip(hwnd):
+            case WmNcUahDrawCaption or WmNcUahDrawFrame:
+                handled = true;
                 break;
             case WmNcHitTest when IsOverMaximize(lParam):
                 handled = true;

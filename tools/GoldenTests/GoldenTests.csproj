@@ -42,4 +42,10 @@
     <Compile Include="..\..\src\ShellThumbnails\*.cs" Link="ShellThumbnails\%(Filename)%(Extension)" />
   </ItemGroup>
 
+  <!-- The portable zips' HandPeg.exe (Pass 5.2.1): where it looks for .NET and which of Microsoft's zips it takes, compiled in here (portable-bootstrap). -->
+  <ItemGroup>
+    <Compile Include="..\PortableBootstrap\DotNetRoots.cs;..\PortableBootstrap\PortableDotNet.cs;..\PortableBootstrap\Web.cs;..\PortableBootstrap\Native.cs"
+             Link="PortableBootstrap\%(Filename)%(Extension)" />
+  </ItemGroup>
+
 </Project>

@@ -3,6 +3,37 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.2.1 — Script-Free Portable .NET, Social Cuts & the Creator Hotbar
+
+### User-Facing Highlights
+- **The portable zips start on any PC, no script.** `HandPeg.exe` in both portable zips (x64 and ARM64) is now a small native
+  program: with the .NET 8 Desktop Runtime on the PC (or already in the folder) it starts HandPeg at once; without it, it
+  opens a window, downloads Microsoft's .NET 8 Desktop Runtime for its processor into `portable\dotnet` (each file checked
+  against Microsoft's published SHA-512, no admin rights, nothing installed) and then starts HandPeg. The
+  `Download Portable .NET (No Admin).cmd` file is gone: PCs that block `.cmd` and PowerShell files no longer stop it. A
+  folder set up by 5.2.0's script keeps working.
+- **Four social cut transitions:** Whip Pan (the picture whips in from the side, smeared the way it moves), Zoom Warp
+  (it punches in from three times its size, streaked outward), RGB Glitch (torn rows and split colours that settle,
+  blinking against what is under it) and Spin (a whole turn about its anchor, blurred along the turn). Each is drawn on
+  the graphics card and chosen like any other style from a clip's Fade In and Fade Out menus.
+- **The Creator Hotbar** on the Timeline's row of tools: five slots, starting with Motion Blur, 3D Fly-In, Neon Rim,
+  Whip Pan and Studio Voice. A click puts the slot's effect, transition, Game Preset or tool on the selected clips (else
+  the video clip at the playhead), in one step of Undo. Right-click a slot to put any effect, transition, Game Preset or
+  one-click tool in it. Settings > Timeline (or the Timeline tab's menu) hides or shows it.
+- **No white line under a maximized window.** With the taskbar set to hide itself, a maximized HandPeg (and its Settings
+  screen) showed a bright two-pixel line along the bottom of the screen; that strip is now drawn in the window's own
+  colour.
+- **No old-style frame flashing.** Maximizing, restoring, minimizing or retitling HandPeg (and its Settings screen) could
+  flash Windows' classic title bar and border over the window; HandPeg now paints its own frame in every state.
+
+### Under the Hood & Fixes
+- The portable `HandPeg.exe` runs HandPeg in its own process through .NET's `hostfxr`, as .NET's own launcher does, so
+  start-up is unchanged; the installers keep .NET's launcher. Its downloads go through Windows' own HTTPS client (and
+  the PC's proxy) and only ever take Microsoft's `https` addresses with a SHA-512 to check.
+- The window frame's border colour follows the theme on Windows 11.
+- New golden tests: the window's frame maximized, restored and restored from minimized, drawn by the card and by the
+  processor (no light pixel), the four transitions against their CPU references, the Creator Hotbar on the real editor model, and where the portable `HandPeg.exe` looks for .NET.
+
 ## HandPeg v5.2.0 — Track Preset Nodes, Studio Audio & Native ARM64
 
 ### User-Facing Highlights

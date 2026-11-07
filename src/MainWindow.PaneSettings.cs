@@ -73,6 +73,8 @@ public partial class MainWindow
                 Toggle("Snap to Audio Beats", _viewModel.SnapToBeats, on => _viewModel.SnapToBeats = on,
                     "With Snap Clips on, edges also catch on the beats found in clips' sound (a clip's menu: Audio & Voice, Detect & Snap to Audio Beats).");
                 Toggle("Beat Grid", _viewModel.ShowBeatGrid, on => _viewModel.ShowBeatGrid = on, "Draws the beats found in a clip's sound as faint ticks along its block.");
+                Toggle("Creator Hotbar", settings.ShowCreatorHotbar, on => SaveHotbar(s => s.ShowCreatorHotbar = on),
+                    "Five slots on the row of tools, each putting an Effect, a Transition, a Game Preset or a one-click tool on the selected clips. Right-click a slot to choose what it holds.");
                 Toggle("Gain and Fade Lines", settings.ShowClipGainLines, on =>
                 {
                     Save(s => s.ShowClipGainLines = on);

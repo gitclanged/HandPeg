@@ -331,9 +331,26 @@ public static partial class ThemeManager
         var dark = IsDark ? 1 : 0;
         _ = DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int));
 
+        // A window that draws its title bar itself (WindowChrome): Windows' frame line in its own background (DWMWA_BORDER_COLOR,
+        // Windows 11; earlier versions refuse it). Maximized beside a taskbar that hides itself its frame has a strip on the screen
+        // painted in that background (MainWindow.PaintFrameStrip, 5.2.1): painted again in the new one (WM_NCPAINT, the whole
+        // frame; the client area is left alone).
+        if (System.Windows.Shell.WindowChrome.GetWindowChrome(window) is not null)
+        {
+            if (window.Background is SolidColorBrush background)
+            {
+                var border = ColorRef(background.Color);
+                _ = DwmSetWindowAttribute(handle, 34, ref border, sizeof(int));
+            }
+
+            if (window.IsVisible && window.WindowState == WindowState.Maximized)
+                SendMessage(handle, WmNcPaint, 1, IntPtr.Zero);
+            return;
+        }
+
         // DWMWA_CAPTION_COLOR and DWMWA_TEXT_COLOR (Windows 11; earlier versions refuse them and keep their own). Not for a
-        // window that draws its title bar itself (WindowChrome) or has none.
-        if (window.WindowStyle == WindowStyle.None || System.Windows.Shell.WindowChrome.GetWindowChrome(window) is not null)
+        // window that has no title bar.
+        if (window.WindowStyle == WindowStyle.None)
             return;
 
         if (window.TryFindResource("TitleBarBrush") is SolidColorBrush bar)
@@ -348,6 +365,11 @@ public static partial class ThemeManager
             _ = DwmSetWindowAttribute(handle, 36, ref words, sizeof(int));
         }
     }
+
+    private const int WmNcPaint = 0x0085;
+
+    [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
+    private static partial IntPtr SendMessage(IntPtr window, int message, nint wParam, IntPtr lParam);
 
     // A COLORREF: 0x00BBGGRR.
     private static int ColorRef(Color color) => color.R | color.G << 8 | color.B << 16;

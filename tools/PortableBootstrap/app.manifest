@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HandPeg.exe of the portable zips (5.2.1). It becomes HandPeg's process (it runs HandPeg.dll in place), so it says no more of that
+  process than .NET's own apphost does: no DPI awareness (WPF and HandPeg's UiScale decide it), no OS list, no common controls.
+  The download window takes per-monitor DPI for its own thread alone (ProgressWindow).
+-->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="MyApplication.app" />
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

@@ -643,7 +643,8 @@ public sealed partial class GpuScenePlan
 
         /// <summary>
         /// A layer's fades (PictureFades): its fade in from its start and its fade out to its end, each held to what its
-        /// length leaves, none a crossfade gave to the clip over it. An adjustment layer's slide or zoom is a dissolve.
+        /// length leaves, none a crossfade gave to the clip over it. An adjustment layer's slide, zoom, whip pan, zoom warp or
+        /// spin (what moves its picture: the canvas under it) is a dissolve.
         /// </summary>
         private Fade[] Fades(Layer layer, bool adjustment)
         {
@@ -653,7 +654,9 @@ public sealed partial class GpuScenePlan
             var (start, end) = layer.GetSpan(_low.SequenceSeconds);
             var length = end - start;
             var fades = new List<Fade>(2);
-            TransitionStyle Style(TransitionStyle style) => adjustment && (TransitionStyles.IsSlide(style) || style is TransitionStyle.Zoom or TransitionStyle.ParticleSnap) ? TransitionStyle.Dissolve : style;
+            TransitionStyle Style(TransitionStyle style) => adjustment && (TransitionStyles.IsSlide(style)
+                || style is TransitionStyle.Zoom or TransitionStyle.ParticleSnap or TransitionStyle.WhipPan or TransitionStyle.ZoomWarp or TransitionStyle.Spin)
+                ? TransitionStyle.Dissolve : style;
 
             var fadeIn = Math.Min(layer.FadeInSeconds, length);
             if (!layer.PictureFadeInOff && fadeIn > 0.01)

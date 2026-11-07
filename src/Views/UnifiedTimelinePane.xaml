@@ -436,6 +436,21 @@
                         <ComboBox Width="150" Margin="3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="38" ItemsSource="{Binding StylePresets}" SelectedItem="{Binding SelectedStylePreset}"
                                   DropDownOpened="GamePresets_DropDownOpened" IsEnabled="{Binding IsVideoReencoded}" AutomationProperties.Name="Game Presets"
                                   ToolTip="The Game Presets in the Styles folder. Choosing one applies it to the selected video clips (else every video clip): its Cutouts, its layout, its colour and blur." />
+                        <!--
+                            The Creator Hotbar (5.2.1): five slots, each an Effect, a Transition, a Game Preset or a one-click tool put
+                            on the selected clips (else the video clip at the playhead), one step of Undo; a right-click chooses what a
+                            slot holds. Named from the settings as the pane is made (ShowHotbar), so the first frame has them.
+                        -->
+                        <StackPanel x:Name="Hotbar" local:OverflowStrip.Priority="50" Orientation="Horizontal" Margin="6,0,3,0" VerticalAlignment="Center" Background="Transparent"
+                                    AutomationProperties.Name="Creator Hotbar">
+                            <TextBlock Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="12" Margin="0,0,4,0" VerticalAlignment="Center" Foreground="{DynamicResource AccentBrush}"
+                                       ToolTip="Creator Hotbar: each slot puts its Effect, Transition, Game Preset or tool on the selected clips. Right-click a slot to choose what it holds." />
+                            <Button Padding="7,3" Margin="0,0,2,0" FontSize="11" VerticalAlignment="Center" Tag="Hotbar0" Click="Tool_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
+                            <Button Padding="7,3" Margin="0,0,2,0" FontSize="11" VerticalAlignment="Center" Tag="Hotbar1" Click="Tool_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
+                            <Button Padding="7,3" Margin="0,0,2,0" FontSize="11" VerticalAlignment="Center" Tag="Hotbar2" Click="Tool_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
+                            <Button Padding="7,3" Margin="0,0,2,0" FontSize="11" VerticalAlignment="Center" Tag="Hotbar3" Click="Tool_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
+                            <Button Padding="7,3" Margin="0" FontSize="11" VerticalAlignment="Center" Tag="Hotbar4" Click="Tool_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
+                        </StackPanel>
                         <!-- The recycle bin: deleted clips wait here, and are put back from here (its list opens under it, BinPopup). -->
                         <ToggleButton x:Name="BinButton" Padding="7,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="35" AutomationProperties.Name="Recycle Bin"
                                       ToolTip="Recycle Bin: the clips that were deleted from the timeline. Nothing of them is rendered; any of them can be put back where it was.">

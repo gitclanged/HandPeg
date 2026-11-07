@@ -167,7 +167,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         var opacity = Math.Clamp(layer.Opacity, 0, 1);
         var blendMode = layer.BlendMode;
         var dissolve = 1f;
-        GpuEffectPacket? shadow = null, wipe = null, slide = null, zoom = null, blurDissolve = null, snap = null, rim = null, glass = null, shutter = null;
+        GpuEffectPacket? shadow = null, wipe = null, slide = null, zoom = null, blurDissolve = null, snap = null, rim = null, glass = null, shutter = null, social = null;
         var effects = layer.Effects;
         var count = Math.Clamp(layer.EffectCount, 0, CompositorProtocol.MaxEffectsPerLayer);
         for (var k = 0; k < count; k++)
@@ -205,6 +205,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                 case GpuShaderSlot.TransitionParticleSnap:
                     snap = packet;
                     break;
+                case GpuShaderSlot.TransitionWhipPan or GpuShaderSlot.TransitionZoomWarp or GpuShaderSlot.TransitionRgbGlitch or GpuShaderSlot.TransitionSpin:
+                    social = packet;
+                    dissolve *= SocialCutDissolve(packet);
+                    break;
                 case GpuShaderSlot.RimGlass when packet.P7 > 0.5f:
                     glass = packet;
                     break;
@@ -237,7 +241,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         if (_alone)
         {
             (opacity, dissolve, blendMode) = (1, 1, 0);
-            (shadow, wipe, slide, zoom, blurDissolve, snap, rim, glass, shutter) = (null, null, null, null, null, null, null, null, null);
+            (shadow, wipe, slide, zoom, blurDissolve, snap, rim, glass, shutter, social) = (null, null, null, null, null, null, null, null, null, null);
         }
 
         if (opacity * dissolve <= 0.0005f)
@@ -277,6 +281,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             work = Blur(work, radius, iterations: 1, (int)GpuShaderSlot.TransitionBlurDissolve);
         }
 
+        // A social cut's pass (5.2.1): over the picture with its effects, before it is placed.
+        if (social is { } cut)
+            work = SocialCut(layer, cut, work);
+
         // Where it goes: slides move it, zooms scale it about its middle.
         if (slide is { } sliding)
         {
@@ -309,7 +317,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
         // Frosted Glass (5.1-GpuFx): the canvas under its shape, blurred, before what stays of its picture; the Neon Rim on the picture, with room for its glow; the
         // shutter last, over all of that: sub-frames of the picture as it is laid on.
-        var rotation = layer.Rotation;
+        var rotation = layer.Rotation + (social is { Slot: GpuShaderSlot.TransitionSpin } spin ? SpinTurn(spin) : 0);
         var share = 1f;
         if (glass is { } frost)
         {

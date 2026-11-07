@@ -68,6 +68,10 @@ public static class Program
         results.AddRange(CutoutTests.All());
         results.AddRange(DogfoodTests.All());
         results.AddRange(GpuFxTests.All());
+        if (filter is null || "creator-hotbar".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(HotbarTests.Run());
+        if (filter is null || "portable-bootstrap".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(PortableBootstrapTests.Run());
         results.AddRange(TimelineErgonomicsTests.All());
         results.AddRange(TimelineInputTests.All());
         results.AddRange(TimelineLaneTests.All());
@@ -118,6 +122,8 @@ public static class Program
             results.Add(GpuSceneClipEffectTests.Run());
         if (filter is null || "gpu-picture-subtitles".Contains(filter, StringComparison.OrdinalIgnoreCase))
             results.Add(PictureSubtitleTests.Run());
+        if (filter is null || "window-maximized-edge".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(WindowFrameTests.MaximizedEdge());
         // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
         // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
         results.AddRange(UiScaleTests.All());

@@ -1,0 +1,26 @@
+# The Creator Hotbar (5.2.1): five slots, each an Effect, a Transition, a Game Preset or a one-click tool; a press one step of Undo.
+ok: a new install shows the hotbar, with the default slots
+ok: they are Motion Blur, 3D Fly-In, Neon Rim, Whip Pan and Studio Voice
+ok: two effects, two one-click tools and a transition
+ok: each is written as kind:id and read back the same
+ok: a Game Preset is kept by its name
+ok: what this HandPeg does not know is not read
+ok: a slot that cannot be read, or is missing, holds its default; the others what was chosen
+ok: every effect card and every transition can go in a slot
+ok: Motion Blur goes on the two selected clips
+ok: an ordinary card on each, to tune
+ok: one Undo takes both away
+ok: the Neon Rim refuses a clip with no picture
+ok: the overlay starts with no fade in
+ok: the Whip Pan goes on it
+ok: as its fade in, of the default transition length
+ok: a Spin chosen in the slot instead
+ok: the fade keeps its length, its style changed
+ok: two Undos, no fade again
+ok: Studio Voice goes on a clip with sound
+ok: switched on in its filters, at its usual mix
+ok: pressed again it says it is on already
+ok: one Undo switches it off
+ok: the 3D Fly-In goes on the first clip
+ok: as keyframes on it alone: never two clips flying at once
+ok: a Game Preset the Styles folder lacks puts nothing on

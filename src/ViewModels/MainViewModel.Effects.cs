@@ -72,6 +72,16 @@ public partial class MainViewModel
             return null;
 
         Checkpoint($"add {definition.Name}");
+        var card = PutEffectOn(layer, definition);
+        ShowEffectsPane = true;
+        StatusText = $"{definition.Name} added to {layer.Name}. Ctrl+Z takes it off.";
+        Log($"Effect added: {definition.Name} on {layer.Name}");
+        return card;
+    }
+
+    /// <summary>An effect put on a clip as <see cref="AddEffect"/> puts it, in the step something else took (the Creator Hotbar's, for several clips).</summary>
+    private EffectInstance PutEffectOn(Layer layer, EffectDefinition definition)
+    {
         EffectInstance card;
         using (Layer.Echo())
         {
@@ -87,9 +97,6 @@ public partial class MainViewModel
                 : layer.AddEffect(definition.NewEffect());
         }
 
-        ShowEffectsPane = true;
-        StatusText = $"{definition.Name} added to {layer.Name}. Ctrl+Z takes it off.";
-        Log($"Effect added: {definition.Name} on {layer.Name}");
         return card;
     }
 

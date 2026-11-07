@@ -439,6 +439,8 @@
                               ToolTip="On: a track's Solo button plays it alone, the others' solo going off. Off: several tracks can be soloed together and are mixed in the player; Alt-click plays one alone." />
                     <CheckBox Content="Show gain lines on clips with sound" IsChecked="{Binding ShowClipGainLines}" AutomationProperties.Name="Show Gain Lines"
                               ToolTip="Clips whose sound is drawn on their blocks show a line at their gain (drag it up or down), sloping down over the clip's fades. The fades themselves are the handles at every clip's top corners, whether this is on or not." />
+                    <CheckBox Content="Show the Creator Hotbar on the Timeline" IsChecked="{Binding ShowCreatorHotbar}" AutomationProperties.Name="Show Creator Hotbar"
+                              ToolTip="Five slots on the Timeline's row of tools (on by default), each putting its Effect, Transition, Game Preset or one-click tool on the selected clips (else the video clip at the playhead) in one step of Undo. Right-click a slot to choose what it holds; it starts with Motion Blur, 3D Fly-In, Neon Rim, Whip Pan and Studio Voice." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Crossfade and Fade Length (s):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="60" Text="{Binding DefaultTransitionSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Crossfade Length"

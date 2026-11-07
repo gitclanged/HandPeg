@@ -672,6 +672,15 @@ public sealed partial class AppSettings
     /// <summary>Clips with sound show a gain line and fade handles on their blocks, to be dragged.</summary>
     public bool ShowClipGainLines { get; set; } = true;
 
+    /// <summary>The Creator Hotbar's five slots on the Timeline's row of tools (5.2.1).</summary>
+    public bool ShowCreatorHotbar { get; set; } = true;
+
+    /// <summary>
+    /// What each of the Creator Hotbar's five slots holds, as "kind:id" (Models.HotbarSlot); null for the defaults (HotbarSlot.Defaults).
+    /// Set by a slot's right-click menu. Replaced whole when it changes, never changed in place (copies share lists).
+    /// </summary>
+    public List<string>? HotbarSlots { get; set; }
+
     /// <summary>How long a crossfade made from a cut's right-click menu is, in seconds.</summary>
     public double DefaultTransitionSeconds { get; set; } = 1;
 

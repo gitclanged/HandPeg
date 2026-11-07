@@ -1392,6 +1392,7 @@ public partial class MainWindow : Window
             _viewModel.OnSettingsSaved();
             _gpu?.ApplyAudioSettings(AppSettings.Current);
             UiScale.ApplyAll();
+            ShowHotbar();
             if (_dock.IsRealized(ExportId))
                 FillExportSection();
 

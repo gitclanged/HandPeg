@@ -128,6 +128,12 @@ public enum GpuShaderSlot
 
     /// <summary>The Thanos Snap (ParticleSnap.hlsl): the picture breaks into embers on a wind.</summary>
     TransitionParticleSnap = 69,
+
+    // The social cuts (SocialCuts.hlsl, 5.2.1): one pass each over the picture.
+    TransitionWhipPan = 70,
+    TransitionZoomWarp = 71,
+    TransitionRgbGlitch = 72,
+    TransitionSpin = 73,
 }
 
 /// <summary>

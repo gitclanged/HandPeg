@@ -369,7 +369,7 @@ internal sealed unsafe partial class SceneRenderer
 
     /// <summary>
     /// The part of the canvas a layer can draw on (canvas pixels): its box as turned, with room for its shadow, within the
-    /// canvas; the whole canvas for a blurred background, and while a slide or a zoom transition carries the box; empty
+    /// canvas; the whole canvas for a blurred background, and while a slide, a zoom or a spin transition carries the box; empty
     /// when it is wholly off the canvas.
     /// </summary>
     private static (float X, float Y, float W, float H) RegionOf(in GpuLayerDescriptor layer, int canvasWidth, int canvasHeight)
@@ -382,7 +382,7 @@ internal sealed unsafe partial class SceneRenderer
         for (var k = 0; k < count; k++)
         {
             var packet = layer.Effects[k];
-            if (packet.Slot is GpuShaderSlot.TransitionSlide or GpuShaderSlot.TransitionZoom)
+            if (packet.Slot is GpuShaderSlot.TransitionSlide or GpuShaderSlot.TransitionZoom or GpuShaderSlot.TransitionSpin)
                 return (0, 0, canvasWidth, canvasHeight);
             if (packet.Slot == GpuShaderSlot.DropShadow)
                 reach = Math.Max(reach, Math.Clamp(packet.P0, 0, 100) + 2 * Math.Clamp(packet.P2, 0, 50) + 2);

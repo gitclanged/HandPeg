@@ -415,6 +415,35 @@ public static partial class CompositorParityTests
                     problems.Add($"zoom: inside {Show(inside)}, outside {Show(outside)}");
             }
 
+            // The social cuts (5.2.1, SocialCuts.hlsl): their pass against its CPU mirror, laid on as SceneRenderer lays it on.
+            GpuEffectPacket Cut(GpuShaderSlot slot, float shown, float through, bool fadingIn = true) => new(slot, shown, 0, 0, through, fadingIn ? 1 : 0, 0, 0, 0);
+            Case("whip pan in, half way (70)", 1, (ref GpuLayerDescriptor l) => Add(ref l, Cut(GpuShaderSlot.TransitionWhipPan, 0.5f, 0.5f)),
+                input => WhipPan(input, [0.5f, 0, 0, 0.5f, 1]));
+            Case("whip pan out, a fifth of the way", 3, (ref GpuLayerDescriptor l) => Add(ref l, Cut(GpuShaderSlot.TransitionWhipPan, 0.9f, 0.2f, fadingIn: false)),
+                input => WhipPan(input, [0.9f, 0, 0, 0.2f, 0]));
+            Case("whip pan, the clip all there: the picture", 3, (ref GpuLayerDescriptor l) => Add(ref l, Cut(GpuShaderSlot.TransitionWhipPan, 1, 1)), input => input);
+            Case("zoom warp in, 30 % of the way (71)", 3, (ref GpuLayerDescriptor l) => Add(ref l, Cut(GpuShaderSlot.TransitionZoomWarp, 0.4f, 0.3f)),
+                input => ZoomWarp(input, [0.4f, 0, 0, 0.3f, 1]));
+            Case("zoom warp in, a tenth of the way: coming on", 3, (ref GpuLayerDescriptor l) => Add(ref l, Cut(GpuShaderSlot.TransitionZoomWarp, 0.2f, 0.1f)),
+                input => Scale(ZoomWarp(input, [0.2f, 0, 0, 0.1f, 1]).ToHalf(), 0.4f));
+            foreach (var (shown, through) in new[] { (0.5f, 0.5f), (0.2f, 0.84f), (0.1f, 0.35f), (0.7f, 0.3f) })
+            {
+                var packet = Cut(GpuShaderSlot.TransitionRgbGlitch, shown, through);
+                var blinks = HandPegApp.Compositor.SceneRenderer.GlitchBlinks(packet);
+                Case(string.Create(CultureInfo.InvariantCulture, $"rgb glitch at {through} ({(blinks ? "blinked out" : "torn")}) (72)"), 3, (ref GpuLayerDescriptor l) => Add(ref l, packet),
+                    input => Scale(RgbGlitch(input, [shown, 0, 0, through, 1]).ToHalf(), blinks ? 0 : 1));
+            }
+
+            var blinked = Enumerable.Range(0, 30).Count(step => HandPegApp.Compositor.SceneRenderer.GlitchBlinks(Cut(GpuShaderSlot.TransitionRgbGlitch, 0, (step + 0.5f) / 30)));
+            Line($"  rgb glitch: its blinks the CPU mirror's, some of its 30 moments and not most");
+            if (blinked != Enumerable.Range(0, 30).Count(step => GlitchRandom((uint)step, 13) < 0.35f) || blinked is 0 or > 15)
+                problems.Add($"rgb glitch: {blinked} of 30 moments blinked out");
+
+            // A spin half way: its box half a turn about its middle, so the blurred picture is laid on upside down, pixel for pixel.
+            Case("spin in, half way: half a turn, blurred along it (73)", 3, (ref GpuLayerDescriptor l) => Add(ref l, Cut(GpuShaderSlot.TransitionSpin, 0.5f, 0.5f)),
+                input => HalfTurned(Spin(input, [0.5f, 0, 0, 0.5f, 1], new Vector2(0.5f)).ToHalf()));
+            Case("spin, the clip all there: the picture", 3, (ref GpuLayerDescriptor l) => Add(ref l, Cut(GpuShaderSlot.TransitionSpin, 1, 1)), input => input);
+
             string[] modes = ["normal", "multiply", "screen", "add", "overlay", "soft light", "hard light", "difference"];
             for (var mode = 1; mode < modes.Length; mode++)
             {
@@ -1135,6 +1164,10 @@ public static partial class CompositorParityTests
                 Add(ref b, new(GpuShaderSlot.BlendMode, 4, 0, 0, 0, 0, 0, 0, 0));
                 Add(ref b, new(GpuShaderSlot.TransitionWipe, 0.6f, 1, 0, 0.6f, 1, 0, 0, 0));
                 Add(ref b, new(GpuShaderSlot.TransitionBlurDissolve, 0.7f, 0, 0, 0.7f, 1, 0, 0, 0));
+                // The social cuts (5.2.1), one a layer: each takes the layer's one cut.
+                var place = 2;
+                foreach (var cut in new[] { GpuShaderSlot.TransitionWhipPan, GpuShaderSlot.TransitionZoomWarp, GpuShaderSlot.TransitionRgbGlitch, GpuShaderSlot.TransitionSpin })
+                    Add(ref Layer(place++, GpuSourceKind.TestPattern, 1, 200, 100, 800, 450), new(cut, 0.6f, 0, 0, 0.5f, 1, 0, 0, 0));
                 var sequence = client.Publish();
                 if (!client.WaitForFrame(sequence, 10_000))
                 {

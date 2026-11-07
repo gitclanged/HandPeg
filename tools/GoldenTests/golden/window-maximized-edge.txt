@@ -1,0 +1,7 @@
+# A window that draws its own frame (5.2.1): never a frame painted by Windows, white or classic, in any state.
+maximized, drawn by the card, after a new title, the frame worked out anew and Windows' frame messages: no pixel of the window white or light
+restored, drawn by the card, after a new title, the frame worked out anew and Windows' frame messages: no pixel of the window white or light
+restored from minimized, drawn by the card, after a new title, the frame worked out anew and Windows' frame messages: no pixel of the window white or light
+maximized, drawn by the processor, after a new title, the frame worked out anew and Windows' frame messages: no pixel of the window white or light
+restored, drawn by the processor, after a new title, the frame worked out anew and Windows' frame messages: no pixel of the window white or light
+restored from minimized, drawn by the processor, after a new title, the frame worked out anew and Windows' frame messages: no pixel of the window white or light

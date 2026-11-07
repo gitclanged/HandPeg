@@ -90,6 +90,8 @@ public partial class MainWindow
         var pane = UnifiedTimeline;
         var surface = pane.Surface;
         pane.ToolClick += TimelineTool_Click;
+        pane.HotbarMenuRequested += (index, at) => RunGuarded("a hotbar slot's menu", () => OpenHotbarSlotMenu(index, at));
+        ShowHotbar();
 
         surface.IsSelected = IsSelected;
         surface.SnapTimes = SnapTimes;
@@ -1057,6 +1059,9 @@ public partial class MainWindow
             case "ZoomOut": ZoomAboutPlayhead(1 / 1.6); break;
             case "ZoomFit": FitTimeline(); break;
             case "PlayPause": PlayPause_Click(sender, e); break;
+
+            // The Creator Hotbar's slots (5.2.1).
+            case "Hotbar0" or "Hotbar1" or "Hotbar2" or "Hotbar3" or "Hotbar4": ApplyHotbar(tag[^1] - '0'); break;
 
             // The inspector's: they act on what their group shows (the button's DataContext).
             case "Properties" when sender is FrameworkElement { DataContext: Layer element }: ShowInEffectsPane(element); break;

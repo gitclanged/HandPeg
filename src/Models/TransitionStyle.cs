@@ -33,6 +33,18 @@ public enum TransitionStyle
 
     /// <summary>The Thanos Snap: the picture breaks into embers on a wind (or gathers itself out of them).</summary>
     ParticleSnap,
+
+    /// <summary>Whips in from the right, smeared the way it goes (or away to the left): a camera whip (5.2.1).</summary>
+    WhipPan,
+
+    /// <summary>Punches in from three times its size about its middle, streaked outward (or away into it).</summary>
+    ZoomWarp,
+
+    /// <summary>Torn rows and split colours that settle as it comes on, blinking between it and what is under it.</summary>
+    RgbGlitch,
+
+    /// <summary>A whole turn about its anchor, blurred along the turn, coming on as it starts (or going as it ends).</summary>
+    Spin,
 }
 
 /// <summary>What each <see cref="TransitionStyle"/> is called, which way it goes, and the curve its fade follows.</summary>
@@ -53,6 +65,10 @@ public static class TransitionStyles
         TransitionStyle.Zoom => "Zoom (Scale Pop)",
         TransitionStyle.BlurDissolve => "Blur Dissolve",
         TransitionStyle.ParticleSnap => "Particle Disintegration (Thanos Snap)",
+        TransitionStyle.WhipPan => "Whip Pan",
+        TransitionStyle.ZoomWarp => "Zoom Warp",
+        TransitionStyle.RgbGlitch => "RGB Glitch",
+        TransitionStyle.Spin => "Spin",
         _ => "Dissolve",
     };
 
@@ -73,12 +89,14 @@ public static class TransitionStyles
     /// <summary>
     /// The curve a fade of this style follows, as how much of the clip is there (0 to 1) against how far through the fade
     /// the clock is: a dissolve evenly; a wipe easing in and out; a slide arriving gently (and leaving as gently as it
-    /// starts); a zoom with a little overshoot; the Thanos Snap evenly. The same curve on the timeline and in the graph (EasingCurves).
+    /// starts); a zoom with a little overshoot; the Thanos Snap evenly; a whip pan and a spin easing in and out, a zoom warp
+    /// landing gently, a glitch evenly. The same curve on the timeline and in the graph (EasingCurves).
     /// </summary>
     public static EasingType Easing(TransitionStyle style) => style switch
     {
-        TransitionStyle.Dissolve or TransitionStyle.BlurDissolve or TransitionStyle.ParticleSnap => EasingType.Linear,
+        TransitionStyle.Dissolve or TransitionStyle.BlurDissolve or TransitionStyle.ParticleSnap or TransitionStyle.RgbGlitch => EasingType.Linear,
         TransitionStyle.Zoom => EasingType.Back,
+        TransitionStyle.ZoomWarp => EasingType.EaseOut,
         _ when IsSlide(style) => EasingType.EaseOut,
         _ => EasingType.EaseInOut,
     };
@@ -89,6 +107,10 @@ public static class TransitionStyles
         TransitionStyle.Zoom => GpuShaderSlot.TransitionZoom,
         TransitionStyle.BlurDissolve => GpuShaderSlot.TransitionBlurDissolve,
         TransitionStyle.ParticleSnap => GpuShaderSlot.TransitionParticleSnap,
+        TransitionStyle.WhipPan => GpuShaderSlot.TransitionWhipPan,
+        TransitionStyle.ZoomWarp => GpuShaderSlot.TransitionZoomWarp,
+        TransitionStyle.RgbGlitch => GpuShaderSlot.TransitionRgbGlitch,
+        TransitionStyle.Spin => GpuShaderSlot.TransitionSpin,
         _ when IsWipe(style) => GpuShaderSlot.TransitionWipe,
         _ when IsSlide(style) => GpuShaderSlot.TransitionSlide,
         _ => GpuShaderSlot.TransitionDissolve,
@@ -122,7 +144,9 @@ public static class TransitionStyles
     /// <summary>
     /// A frozen 16 x 12 picture of a style (4.2B-3), for the fade menus: a dissolve a ramp; a wipe the frame, the half its
     /// edge has uncovered filled and a chevron the way it goes; a slide an arrow the way it goes, with two speed lines; a
-    /// zoom four corners around a small square; a blur dissolve soft dots growing across. Drawn from coordinates alone (no
+    /// zoom four corners around a small square; a blur dissolve soft dots growing across; a whip pan a frame with speed
+    /// lines trailing it; a zoom warp lines bursting out of a small square; a glitch the frame torn into offset bars; a spin
+    /// a circling arrow. Drawn from coordinates alone (no
     /// picture file), for a Path that strokes and fills with the text colour: only the figures meant solid are filled.
     /// Made once per style, on the UI thread, and kept.
     /// </summary>
@@ -182,6 +206,35 @@ public static class TransitionStyles
                     context.ArcTo(new Point(x + r, y), new Size(r, r), 0, false, SweepDirection.Clockwise, false, false);
                     context.ArcTo(new Point(x - r, y), new Size(r, r), 0, false, SweepDirection.Clockwise, false, false);
                 }
+            }
+            else if (style == TransitionStyle.WhipPan)
+            {
+                // A frame flying left, three speed lines trailing it to the right.
+                Shape(false, true, new(0.5, 2.5), new(8.5, 2.5), new(8.5, 9.5), new(0.5, 9.5));
+                Shape(false, false, new(10, 3.5), new(15.5, 3.5));
+                Shape(false, false, new(11, 6), new(15.5, 6));
+                Shape(false, false, new(10, 8.5), new(15.5, 8.5));
+            }
+            else if (style == TransitionStyle.ZoomWarp)
+            {
+                // A small square with lines bursting out of its corners and sides.
+                Shape(true, true, new(6, 4.5), new(10, 4.5), new(10, 7.5), new(6, 7.5));
+                foreach (var (x0, y0, x1, y1) in new[] { (5.0, 3.5, 1.5, 0.5), (11.0, 3.5, 14.5, 0.5), (5.0, 8.5, 1.5, 11.5), (11.0, 8.5, 14.5, 11.5), (4.5, 6.0, 0.5, 6.0), (11.5, 6.0, 15.5, 6.0) })
+                    Shape(false, false, new(x0, y0), new(x1, y1));
+            }
+            else if (style == TransitionStyle.RgbGlitch)
+            {
+                // The frame torn into three bars, each slid its own way.
+                Shape(true, true, new(1.5, 0.5), new(15.5, 0.5), new(15.5, 3.5), new(1.5, 3.5));
+                Shape(true, true, new(0.5, 4.5), new(12.5, 4.5), new(12.5, 7.5), new(0.5, 7.5));
+                Shape(true, true, new(3.5, 8.5), new(15.5, 8.5), new(15.5, 11.5), new(3.5, 11.5));
+            }
+            else if (style == TransitionStyle.Spin)
+            {
+                // Three quarters of a circle turning clockwise from its top, an arrowhead at its end pointing up the way it goes.
+                context.BeginFigure(new Point(8, 0.5), false, false);
+                context.ArcTo(new Point(2.5, 6), new Size(5.5, 5.5), 0, true, SweepDirection.Clockwise, true, true);
+                Shape(false, false, new(0.5, 8.5), new(2.5, 6), new(4.5, 8.5));
             }
             else if (style == TransitionStyle.BlurDissolve)
             {

@@ -34,6 +34,18 @@ composite stage:
   thanos snap: 0.26 of its picture left a quarter of the way, 0.03 half way, 0.00 three quarters
   slide in, half way (66): within 3/255 of the reference
   zoom at half size (67): about the box's middle
+  whip pan in, half way (70): within 3/255 of the reference
+  whip pan out, a fifth of the way: within 3/255 of the reference
+  whip pan, the clip all there: the picture: within 3/255 of the reference
+  zoom warp in, 30 % of the way (71): within 3/255 of the reference
+  zoom warp in, a tenth of the way: coming on: within 3/255 of the reference
+  rgb glitch at 0.5 (torn) (72): within 3/255 of the reference
+  rgb glitch at 0.84 (torn) (72): within 3/255 of the reference
+  rgb glitch at 0.35 (torn) (72): within 3/255 of the reference
+  rgb glitch at 0.3 (blinked out) (72): within 3/255 of the reference
+  rgb glitch: its blinks the CPU mirror's, some of its 30 moments and not most
+  spin in, half way: half a turn, blurred along it (73): within 3/255 of the reference
+  spin, the clip all there: the picture: within 3/255 of the reference
   blend multiply (17): within 3/255 of the reference
   blend screen (17): within 3/255 of the reference
   blend add (17): within 3/255 of the reference

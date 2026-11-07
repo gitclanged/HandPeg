@@ -49,8 +49,9 @@ public partial class UnifiedTimelinePane : UserControl
         Surface.VerticalOffsetChanged += UpdateRowScroll;
         Surface.SizeChanged += (_, _) => UpdateRowScroll();
 
-        // Left out of a narrow row, Add Track is still in the "more" menu: as a menu of its kinds.
-        Toolbar.MenuEntryFor = element => ReferenceEquals(element, AddLayerHost) ? ("Add Track", new Action(OpenKindsMenu)) : null;
+        // Left out of a narrow row, Add Track is still in the "more" menu: as a menu of its kinds; the Creator Hotbar as a menu of its slots.
+        Toolbar.MenuEntryFor = element => ReferenceEquals(element, AddLayerHost) ? ("Add Track", new Action(OpenKindsMenu))
+            : ReferenceEquals(element, Hotbar) ? ("Creator Hotbar", new Action(OpenHotbarMenu)) : null;
     }
 
     /// <summary>
@@ -172,6 +173,46 @@ public partial class UnifiedTimelinePane : UserControl
                 group.DataContext = target;
             group.Visibility = target is null ? Visibility.Collapsed : Visibility.Visible;
         }
+    }
+
+    // ----- The Creator Hotbar (5.2.1) -----
+
+    /// <summary>A slot's right-click (or the menu key on it): the window opens the menu choosing what it holds, at that slot.</summary>
+    public event Action<int, FrameworkElement>? HotbarMenuRequested;
+
+    private IEnumerable<Button> HotbarSlots => Hotbar.Children.OfType<Button>();
+
+    /// <summary>The hotbar's slots named for what they hold (their tooltips what they do), or the hotbar hidden. Cheap: before the first frame too.</summary>
+    public void ShowHotbar(IReadOnlyList<Models.HotbarSlot> slots, bool shown)
+    {
+        Hotbar.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var (button, slot) in HotbarSlots.Zip(slots))
+        {
+            button.Content = slot.Label;
+            button.ToolTip = $"{slot.About} Right-click to choose what this slot holds.";
+            System.Windows.Automation.AutomationProperties.SetName(button, $"Creator Hotbar: {slot.Label}");
+        }
+    }
+
+    private void HotbarSlot_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is Button { Tag: string tag } button && int.TryParse(tag.AsSpan("Hotbar".Length), out var index))
+            HotbarMenuRequested?.Invoke(index, button);
+    }
+
+    /// <summary>The slots as a menu at the pointer: the hotbar's entry of the "more" menu, when the tools' row has no room for it.</summary>
+    private void OpenHotbarMenu()
+    {
+        var menu = new ContextMenu { Placement = PlacementMode.MousePoint };
+        foreach (var slot in HotbarSlots)
+        {
+            var item = new MenuItem { Header = slot.Content, ToolTip = slot.ToolTip };
+            item.Click += (_, e) => ToolClick?.Invoke(slot, e);
+            menu.Items.Add(item);
+        }
+
+        menu.IsOpen = true;
     }
 
     // ----- The rows' scroll bar: it follows the surface, and moves it -----
