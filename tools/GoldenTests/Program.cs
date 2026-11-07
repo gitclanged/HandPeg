@@ -75,6 +75,9 @@ public static class Program
         results.AddRange(TimelineErgonomicsTests.All());
         results.AddRange(TimelineInputTests.All());
         results.AddRange(TimelineLaneTests.All());
+        // timeline-effect-lanes-fold, timeline-effect-lane-cards, timeline-settings-menu (5.3): effect lanes only on an open track, a Cutout's
+        // own cards off them, and the Timeline Settings menu.
+        results.AddRange(TimelineSettingsTests.All());
         results.AddRange(PeMachineTests.All());
         results.AddRange(MediaFoundationTests.All());
         results.AddRange(HardwareTierTests.All());
@@ -124,6 +127,9 @@ public static class Program
             results.Add(PictureSubtitleTests.Run());
         if (filter is null || "window-maximized-edge".Contains(filter, StringComparison.OrdinalIgnoreCase))
             results.Add(WindowFrameTests.MaximizedEdge());
+        // window-frame-messages (5.3): what the custom-frame hook answers, and what still reaches Windows below WindowChrome.
+        if (filter is null || "window-frame-messages".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(WindowFrameTests.Messages());
         // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
         // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
         results.AddRange(UiScaleTests.All());

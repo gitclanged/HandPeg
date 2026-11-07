@@ -601,7 +601,8 @@ public static class AudioEngineTests
             { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true })!;
         var output = process.StandardOutput.ReadToEnd().Trim();
         process.WaitForExit();
-        return double.Parse(output, CultureInfo.InvariantCulture);
+        // Some FFprobe builds print the stream once more under its program (an MPEG-TS file): the first line is the stream's.
+        return double.Parse(output.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)[0], CultureInfo.InvariantCulture);
     }
 
     // Where a rendering's sound begins (its first sample above -26 dB), in seconds.

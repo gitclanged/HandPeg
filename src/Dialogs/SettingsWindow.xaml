@@ -441,6 +441,25 @@
                               ToolTip="Clips whose sound is drawn on their blocks show a line at their gain (drag it up or down), sloping down over the clip's fades. The fades themselves are the handles at every clip's top corners, whether this is on or not." />
                     <CheckBox Content="Show the Creator Hotbar on the Timeline" IsChecked="{Binding ShowCreatorHotbar}" AutomationProperties.Name="Show Creator Hotbar"
                               ToolTip="Five slots on the Timeline's row of tools (on by default), each putting its Effect, Transition, Game Preset or one-click tool on the selected clips (else the video clip at the playhead) in one step of Undo. Right-click a slot to choose what it holds; it starts with Motion Blur, 3D Fly-In, Neon Rim, Whip Pan and Studio Voice." />
+                    <!-- The Timeline's own switches (5.3): the same values as its Timeline Settings menu (its tab's right-click, the gear on its row of tools). -->
+                    <CheckBox Content="Show effect sub-lanes on expanded tracks" IsChecked="{Binding ShowTimelineEffectLanes}" AutomationProperties.Name="Show Effect Sub-Lanes"
+                              ToolTip="On by default. Each track's effects get lanes of their own in its stack, one block per effect over the stretch it works in, shown only while that track's stack is open (its chevron); closed, they take no room. Off: no effect lanes at all, and a clip's effects show only as the fx badge on its block." />
+                    <CheckBox Content="Show built-in Mask &amp; Edge lanes on Cutouts" IsChecked="{Binding ShowBuiltInMaskEffectLanes}" AutomationProperties.Name="Show Built-In Mask and Edge Lanes"
+                              ToolTip="Off by default. On: a Cutout's own Mask and Rounded &amp; Feathered Edges cards, which every Cutout is made with, get effect lanes and count in its fx badge like any effect. Off: they are in the Effects pane only, as editable as ever." />
+                    <CheckBox Content="Show keyframe diamonds on clips" IsChecked="{Binding ShowClipKeyframes}" AutomationProperties.Name="Show Keyframe Diamonds"
+                              ToolTip="On by default. A clip's block on the Timeline shows a diamond at each of its keyframes." />
+                    <CheckBox Content="Show filmstrip thumbnails on clips" IsChecked="{Binding ShowClipFilmstrips}" AutomationProperties.Name="Show Clip Filmstrips"
+                              ToolTip="On by default. A video clip's block on the Timeline shows its file's frames along it (as many as Video Clip Thumbnail Count takes). Off: plain blocks. The Sequence Overview Scrubber's strip is Show Timeline Thumbnails, above." />
+                    <CheckBox Content="Show audio waveforms on clips" IsChecked="{Binding ShowClipWaveforms}" AutomationProperties.Name="Show Clip Waveforms"
+                              ToolTip="On by default. Clips with sound draw their waveforms on their blocks on the Timeline, and a closed sound stack the mix of its lanes in its one bar. (A video clip's own waveform is made only while Show waveforms, above, is on.)" />
+                    <CheckBox Content="Show the audio beat grid" IsChecked="{Binding ShowBeatGrid}" AutomationProperties.Name="Show Beat Grid"
+                              ToolTip="On by default. The beats found in a clip's sound (a clip's menu: Audio &amp; Voice, Detect &amp; Snap to Audio Beats) are drawn as faint ticks along its block." />
+                    <CheckBox Content="Enable timeline snapping" IsChecked="{Binding SnapClips}" AutomationProperties.Name="Enable Timeline Snapping"
+                              local:KeyTip.Text="On by default. A dragged or dropped clip's edges catch on the edges of the other clips, the markers, the end of the sequence and the playhead; Shift while dragging places it freely. {key:view.toggleSnap|The Snap button} turns it on or off." />
+                    <CheckBox Content="Snap to audio beats" IsChecked="{Binding SnapToBeats}" AutomationProperties.Name="Snap to Audio Beats"
+                              ToolTip="On by default. With snapping on, edges also catch on the beats found in clips' sound." />
+                    <CheckBox Content="Follow the playhead during playback" IsChecked="{Binding TimelineFollowsPlayhead}" AutomationProperties.Name="Follow Playhead During Playback"
+                              ToolTip="On by default. While playing, the Timeline turns the page as the playhead reaches its edge, so what is playing stays in sight. Off: the view stays where you put it." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Crossfade and Fade Length (s):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="60" Text="{Binding DefaultTransitionSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Crossfade Length"

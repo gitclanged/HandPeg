@@ -631,15 +631,19 @@ public sealed partial class GpuScenePlan
     /// <summary>How many frames of its file a clip can pass in one of the sequence's: past the fastest a clip runs, what lies between two frames is a cut or a loop's wrap.</summary>
     private const double MostShutterSpeed = Layer.FastestSpeed + 1;
 
-    /// <summary>A Motion Blur card of an entry's Look; null for none. Walked by index: asked for on every frame.</summary>
-    private static EffectInstance? MotionCard(Entry e)
+    /// <summary>A Motion Blur card of an entry's Look, and its definition; null for none. Walked by index: asked for on every frame.</summary>
+    private static EffectInstance? MotionCard(Entry e, out EffectDefinition? definition)
     {
         for (var k = 0; k < e.Look.Length; k++)
         {
-            if (e.Look[k].Definition is { GpuSlot: GpuShaderSlot.MotionBlur })
+            if (e.Look[k].Definition is { GpuSlot: GpuShaderSlot.MotionBlur } motion)
+            {
+                definition = motion;
                 return e.Look[k];
+            }
         }
 
+        definition = null;
         return null;
     }
 
@@ -649,7 +653,7 @@ public sealed partial class GpuScenePlan
     /// </summary>
     private void Shutter(Entry e, double t, ref GpuLayerDescriptor d)
     {
-        if (MotionCard(e) is not { Enabled: true } card || card.EvaluateGpuPacket(t - e.KeyStart, e.Layer) is not { Slot: GpuShaderSlot.MotionBlur } packet)
+        if (MotionCard(e, out var definition) is not { Enabled: true } card || card.EvaluateGpuPacket(definition!, t - e.KeyStart, e.Layer) is not { Slot: GpuShaderSlot.MotionBlur } packet)
             return;
 
         // Across a cut or a loop's wrap the moment a frame ago is another shot: no motion to speak of, however fast it looks. (A ramp's own speed is well within this.)
@@ -696,7 +700,7 @@ public sealed partial class GpuScenePlan
     /// <summary>An adjustment layer's or the finished picture's shutter: the moment of the sequence a frame ago, which tells its next frame from a jump (SceneRenderer.CanvasFlow).</summary>
     private void SequenceShutter(Entry e, double t, ref GpuLayerDescriptor d)
     {
-        if (MotionCard(e) is { Enabled: true })
+        if (MotionCard(e, out _) is { Enabled: true })
         {
             d.PreviousMoment = t - FrameSeconds;
             d.Flags |= GpuLayerDescriptor.FlagPreviousMoment;
@@ -812,7 +816,7 @@ public sealed partial class GpuScenePlan
         var count = definition.GpuPacketCount;
         for (var k = 0; k < count; k++)
         {
-            var packet = card.EvaluateGpuPacket(clipTime, layer, k);
+            var packet = card.EvaluateGpuPacket(definition, clipTime, layer, k);
             if (packet.Slot == GpuShaderSlot.None)
                 return;
 

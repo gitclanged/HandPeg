@@ -1,0 +1,36 @@
+# The Timeline Settings menu: its groups and items from one table, each kept in a real setting; the five new settings' defaults.
+[Lanes & Overlays]
+   Show Effect Sub-Lanes on Expanded Tracks  -> AppSettings.ShowTimelineEffectLanes (True in a new install)
+   Show Built-In Mask & Edge Lanes on Cutouts  -> AppSettings.ShowBuiltInMaskEffectLanes (False in a new install)
+   Show Keyframe Diamonds on Clips  -> AppSettings.ShowClipKeyframes (True in a new install)
+   Show Clip Filmstrip Thumbnails  -> AppSettings.ShowClipFilmstrips (True in a new install)
+   Show Audio Waveforms  -> AppSettings.ShowClipWaveforms (True in a new install)
+   Show Audio Beat Grid  -> AppSettings.ShowBeatGrid (True in a new install)
+   Show I-Frame Lines  -> AppSettings.ShowIFrames (True in a new install)
+   Gain and Fade Lines  -> AppSettings.ShowClipGainLines (True in a new install)
+[Snapping & Playback]
+   Enable Timeline Snapping  (key: view.toggleSnap, by default Caps)  -> AppSettings.SnapClips (True in a new install)
+   Snap to Audio Beats  -> AppSettings.SnapToBeats (True in a new install)
+   Snap Cuts to I-Frames  -> the project's or the session's, not kept in the settings
+   Follow Playhead During Playback  -> AppSettings.TimelineFollowsPlayhead (True in a new install)
+[Bars & Sizing]
+   Show Creator Hotbar  -> AppSettings.ShowCreatorHotbar (True in a new install)
+   Show Sequence Overview Scrubber  -> AppSettings.ShowMasterTimeline (True in a new install)
+   Track Height  -> AppSettings.LayerHeight (25 in a new install)
+[Editing]
+   Ripple All Tracks  -> AppSettings.RippleAllTracks (True in a new install)
+   Dropped Clips Join Track  -> AppSettings.DroppedClipsJoinTrack (False in a new install)
+   Show Linked Audio  -> the project's or the session's, not kept in the settings
+ok: four groups, in order: Lanes & Overlays, Snapping & Playback, Bars & Sizing, Editing
+ok: every setting of the menu has exactly one item
+ok: every item has words and a tooltip, and no key written into its words
+ok: each item kept in the settings names a real setting of AppSettings (a switch; Track Height the one height)
+ok: every item of the menu before 5.3 is still in it (Snap Clips, I-frames, beats, beat grid, hotbar, gain lines, ripple, dropped clips, linked audio, track height)
+ok: Enable Timeline Snapping shows view.toggleSnap's key (Caps by default; S is Zoom Out Under the Pointer)
+ok: Track Height: Compact 8, Medium 25, Large 42, Extra Large 50
+   nearest preset: 1 -> 8, 16 -> 8, 17 -> 25, 30 -> 25, 33 -> 25, 34 -> 42, 46 -> 42, 50 -> 50
+ok: the preset ticked is the nearest (1, 16 -> 8; 17, 30, 33 -> 25; 34, 46 -> 42; 50 -> 50)
+ok: a new install: effect lanes on, the built-in Mask & Edge lanes off, filmstrips, waveforms and following the playhead on
+ok: each is written into the settings file by its own name
+ok: and read back as it was written
+ok: a settings file from before 5.3 (none of them in it) reads as a new install has them

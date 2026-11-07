@@ -220,11 +220,12 @@ public partial class MainWindow
 
     /// <summary>
     /// While a video plays with the bars zoomed in, the view turns the page when the playhead reaches its right
-    /// edge, so that what is playing stays in sight.
+    /// edge, so that what is playing stays in sight; never with Follow Playhead During Playback switched off (5.3,
+    /// AppSettings.TimelineFollowsPlayhead: the view stays where the user put it).
     /// </summary>
     private void FollowPlayhead()
     {
-        if (_viewFit || !_viewModel.IsPlaying || _isScrubbing)
+        if (_viewFit || !_viewModel.IsPlaying || _isScrubbing || !Services.AppSettings.Current.TimelineFollowsPlayhead)
             return;
 
         var (at, span) = (_viewModel.PositionMs / 1000, ViewSpan);

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -35,7 +36,8 @@ public partial class MainWindow
         TitleBar.SizeChanged += (_, _) => UpdateTitleProgress();
         DependencyPropertyDescriptor.FromProperty(TitleProperty, typeof(Window)).AddValueChanged(this, (_, _) => TitleText.Text = Title);
         DependencyPropertyDescriptor.FromProperty(VisibilityProperty, typeof(UIElement)).AddValueChanged(UpdateNotice, (_, _) => ApplyStatusBar());
-        StateChanged += (_, _) => ApplyWindowState();
+        // Inside WM_SIZE: a new place for the window waits until that message is done (WPF lays it out from that message's size).
+        StateChanged += (_, _) => ApplyWindowState(placeLater: true);
 
         // Made maximized (a size that fills the screen, Remember Last Size: WPF makes its window maximized), Windows placed it
         // before its hook was there: kept short of a taskbar that hides itself and inset as soon as it has its handle, before
@@ -47,6 +49,14 @@ public partial class MainWindow
         };
         Loaded += (_, _) => ApplyWindowState();
         DpiChanged += (_, _) => ApplyWindowState();
+
+        // Maximized and moved to another monitor (Win+Shift+Arrow) it stays maximized: its inset is worked out again for where it is
+        // now, once Windows has placed it (one beside a taskbar that hides itself is inset nowhere; one without reaches past every edge).
+        LocationChanged += (_, _) =>
+        {
+            if (WindowState == WindowState.Maximized)
+                Dispatcher.BeginInvoke(() => ApplyWindowState(), System.Windows.Threading.DispatcherPriority.Background);
+        };
         TitleText.Text = Title;
         ApplyWindowState();
         CompositorClient.EngineRecovered += ms => Dispatcher.BeginInvoke(() => ShowEngineRecovered(ms));
@@ -147,14 +157,17 @@ public partial class MainWindow
 
     /// <summary>
     /// Maximized, a window that draws its own frame reaches past the screen's edges by its resize border: the content is
-    /// kept inside them, and the client area short of a taskbar that hides itself (KeepClearOfHiddenTaskbarNow). The Maximize
-    /// button shows Restore then.
+    /// kept inside them; beside a taskbar that hides itself it is placed short of it instead (KeepClearOfHiddenTaskbarNow). The Maximize
+    /// button shows Restore then, and Windows 11 squares the window's corners (ThemeManager.ApplyCorners, 5.3).
     /// </summary>
-    private void ApplyWindowState()
+    private void ApplyWindowState() => ApplyWindowState(placeLater: false);
+
+    private void ApplyWindowState(bool placeLater)
     {
         var maximized = WindowState == WindowState.Maximized;
         if (maximized)
-            KeepClearOfHiddenTaskbarNow(new WindowInteropHelper(this).Handle);
+            KeepClearOfHiddenTaskbarNow(new WindowInteropHelper(this).Handle, placeLater);
+        ThemeManager.ApplyCorners(this);
         ChromeRoot.Margin = maximized ? MaximizedFrameInset(this) : new Thickness(0);
         MaximizeButton.Content = maximized ? "" : "";
         MaximizeButton.ToolTip = maximized ? "Restore Down" : "Maximize";
@@ -190,19 +203,10 @@ public partial class MainWindow
         var down = GetSystemMetricsForDpi(SmCySizeFrame, at) + GetSystemMetricsForDpi(SmCxPaddedBorder, at);
         var margin = new Thickness(across / dpi, down / dpi, across / dpi, down / dpi);
 
-        // Beside a taskbar that hides itself the client area stops short of the screen's edge (OnNcCalcSize), so nothing of
-        // it reaches past that edge to be kept in.
+        // Beside a taskbar that hides itself the window is maximized to the working area, that edge two pixels in
+        // (MaximizedPlace), so nothing of it reaches past any edge to be kept in.
         var edges = handle == IntPtr.Zero ? 0 : AutoHideEdges(MonitorFromWindow(handle, MonitorDefaultToNearest));
-        if ((edges & (1 << AbeLeft)) != 0)
-            margin.Left = 0;
-        if ((edges & (1 << AbeTop)) != 0)
-            margin.Top = 0;
-        if ((edges & (1 << AbeRight)) != 0)
-            margin.Right = 0;
-        if ((edges & (1 << AbeBottom)) != 0)
-            margin.Bottom = 0;
-
-        return margin;
+        return edges != 0 ? new Thickness(0) : margin;
     }
 
     private const int SmCxSizeFrame = 32, SmCySizeFrame = 33, SmCxPaddedBorder = 92;
@@ -215,14 +219,17 @@ public partial class MainWindow
     // hides itself (the working area is then the whole monitor), Windows takes such a window (its client area, which with
     // WindowChrome is the whole window) for a full-screen one and keeps the taskbar hidden: moving the pointer to that edge
     // no longer brings it up, and the Show Desktop corner at its end cannot be reached. So, maximized beside a taskbar that
-    // hides, the client area stops two pixels short of that edge (5.2-AuditB, the user's bug: one was not enough), whatever
-    // the scale: WM_NCCALCSIZE's rectangles and the monitor's are real pixels. (Not the window's own rectangle: Windows puts a
-    // maximized window back where it maximizes it, whatever WM_WINDOWPOSCHANGING or SetWindowPos ask, measured on a 2880 x 1800 laptop.)
-    // Every edge of the window's own monitor with such a taskbar counts, not only the main monitor's. Over that strip the
-    // window answers nowhere (FrameHitTest), and the video's overlay is kept inside the window's client area (VideoSurface),
-    // so nothing of HandPeg's takes the pointer there.
+    // hides, the window stops two pixels short of that edge (5.2-AuditB, the user's bug: one was not enough), whatever the
+    // scale: the monitor's rectangles are real pixels. Since 5.3 that is the window's own maximized place (WM_GETMINMAXINFO: the
+    // monitor's working area, that edge two pixels in), never a client area made smaller than the window: a strip of frame
+    // outside the client area made Windows clip the maximized window with a region and turn the desktop's own frame drawing off
+    // for that window for good (DWMWA_NCRENDERING_ENABLED 0, measured), after which Windows painted its classic caption over the
+    // picture as the window went inactive, maximized or restored (the user's bug: a Vista title bar during moves and resizes).
+    // Every edge of the window's own monitor with such a taskbar counts, not only the main monitor's. The strip is the
+    // desktop's, outside the window; over it the window would answer nowhere anyway (FrameHitTest).
 
-    private const int WmNcCalcSize = 0x0083, WmSettingChange = 0x001A, SpiSetWorkArea = 0x002F;
+    private const int WmNcCalcSize = 0x0083, WmWindowPosChanging = 0x0046, WmSettingChange = 0x001A, SpiSetWorkArea = 0x002F,
+        WmDisplayChange = 0x007E;
     private const uint SwpNoSize = 0x0001, SwpNoMove = 0x0002, SwpNoZOrder = 0x0004, SwpNoActivate = 0x0010, SwpFrameChanged = 0x0020, SwpNoOwnerZOrder = 0x0200;
     private const uint MonitorDefaultToNearest = 2;
     private const uint AbmGetState = 4, AbmGetTaskbarPos = 5, AbmGetAutoHideBarEx = 0x0B, AbsAutoHide = 1;
@@ -310,6 +317,26 @@ public partial class MainWindow
     /// </summary>
     private static int AutoHideEdges(IntPtr monitor)
     {
+        // Asked at every step of a move or resize (WM_GETMINMAXINFO, WM_WINDOWPOSCHANGING): each answer is the shell's, across processes,
+        // so it is kept for a second per monitor, and forgotten at once when the working area or the displays change.
+        var now = Environment.TickCount64;
+        if (_hiddenEdges.TryGetValue(monitor, out var known) && now - known.At <= 1000)
+            return known.Edges;
+        var edges = AskAutoHideEdges(monitor);
+        if (_hiddenEdges.Count > 8)
+            _hiddenEdges.Clear();
+        _hiddenEdges[monitor] = (edges, now);
+        return edges;
+    }
+
+    // What AutoHideEdges last heard for each monitor, and when (the UI thread's alone: both windows that ask live on it).
+    private static readonly Dictionary<IntPtr, (int Edges, long At)> _hiddenEdges = [];
+
+    /// <summary>The taskbar or the displays changed (WM_SETTINGCHANGE with SPI_SETWORKAREA, WM_DISPLAYCHANGE): ask the shell anew.</summary>
+    internal static void ForgetHiddenTaskbars() => _hiddenEdges.Clear();
+
+    private static int AskAutoHideEdges(IntPtr monitor)
+    {
         var state = new AppBarData { Size = Marshal.SizeOf<AppBarData>() };
         if ((SHAppBarMessage(AbmGetState, ref state) & AbsAutoHide) == 0 || !TryMonitorInfo(monitor, out var info))
             return 0;
@@ -345,58 +372,103 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Maximized beside a taskbar that hides itself, the client area Windows is about to give the window (WM_NCCALCSIZE's first
-    /// rectangle, the window's own as WindowChrome leaves it) is made to stop short of that edge: maximizing, moving to another
-    /// monitor, the taskbar's setting changed, and the frame worked out anew for a window made maximized before this hook was
-    /// there (KeepClearOfHiddenTaskbarNow). WindowChrome answers the message after this, with the rectangle as it is left
-    /// (5.2-AuditB, the user's bug: HandPeg maximized kept the hidden taskbar from coming up).
+    /// Where a window maximized on this monitor goes when an edge of it has a taskbar that hides itself (real pixels, on the screen):
+    /// the monitor's working area with each such edge <see cref="HiddenTaskbarStrip"/> pixels in, so the window never covers the whole
+    /// monitor; false when no edge has one (the window is maximized as Windows places it, reaching past the edges by its frame).
     /// </summary>
-    private static void OnNcCalcSize(IntPtr window, IntPtr lParam)
+    private static bool MaximizedPlace(IntPtr monitorHandle, out NativeRect place, out NativeRect monitor)
     {
-        if (!IsZoomed(window))
-            return;
-
-        // Both of the message's forms start with that rectangle (NCCALCSIZE_PARAMS.rgrc[0], or the RECT itself).
-        var client = Marshal.PtrToStructure<NativeRect>(lParam);
-        if (KeepShortOfHiddenTaskbars(ref client))
-            Marshal.StructureToPtr(client, lParam, false);
-    }
-
-    /// <summary>
-    /// A maximized window's client area (real pixels) made to stop <see cref="HiddenTaskbarStrip"/> pixels short of each edge of
-    /// its monitor that has a taskbar which hides itself, so it never covers the whole monitor; whether it had to be.
-    /// </summary>
-    private static bool KeepShortOfHiddenTaskbars(ref NativeRect rect)
-    {
-        var monitorHandle = MonitorFromRect(rect, MonitorDefaultToNearest);
+        (place, monitor) = (default, default);
         var edges = AutoHideEdges(monitorHandle);
         if (edges == 0 || !TryMonitorInfo(monitorHandle, out var info))
             return false;
 
-        var monitor = info.Monitor;
-        var moved = false;
-        if ((edges & (1 << AbeLeft)) != 0 && rect.Left < monitor.Left + HiddenTaskbarStrip)
-            (rect.Left, moved) = (monitor.Left + HiddenTaskbarStrip, true);
-        if ((edges & (1 << AbeTop)) != 0 && rect.Top < monitor.Top + HiddenTaskbarStrip)
-            (rect.Top, moved) = (monitor.Top + HiddenTaskbarStrip, true);
-        if ((edges & (1 << AbeRight)) != 0 && rect.Right > monitor.Right - HiddenTaskbarStrip)
-            (rect.Right, moved) = (monitor.Right - HiddenTaskbarStrip, true);
-        if ((edges & (1 << AbeBottom)) != 0 && rect.Bottom > monitor.Bottom - HiddenTaskbarStrip)
-            (rect.Bottom, moved) = (monitor.Bottom - HiddenTaskbarStrip, true);
-        return moved;
+        monitor = info.Monitor;
+        var work = info.Work;
+        var (left, top, right, bottom) = MaximizedPlaceOf((monitor.Left, monitor.Top, monitor.Right, monitor.Bottom), (work.Left, work.Top, work.Right, work.Bottom), edges);
+        place = new NativeRect { Left = left, Top = top, Right = right, Bottom = bottom };
+        return true;
     }
 
     /// <summary>
-    /// A window maximized before its hook was there (made maximized: its client area worked out as its handle was made), or
-    /// beside a taskbar that came to hide itself since: its frame worked out anew now when its client area covers that
-    /// taskbar's edge, which <see cref="OnNcCalcSize"/> keeps it short of.
+    /// The maximized place on a monitor (real pixels) from its rectangle, its working area and its edges with a taskbar that hides
+    /// itself (bits 1 &lt;&lt; edge, left top right bottom): the working area with each such edge <see cref="HiddenTaskbarStrip"/> pixels in
+    /// from the monitor's. Pure: the golden test (window-frame-messages) asks it for monitors it makes up.
     /// </summary>
-    internal static void KeepClearOfHiddenTaskbarNow(IntPtr window)
+    internal static (int Left, int Top, int Right, int Bottom) MaximizedPlaceOf((int Left, int Top, int Right, int Bottom) monitor,
+        (int Left, int Top, int Right, int Bottom) work, int edges)
     {
-        if (window == IntPtr.Zero || !IsZoomed(window) || !ClientOnScreen(window, out var client) || !KeepShortOfHiddenTaskbars(ref client))
+        var place = work;
+        if ((edges & (1 << AbeLeft)) != 0)
+            place.Left = Math.Max(place.Left, monitor.Left + HiddenTaskbarStrip);
+        if ((edges & (1 << AbeTop)) != 0)
+            place.Top = Math.Max(place.Top, monitor.Top + HiddenTaskbarStrip);
+        if ((edges & (1 << AbeRight)) != 0)
+            place.Right = Math.Min(place.Right, monitor.Right - HiddenTaskbarStrip);
+        if ((edges & (1 << AbeBottom)) != 0)
+            place.Bottom = Math.Min(place.Bottom, monitor.Bottom - HiddenTaskbarStrip);
+        return place;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowPos
+    {
+        public IntPtr Window, InsertAfter;
+        public int X, Y, Width, Height;
+        public uint Flags;
+    }
+
+    /// <summary>
+    /// WM_WINDOWPOSCHANGING of a maximized window beside a taskbar that hides itself: whatever place Windows proposes (maximizing, on
+    /// any monitor; Win+Shift+Arrow to another monitor; the taskbar's setting changed) becomes the <see cref="MaximizedPlace"/> of the
+    /// monitor it lies on; on a monitor with no taskbar that hides itself Windows' own place stands. A restore is not touched: Windows
+    /// clears the window's maximized state before it moves it.
+    /// </summary>
+    private static void KeepMaximizedPlaceShort(IntPtr window, IntPtr lParam)
+    {
+        var pos = Marshal.PtrToStructure<WindowPos>(lParam);
+        if ((pos.Flags & SwpNoSize) != 0 && (pos.Flags & SwpNoMove) != 0 || !IsZoomed(window) || !GetWindowRect(window, out var now))
             return;
 
-        SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0, SwpFrameChanged | SwpNoMove | SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder);
+        var proposed = new NativeRect
+        {
+            Left = (pos.Flags & SwpNoMove) != 0 ? now.Left : pos.X,
+            Top = (pos.Flags & SwpNoMove) != 0 ? now.Top : pos.Y,
+        };
+        proposed.Right = proposed.Left + ((pos.Flags & SwpNoSize) != 0 ? now.Right - now.Left : pos.Width);
+        proposed.Bottom = proposed.Top + ((pos.Flags & SwpNoSize) != 0 ? now.Bottom - now.Top : pos.Height);
+        if (!MaximizedPlace(MonitorFromRect(proposed, MonitorDefaultToNearest), out var place, out _)
+            || (proposed.Left == place.Left && proposed.Top == place.Top && proposed.Right == place.Right && proposed.Bottom == place.Bottom))
+            return;
+
+        (pos.X, pos.Y, pos.Width, pos.Height) = (place.Left, place.Top, place.Right - place.Left, place.Bottom - place.Top);
+        pos.Flags &= ~(SwpNoMove | SwpNoSize);
+        Marshal.StructureToPtr(pos, lParam, false);
+    }
+
+    /// <summary>
+    /// A window maximized before its hook was there (WPF makes a window that starts maximized with WS_MAXIMIZE, so Windows places it as
+    /// its handle is made, and showing it later does not place it again), or beside a taskbar that came to hide itself since: put where
+    /// <see cref="KeepMaximizedPlaceShort"/> would keep it, when it is not there. At once (at SourceInitialized the window is still
+    /// hidden, so its first frame is already right), or with <paramref name="later"/> once the message that asked is done (a state change,
+    /// inside WM_SIZE: WPF lays the window out from that message's size afterwards). It stays maximized (measured: Windows keeps a
+    /// maximized window where SetWindowPos puts it).
+    /// </summary>
+    internal static void KeepClearOfHiddenTaskbarNow(IntPtr window, bool later = false)
+    {
+        if (later)
+        {
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(() => KeepClearOfHiddenTaskbarNow(window),
+                System.Windows.Threading.DispatcherPriority.Background);
+            return;
+        }
+
+        if (window == IntPtr.Zero || !IsZoomed(window) || !GetWindowRect(window, out var now)
+            || !MaximizedPlace(MonitorFromWindow(window, MonitorDefaultToNearest), out var place, out _)
+            || (now.Left == place.Left && now.Top == place.Top && now.Right == place.Right && now.Bottom == place.Bottom))
+            return;
+
+        SetWindowPos(window, IntPtr.Zero, place.Left, place.Top, place.Right - place.Left, place.Bottom - place.Top, SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder);
     }
 
     /// <summary>Whether a point of the screen lies in the strip kept clear along an edge of the window's monitor with a taskbar that hides itself.</summary>
@@ -407,7 +479,7 @@ public partial class MainWindow
             return false;
 
         // Windows is asked which edges have such a taskbar only when the point is at one of them (it asks the shell), and
-        // its answer is kept for a second: the pointer resting at an edge (Close, in the top right corner) asks at each move.
+        // its answer is kept for a second (AutoHideEdges): the pointer resting at an edge (Close, in the top right corner) asks at each move.
         var monitor = info.Monitor;
         if (x < monitor.Left || x >= monitor.Right || y < monitor.Top || y >= monitor.Bottom)
             return false;
@@ -416,18 +488,27 @@ public partial class MainWindow
         if (near == 0)
             return false;
 
-        var now = Environment.TickCount64;
-        if (_stripEdges.Monitor != monitorHandle || now - _stripEdges.At > 1000)
-            _stripEdges = (monitorHandle, AutoHideEdges(monitorHandle), now);
-        return (near & _stripEdges.Edges) != 0;
+        return (near & AutoHideEdges(monitorHandle)) != 0;
     }
-
-    // The edges of a monitor with a taskbar that hides itself, as InHiddenTaskbarStrip last asked (when, in milliseconds).
-    private static (IntPtr Monitor, int Edges, long At) _stripEdges;
 
     // WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME (undocumented): what the themed DefWindowProc sends a window to draw its classic
     // caption and frame, after a title, icon or style change, outside WM_NCPAINT.
     private const int WmNcPaint = 0x0085, WmNcUahDrawCaption = 0x00AE, WmNcUahDrawFrame = 0x00AF;
+
+    // The frame's other messages (5.3): activation, a new title or icon, a move or size loop's two ends, a DPI or theme change.
+    private const int WmNcActivate = 0x0086, WmSetText = 0x000C, WmSetIcon = 0x0080, WmEnterSizeMove = 0x0231, WmExitSizeMove = 0x0232,
+        WmDpiChanged = 0x02E0, WmThemeChanged = 0x031A;
+    private const int GwlStyle = -16;
+    private const long WsVisible = 0x10000000;
+
+    [LibraryImport("user32.dll", EntryPoint = "DefWindowProcW")]
+    private static partial IntPtr DefWindowProc(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static partial IntPtr GetWindowLongPtr(IntPtr window, int index);
+
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static partial IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
 
     [LibraryImport("user32.dll")]
     private static partial IntPtr GetWindowDC(IntPtr window);
@@ -449,22 +530,19 @@ public partial class MainWindow
     private static partial bool DeleteObject(IntPtr gdiObject);
 
     /// <summary>
-    /// A window that draws its own frame never lets Windows paint one: Windows paints the classic caption and frame through the
-    /// window's whole DC, over the picture (5.2.1, the user's bug: an old-style title bar and border flashing as the window was
-    /// maximized, restored, minimized or retitled). Maximized beside a taskbar that hides itself, the strip kept clear of it
-    /// (HiddenTaskbarStrip) is frame, which Windows painted white (a bright line along the bottom of the screen, measured
-    /// 255,255,255 on both rows). Whatever frame there is, in every state, is filled with the window's own background; the
-    /// client area is left to the window. Whether the message was answered (always, for a WPF window).
+    /// A window that draws its own frame never lets Windows paint frame it has on the screen: maximized beside a taskbar that
+    /// hides itself, the strip kept clear of it (HiddenTaskbarStrip) is frame, which Windows painted white (5.2.1, the user's bug:
+    /// a bright line along the bottom of the screen, measured 255,255,255 on both rows). That frame is filled with the window's
+    /// own background; the client area is left to the window. Whether it was: false when no frame lies outside the client area
+    /// (restored, WindowChrome makes the client area the whole window) or the window is minimized, so that WM_NCPAINT then goes
+    /// on to Windows, which has an empty frame to paint (5.3; 5.2.1 answered it in every state).
     /// </summary>
     private static bool PaintFrameStrip(IntPtr hwnd)
     {
-        if (HwndSource.FromHwnd(hwnd)?.RootVisual is not Window window)
+        if (HwndSource.FromHwnd(hwnd)?.RootVisual is not Window window || IsIconic(hwnd) || !FrameOutsideClient(hwnd, out var frame, out var client))
             return false;
-        // Minimized, or no frame outside the client area (restored, WindowChrome's): nothing to paint.
-        if (IsIconic(hwnd) || !GetWindowRect(hwnd, out var frame) || !ClientOnScreen(hwnd, out var client)
-            || (client.Left <= frame.Left && client.Top <= frame.Top && client.Right >= frame.Right && client.Bottom >= frame.Bottom))
-            return true;
 
+        // Frame on the screen but no DC to paint it with: answered all the same, so Windows never paints it white.
         var dc = GetWindowDC(hwnd);
         if (dc == IntPtr.Zero)
             return true;
@@ -480,29 +558,266 @@ public partial class MainWindow
         return true;
     }
 
-    /// <summary>
-    /// The window hook of another window that draws its own frame (the Settings screen, 4.4): the same strip kept clear of a
-    /// taskbar that hides itself, which its inset (MaximizedFrameInset) counts on, and its frame hit-tested in real pixels
-    /// (FrameHitTest), so its title bar's buttons take their clicks under HandPeg's UI scale as the main window's do.
-    /// </summary>
-    internal static IntPtr KeepClearOfHiddenTaskbar(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    /// <summary>Whether any of a window's frame lies outside its client area (maximized beside a taskbar that hides itself: the strip); both on the screen, in real pixels.</summary>
+    private static bool FrameOutsideClient(IntPtr hwnd, out NativeRect frame, out NativeRect client)
     {
-        switch (message)
+        client = default;
+        return GetWindowRect(hwnd, out frame) && ClientOnScreen(hwnd, out client)
+            && (client.Left > frame.Left || client.Top > frame.Top || client.Right < frame.Right || client.Bottom < frame.Bottom);
+    }
+
+    // ----- The frame's messages (5.3): one hook for every window that draws its own frame -----
+    // The main window (through TitleBarHook) and the Settings screen share one hook, FrameHook, whose decisions are one pure
+    // function (FrameDecision, which window-frame-messages prints as a table). WindowChrome's own hook (WPF's WindowChromeWorker)
+    // is added first, as the XAML sets the chrome before the code-behind subscribes to SourceInitialized, and a window's hooks are
+    // called from the last added to the first, so HandPeg's hook answers before WindowChrome's:
+    // - WM_NCACTIVATE: DefWindowProc with lParam -1, which changes the window's active look without painting over the caption,
+    //   its answer returned (TRUE: answering 0 to wParam FALSE would refuse to let the window go inactive).
+    // - WM_SETTEXT, WM_SETICON: DefWindowProc with WS_VISIBLE cleared around it, so Windows keeps the title or the icon and has no
+    //   visible caption to paint; put back only if it was set, so a window not shown yet is never made visible.
+    //   These two are exactly what WindowChrome's worker does (WPF 8.0 and 10.0); answered here, they never depend on its order.
+    // - WM_NCCALCSIZE: never answered here, never changed: WindowChrome's worker answers it in every state (the client area the
+    //   whole window, WVR_REDRAW), so the window never has frame outside its client area (which turned the desktop's own frame
+    //   drawing off for it: see the taskbar section). DefWindowProc's answer would give the window a classic caption and border.
+    // - WM_WINDOWPOSCHANGING: while maximized beside a taskbar that hides itself, whatever place Windows proposes becomes the monitor's
+    //   maximized place (MaximizedPlace), then passed on. WM_GETMINMAXINFO is left to Windows: it reads those numbers for whichever monitor
+    //   the window maximizes on, so numbers for the monitor it is on now were wrong on another (a monitor larger than the main one, or
+    //   one with no taskbar that hides itself).
+    // - WM_NCPAINT: answered only where the window has frame on the screen (maximized with frame outside its client area, which
+    //   nothing of HandPeg's makes any more: the strip painted first); otherwise it goes on to Windows, minimized too, which keeps
+    //   the desktop drawing the frame (answering it while minimized turned that off for good, measured).
+    // - WM_NCUAHDRAWCAPTION, WM_NCUAHDRAWFRAME: swallowed in every state (WindowChrome's worker has no answer for them).
+    // - WM_NCHITTEST: the frame hit-tested in real pixels (FrameHitTest).
+    // A window with Windows' own caption (the side window, DockWindows) has no such hook: its caption must repaint on activation.
+
+    /// <summary>What <see cref="FrameHook"/> does with a message (<see cref="FrameDecision"/>).</summary>
+    internal enum FrameAnswer
+    {
+        /// <summary>Not the frame's, or not in this state: left to the hooks after this one (WindowChrome's, the Window's) and to DefWindowProc.</summary>
+        PassOn,
+
+        /// <summary>Answered with nothing done: Windows' classic caption and frame are never painted.</summary>
+        Swallow,
+
+        /// <summary>DefWindowProc with lParam -1, its answer returned: the active look changes, nothing is painted over the caption.</summary>
+        ActivateNoPaint,
+
+        /// <summary>DefWindowProc with WS_VISIBLE cleared around it (only when set), its answer returned: the title or icon kept, nothing painted.</summary>
+        DefaultHidden,
+
+        /// <summary>The frame outside the client area painted in the window's background (<see cref="PaintFrameStrip"/>), then answered.</summary>
+        PaintStrip,
+
+        /// <summary>The maximized place kept short of a taskbar that hides itself (WM_WINDOWPOSCHANGING), then passed on.</summary>
+        KeepShortThenPassOn,
+
+        /// <summary>The frame hit-tested in real pixels (<see cref="FrameHitTest"/>), answered when it can say; else left to WindowChrome's hook.</summary>
+        HitTest,
+    }
+
+    /// <summary>
+    /// What the frame hook does with a message, by the window's state: <paramref name="zoomed"/> (maximized), <paramref name="iconic"/>
+    /// (minimized), and <paramref name="stripOutside"/> (frame outside its client area, which only a window maximized beside a
+    /// taskbar that hides itself has). Pure: the hook and the golden test (window-frame-messages) both ask it.
+    /// </summary>
+    internal static FrameAnswer FrameDecision(int message, nint wParam, bool zoomed, bool iconic, bool stripOutside) => message switch
+    {
+        // Every state, whatever wParam says (activating or not; a whole frame or part of one).
+        WmNcActivate => FrameAnswer.ActivateNoPaint,
+        WmSetText or WmSetIcon => FrameAnswer.DefaultHidden,
+        WmNcUahDrawCaption or WmNcUahDrawFrame => FrameAnswer.Swallow,
+        WmNcHitTest => FrameAnswer.HitTest,
+        WmWindowPosChanging => FrameAnswer.KeepShortThenPassOn,
+        // Never swallowed (5.3): a window that answers it unpainted while minimized (one with no taskbar button, the Settings screen,
+        // lies on the desktop as a caption) is clipped by Windows with a region and loses the desktop's frame drawing for good.
+        WmNcPaint => zoomed && stripOutside ? FrameAnswer.PaintStrip : FrameAnswer.PassOn,
+        _ => FrameAnswer.PassOn,
+    };
+
+    /// <summary>
+    /// The window hook of every window that draws its own frame: the main window's (through <see cref="TitleBarHook"/>) and the
+    /// Settings screen's (4.4). Windows never paints a classic caption or frame over its picture (see the section above); maximized
+    /// beside a taskbar that hides itself, the window is placed short of it (its client area always the whole window); and its frame
+    /// is hit-tested in real pixels (FrameHitTest), so its title bar's buttons take their clicks under HandPeg's UI scale.
+    /// </summary>
+    internal static IntPtr FrameHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (message == WmSettingChange && wParam == SpiSetWorkArea || message == WmDisplayChange)
+            ForgetHiddenTaskbars();
+        // Only WM_NCPAINT depends on the window's state; every other message is decided by its number alone.
+        var zoomed = message is WmNcPaint && IsZoomed(hwnd);
+        var iconic = message is WmNcPaint && IsIconic(hwnd);
+        var outside = zoomed && message is WmNcPaint && FrameOutsideClient(hwnd, out _, out _);
+        var answer = FrameDecision(message, wParam, zoomed, iconic, outside);
+        var result = IntPtr.Zero;
+        switch (answer)
         {
-            case WmNcCalcSize:
-                OnNcCalcSize(hwnd, lParam);
-                break;
-            case WmNcPaint when PaintFrameStrip(hwnd):
-            case WmNcUahDrawCaption or WmNcUahDrawFrame:
+            case FrameAnswer.ActivateNoPaint:
+                result = DefWindowProc(hwnd, WmNcActivate, wParam, -1);
                 handled = true;
                 break;
-            case WmNcHitTest when HwndSource.FromHwnd(hwnd)?.RootVisual is Window window && FrameHitTest(window, hwnd, lParam) is { } hit:
+            case FrameAnswer.DefaultHidden:
+                result = DefWindowProcHidden(hwnd, message, wParam, lParam);
                 handled = true;
-                return hit;
+                break;
+            case FrameAnswer.KeepShortThenPassOn:
+                KeepMaximizedPlaceShort(hwnd, lParam);
+                break;
+            case FrameAnswer.PaintStrip:
+                if (PaintFrameStrip(hwnd))
+                    handled = true;
+                break;
+            case FrameAnswer.Swallow:
+                handled = true;
+                break;
+            case FrameAnswer.HitTest when HwndSource.FromHwnd(hwnd)?.RootVisual is Window window && FrameHitTest(window, hwnd, lParam) is { } hit:
+                result = hit;
+                handled = true;
+                break;
         }
 
-        return IntPtr.Zero;
+        if (DevFlightRecorder.IsEnabled)
+            TraceFrameMessage(hwnd, message, wParam, answer, handled);
+        return result;
     }
+
+    /// <summary>
+    /// WM_SETTEXT or WM_SETICON given to DefWindowProc with the window's WS_VISIBLE cleared around it, as WindowChrome's worker does:
+    /// Windows keeps the title or the icon and has no visible caption to paint. The style is put back only if it was set (a window not
+    /// shown yet is never made visible), onto what DefWindowProc left. DefWindowProc's answer (TRUE; the icon before).
+    /// </summary>
+    private static IntPtr DefWindowProcHidden(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam)
+    {
+        var style = GetWindowLongPtr(hwnd, GwlStyle).ToInt64();
+        var visible = (style & WsVisible) != 0;
+        if (visible)
+            SetWindowLongPtr(hwnd, GwlStyle, new IntPtr(style & ~WsVisible));
+
+        var result = DefWindowProc(hwnd, message, wParam, lParam);
+        if (visible)
+            SetWindowLongPtr(hwnd, GwlStyle, new IntPtr(GetWindowLongPtr(hwnd, GwlStyle).ToInt64() | WsVisible));
+        return result;
+    }
+
+    // ----- The frame's messages in the flight recorder (5.3, developers only) -----
+    // With the verbose flight recorder on (DevFlightRecorder: dev-verbose.flag or Settings > General > Diagnostics, decided after the
+    // first frame, as the recorder is), FrameHook records the frame's messages: which one, the window and its state, its wParam and
+    // what the hook did with it, so a real drag on a test machine shows what reached Windows. Off, it costs the one test of
+    // DevFlightRecorder.IsEnabled. On:
+    // - WM_NCCALCSIZE and WM_NCPAINT, which come with every step of a move or resize, only inside a move or size loop
+    //   (WM_ENTERSIZEMOVE to WM_EXITSIZEMOVE) and for a second after any other frame message or a change of the window's state
+    //   (maximized, minimized, restored: seen as the messages come, so the change's own messages are among them);
+    // - the rest (WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCUAHDRAWCAPTION, WM_NCUAHDRAWFRAME, the loop's two ends, WM_DPICHANGED,
+    //   WM_THEMECHANGED) always;
+    // - never more than FrameTraceCap lines in a second, nor FrameTraceLoopCap of the frequent ones in one move or size loop, the
+    //   others counted in one line, so a long drag keeps to a share of the recorder's ring (DevFlightRecorder.Capacity lines).
+
+    private const int FrameTraceCap = 40;
+
+    // The window in a move or size loop (zero: none); until when (Environment.TickCount64) the frequent messages are recorded;
+    // the second being counted, the lines recorded in it and those left out.
+    private static IntPtr _traceSizeMove;
+    private static long _traceUntil, _traceSecond;
+    private static int _tracedThisSecond, _traceDropped, _tracedThisLoop, _droppedThisLoop;
+
+    // The frame lines recorded in one move or size loop, at most (the recorder's ring holds DevFlightRecorder.Capacity lines in all).
+    private const int FrameTraceLoopCap = 60;
+
+    // Each window's state when its last frame message was traced (0 restored, 1 maximized, 2 minimized), to see it change.
+    private static Dictionary<IntPtr, int>? _traceStates;
+
+    /// <summary>Records one of the frame's messages in the flight recorder, as <see cref="FrameHook"/> answered it. Only while the recorder is on; never throws.</summary>
+    private static void TraceFrameMessage(IntPtr hwnd, int message, IntPtr wParam, FrameAnswer answer, bool handled)
+    {
+        var frequent = message is WmNcCalcSize or WmNcPaint or WmWindowPosChanging;
+        if (!frequent && message is not (WmNcActivate or WmSetText or WmSetIcon or WmNcUahDrawCaption or WmNcUahDrawFrame
+            or WmEnterSizeMove or WmExitSizeMove or WmDpiChanged or WmThemeChanged))
+            return;
+
+        try
+        {
+            var now = Environment.TickCount64;
+            var state = IsIconic(hwnd) ? 2 : IsZoomed(hwnd) ? 1 : 0;
+            _traceStates ??= new();
+            if (_traceStates.Count > 8)
+                _traceStates.Clear();
+            var changed = _traceStates.TryGetValue(hwnd, out var was) && was != state;
+            _traceStates[hwnd] = state;
+
+            if (message == WmEnterSizeMove)
+                (_traceSizeMove, _tracedThisLoop, _droppedThisLoop) = (hwnd, 0, 0);
+            else if (message == WmExitSizeMove && _traceSizeMove == hwnd)
+            {
+                _traceSizeMove = IntPtr.Zero;
+                if (_droppedThisLoop > 0)
+                    DevFlightRecorder.Record("frame", string.Create(CultureInfo.InvariantCulture, $"{_droppedThisLoop} more frame messages in that move or size loop were not recorded"));
+            }
+
+            // A long drag keeps to a share of the recorder's ring: the first lines of each move or size loop, the rest counted.
+            if (frequent && _traceSizeMove == hwnd && ++_tracedThisLoop > FrameTraceLoopCap)
+            {
+                _droppedThisLoop++;
+                return;
+            }
+            if (changed || !frequent)
+                _traceUntil = now + 1000;
+            if (frequent && _traceSizeMove != hwnd && now > _traceUntil)
+                return;
+
+            if (now - _traceSecond >= 1000)
+            {
+                if (_traceDropped > 0)
+                    DevFlightRecorder.Record("frame", string.Create(CultureInfo.InvariantCulture, $"{_traceDropped} more frame messages in the second before were not recorded"));
+                (_traceSecond, _tracedThisSecond, _traceDropped) = (now, 0, 0);
+            }
+
+            if (++_tracedThisSecond > FrameTraceCap)
+            {
+                _traceDropped++;
+                return;
+            }
+
+            var where = state switch
+            {
+                2 => "minimized",
+                1 when FrameOutsideClient(hwnd, out _, out _) => "maximized, frame outside its client area",
+                1 => "maximized",
+                _ => "restored",
+            };
+            var window = HwndSource.FromHwnd(hwnd)?.RootVisual?.GetType().Name ?? "a window";
+            var loop = _traceSizeMove == hwnd ? ", in a move or size loop" : "";
+            // Whether the desktop still draws the window's frame (DWMWA_NCRENDERING_ENABLED): off, Windows paints its classic one.
+            var desktopFrame = DwmGetWindowAttribute(hwnd, DwmwaNcRenderingEnabled, out var enabled, sizeof(int)) == 0 ? enabled != 0 ? ", desktop frame on" : ", DESKTOP FRAME OFF" : "";
+            DevFlightRecorder.Record("frame", string.Create(CultureInfo.InvariantCulture,
+                $"{FrameMessageName(message)} wParam 0x{wParam.ToInt64():X} to {window} 0x{hwnd.ToInt64():X} ({where}{loop}{desktopFrame}): {answer}, {(handled ? "answered here" : "passed on")}"));
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // The trace is a help for developers, never a reason for a window's messages to fail.
+        }
+    }
+
+    private const int DwmwaNcRenderingEnabled = 1;
+
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
+
+    private static string FrameMessageName(int message) => message switch
+    {
+        WmNcCalcSize => "WM_NCCALCSIZE",
+        WmWindowPosChanging => "WM_WINDOWPOSCHANGING",
+        WmNcPaint => "WM_NCPAINT",
+        WmNcActivate => "WM_NCACTIVATE",
+        WmSetText => "WM_SETTEXT",
+        WmSetIcon => "WM_SETICON",
+        WmNcUahDrawCaption => "WM_NCUAHDRAWCAPTION",
+        WmNcUahDrawFrame => "WM_NCUAHDRAWFRAME",
+        WmEnterSizeMove => "WM_ENTERSIZEMOVE",
+        WmExitSizeMove => "WM_EXITSIZEMOVE",
+        WmDpiChanged => "WM_DPICHANGED",
+        WmThemeChanged => "WM_THEMECHANGED",
+        _ => string.Create(CultureInfo.InvariantCulture, $"0x{message:X4}"),
+    };
 
     // ----- Snap Layouts: the Maximize button as Windows' own; the frame hit-tested in real pixels -----
 
@@ -523,32 +838,25 @@ public partial class MainWindow
 
     /// <summary>
     /// Over the Maximize button the window answers HTMAXBUTTON, which is what opens Windows 11's Snap Layouts; the
-    /// button's hover and press then arrive as the frame's own messages, and are shown and acted on here. Everywhere else
-    /// the frame is hit-tested here, in real pixels (FrameHitTest), never by WindowChrome.
+    /// button's hover and press then arrive as the frame's own messages, and are shown and acted on here. Everything else goes
+    /// to the hook every window that draws its own frame has (FrameHook, 5.3): the frame hit-tested in real pixels
+    /// (FrameHitTest, never by WindowChrome), and no classic caption or frame ever painted.
     /// </summary>
     private IntPtr TitleBarHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         switch (message)
         {
-            case WmNcCalcSize:
-                OnNcCalcSize(hwnd, lParam);
-                break;
-            case WmNcPaint when PaintFrameStrip(hwnd):
-            case WmNcUahDrawCaption or WmNcUahDrawFrame:
-                handled = true;
-                break;
             case WmNcHitTest when IsOverMaximize(lParam):
                 handled = true;
                 return HtMaxButton;
-            case WmNcHitTest when FrameHitTest(this, hwnd, lParam) is { } hit:
-                handled = true;
-                return hit;
 
             // A taskbar set to hide itself or not to (the working area changes): Windows places the window anew, and its
             // content is inset for where it is now, once it has.
             case WmSettingChange when wParam == SpiSetWorkArea:
-                Dispatcher.BeginInvoke(ApplyWindowState, System.Windows.Threading.DispatcherPriority.Background);
+                Dispatcher.BeginInvoke(() => ApplyWindowState(), System.Windows.Threading.DispatcherPriority.Background);
                 break;
+
+            // The pointer over the frame: shown on the Maximize button, the message still going on to Windows (Snap Layouts).
             case WmNcMouseMove:
                 MaximizeButton.Tag = wParam == HtMaxButton ? _maximizePressed ? "pressed" : "hover" : null;
                 break;
@@ -557,15 +865,15 @@ public partial class MainWindow
                 break;
             case WmNcLButtonDown when wParam == HtMaxButton:
                 (_maximizePressed, MaximizeButton.Tag, handled) = (true, "pressed", true);
-                break;
+                return IntPtr.Zero;
             case WmNcLButtonUp when wParam == HtMaxButton:
                 if (_maximizePressed)
                     MaximizeWindow_Click(MaximizeButton, new RoutedEventArgs());
                 (_maximizePressed, MaximizeButton.Tag, handled) = (false, null, true);
-                break;
+                return IntPtr.Zero;
         }
 
-        return IntPtr.Zero;
+        return FrameHook(hwnd, message, wParam, lParam, ref handled);
     }
 
     /// <summary>
@@ -601,8 +909,8 @@ public partial class MainWindow
     /// <list type="bullet">
     /// <item>a part of the title bar that takes the pointer (WindowChrome.IsHitTestVisibleInChrome: the caption buttons, the
     /// status, Update) is the window's own (HTCLIENT), as is anything with a ResizeGripDirection that direction;</item>
-    /// <item>maximized, the strip kept clear of a taskbar that hides itself is nowhere (HTNOWHERE: the client area stops short
-    /// of it, OnNcCalcSize, but the window's frame still lies over it);</item>
+    /// <item>maximized, the strip kept clear of a taskbar that hides itself is nowhere (HTNOWHERE: since 5.3 the window stops short
+    /// of it, MaximizedPlace, so a point there is not the window's; kept for a window Windows still placed over it);</item>
     /// <item>otherwise the resize borders (not maximized; WindowChrome's ResizeBorderThickness) and the caption (the title bar
     /// as drawn, CaptionHeight from the top of the content) in the window's DIPs at the monitor's scale, then the window's own.</item>
     /// </list>

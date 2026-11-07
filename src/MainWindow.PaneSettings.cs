@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
 
@@ -9,16 +10,24 @@ namespace HandPegApp;
 // Right-clicking a pane's tab (or its hover tab) opens with "<Pane> Settings": the settings that pane's work turns on,
 // changed in place (each the same AppSettings value the Settings window shows, saved at once), then "More <Pane>
 // Settings..." opening the Settings window at the tab that has the rest. Panes without settings of their own (the
-// header, the preset bar, the settings tabs) get no section.
+// header, the preset bar, the settings tabs) get no section. The Timeline's is a menu of its own (5.3, Timeline Settings),
+// the same from its tab and from the gear on its row of tools.
 public partial class MainWindow
 {
     /// <summary>The section for a pane, put at the top of its tab's menu (DockManager.ExtendTabMenu).</summary>
     private void AddPaneSettingsMenu(ContextMenu menu, string pane)
     {
+        // The Timeline's (5.3): the Timeline Settings menu its gear opens too, at the top of its tab's menu.
+        if (pane == TimelinePaneId)
+        {
+            var count = FillTimelineSettings(menu, at: 0);
+            menu.Items.Insert(count, new Separator());
+            return;
+        }
+
         var (title, settingsTab) = pane switch
         {
             "Media" => ("Media", "Preview"),
-            TimelinePaneId => ("Timeline", "Timeline"),
             "Timeline" => (ScrubberTitle, "Timeline"),
             "Player" or "Layout" => (pane == "Layout" ? "Canvas" : "Player", "Timeline"),
             "Effects" or "Keyframes" => (pane, "Timeline"),
@@ -67,28 +76,6 @@ public partial class MainWindow
                 }, "Deletes the media pane's kept pictures and strips (the Media browser previews cache)."));
                 break;
 
-            case "Timeline":
-                Toggle("Snap Clips", _viewModel.SnapClips, on => _viewModel.SnapClips = on, "Clips and edges snap to the playhead, markers and other clips' edges. Shift while dragging is never snapped.");
-                Toggle("Snap to I-Frames", _viewModel.SnapToIFrames, on => _viewModel.SnapToIFrames = on, "Cuts and the playhead snap to the video's I-frames, so stream copy cuts cleanly.");
-                Toggle("Snap to Audio Beats", _viewModel.SnapToBeats, on => _viewModel.SnapToBeats = on,
-                    "With Snap Clips on, edges also catch on the beats found in clips' sound (a clip's menu: Audio & Voice, Detect & Snap to Audio Beats).");
-                Toggle("Beat Grid", _viewModel.ShowBeatGrid, on => _viewModel.ShowBeatGrid = on, "Draws the beats found in a clip's sound as faint ticks along its block.");
-                Toggle("Creator Hotbar", settings.ShowCreatorHotbar, on => SaveHotbar(s => s.ShowCreatorHotbar = on),
-                    "Five slots on the row of tools, each putting an Effect, a Transition, a Game Preset or a one-click tool on the selected clips. Right-click a slot to choose what it holds.");
-                Toggle("Gain and Fade Lines", settings.ShowClipGainLines, on =>
-                {
-                    Save(s => s.ShowClipGainLines = on);
-                    ScheduleClipRedraw();
-                }, "Draws each clip's gain line and fade handles over its waveform.");
-                Toggle("Ripple All Tracks", settings.RippleAllTracks, on => Save(s => s.RippleAllTracks = on), "A ripple (Ctrl-drag, Delete with ripple) moves what follows on every track, not only the clip's own.");
-                Toggle("Dropped Clips Join Track", settings.DroppedClipsJoinTrack, on => Save(s => s.DroppedClipsJoinTrack = on), "A picture dropped on a track with room goes onto that track instead of a new one.");
-                Toggle("Show Linked Audio", _viewModel.ShowLinkedAudio, on => _viewModel.ShowLinkedAudio = on, "Draws a video clip's own sound under its pictures, in the lower part of its block.");
-                Choice("Track Height",
-                    [("Compact", (double)CompactTrackHeight), ("Medium", MediumTrackHeight), ("Tall", TallTrackHeight)],
-                    NearestTrackHeight(_viewModel.LayerTrackHeight), height => _viewModel.LayerTrackHeight = height,
-                    "How tall each track's row is (the slider in the timeline's toolbar sets any height between).");
-                break;
-
             case ScrubberTitle:
                 Toggle("Snap to I-Frames", _viewModel.SnapToIFrames, on => _viewModel.SnapToIFrames = on, "Cuts and the playhead snap to the video's I-frames, so stream copy cuts cleanly.");
                 Toggle($"Sync {ScrubberTitle} Stretch", _viewModel.SyncMasterTimeline, on => _viewModel.SyncMasterTimeline = on,
@@ -133,10 +120,212 @@ public partial class MainWindow
     /// <summary>The tile size preset nearest a slider value, for the menu's check mark.</summary>
     private static double NearestTileSize(double size) => new[] { 0.0, 30, 55, 85 }.MinBy(s => Math.Abs(s - size));
 
-    // The timeline's track height presets (MainViewModel.LayerTrackHeight, 1 to 50; 25 is HandPeg's own).
-    private const int CompactTrackHeight = 8, MediumTrackHeight = 25, TallTrackHeight = 42;
+    // ----- The Timeline Settings menu (5.3) -----
+    // One menu for the Timeline's own settings, opened from its tab's right-click and from the gear beside Snap on its row of tools
+    // (the user's call): what is drawn on its lanes and blocks, how it snaps and follows the playhead, its bars and sizes, and how edits
+    // spread, in four groups under headers of their own. It is made from one table (TimelineSettingGroups, which the golden test
+    // timeline-settings-menu reads without a window); each switch is the very value the Settings window, the toolbar's toggles and the
+    // Views menu show, saved at once, and the Timeline is drawn again with it.
 
-    /// <summary>The track height preset nearest the height set, for the menu's check mark.</summary>
-    private static double NearestTrackHeight(double height) =>
-        new double[] { CompactTrackHeight, MediumTrackHeight, TallTrackHeight }.MinBy(h => Math.Abs(h - height));
+    /// <summary>What an item of the Timeline Settings menu changes (5.3); <see cref="TimelineSettingGroups"/> places each once.</summary>
+    internal enum TimelineSetting
+    {
+        EffectLanes, BuiltInMaskLanes, KeyframeDiamonds, Filmstrips, Waveforms, BeatGrid, IFrameLines, GainLines,
+        Snapping, SnapToBeats, SnapToIFrames, FollowPlayhead,
+        CreatorHotbar, Scrubber, TrackHeight,
+        RippleAllTracks, DroppedClipsJoinTrack, ShowLinkedAudio,
+    }
+
+    /// <summary>
+    /// An item of the Timeline Settings menu (5.3): what it changes, its words and its tooltip, the <see cref="AppSettings"/> property it
+    /// is kept in (null: not kept by HandPeg's settings, the project's or the session's own), and the KeybindManager action whose key it
+    /// shows beside it (null for none).
+    /// </summary>
+    internal sealed record TimelineSettingItem(TimelineSetting Setting, string Header, string About, string? Kept, string? KeyAction = null);
+
+    /// <summary>A group of the Timeline Settings menu: its header, and its items in their order.</summary>
+    internal sealed record TimelineSettingGroup(string Header, IReadOnlyList<TimelineSettingItem> Items);
+
+    /// <summary>The Timeline Settings menu, group by group in order (5.3): the tab's right-click and the gear are both made from it.</summary>
+    internal static readonly IReadOnlyList<TimelineSettingGroup> TimelineSettingGroups =
+    [
+        new("Lanes & Overlays",
+        [
+            new(TimelineSetting.EffectLanes, "Show Effect Sub-Lanes on Expanded Tracks",
+                "Each track's effects get lanes of their own in its stack, one block per effect over the stretch it works in, shown while that track's stack is open (its chevron). Off: a clip's effects show only as the fx badge on its block.",
+                nameof(AppSettings.ShowTimelineEffectLanes)),
+            new(TimelineSetting.BuiltInMaskLanes, "Show Built-In Mask & Edge Lanes on Cutouts",
+                "A Cutout's own Mask and Rounded & Feathered Edges cards, which every Cutout is made with, get effect lanes and count in its fx badge too. Off: they are in the Effects pane only.",
+                nameof(AppSettings.ShowBuiltInMaskEffectLanes)),
+            new(TimelineSetting.KeyframeDiamonds, "Show Keyframe Diamonds on Clips", "Draws a diamond on a clip's block at each of its keyframes.",
+                nameof(AppSettings.ShowClipKeyframes)),
+            new(TimelineSetting.Filmstrips, "Show Clip Filmstrip Thumbnails",
+                "Video clips' blocks show their file's frames along them. Off: plain blocks (the Sequence Overview Scrubber's strip of pictures is a setting of its own).",
+                nameof(AppSettings.ShowClipFilmstrips)),
+            new(TimelineSetting.Waveforms, "Show Audio Waveforms",
+                "Clips with sound draw their waveforms on their blocks, and a closed sound stack the mix of its lanes in its one bar.",
+                nameof(AppSettings.ShowClipWaveforms)),
+            new(TimelineSetting.BeatGrid, "Show Audio Beat Grid", "Draws the beats found in a clip's sound as faint ticks along its block.",
+                nameof(AppSettings.ShowBeatGrid)),
+            new(TimelineSetting.IFrameLines, "Show I-Frame Lines", "Draws the video's I-frames as thin lines on the Sequence Overview Scrubber.",
+                nameof(AppSettings.ShowIFrames)),
+            new(TimelineSetting.GainLines, "Gain and Fade Lines", "Draws each clip's gain line and fade handles over its waveform.",
+                nameof(AppSettings.ShowClipGainLines)),
+        ]),
+        new("Snapping & Playback",
+        [
+            new(TimelineSetting.Snapping, "Enable Timeline Snapping",
+                "Clips and edges snap to the playhead, markers and other clips' edges. Shift while dragging is never snapped.",
+                nameof(AppSettings.SnapClips), "view.toggleSnap"),
+            new(TimelineSetting.SnapToBeats, "Snap to Audio Beats",
+                "With snapping on, edges also catch on the beats found in clips' sound (a clip's menu: Audio & Voice, Detect & Snap to Audio Beats).",
+                nameof(AppSettings.SnapToBeats)),
+            new(TimelineSetting.SnapToIFrames, "Snap Cuts to I-Frames",
+                "Cuts and the playhead snap to the video's I-frames, so stream copy cuts cleanly. Kept with the project (Settings has what a new window starts with).",
+                null),
+            new(TimelineSetting.FollowPlayhead, "Follow Playhead During Playback",
+                "While playing, the Timeline turns the page as the playhead reaches its edge, so what is playing stays in sight. Off: the view stays where you put it.",
+                nameof(AppSettings.TimelineFollowsPlayhead)),
+        ]),
+        new("Bars & Sizing",
+        [
+            new(TimelineSetting.CreatorHotbar, "Show Creator Hotbar",
+                "Five slots on the row of tools, each putting an Effect, a Transition, a Game Preset or a one-click tool on the selected clips. Right-click a slot to choose what it holds.",
+                nameof(AppSettings.ShowCreatorHotbar)),
+            new(TimelineSetting.Scrubber, "Show Sequence Overview Scrubber",
+                "The Sequence Overview Scrubber under the player: the whole sequence at a glance, scrubbed by a click or a drag (as in Tabs and Panes).",
+                nameof(AppSettings.ShowMasterTimeline)),
+            new(TimelineSetting.TrackHeight, "Track Height",
+                "How tall each track's row is (the slider in the Timeline's row of tools sets any height between; a track sized by its own lower edge keeps its height).",
+                nameof(AppSettings.LayerHeight)),
+        ]),
+        new("Editing",
+        [
+            new(TimelineSetting.RippleAllTracks, "Ripple All Tracks", "A ripple (Ctrl-drag, Delete with ripple) moves what follows on every track, not only the clip's own.",
+                nameof(AppSettings.RippleAllTracks)),
+            new(TimelineSetting.DroppedClipsJoinTrack, "Dropped Clips Join Track", "A picture dropped on a track with room goes onto that track instead of a new one.",
+                nameof(AppSettings.DroppedClipsJoinTrack)),
+            new(TimelineSetting.ShowLinkedAudio, "Show Linked Audio", "Draws a video clip's own sound under its pictures, in the lower part of its block (for this session).",
+                null),
+        ]),
+    ];
+
+    /// <summary>The Track Height presets of the Timeline Settings menu (MainViewModel.LayerTrackHeight, 1 to 50; 25 is HandPeg's own).</summary>
+    internal static readonly IReadOnlyList<(string Label, int Height)> TrackHeightPresets = [("Compact", 8), ("Medium", 25), ("Large", 42), ("Extra Large", 50)];
+
+    /// <summary>The track height preset nearest the height set, for the menu's check mark (the lower of two as near).</summary>
+    internal static int NearestTrackHeight(double height) => TrackHeightPresets.MinBy(preset => Math.Abs(preset.Height - height)).Height;
+
+    /// <summary>
+    /// Fills the Timeline Settings menu (5.3) from <see cref="TimelineSettingGroups"/>: each group under a header of its own, separators
+    /// between them, its switches ticked as they are now and changed in place (the menu stays open), Track Height's presets, then More
+    /// Timeline Settings... Put into <paramref name="menu"/> from <paramref name="at"/> on, or after what it holds (-1).
+    /// </summary>
+    /// <returns>How many items were put in.</returns>
+    private int FillTimelineSettings(ItemsControl menu, int at = -1)
+    {
+        var count = 0;
+        void Add(object item)
+        {
+            if (at < 0)
+                menu.Items.Add(item);
+            else
+                menu.Items.Insert(at + count, item);
+            count++;
+        }
+
+        foreach (var group in TimelineSettingGroups)
+        {
+            if (count > 0)
+                Add(new Separator());
+            Add(new MenuItem { Header = group.Header, IsEnabled = false, FontWeight = FontWeights.SemiBold });
+            foreach (var entry in group.Items)
+                Add(entry.Setting == TimelineSetting.TrackHeight ? TrackHeightMenu(entry) : TimelineSwitch(entry));
+        }
+
+        Add(new Separator());
+        Add(MenuAction("More Timeline Settings...", () => OpenSettings("Timeline"), "Opens Settings at the tab with the rest."));
+        return count;
+    }
+
+    /// <summary>
+    /// The Timeline Settings menu from the gear on the Timeline's row of tools (5.3): over the gear, or at the pointer when the gear was
+    /// chosen from the row's "more" menu (left out of a narrow row, it is laid out at no size).
+    /// </summary>
+    private void OpenTimelineSettings(FrameworkElement? button)
+    {
+        var menu = new ContextMenu();
+        if (button is { IsVisible: true, ActualWidth: > 0 })
+            (menu.PlacementTarget, menu.Placement) = (button, PlacementMode.Top);
+        else
+            (menu.PlacementTarget, menu.Placement) = (UnifiedTimeline, PlacementMode.MousePoint);
+        FillTimelineSettings(menu);
+        menu.IsOpen = true;
+    }
+
+    // One switch of the menu: ticked as it is now; a click sets it (guarded) and the Timeline is drawn again with it.
+    private MenuItem TimelineSwitch(TimelineSettingItem entry)
+    {
+        var (on, set) = TimelineSettingState(entry.Setting);
+        var item = new MenuItem
+        {
+            Header = entry.Header, IsCheckable = true, IsChecked = on, ToolTip = entry.About,
+
+            // Showing or hiding a pane lays the panes out again: the menu closes with that one.
+            StaysOpenOnClick = entry.Setting != TimelineSetting.Scrubber,
+        };
+        if (entry.KeyAction is { } action)
+            item.InputGestureText = KeybindManager.GestureText(action);
+        item.Click += (_, _) => RunGuarded(entry.Header, () =>
+        {
+            set(item.IsChecked);
+            ScheduleClipRedraw();
+        });
+        return item;
+    }
+
+    // Track Height's presets: the one nearest the height set is ticked; a row with a height of its own keeps it.
+    private MenuItem TrackHeightMenu(TimelineSettingItem entry)
+    {
+        var root = new MenuItem { Header = entry.Header, ToolTip = entry.About };
+        var nearest = NearestTrackHeight(_viewModel.LayerTrackHeight);
+        foreach (var (label, height) in TrackHeightPresets)
+        {
+            var item = new MenuItem { Header = label, IsCheckable = true, IsChecked = height == nearest };
+            item.Click += (_, _) => RunGuarded(entry.Header, () => _viewModel.LayerTrackHeight = height);
+            root.Items.Add(item);
+        }
+
+        return root;
+    }
+
+    // What each switch of the menu shows and sets: the AppSettings value the Settings window shows (saved at once), or the view model's
+    // copy of one, which saves it itself; Snap Cuts to I-Frames is the project's, Show Linked Audio the session's. The Scrubber is shown
+    // or hidden as Tabs and Panes does it, the hotbar as its own menu does.
+    private (bool On, Action<bool> Set) TimelineSettingState(TimelineSetting setting)
+    {
+        var settings = AppSettings.Current;
+        void Save(Action<AppSettings> set) => _viewModel.SetViewSetting(set);
+        return setting switch
+        {
+            TimelineSetting.EffectLanes => (settings.ShowTimelineEffectLanes, on => Save(s => s.ShowTimelineEffectLanes = on)),
+            TimelineSetting.BuiltInMaskLanes => (settings.ShowBuiltInMaskEffectLanes, on => Save(s => s.ShowBuiltInMaskEffectLanes = on)),
+            TimelineSetting.KeyframeDiamonds => (_viewModel.ShowClipKeyframes, on => _viewModel.ShowClipKeyframes = on),
+            TimelineSetting.Filmstrips => (settings.ShowClipFilmstrips, on => Save(s => s.ShowClipFilmstrips = on)),
+            TimelineSetting.Waveforms => (settings.ShowClipWaveforms, on => Save(s => s.ShowClipWaveforms = on)),
+            TimelineSetting.BeatGrid => (_viewModel.ShowBeatGrid, on => _viewModel.ShowBeatGrid = on),
+            TimelineSetting.IFrameLines => (_viewModel.ShowIFrames, on => _viewModel.ShowIFrames = on),
+            TimelineSetting.GainLines => (settings.ShowClipGainLines, on => Save(s => s.ShowClipGainLines = on)),
+            TimelineSetting.Snapping => (_viewModel.SnapClips, on => _viewModel.SnapClips = on),
+            TimelineSetting.SnapToBeats => (_viewModel.SnapToBeats, on => _viewModel.SnapToBeats = on),
+            TimelineSetting.SnapToIFrames => (_viewModel.SnapToIFrames, on => _viewModel.SnapToIFrames = on),
+            TimelineSetting.FollowPlayhead => (settings.TimelineFollowsPlayhead, on => Save(s => s.TimelineFollowsPlayhead = on)),
+            TimelineSetting.CreatorHotbar => (settings.ShowCreatorHotbar, on => SaveHotbar(s => s.ShowCreatorHotbar = on)),
+            TimelineSetting.Scrubber => (settings.ShowMasterTimeline, on => SetScrubberShown(on)),
+            TimelineSetting.RippleAllTracks => (settings.RippleAllTracks, on => Save(s => s.RippleAllTracks = on)),
+            TimelineSetting.DroppedClipsJoinTrack => (settings.DroppedClipsJoinTrack, on => Save(s => s.DroppedClipsJoinTrack = on)),
+            TimelineSetting.ShowLinkedAudio => (_viewModel.ShowLinkedAudio, on => _viewModel.ShowLinkedAudio = on),
+            _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, "Track Height is a choice of heights, not a switch (TrackHeightMenu)."),
+        };
+    }
 }

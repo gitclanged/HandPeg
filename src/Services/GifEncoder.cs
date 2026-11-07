@@ -1,4 +1,5 @@
 using System.IO;
+using System.Numerics;
 
 namespace HandPegApp.Services;
 
@@ -58,15 +59,16 @@ public sealed class GifEncoder : IDisposable
         WriteHeader(output, palette);
 
         var frame = new byte[FrameBytes];
-        var (indices, previous) = (new byte[_width * _height], new byte[_width * _height]);
-        var error = new int[2, (_width + 2) * 3];
+        var (indices, previous, box) = (new byte[_width * _height], new byte[_width * _height], new byte[_width * _height]);
+        var (error, below) = (new int[(_width + 2) * 3], new int[(_width + 2) * 3]);
+        var codes = new LzwTable();
         var shown = 0.0;
         _frames.Position = 0;
         for (var n = 0; n < _count; n++)
         {
             token.ThrowIfCancellationRequested();
             _frames.ReadExactly(frame);
-            Dither(frame, palette, nearest, indices, error);
+            Dither(frame, nearest, indices, error, below);
 
             // The delay that keeps the clip's clock: hundredths of a second since the start, less what was shown.
             var until = Math.Round((n + 1) * 100 / Math.Max(framesPerSecond, 0.1));
@@ -76,7 +78,7 @@ public sealed class GifEncoder : IDisposable
             var (left, top, right, bottom) = n == 0 ? (0, 0, _width, _height) : Changed(indices, previous);
             if (right <= left)
                 (left, top, right, bottom) = (0, 0, 1, 1);
-            WriteFrame(output, indices, left, top, right - left, bottom - top, delay);
+            WriteFrame(output, indices, box, codes, left, top, right - left, bottom - top, delay);
             (indices, previous) = (previous, indices);
             progress?.Report((n + 1) / (double)_count);
         }
@@ -102,19 +104,26 @@ public sealed class GifEncoder : IDisposable
         if (bins.Count == 0)
             return palette;
 
+        // Each box's score (its widest side times the root of its weight) is worked out once, as it is made: only the two
+        // halves of the box just cut are new, and every other box scores as it did.
         var boxes = new List<List<int>> { bins };
+        var scores = new List<double> { Score(bins) };
+        double Score(List<int> box)
+        {
+            if (box.Count < 2)
+                return 0;
+            var (_, range) = WidestAxis(box);
+            var weight = box.Sum(i => histogram[i]);
+            return range * Math.Sqrt(weight);
+        }
+
         while (boxes.Count < colours)
         {
             var (best, score) = (-1, 0.0);
             for (var b = 0; b < boxes.Count; b++)
             {
-                if (boxes[b].Count < 2)
-                    continue;
-                var (_, range) = WidestAxis(boxes[b]);
-                var weight = boxes[b].Sum(i => histogram[i]);
-                var s = range * Math.Sqrt(weight);
-                if (s > score)
-                    (best, score) = (b, s);
+                if (boxes[b].Count >= 2 && scores[b] > score)
+                    (best, score) = (b, scores[b]);
             }
 
             if (best < 0)
@@ -139,6 +148,8 @@ public sealed class GifEncoder : IDisposable
 
             boxes[best] = box[..cut];
             boxes.Add(box[cut..]);
+            scores[best] = Score(boxes[best]);
+            scores.Add(Score(boxes[^1]));
         }
 
         for (var b = 0; b < boxes.Count; b++)
@@ -184,10 +195,16 @@ public sealed class GifEncoder : IDisposable
         return (axis, range);
     }
 
-    // The palette entry nearest each bin (by squared distance, green weighing most), worked out once.
-    private static byte[] NearestTable(byte[] palette)
+    // The palette entry nearest each bin (by squared distance, green weighing most), worked out once, with its colour beside
+    // it (entry | red << 8 | green << 16 | blue << 24), so that dithering finds both at once.
+    private static uint[] NearestTable(byte[] palette)
     {
-        var table = new byte[Levels * Levels * Levels];
+        // The palette by channel, as whole numbers, so that a vector's width of entries is measured at once.
+        var (reds, greens, blues) = (new int[256], new int[256], new int[256]);
+        for (var i = 0; i < 256; i++)
+            (reds[i], greens[i], blues[i]) = (palette[i * 3], palette[i * 3 + 1], palette[i * 3 + 2]);
+
+        var table = new uint[Levels * Levels * Levels];
         Parallel.For(0, Levels, r =>
         {
             for (var g = 0; g < Levels; g++)
@@ -195,19 +212,42 @@ public sealed class GifEncoder : IDisposable
                 for (var b = 0; b < Levels; b++)
                 {
                     var (cr, cg, cb) = (r * 255 / (Levels - 1), g * 255 / (Levels - 1), b * 255 / (Levels - 1));
-                    table[r * Levels * Levels + g * Levels + b] = Nearest(palette, cr, cg, cb);
+                    var entry = Nearest(reds, greens, blues, cr, cg, cb);
+                    table[r * Levels * Levels + g * Levels + b] = entry | (uint)palette[entry * 3] << 8 | (uint)palette[entry * 3 + 1] << 16 | (uint)palette[entry * 3 + 2] << 24;
                 }
             }
         });
         return table;
     }
 
-    private static byte Nearest(byte[] palette, int r, int g, int b)
+    // The first of the nearest entries. Each lane keeps the first nearest of its own entries (a strictly nearer one replaces
+    // it), and of the lanes the nearest wins, the lowest entry among equals: the first nearest of all, as one at a time finds it.
+    private static byte Nearest(int[] reds, int[] greens, int[] blues, int r, int g, int b)
     {
-        var (best, distance) = (0, int.MaxValue);
-        for (var i = 0; i < 256; i++)
+        var (best, distance, i) = (0, int.MaxValue, 0);
+        if (Vector.IsHardwareAccelerated)
         {
-            var (dr, dg, db) = (palette[i * 3] - r, palette[i * 3 + 1] - g, palette[i * 3 + 2] - b);
+            var (red, green, blue) = (new Vector<int>(r), new Vector<int>(g), new Vector<int>(b));
+            var (least, at, index, step) = (new Vector<int>(int.MaxValue), Vector<int>.Zero, Vector<int>.Indices, new Vector<int>(Vector<int>.Count));
+            for (; i <= 256 - Vector<int>.Count; i += Vector<int>.Count)
+            {
+                var (dr, dg, db) = (new Vector<int>(reds, i) - red, new Vector<int>(greens, i) - green, new Vector<int>(blues, i) - blue);
+                var d = 2 * dr * dr + 4 * dg * dg + 3 * db * db;
+                var nearer = Vector.LessThan(d, least);
+                (least, at) = (Vector.ConditionalSelect(nearer, d, least), Vector.ConditionalSelect(nearer, index, at));
+                index += step;
+            }
+
+            for (var lane = 0; lane < Vector<int>.Count; lane++)
+            {
+                if (least[lane] < distance || least[lane] == distance && at[lane] < best)
+                    (best, distance) = (at[lane], least[lane]);
+            }
+        }
+
+        for (; i < 256; i++)
+        {
+            var (dr, dg, db) = (reds[i] - r, greens[i] - g, blues[i] - b);
             var d = 2 * dr * dr + 4 * dg * dg + 3 * db * db;
             if (d < distance)
                 (best, distance) = (i, d);
@@ -218,52 +258,61 @@ public sealed class GifEncoder : IDisposable
 
     // ----- The frames -----
 
-    // Floyd-Steinberg onto the palette: each pixel's error spread right and to the row below (7, 3, 5, 1 sixteenths).
-    private void Dither(byte[] bgra, byte[] palette, byte[] nearest, byte[] indices, int[,] error)
+    // Floyd-Steinberg onto the palette: each pixel's error spread right and to the row below (7, 3, 5, 1 sixteenths). The
+    // errors the row above left (this row's) and those for the row below are two arrays, a pixel's three side by side,
+    // swapped as a row is done. The errors of the last two pixels are kept in hand: the one on the left gives this pixel
+    // seven sixteenths of its own, and a pixel of the row below takes one, five and three of the three above it, so each of
+    // its sums is written once, when the third is known (the same whole numbers, added in another order).
+    private void Dither(byte[] bgra, uint[] nearest, byte[] indices, int[] current, int[] next)
     {
-        Array.Clear(error);
-        var (current, next) = (0, 1);
+        Array.Clear(current);
         for (var y = 0; y < _height; y++)
         {
+            var (r1, g1, b1, r2, g2, b2) = (0, 0, 0, 0, 0, 0);
             for (var x = 0; x < _width; x++)
             {
                 var at = (y * _width + x) * 4;
                 var e = (x + 1) * 3;
-                var r = Math.Clamp(bgra[at + 2] + error[current, e] / 16, 0, 255);
-                var g = Math.Clamp(bgra[at + 1] + error[current, e + 1] / 16, 0, 255);
-                var b = Math.Clamp(bgra[at] + error[current, e + 2] / 16, 0, 255);
-                var index = nearest[Bin((byte)r, (byte)g, (byte)b)];
-                indices[y * _width + x] = index;
-                Span<int> rest = [r - palette[index * 3], g - palette[index * 3 + 1], b - palette[index * 3 + 2]];
-                for (var c = 0; c < 3; c++)
-                {
-                    error[current, e + 3 + c] += rest[c] * 7;
-                    error[next, e - 3 + c] += rest[c] * 3;
-                    error[next, e + c] += rest[c] * 5;
-                    error[next, e + 3 + c] += rest[c];
-                }
+                var r = Math.Clamp(bgra[at + 2] + (current[e] + r1 * 7) / 16, 0, 255);
+                var g = Math.Clamp(bgra[at + 1] + (current[e + 1] + g1 * 7) / 16, 0, 255);
+                var b = Math.Clamp(bgra[at] + (current[e + 2] + b1 * 7) / 16, 0, 255);
+                var found = nearest[Bin((byte)r, (byte)g, (byte)b)];
+                indices[y * _width + x] = (byte)found;
+                var (er, eg, eb) = (r - (int)(found >> 8 & 0xFF), g - (int)(found >> 16 & 0xFF), b - (int)(found >> 24));
+                if (x > 0)
+                    (next[e - 3], next[e - 2], next[e - 1]) = (r2 + r1 * 5 + er * 3, g2 + g1 * 5 + eg * 3, b2 + b1 * 5 + eb * 3);
+                (r2, g2, b2, r1, g1, b1) = (r1, g1, b1, er, eg, eb);
             }
 
-            for (var i = 0; i < error.GetLength(1); i++)
-                error[current, i] = 0;
+            var last = _width * 3;
+            (next[last], next[last + 1], next[last + 2]) = (r2 + r1 * 5, g2 + g1 * 5, b2 + b1 * 5);
             (current, next) = (next, current);
         }
     }
 
-    // The bounding box of the pixels that differ from the frame before: left, top, right, bottom (exclusive).
+    // The bounding box of the pixels that differ from the frame before: left, top, right, bottom (exclusive). A row is
+    // compared whole (a vector at a time); in one that changed, its first difference is its run of equal pixels from the
+    // left, and its last is found from the right, a vector at a time and then pixel by pixel.
     private (int Left, int Top, int Right, int Bottom) Changed(byte[] now, byte[] before)
     {
         var (left, top, right, bottom) = (_width, _height, 0, 0);
         for (var y = 0; y < _height; y++)
         {
-            var row = y * _width;
-            for (var x = 0; x < _width; x++)
-            {
-                if (now[row + x] == before[row + x])
-                    continue;
-                (left, right) = (Math.Min(left, x), Math.Max(right, x + 1));
-                (top, bottom) = (Math.Min(top, y), Math.Max(bottom, y + 1));
-            }
+            var row = now.AsSpan(y * _width, _width);
+            var was = before.AsSpan(y * _width, _width);
+            var first = row.CommonPrefixLength(was);
+            if (first == _width)
+                continue;
+
+            var last = _width;
+            while (last - Vector<byte>.Count > first && new Vector<byte>(row[(last - Vector<byte>.Count)..]) == new Vector<byte>(was[(last - Vector<byte>.Count)..]))
+                last -= Vector<byte>.Count;
+            do
+                last--;
+            while (row[last] == was[last]);
+
+            (left, right) = (Math.Min(left, first), Math.Max(right, last + 1));
+            (top, bottom) = (Math.Min(top, y), Math.Max(bottom, y + 1));
         }
 
         return (left, top, right, bottom);
@@ -287,7 +336,7 @@ public sealed class GifEncoder : IDisposable
         output.Write([0x03, 0x01, 0x00, 0x00, 0x00]);
     }
 
-    private void WriteFrame(Stream output, byte[] indices, int left, int top, int width, int height, int delay)
+    private void WriteFrame(Stream output, byte[] indices, byte[] box, LzwTable codes, int left, int top, int width, int height, int delay)
     {
         // The graphic control extension: its delay; each frame drawn over the last (the parts it leaves out stay).
         output.Write([0x21, 0xF9, 0x04, 0x04]);
@@ -301,10 +350,16 @@ public sealed class GifEncoder : IDisposable
         WriteShort(output, height);
         output.WriteByte(0);
 
-        var pixels = new byte[width * height];
+        // The box's rows, one after another: in place when it is as wide as the frame, else copied together.
+        if (width == _width)
+        {
+            Lzw(output, indices.AsSpan(top * _width, width * height), codes);
+            return;
+        }
+
         for (var y = 0; y < height; y++)
-            Array.Copy(indices, (top + y) * _width + left, pixels, y * width, width);
-        Lzw(output, pixels);
+            Array.Copy(indices, (top + y) * _width + left, box, y * width, width);
+        Lzw(output, box.AsSpan(0, width * height), codes);
     }
 
     private static void WriteShort(Stream output, int value)
@@ -314,7 +369,7 @@ public sealed class GifEncoder : IDisposable
     }
 
     // GIF's LZW of 8-bit indices: codes from 9 bits up to 12, a clear code when the table is full, in sub-blocks of 255 bytes.
-    private static void Lzw(Stream output, byte[] pixels)
+    private static void Lzw(Stream output, ReadOnlySpan<byte> pixels, LzwTable table)
     {
         const int minimum = 8, clear = 1 << minimum, end = clear + 1, largest = 4096;
         output.WriteByte(minimum);
@@ -338,7 +393,7 @@ public sealed class GifEncoder : IDisposable
             }
         }
 
-        var table = new Dictionary<int, int>(largest);
+        table.Clear();
         var (next, size) = (end + 1, minimum + 1);
         Emit(clear, size);
         if (pixels.Length > 0)
@@ -356,7 +411,7 @@ public sealed class GifEncoder : IDisposable
                 Emit(prefix, size);
                 if (next < largest)
                 {
-                    table[key] = next++;
+                    table.Add(key, next++);
                     if (next > 1 << size && size < 12)
                         size++;
                 }
@@ -387,6 +442,33 @@ public sealed class GifEncoder : IDisposable
         }
 
         output.WriteByte(0);
+    }
+
+    /// <summary>
+    /// LZW's table of strings, by the code of a string less its last index and that index (code &lt;&lt; 8 | index, under
+    /// 2^20): one slot each, the code of the string or 0 for none (no string's code is 0), and the slots in use, so that
+    /// clearing the table clears only those. One for a whole file, made once.
+    /// </summary>
+    private sealed class LzwTable
+    {
+        private readonly short[] _codes = new short[1 << 20];
+        private readonly int[] _used = new int[4096];
+        private int _count;
+
+        public bool TryGetValue(int key, out int code) => (code = _codes[key]) != 0;
+
+        public void Add(int key, int code)
+        {
+            _codes[key] = (short)code;
+            _used[_count++] = key;
+        }
+
+        public void Clear()
+        {
+            for (var i = 0; i < _count; i++)
+                _codes[_used[i]] = 0;
+            _count = 0;
+        }
     }
 
     public void Dispose()

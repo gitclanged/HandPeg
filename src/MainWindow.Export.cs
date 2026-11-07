@@ -338,13 +338,18 @@ public partial class MainWindow
             _ => $"The {t.Tab.Header} tab.",
         }));
 
+    /// <summary>The Sequence Overview Scrubber shown or hidden (Tabs and Panes, and the Timeline Settings menu, 5.3): saved, the panes laid out again.</summary>
+    private void SetScrubberShown(bool on)
+    {
+        _viewModel.SavePaneLayout(s => s.ShowMasterTimeline = on);
+        _dock.ScheduleRebuild();
+    }
+
     private IEnumerable<ViewToggle> PaneToggles()
     {
-        void Refresh() => _dock.ScheduleRebuild();
         return
         [
-            new(ScrubberTitle, () => AppSettings.Current.ShowMasterTimeline,
-                on => { _viewModel.SavePaneLayout(s => s.ShowMasterTimeline = on); Refresh(); },
+            new(ScrubberTitle, () => AppSettings.Current.ShowMasterTimeline, SetScrubberShown,
                 "The Sequence Overview Scrubber under the player: the whole sequence at a glance, its cut segments, markers and thumbnails, scrubbed by a click or a drag; its lower edge dragged makes it taller or shorter (the timeline itself is a pane of its own)."),
             new("Playback Controls", () => _viewModel.ShowAdvancedPlayback,
                 on => _viewModel.SetViewSetting(s => s.ShowAdvancedPlayback = on, nameof(MainViewModel.ShowAdvancedPlayback), nameof(MainViewModel.ShowSimplePlayback)),

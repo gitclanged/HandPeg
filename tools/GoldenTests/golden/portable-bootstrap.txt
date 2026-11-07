@@ -1,21 +1,104 @@
-# The portable zips' HandPeg.exe (5.2.1): .NET 8 found (this copy's own first) or Microsoft's downloaded; no script.
+# HandPeg.exe of the portable zips and both installers (5.3.0): .NET 10 found (this copy's own first) or got as the user chooses; no script.
 ok: an empty folder is no root
 ok: nor a .NET with no Windows Desktop runtime
-ok: nor one of another major version (HandPeg asks for 8)
+ok: nor one of another major version: HandPeg asks for 10 (a PC with only .NET 8, or only 11, has none)
 ok: nor one with no hostfxr.dll
 ok: nor one whose framework folder is empty (a download cut off)
+ok: nor one whose hostfxr.dll is built for the other processor (the x64 and ARM64 installers share %LOCALAPPDATA%\HandPeg)
+ok: nor one whose hostfxr.dll is no program at all
+ok: nor one whose only .NET 10 frameworks are a release candidate's (10.0.0-rc.2): HandPeg asks for the release 10.0.0, which hostfxr never rolls forward to a preview
+ok: with released 10.0.14 frameworks beside them it is one (any hostfxr will do, a preview's too)
 ok: a root with several hostfxr versions runs on the newest (as .NET's own host does)
-ok: a preview's folder reads as its version; a name that is none is passed over
+ok: a preview hostfxr's folder reads as its version (for hostfxr alone); a name that is none is passed over
 ok: a copy with no .NET of its own runs on DOTNET_ROOT_ARM64 first (an ARM64 copy)
 ok: then on DOTNET_ROOT
 ok: then on the .NET its installer registered
 ok: then on Program Files\dotnet
 ok: an x64 copy on an ARM64 PC: Program Files\dotnet\x64, the x64 .NET's place there
-ok: looking only in the copy's own folder (HANDPEG_BOOTSTRAP_NO_SYSTEM_DOTNET), none: it downloads
+ok: looking only in the copy's own places (HANDPEG_BOOTSTRAP_NO_SYSTEM_DOTNET), none: it asks
 ok: 5.2.0's script's layout (hostfxr.dll and shared\ beside HandPeg.exe) is this copy's own, before the PC's
-ok: and portable\dotnet, where the download puts it, first of all
+ok: and portable\dotnet, where a zip's download puts it, first of all
+ok: an installed copy (current\HandPeg.exe, Update.exe one up): its own .NET is dotnet beside current, which an update leaves and the uninstaller takes
+ok: so is one installed elsewhere, its folder named Current in any case
+ok: Velopack's portable archive (.portable and Update.exe beside current): dotnet beside current, which travels with the folder
+ok: a folder named current with no Update.exe one up is no install: %LOCALAPPDATA%\HandPeg\dotnet
+ok: a portable zip (its portable folder beside HandPeg.exe): portable\dotnet
+ok: a portable folder wins even in an install's current (it is what makes HandPeg keep everything there)
+ok: anything else (a publish copied somewhere): %LOCALAPPDATA%\HandPeg\dotnet
+ok: a copy with portable.txt beside HandPeg.exe keeps its own .NET beside it (dotnet, by its deps, data and temp), downloaded beside it: never in %LOCALAPPDATA%, never in a portable folder (which would move that copy's data into it)
+ok: so does a copy started with --portable (in any letter case, anywhere among its arguments); the same folder without it is any other copy
+ok: in AppPaths' order: --portable comes before an install's current (where that copy then keeps its data), a portable folder before both
+ok: an installed copy downloads into dotnet beside current, any other copy into %LOCALAPPDATA%\HandPeg\dotnet: never into the program's portable folder
+ok: a portable zip downloads into portable\dotnet, as in 5.2.1
+ok: each attempt downloads in a folder of its own beside the root (dotnet-download-<attempt>) and moves a .NET already there aside beside it (dotnet-old-<attempt>): two attempts never share one, and putting it in place is a rename
+ok: a later download clears beside the root only what downloads into it left (dotnet-download-<attempt>, dotnet-old-<attempt>, 5.2.1's dotnet-download): never the root, current, another name or another folder's
+ok: one download at a time into a root: its lock is named for the root (the same in any letter case or with a trailing separator, another root's another), for this session, with no backslash past Local\
+ok: an installed copy and any other copy share %LOCALAPPDATA%\HandPeg\dotnet by default (the x64 and ARM64 ones too), and so share its lock
+ok: an installed copy runs on its own .NET first, before DOTNET_ROOT_<ARCH>, DOTNET_ROOT, the registered .NET and Program Files\dotnet
+ok: every usable root in order, each once (DOTNET_ROOT, the registered location and Program Files naming one .NET are one): HandPeg runs on the first, and on the next when hostfxr refuses it
+ok: its own .NET of the other processor (the other installer's) is passed over, and a download replaces it
+ok: a download goes in place of the .NET there, which is moved aside whole (and deleted after, best effort), never deleted where it is
+ok: a .NET in use (a HandPeg runs on it) is neither moved nor deleted: the download stops with a message and leaves it as it was
+ok: one that cannot be moved aside is left as it was
+ok: and one moved aside is put back when the new one cannot go in
+ok: a .NET hostfxr refused is known by its stamp (its hostfxr.dll and when that was made): read again it is the same, and a download put in its place has another
+ok: a download waiting for a new start is named for its root (dotnet-pending-<attempt>), and no later download's clean-up takes it for a leftover
+ok: the next start puts the waiting download in place first (the old .NET moved aside and deleted), and deletes a waiting folder that is not whole and a .NET an earlier start moved aside
+ok: with nothing waiting, a start changes nothing
 ok: ARM64: the newest release with both zips for win-arm64 (one without its Windows Desktop zip is passed over)
 ok: x64: the same release, its x64 zips
-ok: a zip from an http address, or with no SHA-512 to check, is never taken
+ok: a zip from an http address, or with no SHA-512 to check (too short, not hex), is never taken
 ok: a list with no release offers nothing
+ok: a preview or release candidate is never taken, even listed first; before the first release there is nothing to take
+ok: the system-wide install takes Microsoft's windowsdesktop-runtime-win-<arch>.exe of the newest release: never a release candidate, a zip, an http address, a SHA-512 too short or not hex, or another processor's
+ok: a list with no release offers no installer
+ok: Microsoft's installer is run as /install /quiet /norestart: no window of its own, never a restart
+  no .NET 10, --veloapp-install 5.3.0: QuietExit, exit 0
+  no .NET 10, --veloapp-uninstall 5.3.0: QuietExit, exit 0
+  no .NET 10, --VELOAPP-Updated 5.3.0: QuietExit, exit 0
+  no .NET 10, --veloapp-obsolete: QuietExit, exit 0
+ok: an installer's hook (--veloapp-*, in any case) with no .NET 10 ends at once with exit 0: no window, no download, and Setup hears of no failure
+  no .NET 10, --compositor-worker HandPeg-1234 0: QuietExit, exit 1
+  no .NET 10, --hw-benchmark clip.mp4: QuietExit, exit 1
+  no .NET 10, --crash-sentinel 1234 HandPegCrash C:\Crashes: QuietExit, exit 1
+ok: HandPeg's own background processes (their argument first) with no .NET end with exit 1, showing nothing
+  no .NET 10, (no arguments): Ask
+  no .NET 10, "": Ask
+  no .NET 10, C:\Videos\Quick cuts.hproj: Ask
+  no .NET 10, --portable: Ask
+  no .NET 10, clip.mp4 --compositor-worker: Ask
+ok: any other start with no .NET 10 asks (none, a project to open, a background argument that is not first)
+  .NET 10 found, --veloapp-install 5.3.0: Host
+  .NET 10 found, --veloapp-uninstall 5.3.0: Host
+  .NET 10 found, --VELOAPP-Updated 5.3.0: Host
+  .NET 10 found, --veloapp-obsolete: Host
+  .NET 10 found, --compositor-worker HandPeg-1234 0: Host
+  .NET 10 found, --hw-benchmark clip.mp4: Host
+  .NET 10 found, --crash-sentinel 1234 HandPegCrash C:\Crashes: Host
+  .NET 10 found, (no arguments): Host
+  .NET 10 found, "": Host
+  .NET 10 found, C:\Videos\Quick cuts.hproj: Host
+  .NET 10 found, --portable: Host
+  .NET 10 found, clip.mp4 --compositor-worker: Host
+ok: with .NET 10 found every start runs HandPeg, an installer's hook too (its hook code is HandPeg's)
+  installer exit 0: Installed
+  installer exit 3010: RestartSuggested
+  installer exit 1641: RestartSuggested
+  installer exit 1223: Cancelled
+  installer exit 1602: Cancelled
+  installer exit 1618: Busy
+  installer exit 1603: Failed
+  installer exit 5: Failed
+  installer exit -1: Failed
+ok: Microsoft's installer's exit code: 0 installed; 3010 and 1641 installed with a restart wanted; 1223 (the UAC prompt declined) and 1602 cancelled, back to the dialog; 1618 another installation running; anything else a failure shown with its code
+ok: it looks for .NET 10, the .NET HandPeg is built for (.NETCoreApp,Version=v10.0)
+ok: and asks Microsoft's .NET 10 release list over https, from its download site and the site's older address
+ok: its self-contained copy is HandPeg's own: portable.txt beside the program or --portable, as AppPaths reads them
+ok: Explorer's thumbnail handler: a .NET 10 Desktop Runtime in Program Files\dotnet is one its comhost starts on
+ok: the location .NET's installer registered is the only one looked at once set (there with no Windows Desktop 10: none)
+ok: DOTNET_ROOT_<ARCH> comes before it, as in .NET's host
+ok: a PC with only .NET 8: none, so the handler is not registered (and one left from before is taken out)
+ok: a PC whose only .NET 10 is a release candidate's: none, as comhost could not start the handler on it
+ok: a DOTNET_ROOT holding no .NET is the only place looked at once set: none, with no fall-back to Program Files\dotnet or to HandPeg's own .NET beneath it
+ok: an x64 process on an ARM64 PC: Program Files\dotnet\x64
 ok: each published HandPeg.exe is a native window program of its processor (x64 0x8664, ARM64 0xAA64), with no .NET header, under 4 MB

@@ -48,9 +48,10 @@ public static class StartupTrace
             var at = Now;
             // The heap: what is in use; committed: what the collector holds from the system (in use, or kept for later). Then
             // the collections so far (generations 0/1/2), the time they paused the process, and how often a thread waited
-            // for a lock: a moment that took long with none of them moving was spent elsewhere (a native call, the disk).
+            // for a lock: a moment that took long with none of them moving was spent elsewhere (a native call, the disk). Last (5.3):
+            // what was allocated so far, and the methods the JIT compiled and its time (what the ahead-of-time code did not cover).
             var line = string.Create(CultureInfo.InvariantCulture,
-                $"{at,8:0.0} ms  {Environment.WorkingSet / 1048576.0,6:0.0} MB ws  {GC.GetTotalMemory(false) / 1048576.0,6:0.0} MB heap  {GC.GetGCMemoryInfo().TotalCommittedBytes / 1048576.0,6:0.0} MB committed  gc {GC.CollectionCount(0)}/{GC.CollectionCount(1)}/{GC.CollectionCount(2)} {GC.GetTotalPauseDuration().TotalMilliseconds,5:0.0} ms  locks {Monitor.LockContentionCount,3}  {moment}");
+                $"{at,8:0.0} ms  {Environment.WorkingSet / 1048576.0,6:0.0} MB ws  {GC.GetTotalMemory(false) / 1048576.0,6:0.0} MB heap  {GC.GetGCMemoryInfo().TotalCommittedBytes / 1048576.0,6:0.0} MB committed  gc {GC.CollectionCount(0)}/{GC.CollectionCount(1)}/{GC.CollectionCount(2)} {GC.GetTotalPauseDuration().TotalMilliseconds,5:0.0} ms  locks {Monitor.LockContentionCount,3}  {GC.GetTotalAllocatedBytes(false) / 1048576.0,6:0.0} MB allocated  jit {System.Runtime.JitInfo.GetCompiledMethodCount(false),5} {System.Runtime.JitInfo.GetCompilationTime(false).TotalMilliseconds,6:0.0} ms  {moment}");
             if (_flushed)
                 AppLog.Write("Startup trace: " + line);
             else
@@ -64,6 +65,8 @@ public static class StartupTrace
     public static void FirstFrame()
     {
         Mark("first frame drawn (ContentRendered)");
+        if (IsOn)
+            Mark("assemblies loaded: " + string.Join(", ", AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetName().Name)));
         FirstFrameDrawn = true;
     }
 

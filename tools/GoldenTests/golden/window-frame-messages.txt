@@ -1,0 +1,115 @@
+# The frame's messages (5.3): what the hook of a window that draws its own frame (MainWindow.FrameHook: the main window's,
+# through TitleBarHook, and the Settings screen's) does with each, and what of them goes on to Windows.
+## What the hook decides (MainWindow.FrameDecision), by the window's state
+message                   restored              maximized             maximized, strip      minimized
+WM_NCACTIVATE, wParam 0   ActivateNoPaint       ActivateNoPaint       ActivateNoPaint       ActivateNoPaint
+WM_NCACTIVATE, wParam 1   ActivateNoPaint       ActivateNoPaint       ActivateNoPaint       ActivateNoPaint
+WM_SETTEXT                DefaultHidden         DefaultHidden         DefaultHidden         DefaultHidden
+WM_SETICON                DefaultHidden         DefaultHidden         DefaultHidden         DefaultHidden
+WM_NCCALCSIZE, wParam 0   PassOn                PassOn                PassOn                PassOn
+WM_NCCALCSIZE, wParam 1   PassOn                PassOn                PassOn                PassOn
+WM_GETMINMAXINFO          PassOn                PassOn                PassOn                PassOn
+WM_WINDOWPOSCHANGING      KeepShortThenPassOn   KeepShortThenPassOn   KeepShortThenPassOn   KeepShortThenPassOn
+WM_NCPAINT                PassOn                PassOn                PaintStrip            PassOn
+WM_NCUAHDRAWCAPTION       Swallow               Swallow               Swallow               Swallow
+WM_NCUAHDRAWFRAME         Swallow               Swallow               Swallow               Swallow
+WM_NCHITTEST              HitTest               HitTest               HitTest               HitTest
+WM_NCMOUSEMOVE            PassOn                PassOn                PassOn                PassOn
+WM_NCMOUSELEAVE           PassOn                PassOn                PassOn                PassOn
+ok: WM_NCACTIVATE goes to DefWindowProc with lParam -1 in every state, its answer returned (swallowed, answering 0, it would refuse to let the window go inactive)
+ok: WM_SETTEXT and WM_SETICON go to DefWindowProc with WS_VISIBLE cleared around them, in every state
+ok: WM_NCCALCSIZE is never answered nor changed by HandPeg's hook, in any state (WindowChrome's answers it: the client area is the whole window, so there is never frame outside it)
+ok: WM_WINDOWPOSCHANGING: the maximized place is kept short of a taskbar that hides itself, then passed on; WM_GETMINMAXINFO is Windows' own (it reads those numbers for whichever monitor the window maximizes on)
+ok: WM_NCPAINT is answered only maximized with frame outside the client area (painted first); otherwise it goes on to Windows, minimized too (answered there, the desktop stops drawing the frame for good)
+ok: WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME (the classic caption's and frame's own) are swallowed in every state
+## The maximized place beside a taskbar that hides itself (MainWindow.MaximizedPlaceOf), made-up monitors
+  2880 x 1800 main monitor, hidden taskbar at the bottom: placed 0,0 - 2880,1798
+ok: 2880 x 1800 main monitor, hidden taskbar at the bottom: the working area with each hidden taskbar's edge two pixels in
+  3840 x 2160 monitor right of the main one, hidden taskbar on the left: placed 2882,0 - 6720,2160
+ok: 3840 x 2160 monitor right of the main one, hidden taskbar on the left: the working area with each hidden taskbar's edge two pixels in
+  1920 x 1080 monitor left of the main one (negative origin), hidden taskbar at the top: placed -1920,202 - 0,1280
+ok: 1920 x 1080 monitor left of the main one (negative origin), hidden taskbar at the top: the working area with each hidden taskbar's edge two pixels in
+  a taskbar at the bottom (48 px) and one that hides itself on the right: placed 0,0 - 2558,1392
+ok: a taskbar at the bottom (48 px) and one that hides itself on the right: the working area with each hidden taskbar's edge two pixels in
+  hidden taskbars on every edge: placed 2,2 - 1918,1078
+ok: hidden taskbars on every edge: the working area with each hidden taskbar's edge two pixels in
+ok: no taskbar that hides itself: the working area itself (the window is then left where Windows maximizes it)
+## A window made maximized: placed before it is shown
+ok: made maximized: shown maximized exactly where it was placed before it was shown (nothing moves after its first frame)
+ok: made maximized: the desktop draws its frame, with no region
+## A real window drawn by the card: HandPeg's hook, WindowChrome's under it, and under that a spy (what goes on to Windows)
+ok: drawn by the card: the hook given WM_NCACTIVATE with wParam 0 answers it, non-zero (TRUE: the window may go inactive)
+ok: drawn by the card, restored: the window is restored
+ok: drawn by the card, restored: the desktop draws the window's frame, Windows clips it with no region, and deactivated it shows no light pixel in its caption band
+ok: drawn by the card, restored: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE, WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME sent, none reached the spy
+ok: drawn by the card, restored: WM_NCPAINT reached the spy (the client area is the whole window: an empty frame left to Windows)
+ok: drawn by the card, restored: WM_NCACTIVATE with wParam 0 answered non-zero (TRUE)
+ok: drawn by the card, restored: WS_VISIBLE still set after WM_SETTEXT and WM_SETICON, the new title kept
+ok: drawn by the card, maximized: the window is maximized
+ok: drawn by the card, maximized: the desktop draws the window's frame, Windows clips it with no region, and deactivated it shows no light pixel in its caption band
+ok: drawn by the card, maximized: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE, WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME sent, none reached the spy
+ok: drawn by the card, maximized: WM_NCPAINT reached the spy exactly when no frame lies outside the client area (the strip beside a taskbar that hides itself is painted and answered)
+ok: drawn by the card, maximized: WM_NCACTIVATE with wParam 0 answered non-zero (TRUE)
+ok: drawn by the card, maximized: WS_VISIBLE still set after WM_SETTEXT and WM_SETICON, the new title kept
+ok: drawn by the card, restored again: the window is restored
+ok: drawn by the card, restored again: the desktop draws the window's frame, Windows clips it with no region, and deactivated it shows no light pixel in its caption band
+ok: drawn by the card, restored again: back at its own place, as before it was maximized
+ok: drawn by the card, restored again: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE, WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME sent, none reached the spy
+ok: drawn by the card, restored again: WM_NCPAINT reached the spy (the client area is the whole window: an empty frame left to Windows)
+ok: drawn by the card, restored again: WM_NCACTIVATE with wParam 0 answered non-zero (TRUE)
+ok: drawn by the card, restored again: WS_VISIBLE still set after WM_SETTEXT and WM_SETICON, the new title kept
+ok: drawn by the card, minimized: the window is minimized
+ok: drawn by the card, minimized: the desktop draws the window's frame, Windows clips it with no region, and deactivated it shows no light pixel in its caption band
+ok: drawn by the card, minimized: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE, WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME sent, none reached the spy
+ok: drawn by the card, minimized: WM_NCPAINT reached the spy (the client area is the whole window: an empty frame left to Windows)
+ok: drawn by the card, minimized: WM_NCACTIVATE with wParam 0 answered non-zero (TRUE)
+ok: drawn by the card, minimized: WS_VISIBLE still set after WM_SETTEXT and WM_SETICON, the new title kept
+ok: drawn by the card, restored from minimized: the window is restored
+ok: drawn by the card, restored from minimized: the desktop draws the window's frame, Windows clips it with no region, and deactivated it shows no light pixel in its caption band
+ok: drawn by the card, restored from minimized: back at its own place, as before it was maximized
+ok: drawn by the card, restored from minimized: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE, WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME sent, none reached the spy
+ok: drawn by the card, restored from minimized: WM_NCPAINT reached the spy (the client area is the whole window: an empty frame left to Windows)
+ok: drawn by the card, restored from minimized: WM_NCACTIVATE with wParam 0 answered non-zero (TRUE)
+ok: drawn by the card, restored from minimized: WS_VISIBLE still set after WM_SETTEXT and WM_SETICON, the new title kept
+ok: drawn by the card: in every state, every change between them and the drag, none of those six messages reached the spy
+ok: drawn by the card: the spy hears the window under WindowChrome's hook (WM_WINDOWPOSCHANGED, which that hook lets through, reached it)
+ok: drawn by the card: a window never shown keeps WS_VISIBLE clear after WM_SETTEXT and WM_SETICON (sent, and given to the hook directly), its new title kept
+ok: drawn by the card: after activation, a new title and icon, the classic caption's messages and each of 10 move-and-size steps, no more light in the caption band than with Windows' classic paths left open
+## A real window drawn by the processor: HandPeg's hook, WindowChrome's under it, and under that a spy (what goes on to Windows)
+ok: drawn by the processor: the hook given WM_NCACTIVATE with wParam 0 answers it, non-zero (TRUE: the window may go inactive)
+ok: drawn by the processor, restored: the window is restored
+ok: drawn by the processor, restored: the desktop draws the window's frame, Windows clips it with no region, and deactivated it shows no light pixel in its caption band
+ok: drawn by the processor, restored: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE, WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME sent, none reached the spy
+ok: drawn by the processor, restored: WM_NCPAINT reached the spy (the client area is the whole window: an empty frame left to Windows)
+ok: drawn by the processor, restored: WM_NCACTIVATE with wParam 0 answered non-zero (TRUE)
+ok: drawn by the processor, restored: WS_VISIBLE still set after WM_SETTEXT and WM_SETICON, the new title kept
+ok: drawn by the processor, maximized: the window is maximized
+ok: drawn by the processor, maximized: the desktop draws the window's frame, Windows clips it with no region, and deactivated it shows no light pixel in its caption band
+ok: drawn by the processor, maximized: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE, WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME sent, none reached the spy
+ok: drawn by the processor, maximized: WM_NCPAINT reached the spy exactly when no frame lies outside the client area (the strip beside a taskbar that hides itself is painted and answered)
+ok: drawn by the processor, maximized: WM_NCACTIVATE with wParam 0 answered non-zero (TRUE)
+ok: drawn by the processor, maximized: WS_VISIBLE still set after WM_SETTEXT and WM_SETICON, the new title kept
+ok: drawn by the processor, restored again: the window is restored
+ok: drawn by the processor, restored again: the desktop draws the window's frame, Windows clips it with no region, and deactivated it shows no light pixel in its caption band
+ok: drawn by the processor, restored again: back at its own place, as before it was maximized
+ok: drawn by the processor, restored again: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE, WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME sent, none reached the spy
+ok: drawn by the processor, restored again: WM_NCPAINT reached the spy (the client area is the whole window: an empty frame left to Windows)
+ok: drawn by the processor, restored again: WM_NCACTIVATE with wParam 0 answered non-zero (TRUE)
+ok: drawn by the processor, restored again: WS_VISIBLE still set after WM_SETTEXT and WM_SETICON, the new title kept
+ok: drawn by the processor, minimized: the window is minimized
+ok: drawn by the processor, minimized: the desktop draws the window's frame, Windows clips it with no region, and deactivated it shows no light pixel in its caption band
+ok: drawn by the processor, minimized: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE, WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME sent, none reached the spy
+ok: drawn by the processor, minimized: WM_NCPAINT reached the spy (the client area is the whole window: an empty frame left to Windows)
+ok: drawn by the processor, minimized: WM_NCACTIVATE with wParam 0 answered non-zero (TRUE)
+ok: drawn by the processor, minimized: WS_VISIBLE still set after WM_SETTEXT and WM_SETICON, the new title kept
+ok: drawn by the processor, restored from minimized: the window is restored
+ok: drawn by the processor, restored from minimized: the desktop draws the window's frame, Windows clips it with no region, and deactivated it shows no light pixel in its caption band
+ok: drawn by the processor, restored from minimized: back at its own place, as before it was maximized
+ok: drawn by the processor, restored from minimized: WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, WM_NCCALCSIZE, WM_NCUAHDRAWCAPTION and WM_NCUAHDRAWFRAME sent, none reached the spy
+ok: drawn by the processor, restored from minimized: WM_NCPAINT reached the spy (the client area is the whole window: an empty frame left to Windows)
+ok: drawn by the processor, restored from minimized: WM_NCACTIVATE with wParam 0 answered non-zero (TRUE)
+ok: drawn by the processor, restored from minimized: WS_VISIBLE still set after WM_SETTEXT and WM_SETICON, the new title kept
+ok: drawn by the processor: in every state, every change between them and the drag, none of those six messages reached the spy
+ok: drawn by the processor: the spy hears the window under WindowChrome's hook (WM_WINDOWPOSCHANGED, which that hook lets through, reached it)
+ok: drawn by the processor: a window never shown keeps WS_VISIBLE clear after WM_SETTEXT and WM_SETICON (sent, and given to the hook directly), its new title kept
+ok: drawn by the processor: after activation, a new title and icon, the classic caption's messages and each of 10 move-and-size steps, no more light in the caption band than with Windows' classic paths left open

@@ -22,7 +22,7 @@ if (-not $NoBuild) {
     }
 }
 
-$exe = Join-Path $PSScriptRoot "GoldenTests\bin\$Configuration\net8.0-windows\HandPeg.GoldenTests.exe"
+$exe = Join-Path $PSScriptRoot "GoldenTests\bin\$Configuration\net10.0-windows\HandPeg.GoldenTests.exe"
 if (-not (Test-Path $exe)) {
     Write-Output "Not built yet: $exe (run without -NoBuild)."
     exit 2

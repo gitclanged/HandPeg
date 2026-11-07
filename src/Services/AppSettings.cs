@@ -676,6 +676,24 @@ public sealed partial class AppSettings
     public bool ShowCreatorHotbar { get; set; } = true;
 
     /// <summary>
+    /// A track's effects have lanes of their own under it, shown while that track's own stack is open (5.3, the user's call); off, a
+    /// clip's effects show only as the "fx N" badge on its block.
+    /// </summary>
+    public bool ShowTimelineEffectLanes { get; set; } = true;
+
+    /// <summary>A Cutout's own Mask and Rounded &amp; Feathered Edges cards, which every Cutout is made with, get effect lanes too (5.3; off by default).</summary>
+    public bool ShowBuiltInMaskEffectLanes { get; set; }
+
+    /// <summary>The Timeline's video and picture clips show their media's frames along their blocks (5.3).</summary>
+    public bool ShowClipFilmstrips { get; set; } = true;
+
+    /// <summary>The Timeline's clips with sound draw their waveforms (5.3).</summary>
+    public bool ShowClipWaveforms { get; set; } = true;
+
+    /// <summary>While playing, the Timeline's view turns the page to keep the playhead in sight (5.3).</summary>
+    public bool TimelineFollowsPlayhead { get; set; } = true;
+
+    /// <summary>
     /// What each of the Creator Hotbar's five slots holds, as "kind:id" (Models.HotbarSlot); null for the defaults (HotbarSlot.Defaults).
     /// Set by a slot's right-click menu. Replaced whole when it changes, never changed in place (copies share lists).
     /// </summary>

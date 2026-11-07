@@ -1,3 +1,5 @@
+using System.Runtime.Intrinsics;
+
 namespace HandPegApp.Services.Audio;
 
 // ----- Loudness: an export's (integrated, after the render) and the live meter's (Pass 5.2B, on the mixer's thread) -----
@@ -16,8 +18,11 @@ public sealed class LoudnessMeter
 {
     private readonly int _channels, _step, _blockSteps;
     private readonly double[] _weights;
-    private readonly KFilter[] _shelf, _pass;
-    private readonly double[] _stepSums;
+
+    // The channels two at a time (5.3), a lane each: their filters, the sums of their squares over the step, and their peaks.
+    private readonly BiquadPair[] _shelf, _pass;
+    private readonly Vector128<double>[] _stepSums;
+    private Vector128<double> _peaks;
     private readonly Queue<double> _recentSteps = new();
     private readonly List<double> _blocks = [];
     private long _inStep;
@@ -27,38 +32,73 @@ public sealed class LoudnessMeter
         _channels = Math.Max(channels, 1);
         _step = Math.Max(sampleRate / 10, 1);
         _blockSteps = 4;
-        _stepSums = new double[_channels];
+        var pairs = (_channels + 1) / 2;
+        _stepSums = new Vector128<double>[pairs];
         _weights = Enumerable.Range(0, _channels).Select(c => _channels >= 5 && c == 3 ? 0 : _channels >= 5 && c >= 4 ? 1.41 : 1.0).ToArray();
-        _shelf = Enumerable.Range(0, _channels).Select(_ => KFilter.Shelf(sampleRate)).ToArray();
-        _pass = Enumerable.Range(0, _channels).Select(_ => KFilter.HighPass(sampleRate)).ToArray();
+        _shelf = Enumerable.Range(0, pairs).Select(_ => KFilter.Shelf(sampleRate).Paired()).ToArray();
+        _pass = Enumerable.Range(0, pairs).Select(_ => KFilter.HighPass(sampleRate).Paired()).ToArray();
     }
 
     /// <summary>The largest sample magnitude seen.</summary>
-    public double SamplePeak { get; private set; }
+    public double SamplePeak => Math.Max(_peaks.GetElement(0), _peaks.GetElement(1));
 
-    /// <summary>One frame (a sample of each channel).</summary>
+    /// <summary>One frame (a sample of each channel; one the frame lacks is silence).</summary>
     public void Add(ReadOnlySpan<float> frame)
     {
-        for (var c = 0; c < _channels && c < frame.Length; c++)
+        if (frame.Length >= _channels)
         {
-            double x = frame[c];
-            SamplePeak = Math.Max(SamplePeak, Math.Abs(x));
-            var y = _pass[c].Next(_shelf[c].Next(x));
-            _stepSums[c] += y * y;
+            Add(frame, 1);
+            return;
         }
 
-        if (++_inStep < _step)
-            return;
+        Span<float> whole = stackalloc float[_channels];
+        frame.CopyTo(whole);
+        Add(whole, 1);
+    }
 
-        var weighted = 0.0;
-        for (var c = 0; c < _channels; c++)
-            (weighted, _stepSums[c]) = (weighted + _weights[c] * _stepSums[c], 0);
-        _recentSteps.Enqueue(weighted / _step);
-        _inStep = 0;
-        if (_recentSteps.Count > _blockSteps)
-            _recentSteps.Dequeue();
-        if (_recentSteps.Count == _blockSteps)
-            _blocks.Add(_recentSteps.Average());
+    /// <summary>Frames of interleaved samples, each a sample of each channel (5.3: an export's track, a block at a time).</summary>
+    public void Add(ReadOnlySpan<float> interleaved, int frames)
+    {
+        frames = Math.Min(frames, interleaved.Length / _channels);
+        for (var done = 0; done < frames;)
+        {
+            var run = (int)Math.Min(frames - done, _step - _inStep);
+            for (var pair = 0; pair < _shelf.Length; pair++)
+                Weigh(interleaved.Slice(done * _channels, run * _channels), run, pair);
+            done += run;
+            if ((_inStep += run) < _step)
+                continue;
+
+            var weighted = 0.0;
+            for (var c = 0; c < _channels; c++)
+                weighted += _weights[c] * _stepSums[c / 2].GetElement(c % 2);
+            Array.Clear(_stepSums);
+            _recentSteps.Enqueue(weighted / _step);
+            _inStep = 0;
+            if (_recentSteps.Count > _blockSteps)
+                _recentSteps.Dequeue();
+            if (_recentSteps.Count == _blockSteps)
+                _blocks.Add(_recentSteps.Average());
+        }
+    }
+
+    // A pair of channels' frames K-weighted, a lane each (each lane the scalar filters' arithmetic in its order: the loudness is the same to the
+    // bit as one channel at a time), their squares summed and their peaks kept. An odd count's last channel has its own sound in the second
+    // lane too, which is never summed.
+    private void Weigh(ReadOnlySpan<float> samples, int frames, int pair)
+    {
+        var (channels, first) = (_channels, 2 * pair);
+        var second = first + 1 < channels ? first + 1 : first;
+        var (shelf, pass, sum, peaks) = (_shelf[pair], _pass[pair], _stepSums[pair], _peaks);
+        for (var i = 0; i < frames; i++)
+        {
+            var x = Vector128.Create((double)samples[i * channels + first], samples[i * channels + second]);
+            peaks = Vector128.Max(peaks, Vector128.Abs(x));
+            var y = pass.Next(shelf.Next(x));
+            sum += y * y;
+        }
+
+        (_shelf[pair], _pass[pair], _stepSums[pair], _peaks) = (shelf, pass, sum, peaks);
     }
 
     /// <summary>The integrated loudness so far, LUFS; negative infinity for silence (or less than one block).</summary>
@@ -77,7 +117,10 @@ public sealed class LoudnessMeter
     }
 }
 
-/// <summary>A direct-form biquad in double precision: BS.1770's K-weighting, its two stages (LoudnessMeter's, LiveLoudness's).</summary>
+/// <summary>
+/// A direct-form biquad in double precision: BS.1770's K-weighting, its two stages (LoudnessMeter's, LiveLoudness's, which since 5.3 run it on
+/// two channels at once: <see cref="Paired"/>, the same arithmetic a lane each).
+/// </summary>
 internal sealed class KFilter(double b0, double b1, double b2, double a1, double a2)
 {
     private double _x1, _x2, _y1, _y2;
@@ -101,6 +144,9 @@ internal sealed class KFilter(double b0, double b1, double b2, double a1, double
         if (Math.Abs(_y2) < 1e-25)
             _y2 = 0;
     }
+
+    /// <summary>The filter on two channels at once (<see cref="BiquadPair"/>), its history cleared.</summary>
+    public BiquadPair Paired() => new(b0, b1, b2, a1, a2);
 
     // BS.1770's pre-filter: a high shelf of about +4 dB from 1.5 kHz (its published 48 kHz coefficients, re-derived for any rate).
     public static KFilter Shelf(int rate)
@@ -137,16 +183,19 @@ internal sealed class LiveLoudness
     private const double Lowest = -70, Highest = 5, BinWidth = 0.1;
     private static readonly int Bins = (int)Math.Round((Highest - Lowest) / BinWidth);
 
-    // The interpolator's phases 1 to 3 (phase 0 is the sample itself), tap j weighing the sample j before the newest.
-    private static readonly double[] Interpolator = MakeInterpolator();
+    // The interpolator's phases 1 to 3 (phase 0 is the sample itself), tap j weighing the sample j before the newest: each tap in both lanes
+    // of a vector (5.3: both sides at once, each lane the sum one side alone makes, in its order, so the peaks are the same to the bit).
+    private static readonly Vector128<double>[] Interpolator = [.. MakeInterpolator().Select(tap => Vector128.Create(tap))];
 
     private readonly int _step;
-    private readonly KFilter _shelfLeft, _shelfRight, _passLeft, _passRight;
+    private BiquadPair _shelf, _pass;
     private readonly double[] _steps = new double[ShortSteps];
     private readonly double[] _histogramEnergy = new double[Bins];
     private readonly int[] _histogramCount = new int[Bins];
     private readonly float[] _holdSteps = new float[HoldSteps];
-    private readonly double[] _historyLeft = new double[Taps], _historyRight = new double[Taps];
+
+    // Both sides' last Taps samples (a lane each), twice over, so the newest's window is always whole: the newest at _historyAt.
+    private readonly Vector128<double>[] _history = new Vector128<double>[2 * Taps];
     private int _historyAt, _stepCount, _stepAt, _holdAt, _inStep;
     private double _stepSum;
     private float _stepPeak;
@@ -154,8 +203,7 @@ internal sealed class LiveLoudness
     public LiveLoudness(int sampleRate)
     {
         _step = Math.Max(sampleRate / 10, 1);
-        (_shelfLeft, _shelfRight) = (KFilter.Shelf(sampleRate), KFilter.Shelf(sampleRate));
-        (_passLeft, _passRight) = (KFilter.HighPass(sampleRate), KFilter.HighPass(sampleRate));
+        (_shelf, _pass) = (KFilter.Shelf(sampleRate).Paired(), KFilter.HighPass(sampleRate).Paired());
     }
 
     /// <summary>The momentary loudness (400 ms), LUFS; negative infinity in silence and before the first step.</summary>
@@ -197,30 +245,26 @@ internal sealed class LiveLoudness
     /// <summary>A block of the mix (interleaved stereo).</summary>
     public void Add(ReadOnlySpan<float> stereo, int frames)
     {
-        var interpolator = Interpolator;
+        var history = _history;
+        ReadOnlySpan<Vector128<double>> first = Interpolator.AsSpan(0, Taps), second = Interpolator.AsSpan(Taps, Taps), third = Interpolator.AsSpan(2 * Taps, Taps);
         for (var i = 0; i < frames; i++)
         {
-            double l = stereo[2 * i], r = stereo[2 * i + 1];
+            var sample = Vector128.Create((double)stereo[2 * i], stereo[2 * i + 1]);
 
             // The true peak: the sample and the three points the interpolator puts before it.
             _historyAt = _historyAt == 0 ? Taps - 1 : _historyAt - 1;
-            (_historyLeft[_historyAt], _historyRight[_historyAt]) = (l, r);
-            var peak = Math.Max(Math.Abs(l), Math.Abs(r));
-            for (var phase = 0; phase < Phases - 1; phase++)
+            history[_historyAt] = history[_historyAt + Taps] = sample;
+            var window = history.AsSpan(_historyAt, Taps);
+            var (one, two, three) = (Vector128<double>.Zero, Vector128<double>.Zero, Vector128<double>.Zero);
+            for (var j = 0; j < window.Length && j < first.Length && j < second.Length && j < third.Length; j++)
             {
-                var (sumLeft, sumRight) = (0.0, 0.0);
-                for (var j = 0; j < Taps; j++)
-                {
-                    var tap = interpolator[phase * Taps + j];
-                    var at = _historyAt + j < Taps ? _historyAt + j : _historyAt + j - Taps;
-                    sumLeft += tap * _historyLeft[at];
-                    sumRight += tap * _historyRight[at];
-                }
-
-                peak = Math.Max(peak, Math.Max(Math.Abs(sumLeft), Math.Abs(sumRight)));
+                one += first[j] * window[j];
+                two += second[j] * window[j];
+                three += third[j] * window[j];
             }
 
-            var truePeak = (float)peak;
+            var most = Vector128.Max(Vector128.Max(Vector128.Abs(sample), Vector128.Abs(one)), Vector128.Max(Vector128.Abs(two), Vector128.Abs(three)));
+            var truePeak = (float)Math.Max(most.GetElement(0), most.GetElement(1));
             if (truePeak > Peak)
                 Peak = truePeak;
             if (truePeak > _stepPeak)
@@ -229,17 +273,15 @@ internal sealed class LiveLoudness
                 Clipped = true;
 
             // The loudness: each side K-weighted, its square summed over the step.
-            var kl = _passLeft.Next(_shelfLeft.Next(l));
-            var kr = _passRight.Next(_shelfRight.Next(r));
-            _stepSum += kl * kl + kr * kr;
+            var weighted = _pass.Next(_shelf.Next(sample));
+            var squares = weighted * weighted;
+            _stepSum += squares.GetElement(0) + squares.GetElement(1);
             if (++_inStep == _step)
                 EndStep();
         }
 
-        _shelfLeft.Flush();
-        _shelfRight.Flush();
-        _passLeft.Flush();
-        _passRight.Flush();
+        _shelf.Flush();
+        _pass.Flush();
     }
 
     private static float Lufs(double meanSquare) => meanSquare > 0 ? (float)(-0.691 + 10 * Math.Log10(meanSquare)) : float.NegativeInfinity;

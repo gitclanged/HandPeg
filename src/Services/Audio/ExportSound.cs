@@ -308,15 +308,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
     private float NormalizingGain(ExportSoundTrack track, string[] busPaths, long frames, int n)
     {
         var meter = new LoudnessMeter(SampleRate, track.Channels);
-        var frame = new float[track.Channels];
-        ReadTrack(track, busPaths, frames, (samples, count) =>
-        {
-            for (var i = 0; i < count; i++)
-            {
-                samples.Slice(i * track.Channels, track.Channels).CopyTo(frame);
-                meter.Add(frame);
-            }
-        });
+        ReadTrack(track, busPaths, frames, (samples, count) => meter.Add(samples, count));
 
         var (loudness, peak) = (meter.IntegratedLufs, meter.SamplePeak);
         if (!double.IsFinite(loudness) || peak <= 0)
@@ -340,8 +332,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
         ReadTrack(track, busPaths, frames, (samples, count) =>
         {
             var values = MemoryMarshal.Cast<byte, float>(bytes.AsSpan(0, count * track.Channels * 4));
-            for (var i = 0; i < values.Length; i++)
-                values[i] = samples[i] * gain;
+            AudioMath.Scale(samples, values, gain);
             output.Write(bytes, 0, count * track.Channels * 4);
         });
     }
@@ -372,6 +363,13 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
 
                         got += read;
                     }
+                }
+
+                // A stereo track's bus is its frames as they are, handed on in place (5.3: the renders are the processor's own floats, little-endian).
+                if (track.Channels == 2 && BitConverter.IsLittleEndian)
+                {
+                    take(MemoryMarshal.Cast<byte, float>(stereo[0].AsSpan(0, count * 8)), count);
+                    continue;
                 }
 
                 for (var i = 0; i < count; i++)

@@ -669,7 +669,8 @@ public sealed partial class UnifiedTimelineControl
         // click and dropped), from where it is if it is still moving.
         if (ChevronAt(lane, at) is { } stack)
         {
-            // Its bars or open: a stack is never hidden (the user's directive).
+            // Its bars or open: a stack is never hidden (the user's directive), except its effect lanes, which take no room while it is
+            // closed (5.3, TimelineRow.HidesWhenClosed).
             SetExpanded(row, stack, !IsExpanded(row, stack));
         }
         else if (SwitchAt(lane, at) is { } flag)
@@ -1347,13 +1348,27 @@ public sealed partial class UnifiedTimelineControl
         return null;
     }
 
-    // What a chevron does, in words: with one stack, its lanes; with two, which of them.
+    // What a chevron does, in words: with one stack, its lanes; with two, which of them. A stack of effect lanes alone (5.3: a
+    // Cutout with an effect of its own) shows them or hides them, having no thin bars; a stack with some among others says so.
     private static string ChevronTip(in Lane lane, ChildStack stack, bool open)
     {
+        var (inStack, hiding) = (0, 0);
+        foreach (var child in lane.Row.Children)
+        {
+            if (child.Stack != stack)
+                continue;
+            inStack++;
+            hiding += child.HidesWhenClosed ? 1 : 0;
+        }
+
+        if (inStack > 0 && hiding == inStack)
+            return open ? "Hide its effect lanes" : "Show its effect lanes";
+
         var lanes = lane.ChevronCount < 2 ? "its lanes"
             : stack == ChildStack.Audio ? "its Audio Sub-Lanes (the unlinked sound, the file's audio streams)"
             : "its Visual Sub-Lanes (the HUD Cutouts and masks, the captions)";
-        return open ? $"Fold {lanes} to thin bars" : $"Open {lanes} to their full height";
+        var bars = hiding > 0 ? "thin bars, its effect lanes hidden" : "thin bars";
+        return open ? $"Fold {lanes} to {bars}" : $"Open {lanes} to their full height";
     }
 
     /// <summary>The stretch put back whose Hide pill a point is on (an index into the row's reveals); -1 for none.</summary>

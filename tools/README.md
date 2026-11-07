@@ -156,25 +156,35 @@ else that median latency after Present, else the first vblank after Present on D
 A/V is its moment minus the sound's then (positive: the picture is ahead); each step's median must be within 0.5 ms
 (nominal) and no frame 15 ms or more off. `--dump <file>` writes every frame presented, for looking into a result.
 
-Check the harness on a known answer when changing it, running `tools\AvSync\bin\Debug\net8.0-windows\AvSync.exe test
+Check the harness on a known answer when changing it, running `tools\AvSync\bin\Debug\net10.0-windows\AvSync.exe test
 --project <file> --points 300 --proxies off` with `--audio-shift-ms 10` (the sound rendered 10 ms late: the audio column
 reads +10 ms) and `--video-shift-ms 40` (the picture drawn 40 ms late: the video column +40 ms; A/V -30 ms). The project
 is only read, and `appsettings.json` is put back byte for byte when the harness ends; set `HANDPEG_DATA_DIR` to a folder of
 the run's own (with `deps\ffmpeg` in it) to keep the app's caches and settings out of it altogether.
 
-## MakeIcon.ps1 (HandPeg.exe's icon)
-`powershell -NoProfile -ExecutionPolicy Bypass -STA -File tools\MakeIcon.ps1 [-Preview <folder>]` draws HandPeg's mark (a rounded
-square in the accent blue, a white peg beside a play triangle) from vector geometry with WPF and writes `src\handpeg.ico` at 16, 24,
-32, 48, 64, 128 and 256 px (PNG frames). `HandPegApp.csproj` names it as the ApplicationIcon; `vpk pack --icon` takes it for Setup.exe.
-`-Preview` also writes each size as a PNG to look at. Run it again only when the mark changes, and commit the new icon.
+## PortableBootstrap (HandPeg.exe of the portable zips and both installers)
 
-## PortableBootstrap (the portable zips' HandPeg.exe)
+A native program (NativeAOT, `HandPegBootstrap.csproj`) that stands in for .NET's apphost in the portable zips and in both Velopack
+installers' packages: it finds a .NET 10 Desktop Runtime for its processor and runs `HandPeg.dll` in its own process through that
+runtime's `hostfxr`. It looks first in the copy's own root, which depends on the kind of copy, in the order HandPeg's `AppPaths` decides
+where a copy keeps its data: `portable\dotnet` beside a portable zip's `HandPeg.exe`; `dotnet` beside the program for a copy made
+self-contained by `portable.txt` or `--portable` (with its `deps`, `data` and `temp`; never a `portable` folder, which would move its data);
+for an installed copy (`current\HandPeg.exe` with `Update.exe` one up), `dotnet` beside `current` (`%LOCALAPPDATA%\HandPeg\dotnet` by
+default), which updates leave alone and the uninstaller removes; for anything else, `%LOCALAPPDATA%\HandPeg\dotnet`. Then it looks at
+5.2.0's `hostfxr.dll` and `shared\` beside it, `DOTNET_ROOT_<ARCH>`, `DOTNET_ROOT` and the installed one. A root counts only with both
+frameworks of major 10 in released versions (a preview's or release candidate's folder never counts: hostfxr never rolls 10.0.0 forward to
+one) and a `hostfxr.dll` built for the program's own processor. When `hostfxr` refuses a root that looks whole (damaged after it was put
+there), it is unloaded again and the next root found is tried, quietly.
 
-A native program (NativeAOT, `HandPegBootstrap.csproj`) that stands in for .NET's apphost in the portable zips: it finds a .NET 8
-Desktop Runtime for its processor (the copy's `portable\dotnet`, 5.2.0's `hostfxr.dll` and `shared\` beside it, `DOTNET_ROOT_<ARCH>`,
-`DOTNET_ROOT`, the installed one) and runs `HandPeg.dll` in its own process through that runtime's `hostfxr`; with none, it
-downloads Microsoft's runtime and Windows Desktop runtime zips (SHA-512 checked) into `portable\dotnet` in a window of its own,
-then runs it. Published once per processor:
+With none, or none that starts, a dark dialog of its own asks how to get it (naming the one that could not start, which a download
+replaces): **Download .NET 10 for HandPeg Only** (recommended: Microsoft's runtime and Windows Desktop runtime zips, SHA-512 checked,
+unpacked into the copy's own root, with no admin rights) or **Install .NET 10 System-Wide** (Microsoft's
+`windowsdesktop-runtime-<version>-win-<arch>.exe`, SHA-512 checked, run elevated as `/install /quiet /norestart`), or Cancel. Only released
+versions are taken, never a preview. One download at a time goes into a root (a named lock per root: a second HandPeg waits and takes the
+first one's), each attempt in a folder of its own beside the root (`dotnet-download-<attempt>`); a .NET already there is moved aside
+(`dotnet-old-<attempt>`) and deleted after, never deleted where it is, and never touched while a HandPeg runs on it. Started by Velopack
+for a hook (`--veloapp-*`) with no .NET 10 it ends at once with exit code 0, and as one of HandPeg's background processes
+(`--compositor-worker`, `--hw-benchmark`, `--crash-sentinel`) with exit code 1, never showing anything. Published once per processor:
 
 ```
 dotnet publish tools\PortableBootstrap\HandPegBootstrap.csproj -c Release -r win-arm64
@@ -183,10 +193,17 @@ dotnet publish tools\PortableBootstrap\HandPegBootstrap.csproj -c Release -r win
 
 which needs Visual Studio's C++ build tools (the ARM64 and x64 compilers and a Windows SDK) for the linker, found through
 `vswhere.exe`: put `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer` on PATH first (the installer does not). The release copies
-`bin\Release\net8.0\<rid>\publish\HandPegBootstrap.exe` over the publish's `HandPeg.exe` in each zip (the installers keep the
-apphost). `HANDPEG_BOOTSTRAP_NO_SYSTEM_DOTNET=1` makes it look only in its own folder, to try the download on a PC that has .NET.
-The `portable-bootstrap` golden test checks where it looks, what it takes from Microsoft's list and, once published, both programs'
-headers.
+`bin\Release\net10.0\<rid>\publish\HandPegBootstrap.exe` over the publish's `HandPeg.exe`, both in each zip and in each installer's
+package folder (never with a `portable` folder or `portable.txt` there, which would make an installed copy portable).
+`HANDPEG_BOOTSTRAP_NO_SYSTEM_DOTNET=1` makes it look only in the copy's own places, to try the dialog and the download on a PC that has
+.NET. The `portable-bootstrap` golden test checks where it looks and every usable root in order, each kind of copy's own root and where
+a download goes, each attempt's folders, what a later one clears and the lock's name, that a .NET already there is moved aside (left as it
+was when in use), what it takes from Microsoft's list, what it does with no .NET, what the installer's exit codes mean, that it looks for
+the .NET HandPeg is built for, when Explorer's thumbnail handler has a .NET it can start on, and, once published, both programs' headers.
+
+Explorer's thumbnail handler (`src\ShellThumbnails`, a .NET COM server) cannot use a copy's own .NET: its `comhost.dll` finds .NET only
+through `DOTNET_ROOT*`, the registered location and Program Files. So HandPeg registers it only when that lookup finds a released .NET 10
+Desktop Runtime (`ExplorerThumbnails.HandlerRuntime`).
 
 ## StartupBench.ps1 (how long does a launch take, as a user sees it?)
 `powershell -NoProfile -File tools\StartupBench.ps1 -Builds "<baseline>\HandPeg.exe;<candidate>\HandPeg.exe" [-Rounds 5] [-Seconds 8] [-Warm]`

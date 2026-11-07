@@ -1393,6 +1393,10 @@ public partial class MainWindow : Window
             _gpu?.ApplyAudioSettings(AppSettings.Current);
             UiScale.ApplyAll();
             ShowHotbar();
+
+            // The Timeline's switches there (5.3: its effect lanes, filmstrips, waveforms, gain lines...) are read as its rows are made.
+            ScheduleClipRedraw();
+
             if (_dock.IsRealized(ExportId))
                 FillExportSection();
 

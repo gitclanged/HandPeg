@@ -8,7 +8,8 @@
       administrator). The golden tests compile its sources into their own program (tools\GoldenTests\GoldenTests.csproj).
   -->
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <LangVersion>14.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>HandPeg.ShellThumbnails</AssemblyName>

@@ -182,10 +182,17 @@ public sealed partial class EffectInstance : ObservableObject
     /// parameter's <see cref="EffectParam.Binding"/>) and nothing allocated: the lists are walked by index, a colour is
     /// read from a span and the pieced curves are evaluated on the stack (<see cref="EasingCurves.Evaluate"/>).
     /// </remarks>
-    public GpuEffectPacket EvaluateGpuPacket(double clipTimeSeconds, Layer? layer = null, int packet = 0)
+    public GpuEffectPacket EvaluateGpuPacket(double clipTimeSeconds, Layer? layer = null, int packet = 0) =>
+        Enabled && Definition is { } definition ? EvaluateGpuPacket(definition, clipTimeSeconds, layer, packet) : default;
+
+    /// <summary>
+    /// The same with the card's <see cref="Definition"/> in hand (a look-up of its type in the registry), for the GPU scene, which
+    /// has just asked for it: once for a card on a frame, not again for each of its packets.
+    /// </summary>
+    internal GpuEffectPacket EvaluateGpuPacket(EffectDefinition definition, double clipTimeSeconds, Layer? layer = null, int packet = 0)
     {
         // (5.2B: the Audio Reactive Pulse's own packet only while the pulse is in use, EffectDefinition.GpuPulsePacket.)
-        if (!Enabled || Definition is not { } definition || packet < 0 || packet >= definition.GpuPacketCount
+        if (!Enabled || packet < 0 || packet >= definition.GpuPacketCount
             || Range is { } range && (clipTimeSeconds < range.Start || clipTimeSeconds > range.End)
             || packet == definition.GpuPulsePacket && !PulseInUse())
             return default;

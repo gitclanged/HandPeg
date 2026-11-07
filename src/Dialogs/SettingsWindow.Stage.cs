@@ -53,22 +53,40 @@ public partial class SettingsWindow
 
     /// <summary>
     /// The screen's own title bar, which lies on the editor's: hidden until it has a frame to show, kept inside the screen
-    /// while maximized, and showing the editor's status and the progress of the work under way as the editor's bar does.
+    /// while maximized, and showing the editor's status and the progress of the work under way as the editor's bar does. Its
+    /// frame has the editor's window hook (MainWindow.FrameHook, 5.3): never a classic caption or frame painted by Windows.
     /// </summary>
     private void InitializeTitleBar()
     {
         SourceInitialized += (_, _) =>
         {
             ThemeManager.SetCloaked(this, true);
-            HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(MainWindow.KeepClearOfHiddenTaskbar);
+            var source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+            source?.AddHook(MainWindow.FrameHook);
+
+            // A taskbar set to hide itself or not to (the working area changes): Windows places the screen anew, and its content is inset
+            // for where it is now, once it has (as the editor's TitleBarHook does).
+            source?.AddHook((IntPtr _, int message, IntPtr wParam, IntPtr _, ref bool _) =>
+            {
+                if (message == 0x001A && wParam == 0x002F)
+                    Dispatcher.BeginInvoke(() => ApplyFrame(), System.Windows.Threading.DispatcherPriority.Background);
+                return IntPtr.Zero;
+            });
             ApplyFrame();
         };
         ContentRendered += (_, _) => ThemeManager.SetCloaked(this, false);
 
         // CoverWindow maximizes the screen before it has a window handle: its frame is known only from here on.
         Loaded += (_, _) => ApplyFrame();
-        StateChanged += (_, _) => ApplyFrame();
+        StateChanged += (_, _) => ApplyFrame(placeLater: true);
         DpiChanged += (_, _) => ApplyFrame();
+
+        // Maximized and moved to another monitor (Win+Shift+Arrow): inset again for where it is now, once Windows has placed it.
+        LocationChanged += (_, _) =>
+        {
+            if (WindowState == WindowState.Maximized)
+                Dispatcher.BeginInvoke(() => ApplyFrame(), System.Windows.Threading.DispatcherPriority.Background);
+        };
         TitleBar.SizeChanged += (_, _) =>
         {
             FitTitleStatus();
@@ -81,13 +99,18 @@ public partial class SettingsWindow
         UpdateTitleStatus();
     }
 
-    // Maximized, a window that draws its own frame reaches past the screen's edges by its frame: its content is kept inside,
-    // and its client area short of a taskbar that hides itself (made maximized before its hook was there: CoverWindow).
-    private void ApplyFrame()
+    // Maximized, a window that draws its own frame reaches past the screen's edges by its frame: its content is kept inside; beside a
+    // taskbar that hides itself it is placed short of it instead (5.3, MainWindow.MaximizedPlace; made maximized before its hook was
+    // there: CoverWindow). Windows 11 squares its corners then, and rounds them again restored (ThemeManager.ApplyCorners, 5.3).
+    private void ApplyFrame() => ApplyFrame(placeLater: false);
+
+    // placeLater: from a state change, inside WM_SIZE (MainWindow.KeepClearOfHiddenTaskbarNow).
+    private void ApplyFrame(bool placeLater)
     {
         var maximized = WindowState == WindowState.Maximized;
         if (maximized)
-            MainWindow.KeepClearOfHiddenTaskbarNow(new WindowInteropHelper(this).Handle);
+            MainWindow.KeepClearOfHiddenTaskbarNow(new WindowInteropHelper(this).Handle, placeLater);
+        ThemeManager.ApplyCorners(this);
         ScreenRoot.Margin = maximized ? MainWindow.MaximizedFrameInset(this) : new Thickness(0);
         MaximizeButton.Content = maximized ? "" : "";
         MaximizeButton.ToolTip = maximized ? "Restore Down" : "Maximize";

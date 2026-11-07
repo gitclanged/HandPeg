@@ -1503,6 +1503,26 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(EditLayersOnPlayer));
         OnPropertyChanged(nameof(SponsorBlockMode));
 
+        // The Timeline's switches the Settings window has as well (5.3): this view model's copies of them follow what was saved, so the
+        // Snap button, the Timeline Settings menu and the blocks show it (each raised only when it changed).
+        var saved = AppSettings.Current;
+        ShowClipKeyframes = saved.ShowClipKeyframes;
+        SnapClips = saved.SnapClips;
+        SnapToBeats = saved.SnapToBeats;
+        ShowBeatGrid = saved.ShowBeatGrid;
+
+        // The I-frame lines as well, without what switching them by hand does (AutoToggleTimelineSnap turning the timeline thumb's snap
+        // to I-frames with them): what was saved already holds the snap the user left in the window.
+        _resyncingShowIFrames = true;
+        try
+        {
+            ShowIFrames = saved.ShowIFrames;
+        }
+        finally
+        {
+            _resyncingShowIFrames = false;
+        }
+
         // The proxy settings may name another height, format or place: proxies are looked for again under them.
         _proxies.Clear();
         PreviewCache.Proxies.QueueTrim();

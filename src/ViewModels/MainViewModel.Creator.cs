@@ -356,6 +356,21 @@ public partial class MainViewModel
         clip is { ContentKind: LayerKind.VideoFile, ParentClipId: { } parentId }
         && Document.FindClip(parentId) is { ContentKind: LayerKind.VideoFile } parent && SameFile(clip.SourcePath, parent.SourcePath ?? "");
 
+    /// <summary>
+    /// Whether a clip is a Cutout, linked to its clip or freed from it (5.3, for the Timeline's effect lanes): a Cutout (<see cref="IsCutout(Layer)"/>),
+    /// or one its block's Lock switch unlocked (SetClipLocked) or a trim left wholly outside its clip: a video clip with no parent clip,
+    /// still on a Sub-Lane in another track's stack, a clip of which plays the same file.
+    /// </summary>
+    public bool IsCutoutOrFreed(Layer view) => view is { IsVideoFile: true, IsDeleted: false } && ClipOf(view) is { } clip && IsCutoutOrFreed(clip);
+
+    /// <summary>Whether a clip is a Cutout, linked to its clip or freed from it on a Sub-Lane of a clip of the same file.</summary>
+    private bool IsCutoutOrFreed(TimelineClip clip) =>
+        IsCutout(clip)
+        || (clip is { ContentKind: LayerKind.VideoFile, ParentClipId: null }
+            && Document.TrackOf(clip) is { ParentTrackId: { } parentTrackId }
+            && Document.Tracks.Find(t => t.Id == parentTrackId) is { } parentTrack
+            && parentTrack.Clips.Any(c => c.ContentKind == LayerKind.VideoFile && SameFile(clip.SourcePath, c.SourcePath ?? "")));
+
     /// <summary>Whether a Cutout hangs from one of the clips named (the clips Cutouts are being put on, which lose their own first).</summary>
     private bool IsCutoutOf(Layer view, IReadOnlyCollection<Guid> clips) => ClipOf(view) is { ParentClipId: { } parent } && clips.Contains(parent);
 
@@ -1139,8 +1154,16 @@ public partial class MainViewModel
     /// <summary>Whether the I-frame lines are drawn on the timeline. Remembered between sessions.</summary>
     [ObservableProperty] private bool _showIFrames = AppSettings.Current.ShowIFrames;
 
+    // Set while ShowIFrames follows a save of the Settings window (OnSettingsSaved, 5.3): the saved settings already hold the lines and
+    // the timeline thumb's snap the user left there, so switching the lines writes nothing and leaves that snap alone.
+    private bool _resyncingShowIFrames;
+
     partial void OnShowIFramesChanged(bool value)
     {
+        // The change is still raised (the Scrubber and the Timeline Settings menu show it); only what a switch by hand does is skipped.
+        if (_resyncingShowIFrames)
+            return;
+
         var settings = AppSettings.Current;
         settings.ShowIFrames = value;
 

@@ -128,7 +128,8 @@ public static class BeatDetector
         private const float Compression = 100;
 
         private static readonly float[] Window = MakeWindow();
-        private static readonly (float[] Cos, float[] Sin, int[] Reverse, float[] SplitCos, float[] SplitSin) Tables = MakeTables();
+        private static readonly Radix2Fft Fft = new(Half);
+        private static readonly (float[] SplitCos, float[] SplitSin) Tables = MakeTables();
 
         private readonly int _rate, _decimation, _blockLength;
         private readonly double _frameRate;
@@ -206,8 +207,9 @@ public static class BeatDetector
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private void Frame()
         {
-            var (cos, sin, reverse, splitCos, splitSin) = Tables;
+            var (splitCos, splitSin) = Tables;
             var (re, im) = (_re, _im);
+            var reverse = Fft.Reverse;
             for (var k = 0; k < Half; k++)
             {
                 var j = reverse[k];
@@ -216,21 +218,8 @@ public static class BeatDetector
                 im[k] = _ring[(_ringAt + odd) & (Size - 1)] * Window[odd];
             }
 
-            for (var length = 2; length <= Half; length <<= 1)
-            {
-                var (half, step) = (length / 2, Half / length);
-                for (var start = 0; start < Half; start += length)
-                {
-                    for (var k = 0; k < half; k++)
-                    {
-                        var (wr, wi) = (cos[k * step], -sin[k * step]);
-                        var (a, b) = (start + k, start + k + half);
-                        var (tr, ti) = (re[b] * wr - im[b] * wi, re[b] * wi + im[b] * wr);
-                        (re[b], im[b]) = (re[a] - tr, im[a] - ti);
-                        (re[a], im[a]) = (re[a] + tr, im[a] + ti);
-                    }
-                }
-            }
+            // (The noise reduction's transform, its butterflies vectors at a time: the same flux to the bit as one butterfly at a time.)
+            Fft.Butterflies(re, im, inverse: false);
 
             // X[k] = E[k] + W^k O[k], E and O the even and odd samples' spectra, taken apart from the packed one.
             const float scale = Compression / (Size / 4f);
@@ -426,25 +415,13 @@ public static class BeatDetector
             return window;
         }
 
-        // The complex FFT's twiddles and bit reversal (128 points), and the real split's (256 points).
-        private static (float[], float[], int[], float[], float[]) MakeTables()
+        // The real split's twiddles (256 points; the complex FFT of 128 is Radix2Fft's).
+        private static (float[], float[]) MakeTables()
         {
-            var (cos, sin, reverse) = (new float[Half / 2], new float[Half / 2], new int[Half]);
-            for (var k = 0; k < Half / 2; k++)
-                (cos[k], sin[k]) = ((float)Math.Cos(2 * Math.PI * k / Half), (float)Math.Sin(2 * Math.PI * k / Half));
-            var bits = System.Numerics.BitOperations.Log2(Half);
-            for (var i = 0; i < Half; i++)
-            {
-                var (r, v) = (0, i);
-                for (var b = 0; b < bits; b++, v >>= 1)
-                    r = (r << 1) | (v & 1);
-                reverse[i] = r;
-            }
-
             var (splitCos, splitSin) = (new float[Half + 1], new float[Half + 1]);
             for (var k = 0; k <= Half; k++)
                 (splitCos[k], splitSin[k]) = ((float)Math.Cos(2 * Math.PI * k / Size), (float)Math.Sin(2 * Math.PI * k / Size));
-            return (cos, sin, reverse, splitCos, splitSin);
+            return (splitCos, splitSin);
         }
     }
 }

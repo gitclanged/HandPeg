@@ -1,4 +1,6 @@
 using System.IO;
+using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
@@ -92,8 +94,28 @@ public static class MaskBaker
             }
         }
 
-        var pixels = new byte[width * height * 4];
-        for (var i = 0; i < mask.Length; i++)
+        return Pack(mask);
+    }
+
+    /// <summary>
+    /// The mask as BGRA8: each value times 255, rounded (to even, as MathF.Round), held to 0..255 and written in every colour,
+    /// solid. A whole vector of values at a time (the same multiply and rounding in each lane), then one at a time for the rest.
+    /// </summary>
+    private static byte[] Pack(float[] mask)
+    {
+        var pixels = new byte[mask.Length * 4];
+        var i = 0;
+        if (Vector.IsHardwareAccelerated)
+        {
+            var values = MemoryMarshal.Cast<float, Vector<float>>(mask.AsSpan());
+            var packed = MemoryMarshal.Cast<byte, Vector<int>>(pixels.AsSpan());
+            var (scale, most, grey, solid) = (new Vector<float>(255), new Vector<int>(255), new Vector<int>(0x010101), new Vector<int>(unchecked((int)0xFF000000)));
+            for (var v = 0; v < values.Length; v++)
+                packed[v] = Vector.Min(Vector.Max(Vector.ConvertToInt32(Vector.Round(values[v] * scale)), Vector<int>.Zero), most) * grey | solid;
+            i = values.Length * Vector<float>.Count;
+        }
+
+        for (; i < mask.Length; i++)
         {
             var v = (byte)Math.Clamp((int)MathF.Round(mask[i] * 255), 0, 255);
             (pixels[i * 4], pixels[i * 4 + 1], pixels[i * 4 + 2], pixels[i * 4 + 3]) = (v, v, v, 255);
@@ -172,9 +194,48 @@ public static class MaskBaker
             Line(source, (y0 + y) * stride + x0, 1, width, rows, y * toWidth, 1, toWidth);
 
         var result = new float[toWidth * toHeight];
-        for (var x = 0; x < toWidth; x++)
-            Line(rows, x, toWidth, height, result, x, toWidth, toHeight);
+        Down(rows, toWidth, height, result, toHeight);
         return result;
+    }
+
+    // Resample's pass down, every column at once, a row at a time: an output row takes the same source rows with the same
+    // weights in every column, so the columns go side by side, in rows as the picture is laid out (one walked alone reads a
+    // cache line for every pixel), each through the very operations Line gives a column alone.
+    private static void Down(float[] source, int width, int count, float[] target, int size)
+    {
+        var scale = (double)count / size;
+        var sums = new double[scale > 1 ? width : 0];
+        for (var i = 0; i < size; i++)
+        {
+            var to = target.AsSpan(i * width, width);
+            if (scale > 1)
+            {
+                var (start, end) = (i * scale, (i + 1) * scale);
+                var weight = 0.0;
+                Array.Clear(sums);
+                for (var k = (int)start; k < Math.Min((int)Math.Ceiling(end), count); k++)
+                {
+                    var w = Math.Min(end, k + 1) - Math.Max(start, k);
+                    var row = source.AsSpan(k * width, width);
+                    for (var x = 0; x < width; x++)
+                        sums[x] += row[x] * w;
+                    weight += w;
+                }
+
+                for (var x = 0; x < width; x++)
+                    to[x] = (float)(weight > 0 ? sums[x] / weight : 0);
+            }
+            else
+            {
+                var at = Math.Clamp((i + 0.5) * scale - 0.5, 0, count - 1);
+                var k = (int)at;
+                var f = at - k;
+                var row = source.AsSpan(k * width, width);
+                var next = source.AsSpan(Math.Min(k + 1, count - 1) * width, width);
+                for (var x = 0; x < width; x++)
+                    to[x] = (float)(row[x] * (1 - f) + next[x] * f);
+            }
+        }
     }
 
     // One line of Resample: count samples from `from` (every `step`) into `size` samples at `to` (every `toStep`).
@@ -214,46 +275,96 @@ public static class MaskBaker
     /// <summary>
     /// Passes of a 3 x 3 dilation (or erosion): the most (least) within a square of radius <paramref name="passes"/>, edges
     /// clamped, as many passes of FFmpeg's dilation and erosion give. Separable, by van Herk / Gil-Werman: three
-    /// comparisons a pixel whatever the radius.
+    /// comparisons a pixel whatever the radius. The columns go a vector's width at a time, side by side (each lane a column,
+    /// through the same comparisons as one alone), so the picture is read a run of pixels a row, not a cache line a pixel.
     /// </summary>
     private static void Spread(float[] mask, int width, int height, int passes, bool grow)
     {
         var line = new float[Math.Max(width, height)];
         var output = new float[line.Length];
+        var size = 2 * passes + 1;
+        var block = (line.Length + 2 * passes + size - 1) / size * size;
+        var (forward, backward) = (new float[block], new float[block]);
         for (var y = 0; y < height; y++)
         {
             Array.Copy(mask, y * width, line, 0, width);
-            Extreme(line, output, width, passes, grow);
+            Extreme(line, output, width, passes, grow, forward, backward);
             Array.Copy(output, 0, mask, y * width, width);
         }
 
-        for (var x = 0; x < width; x++)
+        var x = 0;
+        if (Vector.IsHardwareAccelerated && width >= Vector<float>.Count)
+        {
+            var lanes = Vector<float>.Count;
+            var (columns, extremes) = (new Vector<float>[height], new Vector<float>[height]);
+            var (forwards, backwards) = (new Vector<float>[block], new Vector<float>[block]);
+            for (; x <= width - lanes; x += lanes)
+            {
+                for (var y = 0; y < height; y++)
+                    columns[y] = new Vector<float>(mask.AsSpan(y * width + x, lanes));
+                Extreme(columns, extremes, height, passes, grow, forwards, backwards);
+                for (var y = 0; y < height; y++)
+                    extremes[y].CopyTo(mask.AsSpan(y * width + x, lanes));
+            }
+        }
+
+        for (; x < width; x++)
         {
             for (var y = 0; y < height; y++)
                 line[y] = mask[y * width + x];
-            Extreme(line, output, height, passes, grow);
+            Extreme(line, output, height, passes, grow, forward, backward);
             for (var y = 0; y < height; y++)
                 mask[y * width + x] = output[y];
         }
     }
 
-    // The most (or least) of each window of 2r + 1 along a line, edges clamped.
-    private static void Extreme(float[] line, float[] output, int count, int radius, bool most)
+    // The most (or least) of each window of 2r + 1 along a line, edges clamped. (Its runs are the caller's, used again line after line.)
+    private static void Extreme(float[] line, float[] output, int count, int radius, bool most, float[] forward, float[] backward)
     {
         var size = 2 * radius + 1;
         var padded = count + 2 * radius;
         var block = ((padded + size - 1) / size) * size;
-        var forward = new float[block];
-        var backward = new float[block];
         float At(int i) => line[Math.Clamp(i - radius, 0, count - 1)];
         float Pick(float a, float b) => most ? MathF.Max(a, b) : MathF.Min(a, b);
 
-        for (var i = 0; i < block; i++)
-            forward[i] = i % size == 0 ? At(i) : Pick(forward[i - 1], At(i));
-        for (var i = block - 1; i >= 0; i--)
-            backward[i] = i % size == size - 1 || i == block - 1 ? At(i) : Pick(backward[i + 1], At(i));
+        // Window by window (the block is a whole number of them): a run forward from each one's start, and back from its end,
+        // each carried along in a local rather than read back from the run it is written to.
+        for (var start = 0; start < block; start += size)
+        {
+            var run = forward[start] = At(start);
+            for (var i = start + 1; i < start + size; i++)
+                run = forward[i] = Pick(run, At(i));
+            run = backward[start + size - 1] = At(start + size - 1);
+            for (var i = start + size - 2; i >= start; i--)
+                run = backward[i] = Pick(run, At(i));
+        }
 
         // The window of padded positions [i, i + size - 1] is the backward run from i and the forward run to its end.
+        for (var i = 0; i < count; i++)
+            output[i] = Pick(backward[i], forward[Math.Min(i + size - 1, block - 1)]);
+    }
+
+    // The same along lines side by side, each of a vector's lanes a line of its own (Vector.Max and Min are MathF.Max and Min, lane by lane).
+    private static void Extreme(Vector<float>[] line, Vector<float>[] output, int count, int radius, bool most, Vector<float>[] forward, Vector<float>[] backward)
+    {
+        var size = 2 * radius + 1;
+        var padded = count + 2 * radius;
+        var block = ((padded + size - 1) / size) * size;
+        Vector<float> At(int i) => line[Math.Clamp(i - radius, 0, count - 1)];
+        Vector<float> Pick(Vector<float> a, Vector<float> b) => most ? Vector.Max(a, b) : Vector.Min(a, b);
+
+        // Window by window (the block is a whole number of them): a run forward from each one's start, and back from its end,
+        // each carried along in a local rather than read back from the run it is written to.
+        for (var start = 0; start < block; start += size)
+        {
+            var run = forward[start] = At(start);
+            for (var i = start + 1; i < start + size; i++)
+                run = forward[i] = Pick(run, At(i));
+            run = backward[start + size - 1] = At(start + size - 1);
+            for (var i = start + size - 2; i >= start; i--)
+                run = backward[i] = Pick(run, At(i));
+        }
+
         for (var i = 0; i < count; i++)
             output[i] = Pick(backward[i], forward[Math.Min(i + size - 1, block - 1)]);
     }
@@ -279,25 +390,123 @@ public static class MaskBaker
     }
 
     // A box of radius r across each row (running sums, edges clamped), as boxblur's one pass across.
+    // Four rows at a time, each with its own sum: a sum waits on its last step, so four of them side by side keep the
+    // processor busy. Each row is copied with its first and last values repeated r + 1 times beyond its ends (no position to
+    // clamp), and takes the same values in the same order as Box, so the result is the same to the bit.
     private static void BoxRows(float[] mask, int width, int height, int radius)
     {
-        var line = new float[width];
-        for (var y = 0; y < height; y++)
+        var (pad, size) = (radius + 1, 2 * radius + 1);
+        var stride = width + 2 * pad;
+        var lines = new float[4 * stride];
+        var y = 0;
+        for (; y + 4 <= height; y += 4)
         {
-            Array.Copy(mask, y * width, line, 0, width);
-            Box(line, width, radius, mask, y * width, 1);
+            for (var n = 0; n < 4; n++)
+            {
+                var line = lines.AsSpan(n * stride, stride);
+                line[..pad].Fill(mask[(y + n) * width]);
+                mask.AsSpan((y + n) * width, width).CopyTo(line[pad..]);
+                line[(pad + width)..].Fill(mask[(y + n) * width + width - 1]);
+            }
+
+            var (a, b, c, d) = (0.0, 0.0, 0.0, 0.0);
+            for (var k = pad - radius; k <= pad + radius; k++)
+                (a, b, c, d) = (a + lines[k], b + lines[stride + k], c + lines[2 * stride + k], d + lines[3 * stride + k]);
+
+            var (at, take) = (y * width, pad - radius);
+            for (var i = 0; i < width; i++, take++)
+            {
+                mask[at + i] = (float)(a / size);
+                mask[at + width + i] = (float)(b / size);
+                mask[at + 2 * width + i] = (float)(c / size);
+                mask[at + 3 * width + i] = (float)(d / size);
+                var add = take + size;
+                a += lines[add] - lines[take];
+                b += lines[stride + add] - lines[stride + take];
+                c += lines[2 * stride + add] - lines[2 * stride + take];
+                d += lines[3 * stride + add] - lines[3 * stride + take];
+            }
+        }
+
+        for (; y < height; y++)
+        {
+            Array.Copy(mask, y * width, lines, 0, width);
+            Box(lines, width, radius, mask, y * width, 1);
         }
     }
 
+    // The same down each column, as boxblur's pass down: every column's running sum kept side by side and moved a row at a
+    // time, so the picture is read in rows (a column walked alone reads a cache line for every pixel). Each column takes the
+    // same values in the same order as Box along one line (the difference made in float, then added), so the result is the
+    // same to the bit. The rows a sum has still to take away are kept as they were before being written over: r + 1, in turn.
     private static void BoxColumns(float[] mask, int width, int height, int radius)
     {
-        var line = new float[height];
-        for (var x = 0; x < width; x++)
+        var (sums, kept, size) = (new double[width], new float[(radius + 1) * width], 2 * radius + 1);
+        for (var k = -radius; k <= radius; k++)
+            AddRow(sums, mask.AsSpan(Math.Clamp(k, 0, height - 1) * width, width));
+
+        for (var y = 0; y < height; y++)
         {
-            for (var y = 0; y < height; y++)
-                line[y] = mask[y * width + x];
-            Box(line, height, radius, mask, x, width);
+            var row = mask.AsSpan(y * width, width);
+            row.CopyTo(kept.AsSpan(y % (radius + 1) * width, width));
+            WriteRow(sums, size, row);
+            if (y < height - 1)
+                MoveRow(sums, mask.AsSpan(Math.Min(y + radius + 1, height - 1) * width, width), kept.AsSpan(Math.Max(y - radius, 0) % (radius + 1) * width, width));
         }
+    }
+
+    // sums[x] += row[x], each value widened to double first (as Box's first sum).
+    private static void AddRow(Span<double> sums, ReadOnlySpan<float> row)
+    {
+        var x = 0;
+        if (Vector.IsHardwareAccelerated)
+        {
+            for (; x <= row.Length - Vector<float>.Count; x += Vector<float>.Count)
+            {
+                Vector.Widen(new Vector<float>(row[x..]), out var low, out var high);
+                var into = MemoryMarshal.Cast<double, Vector<double>>(sums.Slice(x, Vector<float>.Count));
+                (into[0], into[1]) = (into[0] + low, into[1] + high);
+            }
+        }
+
+        for (; x < row.Length; x++)
+            sums[x] += row[x];
+    }
+
+    // row[x] = (float)(sums[x] / size), as Box writes a value.
+    private static void WriteRow(ReadOnlySpan<double> sums, int size, Span<float> row)
+    {
+        var x = 0;
+        if (Vector.IsHardwareAccelerated)
+        {
+            var by = new Vector<double>(size);
+            for (; x <= row.Length - Vector<float>.Count; x += Vector<float>.Count)
+            {
+                var from = MemoryMarshal.Cast<double, Vector<double>>(sums.Slice(x, Vector<float>.Count));
+                Vector.Narrow(from[0] / by, from[1] / by).CopyTo(row[x..]);
+            }
+        }
+
+        for (; x < row.Length; x++)
+            row[x] = (float)(sums[x] / size);
+    }
+
+    // sums[x] += add[x] - take[x], the difference made in float and then widened, as Box moves its sum along.
+    private static void MoveRow(Span<double> sums, ReadOnlySpan<float> add, ReadOnlySpan<float> take)
+    {
+        var x = 0;
+        if (Vector.IsHardwareAccelerated)
+        {
+            for (; x <= add.Length - Vector<float>.Count; x += Vector<float>.Count)
+            {
+                Vector.Widen(new Vector<float>(add[x..]) - new Vector<float>(take[x..]), out var low, out var high);
+                var into = MemoryMarshal.Cast<double, Vector<double>>(sums.Slice(x, Vector<float>.Count));
+                (into[0], into[1]) = (into[0] + low, into[1] + high);
+            }
+        }
+
+        for (; x < add.Length; x++)
+            sums[x] += add[x] - take[x];
     }
 
     private static void Box(float[] line, int count, int radius, float[] target, int to, int step)

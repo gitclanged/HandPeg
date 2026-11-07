@@ -37,7 +37,7 @@ if (-not $NoBuild) {
     }
 }
 
-$exe = Join-Path $PSScriptRoot "AvSync\bin\$Configuration\net8.0-windows\AvSync.exe"
+$exe = Join-Path $PSScriptRoot "AvSync\bin\$Configuration\net10.0-windows\AvSync.exe"
 if (-not (Test-Path $exe)) {
     Write-Output "Not built yet: $exe (run without -NoBuild)."
     exit 2

@@ -38,7 +38,8 @@ public enum ChildStack { Visual, Audio }
 /// <summary>
 /// One row of the unified timeline: a track, with its blocks laid out in pixels (seconds times the control's
 /// PixelsPerSecond), and the rows that belong to it (its mini-stack: HUD Cutouts, its file's sound streams, the
-/// captions), drawn under it as thin lanes until it is expanded (then those in front of it above it, <see cref="InFront"/>).
+/// captions), drawn under it as thin lanes until it is expanded (then those in front of it above it, <see cref="InFront"/>);
+/// a track's effect lanes take no room at all until it is (<see cref="HidesWhenClosed"/>).
 /// </summary>
 public sealed class TimelineRow
 {
@@ -52,7 +53,7 @@ public sealed class TimelineRow
 
     public TimelineRowKind Kind { get; init; }
 
-    /// <summary>Its full height in DIPs (a collapsed child lane is a fifth of it, at least 8).</summary>
+    /// <summary>Its full height in DIPs (a collapsed child lane is a fifth of it, at least 8; an effect lane, <see cref="HidesWhenClosed"/>, none).</summary>
     public double Height { get; set; } = 56;
 
     /// <summary>
@@ -82,6 +83,13 @@ public sealed class TimelineRow
     /// the parent's row (the frontmost at the top); the others under it. Closed, every child is in the mini-stack under it.
     /// </summary>
     public bool InFront { get; set; }
+
+    /// <summary>
+    /// A lane that takes no room while its parent's stack is closed (5.3, the user's call: a track's effect lanes, which a closed
+    /// Cutout showed as thin purple bars); every other child is a thin bar then. Open, it is laid as any lane, growing in with its
+    /// stack; under a parent that is itself a thin bar of a closed stack it takes no room either.
+    /// </summary>
+    public bool HidesWhenClosed { get; set; }
 
     /// <summary>Which switch glyphs its header shows.</summary>
     public RowSwitches Offered { get; set; }
@@ -140,7 +148,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     /// <summary>A collapsed child lane is this much of its height (at least 8 px).</summary>
     public const double MiniStackFraction = 0.2;
 
-    // A collapsed lane is never thinner than this.
+    // A collapsed lane is never thinner than this (an effect lane, TimelineRow.HidesWhenClosed, is not a thin bar: it takes no room).
     private const double MiniLeast = 8;
 
     // Between lanes: the panel shows through, as it did between the old bars.
@@ -755,11 +763,22 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         }
     }
 
+    /// <summary>
+    /// The lanes as they are laid now, top to bottom (for the golden tests, timeline-effect-lanes-fold): each row's key, where its lane
+    /// is and how tall (DIPs; 0 for an effect lane of a closed stack), whether it is drawn small or in full, which stacks of its own it
+    /// has (its chevrons: 1 the layers', 2 the sound's), and whether it is the last of its stack that shows.
+    /// </summary>
+    internal IReadOnlyList<(object Key, double Top, double Height, bool Mini, bool Detailed, int Stacks, bool Last)> LaidLanes =>
+        _lanes.ConvertAll<(object Key, double Top, double Height, bool Mini, bool Detailed, int Stacks, bool Last)>(
+            lane => (lane.Row.Key, lane.Top, lane.Height, lane.Mini, lane.Detailed, lane.Stacks, lane.LastChild));
+
     // A lane above its parent's, laid before the parent's index is known: set once it is.
     private const int PendingParent = int.MinValue;
 
     // A row's lane and its children's: a child is as tall as its stack of its parent's is open (a fifth of its height
     // closed, all of it open; the openness is already eased, fastest at first), and a child of a closed one is closed too.
+    // The one exception is an effect lane (5.3, TimelineRow.HidesWhenClosed): closed, or under a closed ancestor, it takes no
+    // room at all, and it grows in from nothing as its stack opens.
     // Each of the parent's stacks (the layers', the sound's) is laid together under it, the layers' first. While the
     // layers' stack is open or opening, its children drawn in front of the parent (TimelineRow.InFront: the captions, a
     // cut-out over the video) are laid above the parent's row instead, in their order (the frontmost at the top), and only
@@ -831,8 +850,10 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             return;
 
         // The rest under it (and, leaving, those in front: thin and closed, as the closed stack has them), each stack
-        // together: first and last of its stack among those laid under it.
+        // together: first and last of its stack among those laid under it that take room (an effect lane of a closed stack
+        // takes none, so the deck's line ends at the last lane that shows).
         bool Under(TimelineRow child) => leaving || !Above(child);
+        bool Shows(TimelineRow child) => !child.HidesWhenClosed || (!Above(child) && Math.Min(openness, Openness(row, child.Stack)) > 0);
         var two = stacks == 3;
         for (var i = 0; i < row.Children.Count; i++)
         {
@@ -841,18 +862,24 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
                 continue;
 
             var before = i - 1;
-            while (before >= 0 && !Under(row.Children[before]))
+            while (before >= 0 && !(Under(row.Children[before]) && Shows(row.Children[before])))
                 before--;
             var after = i + 1;
-            while (after < row.Children.Count && !Under(row.Children[after]))
+            while (after < row.Children.Count && !(Under(row.Children[after]) && Shows(row.Children[after])))
                 after++;
 
             var first = before < 0 || row.Children[before].Stack != child.Stack;
             var last = after >= row.Children.Count || row.Children[after].Stack != child.Stack;
             var (open, share) = Above(child) ? (0.0, fade * (1 - layersOpen)) : (Math.Min(openness, Openness(row, child.Stack)), fade);
 
-            // A stack is never hidden (5.1-CleanupStudioAndFfmpegPurge, the user's directive): closed, it is its thin bars, a fifth of a lane
-            // each. A closed sound stack is one bar, its first lane's, with every stream that is heard: the others come only as it opens.
+            // An effect lane (5.3, the user's call) is never a thin bar: it takes room only as far as its own track's stack is open (and
+            // that track is shown in full), growing in with it, its gap with it; closed, or under a closed ancestor, it is nothing.
+            if (child.HidesWhenClosed)
+                share *= open;
+
+            // Every other child keeps the rule that a stack is never hidden (5.1-CleanupStudioAndFfmpegPurge, the user's directive): closed,
+            // it is its thin bars, a fifth of a lane each. A closed sound stack is one bar, its first lane's, with every stream that is heard:
+            // the others come only as it opens.
             var stackOpen = Openness(row, child.Stack);
             var oneBar = child.Stack == ChildStack.Audio && first && stackOpen < 0.999;
             if (child.Stack == ChildStack.Audio && !first)

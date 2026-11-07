@@ -1,4 +1,6 @@
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 namespace HandPegApp.Services.Audio;
 
@@ -88,6 +90,36 @@ internal struct RbjSection
 
     /// <summary>Its history cleared, its coefficients kept (a seek).</summary>
     public void Clear() => (_x1, _x2, _y1, _y2) = (0, 0, 0, 0);
+
+    /// <summary>The section on both sides of a stereo sound at once (<see cref="BiquadPair"/>), its history cleared.</summary>
+    public readonly BiquadPair Paired() => new(_b0, _b1, _b2, _a1, _a2);
+}
+
+/// <summary>
+/// Two direct-form biquads side by side, a lane of a vector each (5.3: both sides of a stereo sound at once, Studio Voice's and the loudness
+/// meters'): each lane is <see cref="RbjSection"/>'s and <see cref="KFilter"/>'s arithmetic in its order, never fused, so each side comes out
+/// the same to the bit as through a filter of its own.
+/// </summary>
+internal struct BiquadPair(double b0, double b1, double b2, double a1, double a2)
+{
+    private readonly Vector128<double> _b0 = Vector128.Create(b0), _b1 = Vector128.Create(b1), _b2 = Vector128.Create(b2), _a1 = Vector128.Create(a1), _a2 = Vector128.Create(a2);
+    private Vector128<double> _x1, _x2, _y1, _y2;
+
+    public Vector128<double> Next(Vector128<double> x)
+    {
+        var y = _b0 * x + _b1 * _x1 + _b2 * _x2 - _a1 * _y1 - _a2 * _y2;
+        (_x2, _x1, _y2, _y1) = (_x1, x, _y1, y);
+        return y;
+    }
+
+    /// <summary>Denormals let go of, lane by lane.</summary>
+    public void Flush() => (_x1, _x2, _y1, _y2) = (Flushed(_x1), Flushed(_x2), Flushed(_y1), Flushed(_y2));
+
+    /// <summary>Its history cleared, its coefficients kept (a seek).</summary>
+    public void Clear() => (_x1, _x2, _y1, _y2) = (default, default, default, default);
+
+    private static Vector128<double> Flushed(Vector128<double> value) =>
+        Vector128.ConditionalSelect(Vector128.LessThan(Vector128.Abs(value), Vector128.Create(1e-25)), Vector128<double>.Zero, value);
 }
 
 /// <summary>Studio Voice (see the top of this file): the vocal chain blended with the dry sound, its latency constant.</summary>
@@ -148,19 +180,20 @@ internal sealed class StudioVoiceEffect : AudioEffect
         public Chain(int sampleRate, int reverbFrames)
         {
             for (var c = 0; c < 2; c++)
-            {
                 Channels[c] = new Channel(reverbFrames);
-                (HighPass[c], LowPass[c]) = (RbjSection.HighPass(80, 0.7071, sampleRate), RbjSection.LowPass(13000, 0.5, sampleRate));
-                (Presence[c], Exciter[c]) = (RbjSection.Peaking(PresenceHz, 0.9, PresenceDb, sampleRate), RbjSection.BandPass(ExciterHz, 0.7, sampleRate));
-            }
+            (HighPass, LowPass) = (RbjSection.HighPass(80, 0.7071, sampleRate).Paired(), RbjSection.LowPass(13000, 0.5, sampleRate).Paired());
+            (Presence, Exciter) = (RbjSection.Peaking(PresenceHz, 0.9, PresenceDb, sampleRate).Paired(), RbjSection.BandPass(ExciterHz, 0.7, sampleRate).Paired());
         }
 
         public readonly Channel[] Channels = new Channel[2];
-        public readonly RbjSection[] HighPass = new RbjSection[2], LowPass = new RbjSection[2], Presence = new RbjSection[2], Exciter = new RbjSection[2];
 
-        // The dry sound held back (interleaved, Latency frames), and the block's dry, band, cleaned and wet sound.
+        // The filters of both sides, a lane each.
+        public BiquadPair HighPass, LowPass, Presence, Exciter;
+
+        // The dry sound held back (interleaved, Latency frames), and the block's dry and wet sound (interleaved), band and cleaned sound
+        // (each side's Chunk samples, the left's then the right's).
         public readonly float[] Dry = new float[2 * Latency];
-        public readonly float[] Held = new float[2 * Chunk], Wet = new float[2 * Chunk], Band = new float[Chunk], Cleaned = new float[Chunk];
+        public readonly float[] Held = new float[2 * Chunk], Wet = new float[2 * Chunk], Band = new float[2 * Chunk], Cleaned = new float[2 * Chunk];
         public int DryAt;
 
         // The leveller: its mean square, its gain in dB and the one it is heading for, the peak catch's envelope, and a count for how often
@@ -171,14 +204,11 @@ internal sealed class StudioVoiceEffect : AudioEffect
         public void Clear()
         {
             for (var c = 0; c < 2; c++)
-            {
                 Channels[c].Clear();
-                HighPass[c].Clear();
-                LowPass[c].Clear();
-                Presence[c].Clear();
-                Exciter[c].Clear();
-            }
-
+            HighPass.Clear();
+            LowPass.Clear();
+            Presence.Clear();
+            Exciter.Clear();
             Array.Clear(Dry);
             (DryAt, Level, GainDb, Heading, Peak, Tick) = (0, 0, 0, 0, 0, 0);
         }
@@ -243,27 +273,31 @@ internal sealed class StudioVoiceEffect : AudioEffect
 
         chain.DryAt = at;
 
-        // Each side: the voice's band, the spectral stage (a voice model's when one is there, of the same latency), the presence.
+        // The voice's band, both sides at once (a lane each); then each side's spectral stage (a voice model's when one is there, of the
+        // same latency); then the presence, both sides at once again.
+        ref var highPass = ref chain.HighPass;
+        ref var lowPass = ref chain.LowPass;
+        var (band, cleaned) = (chain.Band, chain.Cleaned);
+        for (var i = 0; i < count; i++)
+        {
+            var y = lowPass.Next(highPass.Next(Vector128.Create((double)block[2 * i], block[2 * i + 1])));
+            (band[i], band[Chunk + i]) = ((float)y.GetElement(0), (float)y.GetElement(1));
+        }
+
+        highPass.Flush();
+        lowPass.Flush();
+
         var model = VoiceModels.Current;
         for (var c = 0; c < 2; c++)
         {
-            ref var highPass = ref chain.HighPass[c];
-            ref var lowPass = ref chain.LowPass[c];
-            var band = chain.Band;
-            for (var i = 0; i < count; i++)
-                band[i] = (float)lowPass.Next(highPass.Next(block[2 * i + c]));
-            highPass.Flush();
-            lowPass.Flush();
-
-            var cleaned = chain.Cleaned;
             if (model is { Latency: StudioVoiceEffect.Latency })
             {
-                model.Clean(band.AsSpan(0, count), cleaned.AsSpan(0, count), c);
+                model.Clean(band.AsSpan(c * Chunk, count), cleaned.AsSpan(c * Chunk, count), c);
             }
             else
             {
                 var channel = chain.Channels[c];
-                for (var i = 0; i < count; i++)
+                for (var i = c * Chunk; i < c * Chunk + count; i++)
                 {
                     channel.Input[Size - Hop + channel.Filled] = band[i];
                     cleaned[i] = channel.Ready[channel.Filled];
@@ -274,20 +308,24 @@ internal sealed class StudioVoiceEffect : AudioEffect
                     }
                 }
             }
-
-            ref var presence = ref chain.Presence[c];
-            ref var exciter = ref chain.Exciter[c];
-            for (var i = 0; i < count; i++)
-            {
-                var y = cleaned[i];
-                var lifted = presence.Next(y);
-                var e = exciter.Next(y);
-                wet[2 * i + c] = (float)(lifted + ExciterAmount * (Math.Tanh(ExciterDrive * e) / ExciterDrive - e));
-            }
-
-            presence.Flush();
-            exciter.Flush();
         }
+
+        ref var presence = ref chain.Presence;
+        ref var exciter = ref chain.Exciter;
+        var (drive, amount) = (Vector128.Create(ExciterDrive), Vector128.Create(ExciterAmount));
+        for (var i = 0; i < count; i++)
+        {
+            var y = Vector128.Create((double)cleaned[i], cleaned[Chunk + i]);
+            var lifted = presence.Next(y);
+            var e = exciter.Next(y);
+            var driven = drive * e;
+            var shaped = Vector128.Create(Math.Tanh(driven.GetElement(0)), Math.Tanh(driven.GetElement(1)));
+            var sound = lifted + amount * (shaped / drive - e);
+            (wet[2 * i], wet[2 * i + 1]) = ((float)sound.GetElement(0), (float)sound.GetElement(1));
+        }
+
+        presence.Flush();
+        exciter.Flush();
 
         Level(chain, wet, count);
 
@@ -314,17 +352,46 @@ internal sealed class StudioVoiceEffect : AudioEffect
     }
 
     // One frame of the spectral stage: DenoiseEffect's (a sound above the floor passes), with the room's late reverb as a second interference.
+    // Bins 0 to Size / 2 - 1 four at a time (each lane the scalar loop's operations in its order: the same gains to the bit), the last bin
+    // alone; the bins above Size / 2 then take their mirror bins' gains.
     private void Frame(Channel channel)
     {
         var (re, im) = (channel.Re, channel.Im);
-        var window = DenoiseEffect.Window;
-        for (var n = 0; n < Size; n++)
-            (re[n], im[n]) = (channel.Input[n] * window[n], 0);
+        DenoiseEffect.Windowed(channel.Input, re, im);
         DenoiseEffect.Transform(re, im, inverse: false);
 
         var newWindow = channel.Frames % _halfWindow == 0;
         var (late, lateAt, hasLate) = (channel.Late, channel.Frames % _reverbFrames * Bins, channel.Frames >= _reverbFrames);
-        for (var b = 0; b < Bins; b++)
+        var started = channel.Started;
+        Span<Vector128<float>> vectorRe = DenoiseEffect.Vectors(re), vectorIm = DenoiseEffect.Vectors(im);
+        Span<Vector128<float>> powers = DenoiseEffect.Vectors(channel.Power), minimums = DenoiseEffect.Vectors(channel.Minimum), previouses = DenoiseEffect.Vectors(channel.Previous);
+        Span<Vector128<float>> gains = DenoiseEffect.Vectors(channel.Gain), posts = DenoiseEffect.Vectors(channel.Post);
+        var lates = MemoryMarshal.Cast<float, Vector128<float>>(late.AsSpan(lateAt, Size / 2));
+        var (decay, one) = (Vector128.Create(_roomDecay), Vector128<float>.One);
+        for (var v = 0; v < vectorRe.Length && v < vectorIm.Length && v < powers.Length && v < minimums.Length && v < previouses.Length && v < gains.Length && v < posts.Length && v < lates.Length; v++)
+        {
+            var (r, i) = (vectorRe[v], vectorIm[v]);
+            var power = r * r + i * i;
+            var smooth = started ? Vector128.Create(0.7f) * powers[v] + Vector128.Create(0.3f) * power : power;
+            powers[v] = smooth;
+            if (!started)
+                (minimums[v], previouses[v], gains[v], posts[v]) = (smooth, smooth, one, one);
+            else if (newWindow)
+                (previouses[v], minimums[v]) = (minimums[v], smooth);
+            else
+                minimums[v] = Vector128.Min(minimums[v], smooth);
+
+            var noise = Vector128.Min(Vector128.Max(Vector128.Min(minimums[v], previouses[v]) * DenoiseEffect.Bias, Vector128.Create(1e-12f)), Vector128.Create(DenoiseEffect.MostNoise));
+            var room = hasLate ? decay * lates[v] : Vector128<float>.Zero;
+            lates[v] = smooth;
+            var post = power / (noise + room);
+            var prior = Vector128.Create(0.98f) * gains[v] * gains[v] * posts[v] + Vector128.Create(0.02f) * Vector128.Max(post - one, Vector128<float>.Zero);
+            var gain = Vector128.Max(prior / (one + prior), Vector128.Create(Floor));
+            (gains[v], posts[v]) = (gain, post);
+            (vectorRe[v], vectorIm[v]) = (r * gain, i * gain);
+        }
+
+        for (var b = Size / 2; b < Bins; b++)
         {
             var power = re[b] * re[b] + im[b] * im[b];
             var smooth = channel.Started ? 0.7f * channel.Power[b] + 0.3f * power : power;
@@ -346,24 +413,18 @@ internal sealed class StudioVoiceEffect : AudioEffect
             (channel.Gain[b], channel.Post[b]) = (gain, post);
             re[b] *= gain;
             im[b] *= gain;
-            if (b > 0 && b < Size / 2)
-            {
-                re[Size - b] *= gain;
-                im[Size - b] *= gain;
-            }
         }
 
+        DenoiseEffect.Mirror(re, im, channel.Gain);
         channel.Started = true;
         channel.Frames++;
         DenoiseEffect.Transform(re, im, inverse: true);
 
-        // Overlap-added as DenoiseEffect's frames are: square-root Hann twice is Hann, four a quarter apart sum to 2.
-        var output = channel.Output;
-        for (var n = 0; n < Size; n++)
-            output[n] += re[n] * window[n] * (0.5f / Size);
-        Array.Copy(output, channel.Ready, Hop);
-        Array.Copy(output, Hop, output, 0, Size - Hop);
-        Array.Clear(output, Size - Hop, Hop);
+        // Overlap-added as DenoiseEffect's frames are.
+        DenoiseEffect.OverlapAdd(re, channel.Output);
+        Array.Copy(channel.Output, channel.Ready, Hop);
+        Array.Copy(channel.Output, Hop, channel.Output, 0, Size - Hop);
+        Array.Clear(channel.Output, Size - Hop, Hop);
         Array.Copy(channel.Input, Hop, channel.Input, 0, Size - Hop);
     }
 
@@ -536,7 +597,8 @@ internal static class VoiceModels
     public const string ModelPattern = "DeepFilterNet3*.onnx";
 
     private static int _looked;
-    private static IVoiceModel? _model;
+    // Said null: the .NET 10 SDK's compiler does not count Volatile.Read's ref as a write (CS0649), and no model ever loads here.
+    private static IVoiceModel? _model = null;
 
     /// <summary>The voice model in use; null (the native chain) while none is loaded, which, in this HandPeg, is always.</summary>
     public static IVoiceModel? Current => Volatile.Read(ref _model);

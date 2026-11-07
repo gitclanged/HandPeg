@@ -404,6 +404,10 @@
                                 </ContextMenu>
                             </ToggleButton.ContextMenu>
                         </ToggleButton>
+                        <!-- Timeline Settings (5.3): the same menu as the Timeline tab's right-click (MainWindow.FillTimelineSettings), opened over the gear. -->
+                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="74" Content="&#xE713;" Tag="TimelineSettings" Click="Tool_Click"
+                                AutomationProperties.Name="Timeline Settings"
+                                ToolTip="Timeline Settings: effect lanes, filmstrips, waveforms and keyframes on the clips, snapping, following the playhead, the bars and the track height. The same menu as a right-click on the Timeline's tab." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="55" Content="&#xE71B;" IsChecked="{Binding AudioLinked, Mode=OneWay}" Tag="LinkAudio" Checked="Tool_Click" Unchecked="Tool_Click"
                                       AutomationProperties.Name="Link A/V" local:KeyTip.Text="Link Audio and Video: linked, sound follows its picture and is cut with it. Unlinked, a sound can be dragged on its own; linking again offers to snap it back. {key:clip.toggleLink|Link / Unlink A/V on a clip's menu} links or unlinks the selected clip alone." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="20" Content="&#xE8D6;" IsChecked="{Binding ShowLinkedAudio}"

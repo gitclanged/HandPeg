@@ -2,7 +2,8 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <LangVersion>14.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
@@ -19,9 +20,7 @@
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>
 
-    <!-- HandPeg.exe's icon (5.2.0's re-cut, the user's answer): drawn from vector geometry by tools\MakeIcon.ps1, 16 to 256 px. Its windows,
-         the taskbar, Alt+Tab, Setup.exe and the .hproj / .hpb files Explorer shows (DefaultIcon "<exe>",0) take it from the exe. -->
-    <ApplicationIcon>src\handpeg.ico</ApplicationIcon>
+    <!-- No ApplicationIcon (5.3, the user's answer): HandPeg ships with no custom .ico until the user provides a human-designed one. -->
 
     <!-- Windows Forms is referenced for two things WPF lacks: the system colour picker and tray notifications. -->
     <UseWindowsForms>true</UseWindowsForms>
@@ -50,6 +49,16 @@
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <GarbageCollectionAdaptationMode>1</GarbageCollectionAdaptationMode>
   </PropertyGroup>
+
+  <!--
+      The youngest generation may grow to 64 MB before it is collected (5.3, measured on .NET 10): the ~18 MB a start allocates before
+      its first frame then costs no pause. Left to .NET 10 (or held to 16 MB) it cost the XPS three collections and 18 ms of pauses and
+      the Desktop one of 12 ms. First frame, medians of 9 alternating starts: XPS 433 ms with none, 423 with 16 MB, 417 with 64 MB;
+      Desktop 440, 442, 440 (no change there). The heap 10 s after the first frame is unchanged (the start-up collection after it compacts).
+  -->
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.Gen0MaxBudget" Value="67108864" />
+  </ItemGroup>
 
   <!-- Its namespaces are not imported everywhere: half their type names collide with WPF's. -->
   <ItemGroup>

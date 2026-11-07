@@ -101,7 +101,7 @@ public partial class MainWindow
         menu.Items.Add(MenuAction("Reset Creator Hotbar", () => SaveHotbar(s => s.HotbarSlots = null),
             "Every slot back to Motion Blur, 3D Fly-In, Neon Rim, Whip Pan and Studio Voice."));
         menu.Items.Add(MenuAction("Hide Creator Hotbar", () => SaveHotbar(s => s.ShowCreatorHotbar = false),
-            "Takes the hotbar off the Timeline's row of tools. Settings > Timeline (or the Timeline's tab menu, Timeline Settings) brings it back."));
+            "Takes the hotbar off the Timeline's row of tools. Settings > Timeline, or Timeline Settings (the Timeline's tab menu, or the gear on its row of tools), brings it back."));
         menu.IsOpen = true;
     }
 

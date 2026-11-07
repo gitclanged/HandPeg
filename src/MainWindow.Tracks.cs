@@ -334,7 +334,12 @@ public partial class MainWindow
     {
         List<TimelineBlock>? sounds = null;
         var clipsOnTrack = _viewModel.GetTrackClips(layer);
-        var gainLines = AppSettings.Current.ShowClipGainLines;
+        var settings = AppSettings.Current;
+        var gainLines = settings.ShowClipGainLines;
+
+        // The Timeline Settings switches (5.3): the blocks' frames and their waveforms (a sound clip's, a video clip's own, an unlinked
+        // sound's, and so the closed sound stack's one bar, which draws its lanes' sound) are left off the blocks while they are off.
+        var (filmstrips, waveforms) = (settings.ShowClipFilmstrips, settings.ShowClipWaveforms);
         foreach (var clip in clipsOnTrack)
         {
             var (from, to) = clip.GetSpan(seconds);
@@ -367,13 +372,13 @@ public partial class MainWindow
                 Family = FamilyOf(model),
 
                 // Its frames, from its file's strip, and its sound: both laid on the file's own time.
-                Film = clip.IsHidden ? null
+                Film = clip.IsHidden || !filmstrips ? null
                     : clip.IsVideoFile && !clip.IsLoading ? FilmOf(clip.Filmstrip, clip.ImageWidth, clip.ImageHeight, clip.MediaOffset, clip.MediaDuration, speed)
                     : null,
-                SoundWindow = showsSound ? SoundOf(clip.Waveform, clip.MediaOffset, duration, speed, clip.GainDb) : null,
+                SoundWindow = showsSound && waveforms ? SoundOf(clip.Waveform, clip.MediaOffset, duration, speed, clip.GainDb) : null,
                 Keys = ClipKeys(clip, 0, scale)?.ToList(),
                 Beats = BeatTicks(model, from, scale),
-                Badge = BadgeOf(speed, slip, EffectCount(clip)),
+                Badge = BadgeOf(speed, slip, BadgeEffects(clip, CountsAsCutout(_viewModel, clip), settings)),
                 CanDrag = AlwaysDraggable,
                 Resizable = true,
 
@@ -454,7 +459,7 @@ public partial class MainWindow
                     Fill = clip.IsHidden || clip.IsMuted ? OffClipBrush : LayerAudioBrush,
                     Clip = new LayerSound(clip),
                     Family = model is null ? null : new BlockFamily(("sound", model.Id), model.Id, true, BlockEdges.Start | BlockEdges.End),
-                    SoundWindow = SoundOf(clip.Waveform, clip.MediaOffset, duration, speed, clip.GainDb),
+                    SoundWindow = waveforms ? SoundOf(clip.Waveform, clip.MediaOffset, duration, speed, clip.GainDb) : null,
                     Beats = BeatTicks(model, from + slip, scale),
                     Badge = BadgeOf(1, slip),
                     CanDrag = AlwaysDraggable,
@@ -488,9 +493,11 @@ public partial class MainWindow
     /// <summary>How many times as fast as recorded a clip runs; 1 for a clip that has no speed of its own.</summary>
     private static double ClipSpeed(Layer clip) => clip.HasSpeed ? Math.Clamp(clip.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
 
-    /// <summary>A block's tag: its speed when that is not 1 ("2x"), and how far its unlinked sound was slipped ("+120 ms"); null for neither.</summary>
-    // Its speed, its sound's slip, and how many effects it has (5.2: "fx 2", the effects' lanes folded or not).
-    private static string? BadgeOf(double speed, double slip, int effects = 0)
+    /// <summary>
+    /// A block's tag: its speed when that is not 1 ("2x"), how far its unlinked sound was slipped ("+120 ms"), and how many effects it
+    /// has (5.2: "fx 2", its effect lanes shown or not; 5.3: the cards its lanes would show, <see cref="BadgeEffects"/>); null for none.
+    /// </summary>
+    internal static string? BadgeOf(double speed, double slip, int effects = 0)
     {
         var speedText = Math.Abs(speed - 1) > 0.001 ? string.Create(CultureInfo.InvariantCulture, $"{speed:0.##}x") : null;
         var slipText = Math.Abs(slip) >= 0.0005 ? string.Create(CultureInfo.InvariantCulture, $"{(slip > 0 ? "+" : "-")}{Math.Abs(slip) * 1000:0} ms") : null;
@@ -499,7 +506,41 @@ public partial class MainWindow
         return string.Join("  ", parts) is { Length: > 0 } text ? text : null;
     }
 
-    private static int EffectCount(Layer clip) => clip.IsAudio || clip.IsCaptions ? 0 : clip.Effects.Count(e => !e.IsMissing);
+    // ----- Which cards a clip's effect lanes and its badge show (5.3) -----
+    // Every Cutout is made with two cards of its own, its Mask and its Rounded & Feathered Edges (Layer.EnsureEffect, as its mask and its
+    // feather go on): on the lanes they were two thin purple bars under every Cutout of a Game Preset, saying nothing (the user's report).
+    // So a Cutout's own two are left off its lanes and its "fx N" badge unless Show Built-In Mask & Edge Lanes on Cutouts is on; they stay
+    // in the Effects pane, as editable as ever. The same cards on any other clip (a Mask a user put on a video clip) are its effects.
+
+    /// <summary>A Cutout's own structural cards (5.3): its mask and its rounded / feathered edges, which every Cutout is made with.</summary>
+    internal static bool IsStructuralCard(EffectInstance effect) => effect.Type is EffectRegistry.Mask or EffectRegistry.Edges;
+
+    /// <summary>
+    /// Whether a clip is a Cutout for its effect lanes (5.3): a video clip of the same file as its parent clip, or one unlocked from it and
+    /// still in its stack (MainViewModel.IsCutoutOrFreed: its Lock switch, or a trim that left it outside its clip, unlinks it, and its own
+    /// Mask and Edges must not come back as lanes and "fx 2" for that), or a piece cut from the video's frame with a mask of the whole frame
+    /// (Layer.UsesFrameMask).
+    /// </summary>
+    internal static bool CountsAsCutout(MainViewModel viewModel, Layer clip) => viewModel.IsCutoutOrFreed(clip) || clip.UsesFrameMask;
+
+    /// <summary>
+    /// The cards a clip's effect lanes show (5.3), in its stack's order: none while the Timeline's effect lanes are off, none for a sound
+    /// or the captions; a Cutout's own Mask and Edges only with <see cref="AppSettings.ShowBuiltInMaskEffectLanes"/>. The k-th lane of a
+    /// track shows each clip's k-th card of this list.
+    /// </summary>
+    internal static List<EffectInstance> LaneCards(Layer clip, bool isCutout, AppSettings settings) =>
+        !settings.ShowTimelineEffectLanes || clip.IsAudio || clip.IsCaptions ? []
+        : clip.Effects.Where(effect => ShowsCard(effect, isCutout, settings.ShowBuiltInMaskEffectLanes)).ToList();
+
+    /// <summary>
+    /// How many effects a clip's "fx N" badge counts (5.3): the cards its lanes would show were they on, so a plain Cutout shows no
+    /// badge unless its own Mask and Edges have lanes; the badge stays while the lanes are off.
+    /// </summary>
+    internal static int BadgeEffects(Layer clip, bool isCutout, AppSettings settings) =>
+        clip.IsAudio || clip.IsCaptions ? 0 : clip.Effects.Count(effect => ShowsCard(effect, isCutout, settings.ShowBuiltInMaskEffectLanes));
+
+    // A card a clip's lanes show: one HandPeg knows, and not a Cutout's own Mask or Edges unless those are asked for.
+    private static bool ShowsCard(EffectInstance effect, bool isCutout, bool builtIns) => !effect.IsMissing && (builtIns || !isCutout || !IsStructuralCard(effect));
 
     // A block's own switch pressed (5.2): its On/Off, this clip's alone; a child's Lock to its parent clip.
     private void BlockSwitched(Layer clip, BlockSwitch which)
@@ -545,6 +586,8 @@ public partial class MainWindow
     /// its Cutouts): each clip's first card on the first lane, its second on the second, each over the stretch it works in (its clip's
     /// span; once unlocked a stretch of its own, dragged and trimmed along the clip). Its On/Off is the card's, its Lock frees it to that
     /// stretch. A crossfade on the clips' row is not on these lanes: it never stands between a click and an effect.
+    /// 5.3 (the user's call): the lanes take no room until the track's own stack is opened (HidesWhenClosed), there are none while the
+    /// Timeline's effect lanes are switched off, and a Cutout's own Mask and Edges cards are not on them unless asked for (LaneCards).
     /// </summary>
     private List<TimelineRow> EffectRows(Layer track, double scale)
     {
@@ -552,24 +595,15 @@ public partial class MainWindow
         if (track.IsAudio || track.IsCaptions || track.IsBackground || track.IsEmptyTrack)
             return rows;
 
-        var clips = _viewModel.GetTrackClips(track).Where(c => !c.IsLoading && _viewModel.ClipOf(c) is not null).ToList();
-        var most = clips.Count == 0 ? 0 : clips.Max(EffectCount);
+        var settings = AppSettings.Current;
+        var shown = _viewModel.GetTrackClips(track).Where(c => !c.IsLoading && _viewModel.ClipOf(c) is not null)
+            .Select(c => (Clip: c, Cards: LaneCards(c, CountsAsCutout(_viewModel, c), settings))).ToList();
+        var most = shown.Count == 0 ? 0 : shown.Max(c => c.Cards.Count);
         for (var k = 0; k < most; k++)
         {
-            var row = new TimelineRow
+            var row = EffectLaneRow(track, k);
+            foreach (var (clip, cards) in shown)
             {
-                Key = ("effects", track.TrackId, k),
-                Data = new EffectLane(track, k),
-                Kind = TimelineRowKind.Video,
-                Name = k == 0 ? "Effects" : string.Create(CultureInfo.InvariantCulture, $"Effects {k + 1}"),
-                Height = 26,
-                Accent = EffectClipBrush,
-                Tip = "The effects of this track's clips, each block one effect over the stretch it works in. Its switches turn it on or off, and lock it to its clip or free it to a stretch of its own.",
-            };
-
-            foreach (var clip in clips)
-            {
-                var cards = clip.Effects.Where(e => !e.IsMissing).ToList();
                 if (k >= cards.Count || _viewModel.ClipOf(clip) is not { } model)
                     continue;
 
@@ -620,6 +654,31 @@ public partial class MainWindow
 
         return rows;
     }
+
+    /// <summary>
+    /// A track's k-th effect lane (from 0) as its row, before EffectRows puts the clips' cards on it as blocks: what it stands for, its name
+    /// and height, and that it takes no room until the track's own stack is opened (5.3, the user's call: <see cref="TimelineRow.HidesWhenClosed"/>).
+    /// </summary>
+    internal static TimelineRow EffectLaneRow(Layer track, int k) => new()
+    {
+        Key = ("effects", track.TrackId, k),
+        Data = new EffectLane(track, k),
+        Kind = TimelineRowKind.Video,
+        Name = EffectLaneName(k),
+        Height = 26,
+        HidesWhenClosed = true,
+        Accent = EffectClipBrush,
+        Tip = "The effects of this track's clips, each block one effect over the stretch it works in. Its switches turn it on or off, and lock it to its clip or free it to a stretch of its own.",
+    };
+
+    /// <summary>
+    /// Whether the Timeline's picture tracks take their effect lanes into their stacks (5.3, BuildTimelineRows): not while the effect lanes are
+    /// switched off (<see cref="AppSettings.ShowTimelineEffectLanes"/>), when a clip's effects show only as the "fx N" badge on its block.
+    /// </summary>
+    internal static bool AdoptsEffectLanes(AppSettings settings) => settings.ShowTimelineEffectLanes;
+
+    /// <summary>A track's k-th effect lane's name (from 0): "Effects", then "Effects 2", "Effects 3"...</summary>
+    internal static string EffectLaneName(int k) => k == 0 ? "Effects" : string.Create(CultureInfo.InvariantCulture, $"Effects {k + 1}");
 
     // An effect block's switch pressed: the card's On/Off, or its Lock to its clip's span.
     private void EffectSwitched(Layer clip, EffectInstance effect, BlockSwitch which)

@@ -332,9 +332,8 @@ public static partial class ThemeManager
         _ = DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int));
 
         // A window that draws its title bar itself (WindowChrome): Windows' frame line in its own background (DWMWA_BORDER_COLOR,
-        // Windows 11; earlier versions refuse it). Maximized beside a taskbar that hides itself its frame has a strip on the screen
-        // painted in that background (MainWindow.PaintFrameStrip, 5.2.1): painted again in the new one (WM_NCPAINT, the whole
-        // frame; the client area is left alone).
+        // Windows 11; earlier versions refuse it). Since 5.3 such a window never has frame on the screen (maximized beside a taskbar
+        // that hides itself it is placed short of it, MainWindow.MaximizedPlace), so there is no strip to paint again.
         if (System.Windows.Shell.WindowChrome.GetWindowChrome(window) is not null)
         {
             if (window.Background is SolidColorBrush background)
@@ -343,8 +342,7 @@ public static partial class ThemeManager
                 _ = DwmSetWindowAttribute(handle, 34, ref border, sizeof(int));
             }
 
-            if (window.IsVisible && window.WindowState == WindowState.Maximized)
-                SendMessage(handle, WmNcPaint, 1, IntPtr.Zero);
+            ApplyCorners(window);
             return;
         }
 
@@ -366,10 +364,35 @@ public static partial class ThemeManager
         }
     }
 
-    private const int WmNcPaint = 0x0085;
+    // DWMWA_WINDOW_CORNER_PREFERENCE (Windows 11) and two of its values, DWMWCP_DONOTROUND and DWMWCP_ROUND.
+    private const int DwmwaWindowCornerPreference = 33, DwmwcpDoNotRound = 1, DwmwcpRound = 2;
 
-    [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
-    private static partial IntPtr SendMessage(IntPtr window, int message, nint wParam, IntPtr lParam);
+    /// <summary>The corner preference a window was last given (<see cref="ApplyCorners"/>; 0: none yet).</summary>
+    private static readonly DependencyProperty CornersProperty =
+        DependencyProperty.RegisterAttached("Corners", typeof(int), typeof(ThemeManager), new PropertyMetadata(0));
+
+    /// <summary>
+    /// A window that draws its own frame (WindowChrome) asks Windows 11 for its corners by its state (5.3,
+    /// DWMWA_WINDOW_CORNER_PREFERENCE): rounded while it has a size of its own, square while maximized, where it fills the screen
+    /// edge to edge. Minimized, it keeps what it had, for the state it comes back to. Called with the window's state
+    /// (MainWindow.ApplyWindowState, the Settings screen's ApplyFrame) and its title bar (<see cref="ApplyTitleBar"/>); DWM is asked
+    /// only when the preference changes, never mid-drag for nothing. Windows 10 refuses the attribute and keeps its square corners.
+    /// The frame itself stays DWM's: WindowChrome's GlassFrameThickness is never zero (a zero one gives the window a region, which
+    /// turns DWM's frame, its shadow and its corners off).
+    /// </summary>
+    public static void ApplyCorners(Window window)
+    {
+        var handle = new WindowInteropHelper(window).Handle;
+        if (handle == IntPtr.Zero || window.WindowState == WindowState.Minimized || System.Windows.Shell.WindowChrome.GetWindowChrome(window) is null)
+            return;
+
+        var preference = window.WindowState == WindowState.Maximized ? DwmwcpDoNotRound : DwmwcpRound;
+        if ((int)window.GetValue(CornersProperty) == preference)
+            return;
+
+        window.SetValue(CornersProperty, preference);
+        _ = DwmSetWindowAttribute(handle, DwmwaWindowCornerPreference, ref preference, sizeof(int));
+    }
 
     // A COLORREF: 0x00BBGGRR.
     private static int ColorRef(Color color) => color.R | color.G << 8 | color.B << 16;

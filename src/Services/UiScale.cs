@@ -350,7 +350,9 @@ public static partial class UiScale
     /// The caption WindowChrome hit-tests as tall as the title bar drawn (its XAML height, scaled): in the window's own DIPs,
     /// at the monitor's scale. WindowChrome itself would measure the pointer by the root DPI set here (SetRootDpi), a third off
     /// at 200 % on a 2880 x 1800 screen: the windows that draw their own title bar hit-test their frame in real pixels instead
-    /// (MainWindow.FrameHitTest, 5.2-AuditB), with this height.
+    /// (MainWindow.FrameHitTest, 5.2-AuditB), with this height. A new WindowChrome only when it would differ from the window's
+    /// (5.3): WPF works the whole frame out again for each one it is given (its glass, its system menu, SWP_FRAMECHANGED). A real
+    /// change of scale (a move onto a monitor of another DPI) still gives a new one, in the middle of a drag if it comes in one.
     /// </summary>
     private static void ScaleCaption(Window window, double scale)
     {
@@ -361,12 +363,21 @@ public static partial class UiScale
         if (double.IsNaN(designed))
             window.SetValue(DesignedCaptionProperty, designed = chrome.CaptionHeight);
 
-        var wanted = designed * scale;
-        if (Math.Abs(chrome.CaptionHeight - wanted) < 0.01)
-            return;
         var copy = (WindowChrome)chrome.Clone();
-        copy.CaptionHeight = wanted;
+        copy.CaptionHeight = designed * scale;
+        if (SameFrame(chrome, copy))
+            return;
+
         WindowChrome.SetWindowChrome(window, copy);
+        if (DevFlightRecorder.IsEnabled)
+            DevFlightRecorder.Record("frame", string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"{window.GetType().Name}: a new WindowChrome, its caption {copy.CaptionHeight:0.##} DIPs (WPF works the frame out again)"));
+
+        // Everything of a WindowChrome that shapes the frame WPF works out (a caption within a hundredth of a DIP).
+        static bool SameFrame(WindowChrome had, WindowChrome wanted) => Math.Abs(had.CaptionHeight - wanted.CaptionHeight) < 0.01
+            && had.ResizeBorderThickness == wanted.ResizeBorderThickness && had.GlassFrameThickness == wanted.GlassFrameThickness
+            && had.CornerRadius == wanted.CornerRadius && had.UseAeroCaptionButtons == wanted.UseAeroCaptionButtons
+            && had.NonClientFrameEdges == wanted.NonClientFrameEdges;
     }
 
     /// <summary>A dialog's own size (what its XAML gives it) by a factor, its content's size following it; centred on its owner again.</summary>

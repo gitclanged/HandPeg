@@ -306,11 +306,16 @@ public partial class MainWindow
                 Adopt(parentRow, row);
         }
 
-        // Each picture track's effects (5.2): its clips' effects as blocks on lanes of its own stack, among its Sub-Lanes (EffectRows).
-        foreach (var (layer, row) in pictures)
+        // Each picture track's effects (5.2): its clips' effects as blocks on lanes of its own stack, among its Sub-Lanes (EffectRows),
+        // taking room only while that stack is open (5.3); none at all while the Timeline's effect lanes are switched off, when a clip's
+        // effects show only as the "fx N" badge on its block (AdoptsEffectLanes).
+        if (AdoptsEffectLanes(AppSettings.Current))
         {
-            foreach (var lane in EffectRows(layer, scale))
-                Adopt(row, lane);
+            foreach (var (layer, row) in pictures)
+            {
+                foreach (var lane in EffectRows(layer, scale))
+                    Adopt(row, lane);
+            }
         }
 
         // The captions follow the sound they were heard in: in the stack of its track, among its layers (4.4 BugHunt: beside
@@ -1059,6 +1064,9 @@ public partial class MainWindow
             case "ZoomOut": ZoomAboutPlayhead(1 / 1.6); break;
             case "ZoomFit": FitTimeline(); break;
             case "PlayPause": PlayPause_Click(sender, e); break;
+
+            // The gear beside Snap (5.3): the Timeline Settings menu, the same as the Timeline tab's right-click.
+            case "TimelineSettings": OpenTimelineSettings(sender as FrameworkElement); break;
 
             // The Creator Hotbar's slots (5.2.1).
             case "Hotbar0" or "Hotbar1" or "Hotbar2" or "Hotbar3" or "Hotbar4": ApplyHotbar(tag[^1] - '0'); break;

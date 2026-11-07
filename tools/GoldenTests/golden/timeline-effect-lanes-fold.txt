@@ -1,0 +1,91 @@
+# A track's effect lanes take no room until its own stack is open; its Cutouts and its sound stay thin bars while closed.
+   the host's second effect lane of track 7: key (effects, 7, 1), "Effects 2", 26 px, Video, no room while closed
+ok: the host's effect lane (EffectLaneRow, the row EffectRows makes) takes no room while its stack is closed (HidesWhenClosed)
+ok: and it is known by ("effects", its track, its index), stands for its track's second lane, is named "Effects 2" and is a 26 px picture lane
+ok: the tracks' stacks take their effect lanes with the Timeline's effect lanes on (a new install), and none with them off
+-- V closed
+   V      top      0  height    56  in full
+   A      top     57  height  11.2  small
+   A fx1  top   69.2  height     0  small  last of its stack
+   A fx2  top   69.2  height     0  small  last of its stack
+   B      top   69.2  height  11.2  small
+   B fx1  top   81.4  height     0  small  last of its stack
+   B fx2  top   81.4  height     0  small  last of its stack
+   C      top   81.4  height  11.2  small  last of its stack
+   C fx1  top   93.6  height     0  small  last of its stack
+   C fx2  top   93.6  height     0  small  last of its stack
+   V fx1  top   93.6  height     0  small  last of its stack
+   S      top   93.6  height     8  small  last of its stack
+ok: V closed: the extent (102.6) is the lanes' heights and their gaps, none for a lane that takes no room
+ok: V closed: its Cutouts are still thin bars of 11.2 px (a stack is never hidden)
+ok: V closed: none of the seven effect lanes takes any room (no purple bars)
+ok: V closed: its sound stack is its one 8 px bar, as before
+ok: V closed: the last Cutout's bar ends the deck's line (V's own effect lane after it takes no room)
+-- V open
+   A      top      0  height    56  in full
+   A fx1  top     57  height     0  small  last of its stack
+   A fx2  top     57  height     0  small  last of its stack
+   B      top     57  height    56  in full
+   B fx1  top    114  height     0  small  last of its stack
+   B fx2  top    114  height     0  small  last of its stack
+   C      top    114  height    56  in full  last of its stack
+   C fx1  top    171  height     0  small  last of its stack
+   C fx2  top    171  height     0  small  last of its stack
+   V      top    171  height    56  in full
+   V fx1  top    228  height    26  in full  last of its stack
+   S      top    255  height     8  small  last of its stack
+ok: V open: the extent (264) is the lanes' heights and their gaps, none for a lane that takes no room
+ok: V open: its three Cutouts are 56 px, laid above it
+ok: V open, its Cutouts closed: the six effect lanes of the Cutouts take no room (the bug: six 8 px purple bars)
+ok: V open: V's own effect lane is 26 px, in full, under it
+ok: a Cutout whose stack is effect lanes only keeps its chevron
+ok: V open: its sound stack, closed by itself, is still its one bar
+-- V open, A open
+   A      top      0  height    56  in full
+   A fx1  top     57  height    26  in full
+   A fx2  top     84  height    26  in full  last of its stack
+   B      top    111  height    56  in full
+   B fx1  top    168  height     0  small  last of its stack
+   B fx2  top    168  height     0  small  last of its stack
+   C      top    168  height    56  in full  last of its stack
+   C fx1  top    225  height     0  small  last of its stack
+   C fx2  top    225  height     0  small  last of its stack
+   V      top    225  height    56  in full
+   V fx1  top    282  height    26  in full  last of its stack
+   S      top    309  height     8  small  last of its stack
+ok: V open, A open: the extent (318) is the lanes' heights and their gaps, none for a lane that takes no room
+ok: A open: its two effect lanes are 26 px, in full
+ok: A open: B's and C's effect lanes still take no room
+ok: A open: its last effect lane ends its deck's line
+-- V closed, A left open
+   V      top      0  height    56  in full
+   A      top     57  height  11.2  small
+   A fx1  top   69.2  height     0  small  last of its stack
+   A fx2  top   69.2  height     0  small  last of its stack
+   B      top   69.2  height  11.2  small
+   B fx1  top   81.4  height     0  small  last of its stack
+   B fx2  top   81.4  height     0  small  last of its stack
+   C      top   81.4  height  11.2  small  last of its stack
+   C fx1  top   93.6  height     0  small  last of its stack
+   C fx2  top   93.6  height     0  small  last of its stack
+   V fx1  top   93.6  height     0  small  last of its stack
+   S      top   93.6  height     8  small  last of its stack
+ok: V closed, A left open: the extent (102.6) is the lanes' heights and their gaps, none for a lane that takes no room
+ok: V closed again: A is a thin bar, open or not
+ok: V closed again: A's effect lanes take no room although A's own stack is open
+ok: and A's stack is still open, kept by its key
+-- V open again
+   A      top      0  height    56  in full
+   A fx1  top     57  height    26  in full
+   A fx2  top     84  height    26  in full  last of its stack
+   B      top    111  height    56  in full
+   B fx1  top    168  height     0  small  last of its stack
+   B fx2  top    168  height     0  small  last of its stack
+   C      top    168  height    56  in full  last of its stack
+   C fx1  top    225  height     0  small  last of its stack
+   C fx2  top    225  height     0  small  last of its stack
+   V      top    225  height    56  in full
+   V fx1  top    282  height    26  in full  last of its stack
+   S      top    309  height     8  small  last of its stack
+ok: V open again: the extent (318) is the lanes' heights and their gaps, none for a lane that takes no room
+ok: V open again: A's effect lanes are back at 26 px

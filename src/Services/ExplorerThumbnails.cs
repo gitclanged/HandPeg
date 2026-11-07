@@ -14,6 +14,13 @@ namespace HandPegApp.Services;
 // copies are deleted once nothing holds them. Only what differs is written, and Explorer is told only when something changed.
 // Nothing of it in a self-contained or portable copy (which leaves nothing on the PC), nor while HANDPEG_DATA_DIR is set (tests).
 //
+// The handler needs a .NET of the PC's own (Pass 5.3-Stage1): its comhost.dll finds .NET as .NET's host does for a library, from
+// DOTNET_ROOT_<ARCH> / DOTNET_ROOT, else the location .NET's installer registered, else Program Files\dotnet, and is never told of the
+// .NET HandPeg.exe may have downloaded for itself alone (an installed copy's dotnet, %LOCALAPPDATA%\HandPeg\dotnet, a zip's
+// portable\dotnet). So it is registered only when that lookup finds a released .NET Desktop Runtime (never a preview) of HandPeg's own
+// major version (HandlerRuntime); otherwise the log says so once and a registration left from before is taken out. Each start looks
+// again, so installing .NET for the PC later turns the previews on.
+//
 // Double-click opens them (Pass 5.2-Release, the user's directive): .hproj and .hpb, and only these (never a media extension), name a
 // ProgID of HandPeg's (HandPeg.Project, HandPeg.Bundle) whose DefaultIcon is HandPeg.exe's own and whose shell\open\command starts it
 // with the file, and list it in their OpenWithProgids. Written by an installed copy alone (Velopack's: its current\HandPeg.exe keeps its
@@ -59,6 +66,9 @@ public static partial class ExplorerThumbnails
 
     // One registration at a time: a start's and a Settings save's may meet.
     private static readonly object Gate = new();
+
+    // Whether the log has said this run that the handler has no .NET of the PC's to start on (said once, not at every Settings save).
+    private static bool _saidNoRuntime;
 
     /// <summary>
     /// Registers the handler, or takes it out, as AppSettings.ShowExplorerThumbnails says when it runs: on the Idle work lane, off the
@@ -139,6 +149,21 @@ public static partial class ExplorerThumbnails
             return;
         }
 
+        // The handler starts on the PC's own .NET, never on one HandPeg.exe downloaded for itself: with none, no handler (and none left).
+        if (FindHandlerRuntime() is null)
+        {
+            if (!_saidNoRuntime)
+            {
+                _saidNoRuntime = true;
+                var major = Environment.Version.Major.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                AppLog.Write($"Explorer project previews: not registered, as this PC has no .NET {major} Desktop Runtime of its own for the thumbnail handler "
+                             + "(HandPeg's own .NET is not one Explorer can start it on); installing it for the PC turns them on at the next start.");
+            }
+
+            TakeOut();
+            return;
+        }
+
         if (CopyHandler() is not { } folder)
             return;
 
@@ -165,6 +190,71 @@ public static partial class ExplorerThumbnails
 
         DeleteCopies(except: null);
     }
+
+    /// <summary>
+    /// The .NET root Explorer's thumbnail surrogate would start the handler on, found as its comhost.dll finds one (.NET's host for a
+    /// library, which looks at no folder of the app's own): DOTNET_ROOT_&lt;ARCH&gt;, else DOTNET_ROOT, else the location .NET's installer
+    /// registered, else Program Files\dotnet (Program Files\dotnet\x64 for an x64 process on an ARM64 PC); the first of them that is set is
+    /// the only one looked at, as the host does. Null unless it holds a hostfxr.dll and Microsoft.NETCore.App and
+    /// Microsoft.WindowsDesktop.App of a released version of <paramref name="major"/> (the handler's runtimeconfig.json rolls forward within
+    /// that major only, and never to a preview).
+    /// Pure: the environment, the registered location and Program Files are given (the portable-bootstrap golden test's layouts).
+    /// </summary>
+    internal static string? HandlerRuntime(Func<string, string?> environment, string? registered, string programFiles, string arch, bool x64OnArm64, int major)
+    {
+        var root = environment($"DOTNET_ROOT_{arch.ToUpperInvariant()}") is { Length: > 0 } forArch ? forArch
+            : environment("DOTNET_ROOT") is { Length: > 0 } any ? any
+            : registered is { Length: > 0 } ? registered
+            : x64OnArm64 ? Path.Combine(programFiles, "dotnet", "x64") : Path.Combine(programFiles, "dotnet");
+
+        try
+        {
+            var fxr = Path.Combine(root, "host", "fxr");
+            if (!Directory.Exists(fxr) || !Directory.EnumerateDirectories(fxr).Any(dir => File.Exists(Path.Combine(dir, "hostfxr.dll"))))
+                return null;
+            return HasMajor(Path.Combine(root, "shared", "Microsoft.NETCore.App"), major) && HasMajor(Path.Combine(root, "shared", "Microsoft.WindowsDesktop.App"), major)
+                ? root : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+
+        // A framework folder holding a released version of that major ("10.0.14") with something in it. A preview's or release candidate's
+        // ("10.0.0-rc.2.25502.107") never counts: the handler's runtimeconfig.json asks for the release, which the host never rolls forward to
+        // a pre-release of, so its comhost could not start on a .NET holding only such frameworks.
+        static bool HasMajor(string framework, int major) =>
+            Directory.Exists(framework) && Directory.EnumerateDirectories(framework).Any(dir =>
+            {
+                var name = Path.GetFileName(dir);
+                var dot = name.IndexOf('.');
+                return dot > 0 && !name.Contains('-')
+                       && int.TryParse(name.AsSpan(0, dot), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var found)
+                       && found == major && Directory.EnumerateFileSystemEntries(dir).Any();
+            });
+    }
+
+    /// <summary>
+    /// <see cref="HandlerRuntime"/> on this PC: Explorer's environment, the registered location (HKLM, in the 32-bit view the host reads),
+    /// Program Files, this process's processor, and the major version HandPeg runs on (the handler is built for the same .NET as HandPeg).
+    /// </summary>
+    private static string? FindHandlerRuntime()
+    {
+        var arch = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "arm64" : "x64";
+        string? registered;
+        using (var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry32))
+        using (var key = machine.OpenSubKey($@"SOFTWARE\dotnet\Setup\InstalledVersions\{arch}"))
+            registered = key?.GetValue("InstallLocation") as string;
+
+        var x64OnArm64 = RuntimeInformation.ProcessArchitecture == Architecture.X64 && RuntimeInformation.OSArchitecture == Architecture.Arm64;
+        return HandlerRuntime(ExplorerEnvironment, registered, Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), arch, x64OnArm64, Environment.Version.Major);
+    }
+
+    // A variable as Explorer's processes have it: the user's own, else the machine's (as Windows builds a signed-in user's environment),
+    // not this process's, which a console may have changed.
+    private static string? ExplorerEnvironment(string name) =>
+        Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.User) is { Length: > 0 } user
+            ? user : Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Machine);
 
     /// <summary>
     /// The handler's files beside the program (shell\) copied into a folder of their own under the data folder, named by their content

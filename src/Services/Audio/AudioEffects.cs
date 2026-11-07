@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using HandPegApp.Models;
 
 namespace HandPegApp.Services.Audio;
@@ -372,7 +373,7 @@ internal sealed class DenoiseEffect : AudioEffect
     internal const float MostNoise = Size / 2 * 1e-3f;
 
     internal static readonly float[] Window = MakeWindow();
-    private static readonly (float[] Cos, float[] Sin, int[] Reverse) Tables = MakeTables();
+    private static readonly Radix2Fft Fft = new(Size);
 
     private readonly float _floor;
     private readonly int _halfWindow;
@@ -415,13 +416,39 @@ internal sealed class DenoiseEffect : AudioEffect
     private void Frame(Channel channel)
     {
         var (re, im) = (channel.Re, channel.Im);
-        for (var n = 0; n < Size; n++)
-            (re[n], im[n]) = (channel.Input[n] * Window[n], 0);
+        Windowed(channel.Input, re, im);
         Transform(re, im, inverse: false);
 
-        // The noise floor: the least smoothed power over this half window and the last one.
+        // The noise floor: the least smoothed power over this half window and the last one. Bins 0 to Size / 2 - 1 four at a time (each lane
+        // the scalar loop's operations in its order: the same gains to the bit), the last bin alone; the bins above Size / 2 then take their
+        // mirror bins' gains.
         var newWindow = channel.Frames % _halfWindow == 0;
-        for (var b = 0; b < Bins; b++)
+        var started = channel.Started;
+        Span<Vector128<float>> vectorRe = Vectors(re), vectorIm = Vectors(im);
+        Span<Vector128<float>> powers = Vectors(channel.Power), minimums = Vectors(channel.Minimum), previouses = Vectors(channel.Previous), gains = Vectors(channel.Gain), posts = Vectors(channel.Post);
+        var (floor, one) = (Vector128.Create(_floor), Vector128<float>.One);
+        for (var v = 0; v < vectorRe.Length && v < vectorIm.Length && v < powers.Length && v < minimums.Length && v < previouses.Length && v < gains.Length && v < posts.Length; v++)
+        {
+            var (r, i) = (vectorRe[v], vectorIm[v]);
+            var power = r * r + i * i;
+            var smooth = started ? Vector128.Create(0.7f) * powers[v] + Vector128.Create(0.3f) * power : power;
+            powers[v] = smooth;
+            if (!started)
+                (minimums[v], previouses[v], gains[v], posts[v]) = (smooth, smooth, one, one);
+            else if (newWindow)
+                (previouses[v], minimums[v]) = (minimums[v], smooth);
+            else
+                minimums[v] = Vector128.Min(minimums[v], smooth);
+
+            var noise = Vector128.Min(Vector128.Max(Vector128.Min(minimums[v], previouses[v]) * Bias, Vector128.Create(1e-12f)), Vector128.Create(MostNoise));
+            var post = power / noise;
+            var prior = Vector128.Create(0.98f) * gains[v] * gains[v] * posts[v] + Vector128.Create(0.02f) * Vector128.Max(post - one, Vector128<float>.Zero);
+            var gain = Vector128.Max(prior / (one + prior), floor);
+            (gains[v], posts[v]) = (gain, post);
+            (vectorRe[v], vectorIm[v]) = (r * gain, i * gain);
+        }
+
+        for (var b = Size / 2; b < Bins; b++)
         {
             var power = re[b] * re[b] + im[b] * im[b];
             var smooth = channel.Started ? 0.7f * channel.Power[b] + 0.3f * power : power;
@@ -440,56 +467,59 @@ internal sealed class DenoiseEffect : AudioEffect
             (channel.Gain[b], channel.Post[b]) = (gain, post);
             re[b] *= gain;
             im[b] *= gain;
-            if (b > 0 && b < Size / 2)
-            {
-                re[Size - b] *= gain;
-                im[Size - b] *= gain;
-            }
         }
 
+        Mirror(re, im, channel.Gain);
         channel.Started = true;
         channel.Frames++;
         Transform(re, im, inverse: true);
-
-        // Overlap-added: square-root Hann twice is Hann, four of which a quarter apart sum to 2.
-        var output = channel.Output;
-        for (var n = 0; n < Size; n++)
-            output[n] += re[n] * Window[n] * (0.5f / Size);
-        Array.Copy(output, channel.Ready, Hop);
-        Array.Copy(output, Hop, output, 0, Size - Hop);
-        Array.Clear(output, Size - Hop, Hop);
+        OverlapAdd(re, channel.Output);
+        Array.Copy(channel.Output, channel.Ready, Hop);
+        Array.Copy(channel.Output, Hop, channel.Output, 0, Size - Hop);
+        Array.Clear(channel.Output, Size - Hop, Hop);
         Array.Copy(channel.Input, Hop, channel.Input, 0, Size - Hop);
     }
 
     // An in-place radix-2 FFT of Size points (the inverse unscaled).
-    internal static void Transform(float[] re, float[] im, bool inverse)
+    internal static void Transform(float[] re, float[] im, bool inverse) => Fft.Transform(re, im, inverse);
+
+    // The first so many bins (or points) of a frame's array, four to a vector: the bins below Size / 2 unless told.
+    internal static Span<Vector128<float>> Vectors(float[] values, int count = Size / 2) => MemoryMarshal.Cast<float, Vector128<float>>(values.AsSpan(0, count));
+
+    /// <summary>A frame's input under the window: the transform's real part (its imaginary part nothing).</summary>
+    internal static void Windowed(float[] input, float[] re, float[] im)
     {
-        var (cos, sin, reverse) = Tables;
-        for (var i = 0; i < Size; i++)
+        Span<Vector128<float>> from = Vectors(input, Size), window = Vectors(Window, Size), to = Vectors(re, Size);
+        for (var v = 0; v < from.Length && v < window.Length && v < to.Length; v++)
+            to[v] = from[v] * window[v];
+        Array.Clear(im, 0, Size);
+    }
+
+    /// <summary>The bins above Size / 2 (a real sound's spectrum, mirrored) scaled by their mirror bins' gains: bin Size - b by bin b's.</summary>
+    internal static void Mirror(float[] re, float[] im, float[] gains)
+    {
+        var n = Size / 2 + 1;
+        for (; n + 4 <= Size; n += 4)
         {
-            var j = reverse[i];
-            if (j > i)
-            {
-                (re[i], re[j]) = (re[j], re[i]);
-                (im[i], im[j]) = (im[j], im[i]);
-            }
+            var gain = Vector128.Shuffle(Vector128.Create(gains.AsSpan(Size - n - 3, 4)), Vector128.Create(3, 2, 1, 0));
+            (Vector128.Create(re.AsSpan(n, 4)) * gain).CopyTo(re.AsSpan(n, 4));
+            (Vector128.Create(im.AsSpan(n, 4)) * gain).CopyTo(im.AsSpan(n, 4));
         }
 
-        for (var length = 2; length <= Size; length <<= 1)
+        for (; n < Size; n++)
         {
-            var (half, step) = (length / 2, Size / length);
-            for (var start = 0; start < Size; start += length)
-            {
-                for (var k = 0; k < half; k++)
-                {
-                    var (wr, wi) = (cos[k * step], inverse ? sin[k * step] : -sin[k * step]);
-                    var (a, b) = (start + k, start + k + half);
-                    var (tr, ti) = (re[b] * wr - im[b] * wi, re[b] * wi + im[b] * wr);
-                    (re[b], im[b]) = (re[a] - tr, im[a] - ti);
-                    (re[a], im[a]) = (re[a] + tr, im[a] + ti);
-                }
-            }
+            re[n] *= gains[Size - n];
+            im[n] *= gains[Size - n];
         }
+    }
+
+    /// <summary>A frame's inverse transform overlap-added to the output: square-root Hann twice is Hann, four of which a quarter apart sum to 2.</summary>
+    internal static void OverlapAdd(float[] re, float[] output)
+    {
+        Span<Vector128<float>> from = Vectors(re, Size), window = Vectors(Window, Size), to = Vectors(output, Size);
+        var scale = Vector128.Create(0.5f / Size);
+        for (var v = 0; v < from.Length && v < window.Length && v < to.Length; v++)
+            to[v] += from[v] * window[v] * scale;
     }
 
     private static float[] MakeWindow()
@@ -500,23 +530,6 @@ internal sealed class DenoiseEffect : AudioEffect
         return window;
     }
 
-    private static (float[], float[], int[]) MakeTables()
-    {
-        var (cos, sin, reverse) = (new float[Size / 2], new float[Size / 2], new int[Size]);
-        for (var k = 0; k < Size / 2; k++)
-            (cos[k], sin[k]) = ((float)Math.Cos(2 * Math.PI * k / Size), (float)Math.Sin(2 * Math.PI * k / Size));
-        var bits = System.Numerics.BitOperations.Log2(Size);
-        for (var i = 0; i < Size; i++)
-        {
-            var (r, v) = (0, i);
-            for (var b = 0; b < bits; b++, v >>= 1)
-                r = (r << 1) | (v & 1);
-            reverse[i] = r;
-        }
-
-        return (cos, sin, reverse);
-    }
-
     public override void TakeState(AudioEffect previous)
     {
         if (previous is DenoiseEffect before)
@@ -524,6 +537,157 @@ internal sealed class DenoiseEffect : AudioEffect
     }
 
     public override void Reset() => _channels = [new(), new()];
+}
+
+/// <summary>
+/// An in-place radix-2 FFT of a power of two of 8 points or more, the inverse unscaled (5.3: the noise reduction's and Studio Voice's 512
+/// points, the beat detector's 128). Each stage's twiddles lie side by side (the stage of half-length h at [h, 2h)), so from h = 4 on a
+/// vector does four butterflies (eight where the processor has 256-bit vectors); the first two stages are done four points at a time in
+/// registers. Every butterfly is the multiplications, additions and subtractions of one done alone, in the same order and never fused
+/// (no fused multiply-add), so the result is the same to the bit as the plain loop's.
+/// </summary>
+internal sealed class Radix2Fft
+{
+    private readonly int _size;
+    private readonly float[] _cos, _forwardSin, _inverseSin;
+    private readonly int[] _reverse, _swaps;
+
+    public Radix2Fft(int size)
+    {
+        if (size < 8 || !BitOperations.IsPow2(size))
+            throw new ArgumentOutOfRangeException(nameof(size), size, "A power of two of 8 or more.");
+
+        // The twiddles as the plain loop had them (the table of cos and sin of 2 pi k / size, read at k * step): the same values.
+        _size = size;
+        (_cos, _forwardSin, _inverseSin) = (new float[size], new float[size], new float[size]);
+        for (var half = 1; half < size; half <<= 1)
+        {
+            var step = size / (2 * half);
+            for (var k = 0; k < half; k++)
+            {
+                var m = k * step;
+                var (cos, sin) = ((float)Math.Cos(2 * Math.PI * m / size), (float)Math.Sin(2 * Math.PI * m / size));
+                (_cos[half + k], _forwardSin[half + k], _inverseSin[half + k]) = (cos, -sin, sin);
+            }
+        }
+
+        // The bit-reversed order, and the pairs of points it swaps.
+        _reverse = new int[size];
+        var bits = BitOperations.Log2((uint)size);
+        var swaps = new List<int>(size);
+        for (var i = 0; i < size; i++)
+        {
+            var (r, v) = (0, i);
+            for (var b = 0; b < bits; b++, v >>= 1)
+                r = (r << 1) | (v & 1);
+            _reverse[i] = r;
+            if (r > i)
+            {
+                swaps.Add(i);
+                swaps.Add(r);
+            }
+        }
+
+        _swaps = [.. swaps];
+    }
+
+    /// <summary>The point each point of the transform's input goes to before the butterflies (its index's bits reversed).</summary>
+    public ReadOnlySpan<int> Reverse => _reverse;
+
+    /// <summary>The transform of re + i im in place, the inverse unscaled.</summary>
+    public void Transform(Span<float> re, Span<float> im, bool inverse)
+    {
+        var swaps = _swaps;
+        for (var s = 0; s + 1 < swaps.Length; s += 2)
+        {
+            var (i, j) = (swaps[s], swaps[s + 1]);
+            (re[i], re[j]) = (re[j], re[i]);
+            (im[i], im[j]) = (im[j], im[i]);
+        }
+
+        Butterflies(re, im, inverse);
+    }
+
+    /// <summary>The transform of points already in bit-reversed order (<see cref="Reverse"/>), in place.</summary>
+    public void Butterflies(Span<float> re, Span<float> im, bool inverse)
+    {
+        var size = _size;
+        re = re[..size];
+        im = im[..size];
+        var (cos, sin) = (_cos, inverse ? _inverseSin : _forwardSin);
+
+        // Half-lengths 1 and 2: each four points' two stages in registers.
+        var (w1r, w1i, w20r, w20i, w21r, w21i) = (cos[1], sin[1], cos[2], sin[2], cos[3], sin[3]);
+        for (var g = 0; g + 3 < re.Length && g + 3 < im.Length; g += 4)
+        {
+            float x0 = re[g], x1 = re[g + 1], x2 = re[g + 2], x3 = re[g + 3];
+            float y0 = im[g], y1 = im[g + 1], y2 = im[g + 2], y3 = im[g + 3];
+            var (tr, ti) = (x1 * w1r - y1 * w1i, x1 * w1i + y1 * w1r);
+            (x1, y1) = (x0 - tr, y0 - ti);
+            (x0, y0) = (x0 + tr, y0 + ti);
+            (tr, ti) = (x3 * w1r - y3 * w1i, x3 * w1i + y3 * w1r);
+            (x3, y3) = (x2 - tr, y2 - ti);
+            (x2, y2) = (x2 + tr, y2 + ti);
+            (tr, ti) = (x2 * w20r - y2 * w20i, x2 * w20i + y2 * w20r);
+            (x2, y2) = (x0 - tr, y0 - ti);
+            (x0, y0) = (x0 + tr, y0 + ti);
+            (tr, ti) = (x3 * w21r - y3 * w21i, x3 * w21i + y3 * w21r);
+            (x3, y3) = (x1 - tr, y1 - ti);
+            (x1, y1) = (x1 + tr, y1 + ti);
+            (re[g], re[g + 1], re[g + 2], re[g + 3]) = (x0, x1, x2, x3);
+            (im[g], im[g + 1], im[g + 2], im[g + 3]) = (y0, y1, y2, y3);
+        }
+
+        // Half-length 4 on (and from 8 on, eight at a time where 256-bit vectors are the processor's own).
+        var half = 4;
+        for (; half < size && (half < 8 || !Vector256.IsHardwareAccelerated); half <<= 1)
+        {
+            Stage(MemoryMarshal.Cast<float, Vector128<float>>(re), MemoryMarshal.Cast<float, Vector128<float>>(im),
+                MemoryMarshal.Cast<float, Vector128<float>>(cos.AsSpan(half, half)), MemoryMarshal.Cast<float, Vector128<float>>(sin.AsSpan(half, half)));
+        }
+
+        for (; half < size; half <<= 1)
+        {
+            Stage(MemoryMarshal.Cast<float, Vector256<float>>(re), MemoryMarshal.Cast<float, Vector256<float>>(im),
+                MemoryMarshal.Cast<float, Vector256<float>>(cos.AsSpan(half, half)), MemoryMarshal.Cast<float, Vector256<float>>(sin.AsSpan(half, half)));
+        }
+    }
+
+    // One stage, a vector of butterflies at a time: in each group of points, its first half (a) and second half (b), as long as the twiddles.
+    // (Each span's length is in the loop's condition, so the indexing is not checked again.)
+    private static void Stage(Span<Vector128<float>> re, Span<Vector128<float>> im, ReadOnlySpan<Vector128<float>> cos, ReadOnlySpan<Vector128<float>> sin)
+    {
+        var h = cos.Length;
+        for (var start = 0; start + 2 * h <= re.Length && start + 2 * h <= im.Length; start += 2 * h)
+        {
+            Span<Vector128<float>> ra = re.Slice(start, h), rb = re.Slice(start + h, h), ia = im.Slice(start, h), ib = im.Slice(start + h, h);
+            for (var k = 0; k < cos.Length && k < sin.Length && k < ra.Length && k < rb.Length && k < ia.Length && k < ib.Length; k++)
+            {
+                var (wr, wi, xr, xi) = (cos[k], sin[k], rb[k], ib[k]);
+                var (tr, ti) = (xr * wr - xi * wi, xr * wi + xi * wr);
+                var (ar, ai) = (ra[k], ia[k]);
+                (rb[k], ib[k]) = (ar - tr, ai - ti);
+                (ra[k], ia[k]) = (ar + tr, ai + ti);
+            }
+        }
+    }
+
+    private static void Stage(Span<Vector256<float>> re, Span<Vector256<float>> im, ReadOnlySpan<Vector256<float>> cos, ReadOnlySpan<Vector256<float>> sin)
+    {
+        var h = cos.Length;
+        for (var start = 0; start + 2 * h <= re.Length && start + 2 * h <= im.Length; start += 2 * h)
+        {
+            Span<Vector256<float>> ra = re.Slice(start, h), rb = re.Slice(start + h, h), ia = im.Slice(start, h), ib = im.Slice(start + h, h);
+            for (var k = 0; k < cos.Length && k < sin.Length && k < ra.Length && k < rb.Length && k < ia.Length && k < ib.Length; k++)
+            {
+                var (wr, wi, xr, xi) = (cos[k], sin[k], rb[k], ib[k]);
+                var (tr, ti) = (xr * wr - xi * wi, xr * wi + xi * wr);
+                var (ar, ai) = (ra[k], ia[k]);
+                (rb[k], ib[k]) = (ar - tr, ai - ti);
+                (ra[k], ia[k]) = (ar + tr, ai + ti);
+            }
+        }
+    }
 }
 
 internal sealed class WidenerEffect(float m, bool clip) : AudioEffect
@@ -950,6 +1114,19 @@ internal static class AudioMath
             vectors[i] *= factor;
         for (var i = vectors.Length * Vector<float>.Count; i < data.Length; i++)
             data[i] *= factor;
+    }
+
+    /// <summary>target = source * factor, each sample one multiplication (5.3: an export track's gain).</summary>
+    public static void Scale(ReadOnlySpan<float> source, Span<float> target, float factor)
+    {
+        var s = MemoryMarshal.Cast<float, Vector<float>>(source);
+        var t = MemoryMarshal.Cast<float, Vector<float>>(target);
+        var n = Math.Min(t.Length, s.Length);
+        var f = new Vector<float>(factor);
+        for (var i = 0; i < n; i++)
+            t[i] = s[i] * f;
+        for (var i = n * Vector<float>.Count; i < target.Length && i < source.Length; i++)
+            target[i] = source[i] * factor;
     }
 
     /// <summary>target += source.</summary>

@@ -679,6 +679,9 @@
                                     <ContentPresenter x:Name="icon" DockPanel.Dock="Left" ContentSource="Icon" VerticalAlignment="Center" Margin="0,0,8,0" />
                                     <Path x:Name="arrow" DockPanel.Dock="Right" Data="M0,0 L3.5,3.5 L0,7" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.4"
                                           VerticalAlignment="Center" Margin="14,0,-12,0" Visibility="Collapsed" />
+                                    <!-- The item's key (5.3): KeybindManager.GestureText(id), set as InputGestureText, at the right, dimmer than the words. -->
+                                    <TextBlock x:Name="gesture" DockPanel.Dock="Right" Text="{TemplateBinding InputGestureText}" Foreground="{TemplateBinding Foreground}"
+                                               Opacity="0.65" VerticalAlignment="Center" Margin="24,0,0,0" />
                                     <ContentPresenter ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center" />
                                 </DockPanel>
                                 <Popup x:Name="PART_Popup" PlacementTarget="{Binding ElementName=back}" Placement="Right" HorizontalOffset="-2" VerticalOffset="-4"
@@ -692,6 +695,12 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="Icon" Value="{x:Null}">
                                 <Setter TargetName="icon" Property="Visibility" Value="Collapsed" />
+                            </Trigger>
+                            <Trigger Property="InputGestureText" Value="">
+                                <Setter TargetName="gesture" Property="Visibility" Value="Collapsed" />
+                            </Trigger>
+                            <Trigger Property="InputGestureText" Value="{x:Null}">
+                                <Setter TargetName="gesture" Property="Visibility" Value="Collapsed" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="tick" Property="Visibility" Value="Visible" />

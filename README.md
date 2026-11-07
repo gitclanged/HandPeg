@@ -2,7 +2,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/gitclanged/HandPeg?label=release)](https://github.com/gitclanged/HandPeg/releases/latest)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20x64%20%7C%20ARM64-0078D4)](#download)
-[![.NET 8](https://img.shields.io/badge/.NET-8%20WPF-512BD4)](https://dotnet.microsoft.com/download/dotnet/8.0)
+[![.NET 10](https://img.shields.io/badge/.NET-10%20WPF-512BD4)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 HandPeg is a Windows video editor for turning multi-track gameplay recordings and stream VODs into vertical shorts or
@@ -34,26 +34,29 @@ without the timeline lagging.
 ## Download
 From the [latest release](https://github.com/gitclanged/HandPeg/releases/latest):
 
-- `HandPeg-win-Setup.exe`: the installer (Windows 10 or 11, x64, with the .NET 8 Desktop Runtime). It updates itself.
+- `HandPeg-win-Setup.exe`: the installer (Windows 10 or 11, x64). It updates itself.
 - `HandPeg-win-arm64-Setup.exe`: the native installer for Windows on ARM (Snapdragon PCs). It updates itself from the ARM64
   releases.
 - `HandPeg-5.2.1-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
 - `HandPeg-5.2.1-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
 
-A portable copy keeps everything it writes in the `portable` folder beside `HandPeg.exe`. On a PC without .NET 8,
-`HandPeg.exe` itself downloads Microsoft's .NET 8 Desktop Runtime for its processor into `portable\dotnet` the first time
-it starts, checked against Microsoft's published SHA-512 hashes, with no admin rights, nothing installed and no script to
-run (a locked-down PC that blocks `.cmd` and PowerShell files still starts it). The first start then downloads FFmpeg (and,
-for captions, whisper.cpp), pinned to builds tested with this version.
+HandPeg runs on Microsoft's .NET 10 Desktop Runtime, and neither the installers nor the zips need it installed first. On a PC
+without it (an older .NET such as .NET 8 is not enough), `HandPeg.exe` asks the first time it starts: download .NET 10 for
+HandPeg alone (recommended: no admin rights, kept in `%LOCALAPPDATA%\HandPeg\dotnet` for an installed copy, which the
+uninstaller removes, or in `portable\dotnet` for a portable copy), or install it for every program with Microsoft's own installer
+(asks for admin rights). Either way it is checked against Microsoft's published SHA-512 hashes, and no script runs (a locked-down
+PC that blocks `.cmd` and PowerShell files still starts it). A portable copy keeps everything it writes in the `portable` folder
+beside `HandPeg.exe`. The first start then downloads FFmpeg (and, for captions, whisper.cpp), pinned to builds tested with this
+version.
 
 ## Building from source
 ```
 dotnet build HandPegApp.csproj
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\GoldenTests.ps1
 ```
-`tools\README.md` describes the developer tools (golden tests, the A/V sync check, the start-up benchmark). The portable
-zips' `HandPeg.exe` is a native program (`tools\PortableBootstrap`, NativeAOT): publishing it needs Visual Studio's C++
-build tools, with the ARM64 and x64 compilers.
+Building needs the .NET 10 SDK. `tools\README.md` describes the developer tools (golden tests, the A/V sync check, the start-up
+benchmark). The `HandPeg.exe` of the installers and the portable zips is a native program (`tools\PortableBootstrap`, NativeAOT):
+publishing it needs Visual Studio's C++ build tools, with the ARM64 and x64 compilers.
 
 ## License
 MIT: see [LICENSE](LICENSE).

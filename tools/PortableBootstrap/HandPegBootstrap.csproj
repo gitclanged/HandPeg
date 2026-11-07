@@ -1,16 +1,21 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    HandPeg.exe of the portable zips (Pass 5.2.1): a native program (NativeAOT: no .NET needed to start it) that runs HandPeg.dll in
-    its own process through hostfxr when a .NET 8 Desktop Runtime for its processor is on the PC or in the folder, and otherwise
-    downloads Microsoft's own into portable\dotnet (no admin, no script) and then runs it. Published once per processor:
+    HandPeg.exe of the portable zips (Pass 5.2.1) and of both Setup installers (Pass 5.3-Stage1): a native program (NativeAOT: no .NET
+    needed to start it) that runs HandPeg.dll in its own process through hostfxr when a .NET 10 Desktop Runtime for its processor is
+    the copy's own or on the PC (one hostfxr refuses passes to the next), and otherwise asks: download Microsoft's own into the copy's own
+    root (portable\dotnet for a zip, dotnet beside a portable.txt or portable-argument copy's program, the install folder's dotnet for an
+    installed copy; no admin, no script), or install it for every program with Microsoft's installer (admin); then it runs it.
+    Published once per processor:
       dotnet publish tools\PortableBootstrap\HandPegBootstrap.csproj -c Release -r win-x64    (and -r win-arm64)
     which needs the C++ build tools (Visual Studio's "Desktop development with C++", with the ARM64 and x64 compilers) for the
-    linker. Release.ps1 copies the result over the publish's HandPeg.exe in each zip. The installer keeps .NET's own apphost.
+    linker. Release.ps1 copies the result over the publish's HandPeg.exe in each zip and in each installer's package. It has no icon
+    of its own (HandPeg ships none until a designed one is made); the version below is the release's, set with the app's.
   -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -23,7 +28,6 @@
     <Version>5.2.1</Version>
     <AssemblyVersion>5.2.1.0</AssemblyVersion>
     <FileVersion>5.2.1.0</FileVersion>
-    <ApplicationIcon>..\..\src\handpeg.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
 
     <!-- Native, small, quick to start: no stack trace data, no globalization data, resource keys for messages, no background GC thread. -->

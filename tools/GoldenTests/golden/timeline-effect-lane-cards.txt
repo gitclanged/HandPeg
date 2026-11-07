@@ -1,0 +1,26 @@
+# Overwatch 2's Cutouts: their own Mask and Edges cards have no lanes and no fx badge unless asked for; any other effect has.
+ok: Overwatch 2 Vertical HUD applied to the clip
+ok: its three Cutouts (Abilities & Ammo, Health & Name, Killfeed)
+ok: each counts as a Cutout for its lanes; the clip they hang from does not
+   Abilities & Ammo: cards builtin.matte.mask, builtin.matte.edges
+   Health & Name: cards builtin.matte.mask, builtin.matte.edges
+   Killfeed: cards builtin.matte.mask, builtin.matte.edges
+ok: every Cutout is made with exactly two cards of its own: its Mask, then its Rounded & Feathered Edges
+ok: by default no Cutout has a lane card: no lanes
+ok: and no Cutout shows an fx badge for its own Mask and Edges
+ok: Health & Name unlocked by its Lock switch: free of its clip (no parent clip), still in its clip's stack, no longer linked as a Cutout
+ok: it still counts as a Cutout for its lanes (IsCutoutOrFreed)
+ok: and still has no lane card and no fx badge for its own Mask and Edges (not the fx 2 and two lanes of before)
+ok: locked again, it is linked to its clip as before
+ok: with the built-in lanes on, each Cutout's Mask and Edges are its lane cards: Effects, Effects 2
+ok: and its badge reads fx 2
+   Killfeed with Motion Blur: cards builtin.gpu.motionblur, builtin.matte.mask, builtin.matte.edges; lane cards builtin.gpu.motionblur
+ok: Motion Blur added to Killfeed: exactly one lane card, Motion Blur, on its first lane ("Effects")
+ok: and its badge reads fx 1
+ok: the other Cutouts still have none
+ok: with the built-in lanes on, Killfeed has three lane cards (builtin.gpu.motionblur, builtin.matte.mask, builtin.matte.edges)
+   the clip they hang from, with a Mask: lane cards builtin.matte.mask
+ok: a Mask card on the clip they hang from (no Cutout) is a lane card
+ok: with the effect lanes off, no clip has a lane card (no lanes at all)
+ok: and the badges stay: Killfeed fx 1, the clip fx 1
+ok: a badge with a speed and a slip too: 2x  +120 ms  fx 3

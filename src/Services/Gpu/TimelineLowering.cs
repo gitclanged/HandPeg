@@ -150,6 +150,15 @@ public static partial class TimelineLowering
             return look;
         }
 
+        // (One delegate for every clip that may start a repeating video, not one made for each.)
+        Func<TimelineClip, TimelineTrackModel, LayerState> lookOf = LookOf;
+
+        // The tracks by id, for each track's family (FamilyOf) and its header's switch (IsHiddenWithParents) at one look-up a
+        // step, where looking along the tracks for every clip made a document of many tracks slow to lower after every edit.
+        var tracksById = new Dictionary<Guid, TimelineTrackModel>(document.Tracks.Count);
+        foreach (var track in document.Tracks)
+            tracksById.TryAdd(track.Id, track);
+
         // Every clip as a layer, numbered by its track (a crossfade across tracks pairs clips of two tracks). The caption box is
         // the sequence's (CaptionLayer), and a clip of the legacy blurred background draws nothing (a clip's blur fill is its own).
         var layers = new Dictionary<TimelineClip, Layer>(ReferenceEqualityComparer.Instance);
@@ -159,10 +168,11 @@ public static partial class TimelineLowering
             if (track.Kind == TimelineTrackKind.Subtitle)
                 continue;
 
+            var hidden = track.Kind != TimelineTrackKind.Audio && IsHiddenWithParents(track, tracksById);
             foreach (var clip in track.Clips)
             {
                 if (clip.ContentKind is not (LayerKind.Captions or LayerKind.Background))
-                    layers[clip] = MakeLayer(clip, track, t + 1, LookOf(clip, track), document);
+                    layers[clip] = MakeLayer(clip, track, t + 1, LookOf(clip, track), hidden, document);
             }
         }
 
@@ -173,7 +183,7 @@ public static partial class TimelineLowering
         {
             for (var i = 0; i < track.Clips.Count; i++)
             {
-                if (!layers.TryGetValue(track.Clips[i], out var looped) || Rounds(track, i, LookOf) is not { Count: > 0 } rounds || rounds[^1].End < length - 0.001)
+                if (!layers.TryGetValue(track.Clips[i], out var looped) || Rounds(track, i, lookOf) is not { Count: > 0 } rounds || rounds[^1].End < length - 0.001)
                     continue;
 
                 (looped.Duration, looped.FadeOutSeconds) = (0, Math.Clamp(rounds[^1].FadeOutSeconds, 0, TimelineDocument.LongestFade));
@@ -249,10 +259,11 @@ public static partial class TimelineLowering
         // that family's twins, as they were above the blurred background.
         var familyTwins = new Dictionary<Guid, List<Layer>>();
         var familyFirst = new Dictionary<Guid, int>();
+        var families = new Guid[tracksAt.Count];
         for (var at = 0; at < tracksAt.Count; at++)
         {
             var track = tracksAt[at].Track;
-            var family = FamilyOf(track, document).Id;
+            var family = families[at] = FamilyOf(track, tracksById).Id;
             familyFirst.TryAdd(family, at);
             foreach (var clip in track.Clips)
             {
@@ -271,8 +282,8 @@ public static partial class TimelineLowering
         var stackCaptionsAt = -1;
         for (var at = 0; at < tracksAt.Count; at++)
         {
-            var (track, from, to) = tracksAt[at];
-            var family = FamilyOf(track, document).Id;
+            var (_, from, to) = tracksAt[at];
+            var family = families[at];
             if (familyFirst[family] == at && familyTwins.TryGetValue(family, out var underFamily))
             {
                 foreach (var twin in underFamily)
@@ -330,6 +341,29 @@ public static partial class TimelineLowering
         for (var depth = 0; depth < 64 && at.ParentTrackId is { } parent && document.Tracks.FirstOrDefault(t => t.Id == parent) is { } over; depth++)
             at = over;
         return at;
+    }
+
+    /// <summary>The same with the document's tracks by id (the first of each id, as the walk along them finds it).</summary>
+    private static TimelineTrackModel FamilyOf(TimelineTrackModel track, Dictionary<Guid, TimelineTrackModel> tracksById)
+    {
+        var at = track;
+        for (var depth = 0; depth < 64 && at.ParentTrackId is { } parent && tracksById.TryGetValue(parent, out var over); depth++)
+            at = over;
+        return at;
+    }
+
+    /// <summary><see cref="TimelineDocument.IsHiddenWithParents"/>, with the document's tracks by id.</summary>
+    private static bool IsHiddenWithParents(TimelineTrackModel track, Dictionary<Guid, TimelineTrackModel> tracksById)
+    {
+        TimelineTrackModel? at = track;
+        for (var steps = 0; at is not null && steps <= tracksById.Count; steps++)
+        {
+            if (at.IsHidden)
+                return true;
+            at = at.ParentTrackId is { } parent && tracksById.TryGetValue(parent, out var over) ? over : null;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -532,7 +566,7 @@ public static partial class TimelineLowering
     /// read, and the layer's box takes the shape it leaves (Layer.GetOutputRect, at the clip's own picture size). Keyframes
     /// that change nothing are folded (see <see cref="FoldConstantKeys"/>).
     /// </summary>
-    private static Layer MakeLayer(TimelineClip clip, TimelineTrackModel track, int trackNumber, LayerState look, TimelineDocument document)
+    private static Layer MakeLayer(TimelineClip clip, TimelineTrackModel track, int trackNumber, LayerState look, bool trackHidden, TimelineDocument document)
     {
         var made = look.ShallowCopy();
         made.Kind = clip.ContentKind;
@@ -543,7 +577,7 @@ public static partial class TimelineLowering
             made.MediaDuration = clip.SourceDuration;
         (made.FadeInSeconds, made.FadeOutSeconds, made.FadeInStyle, made.FadeOutStyle) = (clip.FadeInSeconds, clip.FadeOutSeconds, clip.FadeInStyle, clip.FadeOutStyle);
         made.TransitionIn = clip.TransitionIn;
-        made.IsHidden = clip.IsHidden || (track.Kind != TimelineTrackKind.Audio && document.IsHiddenWithParents(track));
+        made.IsHidden = clip.IsHidden || trackHidden;
         (made.IsSoundMuted, made.HasAudio, made.AudioStream) = (clip.IsMuted || track.IsMuted, clip.HasSound, Math.Max(clip.AudioStreamIndex, 0));
         made.AudioOffset = clip.AudioLinked || made.Kind == LayerKind.Audio ? 0 : clip.AudioSlipSeconds;
         made.AudioGainDb = clip.GainDb + track.GainDb;
@@ -706,8 +740,9 @@ public static partial class TimelineLowering
         static bool Same(double a, double b) => Math.Abs(a - b) < 0.02;
         for (var lower = 0; lower < stack.Count; lower++)
         {
+            // (A layer with no fade of its own pairs with none: its look along the rest of the stack is skipped.)
             var under = stack[lower];
-            if (!under.IsPicture || under.Duration <= 0.001)
+            if (!under.IsPicture || under.Duration <= 0.001 || under.FadeOutSeconds <= 0.01 && under.FadeInSeconds <= 0.01)
                 continue;
 
             var (underIn, underOut) = (under.StartTime, under.StartTime + under.Duration);

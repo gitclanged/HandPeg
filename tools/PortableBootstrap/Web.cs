@@ -10,7 +10,8 @@ namespace HandPegBootstrap;
 /// </summary>
 internal static unsafe class Web
 {
-    private const string Agent = "HandPeg-Portable/5.2.1";
+    // No version in it: the one program serves every kind of copy, and a version written here would go stale.
+    private const string Agent = "HandPeg";
 
     /// <summary>A small file (the release list), whole.</summary>
     public static byte[] Get(string url, CancellationToken cancel)
@@ -38,6 +39,21 @@ internal static unsafe class Web
             File.Delete(path);
             throw;
         }
+    }
+
+    /// <summary>The SHA-512 (hex) of what <paramref name="stream"/> holds from where it stands to its end.</summary>
+    public static string Sha512Of(Stream stream)
+    {
+        using var hash = new Sha512();
+        var buffer = new byte[1 << 16];
+        fixed (byte* bytes = buffer)
+        {
+            int read;
+            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                hash.Add(bytes, (uint)read);
+        }
+
+        return Convert.ToHexString(hash.Finish());
     }
 
     private static void Fetch(string url, Stream output, CancellationToken cancel, Sha512? hash, Action<long, long>? progress)
