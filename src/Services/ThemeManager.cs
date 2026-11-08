@@ -155,6 +155,9 @@ public static partial class ThemeManager
         return new()
         {
             ["PaneSeamBrush"] = dark ? Color.FromRgb(0x22, 0x22, 0x28) : Of("ControlBorderBrush"),
+            // The Sequence Overview Scrubber's pane (the user's call after 5.3.0): a little darker than the panes and than the window's
+            // own colour (the bands above and below it), so the bar reads apart from what is round it; a light palette's a touch darker.
+            ["ScrubberBrush"] = Mix(Of("WindowBackgroundBrush"), Colors.Black, dark ? 0.25 : 0.04),
             ["CardBrush"] = Of("ControlBrush"), ["InactiveTabBrush"] = Colors.Transparent, ["TitleBarBrush"] = Of("WindowBackgroundBrush"),
             ["TabEdgeBrush"] = Colors.Transparent, ["ActiveTabEdgeBrush"] = Colors.Transparent,
             ["WellBrush"] = Of("ControlBrush"), ["WellBorderBrush"] = Of("ControlBorderBrush"), ["RaisedBorderBrush"] = Of("ControlBorderBrush"),

@@ -907,7 +907,7 @@
                 </DockPanel>
             </Border>
             <!-- Timeline and cut controls. Slim above and below, square (5.3-Stage2: edge to edge); its sides line up the times. -->
-            <Border Grid.Row="2" Grid.ColumnSpan="3" x:Name="TimelinePane" Style="{StaticResource Panel}" Padding="12,3,12,3" CornerRadius="0">
+            <Border Grid.Row="2" Grid.ColumnSpan="3" x:Name="TimelinePane" Style="{StaticResource Panel}" Background="{DynamicResource ScrubberBrush}" Padding="12,3,12,3" CornerRadius="0">
                 <Grid>
                 <StackPanel>
                     <Grid>

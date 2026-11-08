@@ -84,6 +84,8 @@
         <SolidColorBrush x:Key="TitleBarBrush" po:Freeze="True" Color="#1E1E1E" />
         <!-- 5.3-Stage2: the 1 px line between two panes (the dock's borders), where a 10 px band of the window showed before. -->
         <SolidColorBrush x:Key="PaneSeamBrush" po:Freeze="True" Color="#222228" />
+        <!-- After 5.3.0: the Sequence Overview Scrubber's pane, a little darker than the panes and the window (ThemeManager.LookDefaults). -->
+        <SolidColorBrush x:Key="ScrubberBrush" po:Freeze="True" Color="#161616" />
         <SolidColorBrush x:Key="KeyAccentBrush" po:Freeze="True" Color="Gold" />
         <SolidColorBrush x:Key="WellBrush" po:Freeze="True" Color="#2D2D2D" />
         <SolidColorBrush x:Key="WellBorderBrush" po:Freeze="True" Color="#3F3F3F" />

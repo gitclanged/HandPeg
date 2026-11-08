@@ -13,7 +13,8 @@ Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 - **Edge to edge.** The panes reach the window's sides and foot, with hairline seams between them (still easy to grab), a
   slimmer 26-pixel title bar, and no bands round the playback row, the Sequence Overview Scrubber or the Timeline. The
   empty player shows only its icon and "Drag & Drop Files or Links", with no dashed outline, and the middle of the title bar
-  stays empty until you do something, open something or start some work.
+  stays empty until you do something, open something or start some work. The Sequence Overview Scrubber sits on a slightly
+  darker band of its own, so it reads apart from the panes round it.
 - **One waveform for a clip's whole sound.** A video clip whose audio streams sit on Sub-Lanes draws all of them, at each
   lane's own volume (muted lanes left out), as one see-through waveform across its whole block, over its frames.
 - **A tidier Timeline.** Effect lanes take no room until their track's stack is opened; a gear on the Timeline's row of

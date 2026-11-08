@@ -189,6 +189,8 @@ public static class LayoutTests
         var (padding, gripMargin) = (Sides(Attr(scrubber, "Padding")), Sides(Attr(grip, "Margin")));
         text.Append("   Sequence Overview Scrubber padding ").Append(Attr(scrubber, "Padding")).Append(", its grip's margin ").Append(Attr(grip, "Margin")).Append('\n');
         expect(padding is [12, 3, 12, 3] && Attr(scrubber, "CornerRadius") == "0", "the Sequence Overview Scrubber is slim (3 above and below) and square");
+        expect(Attr(scrubber, "Background") == "{DynamicResource ScrubberBrush}" && app.Descendants().Any(e => e.Name.LocalName == "SolidColorBrush" && Key(e) == "ScrubberBrush"),
+            "and on a background of its own, ScrubberBrush (a little darker than the panes and the window, the user's call after 5.3.0), with App.xaml's default for the first frame");
         expect(gripMargin is { Length: 4 } && gripMargin[0] == -padding[0] && gripMargin[2] == -padding[2] && gripMargin[3] == -padding[3],
             "its lower edge's grip lies over its padding: the padding's left, right and bottom, negated");
         expect(Attr(Named(main, "UnifiedTimelinePanel"), "Padding") == "0" && Attr(Named(main, "UnifiedTimelinePanel"), "CornerRadius") == "0",

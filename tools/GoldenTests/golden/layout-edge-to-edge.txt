@@ -10,6 +10,7 @@ ok: the window's body (ContentRoot) is edge to edge at its sides and foot in eve
 ok: no band above the playback row
    Sequence Overview Scrubber padding 12,3,12,3, its grip's margin -12,0,-12,-3
 ok: the Sequence Overview Scrubber is slim (3 above and below) and square
+ok: and on a background of its own, ScrubberBrush (a little darker than the panes and the window, the user's call after 5.3.0), with App.xaml's default for the first frame
 ok: its lower edge's grip lies over its padding: the padding's left, right and bottom, negated
 ok: the Timeline's panel has no padding and square corners: the ruler right under the tab strip
 ok: the drop hint has no outline (5.3-Stage3: no dashed Rectangle, no border): its icon and words only
