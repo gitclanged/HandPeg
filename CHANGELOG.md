@@ -3,6 +3,40 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.3.1 — A Steady Timecode, a Media Browser That Fills Its Pane & Easy Panning in the Cutout Studio
+
+### User-Facing Highlights
+- **The running times hold still.** The position beside the Sequence Overview Scrubber, its duration, the playback bar's
+  time, the caption editor's time and the voiceover's count use tabular figures and keep their width while they change, so
+  neither the time nor the scrubber beside it shifts sideways during playback. Times read `00:32:01.359`: a period before the
+  milliseconds, a colon only before a frame number (Settings > Timeline's frames format). A time typed as `00:32:01:359` is
+  still understood.
+- **A tighter Sequence Overview Scrubber.** Half the gap between the position and the scrubber, and its strip of pictures
+  laid on whole screen pixels, so the first picture's edge and the lines between them are sharp.
+- **The Media Browser fills its pane.** Its tiles share the pane's whole width, two or more abreast from about 190 pixels
+  wide (one below that), each picture kept 16:9, with no empty band at the right. The size slider still sets how large the
+  tiles are wanted; the pictures are made again sharper once a wider pane has settled.
+- **Easy panning in the Cutout Studio.** Drag with the right button to pan (a right-click that does not move still removes a
+  point or a shape), or with the middle button, Alt + drag away from a shape's edge (on an edge Alt still adds a point), or
+  Space + drag. Shift + the wheel and a touchpad's sideways scroll pan left and right, and slim scroll bars show along the
+  view's edges while it is zoomed in.
+- **The Source Navigator.** A small picture of the whole frame you are cutting from, above the Output Stage, with your shapes
+  on it and a bright box round the part the drawing view shows: click or drag in it to move the view there.
+- **A clearer Output Stage.** It is labelled "Output Stage — drag a finished Cutout to position it", and shows the move pointer
+  only over a Cutout, not over the empty frame round them.
+
+### Under the Hood & Fixes
+- `VirtualizingTilePanel` works out its columns and their shared width in the same measure that places the tiles (nothing is
+  laid out twice), and tells the pane the width it gave them through a bubbling routed event; a small `AspectBox` keeps the
+  pictures 16:9 at any width.
+- `TimeReadout`, a decorator round a TextBlock (whose own measure cannot be overridden), holds a running time's width.
+- The Cutout Studio's pointer goes through point-based steps (`Press`, `MoveTo`, `Release`, `Wheel`), so the golden tests
+  drive pans, clicks and wheels with the points and keys they choose; the horizontal wheel comes from the window's own
+  messages, which WPF raises nothing for.
+- New golden tests: `time-display-tabular`, `media-browser-autofill-columns` (the real pane laid out at four widths) and
+  `cutout-studio-pan-navigator` (the real window: every way to pan, the right-click kept, the scroll bars, the Source
+  Navigator and the Output Stage's pointer).
+
 ## HandPeg v5.3.0 — .NET 10, an Edge-to-Edge Editor & a Touch-Ready 3D View
 
 ### User-Facing Highlights

@@ -1,0 +1,18 @@
+# The running times: HH:MM:SS.mmm, held still by tabular figures and a width that never shrinks for the same text length.
+ok: milliseconds follow a period: 1921.359 s is 00:32:01.359
+ok: and are read back
+ok: a colon before three digits of milliseconds is still read (00:32:01:359)
+ok: but not a colon before two digits, in the milliseconds format
+ok: a colon comes before frames only, in the frames format: 00:32:01:15
+ok: its TextBlock gets tabular figures
+ok: a text of the same length never makes it narrower than the widest it has shown
+ok: a text of another length is measured afresh
+ok: collapsed, it takes no room
+ok: and shown again it starts afresh
+ok: the position by the Sequence Overview Scrubber (PositionTextBlock) is held in a TimeReadout
+ok: so is the duration at the scrubber's right end
+ok: so is the playback bar's position and duration
+ok: so is the caption editor's time (TimeText)
+ok: the voiceover's count (RecordTimeText, a sentence) has tabular figures
+ok: the gutter between the position and the scrubber is 6 DIPs (it was 12)
+ok: the scrubber's filmstrip lays its cells out on whole device pixels

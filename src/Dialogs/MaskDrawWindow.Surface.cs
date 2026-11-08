@@ -34,6 +34,7 @@ public sealed partial class MaskDrawWindow
         private (double Step, Rect Seen)? _grid;
 
         private static readonly Brush[] PieceFills = Frozen(0x55), PieceLines = Frozen(0xFF);
+        private static readonly Pen[] PiecePens = PieceLines.Select(line => (Pen)new Pen(line, 1.5).GetAsFrozen()).ToArray();
         private static readonly Brush DrawingLine = Frozen(Color.FromRgb(0xFF, 0x8A, 0x3D));
         private static readonly Brush RegionLine = Frozen(Color.FromArgb(0xC0, 0xFF, 0xD0, 0x40));
         private static readonly Brush LabelBack = Frozen(Color.FromArgb(0xB0, 0, 0, 0));
@@ -64,6 +65,9 @@ public sealed partial class MaskDrawWindow
 
         /// <summary>The colour a piece is drawn in.</summary>
         public static Brush LineOf(int piece) => PieceLines[Math.Abs(piece) % PieceLines.Length];
+
+        /// <summary>A line in a piece's colour, for the Source Navigator's small outlines.</summary>
+        public static Pen PenOf(int piece) => PiecePens[Math.Abs(piece) % PiecePens.Length];
 
         /// <summary>
         /// A view changed: the grid of source pixels to draw (pixels that step wide, over what is seen; null for none), and vertices at
@@ -225,11 +229,16 @@ public sealed partial class MaskDrawWindow
         private Point Clamp(Point point) => new(Math.Clamp(point.X, 0, _width), Math.Clamp(point.Y, 0, _height));
 
         // Where the pointer is on the picture: with the pixel grid shown, on the nearest corner of a pixel.
-        private Point Pointer()
+        private Point Pointer() => Snapped(Mouse.GetPosition(this));
+
+        private Point Snapped(Point at)
         {
-            var at = Clamp(Mouse.GetPosition(this));
+            at = Clamp(at);
             return _grid is not null ? new Point(Math.Round(at.X), Math.Round(at.Y)) : at;
         }
+
+        /// <summary>Whether a press here (in the picture's pixels) lands on an edge, where Alt + a press puts a point in (5.3.1: elsewhere it pans).</summary>
+        public bool HasEdgeAt(Point at) => EdgeAt(Snapped(at)) is not null;
 
         // With Shift, the next point lies along 0, 45 or 90 degrees from the last one.
         private Point Constrained(Point at)
@@ -451,10 +460,13 @@ public sealed partial class MaskDrawWindow
             InvalidateVisual();
         }
 
-        protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
+        /// <summary>
+        /// A right-click at a place on the picture (in its pixels). The window decides it was one when the button comes up without the
+        /// pointer having moved (5.3.1): a right-drag pans the view instead.
+        /// </summary>
+        public void RightClick(Point at)
         {
-            var at = Pointer();
-            e.Handled = true;
+            at = Snapped(at);
 
             // A point goes, of the shape being drawn or a finished one; a finished shape left with fewer than three goes with it.
             if (PointAt(at) is { } point)

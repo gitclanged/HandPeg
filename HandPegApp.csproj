@@ -13,9 +13,9 @@
     <RootNamespace>HandPegApp</RootNamespace>
     <Product>HandPeg</Product>
     <AssemblyTitle>HandPeg</AssemblyTitle>
-    <Version>5.3.0</Version>
-    <AssemblyVersion>5.3.0.0</AssemblyVersion>
-    <FileVersion>5.3.0.0</FileVersion>
+    <Version>5.3.1</Version>
+    <AssemblyVersion>5.3.1.0</AssemblyVersion>
+    <FileVersion>5.3.1.0</FileVersion>
 
     <!-- Main is written by hand in Program.cs, so that the updater's bootstrap runs before WPF starts. -->
     <StartupObject>HandPegApp.Program</StartupObject>

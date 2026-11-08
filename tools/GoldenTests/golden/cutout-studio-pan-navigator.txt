@@ -1,0 +1,24 @@
+# The Cutout Studio's view (5.3.1): a right-drag, Alt + drag, the middle button and the wheels pan, a right-click still acts;
+# scroll bars while zoomed in; the Source Navigator shows the whole frame and moves the view; the Output Stage's move pointer only over a Cutout.
+ok: fitted to the window, the view shows no scroll bars
+ok: and the Source Navigator's box holds the whole frame
+ok: zoomed in eight notches, both scroll bars show
+ok: each bar's thumb is the part of the picture seen, where it is
+ok: the Source Navigator's box is the part seen, in the source's pixels
+ok: the Source Navigator's middle is the frame's middle: it shows the whole uncropped frame
+ok: a press there centres the view on that point
+ok: pressed at the frame's corner, the view goes no further than the picture's edge
+ok: a right press that moves 2 pixels has not panned
+ok: past 4 pixels it pans, by just what the pointer travelled
+ok: let go, it removed nothing
+ok: a right-click (a press and a release a pixel away) inside a shape still removes it
+ok: and Undo brings it back
+ok: the middle button pans
+ok: Alt + the left button away from an edge pans
+ok: Alt + the left button on an edge is left to the shapes, which put a point in it there
+ok: a plain left press is the pen's
+ok: Shift + a notch of the wheel down moves the view 96 pixels right, its zoom kept
+ok: a notch of the horizontal wheel to the left moves it back
+ok: the Source Navigator is above the Output Stage, in the right-hand column
+ok: both are labelled: the Output Stage says what a drag there does
+ok: across the Output Stage the move pointer shows over a Cutout, and nowhere else

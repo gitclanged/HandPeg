@@ -32,8 +32,11 @@ public static class TimeDisplay
         seconds = 0;
         error = "";
 
-        // HH:MM:SS with optional decimals. TimeSpan's own parser would read "1:30" as hours and minutes.
+        // HH:MM:SS with optional decimals. TimeSpan's own parser would read "1:30" as hours and minutes. A colon before exactly three
+        // digits of milliseconds (HH:MM:SS:mmm, as some players and older notes write them) is read as the period it stands for.
         var parts = text.Trim().Split(':');
+        if (parts.Length == 4 && parts[3].Length == 3 && parts[3].All(char.IsAsciiDigit) && !parts[2].Contains('.'))
+            parts = [parts[0], parts[1], parts[2] + "." + parts[3]];
         if (parts.Length == 3
             && int.TryParse(parts[0], out var hours) && hours >= 0
             && int.TryParse(parts[1], out var minutes) && minutes is >= 0 and <= 59

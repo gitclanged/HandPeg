@@ -136,6 +136,8 @@ public static class Program
         // dock-standard-layout, layout-edge-to-edge, lazy-settings-tabs (5.3-Stage2): Standard Editing's stacked middle column and its
         // upgrade, the window's edges with no dead space, and the Summary and Export tabs made only when shown.
         results.AddRange(LayoutTests.All());
+        // time-display-tabular, media-browser-autofill-columns (5.3.1): the running times held still, the Media Browser's tiles filling the pane.
+        results.AddRange(ReadoutAndTileTests.All());
         // exploded-3d-transition-pacing (a compositor worker: the 3D view's way in and out make no texture after their first frame) and
         // exploded-3d-gestures (5.3-Stage3): the 3D view's camera curve, its wheel, touchpad and touch.
         if (filter is null || "exploded-3d-transition-pacing".Contains(filter, StringComparison.OrdinalIgnoreCase))

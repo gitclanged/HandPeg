@@ -8,17 +8,18 @@
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
         <SolidColorBrush x:Key="Shade" Color="#B0000000" />
-        <!-- How large a tile is, set from code for the view chosen -->
-        <sys:Double x:Key="TileWidth">200</sys:Double>
-        <sys:Double x:Key="TileHeight">112</sys:Double>
+        <!-- How wide a tile is wanted (its margins included), set from code for the size chosen; the panel stretches the columns to fill the pane. -->
+        <sys:Double x:Key="TileWidth">208</sys:Double>
 
         <!--
             A tile: the picture (a frame of the video, which follows the pointer across it), the length in a corner,
             a line along the bottom for where the pointer is, and the name under it.
         -->
         <DataTemplate x:Key="TileTemplate">
-            <StackPanel Width="{DynamicResource TileWidth}" Margin="3" Background="Transparent">
-                <Grid Height="{DynamicResource TileHeight}" Background="{DynamicResource InsetBrush}" ClipToBounds="True"
+            <!-- As wide as the panel's column (stretched to fill the pane, 5.3.1); the picture keeps 16:9 at that width. -->
+            <StackPanel Margin="3" Background="Transparent">
+                <views:AspectBox>
+                <Grid Background="{DynamicResource InsetBrush}" ClipToBounds="True"
                       MouseMove="Picture_MouseMove" MouseLeave="Picture_MouseLeave">
                     <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"
                                Foreground="{DynamicResource MutedTextBrush}" />
@@ -50,6 +51,7 @@
                         </Rectangle.RenderTransform>
                     </Rectangle>
                 </Grid>
+                </views:AspectBox>
                 <!-- The path is the name's tooltip, not the picture's: over the picture it would hide the time being scrubbed. -->
                 <TextBlock Text="{Binding Name}" Margin="1,3,1,0" FontSize="11.5" TextTrimming="CharacterEllipsis" ToolTip="{Binding Path}" />
             </StackPanel>
@@ -128,7 +130,7 @@
 
         <!-- Only the rows of tiles in view (and one more each side) are made: a folder of hundreds of videos stays light. -->
         <ItemsPanelTemplate x:Key="TilePanel">
-            <views:VirtualizingTilePanel />
+            <views:VirtualizingTilePanel TileWidth="{DynamicResource TileWidth}" />
         </ItemsPanelTemplate>
         <ItemsPanelTemplate x:Key="RowPanel">
             <VirtualizingStackPanel />

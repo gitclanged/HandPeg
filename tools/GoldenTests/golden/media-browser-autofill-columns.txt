@@ -1,0 +1,9 @@
+# The Media Browser's tiles: two or more abreast from 190 DIPs, stretched to fill the pane edge to edge, pictures 16:9.
+   a tile of 118:  150 = 1 x 150  189 = 1 x 189  190 = 2 x 95  240 = 2 x 120  300 = 2 x 150  460 = 3 x 153.33  700 = 5 x 140  1000 = 8 x 125
+   a tile of 230:  150 = 1 x 150  189 = 1 x 189  190 = 2 x 95  240 = 2 x 120  300 = 2 x 150  460 = 2 x 230  700 = 3 x 233.33  1000 = 4 x 250
+   a tile of 442:  150 = 1 x 150  189 = 1 x 189  190 = 2 x 95  240 = 2 x 120  300 = 2 x 150  460 = 2 x 230  700 = 2 x 350  1000 = 2 x 500
+ok: the columns share the width exactly; one below 190 DIPs, two or more from 190; past two, none narrower than asked
+ok: a pane 180 wide: one column, the row filled to its right edge, the tiles equal, their pictures 16:9, decoded for the width shown
+ok: a pane 250 wide: two or more abreast, the row filled to its right edge, the tiles equal, their pictures 16:9, decoded for the width shown
+ok: a pane 330 wide: two or more abreast, the row filled to its right edge, the tiles equal, their pictures 16:9, decoded for the width shown
+ok: a pane 700 wide: two or more abreast, the row filled to its right edge, the tiles equal, their pictures 16:9, decoded for the width shown

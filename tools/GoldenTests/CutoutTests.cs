@@ -66,6 +66,20 @@ public static class CutoutTests
 
         yield return new GraphResult("cutout-studio", studio.ToString(), trouble, 0);
 
+        var view = new StringBuilder("# The Cutout Studio's view (5.3.1): a right-drag, Alt + drag, the middle button and the wheels pan, a right-click still acts;\n"
+                                     + "# scroll bars while zoomed in; the Source Navigator shows the whole frame and moves the view; the Output Stage's move pointer only over a Cutout.\n");
+        var astray = new List<string>();
+        try
+        {
+            PanAndNavigator(view, astray);
+        }
+        catch (Exception ex)
+        {
+            astray.Add($"threw {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+        }
+
+        yield return new GraphResult("cutout-studio-pan-navigator", view.ToString(), astray, 0);
+
         var builtIn = new StringBuilder("# The built-in Game Presets (5.1-Release): made as the Studio makes one, written where missing and never over a file, on a clip.\n");
         var wrong = new List<string>();
         try
@@ -443,6 +457,140 @@ public static class CutoutTests
             Expect(Zoom() == "64x", $"the wheel goes up to 64x, and no further ({Zoom()})");
             Wheel(-60);
             Expect(Zoom() == fitted, $"and back down to the whole picture, and no further ({Zoom()})");
+        }
+        finally
+        {
+            window.Close();
+            Pump();
+        }
+    }
+
+    private static void PanAndNavigator(StringBuilder text, List<string> problems)
+    {
+        void Expect(bool holds, string what)
+        {
+            text.Append(holds ? "ok: " : "NOT: ").Append(what).Append('\n');
+            if (!holds)
+                problems.Add(what);
+        }
+
+        const int W = 1920, H = 1080;
+        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
+        var settings = AppSettings.Current;
+        (settings.AutoUpdateDependencies, settings.SendCrashReports, settings.EnableExtraAnimations) = (false, false, false);
+        var vm = Opened("D:/media/game.mkv", W, H, "h264");
+
+        // The hero's one outline (a box low at the left) and the killfeed's two: three shapes in all.
+        List<CutoutPiece> pieces =
+        [
+            new("Hero Portrait & HP", "0.02,0.8 0.2,0.8 0.2,0.95 0.02,0.95", new Rect(0.02, 0.8, 0.18, 0.15), 0.05, 0.75, 0.5),
+            new("Killfeed", "0.75,0.05 0.98,0.05 0.98,0.2;0.75,0.25 0.98,0.25 0.98,0.3 0.75,0.3", new Rect(0.75, 0.05, 0.23, 0.25), 0.4, 0.05, 0.55),
+        ];
+        vm.AddCutouts(pieces, 1.7);
+
+        var window = new MaskDrawWindow(vm, null) { WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000, ShowActivated = false };
+        try
+        {
+            window.Show();
+            Pump();
+            var viewport = Find<Canvas>(window, c => c.ClipToBounds) ?? throw new InvalidOperationException("no viewport");
+            var bars = (Across: Find<System.Windows.Controls.Primitives.ScrollBar>(window, b => b.TemplatedParent is null && b.Orientation == Orientation.Horizontal),
+                Down: Find<System.Windows.Controls.Primitives.ScrollBar>(window, b => b.TemplatedParent is null && b.Orientation == Orientation.Vertical));
+            var surface = typeof(MaskDrawWindow).GetField("_surface", Hidden)!.GetValue(window)!;
+            int Shapes() => (int)surface.GetType().GetProperty("ShapeCount")!.GetValue(surface)!;
+            var navigator = Find<FrameworkElement>(window, e => e.GetType().Name == "SourceNavigator") ?? throw new InvalidOperationException("no Source Navigator");
+            Rect Seen() => (Rect)navigator.GetType().GetProperty("Seen")!.GetValue(navigator)!;
+            var stage = Find<FrameworkElement>(window, e => e.GetType().Name == "CutoutStage") ?? throw new InvalidOperationException("no Output Stage");
+            static bool Near(double a, double b) => Math.Abs(a - b) < 0.01;
+            Point OnView(double x, double y) => new(x * window.View.Zoom + window.View.PanX, y * window.View.Zoom + window.View.PanY);
+            var (viewWidth, viewHeight) = (viewport.ActualWidth, viewport.ActualHeight);
+            var middle = new Point(viewWidth / 2, viewHeight / 2);
+
+            // Fitted: no bars; the navigator's box holds the whole frame.
+            Expect(bars.Across is { Visibility: Visibility.Collapsed } && bars.Down is { Visibility: Visibility.Collapsed }, "fitted to the window, the view shows no scroll bars");
+            Expect(Seen().Contains(new Rect(0, 0, W, H)), "and the Source Navigator's box holds the whole frame");
+
+            // Zoomed in: both bars, each thumb the part seen.
+            window.Wheel(8 * 120, middle, ModifierKeys.None);
+            Pump();
+            var (zoom, panX, panY) = window.View;
+            Expect(bars.Across!.Visibility == Visibility.Visible && bars.Down!.Visibility == Visibility.Visible, "zoomed in eight notches, both scroll bars show");
+            Expect(Near(bars.Across.Value, -panX) && Near(bars.Across.Maximum, W * zoom - viewWidth) && Near(bars.Across.ViewportSize, viewWidth)
+                   && Near(bars.Down!.Value, -panY) && Near(bars.Down.Maximum, H * zoom - viewHeight),
+                "each bar's thumb is the part of the picture seen, where it is");
+            var seen = Seen();
+            Expect(Near(seen.X, -panX / zoom) && Near(seen.Width, viewWidth / zoom) && Near(seen.Height, viewHeight / zoom) && seen.Width < W,
+                "the Source Navigator's box is the part seen, in the source's pixels");
+
+            // The navigator: its middle is the frame's middle; a press there centres the view on it; the frame's corner is as far as it goes.
+            var source = (Point)navigator.GetType().GetMethod("SourceAt", Hidden)!.Invoke(navigator, [new Point(navigator.ActualWidth / 2, navigator.ActualHeight / 2)])!;
+            Expect(Math.Abs(source.X - W / 2.0) < 0.5 && Math.Abs(source.Y - H / 2.0) < 0.5, "the Source Navigator's middle is the frame's middle: it shows the whole uncropped frame");
+            window.CenterOn(source);
+            seen = Seen();
+            Expect(Math.Abs(seen.X + seen.Width / 2 - W / 2.0) < 0.01 && Math.Abs(seen.Y + seen.Height / 2 - H / 2.0) < 0.01, "a press there centres the view on that point");
+            window.CenterOn(new Point(0, 0));
+            Expect(window.View.PanX == 0 && window.View.PanY == 0 && bars.Across.Value == 0 && Seen().TopLeft == new Point(0, 0),
+                "pressed at the frame's corner, the view goes no further than the picture's edge");
+            window.CenterOn(new Point(W / 2.0, H / 2.0));
+
+            // The right button: under four pixels of travel a click, past them a pan by exactly the travel.
+            (zoom, panX, panY) = window.View;
+            var at = new Point(viewWidth * 0.4, viewHeight * 0.4);
+            var count = Shapes();
+            Expect(window.Press(MouseButton.Right, at, ModifierKeys.None) && !window.MoveTo(at + new Vector(2, 1)) && window.View == (zoom, panX, panY),
+                "a right press that moves 2 pixels has not panned");
+            Expect(window.MoveTo(at + new Vector(40, 25)) && Near(window.View.PanX, panX + 40) && Near(window.View.PanY, panY + 25), "past 4 pixels it pans, by just what the pointer travelled");
+            Expect(window.Release(MouseButton.Right) && Shapes() == count, "let go, it removed nothing");
+
+            // A right-click inside the hero's box (the view moved there) takes the shape away, as before; Undo brings it back.
+            window.CenterOn(new Point(0.11 * W, 0.875 * H));
+            var hero = OnView(0.11 * W, 0.875 * H);
+            Expect(window.Press(MouseButton.Right, hero, ModifierKeys.None) && !window.MoveTo(hero + new Vector(1, 1)) && window.Release(MouseButton.Right) && Shapes() == count - 1,
+                "a right-click (a press and a release a pixel away) inside a shape still removes it");
+            surface.GetType().GetMethod("Undo")!.Invoke(surface, null);
+            Expect(Shapes() == count, "and Undo brings it back");
+
+            // The middle button, and Alt + the left away from an edge, pan; Alt + the left on an edge is left to the shapes (it puts a point in).
+            (_, panX, panY) = window.View;
+            Expect(window.Press(MouseButton.Middle, hero, ModifierKeys.None) && window.MoveTo(hero + new Vector(-30, 0)) && Near(window.View.PanX, panX - 30) && window.Release(MouseButton.Middle),
+                "the middle button pans");
+            (_, panX, _) = window.View;
+            Expect(window.Press(MouseButton.Left, hero, ModifierKeys.Alt) && window.MoveTo(hero + new Vector(20, 0)) && Near(window.View.PanX, panX + 20) && window.Release(MouseButton.Left),
+                "Alt + the left button away from an edge pans");
+            var edge = OnView(0.11 * W, 0.8 * H);
+            Expect(!window.Press(MouseButton.Left, edge, ModifierKeys.Alt) && Shapes() == count, "Alt + the left button on an edge is left to the shapes, which put a point in it there");
+            Expect(!window.Press(MouseButton.Left, hero, ModifierKeys.None), "a plain left press is the pen's");
+
+            // The wheels: Shift + the wheel and the horizontal wheel pan sideways at the zoom there is.
+            window.CenterOn(new Point(W / 2.0, H / 2.0));
+            (zoom, panX, panY) = window.View;
+            window.Wheel(-120, middle, ModifierKeys.Shift);
+            Expect(window.View == (zoom, panX - 96, panY), "Shift + a notch of the wheel down moves the view 96 pixels right, its zoom kept");
+            window.SidewaysWheel(-120);
+            Expect(window.View == (zoom, panX, panY), "a notch of the horizontal wheel to the left moves it back");
+
+            // The column: the Source Navigator above the Output Stage, labelled; the move pointer only over a Cutout.
+            Point Top(FrameworkElement element) => element.TransformToAncestor(window).Transform(new Point(0, 0));
+            Expect(Top(navigator).Y < Top(stage).Y && Math.Abs(Top(navigator).X - Top(stage).X) < 0.5, "the Source Navigator is above the Output Stage, in the right-hand column");
+            Expect(Find<TextBlock>(window, t => t.Text == "Source Navigator") is not null && Find<TextBlock>(window, t => t.Text == "Output Stage \u2014 drag a finished Cutout to position it") is not null,
+                "both are labelled: the Output Stage says what a drag there does");
+            var (over, off, wrong) = (0, 0, 0);
+            var pieceAt = stage.GetType().GetMethod("PieceAt", Hidden)!;
+            var cursorAt = stage.GetType().GetMethod("CursorAt")!;
+            for (var y = 1.0; y < stage.ActualHeight; y += 6)
+            {
+                for (var x = 1.0; x < stage.ActualWidth; x += 6)
+                {
+                    var point = new Point(x, y);
+                    var onPiece = pieceAt.Invoke(stage, [point]) is not null;
+                    var pointer = cursorAt.Invoke(stage, [point]) as Cursor;
+                    (over, off) = onPiece ? (over + 1, off) : (over, off + 1);
+                    if ((pointer == Cursors.SizeAll) != onPiece)
+                        wrong++;
+                }
+            }
+
+            Expect(over > 0 && off > 0 && wrong == 0, "across the Output Stage the move pointer shows over a Cutout, and nowhere else");
         }
         finally
         {

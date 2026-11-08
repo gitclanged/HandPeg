@@ -9,9 +9,9 @@ HandPeg is a Windows video editor for turning multi-track gameplay recordings an
 clean cuts. Every track is decoded and composited on the graphics card, so long recordings with many cuts play and scrub
 without the timeline lagging.
 
-![The editor edge to edge with a quick-cut project open: the vertical frame in the player, the Timeline's video clip with its filmstrip under the see-through waveform of all its audio Sub-Lanes, its HUD Cutouts, the Effects and Media panes, and the Quick FX button at the bottom right](docs/screenshots/workspace-v5.3.png)
+![The editor edge to edge with a quick-cut project open: the vertical frame in the player, the Sequence Overview Scrubber with its steady timecode and its strip of pictures, the Timeline's video clip with its filmstrip under the see-through waveform of all its audio Sub-Lanes, its HUD Cutouts, the Effects and Media panes, and the Quick FX button at the bottom right](docs/screenshots/workspace-v5.3.1.png)
 
-![The Cutout Studio: the Overwatch 2 preset's HUD pieces (killfeed, health and name, abilities and ammo) drawn as outlines on a still of the recording](docs/screenshots/cutout-studio-v5.2.png)
+![The Cutout Studio zoomed to 100 % on a still of a gameplay recording, with slim scroll bars along the view, and in the right-hand column the Source Navigator's picture of the whole frame with a bright box round the part in view, above the labelled Output Stage](docs/screenshots/cutout-studio-v5.3.1.png)
 
 ![The audio tools while playing: the Master Meter pane's live levels, and the Audio tab's master mix, master fader and momentary, short-term and integrated LUFS with true peak](docs/screenshots/audio-suite-v5.2.png)
 
@@ -20,7 +20,8 @@ without the timeline lagging.
 ## Main workflows
 - **Track Preset Nodes and the Cutout Studio.** Set a Game Preset on a track and every clip on it, or dropped onto it,
   gets that preset's frame, HUD Cutouts and blurred background. Draw your own game's HUD pieces in the Cutout Studio
-  (pen, rectangle, ellipse, slant; zoom up to 64x with a pixel grid) and save them as a preset.
+  (pen, rectangle, ellipse, slant; zoom up to 64x with a pixel grid, pan with a right-drag or the Source Navigator's
+  picture of the whole frame) and save them as a preset.
 - **Multi-track audio.** Each audio stream of a recording gets its own Sub-Lane under its clip. Studio Voice (denoise,
   presence and a broadcast leveller in one card), a De-Esser and a parametric EQ are effect cards; the Master Meter pane
   shows live LUFS and true peak beside a master fader.
@@ -37,8 +38,8 @@ From the [latest release](https://github.com/gitclanged/HandPeg/releases/latest)
 - `HandPeg-win-Setup.exe`: the installer (Windows 10 or 11, x64). It updates itself.
 - `HandPeg-win-arm64-Setup.exe`: the native installer for Windows on ARM (Snapdragon PCs). It updates itself from the ARM64
   releases.
-- `HandPeg-5.3.0-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
-- `HandPeg-5.3.0-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
+- `HandPeg-5.3.1-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
+- `HandPeg-5.3.1-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
 
 HandPeg runs on Microsoft's .NET 10 Desktop Runtime, and neither the installers nor the zips need it installed first. On a PC
 without it (an older .NET such as .NET 8 is not enough), `HandPeg.exe` asks the first time it starts: download .NET 10 for

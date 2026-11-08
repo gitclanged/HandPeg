@@ -9,14 +9,44 @@ namespace HandPegApp.Views;
 /// <summary>
 /// The media browser's tiles, row after row, with only the rows in view (and one more on each side, for the keyboard
 /// and the pictures about to come into view) made. A wrap panel made every tile at once: in a folder of 290 videos that
-/// was about 40 MB of elements, more than all the pictures together. Every tile is the same size (the tile template's),
-/// so where each one goes follows from its place in the list; the panel scrolls itself by pixels (IScrollInfo) and
-/// brings a tile into view for the keyboard and for ScrollIntoView.
+/// was about 40 MB of elements, more than all the pictures together. Every tile is the same size, so where each one goes
+/// follows from its place in the list; the panel scrolls itself by pixels (IScrollInfo) and brings a tile into view for
+/// the keyboard and for ScrollIntoView.
+/// The columns fill the whole width (5.3.1): as many tiles of <see cref="TileWidth"/> as fit, at least two from
+/// <see cref="TwoColumnsFrom"/> on, each stretched to an equal share, so no empty band is left at the right. The share is
+/// worked out in the same measure that places the tiles: nothing is laid out twice.
 /// </summary>
 public sealed class VirtualizingTilePanel : VirtualizingPanel, IScrollInfo
 {
     // How far the wheel and the arrows move, in pixels.
     private const double LineStep = 48;
+
+    /// <summary>From this width on, the tiles are two or more abreast, however large they are asked to be.</summary>
+    public const double TwoColumnsFrom = 190;
+
+    public static readonly DependencyProperty TileWidthProperty = DependencyProperty.Register(
+        nameof(TileWidth), typeof(double), typeof(VirtualizingTilePanel),
+        new FrameworkPropertyMetadata(208.0, FrameworkPropertyMetadataOptions.AffectsMeasure), width => width is double w && w >= 1);
+
+    /// <summary>The width a whole tile is wanted at (its margins included); the tiles shown are this or a little wider or narrower.</summary>
+    public double TileWidth
+    {
+        get => (double)GetValue(TileWidthProperty);
+        set => SetValue(TileWidthProperty, value);
+    }
+
+    /// <summary>The width each tile now has, after the columns were stretched to the full width.</summary>
+    public double CellWidth { get; private set; }
+
+    public static readonly RoutedEvent CellWidthChangedEvent = EventManager.RegisterRoutedEvent(
+        nameof(CellWidthChanged), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(VirtualizingTilePanel));
+
+    /// <summary>Raised (bubbling) when <see cref="CellWidth"/> changes: the pane decodes its pictures for that size.</summary>
+    public event RoutedEventHandler CellWidthChanged
+    {
+        add => AddHandler(CellWidthChangedEvent, value);
+        remove => RemoveHandler(CellWidthChangedEvent, value);
+    }
 
     private Size _extent, _viewport, _tile = new(1, 1);
     private double _offset;
@@ -40,14 +70,21 @@ public sealed class VirtualizingTilePanel : VirtualizingPanel, IScrollInfo
         var children = InternalChildren;
         var generator = ItemContainerGenerator;
         var count = Count;
-        var width = double.IsInfinity(availableSize.Width) ? _tile.Width * Math.Max(_perRow, 1) : availableSize.Width;
+        var width = double.IsInfinity(availableSize.Width) ? TileWidth * Math.Max(_perRow, 1) : availableSize.Width;
         var height = double.IsInfinity(availableSize.Height) ? _tile.Height : availableSize.Height;
 
-        // The tiles' size: the first one made, measured as it wants to be.
-        if (count > 0)
-            _tile = MeasureOne(children, generator, children.Count > 0 ? IndexOf(generator, 0) : FirstIndex(count));
+        // The columns, then each tile's share of the width: the tiles' height is the first one's, measured at that width.
+        (_perRow, var cell) = Columns(width, TileWidth);
+        if (cell != CellWidth)
+        {
+            CellWidth = cell;
+            RaiseEvent(new RoutedEventArgs(CellWidthChangedEvent, this));
+        }
 
-        _perRow = Math.Max((int)(width / _tile.Width), 1);
+        _tile = new Size(cell, _tile.Height);
+        if (count > 0)
+            _tile = new Size(cell, MeasureOne(children, generator, children.Count > 0 ? IndexOf(generator, 0) : FirstIndex(count)).Height);
+
         var rows = (count + _perRow - 1) / _perRow;
         UpdateScrollInfo(new Size(width, height), new Size(width, rows * _tile.Height));
 
@@ -73,7 +110,7 @@ public sealed class VirtualizingTilePanel : VirtualizingPanel, IScrollInfo
                         generator.PrepareItemContainer(child);
                     }
 
-                    child.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                    child.Measure(new Size(cell, double.PositiveInfinity));
                 }
             }
         }
@@ -91,6 +128,18 @@ public sealed class VirtualizingTilePanel : VirtualizingPanel, IScrollInfo
         }
 
         return new Size(width, Math.Min(height, _extent.Height));
+    }
+
+    /// <summary>
+    /// How many tiles abreast and how wide each is, in a width: as many of the wanted width as fit, at least two from
+    /// <see cref="TwoColumnsFrom"/> on, sharing the width equally.
+    /// </summary>
+    public static (int Columns, double Cell) Columns(double width, double tileWidth)
+    {
+        var columns = Math.Max((int)(width / Math.Max(tileWidth, 1)), 1);
+        if (width >= TwoColumnsFrom)
+            columns = Math.Max(columns, 2);
+        return (columns, width / columns);
     }
 
     // Makes (if need be) and measures one tile, for the tiles' size.
@@ -112,7 +161,7 @@ public sealed class VirtualizingTilePanel : VirtualizingPanel, IScrollInfo
                 generator.PrepareItemContainer(child);
             }
 
-            child.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            child.Measure(new Size(_tile.Width, double.PositiveInfinity));
             return child.DesiredSize is { Width: > 0, Height: > 0 } size ? size : _tile;
         }
     }

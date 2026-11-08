@@ -10,6 +10,7 @@ public sealed partial class MaskDrawWindow
     /// <summary>
     /// The pieces on a tall frame, as the Game Preset will lay them: the video across the middle at its zoom, each piece cut to its own
     /// outlines from the still. A piece is dragged to place it, and the wheel over it sizes it; one moved by hand stays where it was put.
+    /// The move pointer shows only over a piece (5.3.1): the frame round them takes no drag.
     /// </summary>
     private sealed class CutoutStage : FrameworkElement
     {
@@ -39,7 +40,6 @@ public sealed partial class MaskDrawWindow
         public CutoutStage(double sourceWidth, double sourceHeight)
         {
             (_sourceWidth, _sourceHeight) = (sourceWidth, sourceHeight);
-            Cursor = Cursors.SizeAll;
             ToolTip = "The Game Preset's tall frame. Drag a Cutout to place it, the wheel over a Cutout sizes it. Double-click a Cutout to lay it out again by itself.";
         }
 
@@ -92,8 +92,12 @@ public sealed partial class MaskDrawWindow
             e.Handled = true;
         }
 
+        /// <summary>The pointer the stage shows at a point: the move pointer over a piece (or while one is moved), the ordinary one elsewhere.</summary>
+        public Cursor? CursorAt(Point at) => _moving is not null || PieceAt(at) is not null ? Cursors.SizeAll : null;
+
         protected override void OnMouseMove(MouseEventArgs e)
         {
+            Cursor = CursorAt(e.GetPosition(this));
             if (_moving is not { } moving || e.LeftButton != MouseButtonState.Pressed)
                 return;
 

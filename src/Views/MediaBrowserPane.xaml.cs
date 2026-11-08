@@ -26,6 +26,9 @@ public partial class MediaBrowserPane : UserControl
     // The size slider: below this the files are a list; above it, tiles from the smallest width to the largest.
     private const double ListBelow = 8, SmallestTile = 96, LargestTile = 420;
 
+    // What a tile has round its picture, across: the template's margin and the list item's edge and padding.
+    private const double TileChrome = 22;
+
     private static readonly string[] SortKeys = ["Name", "Date", "Size", "Type"];
 
     // A folder with more entries than this lists the first ones, and says so.
@@ -46,6 +49,9 @@ public partial class MediaBrowserPane : UserControl
     private readonly DispatcherTimer _sizeSettled = new() { Interval = TimeSpan.FromMilliseconds(300) };
     private bool? _listView;
     private double _tileWidth = 200;
+
+    // The width the tiles' pictures are shown at: the slider's, stretched by the panel to fill the pane (5.3.1).
+    private double _shownTileWidth;
     private readonly List<MediaBrowserItem> _queue = [];
 
     // The second pass (4.2D): videos whose tile shows a poster made on its own, waiting for their strip (Background lane),
@@ -85,6 +91,7 @@ public partial class MediaBrowserPane : UserControl
         MouseLeave += Pane_MouseLeave;
         _rest.Tick += Rest_Tick;
         Items.SizeChanged += (_, _) => ScheduleVisibleCheck();
+        Items.AddHandler(VirtualizingTilePanel.CellWidthChangedEvent, new RoutedEventHandler(TilesStretched));
         _sizeSettled.Tick += (_, _) =>
         {
             _sizeSettled.Stop();
@@ -338,7 +345,9 @@ public partial class MediaBrowserPane : UserControl
     public Func<string?>? SuggestFolder { get; set; }
 
     // The height a tile's picture is decoded at, in real pixels.
-    private int PictureHeight => (int)Math.Ceiling((_listView == true ? 36 : Math.Round(_tileWidth * 9 / 16)) * VisualTreeHelper.GetDpi(this).DpiScaleY);
+    private int PictureHeight => (int)Math.Ceiling((_listView == true ? 36 : Math.Round(ShownTileWidth * 9 / 16)) * VisualTreeHelper.GetDpi(this).DpiScaleY);
+
+    private double ShownTileWidth => _shownTileWidth > 0 ? _shownTileWidth : _tileWidth;
 
     // Opened the first time the pane is shown, not before: a hidden pane reads no folders.
     private void Pane_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -671,8 +680,7 @@ public partial class MediaBrowserPane : UserControl
     {
         var list = value < ListBelow;
         _tileWidth = Math.Round(SmallestTile + (Math.Max(value, ListBelow) - ListBelow) / (100 - ListBelow) * (LargestTile - SmallestTile));
-        Resources["TileWidth"] = _tileWidth;
-        Resources["TileHeight"] = Math.Round(_tileWidth * 9 / 16);
+        Resources["TileWidth"] = _tileWidth + TileChrome;
         if (_listView == list)
             return;
 
@@ -683,6 +691,26 @@ public partial class MediaBrowserPane : UserControl
         VirtualizingPanel.SetIsVirtualizing(Items, true);
         ScrollViewer.SetCanContentScroll(Items, true);
         ScheduleVisibleCheck();
+    }
+
+    // The tiles' panel (made again whenever the view switches back to tiles) said how wide it stretched them. Wider pictures than they
+    // were made at are made again once the width rests, as after the size slider.
+    private void TilesStretched(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is not VirtualizingTilePanel panel)
+            return;
+
+        var shown = Math.Max(panel.CellWidth - TileChrome, 1);
+        if (Math.Abs(shown - _shownTileWidth) < 0.5)
+            return;
+
+        var grew = _shownTileWidth > 0 && shown > _shownTileWidth;
+        _shownTileWidth = shown;
+        if (grew)
+        {
+            _sizeSettled.Stop();
+            _sizeSettled.Start();
+        }
     }
 
     /// <summary>Makes again, from the strips already on disk, the pictures now shown larger than they were made.</summary>

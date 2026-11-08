@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HandPegApp.Models;
@@ -34,6 +36,12 @@ public sealed partial class MaskDrawWindow : Window
     // WASD's pan, in screen pixels a second; Shift three times that.
     private const double KeyPanSpeed = 900;
 
+    // A notch of Shift + the wheel or of the horizontal wheel (a touchpad's sideways scroll), in screen pixels; how far a right press
+    // moves before it is a pan rather than a click (5.3.1).
+    private const double WheelPan = 96, RightDragFrom = 4;
+
+    private const int WmMouseHWheel = 0x020E;
+
     private static readonly string[] PieceNames = ["Hero Portrait & HP", "Abilities & Weapon", "Killfeed", "Minimap", "Objective"];
 
     private readonly MainViewModel _viewModel;
@@ -59,6 +67,11 @@ public sealed partial class MaskDrawWindow : Window
     private readonly Button _undoButton, _redoButton;
     private readonly StackPanel _pieceRows = new();
     private readonly CutoutStage _stage;
+    private readonly SourceNavigator _navigator;
+
+    // The drawing view's scroll bars (5.3.1): over its right and bottom edges, shown while the picture is larger than the view that way.
+    private readonly ScrollBar _horizontalBar = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Bottom, Visibility = Visibility.Collapsed };
+    private readonly ScrollBar _verticalBar = new() { Orientation = Orientation.Vertical, HorizontalAlignment = HorizontalAlignment.Right, Visibility = Visibility.Collapsed };
     private readonly Slider _zoomSlider = new() { Minimum = 1, Maximum = 2.5, Value = MainViewModel.CutoutDefaultZoom, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBox _presetName = new() { Margin = new Thickness(0, 4, 0, 0) };
 
@@ -77,6 +90,9 @@ public sealed partial class MaskDrawWindow : Window
     private readonly HashSet<Key> _panKeys = [];
     private bool _spaceHeld;
     private (Point From, double PanX, double PanY)? _panDrag;
+
+    // A right press in the view, until it is a click (the button up where it went down) or a pan (5.3.1).
+    private (Point From, double PanX, double PanY)? _rightPress;
 
     private static readonly FontFamily Glyphs = new("Segoe MDL2 Assets");
 
@@ -113,7 +129,11 @@ public sealed partial class MaskDrawWindow : Window
         ShowInTaskbar = false;
         SetResourceReference(BackgroundProperty, "WindowBackgroundBrush");
         SetResourceReference(ForegroundProperty, "TextBrush");
-        SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
+        SourceInitialized += (_, _) =>
+        {
+            ThemeManager.ApplyTitleBar(this);
+            HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(HorizontalWheel);
+        };
 
         // The old regions of the opened file (LayerKind.Video, a legacy kind) are shown over its still alone.
         var regions = viewModel.Layers.Where(l => ownFile is null && l.IsVideo && !l.IsDeleted && !(l.UsesFrameMask && l.MaskShapes.Length > 0))
@@ -139,14 +159,18 @@ public sealed partial class MaskDrawWindow : Window
         _viewport.PreviewMouseDown += Viewport_MouseDown;
         _viewport.PreviewMouseMove += Viewport_MouseMove;
         _viewport.PreviewMouseUp += Viewport_MouseUp;
-        _viewport.LostMouseCapture += (_, _) => _panDrag = null;
+        _viewport.LostMouseCapture += (_, _) => (_panDrag, _rightPress) = (null, null);
         RenderOptions.SetBitmapScalingMode(_still, BitmapScalingMode.HighQuality);
+        _horizontalBar.Scroll += (_, _) => PanTo(-_horizontalBar.Value, _panY);
+        _verticalBar.Scroll += (_, _) => PanTo(_panX, -_verticalBar.Value);
+        _navigator = new SourceNavigator(_width, _height, _surface) { Margin = new Thickness(0, 2, 0, 0) };
+        _navigator.Navigate += CenterOn;
 
         var help = new TextBlock
         {
             Text = "Pen: click corner by corner, as many points as you like (a live line follows; Shift keeps it to 0, 45 or 90 degrees), then click the glowing first point, double-click, or press Enter to close the shape. "
                    + "Drag a point to move it, Alt + click or double-click an edge to add one, right-click a point to remove it. Backspace takes back a point, Escape drops the shape being drawn. Ctrl+Z undoes, Ctrl+Y redoes. "
-                   + "At any moment, a shape half drawn or not: the wheel zooms about the pointer, up to 64x; the middle button, Space + drag or W A S D pan. From 16x points land on pixel corners.",
+                   + "At any moment, a shape half drawn or not: the wheel zooms about the pointer, up to 64x; a right-drag, the middle button, Alt + drag, Space + drag, Shift + the wheel, the scroll bars, the Source Navigator or W A S D pan. From 16x points land on pixel corners.",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -247,7 +271,7 @@ public sealed partial class MaskDrawWindow : Window
         buttons.Children.Add(left);
         buttons.Children.Add(_status);
 
-        _stage = new CutoutStage(_width, _height) { Height = 300, Margin = new Thickness(0, 6, 0, 6) };
+        _stage = new CutoutStage(_width, _height) { MinHeight = 160, Margin = new Thickness(0, 4, 0, 6) };
         _stage.Moved += PieceMoved;
         _zoomSlider.ValueChanged += (_, _) => RefreshPieces();
         ToolTipService.SetToolTip(_zoomSlider, "How far the video is zoomed on the tall frame. Its sides are what the Cutouts bring back.");
@@ -262,7 +286,11 @@ public sealed partial class MaskDrawWindow : Window
         root.Children.Add(top);
         root.Children.Add(buttons);
         root.Children.Add(pane);
-        root.Children.Add(new Border { Child = _viewport, Background = Brushes.Black });
+        var viewHost = new Grid();
+        viewHost.Children.Add(_viewport);
+        viewHost.Children.Add(_horizontalBar);
+        viewHost.Children.Add(_verticalBar);
+        root.Children.Add(new Border { Child = viewHost, Background = Brushes.Black });
         Content = root;
 
         PreviewKeyDown += Window_PreviewKeyDown;
@@ -336,14 +364,22 @@ public sealed partial class MaskDrawWindow : Window
         return piece;
     }
 
-    private StackPanel PiecesPane()
+    // The column at the right: the Cutouts, the Video Zoom, the Source Navigator, the Output Stage (taking the height left) and the
+    // Game Preset's name and Save at its foot.
+    private DockPanel PiecesPane()
     {
-        var pane = new StackPanel { Width = 270, Margin = new Thickness(10, 0, 0, 0) };
-        pane.Children.Add(new TextBlock { Text = "Cutouts", FontWeight = FontWeights.SemiBold });
+        var pane = new DockPanel { Width = 270, Margin = new Thickness(10, 0, 0, 0) };
+        var top = new StackPanel();
+        DockPanel.SetDock(top, Dock.Top);
+        pane.Children.Add(top);
+        var foot = new StackPanel();
+        DockPanel.SetDock(foot, Dock.Bottom);
+        pane.Children.Add(foot);
+        top.Children.Add(new TextBlock { Text = "Cutouts", FontWeight = FontWeights.SemiBold });
         var hint = new TextBlock { Text = "New shapes go to the Cutout selected. Each one becomes a clip of its own.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 4) };
         hint.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
-        pane.Children.Add(hint);
-        pane.Children.Add(new ScrollViewer { Content = _pieceRows, MaxHeight = 150, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        top.Children.Add(hint);
+        top.Children.Add(new ScrollViewer { Content = _pieceRows, MaxHeight = 150, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         var add = new Button { Content = "New Cutout", Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(0, 4, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
         add.Click += (_, _) =>
         {
@@ -351,7 +387,7 @@ public sealed partial class MaskDrawWindow : Window
             _surface.CurrentPiece = NewPiece();
             RefreshPieces();
         };
-        pane.Children.Add(add);
+        top.Children.Add(add);
 
         var zoomRow = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
         var zoomLabel = new TextBlock { Text = "Video Zoom", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
@@ -364,11 +400,15 @@ public sealed partial class MaskDrawWindow : Window
         zoomRow.Children.Add(zoomLabel);
         zoomRow.Children.Add(zoomValue);
         zoomRow.Children.Add(_zoomSlider);
-        pane.Children.Add(zoomRow);
-        pane.Children.Add(_stage);
+        top.Children.Add(zoomRow);
 
-        pane.Children.Add(new TextBlock { Text = "Game Preset Name", Margin = new Thickness(0, 4, 0, 0) });
-        pane.Children.Add(_presetName);
+        // The whole frame being cut from, with the view's box (5.3.1); under it the Output Stage, labelled for what a drag there does.
+        top.Children.Add(new TextBlock { Text = "Source Navigator", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, 0) });
+        top.Children.Add(_navigator);
+        top.Children.Add(new TextBlock { Text = "Output Stage \u2014 drag a finished Cutout to position it", FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0) });
+
+        foot.Children.Add(new TextBlock { Text = "Game Preset Name", Margin = new Thickness(0, 4, 0, 0) });
+        foot.Children.Add(_presetName);
         var save = new Button { Content = "Save as Game Preset", Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 6, 0, 0) };
         save.ToolTip = "Saves the Cutouts as a Game Preset in the Styles folder, its masks inside it: it shows on the drag-and-drop overlay and in the Game Presets. Nothing on the timeline changes.";
         save.Click += (_, _) =>
@@ -377,7 +417,8 @@ public sealed partial class MaskDrawWindow : Window
             var problem = _viewModel.SaveCutoutPreset(_presetName.Text, Pieces(), _zoomSlider.Value);
             _status.Text = problem ?? $"Game Preset \"{_presetName.Text.Trim()}\" saved: drop a video on it, or pick it from the Game Presets.";
         };
-        pane.Children.Add(save);
+        foot.Children.Add(save);
+        pane.Children.Add(_stage);
         return pane;
     }
 
@@ -570,7 +611,36 @@ public sealed partial class MaskDrawWindow : Window
         var seen = new Rect(-_panX / _zoom, -_panY / _zoom, Math.Max(viewWidth, 0) / _zoom, Math.Max(viewHeight, 0) / _zoom);
         _surface.ViewChanged(_zoom >= PixelGridFrom ? 1 : null, seen);
         _zoomText.Text = System.FormattableString.Invariant($"{_zoom:0.##}x");
+        _navigator.Seen = seen;
+        ShowBar(_horizontalBar, wide, viewWidth, _panX);
+        ShowBar(_verticalBar, tall, viewHeight, _panY);
     }
+
+    // A scroll bar over the view: shown while the picture is larger than the view that way, its thumb the part seen. Setting its value
+    // here raises no Scroll, so only the user's own moves of it pan.
+    private static void ShowBar(ScrollBar bar, double picture, double view, double pan)
+    {
+        var shown = picture > view + 0.5;
+        bar.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+        if (!shown)
+            return;
+
+        (bar.Minimum, bar.Maximum, bar.ViewportSize) = (0, picture - view, view);
+        (bar.SmallChange, bar.LargeChange, bar.Value) = (WheelPan, view * 0.9, -pan);
+    }
+
+    // The picture's corner put here (ApplyView keeps it covering the view). A view showing the whole picture stays fitted.
+    private void PanTo(double panX, double panY)
+    {
+        if (_width * _zoom > _viewport.ActualWidth + 0.5 || _height * _zoom > _viewport.ActualHeight + 0.5)
+            _fitted = false;
+        (_panX, _panY) = (panX, panY);
+        ApplyView();
+    }
+
+    // The Source Navigator's press: the view centred on that point of the source, at the zoom it has.
+    internal void CenterOn(Point source) =>
+        PanTo(_viewport.ActualWidth / 2 - source.X * _zoom, _viewport.ActualHeight / 2 - source.Y * _zoom);
 
     private void StartTicking()
     {
@@ -625,46 +695,122 @@ public sealed partial class MaskDrawWindow : Window
             StopTicking();
     }
 
+    // The view's pointer, from WPF's events (and the window's own messages) into the point-based steps below, which the golden tests
+    // drive with the points and keys they choose.
     private void Viewport_MouseWheel(object sender, MouseWheelEventArgs e)
     {
-        ZoomTo(_zoomGoal * Math.Pow(ZoomPerNotch, e.Delta / 120.0), e.GetPosition(_viewport));
+        Wheel(e.Delta, e.GetPosition(_viewport), Keyboard.Modifiers);
         e.Handled = true;
     }
 
-    // The middle button, or Space + the left: a pan, the press never reaching the shapes, so a shape being drawn is left as it is.
-    private void Viewport_MouseDown(object sender, MouseButtonEventArgs e)
+    private void Viewport_MouseDown(object sender, MouseButtonEventArgs e) =>
+        e.Handled = Press(e.ChangedButton, e.GetPosition(_viewport), Keyboard.Modifiers);
+
+    // A right press waits for the right button's own moves: the move WPF raises as the press takes the pointer is not one of them.
+    private void Viewport_MouseMove(object sender, MouseEventArgs e) =>
+        e.Handled = (_rightPress is null || _panDrag is not null || e.RightButton == MouseButtonState.Pressed) && MoveTo(e.GetPosition(_viewport));
+
+    private void Viewport_MouseUp(object sender, MouseButtonEventArgs e) => e.Handled = Release(e.ChangedButton);
+
+    /// <summary>
+    /// The horizontal wheel over the view (a touchpad's sideways scroll, a tilted wheel), which WPF raises nothing for: a pan sideways.
+    /// Answered TRUE, or Windows sends it on as an old tilt wheel's clicks.
+    /// </summary>
+    private IntPtr HorizontalWheel(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (e.ChangedButton == MouseButton.Middle || (e.ChangedButton == MouseButton.Left && _spaceHeld))
-        {
-            _panDrag = (e.GetPosition(_viewport), _panX, _panY);
-            _fitted = false;
-            _viewport.CaptureMouse();
-            Cursor = Cursors.SizeAll;
-            e.Handled = true;
-        }
+        if (msg != WmMouseHWheel || !_viewport.IsMouseOver)
+            return IntPtr.Zero;
+
+        SidewaysWheel((short)((wParam.ToInt64() >> 16) & 0xFFFF));
+        handled = true;
+        return new IntPtr(1);
     }
 
-    private void Viewport_MouseMove(object sender, MouseEventArgs e)
+    /// <summary>The wheel at a point of the view: a zoom about it; with Shift a pan sideways (a notch down moves the view right).</summary>
+    internal void Wheel(int delta, Point at, ModifierKeys keys)
     {
-        if (_panDrag is not { } drag)
-            return;
+        if (keys == ModifierKeys.Shift)
+            PanTo(_panX + delta / 120.0 * WheelPan, _panY);
+        else
+            ZoomTo(_zoomGoal * Math.Pow(ZoomPerNotch, delta / 120.0), at);
+    }
 
-        var at = e.GetPosition(_viewport);
+    /// <summary>The horizontal wheel: a notch to the right moves the view right.</summary>
+    internal void SidewaysWheel(int delta) => PanTo(_panX - delta / 120.0 * WheelPan, _panY);
+
+    /// <summary>
+    /// A press at a point of the view. A pan takes it (true: it never reaches the shapes, so a shape being drawn is left as it is) for
+    /// the middle button, Space + the left, Alt + the left away from an edge (on one it puts a point in), and the right button, which
+    /// becomes a pan once it moves and a right-click on the shapes if it comes up where it went down (5.3.1).
+    /// </summary>
+    internal bool Press(MouseButton button, Point at, ModifierKeys keys)
+    {
+        if (button == MouseButton.Right)
+        {
+            _rightPress = (at, _panX, _panY);
+            _viewport.CaptureMouse();
+            return true;
+        }
+
+        var altPan = button == MouseButton.Left && keys.HasFlag(ModifierKeys.Alt) && !_surface.HasEdgeAt(_viewport.TranslatePoint(at, _surface));
+        if (button == MouseButton.Middle || (button == MouseButton.Left && (_spaceHeld || altPan)))
+        {
+            StartPan(at, _panX, _panY);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void StartPan(Point from, double panX, double panY)
+    {
+        _panDrag = (from, panX, panY);
+        _fitted = false;
+        _viewport.CaptureMouse();
+        Cursor = Cursors.SizeAll;
+    }
+
+    /// <summary>The pointer moved to a point of the view: a pan follows it; a right press becomes one once it is a few pixels away.</summary>
+    internal bool MoveTo(Point at)
+    {
+        if (_rightPress is { } press && _panDrag is null)
+        {
+            if ((at - press.From).Length < RightDragFrom)
+                return false;
+            StartPan(press.From, press.PanX, press.PanY);
+        }
+
+        if (_panDrag is not { } drag)
+            return false;
+
         (_panX, _panY) = (drag.PanX + at.X - drag.From.X, drag.PanY + at.Y - drag.From.Y);
         ApplyView();
-        e.Handled = true;
+        return true;
     }
 
-    private void Viewport_MouseUp(object sender, MouseButtonEventArgs e)
+    /// <summary>A button came up: a pan ends; a right press that never moved is a right-click on the shapes, where it went down.</summary>
+    internal bool Release(MouseButton button)
     {
+        if (button == MouseButton.Right && _rightPress is { } press && _panDrag is null)
+        {
+            _rightPress = null;
+            _viewport.ReleaseMouseCapture();
+            _surface.RightClick(_viewport.TranslatePoint(press.From, _surface));
+            return true;
+        }
+
+        _rightPress = null;
         if (_panDrag is null)
-            return;
+            return false;
 
         _panDrag = null;
         _viewport.ReleaseMouseCapture();
         Cursor = null;
-        e.Handled = true;
+        return true;
     }
+
+    /// <summary>The view now: screen pixels to a source pixel, and where the picture's corner lies in the view.</summary>
+    internal (double Zoom, double PanX, double PanY) View => (_zoom, _panX, _panY);
 
     // ----- Keys -----
 
@@ -757,6 +903,7 @@ public sealed partial class MaskDrawWindow : Window
         try
         {
             _still.Source = await SourceStill.TakeAsync(source, StillSeconds(), _stillPath, _closing.Token);
+            _navigator.Show(_still.Source as BitmapSource);
             ShowHelp();
             RefreshPieces();
         }

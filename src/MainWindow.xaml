@@ -816,9 +816,11 @@
                 </local:OverflowStrip>
                 <!-- The time, sound and speed, and at the end the settings button that chooses what the bar shows -->
                 <StackPanel Grid.Column="2" x:Name="TransportRight" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                    <TextBlock VerticalAlignment="Center" Margin="0,0,12,0" Style="{StaticResource TimeText}" Visibility="{Binding PlaybackControls[Timecode], Converter={StaticResource BoolToVisibility}}">
-                        <Run Text="{Binding PositionText, Mode=OneWay}" /><Run Text=" / " Foreground="{DynamicResource MutedTextBrush}" /><Run Text="{Binding DurationText, Mode=OneWay}" Foreground="{DynamicResource MutedTextBrush}" />
-                    </TextBlock>
+                    <local:TimeReadout VerticalAlignment="Center" Margin="0,0,12,0" Visibility="{Binding PlaybackControls[Timecode], Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Style="{StaticResource TimeText}">
+                            <Run Text="{Binding PositionText, Mode=OneWay}" /><Run Text=" / " Foreground="{DynamicResource MutedTextBrush}" /><Run Text="{Binding DurationText, Mode=OneWay}" Foreground="{DynamicResource MutedTextBrush}" />
+                        </TextBlock>
+                    </local:TimeReadout>
                     <ToggleButton FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="8,5" Margin="0,0,8,0" IsChecked="{Binding IsPlayerMuted}" Visibility="{Binding PlaybackControls[Mute], Converter={StaticResource BoolToVisibility}}"
                                   AutomationProperties.Name="Mute Player">
                         <ToggleButton.Style>
@@ -938,9 +940,11 @@
                                     AutomationProperties.Name="Render Preview"
                                     ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
                         </StackPanel>
-                        <TextBlock Grid.Column="3" x:Name="PositionTextBlock" Text="{Binding PositionText}" Style="{StaticResource TimeText}" Margin="12,0"
-                                   Background="Transparent" Cursor="Hand" ToolTip="Click to copy the current time"
-                                   MouseLeftButtonUp="PositionText_MouseLeftButtonUp" />
+                        <local:TimeReadout Grid.Column="3" Margin="12,0,6,0">
+                            <TextBlock x:Name="PositionTextBlock" Text="{Binding PositionText}" Style="{StaticResource TimeText}"
+                                       Background="Transparent" Cursor="Hand" ToolTip="Click to copy the current time"
+                                       MouseLeftButtonUp="PositionText_MouseLeftButtonUp" />
+                        </local:TimeReadout>
                         <!--
                             The timeline, as tall as the Timeline Height setting makes it. From the back: the strip of
                             pictures and the I-frame lines, the waveform of the mixed audio (both down to its lower
@@ -956,7 +960,8 @@
                         </Grid.RowDefinitions>
                         <Grid Grid.Row="1" Height="{Binding TimelineAreaHeight}">
                             <!-- At the very back: a strip of pictures from the video, cut from the same sheet as the hover previews, dimmed so the waveform reads on top of it. Filled in from code. -->
-                            <ItemsControl x:Name="FilmstripList" Margin="5,0" Opacity="0.5" IsHitTestVisible="False" Focusable="False"
+                            <!-- Rounded to whole device pixels (5.3.1): the cells share the width in fractions, and unrounded their 1 px edges and the first cell's clip fell on half pixels. -->
+                            <ItemsControl x:Name="FilmstripList" Margin="5,0" Opacity="0.5" IsHitTestVisible="False" Focusable="False" UseLayoutRounding="True"
                                           Visibility="Collapsed" ClipToBounds="True" SizeChanged="FilmstripList_SizeChanged"
                                           AutomationProperties.Name="Timeline Thumbnails">
                                 <ItemsControl.ItemsPanel>
@@ -1027,7 +1032,9 @@
                         </Grid>
                         </Grid>
                         </Border>
-                        <TextBlock Grid.Column="5" Text="{Binding DurationText}" Style="{StaticResource TimeText}" Margin="12,0,0,0" />
+                        <local:TimeReadout Grid.Column="5" Margin="6,0,0,0">
+                            <TextBlock Text="{Binding DurationText}" Style="{StaticResource TimeText}" />
+                        </local:TimeReadout>
                     </Grid>
 
                     <StackPanel Orientation="Horizontal" Margin="0,10,0,0" Visibility="{Binding ShowTimelineOptionsBelow, Converter={StaticResource BoolToVisibility}}">
