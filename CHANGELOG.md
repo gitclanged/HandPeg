@@ -3,6 +3,27 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.3.2 — A Timecode That Holds Still at High Frame Rates, in Frames by Default
+
+### User-Facing Highlights
+- **The scrubber no longer shifts on high-frame-rate video.** Above 100 fps (120, 240, 360 fps) the frame number in a
+  time is always three digits (`00:32:01:005` .. `00:32:01:359`), so the time keeps one length through every second. The
+  time beside the Sequence Overview Scrubber and its duration also keep room for a twelve-character time and a little more,
+  and never get narrower, so the scrubber cannot move by a pixel when the time changes length or format.
+- **Times read in frames by default.** Times show as `HH:MM:SS:FF` (hours, minutes, seconds and the frame into the second),
+  existing settings included (switched once). Milliseconds (`HH:MM:SS.mmm`) are a click away: Settings > Timeline & Player >
+  Sub-second Time Format, or the new **Show Sub-Second Time in Frames (HH:MM:SS:FF)** switch in the Timeline Settings menu
+  (the gear, under Snapping & Playback), which changes every time at once.
+
+### Under the Hood & Fixes
+- `Timecode.FrameDigits` pads the frame number to the rate's highest frame (two digits up to 100 fps, three above, four
+  above 1000); `TimeReadout` keeps a floor of `ReserveText` (`00:00:00:000`) in its face plus `Spare` DIPs (8 on the
+  scrubber) and keeps its widest width whatever the text's length (5.3.1 measured afresh at each new length, which moved the
+  scrubber each time a frame number went from `:99` to `:100`).
+- `ShowTimesAsFrames` defaults to on; settings files step to view-defaults version 6, which turns it on once.
+- Golden tests: `time-display-tabular` (every frame of a 360 fps second one length, the readout one width across 11, 12
+  and 13 characters) and `timeline-settings-menu` (the new switch).
+
 ## HandPeg v5.3.1 — A Steady Timecode, a Media Browser That Fills Its Pane & Easy Panning in the Cutout Studio
 
 ### User-Facing Highlights

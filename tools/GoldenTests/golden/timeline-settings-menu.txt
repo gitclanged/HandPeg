@@ -13,6 +13,7 @@
    Snap to Audio Beats  -> AppSettings.SnapToBeats (True in a new install)
    Snap Cuts to I-Frames  -> the project's or the session's, not kept in the settings
    Follow Playhead During Playback  -> AppSettings.TimelineFollowsPlayhead (True in a new install)
+   Show Sub-Second Time in Frames (HH:MM:SS:FF)  -> AppSettings.ShowTimesAsFrames (True in a new install)
 [Bars & Sizing]
    Show Quick FX Button  -> AppSettings.ShowCreatorHotbar (True in a new install)
    Show Undo / Redo Buttons  -> AppSettings.ShowTimelineUndoRedo (False in a new install)
@@ -34,6 +35,7 @@ ok: the preset ticked is the nearest (1, 16 -> 8; 17, 30, 33 -> 25; 34, 46 -> 42
 ok: Show Undo / Redo Buttons is in Bars & Sizing, right after Show Quick FX Button
 ok: the Quick FX switch reads Show Quick FX Button (5.3-Stage3, the user's answer), still kept in ShowCreatorHotbar so saved settings carry over
 ok: it is kept in AppSettings.ShowTimelineUndoRedo, off in a new install (Ctrl+Z and Ctrl+Y undo and redo as ever), with no key of its own
+ok: Show Sub-Second Time in Frames (HH:MM:SS:FF) is in Snapping & Playback, kept in AppSettings.ShowTimesAsFrames, on in a new install
 ok: a new install: effect lanes on, the built-in Mask & Edge lanes off, filmstrips, waveforms and following the playhead on, the Undo / Redo buttons off
 ok: each is written into the settings file by its own name
 ok: a new install's settings file writes ShowTimelineUndoRedo false

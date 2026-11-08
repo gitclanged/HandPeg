@@ -413,7 +413,7 @@
                                  local:NumericInput.Default="8" local:NumericInput.DragStep="0.1" local:NumericInput.Minimum="1" local:NumericInput.Maximum="25" />
                     </StackPanel>
                     <StackPanel Style="{StaticResource Row}"
-                                ToolTip="How times are shown and typed on the timeline, in the cut list and in the manual cut dialog.">
+                                ToolTip="How times are shown and typed on the timeline, in the cut list and in the manual cut dialog. Frames (HH:MM:SS:FF) by default; also in the Timeline Settings menu.">
                         <TextBlock Text="Sub-second Time Format:" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="TimeFormatBox" MinWidth="250" Margin="0">
                             <ComboBoxItem Content="Milliseconds (HH:MM:SS.ms)" />

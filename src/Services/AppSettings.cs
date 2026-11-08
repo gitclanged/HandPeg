@@ -175,8 +175,8 @@ public sealed partial class AppSettings
     /// <summary>True puts the frame-step and speed controls on their own row above the timeline; false keeps them inline.</summary>
     public bool AdvancedPlaybackAboveTimeline { get; set; }
 
-    /// <summary>True shows times as HH:MM:SS:FF (frames); false as HH:MM:SS.mmm (milliseconds).</summary>
-    public bool ShowTimesAsFrames { get; set; }
+    /// <summary>True shows times as HH:MM:SS:FF (frames, the default since 5.3.2); false as HH:MM:SS.mmm (milliseconds).</summary>
+    public bool ShowTimesAsFrames { get; set; } = true;
 
     public bool SnapTimelineToIFrames { get; set; }
 
@@ -1037,6 +1037,9 @@ public sealed partial class AppSettings
                 // Mode is read as any other since 5.2-Arm64AndNpu, its mode no longer read).
                 settings.ShowTimelineThumbnails ??= true;
 
+                // The version the file was written with: the steps below raise it.
+                var viewDefaults = settings.ViewDefaultsVersion;
+
                 // Settings from before the panes and the timeline's slider: what they would have started with.
                 if (settings.ViewDefaultsVersion < 1)
                 {
@@ -1076,6 +1079,15 @@ public sealed partial class AppSettings
                     settings.ViewDefaultsVersion = 5;
                     if (settings.MasterTimelineHeight > 0)
                         settings.MasterTimelineHeight += 2;
+                }
+
+                // Times read in frames (HH:MM:SS:FF) to start with since 5.3.2: switched once; Milliseconds can be chosen again after.
+                // A file at version 0 is a first start's, whose choice is its own (a 5.3.2 one starts in frames anyway).
+                if (settings.ViewDefaultsVersion < 6)
+                {
+                    settings.ViewDefaultsVersion = 6;
+                    if (viewDefaults >= 1)
+                        settings.ShowTimesAsFrames = true;
                 }
 
                 // (4.1.1 brought Editor Mode's saved views to its own once, by the mode a file named. Every file written since

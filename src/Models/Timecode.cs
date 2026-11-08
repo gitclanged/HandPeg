@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace HandPegApp.Models;
 
 /// <summary>
@@ -54,6 +56,17 @@ public static class Timecode
             whole++;
         }
 
-        return $"{whole / 3600:00}:{whole / 60 % 60:00}:{whole % 60:00}:{frames:00}";
+        return $"{whole / 3600:00}:{whole / 60 % 60:00}:{whole % 60:00}:{frames.ToString(FrameDigits(frameRate), CultureInfo.InvariantCulture)}";
     }
+
+    /// <summary>
+    /// FF's format: as many digits as the rate's highest frame number needs, at least two (5.3.2): above 100 fps every frame number
+    /// is three digits (00:32:01:059 .. 00:32:01:359), so the text never changes length within a second.
+    /// </summary>
+    public static string FrameDigits(double frameRate) => MaxFrame(frameRate) switch
+    {
+        >= 1000 => "D4",
+        >= 100 => "D3",
+        _ => "D2",
+    };
 }

@@ -1688,6 +1688,13 @@ public partial class MainViewModel
         return nearest * 1000;
     }
 
+    /// <summary>Times in frames (HH:MM:SS:FF) or milliseconds (HH:MM:SS.mmm), from the Timeline Settings menu (5.3.2): saved, and shown at once.</summary>
+    public void SetTimesAsFrames(bool on)
+    {
+        SetViewSetting(s => s.ShowTimesAsFrames = on);
+        ApplyDisplaySettings();
+    }
+
     /// <summary>Applies the display settings: time format, and which playback controls are shown.</summary>
     private void ApplyDisplaySettings()
     {

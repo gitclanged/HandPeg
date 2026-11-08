@@ -8,14 +8,22 @@ namespace HandPegApp;
 /// <summary>
 /// Holds still a time that changes many times a second (the position by the Sequence Overview Scrubber and in the playback
 /// bar, the caption editor's time, the voiceover's count; 5.3.1): its TextBlock's digits all one width (tabular figures),
-/// and the readout never narrower than the widest text of the same length and face it has shown, so neither the readout
-/// nor what sits beside it moves sideways during playback. A text of another length (the frames format, an hour reached)
-/// is measured afresh. A decorator, as TextBlock's own measure cannot be overridden.
+/// and the readout never narrower than <see cref="ReserveText"/> in its face (plus <see cref="Spare"/>) nor than the widest
+/// text it has shown, whatever its length (5.3.2: a frame number going from two digits to three above 100 fps, or the format
+/// switched, moved the scrubber beside it), so neither the readout nor what sits beside it moves sideways during playback.
+/// Another face or size, or collapsed and shown again, starts again from the reserve. A decorator, as TextBlock's own measure
+/// cannot be overridden.
 /// </summary>
 public sealed class TimeReadout : Decorator
 {
-    private (int Length, double Size, FontFamily? Face) _shape = (-1, 0, null);
+    private (double Size, FontFamily? Face, FontWeight Weight) _shape = (-1, null, default);
     private double _widest;
+
+    /// <summary>The text whose width the readout always keeps room for: a twelve-character time (HH:MM:SS:FFF or HH:MM:SS.mmm).</summary>
+    public string ReserveText { get; set; } = "00:00:00:000";
+
+    /// <summary>Room kept beyond the text, in DIPs (the scrubber's readouts keep 8, 5.3.2).</summary>
+    public double Spare { get; set; }
 
     protected override void OnVisualChildrenChanged(DependencyObject added, DependencyObject removed)
     {
@@ -33,15 +41,16 @@ public sealed class TimeReadout : Decorator
         var size = child.DesiredSize;
         if (child.Visibility == Visibility.Collapsed)
         {
-            _shape = (-1, 0, null);
+            _shape = (-1, null, default);
             return size;
         }
 
-        var shape = child is TextBlock text ? (TextLength(text), text.FontSize, text.FontFamily) : (0, 0, null);
+        var text = child as TextBlock;
+        var shape = text is null ? (0, null, default) : (text.FontSize, text.FontFamily, text.FontWeight);
         if (shape != _shape)
-            (_shape, _widest) = (shape, 0);
+            (_shape, _widest) = (shape, text is null ? 0 : Reserved(text) + Spare);
 
-        _widest = Math.Max(_widest, size.Width);
+        _widest = Math.Max(_widest, size.Width + Spare);
         return new Size(Math.Min(_widest, constraint.Width), size.Height);
     }
 
@@ -51,15 +60,16 @@ public sealed class TimeReadout : Decorator
         return arrangeSize;
     }
 
-    // The characters shown: the text, or its runs' (the playback bar's position and duration are runs of one readout).
-    private static int TextLength(TextBlock text)
+    // The reserve's width in the TextBlock's face, size and weight, with tabular figures as the TextBlock has them.
+    private double Reserved(TextBlock text)
     {
-        if (text.Inlines.Count == 0)
-            return text.Text.Length;
-
-        var length = 0;
-        foreach (var inline in text.Inlines)
-            length += inline is Run run ? run.Text.Length : 1;
-        return length;
+        var reserve = new TextBlock
+        {
+            Text = ReserveText, FontFamily = text.FontFamily, FontSize = text.FontSize, FontWeight = text.FontWeight,
+            FontStyle = text.FontStyle, FontStretch = text.FontStretch,
+        };
+        Typography.SetNumeralAlignment(reserve, FontNumeralAlignment.Tabular);
+        reserve.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        return reserve.DesiredSize.Width;
     }
 }

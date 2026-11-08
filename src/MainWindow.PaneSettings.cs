@@ -131,7 +131,7 @@ public partial class MainWindow
     internal enum TimelineSetting
     {
         EffectLanes, BuiltInMaskLanes, KeyframeDiamonds, Filmstrips, Waveforms, BeatGrid, IFrameLines, GainLines,
-        Snapping, SnapToBeats, SnapToIFrames, FollowPlayhead,
+        Snapping, SnapToBeats, SnapToIFrames, FollowPlayhead, TimesAsFrames,
         CreatorHotbar, UndoRedoButtons, Scrubber, TrackHeight,
         RippleAllTracks, DroppedClipsJoinTrack, ShowLinkedAudio,
     }
@@ -186,6 +186,9 @@ public partial class MainWindow
             new(TimelineSetting.FollowPlayhead, "Follow Playhead During Playback",
                 "While playing, the Timeline turns the page as the playhead reaches its edge, so what is playing stays in sight. Off: the view stays where you put it.",
                 nameof(AppSettings.TimelineFollowsPlayhead)),
+            new(TimelineSetting.TimesAsFrames, "Show Sub-Second Time in Frames (HH:MM:SS:FF)",
+                "Times read hours, minutes, seconds and the frame into the second (on by default). Off: milliseconds, HH:MM:SS.mmm. The same choice as Settings > Timeline & Player, Sub-second Time Format.",
+                nameof(AppSettings.ShowTimesAsFrames)),
         ]),
         new("Bars & Sizing",
         [
@@ -324,6 +327,7 @@ public partial class MainWindow
             TimelineSetting.SnapToBeats => (_viewModel.SnapToBeats, on => _viewModel.SnapToBeats = on),
             TimelineSetting.SnapToIFrames => (_viewModel.SnapToIFrames, on => _viewModel.SnapToIFrames = on),
             TimelineSetting.FollowPlayhead => (settings.TimelineFollowsPlayhead, on => Save(s => s.TimelineFollowsPlayhead = on)),
+            TimelineSetting.TimesAsFrames => (settings.ShowTimesAsFrames, on => _viewModel.SetTimesAsFrames(on)),
             TimelineSetting.CreatorHotbar => (settings.ShowCreatorHotbar, on => SaveHotbar(s => s.ShowCreatorHotbar = on)),
             TimelineSetting.UndoRedoButtons => (settings.ShowTimelineUndoRedo, on => SaveHotbar(s => s.ShowTimelineUndoRedo = on)),
             TimelineSetting.Scrubber => (settings.ShowMasterTimeline, on => SetScrubberShown(on)),

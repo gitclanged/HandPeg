@@ -315,7 +315,7 @@ public static class TimelineSettingsTests
             "four groups, in order: Lanes & Overlays, Snapping & Playback, Bars & Sizing, Editing");
         var all = groups.SelectMany(g => g.Items).ToList();
         expect(Enum.GetValues<MainWindow.TimelineSetting>().All(s => all.Count(i => i.Setting == s) == 1), "every setting of the menu has exactly one item");
-        expect(all.All(i => i.Header.Length > 0 && i.About.Length > 0 && !i.Header.Contains('(')), "every item has words and a tooltip, and no key written into its words");
+        expect(all.All(i => i.Header.Length > 0 && i.About.Length > 0 && !i.Header.Replace("(HH:MM:SS:FF)", "").Contains('(')), "every item has words and a tooltip, and no key written into its words");
         expect(all.Where(i => i.Kept is not null).All(i => typeof(AppSettings).GetProperty(i.Kept!) is { CanRead: true, CanWrite: true } property
                 && (property.PropertyType == typeof(bool) || i.Setting == MainWindow.TimelineSetting.TrackHeight)),
             "each item kept in the settings names a real setting of AppSettings (a switch; Track Height the one height)");
@@ -352,6 +352,12 @@ public static class TimelineSettingsTests
             "the Quick FX switch reads Show Quick FX Button (5.3-Stage3, the user's answer), still kept in ShowCreatorHotbar so saved settings carry over");
         expect(undoRedo is { Header: "Show Undo / Redo Buttons", Kept: nameof(AppSettings.ShowTimelineUndoRedo), KeyAction: null } && !fresh.ShowTimelineUndoRedo,
             "it is kept in AppSettings.ShowTimelineUndoRedo, off in a new install (Ctrl+Z and Ctrl+Y undo and redo as ever), with no key of its own");
+
+        // The time format (5.3.2, the user's answer): in Snapping & Playback, kept in ShowTimesAsFrames, frames in a new install.
+        var timesAsFrames = all.Single(i => i.Setting == MainWindow.TimelineSetting.TimesAsFrames);
+        expect(groups.Single(g => g.Header == "Snapping & Playback").Items.Contains(timesAsFrames)
+               && timesAsFrames is { Header: "Show Sub-Second Time in Frames (HH:MM:SS:FF)", Kept: nameof(AppSettings.ShowTimesAsFrames), KeyAction: null } && fresh.ShowTimesAsFrames,
+            "Show Sub-Second Time in Frames (HH:MM:SS:FF) is in Snapping & Playback, kept in AppSettings.ShowTimesAsFrames, on in a new install");
 
         // The six settings of 5.3: their defaults, and the settings file's own JSON (AppSettingsJsonContext) keeps them.
         expect(fresh is { ShowTimelineEffectLanes: true, ShowBuiltInMaskEffectLanes: false, ShowClipFilmstrips: true, ShowClipWaveforms: true, TimelineFollowsPlayhead: true, ShowTimelineUndoRedo: false },

@@ -18,8 +18,9 @@ namespace HandPegGoldenTests;
 /// <summary>
 /// Pass 5.3.1-Hotfix:
 /// time-display-tabular: the times read HH:MM:SS.mmm (a period before the milliseconds; a colon before frames only), and HH:MM:SS:mmm
-/// is still read; a real TimeReadout never gets narrower for a text of the same length (so nothing beside it moves during playback),
-/// measures afresh for another length and gives its room back when its text is collapsed; its TextBlock gets tabular figures; the
+/// is still read; 5.3.2: frame numbers three digits above 100 fps (one length across 0..359 at 360 fps); a real TimeReadout never
+/// narrower than a twelve-character time nor than the widest text it has shown, whatever its length (so nothing beside it moves
+/// during playback), the scrubber's with 8 DIPs spare, and gives its room back when its text is collapsed; its TextBlock gets tabular figures; the
 /// four running times are TimeReadouts (or tabular) in the XAML, the scrubber's gutter is 6 DIPs and its filmstrip rounds to pixels.
 /// media-browser-autofill-columns: VirtualizingTilePanel.Columns as numbers (two or more abreast from 190 DIPs, sharing the width
 /// exactly), then the real Media Browser pane laid out with no window at four widths: its tiles fill the row edge to edge, equal,
@@ -32,7 +33,7 @@ public static class ReadoutAndTileTests
 
     public static IEnumerable<GraphResult> All()
     {
-        yield return Case("time-display-tabular", "# The running times: HH:MM:SS.mmm, held still by tabular figures and a width that never shrinks for the same text length.", Readouts);
+        yield return Case("time-display-tabular", "# The running times: frame numbers as wide as the rate needs, held still by tabular figures and a width that never shrinks.", Readouts);
         yield return Case("media-browser-autofill-columns", "# The Media Browser's tiles: two or more abreast from 190 DIPs, stretched to fill the pane edge to edge, pictures 16:9.", Tiles);
     }
 
@@ -76,6 +77,19 @@ public static class ReadoutAndTileTests
             TimeDisplay.FrameRate = 30;
             written = TimeDisplay.Format(1921.5);
             expect(written == "00:32:01:15", $"a colon comes before frames only, in the frames format: {written}");
+
+            // 5.3.2: above 100 fps every frame number is three digits, so the text never changes length within a second.
+            TimeDisplay.FrameRate = 120;
+            written = TimeDisplay.Format(1921 + 5 / 120.0);
+            expect(written == "00:32:01:005", $"at 120 fps frame 5 is three digits: {written}");
+            TimeDisplay.FrameRate = 360;
+            written = TimeDisplay.Format(1921 + 359 / 360.0);
+            expect(written == "00:32:01:359", $"at 360 fps frame 359 is {written}");
+            var lengths = Enumerable.Range(0, 360).Select(f => TimeDisplay.Format(1921 + f / 360.0).Length).Distinct().ToList();
+            expect(lengths is [12], $"at 360 fps frames 0 to 359 are all one length ({string.Join(", ", lengths)} characters)");
+            expect(TimeDisplay.TryParse("00:32:01:059", out read, out _) && Math.Abs(read - (1921 + 59 / 360.0)) < 1e-9, "and a three-digit frame number is read back");
+            expect(Timecode.FrameDigits(30) == "D2" && Timecode.FrameDigits(100) == "D2" && Timecode.FrameDigits(101) == "D3" && Timecode.FrameDigits(1001) == "D4",
+                "two digits up to 100 fps, three above, four above 1000");
         }
         finally
         {
@@ -96,17 +110,40 @@ public static class ReadoutAndTileTests
         }
 
         expect(Typography.GetNumeralAlignment(shown) == FontNumeralAlignment.Tabular, "its TextBlock gets tabular figures");
-        var narrow = Measure("iiiiii");
-        var wide = Measure("WWWWWW");
-        var after = Measure("iiiiii");
-        expect(wide > narrow && Math.Abs(after - wide) < 0.01, "a text of the same length never makes it narrower than the widest it has shown");
-        var shorter = Measure("ii");
-        expect(shorter < narrow, "a text of another length is measured afresh");
+        var reserve = new TextBlock { Text = "00:00:00:000", FontFamily = shown.FontFamily, FontSize = shown.FontSize };
+        Typography.SetNumeralAlignment(reserve, FontNumeralAlignment.Tabular);
+        reserve.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var floor = reserve.DesiredSize.Width;
+        expect(Math.Abs(Measure("ii") - floor) < 0.01, "it is never narrower than a twelve-character time (00:00:00:000) in its face");
+        var wide = Measure("WWWWWWWWWWWWWWWW");
+        expect(wide > floor + 1, "a wider text widens it");
+        expect(Math.Abs(Measure("iiiiii") - wide) < 0.01 && Math.Abs(Measure("ii") - wide) < 0.01, "and a narrower text of any length never makes it narrower again");
         shown.Visibility = Visibility.Collapsed;
         readout.UpdateLayout();
         expect(readout.DesiredSize.Width == 0, "collapsed, it takes no room");
         shown.Visibility = Visibility.Visible;
-        expect(Measure("iiiiii") < wide - 0.01, "and shown again it starts afresh");
+        expect(Math.Abs(Measure("ii") - floor) < 0.01, "and shown again it starts again from the twelve-character time");
+
+        // The scrubber's readouts as the window has them (Consolas, 8 DIPs spare): one width across 11, 12 and 13 characters,
+        // in frames at 30 and 360 fps and in milliseconds.
+        var scrubber = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 12 };
+        var held = new TimeReadout { Child = scrubber, Spare = 8 };
+        held.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        held.Arrange(new Rect(held.DesiredSize));
+        double Held(string value)
+        {
+            scrubber.Text = value;
+            held.UpdateLayout();
+            return held.DesiredSize.Width;
+        }
+
+        var widths = new[] { "00:00:01:05", "00:00:01:105", "00:00:01.105", "00:00:01:05", "00:00:01:359", "00:00:01:00" }.Select(Held).ToList();
+        Held("00:00:01:105");
+        var twelve = scrubber.DesiredSize.Width;
+        expect(widths.All(w => Math.Abs(w - widths[0]) < 0.01) && Math.Abs(widths[0] - (twelve + 8)) < 0.01,
+            "the scrubber's readout keeps one width from 00:00:01:05 to 00:00:01:105, 00:00:01.105 and back: a twelve-character time and 8 DIPs");
+        var longer = Held("100:00:01:105");
+        expect(longer > widths[0] && Math.Abs(Held("00:00:01:05") - longer) < 0.01, "a thirteen-character time widens it once, and it stays that wide");
 
         // Where it is used.
         var src = Path.Combine(RepositoryRoot(), "src");
@@ -122,6 +159,9 @@ public static class ReadoutAndTileTests
         var voiceover = XDocument.Load(Path.Combine(src, "Dialogs", "VoiceoverStudioDialog.xaml"));
         expect(Attr(Named(voiceover, "RecordTimeText"), "Typography.NumeralAlignment") == "Tabular", "the voiceover's count (RecordTimeText, a sentence) has tabular figures");
         expect(Attr(position, "Margin") == "12,0,6,0", "the gutter between the position and the scrubber is 6 DIPs (it was 12)");
+        var duration = readouts.Single(r => r.Descendants().Any(t => Attr(t, "Text") == "{Binding DurationText}"));
+        expect(Attr(position, "Spare") == "8" && Attr(duration, "Spare") == "8", "both of the scrubber's readouts keep 8 DIPs spare (5.3.2)");
+        expect(Attr(Named(main, "PositionTextBlock"), "TextAlignment") == "Right", "the position sits against the scrubber, its spare room on its left");
         expect(Attr(Named(main, "FilmstripList"), "UseLayoutRounding") == "True", "the scrubber's filmstrip lays its cells out on whole device pixels");
     }
 

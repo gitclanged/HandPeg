@@ -940,8 +940,9 @@
                                     AutomationProperties.Name="Render Preview"
                                     ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings." />
                         </StackPanel>
-                        <local:TimeReadout Grid.Column="3" Margin="12,0,6,0">
-                            <TextBlock x:Name="PositionTextBlock" Text="{Binding PositionText}" Style="{StaticResource TimeText}"
+                        <!-- The scrubber's two times keep room for a twelve-character time and 8 DIPs more (5.3.2): the scrubber never moves. -->
+                        <local:TimeReadout Grid.Column="3" Margin="12,0,6,0" Spare="8">
+                            <TextBlock x:Name="PositionTextBlock" Text="{Binding PositionText}" Style="{StaticResource TimeText}" TextAlignment="Right"
                                        Background="Transparent" Cursor="Hand" ToolTip="Click to copy the current time"
                                        MouseLeftButtonUp="PositionText_MouseLeftButtonUp" />
                         </local:TimeReadout>
@@ -1032,7 +1033,7 @@
                         </Grid>
                         </Grid>
                         </Border>
-                        <local:TimeReadout Grid.Column="5" Margin="6,0,0,0">
+                        <local:TimeReadout Grid.Column="5" Margin="6,0,0,0" Spare="8">
                             <TextBlock Text="{Binding DurationText}" Style="{StaticResource TimeText}" />
                         </local:TimeReadout>
                     </Grid>
