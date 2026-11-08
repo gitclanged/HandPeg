@@ -398,10 +398,6 @@ public partial class MainViewModel
             TakeBlurFill(layers.BackgroundHidden);
             var on = TemplateFrom(preset) is { } template ? PutTemplate(template, "apply a Game Preset") : 0;
             _layoutSourceAspect = layers.SourceAspectRatio;
-
-            // A layout is seen in the player only with Live Preview (4.3E: always on with a Game Preset).
-            if (!_isBackgroundWorker && HasSource)
-                LivePreview = true;
             applied.Add(on == 0 ? "layout, for the next video opened" : $"layout on {on} clip{(on == 1 ? "" : "s")}");
         }
 

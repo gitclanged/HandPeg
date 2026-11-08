@@ -37,6 +37,26 @@ ok: an installed copy and any other copy share %LOCALAPPDATA%\HandPeg\dotnet by 
 ok: an installed copy runs on its own .NET first, before DOTNET_ROOT_<ARCH>, DOTNET_ROOT, the registered .NET and Program Files\dotnet
 ok: every usable root in order, each once (DOTNET_ROOT, the registered location and Program Files naming one .NET are one): HandPeg runs on the first, and on the next when hostfxr refuses it
 ok: its own .NET of the other processor (the other installer's) is passed over, and a download replaces it
+  installed, its own .NET 10.0.14, Program Files 10.0.20: the installed .NET, HandPeg's own .NET
+ok: an installed copy whose own .NET (10.0.14) is older than the PC's (10.0.20) runs on the PC's, which Windows Update keeps patched; its own is next, where it goes when hostfxr refuses the PC's
+  installed, its own .NET 10.0.20, Program Files 10.0.14: HandPeg's own .NET, the installed .NET
+ok: one whose own .NET is the newer runs on its own
+  installed, both 10.0.14: HandPeg's own .NET, the installed .NET
+ok: and on its own on a tie
+  installed, its own 10.0.14, Program Files Core 10.0.20 with Windows Desktop 10.0.12: HandPeg's own .NET, the installed .NET
+ok: a .NET counts as the lower of its two frameworks (Core 10.0.20 with Windows Desktop 10.0.12 is older than 10.0.14)
+  installed, its own 10.0.14, Program Files 10.0.12 and 10.0.21-rc.1: HandPeg's own .NET, the installed .NET
+ok: a preview on the PC never counts (HandPeg would not run on it): the PC's released 10.0.12 is compared
+  installed, its own 10.0.14, DOTNET_ROOT 10.0.20, Program Files 10.0.14: DOTNET_ROOT, HandPeg's own .NET, the installed .NET
+ok: the PC's .NET is the first it names (DOTNET_ROOT_<ARCH>, DOTNET_ROOT, the registered one, Program Files): a newer DOTNET_ROOT first, then the copy's own, then the rest in their order, each once
+  installed, its own 10.0.14, Program Files 10.0.20 of the other processor: HandPeg's own .NET
+ok: a newer .NET of the other processor is no root at all: the copy runs on its own
+  portable zip, its own 10.0.14, Program Files 10.0.20: this copy's portable\dotnet, the installed .NET
+  portable.txt copy, its own 10.0.14, Program Files 10.0.20: this copy's dotnet, the installed .NET
+ok: a portable zip and a portable.txt copy keep their own .NET first, however new the PC's (they carry it with them)
+  any other copy, its own 10.0.14, Program Files 10.0.20: the installed .NET, HandPeg's own .NET
+ok: any other copy (its own .NET is %LOCALAPPDATA%\HandPeg\dotnet, which installed copies share) does as an installed one
+ok: the .NET a root runs HandPeg on is the lower of its two frameworks' newest released versions (10.0.14 above 10.0.9 as numbers; a preview passed over); none without both
 ok: a download goes in place of the .NET there, which is moved aside whole (and deleted after, best effort), never deleted where it is
 ok: a .NET in use (a HandPeg runs on it) is neither moved nor deleted: the download stops with a message and leaves it as it was
 ok: one that cannot be moved aside is left as it was
@@ -94,11 +114,7 @@ ok: Microsoft's installer's exit code: 0 installed; 3010 and 1641 installed with
 ok: it looks for .NET 10, the .NET HandPeg is built for (.NETCoreApp,Version=v10.0)
 ok: and asks Microsoft's .NET 10 release list over https, from its download site and the site's older address
 ok: its self-contained copy is HandPeg's own: portable.txt beside the program or --portable, as AppPaths reads them
-ok: Explorer's thumbnail handler: a .NET 10 Desktop Runtime in Program Files\dotnet is one its comhost starts on
-ok: the location .NET's installer registered is the only one looked at once set (there with no Windows Desktop 10: none)
-ok: DOTNET_ROOT_<ARCH> comes before it, as in .NET's host
-ok: a PC with only .NET 8: none, so the handler is not registered (and one left from before is taken out)
-ok: a PC whose only .NET 10 is a release candidate's: none, as comhost could not start the handler on it
-ok: a DOTNET_ROOT holding no .NET is the only place looked at once set: none, with no fall-back to Program Files\dotnet or to HandPeg's own .NET beneath it
-ok: an x64 process on an ARM64 PC: Program Files\dotnet\x64
+ok: HandPeg.exe is never marked CET-compatible: CETCompat false, unconditional, for the app's own HandPeg.exe and for the bootstrapper that is the released one (no shadow stacks: about 16 ms of an x64 start; ARM64 has no such mark)
+ok: Explorer's thumbnail handler keeps NativeAOT's CET-compatible default (Explorer's surrogate may enforce shadow stacks)
 ok: each published HandPeg.exe is a native window program of its processor (x64 0x8664, ARM64 0xAA64), with no .NET header, under 4 MB
+ok: and neither is marked CET-compatible (a publish from a clean obj takes CETCompat false)

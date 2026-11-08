@@ -173,7 +173,7 @@ public partial class MainViewModel
             MediaStarts = starts,
             SeekIndexes = seekIndexes,
 
-            // Read by Live Preview only: an export reads the originals.
+            // Read by the preview only: an export reads the originals.
             PreviewPaths = new Dictionary<string, string>(_proxiesInUse, StringComparer.OrdinalIgnoreCase),
         };
     }
@@ -234,10 +234,10 @@ public partial class MainViewModel
                         }, _shutdown.Token);
                     if (!indexed && File.Exists(file) && (await FfmpegRunner.GetIFramesAsync(file, _shutdown.Token)).Count > 0)
                     {
-                        // The live graph, and the I-frames along the timeline, which its clips show now.
+                        // The preview, and the I-frames along the timeline, which its clips show now.
                         System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
                         {
-                            InvalidateLiveFilter();
+                            InvalidatePreviewState();
                             RefreshSequence();
                         });
                     }
@@ -359,34 +359,32 @@ public partial class MainViewModel
         }
     }
 
+    // ----- The preview state -----
+
     /// <summary>
     /// The sequence as the GPU preview engine draws and plays it (5.0): the state gathered once per change (see
-    /// <see cref="_liveState"/>); the preview's own (<see cref="SequenceExportState.IsPreview"/>: its video layers read their
-    /// proxies where they asked for one; the soloed tracks are the document's, which the sound engine hears alone).
+    /// <see cref="_previewState"/>); the preview's own (<see cref="SequenceExportState.IsPreview"/>: its video layers read their
+    /// proxies where they asked for one; the soloed tracks are the document's, which the sound engine hears alone). The player
+    /// always shows it (5.3-Stage2, the user's call: the Live Preview switch is gone), save while Interactive Crop or a Draw
+    /// Target shows a clip's own file.
     /// </summary>
-    public SequenceExportState LivePreviewState() => (_liveState ??= CompileExportState()) with { IsPreview = true };
+    public SequenceExportState LivePreviewState() => (_previewState ??= CompileExportState()) with { IsPreview = true };
 
     // The state the GPU engine was last given. It is the same for every scene and every seek until something changes: it
-    // is gathered again only then (every change raises LiveFilterInvalidated, which drops it).
-    private SequenceExportState? _liveState;
-
-    // ----- Live Preview -----
+    // is gathered again only then (every change raises PreviewStateInvalidated, which drops it).
+    private SequenceExportState? _previewState;
 
     /// <summary>
-    /// Whether the player shows the picture with the export's filters applied. Always on as HandPeg starts and whenever a
-    /// video, a style or a project is opened (the user's call, 4.3E: a style dropped on with it off showed the plain source);
-    /// the box beside the playback controls turns it off for what is open.
+    /// Raised whenever something the player's picture or sound, or the Timeline's rows, are made from changed: after every
+    /// edit and setting change (GenerateCommand), I-frames learnt, the proxies in use, the Subtitle Editor opened or closed.
     /// </summary>
-    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private bool _livePreview = true;
+    public event Action? PreviewStateInvalidated;
 
-    /// <summary>Raised whenever a setting changed that may have changed what Live Preview should show.</summary>
-    public event Action? LiveFilterInvalidated;
-
-    /// <summary>Something a live graph is built from has changed: the state is gathered afresh for the next one.</summary>
-    private void InvalidateLiveFilter()
+    /// <summary>Something the preview is made from has changed: the state is gathered afresh for the next scene plan.</summary>
+    private void InvalidatePreviewState()
     {
-        _liveState = null;
-        LiveFilterInvalidated?.Invoke();
+        _previewState = null;
+        PreviewStateInvalidated?.Invoke();
     }
 
 

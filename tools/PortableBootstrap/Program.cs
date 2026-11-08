@@ -3,13 +3,13 @@ namespace HandPegBootstrap;
 /// <summary>
 /// HandPeg.exe of the portable zips (Pass 5.2.1, the user's answer: a locked-down PC refuses a .cmd or a PowerShell script, so no script
 /// ships) and of both Setup installers (Pass 5.3-Stage1: never Windows' "You must install .NET" box). It finds a .NET 10 Desktop Runtime
-/// for its processor (DotNetRoots: this copy's own first, then the PC's) and runs HandPeg.dll in this process through that runtime's
-/// hostfxr, as .NET's own apphost does: HandPeg's start-up is the apphost's. A root whose hostfxr will not start HandPeg (one that looks
-/// whole but is damaged) passes to the next one found. With none, it asks (ChoiceWindow): download Microsoft's own into this copy's own
-/// root, with no admin (PortableDotNet, in ProgressWindow), or install it for every program with Microsoft's installer, which asks for
-/// admin (SystemDotNet); then it runs HandPeg the same way. Never cmd.exe or PowerShell. Started by Velopack for an installer's hook, or as
-/// one of HandPeg's own background processes, it never shows anything (Launch). HANDPEG_BOOTSTRAP_NO_SYSTEM_DOTNET=1 looks only in the
-/// copy's own places (a test of the download on a PC that has .NET).
+/// for its processor (DotNetRoots: this copy's own first, then the PC's; since Pass 5.3-Stage2 an installed copy's own or the PC's,
+/// whichever is newer) and runs HandPeg.dll in this process through that runtime's hostfxr, as .NET's own apphost does: HandPeg's start-up
+/// is the apphost's. A root whose hostfxr will not start HandPeg (one that looks whole but is damaged) passes to the next one found. With
+/// none, it asks (ChoiceWindow): download Microsoft's own into this copy's own root, with no admin (PortableDotNet, in ProgressWindow), or
+/// install it for every program with Microsoft's installer, which asks for admin (SystemDotNet); then it runs HandPeg the same way. Never
+/// cmd.exe or PowerShell. Started by Velopack for an installer's hook, or as one of HandPeg's own background processes, it never shows
+/// anything (Launch). HANDPEG_BOOTSTRAP_NO_SYSTEM_DOTNET=1 looks only in the copy's own places (a test of the download on a PC that has .NET).
 /// </summary>
 internal static class Program
 {
@@ -34,15 +34,16 @@ internal static class Program
             }));
         }
 
-        // Every .NET 10 found, in order, looked at one at a time: HandPeg runs on the first whose hostfxr starts it. One that hostfxr refuses
-        // (a root that looks whole but cannot start: damaged after it was put there) passes to the next with nothing shown, in a quiet start
-        // too (HandPeg's background processes start through this program as well, and need the root HandPeg itself runs on). With none, or
-        // none that starts, a quiet start ends at once and any other asks, naming the one that could not start. A .NET the dialog has just
-        // put in place that hostfxr refuses is said, and the start ends rather than offering the same again.
+        // Every .NET 10 found, in order, looked at one at a time: HandPeg runs on the first whose hostfxr starts it (an installed copy's own
+        // .NET or the PC's, whichever is newer: DotNetRoots.InOrder). One that hostfxr refuses (a root that looks whole but cannot start:
+        // damaged after it was put there) passes to the next with nothing shown, in a quiet start too (HandPeg's background processes start
+        // through this program as well, and need the root HandPeg itself runs on). With none, or none that starts, a quiet start ends at once
+        // and any other asks, naming the one that could not start. A .NET the dialog has just put in place that hostfxr refuses is said, and
+        // the start ends rather than offering the same again.
         var arch = DotNetRoots.Arch;
         PortableDotNet.FinishPending(PortableDotNet.DownloadTarget(own));
         var refused = new List<Refused>();
-        using var roots = DotNetRoots.AllUsable(Candidates(app, arch, own, SystemLookup)).GetEnumerator();
+        using var roots = DotNetRoots.InOrder(own, app, Candidates(app, arch, own, SystemLookup)).GetEnumerator();
         var root = roots.MoveNext() ? roots.Current : null;
         var fresh = false;
         while (true)
@@ -92,11 +93,11 @@ internal static class Program
         string.Equals(Path.TrimEndingDirectorySeparator(a), Path.TrimEndingDirectorySeparator(b), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The first root found that is not one hostfxr refused in this start (the same folder with the same stamp: one another HandPeg has put
-    /// in its place since is found); null for none.
+    /// The first root found, in the start's order (DotNetRoots.InOrder), that is not one hostfxr refused in this start (the same folder with
+    /// the same stamp: one another HandPeg has put in its place since is found); null for none.
     /// </summary>
     private static DotNetRoot? FindAgain(string app, string arch, OwnDotNet own, bool system, List<Refused> refused) =>
-        DotNetRoots.AllUsable(Candidates(app, arch, own, system))
+        DotNetRoots.InOrder(own, app, Candidates(app, arch, own, system))
             .FirstOrDefault(r => !refused.Exists(x => SameFolder(x.Root.Folder, r.Folder) && x.Stamp == DotNetRoots.StampOf(r)));
 
     /// <summary>HandPeg.exe started again with this start's arguments (and environment); this start then ends with nothing more shown.</summary>

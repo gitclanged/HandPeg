@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using CliWrap;
 using CliWrap.Buffered;
+using Lanes = System.Numerics.Vector<float>;
 
 namespace HandPegApp.Services;
 
@@ -902,6 +903,78 @@ public sealed class WaveformData
     /// <summary>The level whose pairs are no wider than a column: 0 below 8 pairs a column, then 1, 2 and 3.</summary>
     public static int LevelFor(double pairsPerColumn) =>
         pairsPerColumn >= 512 ? 3 : pairsPerColumn >= 64 ? 2 : pairsPerColumn >= 8 ? 1 : 0;
+
+    /// <summary>How tall a combined sound's pairs may be (<see cref="Combine"/>): as tall as a waveform is ever drawn, 4 times its band.</summary>
+    public const float MostCombined = 4;
+
+    /// <summary>
+    /// Several sounds as one (5.3-Stage2, the user's call: a video clip's waveform is its audible Sub-Lanes' together): each pair the
+    /// most any of them reaches there, each as tall as its gain makes it (high: the highest gain x high, low: the lowest gain x low, held
+    /// within plus or minus <see cref="MostCombined"/>), silence where none plays. OffsetShift is where the combined sound's second 0 is
+    /// in that part's own seconds (a part's second = the combined second + its shift), to the nearest pair. A part with no gain, no pairs
+    /// or another rate than the first kept is left out; null when none is left. One part as it is (gain 1, no shift) is that part's own
+    /// peaks, so the waveform tiles made of it are drawn again. Whole vectors (System.Numerics: NEON on ARM64, AVX on x64), then the
+    /// rest one by one: every pair exactly what one by one gives.
+    /// </summary>
+    public static WaveformData? Combine(IReadOnlyList<(WaveformData Data, double GainFactor, double OffsetShift)> parts)
+    {
+        // The parts kept (their gain, their shift in pairs, how many pairs they have), and how long the combined sound is.
+        var kept = new List<(WaveformData Data, double Gain, int Shift, int Pairs)>(parts.Count);
+        var count = 0;
+        foreach (var (data, gain, offset) in parts)
+        {
+            var pairs = Math.Min(data._lows[0].Length, data._highs[0].Length);
+            var pairsShift = offset * data.PairsPerSecond;
+            if (pairs == 0 || !(gain > 0) || !double.IsFinite(gain) || !(Math.Abs(pairsShift) < 1 << 30)
+                || (kept.Count > 0 && data.PairsPerSecond != kept[0].Data.PairsPerSecond))
+                continue;
+
+            var shift = (int)Math.Round(pairsShift);
+            kept.Add((data, gain, shift, pairs));
+            count = Math.Max(count, pairs - shift);
+        }
+
+        if (kept.Count == 0 || count <= 0)
+            return null;
+        if (kept.Count == 1 && Math.Abs(kept[0].Gain - 1) <= 1e-6 && kept[0].Shift == 0)
+            return kept[0].Data;
+
+        var (lows, highs) = (new float[count], new float[count]);
+        foreach (var (data, gain, shift, pairs) in kept)
+        {
+            // The stretch of the combined sound the part plays in: from its start (or the combined sound's) to its end.
+            var from = Math.Max(0, -shift);
+            var end = Math.Min(count, pairs - shift);
+            if (end <= from)
+                continue;
+
+            Widen(highs.AsSpan(from, end - from), data._highs[0].AsSpan(from + shift, end - from), (float)gain, upward: true);
+            Widen(lows.AsSpan(from, end - from), data._lows[0].AsSpan(from + shift, end - from), (float)gain, upward: false);
+        }
+
+        return new WaveformData(lows, highs, kept[0].Data.Fill, kept[0].Data.PairsPerSecond);
+    }
+
+    // into = the higher (upward) or the lower of into and from x gain, from x gain held within MostCombined: whole vectors, then
+    // what is left one by one. The same arithmetic both ways (one float product, clamped, compared), so the same pairs.
+    private static void Widen(Span<float> into, ReadOnlySpan<float> from, float gain, bool upward)
+    {
+        var length = Math.Min(into.Length, from.Length);
+        var vectors = System.Runtime.InteropServices.MemoryMarshal.Cast<float, Lanes>(into[..length]);
+        var sources = System.Runtime.InteropServices.MemoryMarshal.Cast<float, Lanes>(from[..length]);
+        var (scale, least, most) = (new Lanes(gain), new Lanes(-MostCombined), new Lanes(MostCombined));
+        for (var v = 0; v < vectors.Length; v++)
+        {
+            var scaled = System.Numerics.Vector.Min(System.Numerics.Vector.Max(sources[v] * scale, least), most);
+            vectors[v] = upward ? System.Numerics.Vector.Max(vectors[v], scaled) : System.Numerics.Vector.Min(vectors[v], scaled);
+        }
+
+        for (var i = vectors.Length * Lanes.Count; i < length; i++)
+        {
+            var scaled = Math.Clamp(from[i] * gain, -MostCombined, MostCombined);
+            into[i] = upward ? Math.Max(into[i], scaled) : Math.Min(into[i], scaled);
+        }
+    }
 
     /// <summary>The peaks between two fractions of its length (0 to 1), at least one of them.</summary>
     public WaveformData Slice(double from, double to)

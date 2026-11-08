@@ -18,8 +18,11 @@ public sealed partial class UnifiedTimelineControl
     // of the same numbers, and the tiles' placements are found again rather than made).
     private const double OriginStep = 1024;
 
-    // How far down a block its sound band starts, under its pictures (or a J/L cut's sound), as a fraction of its height.
+    // How far down a block a J/L cut's sound band starts, as a fraction of its height (every other sound is drawn across the block).
     private const double SoundBandTop = 0.6;
+
+    // How see-through a waveform drawn across a block's pictures is (5.3-Stage2): its frames show through it.
+    private const double WaveOverPictures = 0.5;
 
     // The width of a switch on a header, and the order the switches are laid in.
     private const double SwitchSize = 18;
@@ -465,18 +468,22 @@ public sealed partial class UnifiedTimelineControl
     /// Draws a block: its colour, its pictures and its sound (both laid from <paramref name="contentLeft"/>, where its file's
     /// stretch begins: its left edge, or where it was while its start is trimmed, or slid by a slip), and, on a lane drawn
     /// in full, its gain line, fades, keys and badge; then its outline when it is selected. A J/L cut's sound reaches out
-    /// past its edges in the lower part (<paramref name="splitNow"/>: the cut being dragged, in place of the block's).
+    /// past its edges in the lower part (<paramref name="splitNow"/>: the cut being dragged, in place of the block's). A stack
+    /// sound is laid from <paramref name="stackLeft"/> when given (a slip: its lanes stay where they play), else from contentLeft.
     /// </summary>
     private void DrawBlock(DrawingContext drawing, in Lane lane, TimelineBlock block, Rect rect, double contentLeft, (double Lead, double Tail)? splitNow,
-        double from, double to, DpiScale dpi)
+        double from, double to, DpiScale dpi, double? stackLeft = null)
     {
         var scale = PixelsPerSecond;
         var detailed = lane.Detailed;
         var (lead, tail) = splitNow ?? block.AudioSplit ?? (0.0, 0.0);
-        // A video's block shows its pictures alone (the user's directive): its sound is in its audio stack, and the summary bar's is drawn
-        // over all its blocks by DrawLane. With no stack to hear it in (a file of one stream), its waveform is on the clip (the user's Q1).
-        var hasSoundStack = (lane.Stacks & StackBit(ChildStack.Audio)) != 0;
-        var wave = lane.Row.Kind == TimelineRowKind.Video && hasSoundStack || lane.Summary ? null : block.SoundWindow ?? WindowOf(block, rect.Width, scale);
+        // A video's block with a sound stack shows what its stack's audible lanes play, as one waveform (5.3-Stage2, the user's call:
+        // StackSound, which the host combines), never its own sound beside it; one with no stack sound shows its own (a file of one
+        // stream, the user's Q1, even beside a clip with a stack on the same track). A clip whose sound is in its stack has none of its
+        // own on its block (unpacked, it is silent; unlinked, its sound is a block of its own: AddTrackBlocks), so nothing is drawn twice.
+        // The closed stack's one bar draws its lanes itself (DrawLane).
+        var stackSound = lane.Row.Kind == TimelineRowKind.Video && !lane.Summary ? block.StackSound : null;
+        var wave = lane.Summary ? null : stackSound ?? block.SoundWindow ?? WindowOf(block, rect.Width, scale);
         var split = detailed && scale > 0 && (lead != 0 || tail != 0);
 
         // A J/L cut: where the sound reaches out past the picture, a tab of the block's colour under its lower part.
@@ -514,16 +521,14 @@ public sealed partial class UnifiedTimelineControl
             pictures = true;
         }
 
-        // Its sound: over its pictures, in their lower part on a shade of its own (never a slab over the frames); alone,
-        // across the block.
-        if (wave is { } sound && !split && scale > 0)
+        // Its sound: across the whole block (5.3-Stage2, the user's call), see-through over its pictures, which show through it
+        // (no shade under it); a J/L cut's still in its band below (after the clip). The stack's sound is laid on the block's own
+        // file time from its left edge (where its lanes play: a slip moves its frames, never them).
+        if (wave is { } sound && (!split || stackSound is not null) && scale > 0)
         {
-            var soundRect = pictures
-                ? new Rect(rect.Left, rect.Top + rect.Height * SoundBandTop, rect.Width, rect.Height * (1 - SoundBandTop))
-                : new Rect(rect.Left, rect.Top + 1, rect.Width, Math.Max(rect.Height - 2, 1));
-            if (pictures)
-                drawing.DrawRectangle(SoundShade, null, soundRect);
-            DrawWave(drawing, sound, contentLeft - lead * scale, soundRect, from, to, scale, pictures ? 0.9 : 0.7, dpi.DpiScaleX);
+            var soundRect = new Rect(rect.Left, rect.Top + 1, rect.Width, Math.Max(rect.Height - 2, 1));
+            DrawWave(drawing, sound, stackSound is null ? contentLeft - lead * scale : stackLeft ?? contentLeft, soundRect, from, to, scale,
+                pictures ? WaveOverPictures : 0.7, dpi.DpiScaleX);
         }
 
         if (detailed)
@@ -557,7 +562,7 @@ public sealed partial class UnifiedTimelineControl
 
         drawing.Pop();
 
-        if (split && wave is { } splitSound)
+        if (split && stackSound is null && wave is { } splitSound)
         {
             if (block.SoundClip is null || block.SoundClipRect != band)
             {
@@ -1439,10 +1444,12 @@ public sealed partial class UnifiedTimelineControl
                 _ => rect.Left,
             };
 
+            // A slip slides its frames alone: its sound stack's lanes are not moved (a slip carries only its captions), so the sound
+            // they play stays at the block's own left until the let-go.
             var away = drag.Target is not null;
             if (away)
                 drawing.PushOpacity(0.5);
-            DrawBlock(drawing, lane, block, rect, contentLeft, null, from, to, dpi);
+            DrawBlock(drawing, lane, block, rect, contentLeft, null, from, to, dpi, drag.Kind == BlockEdit.Slip ? rect.Left : null);
             DrawLabel(drawing, block, rect, from, dpi.PixelsPerDip);
             if (block.CrossfadeIn > 0.01 && scale > 0)
                 DrawCrossfade(drawing, lane, block, scale, _originX, dpi.PixelsPerDip);

@@ -1,4 +1,4 @@
-# The Timeline Settings menu: its groups and items from one table, each kept in a real setting; the five new settings' defaults.
+# The Timeline Settings menu: its groups and items from one table, each kept in a real setting; the six new settings' defaults.
 [Lanes & Overlays]
    Show Effect Sub-Lanes on Expanded Tracks  -> AppSettings.ShowTimelineEffectLanes (True in a new install)
    Show Built-In Mask & Edge Lanes on Cutouts  -> AppSettings.ShowBuiltInMaskEffectLanes (False in a new install)
@@ -15,6 +15,7 @@
    Follow Playhead During Playback  -> AppSettings.TimelineFollowsPlayhead (True in a new install)
 [Bars & Sizing]
    Show Creator Hotbar  -> AppSettings.ShowCreatorHotbar (True in a new install)
+   Show Undo / Redo Buttons  -> AppSettings.ShowTimelineUndoRedo (False in a new install)
    Show Sequence Overview Scrubber  -> AppSettings.ShowMasterTimeline (True in a new install)
    Track Height  -> AppSettings.LayerHeight (25 in a new install)
 [Editing]
@@ -30,7 +31,11 @@ ok: Enable Timeline Snapping shows view.toggleSnap's key (Caps by default; S is 
 ok: Track Height: Compact 8, Medium 25, Large 42, Extra Large 50
    nearest preset: 1 -> 8, 16 -> 8, 17 -> 25, 30 -> 25, 33 -> 25, 34 -> 42, 46 -> 42, 50 -> 50
 ok: the preset ticked is the nearest (1, 16 -> 8; 17, 30, 33 -> 25; 34, 46 -> 42; 50 -> 50)
-ok: a new install: effect lanes on, the built-in Mask & Edge lanes off, filmstrips, waveforms and following the playhead on
+ok: Show Undo / Redo Buttons is in Bars & Sizing, right after Show Creator Hotbar
+ok: it is kept in AppSettings.ShowTimelineUndoRedo, off in a new install (Ctrl+Z and Ctrl+Y undo and redo as ever), with no key of its own
+ok: a new install: effect lanes on, the built-in Mask & Edge lanes off, filmstrips, waveforms and following the playhead on, the Undo / Redo buttons off
 ok: each is written into the settings file by its own name
+ok: a new install's settings file writes ShowTimelineUndoRedo false
 ok: and read back as it was written
+ok: ShowTimelineUndoRedo false is read back false
 ok: a settings file from before 5.3 (none of them in it) reads as a new install has them

@@ -78,6 +78,9 @@ public static class Program
         // timeline-effect-lanes-fold, timeline-effect-lane-cards, timeline-settings-menu (5.3): effect lanes only on an open track, a Cutout's
         // own cards off them, and the Timeline Settings menu.
         results.AddRange(TimelineSettingsTests.All());
+        // timeline-stack-sound, live-preview-gone (5.3-Stage2): a video clip's audible Sub-Lanes drawn as one waveform across its block, and
+        // the Live Preview switch gone (the player shows the clip's own file only for Interactive Crop and a Draw Target).
+        results.AddRange(TimelineStackSoundTests.All());
         results.AddRange(PeMachineTests.All());
         results.AddRange(MediaFoundationTests.All());
         results.AddRange(HardwareTierTests.All());
@@ -130,6 +133,9 @@ public static class Program
         // window-frame-messages (5.3): what the custom-frame hook answers, and what still reaches Windows below WindowChrome.
         if (filter is null || "window-frame-messages".Contains(filter, StringComparison.OrdinalIgnoreCase))
             results.Add(WindowFrameTests.Messages());
+        // dock-standard-layout, layout-edge-to-edge, lazy-settings-tabs (5.3-Stage2): Standard Editing's stacked middle column and its
+        // upgrade, the window's edges with no dead space, and the Summary and Export tabs made only when shown.
+        results.AddRange(LayoutTests.All());
         // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
         // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
         results.AddRange(UiScaleTests.All());

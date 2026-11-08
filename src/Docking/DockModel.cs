@@ -77,10 +77,11 @@ public sealed class DockLayoutState
     /// <summary>
     /// The version of the arrangements this HandPeg makes. 2 (4.4): the Timeline pane ("UnifiedTimeline") took the Layers
     /// and Subtitles tabs' place. 3 (4.4-BugHunt): the Timeline is the first tab of the group it shares with the settings
-    /// tabs, and Standard Editing has it so. An older arrangement is brought up to it, step by step, as it is taken up
-    /// (DockManager.Upgrade), in memory: it is saved as it is the next time the user changes it.
+    /// tabs, and Standard Editing has it so. 4 (5.3-Stage2): Standard Editing's Canvas is a tab beside the effects and keyframes.
+    /// An older arrangement is brought up to it, step by step, as it is taken up (DockManager.Upgrade), in memory: it is saved as
+    /// it is the next time the user changes it.
     /// </summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     /// <summary>The version of HandPeg's arrangements this one was made as (read back from what was saved; 1 before 4.4).</summary>
     public int Version { get; set; } = CurrentVersion;

@@ -1,0 +1,46 @@
+# Every settings tab's body is a template (Summary and Export too); every part declared by hand is named in one.
+ok: MainWindow.xaml has its SettingsTabs
+   Summary: a template, made when first shown or at idle
+ok: the Summary tab's body is its Tag's DataTemplate, nothing built with the window
+   Video: a template, made when first shown or at idle
+ok: the Video tab's body is its Tag's DataTemplate, nothing built with the window
+   Filters: a template, made when first shown or at idle
+ok: the Filters tab's body is its Tag's DataTemplate, nothing built with the window
+   Audio: a template, made when first shown or at idle
+ok: the Audio tab's body is its Tag's DataTemplate, nothing built with the window
+   Export: a template, made when first shown or at idle
+ok: the Export tab's body is its Tag's DataTemplate, nothing built with the window
+   Command Preview: a template, made when first shown or at idle
+ok: the Command Preview tab's body is its Tag's DataTemplate, nothing built with the window
+ok: the tabs are Summary, Video, Filters, Audio, Export and Command Preview, in that order
+ok: the Export tab itself keeps its name (ExportTab): only its body is a template
+ok: the Export template's root is ExportPanel (RealizeTabContent finds it there)
+   SummaryCards: StackPanel
+ok: SummaryCards: a field of the window, named once in a tab's template, as a StackPanel
+   ExportPanel: DockPanel
+ok: ExportPanel: a field of the window, named once in a tab's template, as a DockPanel
+   ExportBarSlot: Border
+ok: ExportBarSlot: a field of the window, named once in a tab's template, as a Border
+   ExportSections: StackPanel
+ok: ExportSections: a field of the window, named once in a tab's template, as a StackPanel
+   EasyExportButton: RadioButton
+ok: EasyExportButton: a field of the window, named once in a tab's template, as a RadioButton
+   AdvancedExportButton: RadioButton
+ok: AdvancedExportButton: a field of the window, named once in a tab's template, as a RadioButton
+   EasyExportPanel: ScrollViewer
+ok: EasyExportPanel: a field of the window, named once in a tab's template, as a ScrollViewer
+   EasyExportCards: WrapPanel
+ok: EasyExportCards: a field of the window, named once in a tab's template, as a WrapPanel
+   ExportSectionHost: Border
+ok: ExportSectionHost: a field of the window, named once in a tab's template, as a Border
+   ExportNoSections: TextBlock
+ok: ExportNoSections: a field of the window, named once in a tab's template, as a TextBlock
+   AudioPanel: DockPanel
+ok: AudioPanel: a field of the window, named once in a tab's template, as a DockPanel
+   AudioOptionsHost: Grid
+ok: AudioOptionsHost: a field of the window, named once in a tab's template, as a Grid
+   AudioOptionsInline: StackPanel
+ok: AudioOptionsInline: a field of the window, named once in a tab's template, as a StackPanel
+   AudioOptionsButton: ToggleButton
+ok: AudioOptionsButton: a field of the window, named once in a tab's template, as a ToggleButton
+ok: none of them is named outside a template (the XAML makes no field for them)

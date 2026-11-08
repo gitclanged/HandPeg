@@ -261,7 +261,11 @@ public partial class MainWindow
         var rows = new List<TimelineRow>();
         var seconds = _viewModel.DurationMs / 1000;
         if (_viewModel.Layers.Count == 0 && seconds <= 0)
+        {
+            // An empty timeline (a new project, the last one closed): the combined sounds the last one drew are let go too.
+            GiveStacksTheirSound([], 0, 0);
             return rows;
+        }
 
         // The tracks' rows: pictures in the stacking order, then the sound clips' tracks (a video clip's sound is on its
         // own clip's row, or its lane while unlinked).
@@ -358,6 +362,10 @@ public partial class MainWindow
         // them its sound's lanes, a video track's stream lanes by stream (5.2: "Stream 1", "Stream 2"...).
         OrderStacks(rows, row => row.Data is Layer lane && _viewModel.StreamOrdinalOf(lane) is { } ordinal ? ordinal : int.MaxValue);
         MarkInFront(rows);
+
+        // Each video block with a sound stack shows what its audible lanes play, as one waveform (5.3-Stage2): known only now that the
+        // lanes are in their stacks; none while the blocks' waveforms or Show Linked Audio are off (what was drawn is let go).
+        GiveStacksTheirSound(AppSettings.Current.ShowClipWaveforms && _viewModel.ShowLinkedAudio ? rows : [], scale, seconds);
         _rowByTrack = byTrack;
 
         // The seams of folded dead air, on the row of the track each was folded at, with the rows that slide with each

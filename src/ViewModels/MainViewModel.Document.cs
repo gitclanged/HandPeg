@@ -93,7 +93,7 @@ public partial class MainViewModel
             SetSequenceEffects(document.SequenceEffects, document.SequenceEffectsBypassed);
             AudioLinked = AllAudioLinked();
             NoteDocumentShape();
-            _liveState = null;
+            _previewState = null;
             RefreshLayerRows();
             TimelineChanged?.Invoke();
             GenerateCommand();
@@ -252,7 +252,7 @@ public partial class MainViewModel
             {
                 using (DeferCommand())
                 {
-                    _liveState = null;
+                    _previewState = null;
                     SyncViews();
                     AudioLinked = AllAudioLinked();
                     NoteDocumentShape();
@@ -308,7 +308,7 @@ public partial class MainViewModel
             using (BeginRestore())
             using (DeferCommand())
             {
-                _liveState = null;
+                _previewState = null;
                 SyncViews(afresh: true);
                 FollowSelection();
                 AudioLinked = AllAudioLinked();
@@ -1216,7 +1216,7 @@ public partial class MainViewModel
                 : VideoViewAt(PositionMs / 1000) ?? FirstVideoView();
 
     /// <summary>
-    /// The clip whose own picture the player shows while a rectangle is drawn on it, or Live Preview is off (GpuPreviewEngine.ShowSource):
+    /// The clip whose own picture the player shows while a rectangle is drawn on it (Interactive Crop or a Draw Target: GpuPreviewEngine.ShowSource):
     /// a region being marked (Draw Target) its video's, else a selected clip's or the one a crop drag holds; otherwise empty, for the
     /// bottom video at each moment (the clip the Crop boxes stand for then, so the view follows the playhead from clip to clip).
     /// </summary>

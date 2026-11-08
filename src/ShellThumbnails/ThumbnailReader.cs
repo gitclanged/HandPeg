@@ -1,7 +1,6 @@
 using System.IO;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
 using System.Text.Json;
 
 namespace HandPegApp.ShellThumbnails;
@@ -136,14 +135,17 @@ internal static class ThumbnailReader
     }
 }
 
-/// <summary>A read-only, seekable Stream over the IStream Explorer hands a handler: what ZipArchive and the reader read through.</summary>
-internal sealed class ComStream(IStream source) : Stream
+/// <summary>
+/// A read-only, seekable Stream over the IStream Explorer hands a handler (an IStream* called through its table: ISequentialStream's Read,
+/// slot 3; IStream's Seek, slot 5, and Stat, slot 12): what ZipArchive and the reader read through. It holds no reference of its own:
+/// whoever made it keeps the stream alive while it reads.
+/// </summary>
+internal sealed unsafe class NativeStream(nint stream) : Stream
 {
     // STATFLAG_NONAME: the stream's size, without its name.
-    private const int StatWithoutName = 1;
+    private const uint StatWithoutName = 1;
 
-    // Where a read at an offset into a caller's array lands first (IStream reads into the start of an array).
-    private byte[]? _scratch;
+    private void** Methods => *(void***)stream;
 
     public override bool CanRead => true;
 
@@ -155,19 +157,18 @@ internal sealed class ComStream(IStream source) : Stream
     {
         get
         {
-            try
-            {
-                source.Stat(out var stat, StatWithoutName);
-                return stat.cbSize;
-            }
-            catch (Exception ex) when (ex is COMException or NotImplementedException or NotSupportedException)
-            {
-                // A stream that does not say: its end found by seeking there and back.
-                var at = Seek(0, SeekOrigin.Current);
-                var end = Seek(0, SeekOrigin.End);
-                Seek(at, SeekOrigin.Begin);
-                return end;
-            }
+            StatStg stat = default;
+            var answer = ((delegate* unmanaged<nint, StatStg*, uint, int>)Methods[12])(stream, &stat, StatWithoutName);
+            if (stat.Name != 0)
+                Marshal.FreeCoTaskMem(stat.Name);
+            if (answer >= 0)
+                return (long)stat.Size;
+
+            // A stream that does not say: its end found by seeking there and back.
+            var at = Seek(0, SeekOrigin.Current);
+            var end = Seek(0, SeekOrigin.End);
+            Seek(at, SeekOrigin.Begin);
+            return end;
         }
     }
 
@@ -177,33 +178,34 @@ internal sealed class ComStream(IStream source) : Stream
         set => Seek(value, SeekOrigin.Begin);
     }
 
-    public override unsafe int Read(byte[] buffer, int offset, int count)
+    public override int Read(byte[] buffer, int offset, int count)
     {
         ValidateBufferArguments(buffer, offset, count);
-        if (count == 0)
-            return 0;
-
-        var into = buffer;
-        if (offset != 0)
-        {
-            if (_scratch is null || _scratch.Length < count)
-                _scratch = new byte[count];
-            into = _scratch;
-        }
-
-        var read = 0;
-        source.Read(into, count, (nint)(&read));
-        if (!ReferenceEquals(into, buffer))
-            Buffer.BlockCopy(into, 0, buffer, offset, read);
-        return read;
+        return Read(buffer.AsSpan(offset, count));
     }
 
-    public override unsafe long Seek(long offset, SeekOrigin origin)
+    public override int Read(Span<byte> buffer)
+    {
+        if (buffer.IsEmpty)
+            return 0;
+
+        uint read = 0;
+        int answer;
+        fixed (byte* into = buffer)
+            answer = ((delegate* unmanaged<nint, byte*, uint, uint*, int>)Methods[3])(stream, into, (uint)buffer.Length, &read);
+        if (answer < 0)
+            throw new IOException("The file's stream could not be read.", answer);
+        return (int)read;
+    }
+
+    public override long Seek(long offset, SeekOrigin origin)
     {
         // STREAM_SEEK_SET, _CUR and _END are SeekOrigin's Begin, Current and End.
-        long position = 0;
-        source.Seek(offset, (int)origin, (nint)(&position));
-        return position;
+        ulong position = 0;
+        var answer = ((delegate* unmanaged<nint, long, uint, ulong*, int>)Methods[5])(stream, offset, (uint)origin, &position);
+        if (answer < 0)
+            throw new IOException("Seeking in the file's stream failed.", answer);
+        return (long)position;
     }
 
     public override void Flush()
@@ -213,4 +215,21 @@ internal sealed class ComStream(IStream source) : Stream
     public override void SetLength(long value) => throw new NotSupportedException();
 
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    /// <summary>STATSTG (80 bytes on 64-bit): its name, its type, its size at offset 16, and what the handler does not read.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StatStg
+    {
+        public nint Name;
+        public uint Type;
+        public ulong Size;
+        public long Modified;
+        public long Created;
+        public long Accessed;
+        public uint Mode;
+        public uint LocksSupported;
+        public Guid Class;
+        public uint StateBits;
+        public uint Reserved;
+    }
 }

@@ -17,7 +17,7 @@
                 <Button.Style>
                     <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
                         <Setter Property="Content" Value="&#xE890;" />
-                        <Setter Property="ToolTip" Value="Visible: click to hide this clip from Live Preview, the export and the Canvas." />
+                        <Setter Property="ToolTip" Value="Visible: click to hide this clip from the preview, the export and the Canvas." />
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding IsHidden}" Value="True">
                                 <Setter Property="Content" Value="&#xED1A;" />
@@ -28,7 +28,7 @@
                 </Button.Style>
             </Button>
             <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"
-                       Text="How the clip sits on the picture. Live Preview shows the result as you change it." />
+                       Text="How the clip sits on the picture. The preview shows the result as you change it." />
         </DockPanel>
 
         <!-- Shape and transparency: always available -->

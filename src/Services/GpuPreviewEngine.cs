@@ -599,7 +599,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         return _client.Publish();
     }
 
-    // ----- The source as it is (a rectangle drawn on it, Live Preview off) -----
+    // ----- The source as it is (a rectangle drawn on it: Interactive Crop, a Draw Target) -----
 
     private volatile bool _sourceView;
 
@@ -608,7 +608,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     /// <summary>
     /// Show a clip's own picture, whole and unfinished, instead of the sequence (true while a crop or a Cutout's place is drawn
-    /// on a clip's source, and with Live Preview off): its file itself (5.2-AuditB: any clip's, where it was the primary
+    /// on a clip's source: Interactive Crop, a Draw Target): its file itself (5.2-AuditB: any clip's, where it was the primary
     /// file's; GpuScenePlan.EvaluateSource). <paramref name="clipId"/> is the clip; empty for the bottom video at the playhead.
     /// </summary>
     public void ShowSource(bool source, Guid clipId = default)

@@ -16,7 +16,7 @@
     <PlatformTarget Condition="'$(RuntimeIdentifier)' == '' and '$(NETCoreSdkRuntimeIdentifier)' == 'win-arm64'">ARM64</PlatformTarget>
     <AssemblyName>HandPeg.GoldenTests</AssemblyName>
     <RootNamespace>HandPegGoldenTests</RootNamespace>
-    <!-- For [LibraryImport]: the Explorer thumbnail handler's GDI calls (compiled in below) and the test's own. -->
+    <!-- For [LibraryImport] and pointers: the Explorer thumbnail handler's COM tables and GDI+ calls (compiled in below) and the test's own. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
@@ -35,9 +35,11 @@
   </ItemGroup>
 
   <!--
-      The Explorer thumbnail handler (Pass 5.2D), its sources compiled in here (the SeekBench pattern), so the
-      explorer-thumbnails test calls the very class Explorer loads. Not a ProjectReference: HandPeg's build builds that library itself
-      (HandPegApp.csproj), and a second build of it from here, with other global properties, would race it into the same folders.
+      The Explorer thumbnail handler (Pass 5.2D; NativeAOT since Pass 5.3-Stage2), its sources compiled in here (the SeekBench pattern),
+      so the explorer-thumbnails test calls the very code Explorer loads, through its exports by address, as Explorer's surrogate calls the
+      DLL. Only its sources: its project's NativeAOT settings stay out of this program (it runs on .NET as any test does), and a Release
+      build's published DLL is loaded by the test where it exists. Not a ProjectReference: HandPeg's Release build publishes that library
+      itself (HandPegApp.csproj), and a second build of it from here, with other global properties, would race it into the same folders.
   -->
   <ItemGroup>
     <Compile Include="..\..\src\ShellThumbnails\*.cs" Link="ShellThumbnails\%(Filename)%(Extension)" />

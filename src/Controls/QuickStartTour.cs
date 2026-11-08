@@ -166,7 +166,9 @@ public sealed class QuickStartTour
         _card.IsOpen = true;
     }
 
-    // Sizes and points in device pixels, as WPF hands them over: the 12 DIP gap is the editor's 12 DIPs.
+    // Sizes and points in device pixels, as WPF hands them over: the card's 12 DIP gap from its target is 12 of the editor's DIPs
+    // (its pixels per DIP), the same distance at every scale. It is the card's own room beside its target, never the window's body
+    // margin (none at the sides and foot since 5.3-Stage2): nothing here counts on room round the panes.
     private CustomPopupPlacement[] PlaceCard(Size popup, Size target, Point offset)
     {
         var centredX = (target.Width - popup.Width) / 2;

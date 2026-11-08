@@ -93,8 +93,6 @@ public partial class MainViewModel
         _backgroundRow.IsHidden = false;
         if (CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
-        if (!_isBackgroundWorker && HasSource)
-            LivePreview = true;
         Checkpoint("add Cutouts", before);
         StatusText = $"Added {states.Count} Cutout{(states.Count == 1 ? "" : "s")}. Ctrl+Z takes them away again.";
     }

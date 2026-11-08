@@ -98,10 +98,11 @@
 
     <!--
         The screen draws its own title bar (4.4), as the main window does (the same WindowChrome): placed over the editor
-        (CoverWindow), its 32 px bar lies exactly on the editor's, carrying the same progress fill and status.
+        (CoverWindow), its bar (CaptionBarHeight, 26 px since 5.3-Stage2, as the editor's) lies exactly on the editor's, carrying
+        the same progress fill and status.
     -->
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="32" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"
+        <WindowChrome CaptionHeight="{StaticResource CaptionBarHeight}" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"
                       ResizeBorderThickness="{x:Static SystemParameters.WindowResizeBorderThickness}" />
     </WindowChrome.WindowChrome>
 
@@ -127,19 +128,19 @@
         </Grid.ColumnDefinitions>
 
         <!--
-            The title bar (WindowChrome, 32 px, 4.4): Back to the editor (saving) and the screen's name at the left, what went
+            The title bar (WindowChrome, 4.4; CaptionBarHeight): Back to the editor (saving) and the screen's name at the left, what went
             wrong beside them, Cancel and the caption buttons at the right (Close is Cancel too: only Back and Escape save).
             The editor's status and the progress of the work under way are mirrored across it as on the editor's own bar
             (UpdateTitleStatus); the status gives way to an error. Dragging anywhere else moves the window.
         -->
-        <Grid x:Name="TitleBar" Grid.ColumnSpan="3" Height="32" Background="{DynamicResource TitleBarBrush}">
+        <Grid x:Name="TitleBar" Grid.ColumnSpan="3" Height="{StaticResource CaptionBarHeight}" Background="{DynamicResource TitleBarBrush}">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <Canvas x:Name="TitleProgress" Grid.ColumnSpan="3" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
-                <Rectangle x:Name="TitleProgressFill" Height="32" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.14" />
+                <Rectangle x:Name="TitleProgressFill" Height="{StaticResource CaptionBarHeight}" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.14" />
             </Canvas>
             <StackPanel x:Name="TitleLeft" Orientation="Horizontal">
                 <Button x:Name="BackButton" Padding="10,1" Margin="8,0,0,0" FontSize="11.5" VerticalAlignment="Center" IsDefault="True" Click="Save_Click"
@@ -440,7 +441,7 @@
                     <CheckBox Content="Show gain lines on clips with sound" IsChecked="{Binding ShowClipGainLines}" AutomationProperties.Name="Show Gain Lines"
                               ToolTip="Clips whose sound is drawn on their blocks show a line at their gain (drag it up or down), sloping down over the clip's fades. The fades themselves are the handles at every clip's top corners, whether this is on or not." />
                     <CheckBox Content="Show the Creator Hotbar on the Timeline" IsChecked="{Binding ShowCreatorHotbar}" AutomationProperties.Name="Show Creator Hotbar"
-                              ToolTip="Five slots on the Timeline's row of tools (on by default), each putting its Effect, Transition, Game Preset or one-click tool on the selected clips (else the video clip at the playhead) in one step of Undo. Right-click a slot to choose what it holds; it starts with Motion Blur, 3D Fly-In, Neon Rim, Whip Pan and Studio Voice." />
+                              ToolTip="The Quick FX button on the Timeline's row of tools (on by default): rest the pointer on it, or click it, for five slots, each putting its Effect, Transition, Game Preset or one-click tool on the selected clips (else the video clip at the playhead) in one step of Undo. Right-click a slot to choose what it holds; they start with Motion Blur, 3D Fly-In, Neon Rim, Whip Pan and Studio Voice." />
                     <!-- The Timeline's own switches (5.3): the same values as its Timeline Settings menu (its tab's right-click, the gear on its row of tools). -->
                     <CheckBox Content="Show effect sub-lanes on expanded tracks" IsChecked="{Binding ShowTimelineEffectLanes}" AutomationProperties.Name="Show Effect Sub-Lanes"
                               ToolTip="On by default. Each track's effects get lanes of their own in its stack, one block per effect over the stretch it works in, shown only while that track's stack is open (its chevron); closed, they take no room. Off: no effect lanes at all, and a clip's effects show only as the fx badge on its block." />
@@ -451,7 +452,7 @@
                     <CheckBox Content="Show filmstrip thumbnails on clips" IsChecked="{Binding ShowClipFilmstrips}" AutomationProperties.Name="Show Clip Filmstrips"
                               ToolTip="On by default. A video clip's block on the Timeline shows its file's frames along it (as many as Video Clip Thumbnail Count takes). Off: plain blocks. The Sequence Overview Scrubber's strip is Show Timeline Thumbnails, above." />
                     <CheckBox Content="Show audio waveforms on clips" IsChecked="{Binding ShowClipWaveforms}" AutomationProperties.Name="Show Clip Waveforms"
-                              ToolTip="On by default. Clips with sound draw their waveforms on their blocks on the Timeline, and a closed sound stack the mix of its lanes in its one bar. (A video clip's own waveform is made only while Show waveforms, above, is on.)" />
+                              ToolTip="On by default. Clips with sound draw their waveforms on their blocks on the Timeline, a video clip with a sound stack the sound of its lanes together across its block, and a closed sound stack the mix of its lanes in its one bar. (A video clip's own waveform is made only while Show waveforms, above, is on.)" />
                     <CheckBox Content="Show the audio beat grid" IsChecked="{Binding ShowBeatGrid}" AutomationProperties.Name="Show Beat Grid"
                               ToolTip="On by default. The beats found in a clip's sound (a clip's menu: Audio &amp; Voice, Detect &amp; Snap to Audio Beats) are drawn as faint ticks along its block." />
                     <CheckBox Content="Enable timeline snapping" IsChecked="{Binding SnapClips}" AutomationProperties.Name="Enable Timeline Snapping"
@@ -460,6 +461,8 @@
                               ToolTip="On by default. With snapping on, edges also catch on the beats found in clips' sound." />
                     <CheckBox Content="Follow the playhead during playback" IsChecked="{Binding TimelineFollowsPlayhead}" AutomationProperties.Name="Follow Playhead During Playback"
                               ToolTip="On by default. While playing, the Timeline turns the page as the playhead reaches its edge, so what is playing stays in sight. Off: the view stays where you put it." />
+                    <CheckBox Content="Show Undo / Redo buttons on the Timeline" IsChecked="{Binding ShowTimelineUndoRedo}" AutomationProperties.Name="Show Undo Redo Buttons"
+                              ToolTip="Off by default. On: the Timeline's row of tools shows Undo and Redo buttons. Off: Ctrl+Z and Ctrl+Y (and the menus) undo and redo as ever." />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Crossfade and Fade Length (s):" Style="{StaticResource FieldLabel}" />
                         <TextBox Width="60" Text="{Binding DefaultTransitionSeconds, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Crossfade Length"
@@ -508,7 +511,7 @@
                     <CheckBox Content="Hardware video decoding (GPU preview)" IsChecked="{Binding PlayerHardwareAcceleration}" AutomationProperties.Name="Hardware Video Decoding"
                               ToolTip="The graphics card decodes the preview's video (Media Foundation on Direct3D 11) as well as drawing it, which keeps high-resolution and high-frame-rate footage smooth and the processor free. Turn this off if the preview shows broken frames (green, garbled or blocky pictures from a driver's decoder): the processor then decodes, more slowly. Exports are not affected. Applies when the player starts again (Reload Player, or the next start of HandPeg)." />
                     <CheckBox Content="Edit Clips on Video Preview" IsChecked="{Binding EditLayersOnPlayer}" AutomationProperties.Name="Edit Clips on Video Preview"
-                              ToolTip="With Live Preview on, click a clip on the player to select it, then drag it to move it, its corner to resize it, its round handle to turn it and its gold dot to move its anchor, as in the Canvas. Only the selected clip's outline and handles are drawn over the video, and none while it plays; a click on the video away from it hides them. Also in the Canvas's title row and the playback bar." />
+                              ToolTip="Click a clip on the player to select it, then drag it to move it, its corner to resize it, its round handle to turn it and its gold dot to move its anchor, as in the Canvas. Only the selected clip's outline and handles are drawn over the video, and none while it plays; a click on the video away from it hides them. Also in the Canvas's title row and the playback bar." />
                     <CheckBox Content="Show advanced playback controls" IsChecked="{Binding ShowAdvancedPlayback}"
                               ToolTip="A transport row centred under the player: reload player, previous I-frame, back one frame, play/pause, forward one frame, next I-frame and render preview, with a playback speed selector (0.25x to 2x) beside it." />
 

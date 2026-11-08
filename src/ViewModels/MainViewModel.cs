@@ -53,7 +53,7 @@ public partial class MainViewModel : ObservableObject
         nameof(DrawTargetLayer), nameof(IsArrangeActive), nameof(SpriteSheetPath),
         nameof(IsBusy), nameof(ProgressValue), nameof(IsProgressIndeterminate),
         nameof(ShowTimelineThumbnails), nameof(ShowHoverPreviews), nameof(HasSource), nameof(SoloedTracks),
-        nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth), nameof(LivePreview),
+        nameof(VoiceoverMixWaveform), nameof(VoiceoverMixStart), nameof(VoiceoverMixWidth),
         nameof(CopyBypassWarning), nameof(ShowLinkedAudio), nameof(ShowTimelineOptionsBelow), nameof(HasAudioClips),
         nameof(KeyframesEnabled), nameof(KeyframesSnap), nameof(KeyframesCreate), nameof(KeyLayer), nameof(ActiveKeyLayer), nameof(SelectedTextLayer), nameof(IsTextLayerSelected),
         nameof(SubtitleSourcePath), nameof(SubtitleTrackSummary), nameof(HasSubtitleCues), nameof(IsSubtitleEditorOpen), nameof(WhisperModelChoice), nameof(WhisperModelStatus), nameof(AutosaveEnabled), nameof(SyncMasterTimeline), nameof(CaptionOptionsEnabled), nameof(CompactTrackControls), nameof(HasTextCues), nameof(SubtitlesAreImages),
@@ -1388,11 +1388,6 @@ public partial class MainViewModel : ObservableObject
         if (!_isBackgroundWorker)
         {
             MediaLoaded?.Invoke(localPath);
-
-            // Live Preview comes on with every video, Game Preset or project opened (4.3E): what a Game Preset, a layout or a
-            // crop does is only seen with it, and a Game Preset dropped on with it off showed the plain source. Once the player is opening the
-            // new file, so it gets its graph when the file is ready instead of being opened twice.
-            LivePreview = true;
             _ = ScanIFramesAsync(localPath);
             _ = GenerateSpriteSheetAsync(localPath);
             _ = GenerateWaveformsAsync(localPath);
@@ -1795,7 +1790,7 @@ public partial class MainViewModel : ObservableObject
         SetBin(null);
         SetMarkers(null);
         Document.Markers = [];
-        _liveState = null;
+        _previewState = null;
     }
 
     // ----- Command generation -----
@@ -1819,7 +1814,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     // The Crop boxes, which only show the clip they stand for while ShowCropTarget sets them: that clip is as it was, so the
-    // command, the proxies and Live Preview are too (the playhead crossing into another clip during playback rebuilds nothing).
+    // command, the proxies and the preview are too (the playhead crossing into another clip during playback rebuilds nothing).
     private static readonly HashSet<string> CropTargetProperties = [nameof(CropLeft), nameof(CropTop), nameof(CropRight), nameof(CropBottom)];
 
     protected override void OnPropertyChanged(PropertyChangedEventArgs e)
@@ -1867,7 +1862,7 @@ public partial class MainViewModel : ObservableObject
 
         // The timeline is as long as its clips reach (what the builder reads from it is gathered afresh for this state), and
         // every picture keeps its middle on a frame of another shape.
-        _liveState = null;
+        _previewState = null;
         KeepPlacesOnReshape();
         RefreshSequence();
 
@@ -1880,9 +1875,9 @@ public partial class MainViewModel : ObservableObject
         RefreshProxies();
         WarmLayerFiles();
 
-        // So does Live Preview, which shows the settings, not the command.
+        // So does the player (and the Timeline's rows), which shows the settings, not the command.
         if (!_isBackgroundWorker)
-            InvalidateLiveFilter();
+            InvalidatePreviewState();
 
         if (IsCommandManuallyEdited)
             return;

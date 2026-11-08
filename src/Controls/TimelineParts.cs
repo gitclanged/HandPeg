@@ -377,6 +377,13 @@ public sealed class TimelineBlock
     /// <summary>The block's sound by time, for the unified timeline (4.4): drawn in place of <see cref="Peaks"/> when given.</summary>
     public WaveWindow? SoundWindow { get; init; }
 
+    /// <summary>
+    /// A video block's sound stack heard as one (5.3-Stage2, the user's call): the audible lanes of its audio stack combined
+    /// (WaveformData.Combine, each at its gain), laid on the block's own file time from its left edge, drawn across the whole
+    /// block, see-through over its pictures. Set by the host once the stacks are made; null for none (nothing audible, or no stack).
+    /// </summary>
+    public WaveWindow? StackSound { get; set; }
+
     /// <summary>The block's pictures on its file's time grid, for the unified timeline (4.4): drawn in place of <see cref="Frames"/> when given.</summary>
     public FilmWindow? Film { get; init; }
 
@@ -401,7 +408,8 @@ public sealed class TimelineBlock
     /// <summary>
     /// A J/L cut of a clip with linked sound, in seconds: how much sooner than its picture its sound starts (a J cut;
     /// negative, later) and how much longer it lasts (an L cut; negative, shorter). The sound is drawn in the lower part
-    /// of the block, reaching out past its edges that far. Null for none (or a clip whose sound is not its picture's).
+    /// of the block, reaching out past its edges that far (the one sound not drawn across the whole block). Null for none (or a
+    /// clip whose sound is not its picture's).
     /// </summary>
     public (double LeadIn, double TailOut)? AudioSplit { get; init; }
 

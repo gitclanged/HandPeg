@@ -89,7 +89,7 @@ public partial class MainWindow
                 break;
 
             case "Player" or "Canvas":
-                Toggle("Edit Clips on Video", _viewModel.EditLayersOnPlayer, on => _viewModel.EditLayersOnPlayer = on, "Move, resize and turn the selected clip on the player itself (with Live Preview).");
+                Toggle("Edit Clips on Video", _viewModel.EditLayersOnPlayer, on => _viewModel.EditLayersOnPlayer = on, "Move, resize and turn the selected clip on the player itself.");
                 Toggle("Snap Guides", settings.SnapLayoutGuides, on => Save(s => s.SnapLayoutGuides = on), "A dragged clip snaps to the frame's edges, centre and the other clips (Alt while dragging: free).");
                 Toggle("Motion Path", settings.ShowMotionPath, on =>
                 {
@@ -132,7 +132,7 @@ public partial class MainWindow
     {
         EffectLanes, BuiltInMaskLanes, KeyframeDiamonds, Filmstrips, Waveforms, BeatGrid, IFrameLines, GainLines,
         Snapping, SnapToBeats, SnapToIFrames, FollowPlayhead,
-        CreatorHotbar, Scrubber, TrackHeight,
+        CreatorHotbar, UndoRedoButtons, Scrubber, TrackHeight,
         RippleAllTracks, DroppedClipsJoinTrack, ShowLinkedAudio,
     }
 
@@ -190,8 +190,11 @@ public partial class MainWindow
         new("Bars & Sizing",
         [
             new(TimelineSetting.CreatorHotbar, "Show Creator Hotbar",
-                "Five slots on the row of tools, each putting an Effect, a Transition, a Game Preset or a one-click tool on the selected clips. Right-click a slot to choose what it holds.",
+                "The Quick FX button on the row of tools: rest the pointer on it, or click it, for five slots, each putting an Effect, a Transition, a Game Preset or a one-click tool on the selected clips. Right-click a slot to choose what it holds.",
                 nameof(AppSettings.ShowCreatorHotbar)),
+            new(TimelineSetting.UndoRedoButtons, "Show Undo / Redo Buttons",
+                "Undo and Redo buttons on the Timeline's row of tools. Off by default: Ctrl+Z and Ctrl+Y undo and redo as ever.",
+                nameof(AppSettings.ShowTimelineUndoRedo)),
             new(TimelineSetting.Scrubber, "Show Sequence Overview Scrubber",
                 "The Sequence Overview Scrubber under the player: the whole sequence at a glance, scrubbed by a click or a drag (as in Tabs and Panes).",
                 nameof(AppSettings.ShowMasterTimeline)),
@@ -205,7 +208,7 @@ public partial class MainWindow
                 nameof(AppSettings.RippleAllTracks)),
             new(TimelineSetting.DroppedClipsJoinTrack, "Dropped Clips Join Track", "A picture dropped on a track with room goes onto that track instead of a new one.",
                 nameof(AppSettings.DroppedClipsJoinTrack)),
-            new(TimelineSetting.ShowLinkedAudio, "Show Linked Audio", "Draws a video clip's own sound under its pictures, in the lower part of its block (for this session).",
+            new(TimelineSetting.ShowLinkedAudio, "Show Linked Audio", "Draws a video clip's own sound, or its sound stack's, over its pictures, across its block (for this session).",
                 null),
         ]),
     ];
@@ -301,7 +304,8 @@ public partial class MainWindow
 
     // What each switch of the menu shows and sets: the AppSettings value the Settings window shows (saved at once), or the view model's
     // copy of one, which saves it itself; Snap Cuts to I-Frames is the project's, Show Linked Audio the session's. The Scrubber is shown
-    // or hidden as Tabs and Panes does it, the hotbar as its own menu does.
+    // or hidden as Tabs and Panes does it, the hotbar (its Quick FX button) and the Undo / Redo buttons as the hotbar's own menu does
+    // (SaveHotbar: the row of tools shown again as the settings say).
     private (bool On, Action<bool> Set) TimelineSettingState(TimelineSetting setting)
     {
         var settings = AppSettings.Current;
@@ -321,6 +325,7 @@ public partial class MainWindow
             TimelineSetting.SnapToIFrames => (_viewModel.SnapToIFrames, on => _viewModel.SnapToIFrames = on),
             TimelineSetting.FollowPlayhead => (settings.TimelineFollowsPlayhead, on => Save(s => s.TimelineFollowsPlayhead = on)),
             TimelineSetting.CreatorHotbar => (settings.ShowCreatorHotbar, on => SaveHotbar(s => s.ShowCreatorHotbar = on)),
+            TimelineSetting.UndoRedoButtons => (settings.ShowTimelineUndoRedo, on => SaveHotbar(s => s.ShowTimelineUndoRedo = on)),
             TimelineSetting.Scrubber => (settings.ShowMasterTimeline, on => SetScrubberShown(on)),
             TimelineSetting.RippleAllTracks => (settings.RippleAllTracks, on => Save(s => s.RippleAllTracks = on)),
             TimelineSetting.DroppedClipsJoinTrack => (settings.DroppedClipsJoinTrack, on => Save(s => s.DroppedClipsJoinTrack = on)),

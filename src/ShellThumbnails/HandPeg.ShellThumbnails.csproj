@@ -1,41 +1,63 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-      HandPeg's Explorer thumbnail handler (Pass 5.2D): a COM class that Windows Explorer loads (in its
-      thumbnail surrogate, never in HandPeg) to show the baked thumbnail a .hproj or a .hpb carries as the file's preview. A library
-      of its own with no reference to HandPeg, so that Explorer loads only it and .NET. HandPegApp.csproj builds it after HandPeg for
-      the same processor and copies it into shell\ beside HandPeg.exe; ExplorerThumbnails registers it for the user alone (HKCU, no
-      administrator). The golden tests compile its sources into their own program (tools\GoldenTests\GoldenTests.csproj).
+      HandPeg's Explorer thumbnail handler (Pass 5.2D; NativeAOT since Pass 5.3-Stage2, the user's answer): the library Windows Explorer
+      loads (in its thumbnail surrogate, never in HandPeg) to show the baked thumbnail a .hproj or a .hpb carries as the file's preview.
+      Compiled to machine code ahead of time, so Explorer needs no .NET to load it: one native DLL exporting DllGetClassObject and
+      DllCanUnloadNow, its COM objects written by hand (ShellExports) and the JPEG drawn by GDI+'s flat API (Gdip). A library of its own
+      with no reference to HandPeg. HandPegApp.csproj publishes it in its Release builds and publishes, for the same processor, where the
+      C++ build tools are, and copies it into shell\ beside HandPeg.exe; ExplorerThumbnails registers it for the user alone (HKCU, no
+      administrator). By hand:
+        dotnet publish src\ShellThumbnails\HandPeg.ShellThumbnails.csproj -c Release -r win-x64    (and -r win-arm64)
+      The golden tests compile its sources into their own program and call its exports by address (tools\GoldenTests\GoldenTests.csproj),
+      and load this published DLL where it has been made.
   -->
   <PropertyGroup>
+    <OutputType>Library</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <LangVersion>14.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>HandPeg.ShellThumbnails</AssemblyName>
     <RootNamespace>HandPegApp.ShellThumbnails</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
-    <!-- A COM server: HandPeg.ShellThumbnails.comhost.dll (the class's CLSID in it) is what Explorer loads, and it starts .NET with
-         the runtime configuration beside it. Framework-dependent, as HandPeg is. -->
-    <EnableComHosting>true</EnableComHosting>
-    <SelfContained>false</SelfContained>
-
-    <!-- System.Drawing (GDI+), to decode the JPEG and draw it at the size Explorer asks for. -->
-    <UseWindowsForms>true</UseWindowsForms>
-
-    <!-- For the generated [LibraryImport] code (GDI) and the IStream's counts read through pointers. -->
+    <!-- The COM tables and the stream's methods through function pointers; GDI, GDI+ and shlwapi through generated [LibraryImport] code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
-    <!-- The processor of HandPeg's build (HandPegApp.csproj passes its runtime): Explorer's surrogate is the machine's own, and an
-         ARM64 one loads only an ARM64 handler. -->
-    <PlatformTarget>x64</PlatformTarget>
-    <PlatformTarget Condition="'$(RuntimeIdentifier)' == 'win-arm64' or ('$(RuntimeIdentifier)' == '' and '$(NETCoreSdkRuntimeIdentifier)' == 'win-arm64')">ARM64</PlatformTarget>
+    <!-- Native and small, as the bootstrapper is (about 1.2 MB): no stack trace data, no globalization data, resource keys for messages,
+         no background GC thread in Explorer's surrogate. It stays CET-compatible (the default), unlike HandPeg.exe: Explorer's surrogate
+         may run with shadow stacks enforced and refuse a module that is not. -->
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Size</OptimizationPreference>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <StackTraceSupport>false</StackTraceSupport>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <EventSourceSupport>false</EventSourceSupport>
+    <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
-  <!-- Their namespaces are not imported everywhere, as in HandPeg's own projects. -->
-  <ItemGroup>
-    <Using Remove="System.Windows.Forms" />
-    <Using Remove="System.Drawing" />
-  </ItemGroup>
+  <!--
+      NativeAOT finds the C++ linker through Visual Studio's vcvarsall.bat, which calls vswhere.exe by name: the Visual Studio Installer
+      folder (where vswhere.exe is, never on PATH by itself) is put on this build's PATH just before NativeAOT looks for the linker.
+  -->
+  <UsingTask TaskName="AddFolderToPath" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Folder ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var path = System.Environment.GetEnvironmentVariable("PATH") ?? "";
+        if (System.IO.Directory.Exists(Folder) && path.IndexOf(Folder, System.StringComparison.OrdinalIgnoreCase) < 0)
+            System.Environment.SetEnvironmentVariable("PATH", path + ";" + Folder);
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="PutVsWhereOnPath" BeforeTargets="SetupOSSpecificProps">
+    <AddFolderToPath Folder="$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer" />
+  </Target>
 
 </Project>

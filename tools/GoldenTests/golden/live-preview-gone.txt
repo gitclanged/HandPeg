@@ -1,0 +1,12 @@
+# The Live Preview switch is gone: the player always shows the preview; the refresh after every edit is renamed, not lost.
+ok: the view model has no LivePreview switch
+ok: nor InvalidateLiveFilter or LiveFilterInvalidated (renamed, not lost)
+ok: InvalidatePreviewState and PreviewStateInvalidated are there, and LivePreviewState (the preview's SequenceExportState) keeps its name
+ok: the main window has no ApplyLiveFilter or ScheduleLiveFilter (ScheduleGpuState is called itself)
+ok: the preview state is gathered once and kept until something changes
+ok: InvalidatePreviewState raises PreviewStateInvalidated once and drops the state: the next is gathered afresh
+   the playback bar's defaults: PrevIFrame,StepBack,StepForward,NextIFrame,AddMarker,EditOnVideo,Exploded3D,RenderPreview,Reload,Volume,Speed,@2
+ok: the playback bar offers no Live Preview control, and starts without it
+ok: a bar saved with Live Preview on it loads the rest, and saves without it
+ok: src\MainWindow.xaml is found above the test
+ok: MainWindow.xaml has no Binding LivePreview, nor a control shown by PlaybackControls[LivePreview] (its eye buttons are gone)

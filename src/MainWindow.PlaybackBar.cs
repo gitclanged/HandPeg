@@ -29,7 +29,8 @@ public partial class MainWindow
                     if (_gpu is { } gpu)
                         gpu.Muted = _viewModel.IsPlayerMuted;
                     break;
-                case nameof(ViewModels.MainViewModel.ShowSafeMargins) or nameof(ViewModels.MainViewModel.LivePreview) or nameof(ViewModels.MainViewModel.FrameWidth)
+                case nameof(ViewModels.MainViewModel.ShowSafeMargins) or nameof(ViewModels.MainViewModel.IsInteractiveCropActive)
+                    or nameof(ViewModels.MainViewModel.DrawTargetLayer) or nameof(ViewModels.MainViewModel.FrameWidth)
                     or nameof(ViewModels.MainViewModel.FrameHeight) or nameof(ViewModels.MainViewModel.SourceWidth) or nameof(ViewModels.MainViewModel.SourceHeight)
                     or nameof(ViewModels.MainViewModel.HasSource):
                     PlaceSafeMargins();
@@ -138,7 +139,7 @@ public partial class MainWindow
         PlayerSetPause(false);
     }
 
-    /// <summary>Saves the frame on screen, as the player shows it (with Live Preview, as the layout makes it), as a PNG in the output's folder.</summary>
+    /// <summary>Saves the frame on screen, as the player shows it (as the layout makes it), as a PNG in the output's folder.</summary>
     private void ExportFrame()
     {
         if (_gpu is not { } gpu)
@@ -163,7 +164,8 @@ public partial class MainWindow
 
     /// <summary>
     /// Outlines the action-safe (90%) and title-safe (80%) areas of the picture as the player shows it: the output
-    /// frame with Live Preview on, the source with it off, fitted into the player as the engine fits it.
+    /// frame, or while Interactive Crop or a Draw Target shows a clip's own file that file's picture, fitted into the player
+    /// as the engine fits it.
     /// </summary>
     private void PlaceSafeMargins()
     {
@@ -173,9 +175,9 @@ public partial class MainWindow
         if (!shown || width <= 0 || height <= 0)
             return;
 
-        var (pictureWidth, pictureHeight) = _viewModel.LivePreview && _viewModel.FrameWidth > 0 && _viewModel.FrameHeight > 0
+        var (pictureWidth, pictureHeight) = CurrentOverlayMode == OverlayMode.None && _viewModel.FrameWidth > 0 && _viewModel.FrameHeight > 0
             ? ((double)_viewModel.FrameWidth, (double)_viewModel.FrameHeight)
-            : _viewModel.CropPictureSize is { Width: > 0, Height: > 0 } source ? (source.Width, source.Height) : (16.0, 9.0);
+            : ShownPictureSize() is { Width: > 0, Height: > 0 } source ? (source.Width, source.Height) : (16.0, 9.0);
         var scale = Math.Min(width / pictureWidth, height / pictureHeight);
         var picture = new Rect((width - pictureWidth * scale) / 2, (height - pictureHeight * scale) / 2, pictureWidth * scale, pictureHeight * scale);
 
@@ -191,8 +193,9 @@ public partial class MainWindow
 
     /// <summary>
     /// The controls in the middle of the bar get the room its two ends do not need: the left end needs only its Views
-    /// button (its checkboxes fold into that menu), the right end all of its controls. What the middle has no room
-    /// for is left out of it and listed in its "more" menu (see OverflowStrip); nothing is ever wrapped onto a second line.
+    /// button (its menu holds the panes and the timeline's I-frame checkboxes), the right end all of its controls. What the
+    /// middle has no room for is left out of it and listed in its "more" menu (see OverflowStrip); nothing is ever wrapped
+    /// onto a second line.
     /// Asked by the row each time it is measured, with the width it is offered (see PlaybackRow).
     /// </summary>
     private void FitTransport(double width)

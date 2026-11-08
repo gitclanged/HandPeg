@@ -672,7 +672,7 @@ public sealed partial class AppSettings
     /// <summary>Clips with sound show a gain line and fade handles on their blocks, to be dragged.</summary>
     public bool ShowClipGainLines { get; set; } = true;
 
-    /// <summary>The Creator Hotbar's five slots on the Timeline's row of tools (5.2.1).</summary>
+    /// <summary>The Creator Hotbar on the Timeline's row of tools (5.2.1): since 5.3-Stage2 its one Quick FX button, whose flyout holds the five slots.</summary>
     public bool ShowCreatorHotbar { get; set; } = true;
 
     /// <summary>
@@ -693,6 +693,9 @@ public sealed partial class AppSettings
     /// <summary>While playing, the Timeline's view turns the page to keep the playhead in sight (5.3).</summary>
     public bool TimelineFollowsPlayhead { get; set; } = true;
 
+    /// <summary>The Timeline's row of tools shows Undo and Redo buttons (5.3; off by default: Ctrl+Z, Ctrl+Y and the Edit menu do the same).</summary>
+    public bool ShowTimelineUndoRedo { get; set; }
+
     /// <summary>
     /// What each of the Creator Hotbar's five slots holds, as "kind:id" (Models.HotbarSlot); null for the defaults (HotbarSlot.Defaults).
     /// Set by a slot's right-click menu. Replaced whole when it changes, never changed in place (copies share lists).
@@ -709,7 +712,7 @@ public sealed partial class AppSettings
     public bool SnapLayoutGuides { get; set; } = true;
 
     /// <summary>
-    /// Live Preview: the layers are moved, resized and turned on the player itself, as in the layout pane;
+    /// The layers are moved, resized and turned on the player itself, as in the layout pane;
     /// only the selected layer's outline and handles are drawn there, and none while playing (4.1.1-B).
     /// </summary>
     public bool EditLayersOnPlayer { get; set; } = true;

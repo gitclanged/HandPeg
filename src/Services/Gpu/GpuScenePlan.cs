@@ -84,8 +84,8 @@ public sealed partial class GpuScenePlan
 
     /// <summary>
     /// A clip's own picture at a moment of the sequence, whole and unfinished (no crop, no effects, no other layer), on a
-    /// canvas of that picture's own size: what the player shows while a rectangle is drawn on a clip's source (its crop, a
-    /// Cutout's place) and with Live Preview off (5.2-AuditB: any clip's, where it was the primary file's). The player's crop
+    /// canvas of that picture's own size: what the player shows while a rectangle is drawn on a clip's source (Interactive
+    /// Crop, a Cutout's place marked by a Draw Target; 5.2-AuditB: any clip's, where it was the primary file's). The player's crop
     /// overlay maps onto exactly this picture. <paramref name="clipKey"/> is the clip's (<see cref="GpuHash.Of(Guid)"/>): its
     /// video; 0, or a clip the plan reads no video for, the bottom video on at the moment. Writes nothing but the header
     /// while that video is not on (the frame's own size when there is none). Allocation-free.

@@ -644,8 +644,9 @@ public sealed class DockManager
             Children.Add(head);
             if (classic)
             {
-                // Boxed tabs: the panel the shown tab joins, as the settings tabs have always looked in the main tab bar.
-                Frame = new Border { Child = Body, CornerRadius = new CornerRadius(0, 6, 6, 6), Padding = TabPadding };
+                // Boxed tabs: the panel the shown tab joins, as the settings tabs have always looked in the main tab bar. Square
+                // (5.3-Stage2: edge to edge, no window showing at its corners).
+                Frame = new Border { Child = Body, CornerRadius = new CornerRadius(0), Padding = TabPadding };
                 Frame.SetResourceReference(Border.BackgroundProperty, "PanelBrush");
                 Children.Add(Frame);
             }
@@ -814,7 +815,7 @@ public sealed class DockManager
     /// The border between two parts of a split: dragged, it shares the room between them anew. Next to a part as tall as
     /// its content (the Sequence Overview Scrubber, the playback controls) it shares the room between the nearest parts above
     /// and below that are not (4.1.1: the player's row and the tabs; the timeline keeps the height its setting gives it);
-    /// with no such part on one side it is only a gap, or, beside a pane that can be made taller, it makes it so. Right under
+    /// with no such part on one side it is only a line, or, beside a pane that can be made taller, it makes it so. Right under
     /// a pane that can be made taller (the Sequence Overview Scrubber), the border is that pane's lower edge: dragged, it makes
     /// it taller or shorter, and Ctrl+drag shares the room instead (5.2-AuditB, the user's bug: the bar could no longer be
     /// sized from its lower edge; the border there shared the room and moved it whole).
@@ -824,6 +825,12 @@ public sealed class DockManager
         var (before, after) = (parts[k - 1], parts[k]);
         UIElement border;
         var (above, under) = (parts.Take(k).LastOrDefault(p => !p.Fits).Element, parts.Skip(k).FirstOrDefault(p => !p.Fits).Element);
+
+        // Edge to edge (5.3-Stage2, the user's call): a border is a 1 px line (PaneSeamBrush) in a row or column of 1 px, and one
+        // that is dragged is grabbed over 7 px, reaching 3 px into each part beside it (drawn over them: ZIndex). Beside a floating
+        // pane (the player), whose native window covers what lies over its place, it reaches all 6 into the other part (SeamGrip).
+        var (beforeEdge, afterEdge) = split.Vertical ? (DockZone.Bottom, DockZone.Top) : (DockZone.Right, DockZone.Left);
+        var (grip, seam) = SeamGrip(split.Vertical, FloatsAt(split.Children[before.Index], beforeEdge), FloatsAt(split.Children[after.Index], afterEdge));
         if ((before.Fits || after.Fits) && split.Vertical && above is not null && under is not null)
         {
             // The pane beside it that fits its content is made taller or shorter (through its height setting), dragged away
@@ -833,7 +840,7 @@ public sealed class DockManager
             var edge = resize is not null && !below;
             var thumb = new Thumb
             {
-                Height = 10, Cursor = Cursors.SizeNS, Template = SplitterLook(),
+                Height = SeamGrab, Margin = grip, Cursor = Cursors.SizeNS, Template = SplitterLook(seam),
                 ToolTip = resize is null ? "Drag to share the room between the parts above and below"
                     : edge ? $"Drag to make the {title} taller or shorter; Ctrl+drag to share the room between the parts above and below"
                     : $"Drag to share the room between the parts above and below; Ctrl+drag to make the {title} taller or shorter",
@@ -856,12 +863,19 @@ public sealed class DockManager
             var (resize, title) = split.Vertical ? Resizer(fitting) : ((Action<double>?)null, "");
             if (resize is null)
             {
-                border = split.Vertical ? new Border { Height = 8 } : new Border { Width = 8 };
+                // Nothing to drag: only the line.
+                var line = split.Vertical ? new Border { Height = 1 } : new Border { Width = 1 };
+                line.SetResourceReference(Border.BackgroundProperty, "PaneSeamBrush");
+                border = line;
             }
             else
             {
                 // Dragged towards the pane that fits its content, it makes it smaller; away from it, taller.
-                var thumb = new Thumb { Height = 10, Cursor = Cursors.SizeNS, Template = SplitterLook(), ToolTip = $"Drag to make the {title} taller or shorter" };
+                var thumb = new Thumb
+                {
+                    Height = SeamGrab, Margin = grip, Cursor = Cursors.SizeNS, Template = SplitterLook(seam),
+                    ToolTip = $"Drag to make the {title} taller or shorter",
+                };
                 var moved = PointerMoves(thumb, grid);
                 thumb.DragDelta += (_, _) =>
                 {
@@ -881,14 +895,21 @@ public sealed class DockManager
                 Cursor = split.Vertical ? Cursors.SizeNS : Cursors.SizeWE, KeyboardIncrement = 16, Focusable = false,
             };
             splitter.SetResourceReference(FrameworkElement.StyleProperty, "QuietSplitter");
+
+            // The line itself (QuietSplitter paints its Background inside its Padding): grabbed over 7 px laid out in 1 px, as the
+            // borders above are (beside the player, wholly in the other part), the line on the seam.
+            splitter.SetResourceReference(Control.BackgroundProperty, "PaneSeamBrush");
+            (splitter.Margin, splitter.Padding) = (grip, seam);
             if (split.Vertical)
-                (splitter.Height, splitter.Margin, splitter.VerticalAlignment) = (2, new Thickness(0, 4, 0, 4), VerticalAlignment.Center);
+                (splitter.Height, splitter.VerticalAlignment) = (SeamGrab, VerticalAlignment.Center);
             else
-                (splitter.Width, splitter.Margin, splitter.HorizontalAlignment) = (2, new Thickness(4, 0, 4, 0), HorizontalAlignment.Center);
+                (splitter.Width, splitter.HorizontalAlignment) = (SeamGrab, HorizontalAlignment.Center);
             splitter.DragCompleted += (_, _) => TakeSizes(grid, split, parts);
             border = splitter;
         }
 
+        // Over the parts beside it (added to the grid after it, the next one would cover half of its grip).
+        Panel.SetZIndex(border, 1);
         if (split.Vertical)
         {
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -957,18 +978,63 @@ public sealed class DockManager
         bottom.Height = new GridLength(Math.Max(bottom.ActualHeight - moved, 1), GridUnitType.Star);
     }
 
-    private static ControlTemplate SplitterLook()
+    // How wide a dragged border's grip is across it (5.3-Stage2): laid out in 1 px, reaching into the parts beside it (SeamGrip).
+    internal const double SeamGrab = 7;
+
+    /// <summary>
+    /// Where a dragged border's grip lies (5.3-Stage2): <see cref="SeamGrab"/> px across the 1 px row (<paramref name="vertical"/>
+    /// split) or column it is laid out in, reaching 3 px into each part beside it; or all 6 into one part when the other is a
+    /// floating pane's (<paramref name="floatsBefore"/>: the part above or at its left; <paramref name="floatsAfter"/>: below or at
+    /// its right), whose native window covers whatever lies over its place, so that half of the grip would never take the pointer.
+    /// Its Margin, and where its 1 px line lies in it (the Thumb's line margin, the GridSplitter's Padding): on the seam either way.
+    /// </summary>
+    internal static (Thickness Grip, Thickness Line) SeamGrip(bool vertical, bool floatsBefore, bool floatsAfter)
+    {
+        const double reach = SeamGrab - 1;
+        var (back, ahead) = floatsBefore == floatsAfter ? (reach / 2, reach / 2) : floatsBefore ? (0.0, reach) : (reach, 0.0);
+        return vertical
+            ? (new Thickness(0, -back, 0, -ahead), new Thickness(0, back, 0, ahead))
+            : (new Thickness(-back, 0, -ahead, 0), new Thickness(back, 0, ahead, 0));
+    }
+
+    /// <summary>A dragged border's look: a 1 px line (PaneSeamBrush) across its grip, on the seam (<paramref name="line"/>: SeamGrip's).</summary>
+    private static ControlTemplate SplitterLook(Thickness line)
     {
         var template = new ControlTemplate(typeof(Thumb));
         var bar = new FrameworkElementFactory(typeof(Border));
         bar.SetValue(Border.BackgroundProperty, Brushes.Transparent);
-        var line = new FrameworkElementFactory(typeof(Border));
-        line.SetValue(FrameworkElement.HeightProperty, 2.0);
-        line.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
-        line.SetResourceReference(Border.BackgroundProperty, "ControlBorderBrush");
-        bar.AppendChild(line);
+        var seam = new FrameworkElementFactory(typeof(Border));
+        seam.SetValue(FrameworkElement.MarginProperty, line);
+        seam.SetResourceReference(Border.BackgroundProperty, "PaneSeamBrush");
+        bar.AppendChild(seam);
         template.VisualTree = bar;
         return template;
+    }
+
+    /// <summary>
+    /// Whether a part's <paramref name="edge"/> is a floating pane's (DockPane.Floats: the player), shown: its native window covers
+    /// anything laid over its place, so a border along that edge reaches into the other part only (SeamGrip).
+    /// </summary>
+    private bool FloatsAt(DockNode node, DockZone edge) =>
+        FloatsAt(node, edge, id => _panes.TryGetValue(id, out var pane) && pane.IsShown(), id => _panes.TryGetValue(id, out var pane) && pane.Floats);
+
+    /// <summary>
+    /// <see cref="FloatsAt(DockNode, DockZone)"/> for the panes <paramref name="shown"/> and <paramref name="floats"/> say (window-free,
+    /// for the goldens: layout-edge-to-edge). A group: one of its panes shown floats; a split across the edge (side by side, for the
+    /// lower edge): any part's does; a split along it: the outermost part on that side showing anything.
+    /// </summary>
+    internal static bool FloatsAt(DockNode node, DockZone edge, Func<string, bool> shown, Func<string, bool> floats)
+    {
+        if (node.IsGroup)
+            return node.Panes.Any(p => shown(p) && floats(p));
+
+        var along = node.Vertical == (edge is DockZone.Top or DockZone.Bottom);
+        if (!along)
+            return node.Children.Any(c => FloatsAt(c, edge, shown, floats));
+
+        var showing = node.Children.Where(c => c.AllPanes().Any(shown)).ToList();
+        var outer = edge is DockZone.Bottom or DockZone.Right ? showing.LastOrDefault() : showing.FirstOrDefault();
+        return outer is not null && FloatsAt(outer, edge, shown, floats);
     }
 
     /// <summary>After a border was dragged: the parts' sizes on screen become their shares.</summary>
@@ -1298,6 +1364,18 @@ public sealed class DockManager
 
         Changed?.Invoke();
     }
+
+    /// <summary>
+    /// Shows a pane that has just been switched on in front of its group once the windows have it: after the layout that
+    /// <see cref="ScheduleRebuild"/> asked for, in place (<see cref="Activate"/>, as a click on its tab), never a layout of its own.
+    /// A pane that is not shown then, or whose group has no host on screen, is left as it is.
+    /// </summary>
+    public void BringForward(string pane) => _main.Dispatcher.BeginInvoke(() =>
+    {
+        var group = _state.Main.GroupOf(pane) ?? _state.Side?.GroupOf(pane);
+        if (!_dragging && group is not null && _panes.TryGetValue(pane, out var known) && known.IsShown() && _groupHosts.Any(g => ReferenceEquals(g.Group, group)))
+            Activate(pane);
+    }, System.Windows.Threading.DispatcherPriority.Loaded);
 
     private void OpenTabMenu(FrameworkElement tab, string pane)
     {
@@ -1693,7 +1771,8 @@ public sealed class DockManager
     /// </summary>
     public static bool SameShape(DockLayoutState a, DockLayoutState b) => Shape(a.Main) == Shape(b.Main);
 
-    private static string Shape(DockNode node) => node.IsGroup
+    /// <summary>A part's shape as text (what SameShape compares): its groups' panes in name order, its splits' way round; also what the golden dock-standard-layout prints.</summary>
+    internal static string Shape(DockNode node) => node.IsGroup
         ? "[" + string.Join(",", node.Panes.Order(StringComparer.Ordinal)) + "]"
         : (node.Vertical ? "V(" : "H(") + string.Join(";", node.Children.Select(Shape)) + ")";
 

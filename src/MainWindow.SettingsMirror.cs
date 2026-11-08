@@ -50,8 +50,9 @@ public partial class MainWindow
         return (source, new Rect(0, 0, source.ActualWidth, source.ActualHeight), still, videoRect);
     }
 
-    // An element that is on show, laid out and large enough to be worth a picture; else null. Nothing here realizes a pane.
-    private static FrameworkElement? ShownForMirror(FrameworkElement element) =>
+    // An element that is on show, laid out and large enough to be worth a picture; else null (and null for a tab's part not made
+    // yet: the Export tab's body comes from its template, 5.3-Stage2). Nothing here realizes a pane.
+    private static FrameworkElement? ShownForMirror(FrameworkElement? element) =>
         element is { IsVisible: true, ActualWidth: >= 40, ActualHeight: >= 20 } ? element : null;
 
     /// <summary>

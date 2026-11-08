@@ -48,6 +48,7 @@ public static class BenchPointer {
     [StructLayout(LayoutKind.Sequential)] struct CursorInfo { public int Size; public int Flags; public IntPtr Cursor; public Point Where; }
     [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CursorInfo info);
     [DllImport("user32.dll")] static extern IntPtr LoadCursor(IntPtr instance, IntPtr id);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
     static readonly IntPtr AppStarting = LoadCursor(IntPtr.Zero, (IntPtr)32650), Wait = LoadCursor(IntPtr.Zero, (IntPtr)32514);
     // Milliseconds of busy pointer seen in the next `seconds`, polled every 20 ms.
     public static double Watch(double seconds) {
@@ -73,6 +74,18 @@ foreach ($build in $Builds) { if (-not (Test-Path $build)) { throw "No such buil
 if (Get-Process HandPeg -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }) { throw 'HandPeg is running: close it first.' }
 if (Test-Path $settings) { Copy-Item $settings $backup -Force }
 
+# The copy's main window: the one of its top-level windows that is a window (Process.MainWindowHandle can be an open popup's, a
+# Popup being a top-level window of its own, which has no WindowPattern and ignores WM_CLOSE: 5.3-Stage2 found every launch of a
+# fresh data folder ended that way, the start-up tour's card open).
+function Get-MainWindow([System.Diagnostics.Process]$process) {
+    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $process.Id)
+    foreach ($window in [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $condition)) {
+        $pattern = $null
+        if ($window.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$pattern)) { return $window }
+    }
+    [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+}
+
 function Read-NewLog([long]$from) {
     if (-not (Test-Path $log)) { return '' }
     $stream = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite')
@@ -87,10 +100,12 @@ function Invoke-Launch([string]$build) {
         # UI Automation's Close first (the close button, as a user presses it); then the window's own WM_CLOSE; only then the
         # process ended (which its crash sentinel reports as a crash: 5.2E, a test PC's five).
         $why = ''
-        try { [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle).GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close() }
+        $main = $null
+        try { $main = Get-MainWindow $process; $main.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close() }
         catch { $why = "UI Automation's Close failed: $($_.Exception.Message)" }
         if (-not $process.WaitForExit(8000)) {
-            [void]$process.CloseMainWindow()
+            $handle = if ($main) { [IntPtr]$main.Current.NativeWindowHandle } else { $process.MainWindowHandle }
+            [void][BenchPointer]::PostMessage($handle, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
             if (-not $process.WaitForExit(8000)) {
                 # What it had open (a dialog on top keeps the window from closing): its top-level windows, by title and class.
                 $open = ''

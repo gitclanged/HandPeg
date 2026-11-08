@@ -1,0 +1,8 @@
+# WaveformData.Combine (5.3-Stage2): several sounds as one, each pair the most any reaches at its gain and shift, against a brute force pair by pair.
+parts of 36001, 20003 and 7 pairs at gains 1, 0.5 and 2, shifted +3, -5 and 0 pairs: 35998 pairs at 80 a second; levels 4500, 563, 71
+every pair is the brute force's: the highest gain x high and the lowest gain x low of the parts playing there, silence (0) where none does
+a pair past 4 at its gain is held there (2.5 x 2 and 3 x 2 are 4 and 4)
+the highs never go under silence and the lows never over it (a part's high under 0, the hand-written part's low over 0)
+its folds are made as any sound's: each pair of levels 1 to 3, and RangeOf over 500 stretches, the brute force's
+one part at gain 1 and no shift is itself; a part with no gain is left out; no part left is null
+a part at another rate than the first's is left out: the sound is the other three's, pair for pair

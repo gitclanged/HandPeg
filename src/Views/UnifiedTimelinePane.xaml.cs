@@ -10,7 +10,7 @@ namespace HandPegApp.Views;
 /// The timeline pane (4.4): the drawn surface of every track (<see cref="Surface"/>), its ruler, scroll bars, zoom, tools and
 /// the inspector of what is selected. It edits nothing itself: every button goes out through <see cref="ToolClick"/>, its
 /// Tag saying what it is, to the main window, which holds the selection and the view (MainWindow.UnifiedTimeline.cs).
-/// What is its own: the rows' scroll bar following the surface, the Add Track flyout and the recycle bin's popup.
+/// What is its own: the rows' scroll bar following the surface, the Add Track and Quick FX flyouts and the recycle bin's popup.
 /// Made before the first frame in every layout, so making it does nothing but lay out its parts: the surface is empty
 /// until the window gives it rows. The row of tools is made with it (5.0, the user's Q5: zero pop-in); what is hidden at
 /// the first frame (Text Settings, the inspector, the Add Track and recycle bin flyouts: DetailsTemplate) is not made at
@@ -34,30 +34,40 @@ public partial class UnifiedTimelinePane : UserControl
     // What the inspector was asked to show before it was made: shown as it is made.
     private (string Name, object? Picture, object? Sound, object? Background)? _inspectLater;
 
+    // Quick FX (5.3-Stage2): its flyout of the Creator Hotbar's slots, made with DetailsTemplate (RealizeTools); the slots' names as the
+    // settings last gave them (ShowHotbar, before the first frame too), put on the slots once they are made; and whether a slot's
+    // right-click menu is open, which keeps the flyout open under it.
+    private HoverFlyout? _quickFxHover;
+    private FrameworkElement _quickFxPanel = null!;
+    private Panel? _slotsPanel;
+    private IReadOnlyList<Models.HotbarSlot> _slots = [];
+    private bool _slotMenuOpen;
+
     public UnifiedTimelinePane()
     {
         InitializeComponent();
 
         // The ruler and the time's scroll bar begin where the rows' headers end; the zoom's corner beside the ruler is as wide
-        // as the headers (the tracks' height is on the row of tools, with the other timeline tools).
+        // as the headers (the tracks' height is on the row of tools, with the other timeline tools). A hairline apart from the
+        // tracks (5.3-Stage2: 1, from 2).
         var headers = Surface.HeaderWidth;
         ZoomCorner.Width = headers;
-        Ruler.Margin = new Thickness(headers, 0, 0, 2);
-        TimeScroll.Margin = new Thickness(headers, 2, 0, 0);
+        Ruler.Margin = new Thickness(headers, 0, 0, 1);
+        TimeScroll.Margin = new Thickness(headers, 1, 0, 0);
 
         Surface.ExtentChanged += UpdateRowScroll;
         Surface.VerticalOffsetChanged += UpdateRowScroll;
         Surface.SizeChanged += (_, _) => UpdateRowScroll();
 
-        // Left out of a narrow row, Add Track is still in the "more" menu: as a menu of its kinds; the Creator Hotbar as a menu of its slots.
+        // Left out of a narrow row, Add Track is still in the "more" menu: as a menu of its kinds; Quick FX as a menu of its slots.
         Toolbar.MenuEntryFor = element => ReferenceEquals(element, AddLayerHost) ? ("Add Track", new Action(OpenKindsMenu))
-            : ReferenceEquals(element, Hotbar) ? ("Creator Hotbar", new Action(OpenHotbarMenu)) : null;
+            : ReferenceEquals(element, QuickFxHost) ? ("Quick FX", new Action(OpenHotbarMenu)) : null;
     }
 
     /// <summary>
     /// Makes what is under the tracks and hidden at the first frame (5.0, the user's Q5; DetailsTemplate): Text Settings, the
-    /// inspector, and the flyouts of the row of tools (Add Track's kinds, the recycle bin's list). The window calls it once it
-    /// is on screen (at ContextIdle after ContentRendered), so the first frame never waits for them; they start hidden and
+    /// inspector, and the flyouts of the row of tools (Add Track's kinds, Quick FX's slots, the recycle bin's list). The window
+    /// calls it once it is on screen (at ContextIdle after ContentRendered), so the first frame never waits for them; they start hidden and
     /// DetailsHost takes no room until something is selected, so nothing moves when they come. The row of tools itself is
     /// made with the pane. Once: again does nothing. Anything that needs them before (the "more" menu's Add Track, resting on
     /// the bin) makes them at once.
@@ -103,6 +113,14 @@ public partial class UnifiedTimelinePane : UserControl
         bin.Opened += BinPopup_Opened;
         bin.Closed += BinPopup_Closed;
         _textSettingsPanel.IsVisibleChanged += TextSettings_IsVisibleChanged;
+
+        // Quick FX's slots open as Add Track's kinds do, over its button, and stay open while a slot's right-click menu is (HoldQuickFxFor).
+        var quickFx = Part<Popup>("QuickFxPopup");
+        quickFx.PlacementTarget = QuickFxHost;
+        _quickFxPanel = Part<FrameworkElement>("QuickFxFlyoutPanel");
+        _slotsPanel = Part<Panel>("HotbarSlotsPanel");
+        _quickFxHover = new HoverFlyout(QuickFxHost, quickFx, _quickFxPanel) { HoldsWhileFocused = true, HoldsWhile = () => _slotMenuOpen };
+        LabelSlots();
 
         // The inspector's groups are bound to nothing until something is selected (never to the window's view model, by inheritance).
         _pictureGroup.DataContext = _soundGroup.DataContext = _backgroundGroup.DataContext = null;
@@ -175,23 +193,63 @@ public partial class UnifiedTimelinePane : UserControl
         }
     }
 
-    // ----- The Creator Hotbar (5.2.1) -----
+    // ----- The Creator Hotbar (5.2.1), behind the Quick FX button (5.3-Stage2) -----
 
     /// <summary>A slot's right-click (or the menu key on it): the window opens the menu choosing what it holds, at that slot.</summary>
     public event Action<int, FrameworkElement>? HotbarMenuRequested;
 
-    private IEnumerable<Button> HotbarSlots => Hotbar.Children.OfType<Button>();
+    // The slots, once the flyout is made (RealizeTools); none before.
+    private IEnumerable<Button> HotbarSlots => _slotsPanel?.Children.OfType<Button>() ?? [];
 
-    /// <summary>The hotbar's slots named for what they hold (their tooltips what they do), or the hotbar hidden. Cheap: before the first frame too.</summary>
+    /// <summary>
+    /// The Quick FX button shown or hidden, and its slots named for what they hold (their tooltips what they do). Cheap: before the
+    /// first frame too, when only the button is there; the names go on the slots as the flyout is made.
+    /// </summary>
     public void ShowHotbar(IReadOnlyList<Models.HotbarSlot> slots, bool shown)
     {
-        Hotbar.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
-        foreach (var (button, slot) in HotbarSlots.Zip(slots))
+        _slots = slots;
+        QuickFxHost.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+        if (!shown)
+            _quickFxHover?.Close();
+        LabelSlots();
+    }
+
+    private void LabelSlots()
+    {
+        foreach (var (button, slot) in HotbarSlots.Zip(_slots))
         {
             button.Content = slot.Label;
             button.ToolTip = $"{slot.About} Right-click to choose what this slot holds.";
             System.Windows.Automation.AutomationProperties.SetName(button, $"Creator Hotbar: {slot.Label}");
         }
+    }
+
+    /// <summary>The Undo and Redo buttons on the row of tools shown or not (AppSettings.ShowTimelineUndoRedo, off by default: 5.3-Stage2).</summary>
+    public void ShowUndoRedo(bool shown) => UndoButton.Visibility = RedoButton.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>
+    /// Keeps Quick FX's flyout open while a slot's right-click menu is (the pointer crossing into the menu leaves the flyout, which
+    /// would close it under the menu); it closes a moment after the menu does, unless the pointer is back on it.
+    /// </summary>
+    public void HoldQuickFxFor(ContextMenu menu)
+    {
+        _slotMenuOpen = true;
+        menu.Closed += (_, _) =>
+        {
+            _slotMenuOpen = false;
+            _quickFxHover?.Release();
+        };
+    }
+
+    // A slot's click: what it holds goes on (the window, by its Tag: Tool_Click's way). Clicked with the pointer, the keyboard goes
+    // back to the Quick FX button first: the slot took it as it was pressed, and the flyout, held open while it has the keyboard (for
+    // Down and Escape), would then stay open over the tracks after the pointer left it and the button. From the keyboard (Space or
+    // Enter on a slot) it stays on the slots.
+    private void HotbarSlot_Click(object sender, RoutedEventArgs e)
+    {
+        if (InputManager.Current.MostRecentInputDevice is not KeyboardDevice && _quickFxPanel.IsKeyboardFocusWithin)
+            Keyboard.Focus(QuickFxButton);
+        ToolClick?.Invoke(sender, e);
     }
 
     private void HotbarSlot_ContextMenuOpening(object sender, ContextMenuEventArgs e)
@@ -201,9 +259,39 @@ public partial class UnifiedTimelinePane : UserControl
             HotbarMenuRequested?.Invoke(index, button);
     }
 
-    /// <summary>The slots as a menu at the pointer: the hotbar's entry of the "more" menu, when the tools' row has no room for it.</summary>
+    // A click on Quick FX opens its slots at once (resting on it opens them too: HoverFlyout).
+    private void QuickFx_Click(object sender, RoutedEventArgs e)
+    {
+        RealizeTools();
+        _quickFxHover?.Open();
+    }
+
+    // From the keyboard: Down (or Alt+Down) on the button opens the slots, the first one focused; Escape closes them again.
+    private void QuickFx_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if ((e.Key == Key.System ? e.SystemKey : e.Key) != Key.Down)
+            return;
+
+        e.Handled = true;
+        RealizeTools();
+        _quickFxHover?.Open();
+        Dispatcher.BeginInvoke(() => _quickFxPanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)), DispatcherPriority.Loaded);
+    }
+
+    private void QuickFxFlyout_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape)
+            return;
+
+        e.Handled = true;
+        _quickFxHover?.Close();
+        Keyboard.Focus(QuickFxButton);
+    }
+
+    /// <summary>The slots as a menu at the pointer: Quick FX's entry of the "more" menu, when the tools' row has no room for it.</summary>
     private void OpenHotbarMenu()
     {
+        RealizeTools();
         var menu = new ContextMenu { Placement = PlacementMode.MousePoint };
         foreach (var slot in HotbarSlots)
         {

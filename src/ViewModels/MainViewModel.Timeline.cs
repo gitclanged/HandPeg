@@ -1149,8 +1149,8 @@ public partial class MainViewModel
 
     // Whether the user has touched HandPeg (a key, a click, the wheel, a drop) since then, or an edit has taken a step of
     // Undo (one the user set going earlier, finishing in the background). What changes before either is not theirs (a probe,
-    // a scan or the player settling after the load) and never counts as an edit (4.3E: a project opened and closed again,
-    // with Live Preview on, must never ask to be saved).
+    // a scan or the player settling after the load) and never counts as an edit (4.3E: a project opened and closed again
+    // must never ask to be saved).
     private bool _touchedSinceSaved;
 
     private string Fingerprint()

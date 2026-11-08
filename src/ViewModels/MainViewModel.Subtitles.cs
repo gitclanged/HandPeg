@@ -486,7 +486,7 @@ public partial class MainViewModel
         if (!value)
             RefreshSubtitlePreview();
         if (!_isBackgroundWorker)
-            InvalidateLiveFilter();
+            InvalidatePreviewState();
     }
 
     /// <summary>Has the main player show the subtitle track as it is now.</summary>

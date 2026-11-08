@@ -39,8 +39,8 @@ internal sealed record OwnDotNet(CopyKind Kind, string Folder, string Where);
 /// Files\dotnet\x64). A root counts only with a hostfxr.dll of this process's processor and both Microsoft.NETCore.App and
 /// Microsoft.WindowsDesktop.App of a released version of major 10 (HandPeg.runtimeconfig.json asks for 10.0.0, rolling forward within 10,
 /// and never to a preview). Only directories and file headers are looked at: no process, no network. Every root found is kept in order
-/// (<see cref="AllUsable"/>), so that one hostfxr refuses passes to the next. Shared with the golden tests (portable-bootstrap), which
-/// build layouts on disk and ask.
+/// (<see cref="AllUsable"/>), so that one hostfxr refuses passes to the next. An installed copy runs on the newer of its own .NET and the
+/// PC's (<see cref="InOrder"/>, Pass 5.3-Stage2). Shared with the golden tests (portable-bootstrap), which build layouts on disk and ask.
 /// </summary>
 internal static class DotNetRoots
 {
@@ -135,6 +135,73 @@ internal static class DotNetRoots
     }
 
     /// <summary>
+    /// Every usable root in the order to try (Pass 5.3-Stage2, the user's answer): an installed copy, and any other copy that is not a
+    /// portable one (its own root is %LOCALAPPDATA%\HandPeg\dotnet, which installed copies share), runs on whichever is newer of its own
+    /// .NET (<paramref name="own"/>'s root, or 5.2.0's layout in <paramref name="app"/>) and the PC's first (DOTNET_ROOT_&lt;ARCH&gt;,
+    /// DOTNET_ROOT, the registered .NET, Program Files), its own on a tie: a .NET the PC's updates keep patched is taken over the copy
+    /// HandPeg downloaded for itself once it is newer. A portable zip and a portable.txt or --portable copy keep their own first (they
+    /// carry it). The rest follow in their order, each once, as where to go when hostfxr refuses one. Looked at lazily: no further than
+    /// the PC's first root.
+    /// </summary>
+    public static IEnumerable<DotNetRoot> InOrder(OwnDotNet own, string app, IEnumerable<(string Folder, string Where)> candidates)
+    {
+        using var roots = AllUsable(candidates).GetEnumerator();
+        if (own.Kind is CopyKind.Portable or CopyKind.SelfContained)
+        {
+            while (roots.MoveNext())
+                yield return roots.Current;
+            yield break;
+        }
+
+        // The candidates list this copy's own places first: those found are held back until the PC's first root is found (or none is).
+        var ownFolders = new[] { own.Folder, app }.Select(Comparable).ToArray();
+        var held = new List<DotNetRoot>();
+        DotNetRoot? pc = null;
+        while (pc is null && roots.MoveNext())
+        {
+            if (ownFolders.Contains(Comparable(roots.Current.Folder), StringComparer.OrdinalIgnoreCase))
+                held.Add(roots.Current);
+            else
+                pc = roots.Current;
+        }
+
+        if (pc is not null && held.Count > 0 && RuntimeVersion(pc.Folder) is { } theirs && (RuntimeVersion(held[0].Folder) is not { } mine || theirs > mine))
+        {
+            yield return pc;
+            pc = null;
+        }
+
+        foreach (var root in held)
+            yield return root;
+        if (pc is not null)
+            yield return pc;
+        while (roots.MoveNext())
+            yield return roots.Current;
+    }
+
+    /// <summary>
+    /// The .NET a root runs HandPeg on: the lower of its newest released 10.x Microsoft.NETCore.App and Microsoft.WindowsDesktop.App
+    /// (hostfxr takes each framework's newest patch; a Desktop Runtime puts both at one version). Null when either is missing.
+    /// </summary>
+    public static Version? RuntimeVersion(string folder)
+    {
+        try
+        {
+            if (FrameworkFolder(folder, "Microsoft.NETCore.App") is not { } core || FrameworkFolder(folder, "Microsoft.WindowsDesktop.App") is not { } desktop
+                || VersionOf(Path.GetFileName(core)) is not { } coreVersion || VersionOf(Path.GetFileName(desktop)) is not { } desktopVersion)
+                return null;
+            return coreVersion < desktopVersion ? coreVersion : desktopVersion;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    // A folder as roots are compared: full, without a trailing separator (in any letter case, by the caller).
+    private static string Comparable(string folder) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
+
+    /// <summary>
     /// A folder as a root HandPeg can run on: its hostfxr.dll (the newest under host\fxr, else one beside it), built for this process's
     /// processor (the x64 and ARM64 installers share %LOCALAPPDATA%\HandPeg, so the other's .NET may be there), and both frameworks of
     /// major 10 as released versions; null otherwise.
@@ -198,9 +265,12 @@ internal static class DotNetRoots
     // ("10.0.0-rc.2.25502.107") never counts: HandPeg.runtimeconfig.json asks for the release 10.0.0, which hostfxr never rolls forward to a
     // pre-release of (10.0.0-rc.2 is lower than 10.0.0), so a root holding only such frameworks would fail every start. (A hostfxr of any
     // version will do: its folder's name is read as its version, dash or not.)
-    private static bool HasFramework(string folder, string name) =>
+    private static bool HasFramework(string folder, string name) => FrameworkFolder(folder, name) is not null;
+
+    // The folder of the newest such version of a framework; null for none.
+    private static string? FrameworkFolder(string folder, string name) =>
         Newest(Path.Combine(folder, "shared", name), v => v.Major == Major,
-            dir => !Path.GetFileName(dir).Contains('-') && Directory.EnumerateFileSystemEntries(dir).Any()) is not null;
+            dir => !Path.GetFileName(dir).Contains('-') && Directory.EnumerateFileSystemEntries(dir).Any());
 
     /// <summary>The subfolder of <paramref name="parent"/> named for the highest version that <paramref name="wanted"/> takes and <paramref name="holds"/> holds; null for none.</summary>
     private static string? Newest(string parent, Func<Version, bool> wanted, Func<string, bool> holds)

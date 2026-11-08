@@ -27,7 +27,7 @@ public partial class MainWindow
     // it goes (5.2-AuditB: a file's streams are Sub-Lanes of sound clips like any other); a video clip's own sound, while it
     // is unlinked from its picture; the captions. Everything is placed by one sum:
     // seconds times the surface's pixels per second. While a block is being dragged only that block is moved; what it
-    // stands for is changed when it is let go, which is also when everything else (the command, Live Preview, Undo) hears of it.
+    // stands for is changed when it is let go, which is also when everything else (the command, the player, Undo) hears of it.
     //
     // The rows are made again after a change, and when the zoom changes the scale; as the video plays only the playhead
     // slides. The pictures in a block (its file's frames, its sound) are cut from pictures already in memory and laid on
@@ -340,6 +340,10 @@ public partial class MainWindow
         // The Timeline Settings switches (5.3): the blocks' frames and their waveforms (a sound clip's, a video clip's own, an unlinked
         // sound's, and so the closed sound stack's one bar, which draws its lanes' sound) are left off the blocks while they are off.
         var (filmstrips, waveforms) = (settings.ShowClipFilmstrips, settings.ShowClipWaveforms);
+
+        // A waveform is as tall as it is heard (5.3-Stage2): its clip's gain and its track's together, as the sound engine mixes it, so a
+        // lane's own waveform and its share of its video's (StackSound) agree.
+        var trackGainDb = _viewModel.TrackOfRow(layer)?.GainDb ?? 0;
         foreach (var clip in clipsOnTrack)
         {
             var (from, to) = clip.GetSpan(seconds);
@@ -375,7 +379,7 @@ public partial class MainWindow
                 Film = clip.IsHidden || !filmstrips ? null
                     : clip.IsVideoFile && !clip.IsLoading ? FilmOf(clip.Filmstrip, clip.ImageWidth, clip.ImageHeight, clip.MediaOffset, clip.MediaDuration, speed)
                     : null,
-                SoundWindow = showsSound && waveforms ? SoundOf(clip.Waveform, clip.MediaOffset, duration, speed, clip.GainDb) : null,
+                SoundWindow = showsSound && waveforms ? SoundOf(clip.Waveform, clip.MediaOffset, duration, speed, clip.GainDb + trackGainDb) : null,
                 Keys = ClipKeys(clip, 0, scale)?.ToList(),
                 Beats = BeatTicks(model, from, scale),
                 Badge = BadgeOf(speed, slip, BadgeEffects(clip, CountsAsCutout(_viewModel, clip), settings)),
@@ -459,7 +463,7 @@ public partial class MainWindow
                     Fill = clip.IsHidden || clip.IsMuted ? OffClipBrush : LayerAudioBrush,
                     Clip = new LayerSound(clip),
                     Family = model is null ? null : new BlockFamily(("sound", model.Id), model.Id, true, BlockEdges.Start | BlockEdges.End),
-                    SoundWindow = waveforms ? SoundOf(clip.Waveform, clip.MediaOffset, duration, speed, clip.GainDb) : null,
+                    SoundWindow = waveforms ? SoundOf(clip.Waveform, clip.MediaOffset, duration, speed, clip.GainDb + trackGainDb) : null,
                     Beats = BeatTicks(model, from + slip, scale),
                     Badge = BadgeOf(1, slip),
                     CanDrag = AlwaysDraggable,
@@ -489,6 +493,213 @@ public partial class MainWindow
 
     /// <summary>A gain in decibels as how many times as tall its sound is drawn (1 for 0 dB), within reason.</summary>
     private static double DecibelScale(double gainDb) => Math.Clamp(Math.Pow(10, gainDb / 20), 0, 8);
+
+    // ----- A video's sound stack as one waveform (5.3-Stage2) -----
+    // A video clip with a sound stack (its file's streams on Sub-Lanes, its unlinked sound) shows what that stack plays as one
+    // waveform across its block (the user's call, where 5.1 showed its pictures alone): its audible lanes' sound combined, the most
+    // any of them reaches (WaveformData.Combine), each at its clip's and its track's gain. Worked out on the rows once they are in
+    // their stacks, by the rules the closed stack's one bar draws by: a lane not muted (its own switch, or its video track's master
+    // mute), a block with a sound. A parent hidden or switched off still shows it: its lanes keep playing (its switch and its track's
+    // eye leave its Sub-Lanes' sound as it is). Combined on the parent's own file time: with every lane under the whole of its clip,
+    // every clip of one file shares one combined sound across splits and zooms while the gains and shifts stay the same, and its
+    // waveform tiles are drawn again after an edit, never made again; with a lane under part of its clip, the combined sound is that
+    // clip's stretch of the file alone (Law 2: no clip holds a whole file's sound of its own).
+
+    // The combined sounds by what they were made of: those the last layout of the rows drew (looked in first, so a timeline of more
+    // files than the few kept never makes them all again at every edit) and those this one draws, and a few kept besides (an hour of
+    // one is about 2.6 MB, Law 2).
+    private static Dictionary<StackSoundKey, WaveformData> _stackSoundsDrawn = [], _stackSoundsDrawing = [];
+    private static readonly LruCache<StackSoundKey, WaveformData> StackSounds = new(12);
+
+    /// <summary>
+    /// One part of a combined stack sound as it is kept: its peaks (by identity), its gain in thousandths, its shift in pairs, and the
+    /// stretch of its own pairs it plays (from First up to End; int.MinValue and int.MaxValue for all of it, a lane under the whole block).
+    /// </summary>
+    private readonly record struct StackSoundPart(WaveformData Data, int GainMilli, int ShiftPairs, int First, int End);
+
+    /// <summary>
+    /// What a combined stack sound is made of, part by part in order, and the stretch of the parent's file it covers in its pairs (From up
+    /// to To; null for all of it, while every part is a lane under the whole block): two are the same when every part and the stretch are.
+    /// </summary>
+    private sealed class StackSoundKey(StackSoundPart[] parts, (int From, int To)? window) : IEquatable<StackSoundKey>
+    {
+        public StackSoundPart[] Parts { get; } = parts;
+
+        public (int From, int To)? Window { get; } = window;
+
+        public bool Equals(StackSoundKey? other) => other is not null && Window == other.Window && Parts.AsSpan().SequenceEqual(other.Parts);
+
+        public override bool Equals(object? obj) => Equals(obj as StackSoundKey);
+
+        public override int GetHashCode()
+        {
+            var hash = new HashCode();
+            hash.Add(Window);
+            foreach (var part in Parts)
+                hash.Add(part);
+            return hash.ToHashCode();
+        }
+    }
+
+    /// <summary>
+    /// Gives each video block with a sound stack what that stack plays, as one sound (<see cref="TimelineBlock.StackSound"/>), once the
+    /// rows are in their stacks (BuildTimelineRows, while the waveforms and Show Linked Audio are on): from the blocks of its audible
+    /// lanes, each found by its Family's parent (its clip's parent clip), at <paramref name="scale"/> pixels a second on a sequence of
+    /// <paramref name="seconds"/>. Every mute, gain or waveform that changes lays the rows out again (ScheduleClipRedraw), so this
+    /// follows them with nothing of its own to watch. A parent hidden or switched off keeps its stack sound (its lanes still play). What
+    /// the last pass drew and this one does not is let go (no rows: all of it, an empty timeline's too).
+    /// </summary>
+    internal static void GiveStacksTheirSound(IReadOnlyList<TimelineRow> rows, double scale, double seconds)
+    {
+        if (scale > 0)
+        {
+            foreach (var row in rows)
+                Give(row);
+        }
+
+        (_stackSoundsDrawn, _stackSoundsDrawing) = (_stackSoundsDrawing, _stackSoundsDrawn);
+        _stackSoundsDrawing.Clear();
+
+        void Give(TimelineRow row)
+        {
+            // The audible lanes' blocks, by the clip they belong to: a lane not muted (a muted video track mutes them all), each block
+            // with a sound and not muted by its own switch (an unlinked sound's).
+            Dictionary<object, List<(double Start, WaveWindow Sound)>>? heard = null;
+            if (row.Kind == TimelineRowKind.Video && (row.State & RowSwitches.Muted) == 0)
+            {
+                foreach (var lane in row.Children)
+                {
+                    if (lane.Stack != ChildStack.Audio || (lane.State & RowSwitches.Muted) != 0)
+                        continue;
+
+                    foreach (var block in lane.Blocks)
+                    {
+                        if (block.Family?.Parent is not { } parent || block.SoundWindow is not { } sound || block.Clip is LayerSound { Layer.IsMuted: true })
+                            continue;
+
+                        heard ??= new();
+                        if (!heard.TryGetValue(parent, out var sounds))
+                            heard[parent] = sounds = [];
+                        sounds.Add((block.Left / scale, sound));
+                    }
+                }
+            }
+
+            // Each video block whose clip they belong to, hidden or switched off as well (its lanes are heard all the same).
+            if (heard is not null)
+            {
+                foreach (var block in row.Blocks)
+                {
+                    if (block.Clip is not Layer { IsLoading: false } clip || block.Family?.Key is not { } key || !heard.TryGetValue(key, out var sounds))
+                        continue;
+
+                    var (from, to) = clip.GetSpan(seconds);
+                    block.StackSound = StackSoundOf(block.Left / scale, clip.MediaOffset, ClipSpeed(clip), to - from, sounds);
+                }
+            }
+
+            foreach (var child in row.Children)
+                Give(child);
+        }
+    }
+
+    /// <summary>
+    /// A video block's stack sound (<see cref="TimelineBlock.StackSound"/>): its lanes' sounds combined on its own file time, its file
+    /// from <paramref name="mediaFrom"/> on for <paramref name="duration"/> seconds of the timeline at <paramref name="speed"/>, the block
+    /// starting at <paramref name="start"/> (seconds). Each child is where its block starts (seconds) and the sound it shows. One at
+    /// another speed is left out (never resampled: a file's streams take their video's speed), and so is one playing nowhere under the
+    /// block. While every lane is under the whole block, the combined sound is of their whole files, so every clip of a file shares one;
+    /// with one under part of it, the combined sound covers only the block's own stretch of its file (laid from there), each lane cut to
+    /// what it plays in it, so no clip holds a whole file's for itself (Law 2). The same parts give the same combined sound, kept
+    /// (StackSounds). Null for nothing audible.
+    /// </summary>
+    internal static WaveWindow? StackSoundOf(double start, double mediaFrom, double speed, double duration, IReadOnlyList<(double Start, WaveWindow Sound)> children)
+    {
+        if (!(speed > 0) || !(duration > 0) || children.Count == 0)
+            return null;
+
+        var mediaTo = mediaFrom + duration * speed;
+        List<StackSoundPart>? parts = null;
+        foreach (var (childStart, sound) in children)
+        {
+            var data = sound.Data;
+            var pairsPerSecond = data.PairsPerSecond;
+            if (data.Count == 0 || Math.Abs(sound.Speed - speed) > 1e-6 || !(sound.GainScale > 0))
+                continue;
+
+            // The parent's file second s is the lane's own s + shift; where the lane plays, on the parent's file time.
+            var shift = sound.MediaFrom - mediaFrom - (childStart - start) * speed;
+            var (playsFrom, playsTo) = (sound.MediaFrom - shift, sound.MediaTo - shift);
+            if (!(playsTo > mediaFrom && playsFrom < mediaTo) || !(Math.Abs(shift * pairsPerSecond) < 1 << 30))
+                continue;
+
+            var pair = 1 / pairsPerSecond;
+            var whole = playsFrom <= mediaFrom + pair && playsTo >= mediaTo - pair;
+            (parts ??= []).Add(new StackSoundPart(data, (int)Math.Round(sound.GainScale * 1000), (int)Math.Round(shift * pairsPerSecond),
+                whole ? int.MinValue : (int)Math.Floor(sound.MediaFrom * pairsPerSecond), whole ? int.MaxValue : (int)Math.Ceiling(sound.MediaTo * pairsPerSecond)));
+        }
+
+        if (parts is null)
+            return null;
+
+        // With a lane under part of the block, the block's own stretch of its file alone: from its pair at mediaFrom up to the one at
+        // mediaTo (counted at the first part's rate), the combined pair 0 being the first of them.
+        (int From, int To)? window = null;
+        var laidFrom = 0.0;
+        if (parts.Exists(p => p.First != int.MinValue))
+        {
+            var pairsPerSecond = parts[0].Data.PairsPerSecond;
+            if (!(Math.Abs(mediaFrom * pairsPerSecond) < 1 << 30 && Math.Abs(mediaTo * pairsPerSecond) < 1 << 30))
+                return null;
+            window = ((int)Math.Floor(mediaFrom * pairsPerSecond), (int)Math.Ceiling(mediaTo * pairsPerSecond));
+            laidFrom = window.Value.From / pairsPerSecond;
+        }
+
+        var key = new StackSoundKey([.. parts], window);
+        if (!_stackSoundsDrawing.TryGetValue(key, out var combined) && !_stackSoundsDrawn.TryGetValue(key, out combined) && !StackSounds.TryGetValue(key, out combined))
+        {
+            if (CombinedStackSound(key) is not { } made)
+                return null;
+            StackSounds[key] = combined = made;
+        }
+
+        _stackSoundsDrawing[key] = combined;
+        return new WaveWindow(combined, mediaFrom - laidFrom, mediaTo - laidFrom, speed);
+    }
+
+    /// <summary>
+    /// A stack sound made: each part at its gain and shift; with a stretch of the parent's file (the key's Window: a lane under part of
+    /// its block), each part cut first to the pairs of its own stretch that play in it.
+    /// </summary>
+    private static WaveformData? CombinedStackSound(StackSoundKey key)
+    {
+        var parts = new List<(WaveformData Data, double GainFactor, double OffsetShift)>(key.Parts.Length);
+        foreach (var (data, gainMilli, shiftPairs, first, end) in key.Parts)
+        {
+            var pairsPerSecond = data.PairsPerSecond;
+            if (key.Window is not { } window)
+            {
+                parts.Add((data, gainMilli / 1000.0, shiftPairs / pairsPerSecond));
+                continue;
+            }
+
+            // Its pairs from first up to end (all of them for a lane under the whole block) that play in the stretch: the combined
+            // pair i is the parent's pair window.From + i, its own pair window.From + shift + i. One at another rate than the stretch
+            // was counted at is left out, as Combine leaves it out.
+            if (pairsPerSecond != key.Parts[0].Data.PairsPerSecond)
+                continue;
+
+            var lows = data.LowsAt(0);
+            var highs = data.HighsAt(0);
+            var count = Math.Min(lows.Length, highs.Length);
+            var at = (long)window.From + shiftPairs;
+            var (from, to) = ((int)Math.Clamp(Math.Max(first, at), 0, count), (int)Math.Clamp(Math.Min(end, (long)window.To + shiftPairs), 0, count));
+            if (to > from)
+                parts.Add((new WaveformData(lows[from..to].ToArray(), highs[from..to].ToArray(), data.Fill, pairsPerSecond), gainMilli / 1000.0, (at - from) / pairsPerSecond));
+        }
+
+        return WaveformData.Combine(parts);
+    }
 
     /// <summary>How many times as fast as recorded a clip runs; 1 for a clip that has no speed of its own.</summary>
     private static double ClipSpeed(Layer clip) => clip.HasSpeed ? Math.Clamp(clip.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;

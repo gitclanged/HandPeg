@@ -15,8 +15,8 @@ public partial class MainWindow
     // The player is the GPU preview engine (MainWindow.GpuPreview.cs; the only one since 5.0-Verify, libmpv is gone): the
     // compositor draws the sequence's scene plan into the video surface, the WASAPI mixer plays its sound, and the mixer's
     // clock is the playhead. Whatever moves or changes the player goes through the members here (PlayerSeek, PlayerSetPause,
-    // PlayerIsPlaying, TakePlayerPosition, ApplyLiveFilter and ScheduleLiveFilter, OpenInPlayer), which keep their names
-    // from the libmpv days so that their callers need not know: an edit is a new scene plan, a jump an exact seek.
+    // PlayerIsPlaying, TakePlayerPosition, OpenInPlayer), which keep their names from the libmpv days so that their callers
+    // need not know, and ScheduleGpuState (MainWindow.GpuPreview.cs): an edit is a new scene plan, a jump an exact seek.
 
     private bool _shellDrawn;
 
@@ -142,13 +142,6 @@ public partial class MainWindow
         EnsureGpuEngine();
     }
 
-    // ----- Live Preview -----
-
-    /// <summary>Something the picture or the sound is made from changed: the engine gets the sequence again within a frame.</summary>
-    private void ScheduleLiveFilter() => ScheduleGpuState();
-
-    private void ApplyLiveFilter() => ScheduleGpuState();
-
     // ----- Following the player -----
     // While it plays, the position is read once per screen refresh (CompositionTarget.Rendering): one look per frame
     // drawn, and nothing queued behind a busy UI thread. Paused, the refresh is not followed (it would keep WPF drawing
@@ -187,7 +180,7 @@ public partial class MainWindow
             return;
 
         // A track played on its own is played without the layers' sound (the engine's program is built for it).
-        ScheduleLiveFilter();
+        ScheduleGpuState();
 
         // The button is a play button: choosing a track starts it, and letting go of the last one pauses.
         if (_viewModel.SoloedTracks.Count > 0 && !PlayerIsPlaying)

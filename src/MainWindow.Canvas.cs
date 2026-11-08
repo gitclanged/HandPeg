@@ -84,8 +84,9 @@ public partial class MainWindow
         }
 
         CropCanvas.Visibility = mode == OverlayMode.None ? Visibility.Collapsed : Visibility.Visible;
-        ApplyLiveFilter();
 
+        // The player shows the clip's own file while a rectangle is drawn on it, the composite otherwise (PushGpuState).
+        ScheduleGpuState();
 
         // Red for the crop, gold for a UI layer, so it is clear what is being drawn.
         var colour = mode == OverlayMode.DrawTarget ? Colors.Gold : Colors.Red;

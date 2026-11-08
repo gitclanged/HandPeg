@@ -31,6 +31,18 @@ public partial class MainWindow
     private string _exportSection = SectionTabs[0].Id;
     private (Panel Parent, int Index)? _destinationHome;
 
+    // The Export tab's named parts, found as its template is made (RealizeTabContent, 5.3-Stage2: the tab is not built with the
+    // window). The three reached before that (UpdateTabVisibility before the first frame, the Settings mirror) are null until then;
+    // the rest are reached only from inside the tab, once it is made.
+    private DockPanel? ExportPanel;
+    private Border? ExportBarSlot;
+    private StackPanel? ExportSections;
+    private RadioButton EasyExportButton = null!, AdvancedExportButton = null!;
+    private ScrollViewer EasyExportPanel = null!;
+    private WrapPanel EasyExportCards = null!;
+    private Border ExportSectionHost = null!;
+    private TextBlock ExportNoSections = null!;
+
     private static bool IsSection(string id) => SectionTabs.Any(s => s.Id == id);
 
     private TabItem TabOf(string id) => _tabPanes.First(t => t.Id == id).Tab;
@@ -116,7 +128,21 @@ public partial class MainWindow
         if (inExport.Count > 0 && inExport.All(s => s.Id != _exportSection))
             _exportSection = inExport[0].Id;
 
-        ExportSections.Children.Clear();
+        FillExportSectionButtons(inExport);
+        if (_dock.IsRealized(ExportId))
+            FillExportSection();
+    }
+
+    /// <summary>
+    /// The Export tab's buttons for the sections it holds (none for a single one, nor in Easy Social Export). They are the tab's:
+    /// until it is made (5.3-Stage2) there is nowhere to put them, and ExportContent makes them with it.
+    /// </summary>
+    private void FillExportSectionButtons(List<(string Id, string Label)> inExport)
+    {
+        if (ExportSections is not { } sections)
+            return;
+
+        sections.Children.Clear();
         foreach (var (id, label) in inExport)
         {
             var button = new RadioButton { Content = label, GroupName = "ExportSection", IsChecked = id == _exportSection };
@@ -127,13 +153,11 @@ public partial class MainWindow
                 _exportSection = id;
                 FillExportSection();
             };
-            ExportSections.Children.Add(button);
+            sections.Children.Add(button);
         }
 
         // A single section needs no button to choose it; Easy Social Export shows none.
-        ExportSections.Visibility = inExport.Count > 1 && !EasyExport ? Visibility.Visible : Visibility.Collapsed;
-        if (_dock.IsRealized(ExportId))
-            FillExportSection();
+        sections.Visibility = inExport.Count > 1 && !EasyExport ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>
@@ -178,14 +202,9 @@ public partial class MainWindow
         EasyExportPanel.Visibility = easy ? Visibility.Visible : Visibility.Collapsed;
         ExportSectionHost.Visibility = easy ? Visibility.Collapsed : Visibility.Visible;
         if (easy)
-        {
-            ExportSections.Visibility = Visibility.Collapsed;
             MakeSocialCards();
-        }
-        else
-        {
-            ExportSections.Visibility = ExportSections.Children.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
-        }
+        if (ExportSections is { } sections)
+            sections.Visibility = !easy && sections.Children.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void ExportMode_Checked(object sender, RoutedEventArgs e)
@@ -286,17 +305,24 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The Export tab's pane content, made when first shown (or at idle): its middle filled then.</summary>
+    /// <summary>
+    /// The Export tab's pane content, made when first shown (or at idle; RealizeTabContent finds its parts): its section buttons,
+    /// the destination bar parked until now, and its middle, filled then. The dock counts it as made only once this returns,
+    /// which is why these are called here.
+    /// </summary>
     private FrameworkElement ExportContent()
     {
         var content = RealizeTabContent(ExportTab);
+        FillExportSectionButtons(SectionTabs.Where(s => TabOf(s.Id).Visibility != Visibility.Visible).ToList());
+        PlaceDestinationBar();
         FillExportSection();
         return content;
     }
 
     /// <summary>
     /// Save As, Browse, Add to Queue and Start Encode: in the Export tab while it is shown, else at the bottom of the
-    /// window while Export is hidden.
+    /// window while Export is hidden. While Export is shown but not made yet (5.3-Stage2: made when first shown, or at idle)
+    /// the bar is out of the window, parked, as it was inside the unmade tab before; ExportContent puts it in.
     /// </summary>
     private void PlaceDestinationBar()
     {
@@ -304,18 +330,27 @@ public partial class MainWindow
         if (_destinationHome is not { } place)
             return;
 
+        // Out of the window for a moment (parked, or moved): its data stays the window's, as a section's does (SectionContent).
+        if (DestinationBar.ReadLocalValue(DataContextProperty) == DependencyProperty.UnsetValue)
+            DestinationBar.SetBinding(DataContextProperty, new Binding(nameof(DataContext)) { Source = this });
+
         if (ExportTab.Visibility == Visibility.Visible)
         {
-            if (ReferenceEquals(DestinationBar.Parent, ExportBarSlot))
+            if (ExportBarSlot is not null && ReferenceEquals(DestinationBar.Parent, ExportBarSlot))
                 return;
-            place.Parent.Children.Remove(DestinationBar);
+            if (ReferenceEquals(DestinationBar.Parent, place.Parent))
+                place.Parent.Children.Remove(DestinationBar);
             DestinationBar.Margin = new Thickness(0);
-            ExportBarSlot.Child = DestinationBar;
+            if (ExportBarSlot is { } slot)
+                slot.Child = DestinationBar;
         }
         else if (!ReferenceEquals(DestinationBar.Parent, place.Parent))
         {
-            ExportBarSlot.Child = null;
-            DestinationBar.Margin = new Thickness(0, 10, 0, 0);
+            if (ExportBarSlot is { } slot && ReferenceEquals(slot.Child, DestinationBar))
+                slot.Child = null;
+
+            // Right under the panes (5.3-Stage2): a hairline apart, no band.
+            DestinationBar.Margin = new Thickness(0, 1, 0, 0);
             place.Parent.Children.Insert(Math.Min(place.Index, place.Parent.Children.Count), DestinationBar);
         }
 

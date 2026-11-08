@@ -20,6 +20,8 @@ public static class WaveformTests
             "# WaveformData's mip pyramid (4.4): RangeOf, Range and Envelope against a brute-force min/max over seeded random peaks.", Mips);
         yield return Case("deadair-from-peaks",
             "# Remove Dead Air's silences from the peaks in memory (5.1-CleanupStudioAndFfmpegPurge), and the peaks read natively, each track in one pass, from a WAV.", DeadAir);
+        yield return Case("waveform-combine",
+            "# WaveformData.Combine (5.3-Stage2): several sounds as one, each pair the most any reaches at its gain and shift, against a brute force pair by pair.", Combine);
     }
 
     private static GraphResult Case(string golden, string header, Action<StringBuilder, List<string>> body)
@@ -257,6 +259,126 @@ public static class WaveformTests
 
         Array.Sort(times);
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"  info  waveform-mips: Envelope of {seconds:0} s into 1500 columns, median {times[times.Length / 2]:0.000} ms"));
+    }
+
+    private static void Combine(StringBuilder text, List<string> problems)
+    {
+        // Three sounds of uneven lengths, so every part has a ragged tail past its whole vectors (the last shorter than any vector), at
+        // gains 1, 0.5 and 2, shifted 3 pairs on, 5 back and not at all. The first two swell and fade with rare loud spikes (2.5, past
+        // what gain 2 may reach) and a few highs under 0; the third is written by hand, its loud pairs past MostCombined at gain 2.
+        const double rate = Waveforms.PeaksPerSecond;
+        var random = new Random(5302);
+        WaveformData Sound(int count, double pairsPerSecond)
+        {
+            var (lows, highs) = (new float[count], new float[count]);
+            for (var i = 0; i < count; i++)
+            {
+                var swell = Math.Pow(Math.Abs(Math.Sin(i / 700.0)), 2);
+                highs[i] = (float)(swell * (random.NextDouble() - 0.05));
+                lows[i] = (float)(-swell * random.NextDouble());
+                if (random.Next(400) == 0)
+                    (lows[i], highs[i]) = (-2.5f, 2.5f);
+            }
+
+            return new WaveformData(lows, highs, Brushes.White, pairsPerSecond);
+        }
+
+        var hand = new WaveformData([-0.2f, -2.5f, -0.1f, -0.3f, -1f, -2.2f, 0.1f], [0.2f, 2.5f, 0.4f, -0.1f, 1f, 0.3f, 3f], Brushes.White);
+        var parts = new (WaveformData Data, double GainFactor, double OffsetShift)[] { (Sound(36_001, rate), 1, 3 / rate), (Sound(20_003, rate), 0.5, -5 / rate), (hand, 2, 0) };
+        var combined = WaveformData.Combine(parts);
+        var (wantLows, wantHighs) = BruteCombine(parts);
+        Expect(problems, combined is not null, "three sounds make a combined sound");
+        if (combined is null)
+            return;
+
+        Line(text, $"parts of {parts[0].Data.Count}, {parts[1].Data.Count} and {parts[2].Data.Count} pairs at gains 1, 0.5 and 2, shifted +3, -5 and 0 pairs: {combined.Count} pairs at {combined.PairsPerSecond} a second; levels {combined.CountAt(1)}, {combined.CountAt(2)}, {combined.CountAt(3)}");
+        Expect(problems, combined.Count == wantHighs.Length && combined.Count == 36_001 - 3, "it is as long as its longest reach (the first part less its 3 pairs)");
+
+        // Every pair against the brute force, as the vectors and the tails made it.
+        var (lows0, highs0) = (combined.LowsAt(0).ToArray(), combined.HighsAt(0).ToArray());
+        var wrong = Enumerable.Range(0, Math.Min(lows0.Length, wantLows.Length)).FirstOrDefault(i => lows0[i] != wantLows[i] || highs0[i] != wantHighs[i], -1);
+        Expect(problems, wrong < 0, wrong < 0 ? "every pair" : $"every pair: pair {wrong} is ({lows0[wrong]}, {highs0[wrong]}), not ({wantLows[wrong]}, {wantHighs[wrong]})");
+        Line(text, $"every pair is the brute force's: the highest gain x high and the lowest gain x low of the parts playing there, silence (0) where none does");
+        Expect(problems, highs0[1] == WaveformData.MostCombined && lows0[1] == -WaveformData.MostCombined && highs0[6] == WaveformData.MostCombined,
+            "the hand-written part's loud pairs at gain 2 are held at MostCombined (4)");
+        Line(text, $"a pair past {WaveformData.MostCombined} at its gain is held there (2.5 x 2 and 3 x 2 are {highs0[1]} and {highs0[6]})");
+        Expect(problems, highs0.Min() >= 0 && lows0.Max() <= 0, "a high under 0 never pulls the silence under it down, nor a low over 0 up");
+        Line(text, $"the highs never go under silence and the lows never over it (a part's high under 0, the hand-written part's low over 0)");
+
+        // Its folds and ranges, against the brute force of the pairs it holds.
+        for (var level = 1; level < WaveformData.MipLevels; level++)
+        {
+            var fold = 1 << (3 * level);
+            var (levelLows, levelHighs) = (combined.LowsAt(level).ToArray(), combined.HighsAt(level).ToArray());
+            for (var j = 0; j < levelLows.Length; j++)
+            {
+                if (!Same((levelLows[j], levelHighs[j]), Brute(wantLows, wantHighs, j * fold, (j + 1) * fold)))
+                {
+                    problems.Add($"combined level {level} pair {j} is not the lowest and the highest of what it folds");
+                    break;
+                }
+            }
+        }
+
+        for (var k = 0; k < 500; k++)
+        {
+            var first = random.Next(combined.Count);
+            var end = Math.Min(first + 1 + (int)Math.Exp(random.NextDouble() * Math.Log(combined.Count)), combined.Count);
+            if (!Same(combined.RangeOf(first, end), Brute(wantLows, wantHighs, first, end)))
+            {
+                problems.Add($"combined RangeOf({first}, {end}) is {combined.RangeOf(first, end)}, not {Brute(wantLows, wantHighs, first, end)}");
+                break;
+            }
+        }
+
+        Line(text, $"its folds are made as any sound's: each pair of levels 1 to 3, and RangeOf over 500 stretches, the brute force's");
+
+        // One part as it is is that part's own peaks (its tiles drawn again); a part with no gain is left out, so is one at another rate.
+        Expect(problems, ReferenceEquals(WaveformData.Combine([(hand, 1, 0)]), hand), "one part at gain 1 and no shift is that part itself");
+        Expect(problems, ReferenceEquals(WaveformData.Combine([(hand, 1, 0), (parts[0].Data, 0, 0)]), hand), "a part with no gain is left out (the one left is itself)");
+        Expect(problems, WaveformData.Combine([(hand, 1, 0.4 / rate)]) is { } nearly && ReferenceEquals(nearly, hand), "a shift under half a pair is no shift");
+        Expect(problems, WaveformData.Combine([(hand, 1, 1 / rate)]) is { } shifted && !ReferenceEquals(shifted, hand) && shifted.Count == 6 && shifted.HighsAt(0)[0] == 2.5f,
+            "a part shifted one pair on is a sound of its own, read from its second pair");
+        Expect(problems, WaveformData.Combine([]) is null && WaveformData.Combine([(hand, 0, 0)]) is null, "no parts, or none with a gain, make nothing (null)");
+        Line(text, $"one part at gain 1 and no shift is itself; a part with no gain is left out; no part left is null");
+
+        var other = Sound(5000, 20);
+        var withOther = WaveformData.Combine([.. parts, (other, 1, 0)]);
+        var same = withOther is not null && withOther.Count == combined.Count
+            && withOther.LowsAt(0).SequenceEqual(combined.LowsAt(0)) && withOther.HighsAt(0).SequenceEqual(combined.HighsAt(0));
+        Expect(problems, same, "a part at another rate (20 a second) is left out: the three parts' sound, pair for pair");
+        Line(text, $"a part at another rate than the first's is left out: the sound is the other three's, pair for pair");
+        Expect(problems, WaveformData.Combine([(other, 1, 0), (hand, 1, 0)]) is { } byRate && ReferenceEquals(byRate, other), "the first part kept sets the rate");
+
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"  info  waveform-combine: {System.Numerics.Vector<float>.Count} floats a vector, accelerated {System.Numerics.Vector.IsHardwareAccelerated}"));
+    }
+
+    /// <summary>Combine's sound worked out pair by pair: for each pair, the most each part playing there reaches at its gain (held within MostCombined), from silence.</summary>
+    private static (float[] Lows, float[] Highs) BruteCombine(IReadOnlyList<(WaveformData Data, double GainFactor, double OffsetShift)> parts)
+    {
+        var shifts = parts.Select(p => (int)Math.Round(p.OffsetShift * p.Data.PairsPerSecond)).ToArray();
+        var (partLows, partHighs) = (parts.Select(p => p.Data.LowsAt(0).ToArray()).ToArray(), parts.Select(p => p.Data.HighsAt(0).ToArray()).ToArray());
+        var count = Enumerable.Range(0, parts.Count).Max(k => partHighs[k].Length - shifts[k]);
+        var (lows, highs) = (new float[count], new float[count]);
+        for (var i = 0; i < count; i++)
+        {
+            var (low, high) = (0f, 0f);
+            for (var k = 0; k < parts.Count; k++)
+            {
+                var j = i + shifts[k];
+                if (j < 0 || j >= partHighs[k].Length)
+                    continue;
+
+                var gain = (float)parts[k].GainFactor;
+                low = Math.Min(low, Math.Clamp(partLows[k][j] * gain, -WaveformData.MostCombined, WaveformData.MostCombined));
+                high = Math.Max(high, Math.Clamp(partHighs[k][j] * gain, -WaveformData.MostCombined, WaveformData.MostCombined));
+            }
+
+            (lows[i], highs[i]) = (low, high);
+        }
+
+        return (lows, highs);
     }
 
     private static void Expect(List<string> problems, bool held, string what)

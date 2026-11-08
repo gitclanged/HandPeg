@@ -1,0 +1,55 @@
+# Edge to edge: a 26 px title bar, no bands round the panes, the transport and Timeline de-cluttered; the live Timeline pane flush.
+   CaptionBarHeight: 26
+ok: App.xaml's CaptionBarHeight is 26 (from 32)
+ok: the caption buttons' style takes its height from it
+ok: the main window: its WindowChrome's CaptionHeight, its title bar and its progress fill are all CaptionBarHeight
+ok: the main window: its 3 caption buttons are as tall as the bar (no height of their own)
+ok: the Settings screen: its WindowChrome's CaptionHeight, its title bar and its progress fill are all CaptionBarHeight
+ok: the Settings screen: its 2 caption buttons are as tall as the bar (no height of their own)
+ok: the window's body (ContentRoot) is edge to edge at its sides and foot in every state, 6 under the title bar (the Header's buttons clear the caption buttons)
+ok: no band above the playback row
+   Sequence Overview Scrubber padding 12,3,12,3, its grip's margin -12,0,-12,-3
+ok: the Sequence Overview Scrubber is slim (3 above and below) and square
+ok: its lower edge's grip lies over its padding: the padding's left, right and bottom, negated
+ok: the Timeline's panel has no padding and square corners: the ruler right under the tab strip
+ok: the drop hint's dashed outline is 6 in from the player's edges (from 36)
+ok: no 10 px band above the status bar or the destination bar
+ok: no band under the Preset Bar either (its Margin 0, from 0,0,0,10): the dock's seams part the panes
+ok: QuietSplitter's grip is the splitter itself, its line inside its Padding (no grip of its own reaching 3 px each way)
+   a column seam, no floating pane: grip -3..4, line 0..1 (the seam 0..1)
+ok: a column seam, no floating pane: a 7 px grip with its 1 px line on the seam, reaching 3 px into each part
+   a column seam, the player at the left: grip 0..7, line 0..1 (the seam 0..1)
+ok: a column seam, the player at the left: a 7 px grip with its 1 px line on the seam, wholly in the part at the right (none of it over the player)
+   a column seam, the player at the right: grip -6..1, line 0..1 (the seam 0..1)
+ok: a column seam, the player at the right: a 7 px grip with its 1 px line on the seam, wholly in the part at the left (none of it over the player)
+   a row seam, no floating pane: grip -3..4, line 0..1 (the seam 0..1)
+ok: a row seam, no floating pane: a 7 px grip with its 1 px line on the seam, reaching 3 px into each part
+   a row seam, the player above: grip 0..7, line 0..1 (the seam 0..1)
+ok: a row seam, the player above: a 7 px grip with its 1 px line on the seam, wholly in the part below (none of it over the player)
+   a row seam, the player below: grip -6..1, line 0..1 (the seam 0..1)
+ok: a row seam, the player below: a 7 px grip with its 1 px line on the seam, wholly in the part above (none of it over the player)
+ok: Standard Editing: the column seam between the player and the effects has the player at its left (its grip goes wholly into the effects' column)
+ok: the seam under the top row has the player above it only while the playback controls, the lowest part there, are hidden
+ok: a part under a seam with the player along its top floats there (the grip then reaches up only), unless the player is hidden
+ok: the transport row's I-frame checkboxes (TimelineOptionsInline) are gone
+ok: and the Views button left in their place keeps its own width (LastChildFill off)
+ok: the Views menu always shows the I-frame checkboxes
+ok: no Live Preview switch is left: nothing in MainWindow.xaml binds LivePreview (0 found)
+ok: UndoButton is on the row of tools, Collapsed in the XAML
+ok: RedoButton is on the row of tools, Collapsed in the XAML
+ok: Quick FX is one button on the row of tools (QuickFxHost)
+ok: its five slots are in its flyout (QuickFxPopup), inside DetailsTemplate: none on the row, none made before the first frame
+ok: each slot's click goes through HotbarSlot_Click, which hands the keyboard back to the Quick FX button after a pointer click (leaving both then closes the flyout)
+ok: the inline Creator Hotbar is gone
+ok: the rows' scroll bar keeps its clicks over a restored window's resize band
+ok: the row of tools is a hairline under the tracks
+   live pane 1200 x 480: ruler top 0, tracks left 0, rows' scroll bar right 1200, tools' row bottom 480
+ok: the ruler is the pane's top edge (no gap under the tab strip)
+ok: the tracks start at the pane's left edge
+ok: the rows' scroll bar ends at the pane's right edge
+ok: the row of tools ends at the pane's bottom edge
+ok: Undo and Redo are hidden as the pane is made
+ok: ShowUndoRedo(true) shows both
+ok: ShowUndoRedo(false) hides both again
+ok: ShowHotbar(slots, false) hides the Quick FX button
+ok: ShowHotbar(slots, true) shows it, and no slot is on the row (they are made with the flyout, after the first frame)

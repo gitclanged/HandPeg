@@ -82,6 +82,8 @@
         <SolidColorBrush x:Key="TabEdgeBrush" po:Freeze="True" Color="Transparent" />
         <SolidColorBrush x:Key="ActiveTabEdgeBrush" po:Freeze="True" Color="Transparent" />
         <SolidColorBrush x:Key="TitleBarBrush" po:Freeze="True" Color="#1E1E1E" />
+        <!-- 5.3-Stage2: the 1 px line between two panes (the dock's borders), where a 10 px band of the window showed before. -->
+        <SolidColorBrush x:Key="PaneSeamBrush" po:Freeze="True" Color="#222228" />
         <SolidColorBrush x:Key="KeyAccentBrush" po:Freeze="True" Color="Gold" />
         <SolidColorBrush x:Key="WellBrush" po:Freeze="True" Color="#2D2D2D" />
         <SolidColorBrush x:Key="WellBorderBrush" po:Freeze="True" Color="#3F3F3F" />
@@ -199,12 +201,20 @@
         </Style>
 
         <!--
+            The height of the title bar of a window that draws its own (5.3-Stage2: 26, from 32): the main window's and the Settings
+            screen's alike, which lies exactly over it (CoverWindow), so the bar never jumps as Settings opens. Their WindowChrome's
+            CaptionHeight, their title bars, their progress fills and the caption buttons below all take it.
+        -->
+        <sys:Double x:Key="CaptionBarHeight">26</sys:Double>
+
+        <!--
             The caption buttons of a window that draws its own title bar (Minimize, Maximize / Restore): Windows' own glyphs,
-            46 x 32, lit on hover. Here since 4.4, for the main window's title bar and the Settings screen's alike: one template.
+            46 wide and as tall as the bar, lit on hover. Here since 4.4, for the main window's title bar and the Settings screen's
+            alike: one template.
         -->
         <Style x:Key="CaptionButton" TargetType="Button">
             <Setter Property="Width" Value="46" />
-            <Setter Property="Height" Value="32" />
+            <Setter Property="Height" Value="{StaticResource CaptionBarHeight}" />
             <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
             <Setter Property="FontSize" Value="10" />
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -592,16 +602,18 @@
         </Style>
 
         <!--
-            A splitter that stays out of sight until the pointer is on it. The visible line is as thin as the
-            splitter itself; the transparent area around it is wider, so it is still easy to grab.
+            A splitter that stays out of sight until the pointer is on it. The splitter is its grip, a transparent area wide
+            enough to grab; the visible line is what its Padding leaves of it (5.3-Stage2: the dock's borders give a 7 px grip
+            laid out in 1 px and the Padding that puts the 1 px line on the seam, DockManager.SeamGrip, so beside the floating
+            player the grip lies wholly in the other part).
         -->
         <Style x:Key="QuietSplitter" TargetType="GridSplitter">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="GridSplitter">
-                        <Border Background="Transparent" Margin="-3">
-                            <Border x:Name="line" Margin="3" Background="{TemplateBinding Background}" />
+                        <Border Background="Transparent">
+                            <Border x:Name="line" Margin="{TemplateBinding Padding}" Background="{TemplateBinding Background}" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">

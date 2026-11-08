@@ -48,6 +48,12 @@
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <GarbageCollectionAdaptationMode>1</GarbageCollectionAdaptationMode>
+
+    <!-- No CET shadow stacks (Pass 5.3-Stage2, the user's answer, a security trade-off): .NET 9 and later mark an x64 HandPeg.exe
+         CET-compatible, and Windows then keeps a shadow stack of every call, which cost about 16 ms of start-up on the Desktop's Zen 4.
+         ARM64 has no such mark. This is the build's own HandPeg.exe (and a raw publish's); the released HandPeg.exe is the bootstrapper,
+         which says the same (tools\PortableBootstrap). It takes effect from a clean obj only (CLAUDE.md section 4). -->
+    <CETCompat>false</CETCompat>
   </PropertyGroup>
 
   <!--
@@ -224,13 +230,17 @@ public class CompileHlsl : Microsoft.Build.Utilities.Task
   </Target>
 
   <!--
-      The Explorer thumbnail handler (Pass 5.2D, src\ShellThumbnails): a COM class library that Windows
-      Explorer loads to show the thumbnail a .hproj or .hpb carries as its preview. No part of HandPeg's assembly and no reference of
-      it (Explorer loads it alone): built after HandPeg for the same processor (the runtime being built, else this machine's: an ARM64
-      Explorer loads only an ARM64 handler), framework-dependent, and its four files copied into shell\ beside HandPeg.exe on a build
-      and again on a publish. ExplorerThumbnails registers it from there. It is restored first, in an evaluation of its own (a
-      restore session of its own, as dotnet's -restore makes one), so that its build reads what the restore wrote; nothing else of
-      HandPeg's build changes.
+      The Explorer thumbnail handler (Pass 5.2D, src\ShellThumbnails; NativeAOT since Pass 5.3-Stage2): a native COM library that Windows
+      Explorer loads to show the thumbnail a .hproj or .hpb carries as its preview, with no .NET needed. No part of HandPeg's assembly and
+      no reference of it (Explorer loads it alone): published after HandPeg for the same processor (the runtime being built, else this
+      machine's: an ARM64 Explorer loads only an ARM64 handler), by a Release build or publish only (a Debug build stays quick and has
+      none), and only where Visual Studio's C++ build tools for that processor are (NativeAOT links with them; without them a message
+      says so and the build goes on without the handler; Release.ps1 refuses a release without it). Its one file is copied into shell\
+      beside HandPeg.exe, and again on a publish; ExplorerThumbnails registers it from there. It is published by a dotnet of its own,
+      the command at the top of its project, self-contained, into its own bin\: an MSBuild task here would restore it and publish it in one build, whose
+      publish could keep what it read before the restore (measured: a plain .NET publish, no native DLL, in shell\), and would hand it this
+      build's own properties ("dotnet publish -o" and "self-contained false" reach every project a build builds). The four files of
+      5.3-Stage1's .NET COM host that an older build left in shell\ go on every build.
   -->
   <PropertyGroup>
     <ShellThumbnailsProject>$(MSBuildThisFileDirectory)src\ShellThumbnails\HandPeg.ShellThumbnails.csproj</ShellThumbnailsProject>
@@ -240,27 +250,34 @@ public class CompileHlsl : Microsoft.Build.Utilities.Task
     <PropertyGroup>
       <_ShellThumbnailsRid>$(RuntimeIdentifier)</_ShellThumbnailsRid>
       <_ShellThumbnailsRid Condition="'$(_ShellThumbnailsRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</_ShellThumbnailsRid>
-      <_ShellThumbnailsProperties>Configuration=$(Configuration);RuntimeIdentifier=$(_ShellThumbnailsRid);SelfContained=false</_ShellThumbnailsProperties>
+      <_ShellThumbnailsDotnet>$(DOTNET_HOST_PATH)</_ShellThumbnailsDotnet>
+      <_ShellThumbnailsDotnet Condition="'$(_ShellThumbnailsDotnet)' == ''">dotnet</_ShellThumbnailsDotnet>
+      <_ShellThumbnailsDll>$(MSBuildThisFileDirectory)src\ShellThumbnails\bin\Release\net10.0-windows\$(_ShellThumbnailsRid)\publish\HandPeg.ShellThumbnails.dll</_ShellThumbnailsDll>
+      <_ShellThumbnailsVsWhere>$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer\vswhere.exe</_ShellThumbnailsVsWhere>
+      <!-- The C++ tools NativeAOT's own lookup asks for (ILCompiler's findvcvarsall.bat): the target processor's. -->
+      <_ShellThumbnailsVcTools>x86.x64</_ShellThumbnailsVcTools>
+      <_ShellThumbnailsVcTools Condition="'$(_ShellThumbnailsRid)' == 'win-arm64'">ARM64</_ShellThumbnailsVcTools>
     </PropertyGroup>
-    <MSBuild Projects="$(ShellThumbnailsProject)" Targets="Restore" Properties="$(_ShellThumbnailsProperties);MSBuildRestoreSessionId=$([System.Guid]::NewGuid())" />
-    <MSBuild Projects="$(ShellThumbnailsProject)" Targets="Build" Properties="$(_ShellThumbnailsProperties)">
-      <Output TaskParameter="TargetOutputs" ItemName="_ShellThumbnailsAssembly" />
-    </MSBuild>
-    <PropertyGroup>
-      <_ShellThumbnailsOutput>@(_ShellThumbnailsAssembly->'%(RootDir)%(Directory)')</_ShellThumbnailsOutput>
-    </PropertyGroup>
+
     <ItemGroup>
-      <_ShellThumbnailsFile Include="$(_ShellThumbnailsOutput)HandPeg.ShellThumbnails.dll;$(_ShellThumbnailsOutput)HandPeg.ShellThumbnails.comhost.dll" />
-      <_ShellThumbnailsFile Include="$(_ShellThumbnailsOutput)HandPeg.ShellThumbnails.runtimeconfig.json;$(_ShellThumbnailsOutput)HandPeg.ShellThumbnails.deps.json" />
+      <_ShellThumbnailsStale Include="$(OutDir)shell\HandPeg.ShellThumbnails.comhost.dll;$(OutDir)shell\HandPeg.ShellThumbnails.runtimeconfig.json;$(OutDir)shell\HandPeg.ShellThumbnails.deps.json" />
+      <_ShellThumbnailsStale Include="$(OutDir)shell\HandPeg.ShellThumbnails.dll" Condition="Exists('$(OutDir)shell\HandPeg.ShellThumbnails.comhost.dll')" />
     </ItemGroup>
-    <Copy SourceFiles="@(_ShellThumbnailsFile)" DestinationFolder="$(OutDir)shell\" SkipUnchangedFiles="true" />
+    <Delete Files="@(_ShellThumbnailsStale)" />
+
+    <Exec Condition="'$(Configuration)' == 'Release' and Exists('$(_ShellThumbnailsVsWhere)')" EchoOff="true" IgnoreExitCode="true" ConsoleToMSBuild="true" StandardOutputImportance="low"
+          Command="&quot;$(_ShellThumbnailsVsWhere)&quot; -latest -prerelease -products * -requires Microsoft.VisualStudio.Component.VC.Tools.$(_ShellThumbnailsVcTools) -property installationPath">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_ShellThumbnailsVs" />
+    </Exec>
+    <Message Condition="'$(Configuration)' == 'Release' and '$(_ShellThumbnailsVs)' == ''" Importance="high"
+             Text="No Visual Studio C++ build tools for $(_ShellThumbnailsRid): the Explorer thumbnail handler (NativeAOT) is not built, so this build has no shell\HandPeg.ShellThumbnails.dll." />
+    <Exec Condition="'$(Configuration)' == 'Release' and '$(_ShellThumbnailsVs)' != ''"
+          Command="&quot;$(_ShellThumbnailsDotnet)&quot; publish &quot;$(ShellThumbnailsProject)&quot; -c Release -r $(_ShellThumbnailsRid) --self-contained -nologo -v:q -nr:false" />
+    <Copy Condition="'$(Configuration)' == 'Release' and '$(_ShellThumbnailsVs)' != ''" SourceFiles="$(_ShellThumbnailsDll)" DestinationFolder="$(OutDir)shell\" SkipUnchangedFiles="true" />
   </Target>
 
-  <Target Name="PublishShellThumbnails" AfterTargets="Publish" Condition="'$(DesignTimeBuild)' != 'true' and Exists('$(OutDir)shell\HandPeg.ShellThumbnails.comhost.dll')">
-    <ItemGroup>
-      <_ShellThumbnailsPublished Include="$(OutDir)shell\*.*" />
-    </ItemGroup>
-    <Copy SourceFiles="@(_ShellThumbnailsPublished)" DestinationFolder="$(PublishDir)shell\" SkipUnchangedFiles="true" />
+  <Target Name="PublishShellThumbnails" AfterTargets="Publish" Condition="'$(DesignTimeBuild)' != 'true' and Exists('$(OutDir)shell\HandPeg.ShellThumbnails.dll')">
+    <Copy SourceFiles="$(OutDir)shell\HandPeg.ShellThumbnails.dll" DestinationFolder="$(PublishDir)shell\" SkipUnchangedFiles="true" />
   </Target>
 
   <ItemGroup>

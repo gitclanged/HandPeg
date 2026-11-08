@@ -311,6 +311,36 @@
                 </Popup>
 
                 <!--
+                    Quick FX's five slots (the Creator Hotbar, 5.3-Stage2), over its button (HoverFlyout: resting on the button, or a
+                    click, opens them; leaving both closes them, but not while a slot's right-click menu is open: HoldQuickFxFor).
+                    A slot's click puts what it holds on the selected clips and leaves the flyout open, so several go on in a row; a
+                    click with the pointer hands the keyboard back to the button (HotbarSlot_Click), so leaving both still closes it.
+                    Named from the settings by ShowHotbar; its target, the button's host, is set in code (RealizeTools).
+                -->
+                <Popup x:Name="QuickFxPopup" StaysOpen="True" AllowsTransparency="True" Placement="Top">
+                    <local:ButtonChrome x:Name="QuickFxFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6" Margin="0,0,0,2" PreviewKeyDown="QuickFxFlyout_PreviewKeyDown">
+                        <StackPanel x:Name="HotbarSlotsPanel" TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="200" AutomationProperties.Name="Creator Hotbar">
+                            <StackPanel.Resources>
+                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Setter Property="Background" Value="Transparent" />
+                                    <Setter Property="BorderThickness" Value="0" />
+                                    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                                    <Setter Property="HorizontalContentAlignment" Value="Left" />
+                                    <Setter Property="Padding" Value="10,6" />
+                                    <Setter Property="Margin" Value="0,1" />
+                                </Style>
+                            </StackPanel.Resources>
+                            <TextBlock Text="Quick FX" FontWeight="SemiBold" Foreground="{DynamicResource MutedTextBrush}" Margin="10,2,10,4" />
+                            <Button Tag="Hotbar0" Click="HotbarSlot_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
+                            <Button Tag="Hotbar1" Click="HotbarSlot_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
+                            <Button Tag="Hotbar2" Click="HotbarSlot_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
+                            <Button Tag="Hotbar3" Click="HotbarSlot_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
+                            <Button Tag="Hotbar4" Click="HotbarSlot_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
+                        </StackPanel>
+                    </local:ButtonChrome>
+                </Popup>
+
+                <!--
                     The recycle bin's list, over its button: its target and its IsOpen (the button's IsChecked, both ways) are set
                     in code, as are its Opened and Closed (RealizeTools).
                 -->
@@ -341,7 +371,8 @@
                 the row says nothing and the ruler is the pane's top edge). The tools are at the bottom.
             -->
             <docking:PaneTitleRow DockPanel.Dock="Top">
-                <docking:PaneTitleSlot PaneId="UnifiedTimeline" Margin="0,0,0,4" />
+                <!-- The pane is flush with its part's edges (5.3-Stage2): the title, where it shows, keeps off the left edge. -->
+                <docking:PaneTitleSlot PaneId="UnifiedTimeline" Margin="8,4,0,4" />
             </docking:PaneTitleRow>
 
             <!--
@@ -355,9 +386,10 @@
                     The tools, on one line along the bottom edge; what does not fit goes into the "more" menu, the least
                     wanted first (OverflowStrip.Priority). Each works on what is selected on the timeline, or, with nothing
                     selected, on the video clip at the playhead. Made with the window (5.0, the user's Q5: what the
-                    first frame shows is all there in it); their flyouts come with DetailsTemplate.
+                    first frame shows is all there in it); their flyouts come with DetailsTemplate. A hairline under the tracks
+                    (5.3-Stage2: no band).
                 -->
-                <Border Height="26" Margin="0,4,0,0">
+                <Border x:Name="ToolbarRow" Height="26" Margin="0,1,0,0">
                     <local:OverflowStrip x:Name="Toolbar" MinWidth="150" VerticalAlignment="Center">
                         <!-- Play / Pause, while neither the playback bar's nor the Sequence Overview Scrubber's is on screen (MainWindow shows it). -->
                         <Button x:Name="PlayButton" Style="{StaticResource Tool}" local:OverflowStrip.Priority="110" Content="&#xE768;" Margin="0,0,6,0" Tag="PlayPause" Click="Tool_Click" Visibility="Collapsed"
@@ -385,9 +417,14 @@
                                 AutomationProperties.Name="Trim End" local:KeyTip.Action="edit.trimEnd" local:KeyTip.Text="Trim End to Playhead{keys}: the selected clip ends at the playhead; what came after goes." />
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="85" Content="&#xE74D;" Tag="Delete" Click="Tool_Click" IsEnabled="{Binding HasSource}"
                                 AutomationProperties.Name="Delete" local:KeyTip.Action="edit.delete" local:KeyTip.Text="Delete{keys}: the selected clip goes into the recycle bin." />
-                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A7;" Margin="6,0,3,0" Tag="Undo" Click="Tool_Click"
+                        <!--
+                            Undo and Redo: hidden unless Settings > Timeline (or Timeline Settings) shows them (5.3-Stage2, the user's
+                            de-clutter; ShowTimelineUndoRedo, off by default: ShowUndoRedo). Collapsed here, so the first frame is right
+                            before any code runs, and a collapsed tool is left out of the row and its "more" menu.
+                        -->
+                        <Button x:Name="UndoButton" Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A7;" Margin="6,0,3,0" Tag="Undo" Click="Tool_Click" Visibility="Collapsed"
                                 AutomationProperties.Name="Undo" local:KeyTip.Action="edit.undo" local:KeyTip.Text="Undo{keys}: takes back the last change. Twenty steps are kept." />
-                        <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A6;" Tag="Redo" Click="Tool_Click"
+                        <Button x:Name="RedoButton" Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A6;" Tag="Redo" Click="Tool_Click" Visibility="Collapsed"
                                 AutomationProperties.Name="Redo" local:KeyTip.Action="edit.redo" local:KeyTip.Text="Redo{keys}: does again what was just undone." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="75" Margin="6,0,3,0" IsChecked="{Binding SnapClips}" AutomationProperties.Name="Snap"
                                       local:KeyTip.Action="view.toggleSnap" local:KeyTip.Text="Snap{keys}: a dragged or dropped clip's edges catch on the edges of the other clips, the markers, the end of the sequence and the playhead. Hold Shift while dragging to place it freely, a frame at a time; Ctrl on an edge ripples.">
@@ -411,7 +448,7 @@
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="55" Content="&#xE71B;" IsChecked="{Binding AudioLinked, Mode=OneWay}" Tag="LinkAudio" Checked="Tool_Click" Unchecked="Tool_Click"
                                       AutomationProperties.Name="Link A/V" local:KeyTip.Text="Link Audio and Video: linked, sound follows its picture and is cut with it. Unlinked, a sound can be dragged on its own; linking again offers to snap it back. {key:clip.toggleLink|Link / Unlink A/V on a clip's menu} links or unlinks the selected clip alone." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="20" Content="&#xE8D6;" IsChecked="{Binding ShowLinkedAudio}"
-                                      AutomationProperties.Name="Show Linked Audio" ToolTip="Show Linked Audio: draws the sound that belongs to a picture in the lower part of its block (a video clip's own sound, on that clip)." />
+                                      AutomationProperties.Name="Show Linked Audio" ToolTip="Show Linked Audio: draws the sound that belongs to a picture across its block, over the pictures (a video clip's own sound, or its sound stack's, on that clip)." />
                         <!-- Where the in point being set is (or that none is), beside its buttons. -->
                         <!-- The tracks' height (each track's row), with the other timeline tools (5.0-Verify: one row along the bottom). -->
                         <StackPanel local:OverflowStrip.Priority="65" Orientation="Horizontal" Margin="6,0,6,0" VerticalAlignment="Center" Background="Transparent"
@@ -441,20 +478,21 @@
                                   DropDownOpened="GamePresets_DropDownOpened" IsEnabled="{Binding IsVideoReencoded}" AutomationProperties.Name="Game Presets"
                                   ToolTip="The Game Presets in the Styles folder. Choosing one applies it to the selected video clips (else every video clip): its Cutouts, its layout, its colour and blur." />
                         <!--
-                            The Creator Hotbar (5.2.1): five slots, each an Effect, a Transition, a Game Preset or a one-click tool put
-                            on the selected clips (else the video clip at the playhead), one step of Undo; a right-click chooses what a
-                            slot holds. Named from the settings as the pane is made (ShowHotbar), so the first frame has them.
+                            Quick FX, the Creator Hotbar (5.2.1; one button since 5.3-Stage2, the user's de-clutter): resting the pointer
+                            on it, or a click (or Down), opens its five slots over it (QuickFxPopup, made after the first frame with
+                            DetailsTemplate), each an Effect, a Transition, a Game Preset or a one-click tool put on the selected clips
+                            (else the video clip at the playhead), one step of Undo; a right-click on a slot chooses what it holds. Shown
+                            or hidden from the settings as the pane is made (ShowHotbar), so the first frame has it right.
                         -->
-                        <StackPanel x:Name="Hotbar" local:OverflowStrip.Priority="50" Orientation="Horizontal" Margin="6,0,3,0" VerticalAlignment="Center" Background="Transparent"
-                                    AutomationProperties.Name="Creator Hotbar">
-                            <TextBlock Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="12" Margin="0,0,4,0" VerticalAlignment="Center" Foreground="{DynamicResource AccentBrush}"
-                                       ToolTip="Creator Hotbar: each slot puts its Effect, Transition, Game Preset or tool on the selected clips. Right-click a slot to choose what it holds." />
-                            <Button Padding="7,3" Margin="0,0,2,0" FontSize="11" VerticalAlignment="Center" Tag="Hotbar0" Click="Tool_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
-                            <Button Padding="7,3" Margin="0,0,2,0" FontSize="11" VerticalAlignment="Center" Tag="Hotbar1" Click="Tool_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
-                            <Button Padding="7,3" Margin="0,0,2,0" FontSize="11" VerticalAlignment="Center" Tag="Hotbar2" Click="Tool_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
-                            <Button Padding="7,3" Margin="0,0,2,0" FontSize="11" VerticalAlignment="Center" Tag="Hotbar3" Click="Tool_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
-                            <Button Padding="7,3" Margin="0" FontSize="11" VerticalAlignment="Center" Tag="Hotbar4" Click="Tool_Click" ContextMenuOpening="HotbarSlot_ContextMenuOpening" />
-                        </StackPanel>
+                        <Grid x:Name="QuickFxHost" local:OverflowStrip.Priority="50" Margin="6,0,3,0" Background="Transparent" VerticalAlignment="Center">
+                            <Button x:Name="QuickFxButton" Padding="9,4" Click="QuickFx_Click" PreviewKeyDown="QuickFx_PreviewKeyDown" AutomationProperties.Name="Quick FX"
+                                    ToolTip="Quick FX (the Creator Hotbar): five slots, each putting an Effect, a Transition, a Game Preset or a one-click tool on the selected clips. Rest the pointer here, or click, for the slots; right-click a slot to choose what it holds.">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
+                                    <TextBlock Text="Quick FX" Margin="6,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
                         <!-- The recycle bin: deleted clips wait here, and are put back from here (its list opens under it, BinPopup). -->
                         <ToggleButton x:Name="BinButton" Padding="7,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="35" AutomationProperties.Name="Recycle Bin"
                                       ToolTip="Recycle Bin: the clips that were deleted from the timeline. Nothing of them is rendered; any of them can be put back where it was.">
@@ -524,8 +562,9 @@
                                      ToolTip="Click or drag to move the playhead. The wheel zooms the tracks about the pointer; Shift + wheel, or a drag with the middle button, moves along. The shaded part after the end is room to drop or drag clips into." />
 
                 <local:UnifiedTimelineControl x:Name="Surface" Grid.Row="1" AutomationProperties.Name="Timeline Tracks" />
+                <!-- Its clicks are its own over a restored window's resize band too (the pane is flush with the window's edge, 5.3-Stage2). -->
                 <ScrollBar x:Name="RowScroll" Grid.Row="1" Grid.Column="1" Orientation="Vertical" Scroll="RowScroll_Scroll" Visibility="Hidden"
-                           AutomationProperties.Name="Timeline Rows Scroll" />
+                           WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="Timeline Rows Scroll" />
 
                 <ScrollBar x:Name="TimeScroll" Grid.Row="2" Orientation="Horizontal" Margin="0,2,0,0" AutomationProperties.Name="Timeline Scroll" />
             </Grid>

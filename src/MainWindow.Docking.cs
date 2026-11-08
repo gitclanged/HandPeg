@@ -124,10 +124,18 @@ public partial class MainWindow
                 case nameof(ViewModels.MainViewModel.ShowCommandPreviewTab):
                     UpdateTabVisibility();
                     break;
-                case nameof(ViewModels.MainViewModel.ShowAdvancedPlayback) or nameof(ViewModels.MainViewModel.IsArrangeActive)
+                case nameof(ViewModels.MainViewModel.ShowAdvancedPlayback)
                     or nameof(ViewModels.MainViewModel.IsMediaBrowserVisible) or nameof(ViewModels.MainViewModel.ShowKeyframesPane) or nameof(ViewModels.MainViewModel.ShowEffectsPane)
                     or nameof(ViewModels.MainViewModel.ShowPresetBarAtTop) or nameof(ViewModels.MainViewModel.ShowMasterMeter):
                     _dock.ScheduleRebuild();
+                    break;
+
+                // The Canvas turned on comes to the front of its group once the dock has it (since 5.3-Stage2 a tab behind the effects
+                // in Standard Editing; it had a part of its own before, and showed at once): in place, as a click on its tab.
+                case nameof(ViewModels.MainViewModel.IsArrangeActive):
+                    _dock.ScheduleRebuild();
+                    if (_viewModel.IsArrangeActive)
+                        _dock.BringForward("Layout");
                     break;
             }
         };
@@ -246,9 +254,10 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Makes what is in a settings tab: from its template (every tab but Summary and Export is left as one until wanted),
-    /// or the content it was made with. The named parts this window uses are found in it as it is made (the Audio tab's
-    /// options row, which folds into a button when it is narrow).
+    /// Makes what is in a settings tab: from its template (every tab is left as one until wanted; Summary and Export too since
+    /// 5.3-Stage2), or the content it was made with. The named parts this window uses are found in it as it is made (the Audio
+    /// tab's options row, which folds into a button when it is narrow; the Summary's cards, put in their saved order; the
+    /// Export tab's parts).
     /// </summary>
     private FrameworkElement RealizeTabContent(TabItem tab)
     {
@@ -276,6 +285,27 @@ public partial class MainWindow
         // The Audio tab's master meter and fader (5.2B): fed and wired as the pane's is.
         if (content.FindName("AudioTabMeter") is AudioMeterControl tabMeter)
             WireMeter(tabMeter);
+
+        // The Summary's cards, in the order they were last dragged into (on Loaded until 5.3-Stage2, when the tab was built with the window).
+        if (content.FindName(nameof(SummaryCards)) is StackPanel cards)
+        {
+            SummaryCards = cards;
+            ApplySummaryCardOrder();
+        }
+
+        // The Export tab's parts (MainWindow.Export.cs); ExportContent fills it once they are found. ExportPanel is the template's root.
+        if ((content.Name == nameof(ExportPanel) ? content : content.FindName(nameof(ExportPanel))) is DockPanel export)
+        {
+            T Part<T>(string name) where T : class => (T)content.FindName(name);
+            ExportPanel = export;
+            ExportBarSlot = Part<Border>(nameof(ExportBarSlot));
+            ExportSections = Part<StackPanel>(nameof(ExportSections));
+            (EasyExportButton, AdvancedExportButton) = (Part<RadioButton>(nameof(EasyExportButton)), Part<RadioButton>(nameof(AdvancedExportButton)));
+            EasyExportPanel = Part<ScrollViewer>(nameof(EasyExportPanel));
+            EasyExportCards = Part<WrapPanel>(nameof(EasyExportCards));
+            ExportSectionHost = Part<Border>(nameof(ExportSectionHost));
+            ExportNoSections = Part<TextBlock>(nameof(ExportNoSections));
+        }
 
         return content;
     }
@@ -320,14 +350,22 @@ public partial class MainWindow
     /// </summary>
     private DockLayoutState UpgradeLayout(DockLayoutState state)
     {
+        UpgradeLayout(state, TabIds);
+        return state;
+    }
+
+    /// <summary>The steps of <see cref="UpgradeLayout(DockLayoutState)"/>, for the settings tabs given (their pane ids, in order): window-free, for the goldens too.</summary>
+    internal static void UpgradeLayout(DockLayoutState state, IReadOnlyList<string> tabIds)
+    {
         var from = new[] { state.Main, state.Side, state.SideClosed }.OfType<DockNode>().Any(root => root.AllPanes().Any(IsRetiredPane))
             ? 1 : state.Version;
         state.Version = DockLayoutState.CurrentVersion;
         if (from < 2)
             WithoutRetiredTabs(state);
         if (from < 3)
-            PutTimelineFirst(state);
-        return state;
+            PutTimelineFirst(state, tabIds);
+        if (from < 4)
+            StackCanvasWithEffects(state, tabIds);
     }
 
     /// <summary>
@@ -362,9 +400,9 @@ public partial class MainWindow
     /// share of the room the two had; in any other arrangement, a group holding the timeline and settings tabs gets the
     /// timeline as its first tab (the tab shown stays the one shown). Nothing else moves.
     /// </summary>
-    private void PutTimelineFirst(DockLayoutState state)
+    private static void PutTimelineFirst(DockLayoutState state, IReadOnlyList<string> tabIds)
     {
-        if (DockManager.SameShape(state, StandardLayoutBeside()) && state.Main.GroupOf(TimelinePaneId) is { } alone
+        if (DockManager.SameShape(state, StandardLayoutBeside(tabIds)) && state.Main.GroupOf(TimelinePaneId) is { } alone
             && state.Main.ParentOf(alone) is { IsGroup: false, Vertical: false, Children.Count: 2 } beside
             && ReferenceEquals(beside.Children[0], alone) && beside.Children[1] is { IsGroup: true } tabs
             && state.Main.ParentOf(beside) is { } parent)
@@ -383,6 +421,31 @@ public partial class MainWindow
                 group.Panes.Insert(0, TimelinePaneId);
             }
         }
+    }
+
+    /// <summary>
+    /// 3 to 4 (5.3-Stage2, the user's de-clutter): Standard Editing as version 3 had it (the Canvas in a part of its own over the
+    /// effects, keyframes and Master Meter) gets the Canvas as a tab of that group, after the keyframes, the group taking the
+    /// column's place and so its share of the room; the tab shown stays the one shown. Only that shape, with the Meter (5.2B on) or
+    /// without it (a 4.4 arrangement just brought up by PutTimelineFirst: the Meter is put in afterwards, by DockManager.PlaceAsDefault);
+    /// any arrangement the user made is left as it is.
+    /// </summary>
+    private static void StackCanvasWithEffects(DockLayoutState state, IReadOnlyList<string> tabIds)
+    {
+        var withoutMeter = StandardLayoutV3(tabIds);
+        withoutMeter.Main.GroupOf("Meter")?.Panes.Remove("Meter");
+        if (!(DockManager.SameShape(state, StandardLayoutV3(tabIds)) || DockManager.SameShape(state, withoutMeter))
+            || state.Main.GroupOf("Layout") is not { Panes.Count: 1 } canvas
+            || state.Main.ParentOf(canvas) is not { IsGroup: false, Vertical: true, Children.Count: 2 } column
+            || column.Children.Find(c => !ReferenceEquals(c, canvas)) is not { IsGroup: true } effects
+            || state.Main.ParentOf(column) is not { } parent)
+            return;
+
+        var keys = effects.Panes.IndexOf("Keyframes");
+        effects.Panes.Insert(keys < 0 ? effects.Panes.Count : keys + 1, "Layout");
+
+        // The same place in its split, so the column's share of the room (Sizes, by index) is the group's.
+        parent.Children[parent.Children.IndexOf(column)] = effects;
     }
 
     /// <summary>

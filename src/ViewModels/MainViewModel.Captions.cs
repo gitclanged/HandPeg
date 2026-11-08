@@ -330,9 +330,7 @@ public partial class MainViewModel
             return;
         }
 
-        var shown = LivePreview
-            ? "Subtitles preview on: the player draws the captions over the picture as they are styled."
-            : "Subtitles preview on: the player draws the captions over the source. Switch Live Preview on to see them on the finished frame.";
+        const string shown = "Subtitles preview on: the player draws the captions over the picture as they are styled.";
 
         // A subtitle track with words is what the captions say: the player draws its cues as they stand, nothing is heard.
         if (HasTextCues)

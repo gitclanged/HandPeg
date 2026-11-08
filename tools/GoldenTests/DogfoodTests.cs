@@ -422,7 +422,7 @@ public static class DogfoodTests
         expect(Children(vm, vm.Document.FindClip(mainId)!).Count == 2, "Cutouts added to one clip leave another clip's on it");
         expect(Children(vm, vm.Document.FindClip(otherId)!).Count == 2, "and take the place of that clip's own");
 
-        // The source view (Live Preview off): the bottom video at each moment, unless a clip is selected.
+        // The source view (the player during Interactive Crop or a Draw Target): the bottom video at each moment, unless a clip is selected.
         vm.KeyLayer = null;
         expect(vm.ShownSourceClip == Guid.Empty, "with nothing selected the source view follows the playhead from clip to clip");
         vm.KeyLayer = vm.ViewOf(vm.Document.FindClip(otherId)!);

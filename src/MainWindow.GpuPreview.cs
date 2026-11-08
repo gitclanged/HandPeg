@@ -9,7 +9,7 @@ namespace HandPegApp;
 // The player is GpuPreviewEngine: the compositor draws the scene plan of the sequence into the video surface, the WASAPI
 // mixer plays its sound, and the mixer's clock is the playhead. Everything that moves it (seeks, play and pause, J/K/L,
 // scrubs, Loop, the zoom) goes through the few places in MainWindow.Player.cs (PlayerSeek, PlayerSetPause,
-// PlayerIsPlaying, TakePlayerPosition, ApplyLiveFilter ...). An edit is a new scene plan, never a graph.
+// PlayerIsPlaying, TakePlayerPosition ...); every change reaches it through ScheduleGpuState. An edit is a new scene plan, never a graph.
 // When the engine cannot start, or its worker's supervisor gives up on it, the player stops with a notice where the
 // picture was (OnGpuFailed) and starts again by itself a few seconds later; failing again, on the processor (WARP: slow,
 // but a picture); failing there too, it waits for Reload Player.
@@ -274,9 +274,10 @@ public partial class MainWindow
     /// </summary>
     private void PushGpuState(GpuPreviewEngine engine)
     {
-        // A rectangle drawn on a clip's picture (the crop, a region's place) and Live Preview off show that clip's file itself
-        // (5.2-AuditB: the clip the overlay is drawn on, else the video at the playhead).
-        engine.ShowSource(!_viewModel.LivePreview || CurrentOverlayMode != OverlayMode.None, _viewModel.ShownSourceClip);
+        // Interactive Crop or a Draw Target (a rectangle drawn on a clip's picture: the crop, a region's place) shows that clip's
+        // own file (5.2-AuditB: the clip the overlay is drawn on, else the video at the playhead); otherwise always the composite
+        // (5.3-Stage2: the Live Preview switch is gone).
+        engine.ShowSource(CurrentOverlayMode != OverlayMode.None, _viewModel.ShownSourceClip);
         var state = _viewModel.LivePreviewState();
         if (_viewModel.PreviewPictureSubtitles() is { } pictures)
             state = state with { PictureSubtitles = pictures };

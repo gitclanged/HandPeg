@@ -106,7 +106,7 @@ internal sealed class ProjectSession : IDisposable
     public SequenceExportState State() => ViewModel.LivePreviewState();
 
     // Something the state is gathered from changed: the app gathers it again for the next one.
-    private void Invalidate() => typeof(MainViewModel).GetMethod("InvalidateLiveFilter", Hidden)!.Invoke(ViewModel, null);
+    private void Invalidate() => typeof(MainViewModel).GetMethod("InvalidatePreviewState", Hidden)!.Invoke(ViewModel, null);
 
     /// <summary>Runs the interface thread's queue for a while: what the app hands to it (a fact learnt, a file made) happens.</summary>
     public static void Pump(TimeSpan time)

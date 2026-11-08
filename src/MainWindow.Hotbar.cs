@@ -10,14 +10,23 @@ namespace HandPegApp;
 // ----- The Creator Hotbar on the Timeline's row of tools (Pass 5.2.1) -----
 // Five slots (AppSettings.HotbarSlots, Models.HotbarSlot): a click puts what a slot holds on the selected clips, else the video clip at
 // the playhead (MainViewModel.ApplyHotbarSlot, one step of Undo); a right-click chooses what it holds: any Effect, Transition, Game
-// Preset or one-click tool, saved at once. Hidden with Settings > Timeline's box (ShowCreatorHotbar) or its own menu.
+// Preset or one-click tool, saved at once. Since 5.3-Stage2 the slots are in the Quick FX button's flyout (the user's de-clutter: one
+// button on the row instead of five). Hidden with Settings > Timeline's box (ShowCreatorHotbar) or its own menu. The row's Undo and
+// Redo buttons follow their setting here too (ShowTimelineUndoRedo, off by default).
 public partial class MainWindow
 {
     /// <summary>The hotbar's slots as the settings have them now.</summary>
     private static IReadOnlyList<HotbarSlot> HotbarSlots => HotbarSlot.FromSettings(AppSettings.Current.HotbarSlots);
 
-    /// <summary>The slots named on the row of tools, or the hotbar hidden, as the settings say (at start-up, after Settings and after a change).</summary>
-    private void ShowHotbar() => UnifiedTimeline.ShowHotbar(HotbarSlots, AppSettings.Current.ShowCreatorHotbar);
+    /// <summary>
+    /// The row of tools as the settings say (at start-up, before the first frame; after Settings and after a change): the Quick FX
+    /// button and its slots' names, or the button hidden; and the Undo and Redo buttons shown or not.
+    /// </summary>
+    private void ShowHotbar()
+    {
+        UnifiedTimeline.ShowHotbar(HotbarSlots, AppSettings.Current.ShowCreatorHotbar);
+        UnifiedTimeline.ShowUndoRedo(AppSettings.Current.ShowTimelineUndoRedo);
+    }
 
     /// <summary>A slot pressed: what it holds goes on the selected clips (the clips selected together, else the one), or the video clip at the playhead.</summary>
     private void ApplyHotbar(int index)
@@ -101,7 +110,10 @@ public partial class MainWindow
         menu.Items.Add(MenuAction("Reset Creator Hotbar", () => SaveHotbar(s => s.HotbarSlots = null),
             "Every slot back to Motion Blur, 3D Fly-In, Neon Rim, Whip Pan and Studio Voice."));
         menu.Items.Add(MenuAction("Hide Creator Hotbar", () => SaveHotbar(s => s.ShowCreatorHotbar = false),
-            "Takes the hotbar off the Timeline's row of tools. Settings > Timeline, or Timeline Settings (the Timeline's tab menu, or the gear on its row of tools), brings it back."));
+            "Takes the Quick FX button off the Timeline's row of tools. Settings > Timeline, or Timeline Settings (the Timeline's tab menu, or the gear on its row of tools), brings it back."));
+
+        // The slot's flyout stays open while this menu is (the pointer crossing into the menu leaves it).
+        UnifiedTimeline.HoldQuickFxFor(menu);
         menu.IsOpen = true;
     }
 

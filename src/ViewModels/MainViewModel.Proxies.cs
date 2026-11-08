@@ -79,7 +79,7 @@ public partial class MainViewModel
         if (inUse.Count != _proxiesInUse.Count || inUse.Any(p => !_proxiesInUse.TryGetValue(p.Key, out var had) || had != p.Value))
         {
             _proxiesInUse = inUse;
-            InvalidateLiveFilter();
+            InvalidatePreviewState();
         }
     }
 

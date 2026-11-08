@@ -145,13 +145,16 @@ public static partial class ThemeManager
     /// give its own: the accent's buttons, as HandPeg always had, flat (no bevel), hover in the control hover colour;
     /// lists on the inputs' colour, their edges, the combo boxes' and the cards' the plain control border, and the tabs
     /// not shown open to what is behind them (4.1C.2), with no outline (4.1.1), the title bar the window's own colour; a
-    /// ticked check box filled with the accent and a mark in the colour on it, and no dotted rectangle (4.2B-3).
+    /// ticked check box filled with the accent and a mark in the colour on it, and no dotted rectangle (4.2B-3). The line between
+    /// two panes (5.3-Stage2) is a near-black hairline on a dark palette, and the controls' border colour on a light one, where a
+    /// near-black line would cut the panels apart.
     /// </summary>
-    private static Dictionary<string, Color> LookDefaults(Dictionary<string, string> palette, Color accent, Color hover, Color pressed, Color onAccent)
+    private static Dictionary<string, Color> LookDefaults(Dictionary<string, string> palette, bool dark, Color accent, Color hover, Color pressed, Color onAccent)
     {
         Color Of(string key) => (Color)ColorConverter.ConvertFromString(palette[key]);
         return new()
         {
+            ["PaneSeamBrush"] = dark ? Color.FromRgb(0x22, 0x22, 0x28) : Of("ControlBorderBrush"),
             ["CardBrush"] = Of("ControlBrush"), ["InactiveTabBrush"] = Colors.Transparent, ["TitleBarBrush"] = Of("WindowBackgroundBrush"),
             ["TabEdgeBrush"] = Colors.Transparent, ["ActiveTabEdgeBrush"] = Colors.Transparent,
             ["WellBrush"] = Of("ControlBrush"), ["WellBorderBrush"] = Of("ControlBorderBrush"), ["RaisedBorderBrush"] = Of("ControlBorderBrush"),
@@ -252,7 +255,7 @@ public static partial class ThemeManager
         resources["AccentHoverBrush"] = Brush(hover);
         resources["AccentPressedBrush"] = Brush(pressed);
         resources["OnAccentBrush"] = Brush(chosen.OnAccent);
-        foreach (var (key, color) in LookDefaults(chosen.Palette, accent, hover, pressed, chosen.OnAccent))
+        foreach (var (key, color) in LookDefaults(chosen.Palette, chosen.Dark, accent, hover, pressed, chosen.OnAccent))
         {
             if (!chosen.Palette.ContainsKey(key))
                 resources[key] = Brush(color);
@@ -309,7 +312,7 @@ public static partial class ThemeManager
 
         var accent = chosen.Accent ?? MakeUsable(ReadAccent());
         tokens["AccentBrush"] = accent;
-        foreach (var (key, color) in LookDefaults(chosen.Palette, accent, Mix(accent, Colors.White, 0.16), Mix(accent, Colors.Black, 0.25), chosen.OnAccent))
+        foreach (var (key, color) in LookDefaults(chosen.Palette, chosen.Dark, accent, Mix(accent, Colors.White, 0.16), Mix(accent, Colors.Black, 0.25), chosen.OnAccent))
             tokens.TryAdd(key, color);
         return (tokens, chosen.ControlRadius, chosen.TabRadius);
     }

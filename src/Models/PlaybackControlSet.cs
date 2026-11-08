@@ -43,9 +43,8 @@ public sealed class PlaybackControlSet : ObservableObject
             new("AddMarker", "Add Marker", "Markers", "Puts a marker at the playhead (M). Markers can become the export's chapters."),
             new("PrevMarker", "Previous Marker", "Markers", "Jump back to the marker before the playhead (Ctrl+Shift+M)."),
             new("NextMarker", "Next Marker", "Markers", "Jump on to the marker after the playhead (Shift+M)."),
-            new("LivePreview", "Live Preview", "Viewer", "Runs the export's filters on the picture as it plays."),
             new("SafeMargins", "Safe Margins", "Viewer", "Outlines the action-safe (90%) and title-safe (80%) areas of the frame over the picture."),
-            new("EditOnVideo", "Edit Clips on Video Preview", "Viewer", "Move, resize and turn the selected clip on the player itself (with Live Preview)."),
+            new("EditOnVideo", "Edit Clips on Video Preview", "Viewer", "Move, resize and turn the selected clip on the player itself."),
             new("Exploded3D", "3D Exploded View", "Viewer", "Turns the player into a 3D view of the layer stack: orbit it, spread the layers apart, drag them in their planes and along the stack (the GPU preview engine)."),
             new("ExportFrame", "Export Frame", "Viewer", "Saves the frame as it is shown, as a PNG beside the output."),
             new("RenderPreview", "Render Preview", "Viewer", "Encodes a few seconds as the export will look, and plays them."),
@@ -74,9 +73,10 @@ public sealed class PlaybackControlSet : ObservableObject
     /// <summary>Whether the control of this name is shown.</summary>
     public bool this[string id] => _byId.TryGetValue(id, out var option) && option.IsShown;
 
-    // What the bar starts with.
+    // What the bar starts with. (5.3-Stage2: the Live Preview switch is gone; a saved list naming it shows the rest, as Load
+    // ignores a name it does not know.)
     private static readonly string[] Defaults =
-        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "LivePreview", "RenderPreview", "Reload", "Volume", "Speed", "AddMarker", "EditOnVideo", "Exploded3D"];
+        ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "RenderPreview", "Reload", "Volume", "Speed", "AddMarker", "EditOnVideo", "Exploded3D"];
 
     // The saved list's version (its last name, "@2"), and the controls each version brought: a list saved before a control
     // existed shows it once (5.0-Verify, the user's Q4: the 3D Exploded View on bars saved before 5.0); after that, the

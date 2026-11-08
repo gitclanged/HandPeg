@@ -110,8 +110,8 @@ public static partial class WindowFrameTests
         ResizeBorderThickness = SystemParameters.WindowResizeBorderThickness,
     };
 
-    // The title bar's height in the windows' XAML, in DIPs.
-    private const double TitleBarHeight = 32;
+    // The title bar's height in the windows' XAML, in DIPs (App.xaml's CaptionBarHeight: 26 since 5.3-Stage2, both windows).
+    private const double TitleBarHeight = 26;
 
     /// <summary>
     /// A window with the main window's chrome and dark background, put in the state named and given what makes Windows paint a

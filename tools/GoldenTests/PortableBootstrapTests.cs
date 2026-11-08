@@ -16,12 +16,13 @@ namespace HandPegGoldenTests;
 /// root in order, each once (where it goes when hostfxr refuses one); what counts as a root (both frameworks of major 10 as released
 /// versions and a hostfxr of this processor, the newest); each kind of copy's own root (portable.txt and --portable included) and where a
 /// download goes (never a "portable" folder in an installed copy), each attempt in a folder of its own under a lock per root, what a later
-/// one clears, and a .NET already there moved aside, never deleted where it is nor while in use; which of Microsoft's files it takes from a
-/// release list (released versions only, https and a SHA-512); what it does with no .NET (an installer's hook and a background process end
-/// quietly, anything else asks); what Microsoft's installer's exit codes mean; that its .NET is the one HandPeg is built for and its
-/// portable marks HandPeg's own; when Explorer's thumbnail handler has a .NET it can start on.
-/// And, where they have been published (Release.ps1), that both HandPeg.exe builds are native programs of their processor: no .NET header,
-/// a window program, small. Every line says what it proved; the tables show each answer.
+/// one clears, and a .NET already there moved aside, never deleted where it is nor while in use; that an installed copy runs on the newer of
+/// its own .NET and the PC's (Pass 5.3-Stage2), a portable one on its own; which of Microsoft's files it takes from a release list (released
+/// versions only, https and a SHA-512); what it does with no .NET (an installer's hook and a background process end quietly, anything else
+/// asks); what Microsoft's installer's exit codes mean; that its .NET is the one HandPeg is built for and its portable marks HandPeg's own;
+/// that HandPeg.exe, as built here and as released, is not marked CET-compatible while Explorer's thumbnail handler stays so (Pass
+/// 5.3-Stage2). And, where they have been published (Release.ps1), that both HandPeg.exe builds are native programs of their processor: no
+/// .NET header, a window program, small, no CET mark. Every line says what it proved; the tables show each answer.
 /// </summary>
 public static class PortableBootstrapTests
 {
@@ -43,13 +44,14 @@ public static class PortableBootstrapTests
         {
             Roots(Expect, scratch);
             Copies(Expect, scratch);
+            NewerRuntime(Expect, Note, scratch);
             Replacing(Expect, scratch);
             Releases(Expect);
             Installers(Expect);
             Decisions(Expect, Note);
             Outcomes(Expect, Note);
             Constants(Expect);
-            HandlerRuntimes(Expect, scratch);
+            ShadowStacks(Expect);
             Programs(Expect);
         }
         catch (Exception ex)
@@ -305,6 +307,92 @@ public static class PortableBootstrapTests
         expect(Find()?.Folder == Path.GetFullPath(environmentRoot), "its own .NET of the other processor (the other installer's) is passed over, and a download replaces it");
     }
 
+    private static void NewerRuntime(Action<bool, string> expect, Action<string> note, string scratch)
+    {
+        static string[] Runtime(string version) => [$"Microsoft.NETCore.App {version}", $"Microsoft.WindowsDesktop.App {version}"];
+        static string? NoEnvironment(string name) => null;
+        static string ProgramFilesDotNet((OwnDotNet Own, string App, string ProgramFiles) copy) => Path.Combine(copy.ProgramFiles, "dotnet");
+
+        // A copy in a layout of its own (newer\<name>): an installed one (current\HandPeg.exe, Update.exe one up), a portable zip, a
+        // portable.txt copy or any other; its own .NET of version <own>, and the PC's Program Files\dotnet of version <pc> (none for null).
+        (OwnDotNet Own, string App, string ProgramFiles) Layout(string name, string? own, string? pc, CopyKind kind = CopyKind.Installed)
+        {
+            var top = Path.Combine(scratch, "newer", name);
+            var app = Directory.CreateDirectory(Path.Combine(top, kind == CopyKind.Installed ? Path.Combine("HandPeg", "current") : "App")).FullName;
+            if (kind == CopyKind.Installed)
+                File.WriteAllText(Path.Combine(top, "HandPeg", "Update.exe"), "");
+            else if (kind == CopyKind.Portable)
+                Directory.CreateDirectory(Path.Combine(app, "portable"));
+            else if (kind == CopyKind.SelfContained)
+                File.WriteAllText(Path.Combine(app, DotNetRoots.PortableSentinel), "");
+
+            var copy = DotNetRoots.OwnRoot(app, [], Directory.Exists, File.Exists, Path.Combine(top, "Local"));
+            if (own is not null)
+                Root(copy.Folder, own, Runtime(own));
+            var programFiles = Path.Combine(top, "Program Files");
+            if (pc is not null)
+                Root(Path.Combine(programFiles, "dotnet"), pc, Runtime(pc));
+            return (copy, app, programFiles);
+        }
+
+        // Every usable root in the order HandPeg.exe tries them (no registered .NET), shown by what each is called.
+        List<DotNetRoot> Order(string label, (OwnDotNet Own, string App, string ProgramFiles) copy, Func<string, string?> environment)
+        {
+            var order = DotNetRoots.InOrder(copy.Own, copy.App, DotNetRoots.Candidates(copy.Own, copy.App, true, environment, null, copy.ProgramFiles, "arm64", false)).ToList();
+            note($"{label}: {string.Join(", ", order.Select(r => r.Where))}");
+            return order;
+        }
+
+        static bool Is(List<DotNetRoot> order, params string[] folders) =>
+            order.Count == folders.Length && order.Select(r => r.Folder).SequenceEqual(folders.Select(f => Path.GetFullPath(f)), StringComparer.OrdinalIgnoreCase);
+
+        var older = Layout("own-older", "10.0.14", "10.0.20");
+        expect(Is(Order("installed, its own .NET 10.0.14, Program Files 10.0.20", older, NoEnvironment), ProgramFilesDotNet(older), older.Own.Folder),
+            "an installed copy whose own .NET (10.0.14) is older than the PC's (10.0.20) runs on the PC's, which Windows Update keeps patched; its own is next, "
+            + "where it goes when hostfxr refuses the PC's");
+        var newer = Layout("own-newer", "10.0.20", "10.0.14");
+        expect(Is(Order("installed, its own .NET 10.0.20, Program Files 10.0.14", newer, NoEnvironment), newer.Own.Folder, ProgramFilesDotNet(newer)),
+            "one whose own .NET is the newer runs on its own");
+        var tie = Layout("tie", "10.0.14", "10.0.14");
+        expect(Is(Order("installed, both 10.0.14", tie, NoEnvironment), tie.Own.Folder, ProgramFilesDotNet(tie)), "and on its own on a tie");
+        var mixed = Layout("mixed", "10.0.14", null);
+        Root(ProgramFilesDotNet(mixed), "10.0.20", "Microsoft.NETCore.App 10.0.20", "Microsoft.WindowsDesktop.App 10.0.12");
+        expect(Is(Order("installed, its own 10.0.14, Program Files Core 10.0.20 with Windows Desktop 10.0.12", mixed, NoEnvironment), mixed.Own.Folder, ProgramFilesDotNet(mixed)),
+            "a .NET counts as the lower of its two frameworks (Core 10.0.20 with Windows Desktop 10.0.12 is older than 10.0.14)");
+        var previews = Layout("previews", "10.0.14", "10.0.12");
+        Root(ProgramFilesDotNet(previews), "10.0.21-rc.1.25555.1", "Microsoft.NETCore.App 10.0.21-rc.1.25555.1", "Microsoft.WindowsDesktop.App 10.0.21-rc.1.25555.1");
+        expect(Is(Order("installed, its own 10.0.14, Program Files 10.0.12 and 10.0.21-rc.1", previews, NoEnvironment), previews.Own.Folder, ProgramFilesDotNet(previews)),
+            "a preview on the PC never counts (HandPeg would not run on it): the PC's released 10.0.12 is compared");
+
+        var named = Layout("environment", "10.0.14", "10.0.14");
+        var newerRoot = Root(Path.Combine(scratch, "newer", "environment", "env"), "10.0.20", Runtime("10.0.20"));
+        expect(Is(Order("installed, its own 10.0.14, DOTNET_ROOT 10.0.20, Program Files 10.0.14", named, name => name == "DOTNET_ROOT" ? newerRoot : null),
+                newerRoot, named.Own.Folder, ProgramFilesDotNet(named)),
+            "the PC's .NET is the first it names (DOTNET_ROOT_<ARCH>, DOTNET_ROOT, the registered one, Program Files): a newer DOTNET_ROOT first, then the copy's own, "
+            + "then the rest in their order, each once");
+        var foreign = Layout("foreign", "10.0.14", null);
+        RootFor(OtherMachine, ProgramFilesDotNet(foreign), "10.0.20", Runtime("10.0.20"));
+        expect(Is(Order("installed, its own 10.0.14, Program Files 10.0.20 of the other processor", foreign, NoEnvironment), foreign.Own.Folder),
+            "a newer .NET of the other processor is no root at all: the copy runs on its own");
+
+        var zip = Layout("zip", "10.0.14", "10.0.20", CopyKind.Portable);
+        var sentinel = Layout("portable-txt", "10.0.14", "10.0.20", CopyKind.SelfContained);
+        expect(zip.Own.Kind == CopyKind.Portable && Is(Order("portable zip, its own 10.0.14, Program Files 10.0.20", zip, NoEnvironment), zip.Own.Folder, ProgramFilesDotNet(zip))
+               && sentinel.Own.Kind == CopyKind.SelfContained && Is(Order("portable.txt copy, its own 10.0.14, Program Files 10.0.20", sentinel, NoEnvironment), sentinel.Own.Folder, ProgramFilesDotNet(sentinel)),
+            "a portable zip and a portable.txt copy keep their own .NET first, however new the PC's (they carry it with them)");
+        var other = Layout("other", "10.0.14", "10.0.20", CopyKind.Other);
+        expect(other.Own.Kind == CopyKind.Other && Is(Order("any other copy, its own 10.0.14, Program Files 10.0.20", other, NoEnvironment), ProgramFilesDotNet(other), other.Own.Folder),
+            "any other copy (its own .NET is %LOCALAPPDATA%\\HandPeg\\dotnet, which installed copies share) does as an installed one");
+
+        var versions = Path.Combine(scratch, "newer", "versions");
+        var split = Root(Path.Combine(versions, "split"), "10.0.20", "Microsoft.NETCore.App 10.0.14", "Microsoft.WindowsDesktop.App 10.0.20");
+        var several = Root(Path.Combine(versions, "several"), "10.0.14", "Microsoft.NETCore.App 10.0.9", "Microsoft.NETCore.App 10.0.14", "Microsoft.NETCore.App 10.0.30-rc.1",
+            "Microsoft.WindowsDesktop.App 10.0.9", "Microsoft.WindowsDesktop.App 10.0.14");
+        var coreOnly = Root(Path.Combine(versions, "core-only"), "10.0.14", "Microsoft.NETCore.App 10.0.14");
+        expect(DotNetRoots.RuntimeVersion(split) == new Version(10, 0, 14) && DotNetRoots.RuntimeVersion(several) == new Version(10, 0, 14) && DotNetRoots.RuntimeVersion(coreOnly) is null,
+            "the .NET a root runs HandPeg on is the lower of its two frameworks' newest released versions (10.0.14 above 10.0.9 as numbers; a preview passed over); none without both");
+    }
+
     private static void Replacing(Action<bool, string> expect, string scratch)
     {
         // A download put in place of a .NET already there (PortableDotNet.PutInPlace): the old one is moved aside whole, never deleted where
@@ -523,49 +611,38 @@ public static class PortableBootstrapTests
             $"its self-contained copy is HandPeg's own: {DotNetRoots.PortableSentinel} beside the program or {DotNetRoots.PortableArgument}, as AppPaths reads them");
     }
 
-    private static void HandlerRuntimes(Action<bool, string> expect, string scratch)
+    /// <summary>
+    /// No CET shadow stacks for HandPeg.exe (Pass 5.3-Stage2, the user's answer): CETCompat false, unconditional, in both projects that make
+    /// a HandPeg.exe (the app's apphost and the released bootstrapper), and never in Explorer's thumbnail handler's, which stays
+    /// CET-compatible for Explorer's surrogate. Read from the projects themselves, so it holds with nothing published.
+    /// </summary>
+    private static void ShadowStacks(Action<bool, string> expect)
     {
-        var programFiles = Path.Combine(scratch, "PF-shell");
-        var machine = Root(Path.Combine(programFiles, "dotnet"), "10.0.14", Core10, Desktop10);
-        var environment = new Dictionary<string, string>();
-        string? Env(string name) => environment.GetValueOrDefault(name);
-        string? Handler(string? registered, string files, string arch = "arm64", bool x64OnArm64 = false) =>
-            HandPegApp.Services.ExplorerThumbnails.HandlerRuntime(Env, registered, files, arch, x64OnArm64, DotNetRoots.Major);
+        var root = RepositoryRoot() ?? "";
+        bool? Off(params string[] parts)
+        {
+            var project = Path.Combine(root, Path.Combine(parts));
+            if (!File.Exists(project))
+                return null;
 
-        expect(Handler(null, programFiles) == machine, "Explorer's thumbnail handler: a .NET 10 Desktop Runtime in Program Files\\dotnet is one its comhost starts on");
-        var registered = Root(Path.Combine(scratch, "registered-shell"), "10.0.14", Core10, "Microsoft.WindowsDesktop.App 8.0.33");
-        expect(Handler(registered, programFiles) is null, "the location .NET's installer registered is the only one looked at once set (there with no Windows Desktop 10: none)");
-        var forArch = Root(Path.Combine(scratch, "env-shell"), "10.0.14", Core10, Desktop10);
-        environment["DOTNET_ROOT_ARM64"] = forArch;
-        expect(Handler(registered, programFiles) == forArch, "DOTNET_ROOT_<ARCH> comes before it, as in .NET's host");
-        environment.Clear();
-        var eight = Path.Combine(scratch, "PF-eight");
-        Root(Path.Combine(eight, "dotnet"), "8.0.33", "Microsoft.NETCore.App 8.0.33", "Microsoft.WindowsDesktop.App 8.0.33");
-        expect(Handler(null, eight) is null, "a PC with only .NET 8: none, so the handler is not registered (and one left from before is taken out)");
-        var preview = Path.Combine(scratch, "PF-preview");
-        const string Candidate = "10.0.0-rc.2.25502.107";
-        Root(Path.Combine(preview, "dotnet"), Candidate, $"Microsoft.NETCore.App {Candidate}", $"Microsoft.WindowsDesktop.App {Candidate}");
-        expect(Handler(null, preview) is null, "a PC whose only .NET 10 is a release candidate's: none, as comhost could not start the handler on it");
+            // Elements only (comments are not read): CETCompat in an unconditional PropertyGroup, false.
+            var settings = System.Xml.Linq.XDocument.Load(project).Descendants("CETCompat").ToList();
+            return settings.Count > 0 && settings.All(e => e.Value.Trim().Equals("false", StringComparison.OrdinalIgnoreCase)
+                                                           && e.Attribute("Condition") is null && e.Parent?.Attribute("Condition") is null);
+        }
 
-        // DOTNET_ROOT set to a folder that holds no .NET (here the one HandPeg's own dotnet is in): the only place looked at, as in .NET's host.
-        var localApp = Path.Combine(scratch, "Local-shell", "HandPeg");
-        Root(Path.Combine(localApp, "dotnet"), "10.0.14", Core10, Desktop10);
-        environment["DOTNET_ROOT"] = localApp;
-        expect(Handler(null, programFiles) is null,
-            "a DOTNET_ROOT holding no .NET is the only place looked at once set: none, with no fall-back to Program Files\\dotnet or to HandPeg's own .NET beneath it");
-        environment.Clear();
-        var x64 = Root(Path.Combine(programFiles, "dotnet", "x64"), "10.0.14", Core10, Desktop10);
-        expect(Handler(null, programFiles, "x64", x64OnArm64: true) == x64, "an x64 process on an ARM64 PC: Program Files\\dotnet\\x64");
+        expect(Off("HandPegApp.csproj") == true && Off("tools", "PortableBootstrap", "HandPegBootstrap.csproj") == true,
+            "HandPeg.exe is never marked CET-compatible: CETCompat false, unconditional, for the app's own HandPeg.exe and for the bootstrapper that is the released one "
+            + "(no shadow stacks: about 16 ms of an x64 start; ARM64 has no such mark)");
+        expect(Off("src", "ShellThumbnails", "HandPeg.ShellThumbnails.csproj") == false,
+            "Explorer's thumbnail handler keeps NativeAOT's CET-compatible default (Explorer's surrogate may enforce shadow stacks)");
     }
 
     private static void Programs(Action<bool, string> expect)
     {
-        // The repository's tools folder: the first folder up from this test's own with PortableBootstrap in it.
-        var tools = new DirectoryInfo(AppContext.BaseDirectory);
-        while (tools is not null && !Directory.Exists(Path.Combine(tools.FullName, "PortableBootstrap")))
-            tools = tools.Parent;
-        var folder = Path.Combine(tools?.FullName ?? "", "PortableBootstrap", "bin", "Release", "net10.0");
+        var folder = Path.Combine(RepositoryRoot() ?? "", "tools", "PortableBootstrap", "bin", "Release", "net10.0");
         var wrong = new List<string>();
+        var marked = new List<string>();
         foreach (var (rid, machine) in new[] { ("win-x64", (ushort)0x8664), ("win-arm64", (ushort)0xAA64) })
         {
             var exe = Path.GetFullPath(Path.Combine(folder, rid, "publish", "HandPegBootstrap.exe"));
@@ -575,31 +652,85 @@ public static class PortableBootstrapTests
                 continue;
             }
 
-            var header = PeHeader(exe);
-            Console.WriteLine($"        {rid} HandPeg.exe: machine 0x{header.Machine:X4}, subsystem {header.Subsystem}, .NET header {header.HasClrHeader}, {new FileInfo(exe).Length / 1024} KB");
+            var header = ReadPe(exe);
+            Console.WriteLine($"        {rid} HandPeg.exe: machine 0x{header.Machine:X4}, subsystem {header.Subsystem}, .NET header {header.HasClrHeader}, CET-compatible {header.CetCompatible}, {new FileInfo(exe).Length / 1024} KB");
             if (header.Machine != machine || header.Subsystem != 2 || header.HasClrHeader || new FileInfo(exe).Length > 4 << 20)
                 wrong.Add(rid);
+            if (header.CetCompatible)
+                marked.Add(rid);
         }
 
         expect(wrong.Count == 0, "each published HandPeg.exe is a native window program of its processor (x64 0x8664, ARM64 0xAA64), with no .NET header, under 4 MB"
             + (wrong.Count > 0 ? $": not {string.Join(", ", wrong)}" : ""));
+        expect(marked.Count == 0, "and neither is marked CET-compatible (a publish from a clean obj takes CETCompat false)"
+            + (marked.Count > 0 ? $": marked {string.Join(", ", marked)}" : ""));
     }
 
-    /// <summary>A PE file's machine, subsystem, and whether it has a .NET (CLR) header: data directory 14 of its optional header.</summary>
-    private static (ushort Machine, ushort Subsystem, bool HasClrHeader) PeHeader(string path)
+    /// <summary>The repository's folder: the first folder up from this test's own with HandPegApp.csproj in it; null when there is none.</summary>
+    internal static string? RepositoryRoot()
     {
-        using var reader = new BinaryReader(File.OpenRead(path));
-        reader.BaseStream.Position = 0x3C;
-        var pe = reader.ReadInt32();
-        reader.BaseStream.Position = pe + 4;
-        var machine = reader.ReadUInt16();
-        reader.BaseStream.Position = pe + 24;
-        var magic = reader.ReadUInt16();
-        reader.BaseStream.Position = pe + 24 + 68;
-        var subsystem = reader.ReadUInt16();
-        var directories = pe + 24 + (magic == 0x20B ? 112 : 96);
-        reader.BaseStream.Position = directories + 14 * 8;
-        var clr = reader.ReadUInt32();
-        return (machine, subsystem, clr != 0);
+        var folder = new DirectoryInfo(AppContext.BaseDirectory);
+        while (folder is not null && !File.Exists(Path.Combine(folder.FullName, "HandPegApp.csproj")))
+            folder = folder.Parent;
+        return folder?.FullName;
+    }
+
+    /// <summary>
+    /// What the golden tests read of a PE file: its machine, its subsystem, whether it is a DLL, whether it has a .NET (CLR) header (data
+    /// directory 14), whether it is marked CET-compatible (the debug directory's IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS entry, type 20,
+    /// bit 0x1; ARM64 has none), and the names it exports.
+    /// </summary>
+    internal readonly record struct PeFacts(ushort Machine, ushort Subsystem, bool IsDll, bool HasClrHeader, bool CetCompatible, IReadOnlyList<string> Exports);
+
+    internal static PeFacts ReadPe(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        ushort U16(int at) => BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(at));
+        uint U32(int at) => BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(at));
+
+        var pe = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(0x3C));
+        var sectionCount = U16(pe + 6);
+        var optional = pe + 24;
+        var sections = optional + U16(pe + 20);
+        var directories = optional + (U16(optional) == 0x20B ? 112 : 96);
+
+        // Where an address in the loaded image is in the file: through the section that holds it.
+        int Offset(uint address)
+        {
+            for (var i = 0; i < sectionCount; i++)
+            {
+                var section = sections + i * 40;
+                var (start, size, raw) = (U32(section + 12), Math.Max(U32(section + 8), U32(section + 16)), U32(section + 20));
+                if (address >= start && address < start + size)
+                    return (int)(address - start + raw);
+            }
+
+            throw new InvalidDataException($"{path}: address 0x{address:X} is in no section");
+        }
+
+        var exports = new List<string>();
+        if (U32(directories) is var exportAddress and not 0)
+        {
+            var table = Offset(exportAddress);
+            var names = Offset(U32(table + 32));
+            for (var i = 0; i < U32(table + 24); i++)
+            {
+                var name = Offset(U32(names + i * 4));
+                exports.Add(Encoding.ASCII.GetString(bytes, name, Array.IndexOf(bytes, (byte)0, name) - name));
+            }
+        }
+
+        var cet = false;
+        if (U32(directories + 6 * 8) is var debugAddress and not 0)
+        {
+            var debug = Offset(debugAddress);
+            for (var entry = debug; entry < debug + U32(directories + 6 * 8 + 4); entry += 28)
+            {
+                if (U32(entry + 12) == 20)
+                    cet = (U32((int)U32(entry + 24)) & 1) != 0;
+            }
+        }
+
+        return new PeFacts(U16(pe + 4), U16(optional + 68), (U16(pe + 22) & 0x2000) != 0, U32(directories + 14 * 8) != 0, cet, exports);
     }
 }

@@ -276,12 +276,13 @@ public partial class MainWindow : Window
         // What a Windows notification would have said while HandPeg was in front goes on the status line instead (5.0-Release).
         Notifier.Said += (title, message) => Dispatcher.BeginInvoke(() => _viewModel.StatusText = $"{title}: {message}");
 
-        _viewModel.LiveFilterInvalidated += ScheduleLiveFilter;
+        // The player's picture is made again after every change it is made from (the preview state, MainViewModel.InvalidatePreviewState).
+        _viewModel.PreviewStateInvalidated += ScheduleGpuState;
         _viewModel.IsTimelineDragHeld = () => TimelineDragHeld;
         _viewModel.TimelineSelection = SelectedGroup;
 
         // The timeline's rows follow the clip views (Layers), and anything about one that changes.
-        _viewModel.LiveFilterInvalidated += ScheduleClipRedraw;
+        _viewModel.PreviewStateInvalidated += ScheduleClipRedraw;
         _viewModel.Layers.CollectionChanged += (_, _) => ScheduleClipRedraw();
         _viewModel.TimelineChanged += ScheduleClipRedraw;
         _viewModel.TimelineChanged += DrawKeyTimeline;
@@ -304,8 +305,7 @@ public partial class MainWindow : Window
         KeyLanes.ZoomRequested += ZoomTimeline;
         Loaded += (_, _) => ApplyPaneLayout();
 
-        // The Summary cards, in the order they were last dragged into.
-        Loaded += (_, _) => ApplySummaryCardOrder();
+        // The Summary cards, in the order they were last dragged into: put in it as the tab is made (RealizeTabContent).
         ReorderBehavior.Reordered += panel =>
         {
             if (ReferenceEquals(panel, SummaryCards))
@@ -323,7 +323,7 @@ public partial class MainWindow : Window
         // A double-click on any slider or number box puts it back: to the style preset's value where there is one.
         NumericInput.ResetValue = _viewModel.GetResetValue;
         NumericInput.RegisterDoubleClickReset();
-        VideoView.SizeChanged += (_, _) => ScheduleLiveFilter();
+        VideoView.SizeChanged += (_, _) => ScheduleGpuState();
 
         // The player starts once there is a surface for it to draw on, away from the UI thread.
         // And not before the window has been drawn (_shellDrawn): the workspace is on screen first, and the
@@ -1012,38 +1012,14 @@ public partial class MainWindow : Window
 
     private void DropHint_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => BrowseSource_Click(sender, e);
 
-    // ----- The timeline's checkboxes in the transport row -----
-
-    // The width the three checkboxes need side by side, measured while they are shown.
-    private double _timelineOptionsWidth;
-
-    /// <summary>
-    /// Shows the checkboxes beside the transport while the row has room for them, and one button that opens
-    /// them as a menu while it has not. They are never wrapped onto a second line.
-    /// </summary>
-    private void TimelineOptionsHost_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        if (TimelineOptionsInline.Visibility == Visibility.Visible && TimelineOptionsInline.ActualWidth > 0)
-            _timelineOptionsWidth = Math.Max(_timelineOptionsWidth, TimelineOptionsInline.ActualWidth);
-        if (_timelineOptionsWidth <= 0)
-        {
-            TimelineOptionsInline.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            _timelineOptionsWidth = TimelineOptionsInline.DesiredSize.Width;
-        }
-
-        // No room: the checkboxes are taken out of the row altogether and offered in the Views menu instead; with
-        // room again they come back. They are never wrapped onto a second line.
-        var fits = TimelineOptionsHost.ActualWidth >= _timelineOptionsWidth + 4;
-        UpdateTransportMinWidth();
-        TimelineOptionsInline.Visibility = fits ? Visibility.Visible : Visibility.Collapsed;
-        ViewsPlaybackOptions.Visibility = fits ? Visibility.Collapsed : Visibility.Visible;
-    }
+    // ----- The Views button in the transport row -----
+    // The timeline's I-frame checkboxes that followed it are in the Views menu and Timeline Settings since 5.3-Stage2 (the user's de-clutter).
 
     private void TimelineOptionsBar_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e) => UpdateTransportMinWidth();
 
     /// <summary>
-    /// However narrow the player gets, the Views button keeps its place at the left of the playback bar: with
-    /// the checkboxes folded into it, it is the only way to them.
+    /// However narrow the player gets, the Views button keeps its place at the left of the playback bar: it is the way to
+    /// the panes and the timeline's I-frame checkboxes.
     /// </summary>
     private void UpdateTransportMinWidth() =>
         TransportRow.ColumnDefinitions[0].MinWidth = TimelineOptionsBar.IsVisible
@@ -1502,19 +1478,11 @@ public partial class MainWindow : Window
                 gpuSpeed.Rate = _viewModel.PlaybackRate;
         }
 
-        if (e.PropertyName == nameof(MainViewModel.LivePreview))
-        {
-            ApplyLiveFilter();
-            _viewModel.StatusText = _viewModel.LivePreview
-                ? "Live Preview on: the player shows the picture with the export's filters applied."
-                : "Live Preview off: the player shows the source as it is.";
-        }
-
         if (e.PropertyName is nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer))
             UpdateOverlayMode();
 
-        // The source view shows the selected clip's picture (MainViewModel.ShownSourceClip).
-        if (e.PropertyName == nameof(MainViewModel.KeyLayer) && (!_viewModel.LivePreview || CurrentOverlayMode != OverlayMode.None))
+        // The source view (Interactive Crop or a Draw Target) shows the selected clip's picture (MainViewModel.ShownSourceClip).
+        if (e.PropertyName == nameof(MainViewModel.KeyLayer) && CurrentOverlayMode != OverlayMode.None)
             ScheduleGpuState();
 
         if (e.PropertyName == nameof(MainViewModel.IsArrangeActive))
@@ -1823,6 +1791,9 @@ public partial class MainWindow : Window
     private Grid AudioOptionsHost = null!;
     private StackPanel AudioOptionsInline = null!;
     private System.Windows.Controls.Primitives.ToggleButton AudioOptionsButton = null!;
+
+    // The Summary tab's cards (5.3-Stage2: the tab is a template too, made with the tab by RealizeTabContent); null until then.
+    private StackPanel? SummaryCards;
 
     private void AudioOptionsHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -2261,26 +2232,34 @@ public partial class MainWindow : Window
 
     private static readonly string[] SummaryCardIds = ["Output", "EncodingPreset", "StylePreset", "SwapProject"];
 
-    /// <summary>Puts the cards in the order saved (any not named keep their place after those that are).</summary>
+    /// <summary>Puts the cards in the order saved (any not named keep their place after those that are); nothing while the tab is not made.</summary>
     private void ApplySummaryCardOrder()
     {
+        if (SummaryCards is not { } panel)
+            return;
+
         var saved = AppSettings.Current.SummaryCardOrder.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var order = saved.Where(SummaryCardIds.Contains).Concat(SummaryCardIds.Where(id => !saved.Contains(id))).ToList();
-        var cards = SummaryCards.Children.OfType<FrameworkElement>().ToList();
-        SummaryCards.Children.Clear();
+        var cards = panel.Children.OfType<FrameworkElement>().ToList();
+        panel.Children.Clear();
         foreach (var card in cards.OrderBy(c => c.Tag is string id && order.IndexOf(id) is var at and >= 0 ? at : int.MaxValue))
-            SummaryCards.Children.Add(card);
+            panel.Children.Add(card);
     }
 
-    private void SaveSummaryCardOrder() =>
-        _viewModel.SavePaneLayout(s => s.SummaryCardOrder = string.Join(",", SummaryCards.Children.OfType<FrameworkElement>().Select(c => c.Tag as string).OfType<string>()));
+    private void SaveSummaryCardOrder()
+    {
+        if (SummaryCards is { } panel)
+            _viewModel.SavePaneLayout(s => s.SummaryCardOrder = string.Join(",", panel.Children.OfType<FrameworkElement>().Select(c => c.Tag as string).OfType<string>()));
+    }
 
     private void SummaryCardHeader_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (sender is not FrameworkElement { Tag: string id } header || SummaryCards.Children.OfType<FrameworkElement>().FirstOrDefault(c => c.Tag as string == id) is not { } card)
+        // Only from inside the Summary tab, so its cards are made.
+        if (SummaryCards is not { } panel || sender is not FrameworkElement { Tag: string id } header
+            || panel.Children.OfType<FrameworkElement>().FirstOrDefault(c => c.Tag as string == id) is not { } card)
             return;
 
-        var at = SummaryCards.Children.IndexOf(card);
+        var at = panel.Children.IndexOf(card);
         var menu = new ContextMenu { PlacementTarget = header };
         void Add(string text, bool enabled, Action action)
         {
@@ -2295,13 +2274,13 @@ public partial class MainWindow : Window
 
         Add("Move Up", at > 0, () =>
         {
-            SummaryCards.Children.RemoveAt(at);
-            SummaryCards.Children.Insert(at - 1, card);
+            panel.Children.RemoveAt(at);
+            panel.Children.Insert(at - 1, card);
         });
-        Add("Move Down", at < SummaryCards.Children.Count - 1, () =>
+        Add("Move Down", at < panel.Children.Count - 1, () =>
         {
-            SummaryCards.Children.RemoveAt(at);
-            SummaryCards.Children.Insert(at + 1, card);
+            panel.Children.RemoveAt(at);
+            panel.Children.Insert(at + 1, card);
         });
         menu.Items.Add(new Separator());
         Add("Reset Card Order", true, () =>
@@ -2359,7 +2338,8 @@ public partial class MainWindow : Window
         Grid.SetRow(StatusBar, merged ? 0 : 1);
         Grid.SetColumn(StatusBar, 0);
         Grid.SetColumnSpan(StatusBar, merged ? 1 : 2);
-        (StatusBar.Margin, StatusBar.VerticalAlignment) = merged ? (new Thickness(2, 10, 14, 0), VerticalAlignment.Center) : (new Thickness(2, 10, 0, 0), VerticalAlignment.Stretch);
+        // Edge to edge (5.3-Stage2): no band above it, only its words kept off the window's edges.
+        (StatusBar.Margin, StatusBar.VerticalAlignment) = merged ? (new Thickness(8, 2, 14, 2), VerticalAlignment.Center) : (new Thickness(8, 2, 8, 2), VerticalAlignment.Stretch);
 
         // Inside the status bar the progress chip is first, at the left edge, in both modes; the action log follows it.
     }

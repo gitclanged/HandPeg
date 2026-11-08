@@ -310,8 +310,6 @@ public partial class MainViewModel
         if (style.Blur is { } blur)
             TakeBlur(blur);
 
-        if (!_isBackgroundWorker && HasSource)
-            LivePreview = true;
         ApplyEncodingDefaultsOverStyle();
         Checkpoint($"apply {name}", before);
         StatusText = $"{name} is on {(targets.Count == 1 ? "the clip" : $"{targets.Count} clips")}, its Cutouts over {(targets.Count == 1 ? "its" : "each one's")} span. Ctrl+Z takes it away.";
@@ -451,8 +449,6 @@ public partial class MainViewModel
                 PutTemplateOn(id, template, label, swap: true);
             if (style.Blur is { } blur && targets.Count > 0)
                 TakeBlur(blur);
-            if (targets.Count > 0 && !_isBackgroundWorker && HasSource)
-                LivePreview = true;
             ApplyEncodingDefaultsOverStyle();
         }
 

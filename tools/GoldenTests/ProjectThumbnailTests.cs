@@ -3,7 +3,6 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Windows.Media;
@@ -18,11 +17,12 @@ namespace HandPegGoldenTests;
 /// <summary>
 /// Pass 5.2D's baked project thumbnails: their size, their JPEG, where a .hproj and a .hpb carry them and how
 /// they are read back without reading the rest, and the readback wait the player draws one through, ended by its stop
-/// (project-thumbnail); Explorer's preview of them, the very handler class Explorer loads over a stream of each kind of file, and its
-/// registration for the user, on a test key of its own (explorer-thumbnails). Every line says what it proved; sizes in bytes,
-/// colours and wait times as measured go to the console.
+/// (project-thumbnail); Explorer's preview of them, the very handler Explorer loads (its code compiled in here, called through its
+/// exports and COM tables as Explorer's surrogate calls the NativeAOT DLL; and that DLL itself where a Release build has published it)
+/// over a stream of each kind of file, and its registration for the user, on a test key of its own (explorer-thumbnails). Every line
+/// says what it proved; sizes in bytes, colours and wait times as measured go to the console.
 /// </summary>
-public static partial class ProjectThumbnailTests
+public static unsafe partial class ProjectThumbnailTests
 {
     // The colours of the test frames (B, G, R), and how far a JPEG (and a scaling) may move them.
     private static readonly (int B, int G, int R) Orange = (40, 120, 200), Blue = (200, 60, 30), Green = (30, 160, 90);
@@ -264,11 +264,27 @@ public static partial class ProjectThumbnailTests
 
     // ----- explorer-thumbnails -----
 
+    // The interfaces as Windows declares them (unknwn.h, shobjidl.h, thumbcache.h): what Explorer's surrogate asks a handler for.
+    private static readonly Guid UnknownIid = new("00000000-0000-0000-c000-000000000046");
+    private static readonly Guid ClassFactoryIid = new("00000001-0000-0000-c000-000000000046");
+    private static readonly Guid InitializeWithStreamIid = new("b824b49d-22ac-4161-ac8a-9916e8fa3f7f");
+    private static readonly Guid InitializeWithFileIid = new("b7d14566-0509-4cce-a71f-0a554233bd9b");
+    private static readonly Guid ThumbnailProviderIid = new("e357fccd-a995-4576-b01f-234630154e96");
+
+    // S_FALSE, E_NOINTERFACE, CLASS_E_NOAGGREGATION, CLASS_E_CLASSNOTAVAILABLE.
+    private const int SFalse = 1, NoInterface = unchecked((int)0x80004002), NoAggregation = unchecked((int)0x80040110), ClassNotAvailable = unchecked((int)0x80040111);
+
+    // STGM_READ | STGM_SHARE_DENY_WRITE: the file opened as Explorer's surrogate opens one for a thumbnail handler.
+    private const uint ReadDenyWrite = 0x20;
+
     private static void RunExplorerPreviews(string folder, StringBuilder text, Action<bool, string> expect)
     {
-        expect(Guid.Parse(ProjectThumbnailProvider.ClassId) == Guid.Parse(ExplorerThumbnails.HandlerClsid) && typeof(ProjectThumbnailProvider).GUID == Guid.Parse(ProjectThumbnailProvider.ClassId),
-            "the handler class's CLSID is the one HandPeg registers");
-        expect(typeof(IThumbnailProvider).GUID == Guid.Parse(ExplorerThumbnails.ThumbnailProviderKey), "and the ShellEx key it is registered under is IThumbnailProvider's");
+        var registered = Guid.Parse(ExplorerThumbnails.HandlerClsid);
+        expect(ComIds.Provider == registered && Guid.Parse(ProjectThumbnailProvider.ClassId) == registered, "the handler class's CLSID is the one HandPeg registers");
+        expect(ComIds.ThumbnailProvider == Guid.Parse(ExplorerThumbnails.ThumbnailProviderKey) && ComIds.ThumbnailProvider == ThumbnailProviderIid,
+            "and the ShellEx key it is registered under is IThumbnailProvider's");
+        expect(ComIds.Unknown == UnknownIid && ComIds.ClassFactory == ClassFactoryIid && ComIds.InitializeWithStream == InitializeWithStreamIid,
+            "its objects answer to Windows' own IUnknown, IClassFactory and IInitializeWithStream");
 
         // Two-tone (the top half its colour, the bottom half orange), so the bitmap's rows say which way up they are: GetObject reports
         // a DIB section's height as positive whichever way its rows run, so the order is read from the pixels themselves.
@@ -286,11 +302,15 @@ public static partial class ProjectThumbnailTests
         ProjectStore.SaveTo(new ProjectState { Name = "Bare" }, bare);
         var notProject = Path.Combine(folder, "Noise.hproj");
         File.WriteAllBytes(notProject, Enumerable.Range(0, 4096).Select(i => (byte)(i * 37 % 251)).ToArray());
+        var broken = Path.Combine(folder, "Broken.hproj");
+        ProjectStore.SaveTo(new ProjectState { Name = "Broken", ThumbnailJpeg = Enumerable.Range(0, 2048).Select(i => (byte)(i * 13 % 251)).ToArray() }, broken);
 
-        // The handler over each, as Explorer calls it: a stream, then a bitmap that fits 256 x 256.
+        // The handler's code compiled into this program, called as Explorer's surrogate calls the DLL: its export by address, then its
+        // objects through their tables, over Windows' own stream of each file; a bitmap that fits 256 x 256.
+        delegate* unmanaged<Guid*, Guid*, void**, int> getClassObject = &ShellExports.DllGetClassObject;
         foreach (var (path, kind, width, height, colour) in new[] { (project, ".hproj 16:9", 256, 144, Blue), (bundle, ".hpb 9:16", 144, 256, Green) })
         {
-            var preview = Preview(path, 256);
+            var preview = Preview(getClassObject, path, 256);
             text.Append(CultureInfo.InvariantCulture, $"{kind}: HRESULT 0x{preview.Result:X8}, {preview.Width} x {preview.Height}, {preview.BitsPerPixel} bits, top-down {Near(preview.Upper, colour) && Near(preview.Lower, Orange)}, alpha type {preview.Alpha}\n");
             Console.WriteLine($"        {kind}: first rows B {preview.Upper.B}, G {preview.Upper.G}, R {preview.Upper.R}; last rows B {preview.Lower.B}, G {preview.Lower.G}, R {preview.Lower.R}");
             expect(preview.Result == ProjectThumbnailProvider.Ok && preview.Width == width && preview.Height == height,
@@ -299,20 +319,17 @@ public static partial class ProjectThumbnailTests
             expect(Near(preview.Upper, colour) && Near(preview.Lower, Orange), $"top-down, in the thumbnail's colours: its first rows the top's, within {Tolerance} levels ({kind})");
         }
 
-        var small = Preview(project, 96);
+        var small = Preview(getClassObject, project, 96);
         expect(small.Result == ProjectThumbnailProvider.Ok && small.Width == 96 && small.Height == 54, "asked for 96 it draws 96 x 54");
-        var none = Preview(bare, 256);
+        var none = Preview(getClassObject, bare, 256);
         expect(none.Result == ProjectThumbnailProvider.Fail && !none.HadBitmap, "a project without a thumbnail gets E_FAIL and no bitmap (Explorer shows its icon)");
-        var noise = Preview(notProject, 256);
+        var noise = Preview(getClassObject, notProject, 256);
         expect(noise.Result == ProjectThumbnailProvider.Fail && !noise.HadBitmap, "a file that is not a project gets E_FAIL too");
+        var damaged = Preview(getClassObject, broken, 256);
+        expect(damaged.Result == ProjectThumbnailProvider.Fail && !damaged.HadBitmap, "and so does a project whose thumbnail is not a picture (nothing leaves the handler as an exception)");
 
-        var twice = new ProjectThumbnailProvider();
-        using (var file = File.OpenRead(project))
-        {
-            var stream = new ManagedStream(file);
-            expect(twice.Initialize(stream, 0) == ProjectThumbnailProvider.Ok && twice.Initialize(stream, 0) != ProjectThumbnailProvider.Ok,
-                "a second Initialize is refused (the handler is for one file)");
-        }
+        Objects(getClassObject, &ShellExports.DllCanUnloadNow, project, expect);
+        Published(project, expect);
 
         // The registration, on the test's own key: what differs is written, a second time nothing, and only HandPeg's is taken out.
         try
@@ -325,15 +342,19 @@ public static partial class ProjectThumbnailTests
             Describe(classes, "", text);
             var clsid = @"CLSID\" + ExplorerThumbnails.HandlerClsid;
             expect(Value(classes, clsid, "") == ExplorerThumbnails.HandlerName, "its class is named");
-            expect(Value(classes, clsid + @"\InprocServer32", "") == Path.Combine(handler, ExplorerThumbnails.ComHostFile)
-                   && Value(classes, clsid + @"\InprocServer32", "ThreadingModel") == "Apartment", "its server is the COM host in the handler's folder, Apartment-threaded");
+            expect(Value(classes, clsid + @"\InprocServer32", "") == Path.Combine(handler, ExplorerThumbnails.HandlerFile)
+                   && Value(classes, clsid + @"\InprocServer32", "ThreadingModel") == "Apartment", "its server is the handler's own DLL in its folder (no .NET host), Apartment-threaded");
             expect(Value(classes, $@".hproj\ShellEx\{ExplorerThumbnails.ThumbnailProviderKey}", "") == ExplorerThumbnails.HandlerClsid
                    && Value(classes, $@".hpb\ShellEx\{ExplorerThumbnails.ThumbnailProviderKey}", "") == ExplorerThumbnails.HandlerClsid,
                 ".hproj and .hpb name it as their thumbnail handler");
             expect(!ExplorerThumbnails.Register(classes, handler), "a second Register writes nothing (and Explorer is told nothing)");
             const string moved = @"X:\HandPeg-Data\shell\fedcba9876543210";
-            expect(ExplorerThumbnails.Register(classes, moved) && Value(classes, clsid + @"\InprocServer32", "") == Path.Combine(moved, ExplorerThumbnails.ComHostFile),
+            expect(ExplorerThumbnails.Register(classes, moved) && Value(classes, clsid + @"\InprocServer32", "") == Path.Combine(moved, ExplorerThumbnails.HandlerFile),
                 "a handler in another folder (a new version): its server's path is written again");
+            using (var key = classes.CreateSubKey(clsid + @"\InprocServer32"))
+                key.SetValue("", Path.Combine(moved, "HandPeg.ShellThumbnails.comhost.dll"));
+            expect(ExplorerThumbnails.Register(classes, moved) && Value(classes, clsid + @"\InprocServer32", "") == Path.Combine(moved, ExplorerThumbnails.HandlerFile),
+                "5.3-Stage1's registration (its .NET COM host) is written over with the DLL at the next start");
 
             // Another program's handler for .hpb is not HandPeg's to take out.
             const string other = "{00000000-0000-0000-0000-000000000001}";
@@ -382,15 +403,9 @@ public static partial class ProjectThumbnailTests
     // Upper and Lower: the middle column's pixel a quarter and three quarters of the way through the bitmap's memory.
     private readonly record struct PreviewResult(int Result, bool HadBitmap, int Width, int Height, int BitsPerPixel, uint Alpha, (int B, int G, int R) Upper, (int B, int G, int R) Lower);
 
-    private static PreviewResult Preview(string path, uint cx)
+    private static PreviewResult Preview(delegate* unmanaged<Guid*, Guid*, void**, int> getClassObject, string path, uint cx)
     {
-        var provider = new ProjectThumbnailProvider();
-        using var file = File.OpenRead(path);
-        var initialized = provider.Initialize(new ManagedStream(file), 0);
-        if (initialized != ProjectThumbnailProvider.Ok)
-            return new PreviewResult(initialized, false, 0, 0, 0, 0, default, default);
-
-        var result = provider.GetThumbnail(cx, out var bitmap, out var alpha);
+        var (result, bitmap, alpha) = Thumbnail(getClassObject, path, cx);
         if (bitmap == 0)
             return new PreviewResult(result, false, 0, 0, 0, alpha, default, default);
 
@@ -412,6 +427,233 @@ public static partial class ProjectThumbnailTests
         {
             DeleteObject(bitmap);
         }
+    }
+
+    /// <summary>
+    /// A file's thumbnail asked for as Explorer's surrogate asks a handler DLL: DllGetClassObject (the registered CLSID, IClassFactory),
+    /// CreateInstance (IInitializeWithStream), Initialize with Windows' own stream of the file, QueryInterface (IThumbnailProvider),
+    /// GetThumbnail, then every reference released. The HRESULT, and the bitmap the caller now owns (0 for none).
+    /// </summary>
+    private static (int Result, nint Bitmap, uint Alpha) Thumbnail(delegate* unmanaged<Guid*, Guid*, void**, int> getClassObject, string path, uint cx)
+    {
+        void* factory = null;
+        var answer = GetClassObject(getClassObject, Guid.Parse(ExplorerThumbnails.HandlerClsid), &factory);
+        if (answer != 0 || factory is null)
+            return (answer, 0, 0);
+
+        void* initialize = null, thumbnail = null;
+        try
+        {
+            answer = CreateInstance(factory, null, InitializeWithStreamIid, &initialize);
+            if (answer != 0 || initialize is null)
+                return (answer, 0, 0);
+
+            var stream = OpenStream(path);
+            answer = Initialize(initialize, stream);
+            Release(stream);
+            if (answer != 0)
+                return (answer, 0, 0);
+
+            answer = Query(initialize, ThumbnailProviderIid, &thumbnail);
+            if (answer != 0 || thumbnail is null)
+                return (answer, 0, 0);
+
+            nint bitmap = 0;
+            var alpha = 0;
+            answer = GetThumbnail(thumbnail, cx, &bitmap, &alpha);
+            return (answer, bitmap, (uint)alpha);
+        }
+        finally
+        {
+            if (thumbnail is not null)
+                Release(thumbnail);
+            if (initialize is not null)
+                Release(initialize);
+            Release(factory);
+        }
+    }
+
+    /// <summary>
+    /// One object as Explorer's surrogate holds it: refused a second file, one identity whichever interface it is asked from, the file let go
+    /// of once its thumbnail is read (or with the object, when it never is), freed by its last Release; and what the library refuses
+    /// (another class, an aggregate, a handler of paths) and that it is never unloaded.
+    /// </summary>
+    private static void Objects(delegate* unmanaged<Guid*, Guid*, void**, int> getClassObject, delegate* unmanaged<int> canUnloadNow, string project, Action<bool, string> expect)
+    {
+        void* factory = null;
+        if (GetClassObject(getClassObject, Guid.Parse(ExplorerThumbnails.HandlerClsid), &factory) != 0 || factory is null)
+        {
+            expect(false, "DllGetClassObject gives the handler's class factory");
+            return;
+        }
+
+        try
+        {
+            void* other = null;
+            expect(GetClassObject(getClassObject, new Guid("00000000-0000-0000-0000-000000000001"), &other) == ClassNotAvailable && other is null,
+                "another class: DllGetClassObject says CLASS_E_CLASSNOTAVAILABLE and gives nothing");
+            expect(canUnloadNow() == SFalse, "DllCanUnloadNow says S_FALSE: a NativeAOT library is never unloaded, so Explorer's surrogate keeps it");
+
+            void* initialize = null;
+            if (CreateInstance(factory, null, InitializeWithStreamIid, &initialize) != 0 || initialize is null)
+            {
+                expect(false, "CreateInstance gives an IInitializeWithStream");
+                return;
+            }
+
+            var stream = OpenStream(project);
+            var first = Initialize(initialize, stream);
+            var second = Initialize(initialize, stream);
+            Release(stream);
+            expect(first == ProjectThumbnailProvider.Ok && second != ProjectThumbnailProvider.Ok, "a second Initialize is refused (the handler is for one file)");
+
+            void* thumbnail = null, fromInitialize = null, fromThumbnail = null;
+            Query(initialize, ThumbnailProviderIid, &thumbnail);
+            Query(initialize, UnknownIid, &fromInitialize);
+            if (thumbnail is not null)
+                Query(thumbnail, UnknownIid, &fromThumbnail);
+            expect(thumbnail is not null && fromInitialize == initialize && fromThumbnail == initialize,
+                "QueryInterface finds IThumbnailProvider, and IUnknown is the same object from either interface (COM's identity rule)");
+
+            nint bitmap = 0;
+            var alpha = 0;
+            var drawn = thumbnail is not null ? GetThumbnail(thumbnail, 256, &bitmap, &alpha) : ProjectThumbnailProvider.Fail;
+            if (bitmap != 0)
+                DeleteObject(bitmap);
+            expect(drawn == ProjectThumbnailProvider.Ok && FileIsFree(project), "the file is let go of once its thumbnail is read, while Explorer still holds the object");
+
+            if (fromThumbnail is not null)
+                Release(fromThumbnail);
+            if (fromInitialize is not null)
+                Release(fromInitialize);
+            if (thumbnail is not null)
+                Release(thumbnail);
+            expect(Release(initialize) == 0, "the last Release frees the object (its count back to 0)");
+
+            void* unread = null;
+            var heldWhileAlive = false;
+            if (CreateInstance(factory, null, InitializeWithStreamIid, &unread) == 0 && unread is not null)
+            {
+                var again = OpenStream(project);
+                Initialize(unread, again);
+                Release(again);
+                heldWhileAlive = !FileIsFree(project);
+                Release(unread);
+            }
+
+            expect(heldWhileAlive && FileIsFree(project), "a file never read is held while its object lives, and let go of by the object's last Release");
+
+            void* aggregate = null;
+            expect(CreateInstance(factory, factory, InitializeWithStreamIid, &aggregate) == NoAggregation && aggregate is null,
+                "an aggregating outer object is refused (CLASS_E_NOAGGREGATION)");
+            void* byPath = null;
+            expect(CreateInstance(factory, null, InitializeWithFileIid, &byPath) == NoInterface && byPath is null,
+                "it takes a stream only (as a handler in Explorer's isolated surrogate should): asked for IInitializeWithFile, E_NOINTERFACE");
+        }
+        finally
+        {
+            Release(factory);
+        }
+    }
+
+    /// <summary>
+    /// The handler as HandPeg's Release build publishes it for shell\ (src\ShellThumbnails\bin\Release\net10.0-windows\&lt;rid&gt;\publish;
+    /// Release.ps1 makes both), where one has been made: each a native DLL of its processor with the two exports, and the one of this
+    /// process's processor loaded as Explorer's surrogate loads it, drawing what the compiled-in code draws. A Debug build makes none, so
+    /// the golden text is the same either way; what was found goes to the console.
+    /// </summary>
+    private static void Published(string project, Action<bool, string> expect)
+    {
+        var root = PortableBootstrapTests.RepositoryRoot() ?? "";
+        var own = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? (ushort)0xAA64 : (ushort)0x8664;
+        var wrong = new List<string>();
+        string? loadable = null;
+        foreach (var (rid, machine) in new[] { ("win-x64", (ushort)0x8664), ("win-arm64", (ushort)0xAA64) })
+        {
+            var dll = Path.GetFullPath(Path.Combine(root, "src", "ShellThumbnails", "bin", "Release", "net10.0-windows", rid, "publish", ExplorerThumbnails.HandlerFile));
+            if (!File.Exists(dll))
+            {
+                Console.WriteLine($"        {rid} handler not published here ({dll}): checked by Release.ps1, and here once a Release build has made it");
+                continue;
+            }
+
+            var pe = PortableBootstrapTests.ReadPe(dll);
+            var size = new FileInfo(dll).Length;
+            Console.WriteLine($"        {rid} handler: machine 0x{pe.Machine:X4}, DLL {pe.IsDll}, .NET header {pe.HasClrHeader}, exports {string.Join(" ", pe.Exports)}, CET-compatible {pe.CetCompatible}, {size / 1024} KB");
+            if (pe.Machine != machine || !pe.IsDll || pe.HasClrHeader || !pe.Exports.Contains("DllGetClassObject") || !pe.Exports.Contains("DllCanUnloadNow")
+                || (machine == 0x8664 && !pe.CetCompatible) || size > 4 << 20)
+                wrong.Add(rid);
+            else if (machine == own)
+                loadable = dll;
+        }
+
+        expect(wrong.Count == 0, "each published handler is a native DLL of its processor (x64 0x8664, ARM64 0xAA64) with no .NET header, exporting DllGetClassObject and "
+            + "DllCanUnloadNow, CET-compatible on x64 (Explorer's surrogate may enforce it), under 4 MB" + (wrong.Count > 0 ? $": not {string.Join(", ", wrong)}" : ""));
+
+        var drawn = true;
+        if (loadable is not null)
+        {
+            // Never freed: a NativeAOT library cannot be unloaded (this process holds it until it ends).
+            var library = NativeLibrary.Load(loadable);
+            var published = (delegate* unmanaged<Guid*, Guid*, void**, int>)NativeLibrary.GetExport(library, "DllGetClassObject");
+            var preview = Preview(published, project, 256);
+            Console.WriteLine($"        the published handler of this processor: HRESULT 0x{preview.Result:X8}, {preview.Width} x {preview.Height}, {preview.BitsPerPixel} bits, alpha type {preview.Alpha}; first rows B {preview.Upper.B}, G {preview.Upper.G}, R {preview.Upper.R}");
+            drawn = preview.Result == ProjectThumbnailProvider.Ok && preview.Width == 256 && preview.Height == 144 && preview.BitsPerPixel == 32
+                    && preview.Alpha == ProjectThumbnailProvider.AlphaRgb && Near(preview.Upper, Blue) && Near(preview.Lower, Orange);
+        }
+
+        expect(drawn, "and the one of this processor, loaded as Explorer's surrogate loads it (the DLL, then its export), draws the .hproj at 256 x 144, top-down, as the code compiled in here does");
+    }
+
+    // Whether nothing holds the file open any more: Windows' stream of it lets no one else write while it is open.
+    private static bool FileIsFree(string path)
+    {
+        try
+        {
+            using var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
+    // ----- COM by hand: a pointer's first field is its table of methods (IUnknown's three first, then the interface's own) -----
+
+    private static void* Slot(void* com, int slot) => (*(void***)com)[slot];
+
+    private static uint Release(void* com) => ((delegate* unmanaged<void*, uint>)Slot(com, 2))(com);
+
+    private static int Query(void* com, Guid iid, void** result) => ((delegate* unmanaged<void*, Guid*, void**, int>)Slot(com, 0))(com, &iid, result);
+
+    private static int GetClassObject(delegate* unmanaged<Guid*, Guid*, void**, int> getClassObject, Guid clsid, void** factory)
+    {
+        var iid = ClassFactoryIid;
+        return getClassObject(&clsid, &iid, factory);
+    }
+
+    // IClassFactory::CreateInstance(outer, iid, result), slot 3.
+    private static int CreateInstance(void* factory, void* outer, Guid iid, void** result) =>
+        ((delegate* unmanaged<void*, void*, Guid*, void**, int>)Slot(factory, 3))(factory, outer, &iid, result);
+
+    // IInitializeWithStream::Initialize(stream, mode), slot 3.
+    private static int Initialize(void* initialize, void* stream) => ((delegate* unmanaged<void*, void*, uint, int>)Slot(initialize, 3))(initialize, stream, 0);
+
+    // IThumbnailProvider::GetThumbnail(cx, bitmap, alpha), slot 3.
+    private static int GetThumbnail(void* thumbnail, uint cx, nint* bitmap, int* alpha) =>
+        ((delegate* unmanaged<void*, uint, nint*, int*, int>)Slot(thumbnail, 3))(thumbnail, cx, bitmap, alpha);
+
+    // The file as a stream, opened as Explorer's surrogate opens one for a handler (shlwapi's file stream: read, others may not write).
+    private static void* OpenStream(string path)
+    {
+        void* stream = null;
+        int answer;
+        fixed (char* name = path)
+            answer = SHCreateStreamOnFileEx(name, ReadDenyWrite, 0, 0, null, &stream);
+        if (answer != 0 || stream is null)
+            throw new IOException($"SHCreateStreamOnFileEx said 0x{answer:X8} for {path}");
+        return stream;
     }
 
     // Every key and value under a key, sorted: what the golden shows of the registration.
@@ -466,46 +708,6 @@ public static partial class ProjectThumbnailTests
 
     // ----- What Explorer hands the handler, and what GDI says of what it hands back -----
 
-    /// <summary>An IStream over a file, as Explorer gives a thumbnail handler one: read and seek, its size from Stat.</summary>
-    private sealed class ManagedStream(Stream inner) : IStream
-    {
-        public void Read(byte[] pv, int cb, nint pcbRead)
-        {
-            var read = inner.Read(pv, 0, cb);
-            if (pcbRead != 0)
-                Marshal.WriteInt32(pcbRead, read);
-        }
-
-        public void Seek(long dlibMove, int dwOrigin, nint plibNewPosition)
-        {
-            var at = inner.Seek(dlibMove, (SeekOrigin)dwOrigin);
-            if (plibNewPosition != 0)
-                Marshal.WriteInt64(plibNewPosition, at);
-        }
-
-        public void Stat(out STATSTG pstatstg, int grfStatFlag) => pstatstg = new STATSTG { cbSize = inner.Length, type = 2 };
-
-        public void Clone(out IStream ppstm) => throw new NotSupportedException();
-
-        public void Commit(int grfCommitFlags)
-        {
-        }
-
-        public void CopyTo(IStream pstm, long cb, nint pcbRead, nint pcbWritten) => throw new NotSupportedException();
-
-        public void LockRegion(long libOffset, long cb, int dwLockType) => throw new NotSupportedException();
-
-        public void Revert()
-        {
-        }
-
-        public void SetSize(long libNewSize) => throw new NotSupportedException();
-
-        public void UnlockRegion(long libOffset, long cb, int dwLockType) => throw new NotSupportedException();
-
-        public void Write(byte[] pv, int cb, nint pcbWritten) => throw new NotSupportedException();
-    }
-
     /// <summary>DIBSECTION: the BITMAP (its pixels' address), its BITMAPINFOHEADER (a negative height: rows top first), and the rest.</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct DibSection
@@ -534,6 +736,10 @@ public static partial class ProjectThumbnailTests
         public nint Section;
         public uint Offset;
     }
+
+    // A file stream (shlwapi): the file, its STGM mode, its attributes, whether to create it (no), no template, the IStream.
+    [LibraryImport("shlwapi.dll")]
+    private static partial int SHCreateStreamOnFileEx(char* file, uint mode, uint attributes, int create, void* template, void** stream);
 
     [LibraryImport("gdi32.dll", EntryPoint = "GetObjectW")]
     private static partial int GetObject(nint handle, int size, out DibSection section);

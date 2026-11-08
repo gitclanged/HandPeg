@@ -192,18 +192,20 @@ dotnet publish tools\PortableBootstrap\HandPegBootstrap.csproj -c Release -r win
 ```
 
 which needs Visual Studio's C++ build tools (the ARM64 and x64 compilers and a Windows SDK) for the linker, found through
-`vswhere.exe`: put `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer` on PATH first (the installer does not). The release copies
+`vswhere.exe` (the project puts `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer` on its build's PATH itself). The release copies
 `bin\Release\net10.0\<rid>\publish\HandPegBootstrap.exe` over the publish's `HandPeg.exe`, both in each zip and in each installer's
 package folder (never with a `portable` folder or `portable.txt` there, which would make an installed copy portable).
 `HANDPEG_BOOTSTRAP_NO_SYSTEM_DOTNET=1` makes it look only in the copy's own places, to try the dialog and the download on a PC that has
 .NET. The `portable-bootstrap` golden test checks where it looks and every usable root in order, each kind of copy's own root and where
 a download goes, each attempt's folders, what a later one clears and the lock's name, that a .NET already there is moved aside (left as it
 was when in use), what it takes from Microsoft's list, what it does with no .NET, what the installer's exit codes mean, that it looks for
-the .NET HandPeg is built for, when Explorer's thumbnail handler has a .NET it can start on, and, once published, both programs' headers.
+the .NET HandPeg is built for, that an installed copy runs on the newer of its own .NET 10 and the PC's (its own on a tie) while a
+portable one keeps its own first, that HandPeg.exe is not marked for shadow stacks (CET), and, once published, both programs' headers.
 
-Explorer's thumbnail handler (`src\ShellThumbnails`, a .NET COM server) cannot use a copy's own .NET: its `comhost.dll` finds .NET only
-through `DOTNET_ROOT*`, the registered location and Program Files. So HandPeg registers it only when that lookup finds a released .NET 10
-Desktop Runtime (`ExplorerThumbnails.HandlerRuntime`).
+Explorer's thumbnail handler (`src\ShellThumbnails`) is NativeAOT since 5.3: one native `HandPeg.ShellThumbnails.dll` that needs no .NET,
+published by a Release build or publish of HandPeg (where the C++ build tools for its processor are) into `shell\` beside HandPeg.exe, and
+registered from there by an installed copy. By hand: `dotnet publish src\ShellThumbnails\HandPeg.ShellThumbnails.csproj -c Release -r win-x64`
+(and `-r win-arm64`). The `explorer-thumbnails` golden test calls its exports by address, and loads the published DLL where one exists.
 
 ## StartupBench.ps1 (how long does a launch take, as a user sees it?)
 `powershell -NoProfile -File tools\StartupBench.ps1 -Builds "<baseline>\HandPeg.exe;<candidate>\HandPeg.exe" [-Rounds 5] [-Seconds 8] [-Warm]`

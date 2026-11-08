@@ -505,7 +505,7 @@ public partial class MainViewModel
             SaveView(s => s.EditLayersOnPlayer = value);
             OnPropertyChanged();
             StatusText = value
-                ? "Edit Clips on Video Preview on: with Live Preview, click a clip on the player to select it, then drag it, its corner, its round handle or its anchor."
+                ? "Edit Clips on Video Preview on: click a clip on the player to select it, then drag it, its corner, its round handle or its anchor."
                 : "Edit Clips on Video Preview off: clips are arranged on the Canvas.";
         }
     }

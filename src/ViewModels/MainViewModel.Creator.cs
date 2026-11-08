@@ -762,7 +762,7 @@ public partial class MainViewModel
             Edit("fill in a video clip", edit => LayOut(edit, clip, end), undoable: false);
             UnpackStreams(element, info, undoable: false);
             element.IsLoading = false;
-            _liveState = null;
+            _previewState = null;
             GenerateCommand();
         }
 

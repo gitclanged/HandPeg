@@ -1180,7 +1180,7 @@ public partial class EffectsPane : UserControl
         {
             AddList.Children.Add(MenuHeading(group.Key));
             foreach (var definition in group)
-                AddList.Children.Add(MenuButton(definition.Name, $"{definition.Description} ({definition.Cost} cost in Live Preview.)", () => Add(definition)));
+                AddList.Children.Add(MenuButton(definition.Name, $"{definition.Description} ({definition.Cost} cost in the preview.)", () => Add(definition)));
         }
 
         // Presets saved from this pane.

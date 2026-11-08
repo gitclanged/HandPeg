@@ -349,26 +349,27 @@
 
     <!-- The window drawn by HandPeg (Pass 4.1B): its own title bar over the content, Windows' frame, shadow and snapping kept. -->
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="32" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"
+        <WindowChrome CaptionHeight="{StaticResource CaptionBarHeight}" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"
                       ResizeBorderThickness="{x:Static SystemParameters.WindowResizeBorderThickness}" />
     </WindowChrome.WindowChrome>
 
     <DockPanel x:Name="ChromeRoot">
     <!--
-        The title bar (WindowChrome, 32 px): HandPeg's name at the left, the caption buttons at the right (Maximize answers
+        The title bar (WindowChrome, 26 px since 5.3-Stage2: CaptionBarHeight in App.xaml, which the Settings screen's bar shares):
+        HandPeg's name at the left, the caption buttons at the right (Maximize answers
         as Windows' own, so Snap Layouts open from it: TitleBarHook). It carries the status at its middle (dimmed) and the
         progress of the work under way as a dim fill across its whole height, status bar or none (4.1.1); resting on
         the status opens the work flyout, a right-click on it brings the status bar back. Dragging anywhere else moves the
         window; a double-click maximizes it.
     -->
-    <Grid x:Name="TitleBar" DockPanel.Dock="Top" Height="32" Background="{DynamicResource TitleBarBrush}">
+    <Grid x:Name="TitleBar" DockPanel.Dock="Top" Height="{StaticResource CaptionBarHeight}" Background="{DynamicResource TitleBarBrush}">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
         <Canvas x:Name="TitleProgress" Grid.ColumnSpan="3" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
-            <Rectangle x:Name="TitleProgressFill" Height="32" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.175" />
+            <Rectangle x:Name="TitleProgressFill" Height="{StaticResource CaptionBarHeight}" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.175" />
         </Canvas>
         <TextBlock x:Name="TitleText" Text="HandPeg" Margin="14,0,12,0" VerticalAlignment="Center" FontSize="12" IsHitTestVisible="False" />
         <Border x:Name="TitleStatus" Grid.ColumnSpan="3" HorizontalAlignment="Center" Background="Transparent" Padding="12,0" Visibility="Collapsed"
@@ -400,7 +401,14 @@
         </StackPanel>
     </Grid>
 
-    <Grid Margin="12">
+    <!--
+        The window's body, edge to edge at its sides and foot in every state (5.3-Stage2, the user's call: no dead band round the
+        panes), with 6 under the title bar (the user's call after seeing it flush: the Header's buttons touched the caption buttons
+        and read as overlapping them; 6 is the gap between the Header's own buttons). A restored window keeps its resize edges:
+        Windows' resize band over the content goes to the frame (FrameHitTest), the player's native window lets it through
+        (VideoSurface) and the rows' scroll bar keeps its clicks (IsHitTestVisibleInChrome).
+    -->
+    <Grid x:Name="ContentRoot" Margin="0,6,0,0">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <!-- The panes (MainDockHost), between the top bar and the bottom bar. -->
@@ -479,8 +487,8 @@
                Opened="ViewsPopup_Opened" Closed="ViewsPopup_Closed">
             <local:ButtonChrome Style="{StaticResource FlyoutChrome}" Padding="12,10">
                 <StackPanel TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="250">
-                    <!-- The timeline's checkboxes, while the playback bar has no room for them. -->
-                    <StackPanel x:Name="ViewsPlaybackOptions" Visibility="Collapsed" Margin="0,0,0,8">
+                    <!-- The timeline's I-frame checkboxes, always here since 5.3-Stage2 (the playback bar no longer carries them; Timeline Settings has them too). -->
+                    <StackPanel x:Name="ViewsPlaybackOptions" Margin="0,0,0,8">
                         <TextBlock Text="Timeline" FontWeight="SemiBold" Margin="0,0,0,4" />
                         <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="0,2"
                                   ToolTip="Splits move onto the I-frames of the video clip they cut, which is what a stream copy needs to cut without encoding." />
@@ -602,7 +610,7 @@
                     <!--
                         Files dropped anywhere on it go to the window's own drop handling (4.3E): over a clip's box, the selected
                         clip's handles (in the adorner layer, beside the boxes' canvas) or the crop, a drop on the video lands as
-                        it does with Live Preview off (always on now, with the boxes over the video).
+                        it does anywhere else on the window.
                     -->
                     <Grid x:Name="PlayerOverlay" AllowDrop="True" DragEnter="DropHint_DragOver" DragOver="DropHint_DragOver" Drop="Window_Drop">
                         <AdornerDecorator ClipToBounds="True">
@@ -665,7 +673,7 @@
             <Grid x:Name="DropHint" Background="#FF0E0E0E" AllowDrop="True" Cursor="Hand" Margin="{DynamicResource WellEdgeThickness}"
                   DragEnter="DropHint_DragOver" DragOver="DropHint_DragOver" Drop="Window_Drop" MouseLeftButtonUp="DropHint_MouseLeftButtonUp"
                   AutomationProperties.Name="Drag and Drop Files or Links">
-                <Rectangle Margin="36" RadiusX="14" RadiusY="14" Stroke="#66FFFFFF" StrokeThickness="2" StrokeDashArray="6 5" />
+                <Rectangle Margin="6" RadiusX="14" RadiusY="14" Stroke="#66FFFFFF" StrokeThickness="2" StrokeDashArray="6 5" />
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                     <Path Data="{StaticResource DropFileOrLinkIcon}" Width="58" Height="54" Stretch="Uniform" Stroke="#88FFFFFF" StrokeThickness="2.2"
                           StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" />
@@ -689,7 +697,7 @@
                 Advanced transport, centred under the player when switched on in Settings:
                 previous I-frame, back one frame, play/pause, forward one frame, next I-frame.
             -->
-            <local:PlaybackRow Grid.Row="1" x:Name="TransportRow" Margin="0,8,0,0">
+            <local:PlaybackRow Grid.Row="1" x:Name="TransportRow" Margin="0">
                 <!-- The buttons sit in the middle while there is room; in a narrow player they give way to the volume -->
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -697,13 +705,14 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <!--
-                    The timeline's three checkboxes, here beside the transport instead of under the timeline.
-                    When the row is too narrow for them they are not wrapped: they fold into one button, which opens them as a small menu.
+                    The Views button at the left of the row. The timeline's I-frame checkboxes that followed it are gone from the row
+                    (5.3-Stage2, the user's de-clutter): they are in the Views menu and in Timeline Settings. Not filling the column,
+                    so the button keeps its own width.
                 -->
-                <DockPanel x:Name="TimelineOptionsBar" Margin="0,0,10,0" LastChildFill="True" IsVisibleChanged="TimelineOptionsBar_IsVisibleChanged">
-                    <!-- Views: the panes, and (when the row is too narrow for them) the checkboxes that otherwise follow it. Its icon is geometry: an eye. -->
+                <DockPanel x:Name="TimelineOptionsBar" Margin="0,0,10,0" LastChildFill="False" IsVisibleChanged="TimelineOptionsBar_IsVisibleChanged">
+                    <!-- Views: the panes and the timeline's I-frame checkboxes. Its icon is geometry: an eye. -->
                     <ToggleButton x:Name="ViewsButton" DockPanel.Dock="Left" Padding="10,6" Margin="0,0,12,0" VerticalAlignment="Center" AutomationProperties.Name="Views"
-                                  ToolTip="Views: show or hide the tabs and the Canvas, Media, Keyframes and Effects panes, and put the panes back where they started. When the window is narrow, the timeline's checkboxes are in here too.">
+                                  ToolTip="Views: show or hide the tabs and the Canvas, Media, Keyframes and Effects panes, put the panes back where they started, and the timeline's I-frame checkboxes.">
                         <StackPanel Orientation="Horizontal">
                             <Path Width="18" Height="12" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.4" StrokeLineJoin="Round"
                                   Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
@@ -711,14 +720,6 @@
                             <TextBlock Text="Views" Margin="7,0,0,0" VerticalAlignment="Center" />
                         </StackPanel>
                     </ToggleButton>
-                <Grid x:Name="TimelineOptionsHost" ClipToBounds="True" SizeChanged="TimelineOptionsHost_SizeChanged">
-                    <StackPanel x:Name="TimelineOptionsInline" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
-                        <CheckBox Content="Snap cuts to I-frames" IsChecked="{Binding SnapToIFrames}" Margin="0"
-                                  ToolTip="Splits move onto the I-frames of the video clip they cut, which is what a stream copy needs to cut without encoding. It does not change the encoders: pick Copy or a codec in the Video and Audio tabs." />
-                        <CheckBox Content="Show I-frames" IsChecked="{Binding ShowIFrames}" Margin="14,0,0,0"
-                                  ToolTip="Draws a thin line on the timeline at every I-frame. Settings (Timeline) can tie timeline snapping to this box." />
-                    </StackPanel>
-                </Grid>
                 </DockPanel>
                 <!--
                     The controls, each shown or not as chosen with the settings button at the right end (PlaybackControls). On one line, always: what the row has no room for is left out of it, least wanted first, and listed
@@ -732,13 +733,6 @@
                             <Setter Property="Padding" Value="10,5" />
                         </Style>
                     </local:OverflowStrip.Resources>
-                    <ToggleButton local:OverflowStrip.Priority="80" Content="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0" IsChecked="{Binding LivePreview}"
-                              AutomationProperties.Name="Enable Live Preview"
-                              ToolTip="Enable Live Preview: the GPU engine draws the sequence as the export draws it (the export is the very same engine), so crop, layout, color, LUT, effects and the rest are seen as you set them, with nothing rendered to disk. Off, the player shows the source as it is. It comes on by itself whenever a video, a preset or a project is opened.">
-                        <ToggleButton.Visibility>
-                            <Binding Path="PlaybackControls[LivePreview]" Converter="{StaticResource BoolToVisibility}" />
-                        </ToggleButton.Visibility>
-                    </ToggleButton>
                     <Button local:OverflowStrip.Priority="20" Style="{StaticResource TransportButton}" Content="&#xE72C;" Margin="3,0,14,0" Click="ReloadPlayer_Click" Visibility="{Binding PlaybackControls[Reload], Converter={StaticResource BoolToVisibility}}"
                             ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
                     <Button local:OverflowStrip.Priority="60" Style="{StaticResource TransportButton}" Content="&#xEB9E;" Tag="JumpStart" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[JumpStart], Converter={StaticResource BoolToVisibility}}"
@@ -791,7 +785,7 @@
                     <ToggleButton local:OverflowStrip.Priority="10" Content="&#xE8B3;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="14,0,3,0" IsChecked="{Binding ShowSafeMargins}" Visibility="{Binding PlaybackControls[SafeMargins], Converter={StaticResource BoolToVisibility}}"
                                   ToolTip="Safe Margins: outlines the action-safe (90%) and title-safe (80%) areas of the frame over the picture." AutomationProperties.Name="Safe Margins" />
                     <ToggleButton local:OverflowStrip.Priority="10" Content="&#xE7AD;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="12,7" Margin="3,0,3,0" IsChecked="{Binding EditLayersOnPlayer}"
-                                  ToolTip="Edit Clips on Video Preview: with Live Preview on, click a clip on the player to select it, then move, resize or turn it there. Only the selected clip is outlined, and nothing while playing." AutomationProperties.Name="Edit Clips on Video Preview">
+                                  ToolTip="Edit Clips on Video Preview: click a clip on the player to select it, then move, resize or turn it there. Only the selected clip is outlined, and nothing while playing." AutomationProperties.Name="Edit Clips on Video Preview">
                         <ToggleButton.Visibility>
                             <Binding Path="PlaybackControls[EditOnVideo]" Converter="{StaticResource BoolToVisibility}" />
                         </ToggleButton.Visibility>
@@ -805,7 +799,7 @@
                               Data="M 2,3 L 9,0.8 L 16,3 L 9,5.2 Z M 2,8 L 9,5.8 L 16,8 L 9,10.2 Z M 2,13 L 9,10.8 L 16,13 L 9,15.2 Z" />
                     </ToggleButton>
                     <Button local:OverflowStrip.Priority="10" Style="{StaticResource TransportButton}" Content="&#xE722;" Tag="ExportFrame" Click="PlaybackControl_Click" Visibility="{Binding PlaybackControls[ExportFrame], Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="Export Frame: saves the frame as it is shown (with Live Preview: as the layout makes it) as a PNG in the output's folder." AutomationProperties.Name="Export Frame" />
+                            ToolTip="Export Frame: saves the frame as it is shown (as the layout makes it) as a PNG in the output's folder." AutomationProperties.Name="Export Frame" />
                     <Button local:OverflowStrip.Priority="55" Style="{StaticResource TransportButton}" Content="&#xE7B3;" Margin="14,0,3,0" Command="{Binding RenderPreviewCommand}"
                             AutomationProperties.Name="Render Preview"
                             ToolTip="Render Preview: encode a few seconds with the current crop, scaling and filters at reduced size, and play the result. Length and size are set in Settings.">
@@ -896,7 +890,7 @@
                         <docking:PaneTitleSlot PaneId="Layout" />
                         <CheckBox Content="Edit on Video" IsChecked="{Binding EditLayersOnPlayer}" Margin="10,0,4,0" VerticalAlignment="Center"
                                   docking:PaneTitleRow.Optional="True" AutomationProperties.Name="Edit Clips on Video Preview"
-                                  ToolTip="Edit Clips on Video Preview: with Live Preview on, the selected clip is moved, resized and turned on the player itself too (only its outline and handles are drawn there, and none while playing)." />
+                                  ToolTip="Edit Clips on Video Preview: the selected clip is moved, resized and turned on the player itself too (only its outline and handles are drawn there, and none while playing)." />
                     </docking:PaneTitleRow>
                     <TextBlock DockPanel.Dock="Top" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
                                Text="Drag a clip to move it, its corner handle to resize it. Double-click to center." />
@@ -909,8 +903,8 @@
                     </local:ButtonChrome>
                 </DockPanel>
             </Border>
-            <!-- Timeline and cut controls -->
-            <Border Grid.Row="2" Grid.ColumnSpan="3" x:Name="TimelinePane" Style="{StaticResource Panel}">
+            <!-- Timeline and cut controls. Slim above and below, square (5.3-Stage2: edge to edge); its sides line up the times. -->
+            <Border Grid.Row="2" Grid.ColumnSpan="3" x:Name="TimelinePane" Style="{StaticResource Panel}" Padding="12,3,12,3" CornerRadius="0">
                 <Grid>
                 <StackPanel>
                     <Grid>
@@ -935,9 +929,6 @@
                         </StackPanel>
                         <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="10,0,0,0"
                                     Visibility="{Binding ShowSimplePlayback, Converter={StaticResource BoolToVisibility}}">
-                            <ToggleButton Content="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="14" Padding="9,6" Margin="3,0" IsChecked="{Binding LivePreview}"
-                                  AutomationProperties.Name="Enable Live Preview"
-                                  ToolTip="Enable Live Preview: the GPU engine draws the sequence as the export draws it (the export is the very same engine), so crop, layout, color, LUT, effects and the rest are seen as you set them, with nothing rendered to disk. Off, the player shows the source as it is. It comes on by itself whenever a video, a preset or a project is opened." />
                             <Button Style="{StaticResource TransportButton}" Content="&#xE72C;" Padding="9,6" Click="ReloadPlayer_Click"
                                     ToolTip="Use if timeline is stuck" AutomationProperties.Name="Reload Player" />
                             <Button Style="{StaticResource TransportButton}" Content="&#xE7B3;" Padding="9,6" Command="{Binding RenderPreviewCommand}"
@@ -1045,10 +1036,10 @@
                 </StackPanel>
                 <!--
                     The bar's lower edge (5.1-Polish, the user's directive): dragged, its height (16 to 120 px, MainWindow.Docking.cs);
-                    double-clicked, the usual one. Over the pane's padding, above everything else in the pane; the border under the
-                    pane (the dock's) sizes the bar too (5.2-AuditB).
+                    double-clicked, the usual one. Over the pane's padding (its margin is the padding's, negated: they change together),
+                    above everything else in the pane; the border under the pane (the dock's) sizes the bar too (5.2-AuditB).
                 -->
-                <local:EdgeGrip x:Name="OverviewGrip" VerticalAlignment="Bottom" Margin="-12,0,-12,-10" Panel.ZIndex="1"
+                <local:EdgeGrip x:Name="OverviewGrip" VerticalAlignment="Bottom" Margin="-12,0,-12,-3" Panel.ZIndex="1"
                                 DragStarted="OverviewGrip_DragStarted" Dragged="OverviewGrip_Dragged" ResetRequested="OverviewGrip_ResetRequested"
                                 ToolTip="Drag to make the Sequence Overview Scrubber taller or shorter. A double-click puts its usual height back." />
                 </Grid>
@@ -1306,15 +1297,24 @@
             <!--
                 The timeline (4.4): every track on one drawn surface (the video tracks, their Sub-Lanes of Cutouts and sound,
                 the sound clips, the captions), with its ruler, toolbar and the selection's inspector. Its pane is
-                "UnifiedTimeline"; wired up by InitializeUnifiedTimeline (MainWindow.UnifiedTimeline.cs).
+                "UnifiedTimeline"; wired up by InitializeUnifiedTimeline (MainWindow.UnifiedTimeline.cs). Flush with its part's edges
+                (5.3-Stage2): no padding and square corners, so the ruler starts right under the tab strip.
             -->
-            <Border x:Name="UnifiedTimelinePanel" Style="{StaticResource Panel}">
+            <Border x:Name="UnifiedTimelinePanel" Style="{StaticResource Panel}" Padding="0" CornerRadius="0">
                 <views:UnifiedTimelinePane x:Name="UnifiedTimeline" />
             </Border>
-        <!-- The preset bar above the tabs, as Settings may have it: a pane of its own. -->
-        <ContentControl x:Name="PresetBarPane" Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0,0,0,10" />
+        <!-- The preset bar above the tabs, as Settings may have it: a pane of its own, with no band under it (5.3-Stage2: the dock's seams part the panes). -->
+        <ContentControl x:Name="PresetBarPane" Content="{Binding}" ContentTemplate="{StaticResource PresetBar}" Focusable="False" Margin="0" />
         <TabControl x:Name="SettingsTabs" Padding="16,8">
             <TabItem Header="Summary">
+                <!--
+                    Not built with the window (5.3-Stage2): made when the tab is first shown, or once the window is idle
+                    (RealizeTabContent, which finds SummaryCards and puts the cards in their saved order). Its own resources
+                    (InfoRowTemplate, SummaryBlock) are found by DynamicResource: made with the template, they are not there
+                    while the window's XAML is read.
+                -->
+                <TabItem.Tag>
+                <DataTemplate>
                 <DockPanel>
                 <Grid Grid.IsSharedSizeScope="True">
                     <Grid.ColumnDefinitions>
@@ -1353,7 +1353,7 @@
                             </Style>
                         </StackPanel.Resources>
 
-                        <Border Style="{StaticResource SummaryBlock}" Tag="Output">
+                        <Border Style="{DynamicResource SummaryBlock}" Tag="Output">
                             <StackPanel>
                                 <DockPanel local:ReorderBehavior.IsGrip="True" Tag="Output" Background="Transparent" Cursor="SizeNS" Margin="0,0,0,6" MouseRightButtonUp="SummaryCardHeader_MouseRightButtonUp"
                                            ToolTip="Drag this card by its title to put it elsewhere in the column. Right-click for more.">
@@ -1387,7 +1387,7 @@
                         </Border>
 
                         <!-- Encoding presets: size, filters, video and audio settings -->
-                        <Border Style="{StaticResource SummaryBlock}" Tag="EncodingPreset">
+                        <Border Style="{DynamicResource SummaryBlock}" Tag="EncodingPreset">
                             <StackPanel>
                                 <DockPanel local:ReorderBehavior.IsGrip="True" Tag="EncodingPreset" Background="Transparent" Cursor="SizeNS" Margin="0,0,0,6" MouseRightButtonUp="SummaryCardHeader_MouseRightButtonUp"
                                            ToolTip="Drag this card by its title to put it elsewhere in the column. Right-click for more.">
@@ -1403,7 +1403,7 @@
                         </Border>
 
                         <!-- Game Presets: a layout for the video clips (their place, look and Cutouts), with the color, blur and subtitle settings that go with them (its Tag, the saved place in the column, keeps its old name) -->
-                        <Border Style="{StaticResource SummaryBlock}" Tag="StylePreset">
+                        <Border Style="{DynamicResource SummaryBlock}" Tag="StylePreset">
                             <StackPanel>
                                 <DockPanel local:ReorderBehavior.IsGrip="True" Tag="StylePreset" Background="Transparent" Cursor="SizeNS" Margin="0,0,0,6" MouseRightButtonUp="SummaryCardHeader_MouseRightButtonUp"
                                            ToolTip="Drag this card by its title to put it elsewhere in the column. Right-click for more.">
@@ -1420,7 +1420,7 @@
                         </Border>
 
                         <!-- The project that is open, and the way to another -->
-                        <Border Style="{StaticResource SummaryBlock}" Tag="SwapProject">
+                        <Border Style="{DynamicResource SummaryBlock}" Tag="SwapProject">
                             <StackPanel>
                                 <DockPanel local:ReorderBehavior.IsGrip="True" Tag="SwapProject" Background="Transparent" Cursor="SizeNS" Margin="0,0,0,6" MouseRightButtonUp="SummaryCardHeader_MouseRightButtonUp"
                                            ToolTip="Drag this card by its title to put it elsewhere in the column. Right-click for more.">
@@ -1440,7 +1440,7 @@
                         <DockPanel>
                             <TextBlock DockPanel.Dock="Top" Text="Source Information" FontWeight="SemiBold" Margin="0,0,0,6" />
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                <ItemsControl ItemsSource="{Binding SourceInfoRows}" ItemTemplate="{StaticResource InfoRowTemplate}" />
+                                <ItemsControl ItemsSource="{Binding SourceInfoRows}" ItemTemplate="{DynamicResource InfoRowTemplate}" />
                             </ScrollViewer>
                         </DockPanel>
                     </Border>
@@ -1449,12 +1449,14 @@
                         <DockPanel>
                             <TextBlock DockPanel.Dock="Top" Text="Projected Output" FontWeight="SemiBold" Margin="0,0,0,6" />
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                <ItemsControl ItemsSource="{Binding OutputInfoRows}" ItemTemplate="{StaticResource InfoRowTemplate}" />
+                                <ItemsControl ItemsSource="{Binding OutputInfoRows}" ItemTemplate="{DynamicResource InfoRowTemplate}" />
                             </ScrollViewer>
                         </DockPanel>
                     </Border>
                 </Grid>
                 </DockPanel>
+                </DataTemplate>
+                </TabItem.Tag>
             </TabItem>
 
             <TabItem Header="Video">
@@ -2034,6 +2036,12 @@
                 Browse, Add to Queue and Start Encode (DestinationBar itself, moved here while this tab is shown).
             -->
             <TabItem Header="Export" x:Name="ExportTab">
+                <!--
+                    Not built with the window (5.3-Stage2): made when the tab is first shown, or once the window is idle (ExportContent;
+                    RealizeTabContent finds its named parts). DestinationBar waits outside the window until then (PlaceDestinationBar).
+                -->
+                <TabItem.Tag>
+                <DataTemplate>
                 <DockPanel x:Name="ExportPanel">
                     <Border DockPanel.Dock="Bottom" x:Name="ExportBarSlot" Margin="0,4,0,0" />
                     <!-- The sound's encoding, always here (4.1.1), whether the Audio tab (the sound's settings) is shown or not -->
@@ -2120,6 +2128,8 @@
                         </Border>
                     </Grid>
                 </DockPanel>
+                </DataTemplate>
+                </TabItem.Tag>
             </TabItem>
 
             <!-- Off by default; switched on in Settings for those who want to read or edit the FFmpeg command. -->
@@ -2165,7 +2175,7 @@
         </Grid.RowDefinitions>
 
         <!-- Destination -->
-        <Border Grid.ColumnSpan="2" x:Name="DestinationBar" Style="{StaticResource Panel}" Margin="0,10,0,0">
+        <Border Grid.ColumnSpan="2" x:Name="DestinationBar" Style="{StaticResource Panel}" Margin="0,1,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -2192,8 +2202,11 @@
         </Border>
 
         <!-- Status bar -->
-        <!-- Right-click: hide it (Tabs and Panes); the status and the progress then move into the title bar. -->
-        <Grid Grid.Row="1" Grid.ColumnSpan="2" x:Name="StatusBar" Margin="2,10,0,0" Background="Transparent">
+        <!--
+            Right-click: hide it (Tabs and Panes); the status and the progress then move into the title bar. Right under the panes
+            since 5.3-Stage2 (no band above it), its words kept off the window's edges (UpdateBottomBar sets the margin).
+        -->
+        <Grid Grid.Row="1" Grid.ColumnSpan="2" x:Name="StatusBar" Margin="8,2,8,2" Background="Transparent">
             <Grid.ContextMenu>
                 <ContextMenu>
                     <MenuItem Header="Hide Status Bar" Click="HideStatusBar_Click" AutomationProperties.Name="Hide Status Bar"

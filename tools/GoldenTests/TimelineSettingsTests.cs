@@ -23,7 +23,8 @@ namespace HandPegGoldenTests;
 /// have no lanes and no fx badge unless asked for, unlocked from its clip by its Lock switch as well, any other effect has, the same cards
 /// on a clip that is no Cutout have, and with the effect lanes off there are none while the badge stays;
 /// timeline-settings-menu: the menu's groups and items from the one table both of its places are made from, each kept in a real setting,
-/// the snap item's key, the track height presets, and the five new settings' defaults through the settings file's own JSON.
+/// the snap item's key, the track height presets, the Undo / Redo item (5.3-Stage2), and the six new settings' defaults through the
+/// settings file's own JSON.
 /// Every line says what it proved.
 /// </summary>
 public static class TimelineSettingsTests
@@ -34,7 +35,7 @@ public static class TimelineSettingsTests
     {
         yield return Case("timeline-effect-lanes-fold", "# A track's effect lanes take no room until its own stack is open; its Cutouts and its sound stay thin bars while closed.", LanesFold);
         yield return Case("timeline-effect-lane-cards", "# Overwatch 2's Cutouts: their own Mask and Edges cards have no lanes and no fx badge unless asked for; any other effect has.", LaneCards);
-        yield return Case("timeline-settings-menu", "# The Timeline Settings menu: its groups and items from one table, each kept in a real setting; the five new settings' defaults.", SettingsMenu);
+        yield return Case("timeline-settings-menu", "# The Timeline Settings menu: its groups and items from one table, each kept in a real setting; the six new settings' defaults.", SettingsMenu);
     }
 
     private static GraphResult Case(string name, string title, Action<Action<bool, string>, StringBuilder> run)
@@ -340,26 +341,43 @@ public static class TimelineSettingsTests
         text.Append("   nearest preset: ").Append(string.Join(", ", nearest.Select(n => string.Create(CultureInfo.InvariantCulture, $"{n.h:0} -> {n.Item2}")))).Append('\n');
         expect(nearest.Select(n => n.Item2).SequenceEqual([8, 8, 25, 25, 25, 42, 42, 50]), "the preset ticked is the nearest (1, 16 -> 8; 17, 30, 33 -> 25; 34, 46 -> 42; 50 -> 50)");
 
-        // The five settings of 5.3: their defaults, and the settings file's own JSON (AppSettingsJsonContext) keeps them.
-        expect(fresh is { ShowTimelineEffectLanes: true, ShowBuiltInMaskEffectLanes: false, ShowClipFilmstrips: true, ShowClipWaveforms: true, TimelineFollowsPlayhead: true },
-            "a new install: effect lanes on, the built-in Mask & Edge lanes off, filmstrips, waveforms and following the playhead on");
+        // Undo / Redo on the row of tools (5.3-Stage2, the user's de-clutter): its item is in Bars & Sizing, after the hotbar's, and kept
+        // in ShowTimelineUndoRedo, off in a new install.
+        var bars = groups.Single(g => g.Header == "Bars & Sizing").Items;
+        var undoRedo = all.Single(i => i.Setting == MainWindow.TimelineSetting.UndoRedoButtons);
+        expect(bars.Contains(undoRedo) && bars.ToList().IndexOf(undoRedo) == bars.ToList().FindIndex(i => i.Setting == MainWindow.TimelineSetting.CreatorHotbar) + 1,
+            "Show Undo / Redo Buttons is in Bars & Sizing, right after Show Creator Hotbar");
+        expect(undoRedo is { Header: "Show Undo / Redo Buttons", Kept: nameof(AppSettings.ShowTimelineUndoRedo), KeyAction: null } && !fresh.ShowTimelineUndoRedo,
+            "it is kept in AppSettings.ShowTimelineUndoRedo, off in a new install (Ctrl+Z and Ctrl+Y undo and redo as ever), with no key of its own");
+
+        // The six settings of 5.3: their defaults, and the settings file's own JSON (AppSettingsJsonContext) keeps them.
+        expect(fresh is { ShowTimelineEffectLanes: true, ShowBuiltInMaskEffectLanes: false, ShowClipFilmstrips: true, ShowClipWaveforms: true, TimelineFollowsPlayhead: true, ShowTimelineUndoRedo: false },
+            "a new install: effect lanes on, the built-in Mask & Edge lanes off, filmstrips, waveforms and following the playhead on, the Undo / Redo buttons off");
         var changed = fresh.Clone();
         (changed.ShowTimelineEffectLanes, changed.ShowBuiltInMaskEffectLanes, changed.ShowClipFilmstrips, changed.ShowClipWaveforms, changed.TimelineFollowsPlayhead) = (false, true, false, false, false);
+        changed.ShowTimelineUndoRedo = true;
         var json = JsonSerializer.Serialize(changed, AppSettingsJsonContext.Default.AppSettings);
         using (var document = JsonDocument.Parse(json))
         {
             var root = document.RootElement;
             bool Written(string property, bool value) => root.TryGetProperty(property, out var element) && element.ValueKind == (value ? JsonValueKind.True : JsonValueKind.False);
             expect(Written(nameof(AppSettings.ShowTimelineEffectLanes), false) && Written(nameof(AppSettings.ShowBuiltInMaskEffectLanes), true) && Written(nameof(AppSettings.ShowClipFilmstrips), false)
-                   && Written(nameof(AppSettings.ShowClipWaveforms), false) && Written(nameof(AppSettings.TimelineFollowsPlayhead), false),
+                   && Written(nameof(AppSettings.ShowClipWaveforms), false) && Written(nameof(AppSettings.TimelineFollowsPlayhead), false) && Written(nameof(AppSettings.ShowTimelineUndoRedo), true),
                 "each is written into the settings file by its own name");
+
+            // And a new install's file says the Undo / Redo buttons are off, by name too.
+            using var plain = JsonDocument.Parse(JsonSerializer.Serialize(fresh, AppSettingsJsonContext.Default.AppSettings));
+            expect(plain.RootElement.TryGetProperty(nameof(AppSettings.ShowTimelineUndoRedo), out var off) && off.ValueKind == JsonValueKind.False,
+                "a new install's settings file writes ShowTimelineUndoRedo false");
         }
 
         var back = JsonSerializer.Deserialize(json, AppSettingsJsonContext.Default.AppSettings);
-        expect(back is { ShowTimelineEffectLanes: false, ShowBuiltInMaskEffectLanes: true, ShowClipFilmstrips: false, ShowClipWaveforms: false, TimelineFollowsPlayhead: false },
+        expect(back is { ShowTimelineEffectLanes: false, ShowBuiltInMaskEffectLanes: true, ShowClipFilmstrips: false, ShowClipWaveforms: false, TimelineFollowsPlayhead: false, ShowTimelineUndoRedo: true },
             "and read back as it was written");
+        var unchanged = JsonSerializer.Deserialize(JsonSerializer.Serialize(fresh, AppSettingsJsonContext.Default.AppSettings), AppSettingsJsonContext.Default.AppSettings);
+        expect(unchanged is { ShowTimelineUndoRedo: false }, "ShowTimelineUndoRedo false is read back false");
         var older = JsonSerializer.Deserialize("{}", AppSettingsJsonContext.Default.AppSettings);
-        expect(older is { ShowTimelineEffectLanes: true, ShowBuiltInMaskEffectLanes: false, ShowClipFilmstrips: true, ShowClipWaveforms: true, TimelineFollowsPlayhead: true },
+        expect(older is { ShowTimelineEffectLanes: true, ShowBuiltInMaskEffectLanes: false, ShowClipFilmstrips: true, ShowClipWaveforms: true, TimelineFollowsPlayhead: true, ShowTimelineUndoRedo: false },
             "a settings file from before 5.3 (none of them in it) reads as a new install has them");
     }
 }

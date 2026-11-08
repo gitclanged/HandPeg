@@ -93,6 +93,12 @@ public sealed partial class VideoSurface : HwndHost
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool DeleteObject(IntPtr handle);
 
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetWindowRect(IntPtr window, out NativeRect rect);
+
+    private const int WmNcHitTest = 0x0084, HtTransparent = -1;
+
     private Window? _owner;
     private Window? _overlayWindow;
     private Int32Rect _placed;
@@ -152,6 +158,51 @@ public sealed partial class VideoSurface : HwndHost
     {
         SurfaceHandle = IntPtr.Zero;
         DestroyWindow(hwnd.Handle);
+    }
+
+    /// <summary>
+    /// The window drawn edge to edge (5.3-Stage2): over a restored window's resize band the pointer is its frame's, the player at
+    /// its edge or not. There the native window lets the pointer through (HTTRANSPARENT), so the window under it answers as its
+    /// frame (MainWindow.FrameHitTest: HTLEFT and the rest) and is resized from there.
+    /// </summary>
+    protected override IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WmNcHitTest && InsideResizeBand(_owner) is { } inside)
+        {
+            var value = lParam.ToInt64();
+            var (x, y) = unchecked(((int)(short)(value & 0xFFFF), (int)(short)((value >> 16) & 0xFFFF)));
+            if (x < inside.X || y < inside.Y || x >= inside.X + inside.Width || y >= inside.Y + inside.Height)
+            {
+                handled = true;
+                return new IntPtr(HtTransparent);
+            }
+        }
+
+        return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
+    }
+
+    /// <summary>
+    /// The part of a window that draws its own frame (WindowChrome) inside its resize band, on the screen in real pixels: while it is
+    /// restored and can be resized, the whole window (its client area: it has no frame outside it) less the band Windows sizes it from,
+    /// its ResizeBorderThickness at its monitor's scale, counted as MainWindow.FrameHitTest counts it. Null when it has no such band
+    /// (maximized or minimized, not to be resized, Windows' own frame as the side window has, or no handle yet).
+    /// </summary>
+    private static Int32Rect? InsideResizeBand(Window? owner)
+    {
+        if (owner is null || owner.WindowState != WindowState.Normal || owner.ResizeMode is not (ResizeMode.CanResize or ResizeMode.CanResizeWithGrip)
+            || System.Windows.Shell.WindowChrome.GetWindowChrome(owner) is not { } chrome)
+            return null;
+
+        var handle = new WindowInteropHelper(owner).Handle;
+        if (handle == IntPtr.Zero || !GetWindowRect(handle, out var frame))
+            return null;
+
+        // The band is x < left + border (so up to the pixel that reaches past it) and x >= right - border, as FrameHitTest compares.
+        var scale = Services.UiScale.MonitorScale(owner);
+        var border = chrome.ResizeBorderThickness;
+        var (left, top) = (frame.Left + (int)Math.Ceiling(border.Left * scale), frame.Top + (int)Math.Ceiling(border.Top * scale));
+        var (right, bottom) = (frame.Right - (int)Math.Floor(border.Right * scale), frame.Bottom - (int)Math.Floor(border.Bottom * scale));
+        return right > left && bottom > top ? new Int32Rect(left, top, right - left, bottom - top) : null;
     }
 
     /// <summary>
@@ -295,8 +346,11 @@ public sealed partial class VideoSurface : HwndHost
         var place = new Int32Rect((int)Math.Round(corner.X), (int)Math.Round(corner.Y),
             (int)Math.Round(ActualWidth * dpi.DpiScaleX), (int)Math.Round(ActualHeight * dpi.DpiScaleY));
 
-        // The part of it inside the owner's client area; none of it there, it is not shown.
+        // The part of it inside the owner's client area; none of it there, it is not shown. Restored, not over the owner's resize band
+        // either (5.3-Stage2: the window is drawn edge to edge), where the pointer is the frame's (WndProc).
         var shown = ClientAreaOf(owner) is { } client ? Intersection(place, client) : place;
+        if (InsideResizeBand(owner) is { } inside)
+            shown = Intersection(shown, inside);
         if (shown.Width <= 0 || shown.Height <= 0)
         {
             HideOverlay(overlay);

@@ -18,7 +18,7 @@ namespace HandPegApp;
 /// Only the selected clip's box is outlined and has the handles (corner grip, rotation handle, anchor dot), and only
 /// while paused: the video is never cluttered with the others. A click on the video away from it hides the outline
 /// until another clip is selected. Moving, resizing, turning and the anchor go through the same code as the layout
-/// pane's (MoveTrackLayer, ResizeTrackLayer, WireGizmo). Shown with Live Preview on. The caption box
+/// pane's (MoveTrackLayer, ResizeTrackLayer, WireGizmo). Shown over the composite (not while a rectangle is drawn). The caption box
 /// is one of them while captions are on (5.0-Verify, the user's bug 3): on top, moved and sized like the Canvas's (no turn,
 /// no anchor), selected by a press on it or on any caption on the timeline.
 /// </summary>
@@ -64,7 +64,7 @@ public partial class MainWindow
                     else
                         RedrawForClipsShown();
                     break;
-                case nameof(MainViewModel.EditLayersOnPlayer) or nameof(MainViewModel.LivePreview)
+                case nameof(MainViewModel.EditLayersOnPlayer)
                     or nameof(MainViewModel.IsPlaying) or nameof(MainViewModel.AutoCaptions) or nameof(MainViewModel.HasSource)
                     or nameof(MainViewModel.FrameWidth) or nameof(MainViewModel.FrameHeight)
                     or nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer):
@@ -185,9 +185,9 @@ public partial class MainWindow
 
     private void PlayerLayoutCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => RedrawPlayerLayout();
 
-    /// <summary>Whether layers are edited on the player now: Live Preview and the frame engine (or the captions) on, paused, nothing else drawn on the video.</summary>
+    /// <summary>Whether layers are edited on the player now: the frame engine (or the captions) on, paused, nothing else drawn on the video.</summary>
     private bool PlayerLayoutActive =>
-        _viewModel.EditLayersOnPlayer && _viewModel.LivePreview && _viewModel.CanEditLayout && _viewModel.HasSource
+        _viewModel.EditLayersOnPlayer && _viewModel.CanEditLayout && _viewModel.HasSource
         && !_viewModel.IsPlaying && CurrentOverlayMode == OverlayMode.None && _viewModel.FrameWidth > 0 && _viewModel.FrameHeight > 0;
 
     /// <summary>

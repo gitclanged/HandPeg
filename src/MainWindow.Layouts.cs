@@ -22,11 +22,14 @@ public partial class MainWindow
     // The settings tabs as one group, in their order; the one shown first named.
     private DockNode TabsGroup(string? active = null, params string[] without)
     {
-        var tabs = DockNode.Group([.. _tabPanes.Select(t => t.Id).Where(id => !without.Contains(id))]);
+        var tabs = DockNode.Group([.. TabIds.Where(id => !without.Contains(id))]);
         if (active is not null && tabs.Panes.Contains(active))
             tabs.Active = active;
         return tabs;
     }
+
+    // The settings tabs' pane ids, in their order: what the window-free layouts (StandardLayout, UpgradeLayout) are given.
+    private IReadOnlyList<string> TabIds => [.. _tabPanes.Select(t => t.Id)];
 
     /// <summary>
     /// The bottom of the built-in layouts but Standard Editing (4.4): the timeline, with a group of settings tabs at its
@@ -50,31 +53,55 @@ public partial class MainWindow
 
     /// <summary>
     /// Standard Editing (where HandPeg starts, and what Reset Layout puts back): the player at the top left with the
-    /// playback controls under it; the Canvas over the effects and keyframes in a column beside it; the header
+    /// playback controls under it; beside it one column of tabs, the effects first and shown, then the keyframes, the Canvas
+    /// and the Master Meter (5.3-Stage2, the user's de-clutter: the Canvas no longer takes a part of its own); the header
     /// joined over the media browser at the right; the Sequence Overview Scrubber under all of it (shown: AppSettings.ShowMasterTimeline
     /// is on by default), and under that the timeline, the first tab of the group of settings tabs (4.4-BugHunt).
     /// </summary>
-    private DockLayoutState StandardLayout()
+    private DockLayoutState StandardLayout() => StandardLayout(TabIds);
+
+    /// <summary>Standard Editing for the settings tabs given (their pane ids, in order): window-free, for the goldens (dock-standard-layout) too.</summary>
+    internal static DockLayoutState StandardLayout(IReadOnlyList<string> tabIds)
     {
         var player = DockNode.Split(true, (DockNode.Group("Player"), 1), (DockNode.Group("Playback"), 1));
-        // The Master Meter (5.2B) is a tab beside the effects and keyframes: hidden until Tabs and Panes shows it, and taken there by every
-        // arrangement that has no place of its own for it (DockManager.PlaceAsDefault).
+        // The Master Meter (5.2B) is a tab beside the effects, keyframes and Canvas: hidden until Tabs and Panes shows it, and taken there
+        // by every arrangement that has no place of its own for it (DockManager.PlaceAsDefault).
+        var middle = DockNode.Group("Effects", "Keyframes", "Layout", "Meter");
+        var side = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media"), 1));
+        var top = DockNode.Split(false, (player, 56), (middle, 22), (side, 22));
+        return new DockLayoutState
+        {
+            Main = DockNode.Split(true, (top, 46), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineFirst(DockNode.Group([.. tabIds])), 38)),
+        };
+    }
+
+    /// <summary>
+    /// Standard Editing as 5.2B to 5.3-Stage1 made it (arrangement version 3): the Canvas over the effects, keyframes and Master
+    /// Meter in a column of its own. What step 3 to 4 recognises (StackCanvasWithEffects), and what the 4.4 shape is derived from
+    /// (StandardLayoutBeside). Frozen: never change it.
+    /// </summary>
+    internal static DockLayoutState StandardLayoutV3(IReadOnlyList<string> tabIds)
+    {
+        var player = DockNode.Split(true, (DockNode.Group("Player"), 1), (DockNode.Group("Playback"), 1));
         var middle = DockNode.Split(true, (DockNode.Group("Layout"), 1), (DockNode.Group("Effects", "Keyframes", "Meter"), 1.3));
         var side = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media"), 1));
         var top = DockNode.Split(false, (player, 56), (middle, 22), (side, 22));
         return new DockLayoutState
         {
-            Main = DockNode.Split(true, (top, 46), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineFirst(TabsGroup()), 38)),
+            Version = 3,
+            Main = DockNode.Split(true, (top, 46), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineFirst(DockNode.Group([.. tabIds])), 38)),
         };
     }
 
     /// <summary>
     /// Standard Editing as 4.4 first made it (the timeline in a group of its own, the settings tabs beside it): what an
-    /// arrangement of version 2 taken up as Standard Editing is recognised by (PutTimelineFirst).
+    /// arrangement of version 2 taken up as Standard Editing is recognised by (PutTimelineFirst). From the frozen version 3
+    /// shape (StandardLayoutV3), never from today's Standard Editing, so the 2 to 3 step keeps finding it.
     /// </summary>
-    private DockLayoutState StandardLayoutBeside()
+    internal static DockLayoutState StandardLayoutBeside(IReadOnlyList<string> tabIds)
     {
-        var state = StandardLayout();
+        var state = StandardLayoutV3(tabIds);
+        state.Version = 2;
 
         // 4.4 had no Master Meter (5.2B): its Standard Editing is told by the panes it had.
         state.Main.GroupOf("Meter")?.Panes.Remove("Meter");
@@ -141,7 +168,7 @@ public partial class MainWindow
 
     private IEnumerable<LayoutChoice> BuiltInLayouts() =>
     [
-        new("Standard Editing", "The player at the top left, the Canvas and effects beside it, the media at the right; the Sequence Overview Scrubber, and the timeline below, the first of the settings tabs. Where HandPeg starts.", StandardLayout(), null),
+        new("Standard Editing", "The player at the top left, the effects, keyframes and Canvas as tabs beside it, the media at the right; the Sequence Overview Scrubber, and the timeline below, the first of the settings tabs. Where HandPeg starts.", StandardLayout(), null),
         new("Color & Effects", "A large player, tall effects and keyframes and media and Summary columns at the right; the timeline below, with the other tabs beside it.", InspectorLayout(), null),
         new("Assembly & Media", "The player at the left, a wide media column with the Canvas at the right; the timeline, the settings tabs and the effects and keyframes side by side below.", AssemblyLayout(), null),
         new("Vertical & Shorts Studio", "For 9:16 shorts: a tall player and Canvas side by side, media, effects and keyframes at the right; the timeline below, with the Export and Audio tabs beside it.", ShortsLayout(), null),

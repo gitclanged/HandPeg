@@ -1,0 +1,26 @@
+# A video clip with a sound stack shows its audible lanes' sound as one waveform, across its block, over its frames.
+ok: two lanes under a 6 s clip: one sound of their 800 pairs, laid on the clip's file time from 0 to 6 s at its speed, at gain 1 (each lane's gain is in it)
+ok: each pair is the louder lane's (the most either reaches), not the two added
+ok: the same lanes again (a rebuild of the rows after an edit): the very sound kept
+ok: S2 at +6 dB (twice as tall): a new sound, S2's 0.3 now 0.6 where it is the louder
+ok: a lane at 2x under a 1x clip is left out: S1's own peaks (one lane as it is: its tiles drawn again)
+ok: and with only that lane, the clip has no stack sound
+   a lane slipped 0.5 s: its spike at its pair 100 is the clip's pair 140
+ok: a lane slipped 0.5 s later lands 40 pairs over, silent before it starts
+ok: a lane under the first 3 s only: its sound stops where it does (S2's alone after 3 s), the combined sound the clip's 6 s of the file alone (480 pairs)
+ok: the two halves of the clip split at 5 s share one sound (their lanes under the whole of each), the whole clip's
+ok: S1 under the first second of a clip of the file's 3 to 6 s: the combined sound is that clip's 3 s alone (240 pairs, laid from 0), never the whole file's
+ok: the host's pass: the video block's stack sound is its two lanes' together, found by its clip (each lane block's family names it)
+ok: S2's lane muted: S1's alone, its own peaks
+ok: the video track's master mute: no stack sound
+ok: the clip hidden (switched off, or its video track's eye off): its lanes still play, so its stack sound stays (the very sound kept)
+ok: an empty timeline's pass (no rows): the combined sounds the last pass drew are let go, none held for it
+ok: laid out with no window: the frames are where the block is (its silent stretch shows them as they are)
+ok: the stack sound covers the block's top 30 % too: drawn across the whole block, over its frames
+ok: see-through: lighter than the frames, never a white slab over them
+ok: no dark band under the sound: its silent stretch's lower part is the frames as they are
+ok: a block with a stack sound never draws its own sound beside it: given a loud one too, its stack's silent stretch shows its frames
+ok: a block with no stack sound beside a stacked one on the same track (a file of one stream) draws its own sound across it, over its frames
+ok: a J/L cut's block: its top shows its frames (its sound is not drawn across it)
+ok: and its sound is in its band under SoundBandTop, reaching out before its picture
+ok: slipped 2 s (Alt-dragged): its stack sound stays where its lanes play (loud at 2 s, silent at 4 s), only its frames slide
