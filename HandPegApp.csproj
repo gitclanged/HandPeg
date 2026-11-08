@@ -83,15 +83,16 @@
   -->
 
   <!--
-      Published and packed output, when it is made inside the project folder; the developer tools, which live beside the
+      Published and packed output, when it is made inside the project folder; local\, this PC's untracked material (never
+      part of the program); the developer tools, which live beside the
       program without being part of it (tools\, each a project of its own); and the Explorer thumbnail handler, a library of
       its own (src\ShellThumbnails, built below), its obj\ with it.
   -->
   <ItemGroup>
-    <Compile Remove="publish\**;Releases\**;tools\**;src\ShellThumbnails\**" />
-    <None Remove="publish\**;Releases\**;tools\**;src\ShellThumbnails\**" />
-    <Page Remove="publish\**;Releases\**;tools\**;src\ShellThumbnails\**" />
-    <EmbeddedResource Remove="tools\**;src\ShellThumbnails\**" />
+    <Compile Remove="publish\**;Releases\**;local\**;tools\**;src\ShellThumbnails\**" />
+    <None Remove="publish\**;Releases\**;local\**;tools\**;src\ShellThumbnails\**" />
+    <Page Remove="publish\**;Releases\**;local\**;tools\**;src\ShellThumbnails\**" />
+    <EmbeddedResource Remove="local\**;tools\**;src\ShellThumbnails\**" />
     <Content Remove="tools\**;src\ShellThumbnails\**" />
   </ItemGroup>
 
