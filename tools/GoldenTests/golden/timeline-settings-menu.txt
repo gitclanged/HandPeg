@@ -14,7 +14,7 @@
    Snap Cuts to I-Frames  -> the project's or the session's, not kept in the settings
    Follow Playhead During Playback  -> AppSettings.TimelineFollowsPlayhead (True in a new install)
 [Bars & Sizing]
-   Show Creator Hotbar  -> AppSettings.ShowCreatorHotbar (True in a new install)
+   Show Quick FX Button  -> AppSettings.ShowCreatorHotbar (True in a new install)
    Show Undo / Redo Buttons  -> AppSettings.ShowTimelineUndoRedo (False in a new install)
    Show Sequence Overview Scrubber  -> AppSettings.ShowMasterTimeline (True in a new install)
    Track Height  -> AppSettings.LayerHeight (25 in a new install)
@@ -31,7 +31,8 @@ ok: Enable Timeline Snapping shows view.toggleSnap's key (Caps by default; S is 
 ok: Track Height: Compact 8, Medium 25, Large 42, Extra Large 50
    nearest preset: 1 -> 8, 16 -> 8, 17 -> 25, 30 -> 25, 33 -> 25, 34 -> 42, 46 -> 42, 50 -> 50
 ok: the preset ticked is the nearest (1, 16 -> 8; 17, 30, 33 -> 25; 34, 46 -> 42; 50 -> 50)
-ok: Show Undo / Redo Buttons is in Bars & Sizing, right after Show Creator Hotbar
+ok: Show Undo / Redo Buttons is in Bars & Sizing, right after Show Quick FX Button
+ok: the Quick FX switch reads Show Quick FX Button (5.3-Stage3, the user's answer), still kept in ShowCreatorHotbar so saved settings carry over
 ok: it is kept in AppSettings.ShowTimelineUndoRedo, off in a new install (Ctrl+Z and Ctrl+Y undo and redo as ever), with no key of its own
 ok: a new install: effect lanes on, the built-in Mask & Edge lanes off, filmstrips, waveforms and following the playhead on, the Undo / Redo buttons off
 ok: each is written into the settings file by its own name

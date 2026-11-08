@@ -382,7 +382,7 @@
             </Border.ContextMenu>
             <TextBlock x:Name="TitleStatusText" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
         </Border>
-        <StackPanel Grid.Column="2" Orientation="Horizontal">
+        <StackPanel x:Name="TitleRight" Grid.Column="2" Orientation="Horizontal">
             <!-- 5.0-Core: shown for a few seconds after the GPU compositor came back from a crash or a lost device (CompositorClient.EngineRecovered). -->
             <StackPanel x:Name="EngineRecoveredBadge" Orientation="Horizontal" Margin="0,0,10,0" VerticalAlignment="Center" Opacity="0.7" Visibility="Collapsed"
                         Background="Transparent" WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="Preview engine recovered">
@@ -530,7 +530,7 @@
             anywhere else closes it. The side window, the built-in
             layouts, the user's own (rows made in code: FillLayoutRows), Save Current Layout and Reset Layout.
         -->
-        <Popup x:Name="LayoutFlyout" AllowsTransparency="True" StaysOpen="True" Placement="Bottom" VerticalOffset="6">
+        <Popup x:Name="LayoutFlyout" AllowsTransparency="True" StaysOpen="True">
             <local:ButtonChrome x:Name="LayoutFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6"
                     KeyDown="LayoutFlyout_KeyDown" TextElement.Foreground="{DynamicResource TextBrush}">
                 <StackPanel MinWidth="220">
@@ -568,8 +568,7 @@
             click keeps it; leaving the cards, Escape or the pointer gone from the selector and the button puts things back
             as they were. Placed once, where it opened, so it stays put while the window changes under it (PlaceLayoutSelector).
         -->
-        <Popup x:Name="LayoutSelector" AllowsTransparency="True" StaysOpen="True" Placement="Relative" PlacementTarget="{Binding ElementName=MainDockHost}"
-               Closed="LayoutSelector_Closed">
+        <Popup x:Name="LayoutSelector" AllowsTransparency="True" StaysOpen="True" Closed="LayoutSelector_Closed">
             <local:ButtonChrome x:Name="LayoutSelectorPanel" Style="{StaticResource FlyoutChrome}" Padding="10,8,10,10"
                     KeyDown="LayoutSelector_KeyDown" TextElement.Foreground="{DynamicResource TextBrush}">
                 <StackPanel>
@@ -656,8 +655,12 @@
                                         <Button Style="{StaticResource TransportButton}" Content="&#xE711;" Padding="7,4" Margin="2,0" Click="ExplodedClose_Click"
                                                 ToolTip="Back to the flat picture (Esc)." AutomationProperties.Name="Leave 3D Exploded View" />
                                     </StackPanel>
-                                    <TextBlock Text="Drag: move  &#x00B7;  Shift + drag: through the stack  &#x00B7;  Drag empty or Alt + middle: orbit  &#x00B7;  Wheel: zoom  &#x00B7;  Esc: back"
-                                               FontSize="10.5" Foreground="#90FFFFFF" Margin="0,3,0,0" TextTrimming="CharacterEllipsis" MaxWidth="460" />
+                                    <!-- The view's keys and gestures (5.3-Stage3): a pinch zooms, two fingers orbit, Alt + the wheel picks the layers. -->
+                                    <TextBlock FontSize="10.5" Foreground="#90FFFFFF" Margin="0,3,0,0" LineHeight="14" AutomationProperties.Name="3D View Hints">
+                                        <Run Text="Drag: move  &#x00B7;  Shift + drag: through the stack  &#x00B7;  Esc: back" /><LineBreak />
+                                        <Run Text="Right-drag, two-finger scroll or a finger: orbit  &#x00B7;  Wheel or pinch: zoom" /><LineBreak />
+                                        <Run Text="Alt + wheel or [ ]: the layer in front or behind  &#x00B7;  Shift + wheel: spacing" />
+                                    </TextBlock>
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -668,12 +671,12 @@
                 Shown while no video is loaded, and solid. Ordinary content of the pane, not of the window kept over
                 the video: while it shows, the video surface is hidden (see UpdateVideoVisibility), so it belongs to
                 whichever window holds the player and keeps that window's place among the others. Files and links
-                dropped on it go to the main window's own drop handling; a click opens Browse.
+                dropped on it go to the main window's own drop handling; a click opens Browse. No outline round it
+                (5.3-Stage3, the user's call): the icon and the words on the dark surface.
             -->
             <Grid x:Name="DropHint" Background="#FF0E0E0E" AllowDrop="True" Cursor="Hand" Margin="{DynamicResource WellEdgeThickness}"
                   DragEnter="DropHint_DragOver" DragOver="DropHint_DragOver" Drop="Window_Drop" MouseLeftButtonUp="DropHint_MouseLeftButtonUp"
                   AutomationProperties.Name="Drag and Drop Files or Links">
-                <Rectangle Margin="6" RadiusX="14" RadiusY="14" Stroke="#66FFFFFF" StrokeThickness="2" StrokeDashArray="6 5" />
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                     <Path Data="{StaticResource DropFileOrLinkIcon}" Width="58" Height="54" Stretch="Uniform" Stroke="#88FFFFFF" StrokeThickness="2.2"
                           StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" />
@@ -793,7 +796,7 @@
                     <!-- 3D Exploded View (5.0D, MainWindow.Exploded.cs): the GPU engine's layer stack in 3D, and back. Its icon is geometry: three planes apart. -->
                     <ToggleButton x:Name="ExplodedToggle" local:OverflowStrip.Priority="12" Padding="10,6" Margin="3,0,3,0" Checked="ExplodedToggle_Changed" Unchecked="ExplodedToggle_Changed"
                                   Visibility="{Binding PlaybackControls[Exploded3D], Converter={StaticResource BoolToVisibility}}" AutomationProperties.Name="3D Exploded View"
-                                  local:KeyTip.Action="view.exploded3d" local:KeyTip.Text="3D Exploded View{keys}: the player shows the layer stack in 3D, each layer a plane in compositing order. Drag a layer to move it in its plane, Shift + drag to move it through the stack (its track's place), drag the empty space or Alt + middle-drag to orbit, the wheel to zoom; Esc or this button goes back. Needs the GPU preview engine.">
+                                  local:KeyTip.Action="view.exploded3d" local:KeyTip.Text="3D Exploded View{keys}: the player shows the layer stack in 3D, each layer a plane in compositing order. Drag a layer to move it in its plane, Shift + drag to move it through the stack (its track's place); right-drag, a touchpad's two-finger scroll or a finger on the empty space to orbit (Alt + middle-drag from the flat player); the wheel or a pinch to zoom; Alt + the wheel or [ and ] for the layer in front or behind. Esc or this button goes back. Needs the GPU preview engine.">
                         <Path Width="18" Height="16" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.3" StrokeLineJoin="Round"
                               Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
                               Data="M 2,3 L 9,0.8 L 16,3 L 9,5.2 Z M 2,8 L 9,5.8 L 16,8 L 9,10.2 Z M 2,13 L 9,10.8 L 16,13 L 9,15.2 Z" />
@@ -1056,7 +1059,7 @@
                     with the box for a path or a web address (and the download resolution), the Settings button's pattern.
                 -->
                 <Grid Margin="6,0,0,6" x:Name="AddMediaHost">
-                    <Popup x:Name="AddMediaFlyout" PlacementTarget="{Binding ElementName=AddMediaHost}" Placement="Bottom" VerticalOffset="6"
+                    <Popup x:Name="AddMediaFlyout"
                            AllowsTransparency="True" StaysOpen="True" Opened="AddMediaFlyout_Opened">
                         <local:ButtonChrome x:Name="AddMediaFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="10,8"
                                 Width="380" KeyDown="AddMediaFlyout_KeyDown"
@@ -1118,7 +1121,7 @@
                     queue and the Social Squisher.
                 -->
                 <Grid Margin="6,0,0,6" x:Name="SettingsHost">
-                    <Popup x:Name="SettingsFlyout" PlacementTarget="{Binding ElementName=SettingsHost}" Placement="Bottom" HorizontalOffset="-150" VerticalOffset="6"
+                    <Popup x:Name="SettingsFlyout"
                            AllowsTransparency="True" StaysOpen="True">
                         <local:ButtonChrome x:Name="SettingsFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6">
                             <StackPanel MinWidth="180">

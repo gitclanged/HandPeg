@@ -1,0 +1,26 @@
+# The header's flyouts (5.3-Stage3): one placement in device pixels against the button, never mirrored, never moved by a layout previewed under it.
+UiScale.FlyoutCorner, a button at (600, 40) 48 x 33, a flyout 420 x 300, 9 apart, the room (12, 0) to (1200, 700):
+  under it, right edges level (the header's flyouts): its top left at (228, 82)
+  under it, left edges level: its top left at (600, 82)
+  over it, left edges level (the Views menu): its top left at (20, 391)
+  at its left, tops level (the header a strip at the right): its top left at (171, 40)
+  at its right, tops level (the header a strip at the left): its top left at (657, 40)
+  under a button near the room's left: kept 12 in: its top left at (12, 82)
+  under a button near the room's foot: kept inside it: its top left at (228, 400)
+  the same with no room: where it falls (Windows keeps it on the screen): its top left at (-272, 82)
+MainWindow.xaml, each placed in code by UiScale.PlaceAgainst (no Placement, PlacementTarget or offsets of its own):
+  LayoutSelector
+  LayoutFlyout
+  AddMediaFlyout
+  SettingsFlyout
+  ViewsPopup
+a window at HandPeg's scale, its panes laid out by a DockManager in Standard Editing, a header of four buttons:
+  a flyout placed against the Layout button opens under it, right edges level, 6 DIPs down
+  Standard Editing previewed under it: the flyout has not moved
+  Color & Effects previewed under it: the flyout has not moved
+  Assembly & Media previewed under it: the flyout has not moved
+  Vertical & Shorts Studio previewed under it: the flyout has not moved
+  the layouts moved the button (or took it out) at least once, so the test proves something
+  the panes put back as they were: the flyout has not moved
+  opened again over another layout: under the button where it is now, right edges level, 6 DIPs down
+  a flyout placed over the Views button opens above it, left edges level, 4 DIPs up

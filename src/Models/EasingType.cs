@@ -306,6 +306,18 @@ public static class EasingCurves
 
     private static string Number(double value) => value.ToString("0.#######", System.Globalization.CultureInfo.InvariantCulture);
 
+    // ----- The 3D view's camera (5.3-Stage3) -----
+
+    /// <summary>
+    /// The cubic ease in and out (4u³ to halfway, then 1 - (2 - 2u)³ / 2): from rest to rest, gentler at both ends than Ease In-Out's
+    /// half cosine. The 3D view's way in, way out and Reset (GpuPreviewEngine.StepPose); no keyframe's.
+    /// </summary>
+    public static double CubicInOut(double progress)
+    {
+        var u = Math.Clamp(progress, 0, 1);
+        return u < 0.5 ? 4 * u * u * u : 1 - Math.Pow(2 - 2 * u, 3) / 2;
+    }
+
     // ----- The curves' pictures -----
 
     /// <summary>How wide and how tall a curve's picture is, in DIPs.</summary>

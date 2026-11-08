@@ -1,0 +1,11 @@
+# The 3D view's way in and out (5.3-Stage3): 240 ms along a cubic ease, each step at most a 60 Hz refresh; no texture made after its first frame.
+the camera (GpuPreviewEngine.StepPose), from the flat picture to the 3D view's start (30 degrees, 16 up, zoom 1.85, spacing 0.16):
+  at 60 Hz: lands exactly on the target on step 15 (15 wanted), every step forward, none more than 19 % of the way
+  at 120 Hz: lands exactly on the target on step 29 (29 wanted), every step forward, none more than 11 % of the way
+  cold first frames of 70, 45 and 30 ms: the first step moves it 0.1 % of the way (5.3-Stage2's chase: 56 %), and it lands on step 15
+  turned back after 6 steps (29 % of the way in): the first step back moves it 0.0 % of the whole way, and it lands on the flat picture on step 15
+  turned 20 degrees more at step 5 of the way in: lands on the new turn, on step 15
+  an orbit chased (no transition), its step a second late: 18 % of the way, as at one 60 Hz refresh
+  EasingCurves.CubicInOut at 0, 0.1, 0.25, 0.5, 0.75, 0.9, 1: 0, 0.004, 0.0625, 0.5, 0.9375, 0.996, 1
+a compositor worker drawing four planes (a selected pattern, a blurred one, a blended one, an adjustment's glass) 1280 x 720 on 960 x 540:
+  the way in's 14 frames after its first, and the way out's 14: no texture made (the first frame makes the 3D view's own)

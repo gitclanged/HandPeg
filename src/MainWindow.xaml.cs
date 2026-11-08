@@ -148,13 +148,13 @@ public partial class MainWindow : Window
 
         _dropLeave.Tick += (_, _) => HideDropOverlay();
         TransportRow.Fitting = FitTransport;
-        _addMediaHover = new HoverFlyout(AddMediaHost, AddMediaFlyout, AddMediaFlyoutPanel) { HoldsWhileFocused = true, Opening = () => PlaceHeaderFlyout(AddMediaFlyout, AddMediaHost, AddMediaFlyoutPanel.Width) };
+        _addMediaHover = new HoverFlyout(AddMediaHost, AddMediaFlyout, AddMediaFlyoutPanel) { HoldsWhileFocused = true, Opening = () => PlaceHeaderFlyout(AddMediaFlyout, AddMediaHost) };
         _settingsHover = new HoverFlyout(SettingsHost, SettingsFlyout, SettingsFlyoutPanel)
         {
             Opening = () =>
             {
                 _viewModel.RefreshAutosave();
-                PlaceHeaderFlyout(SettingsFlyout, SettingsHost, 150 + SettingsHost.ActualWidth);
+                PlaceHeaderFlyout(SettingsFlyout, SettingsHost);
             },
         };
 
@@ -316,8 +316,9 @@ public partial class MainWindow : Window
         _viewModel.LayerLoaded += RedrawLayout;
         _viewModel.LayerVisibilityChanged += RedrawLayout;
 
-        // Edit layout may already be on when the window opens (it is to start with): the pane opens with it.
-        Loaded += (_, _) => UpdateLayoutPane();
+        // Edit layout may already be on when the window opens (it is to start with): the pane opens with it, saying nothing
+        // (the title bar's middle stays empty until the user does something: 5.3-Stage3, the user's call).
+        Loaded += (_, _) => UpdateLayoutPane(announce: false);
         SizeChanged += (_, _) => UpdateBottomBar();
 
         // A double-click on any slider or number box puts it back: to the style preset's value where there is one.
@@ -1165,22 +1166,25 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Where a header flyout opens: under its button, a few pixels down so that its window never comes up under the
-    /// pointer, reaching <paramref name="leftward"/> pixels left of the button's right edge (the header sits at the
-    /// window's right); beside it, towards the window's middle, while the header stands as a strip at a side.
+    /// pointer, its right edge at the button's (the header sits at the window's right); beside it, towards the window's
+    /// middle, while the header stands as a strip at a side. One placement in device pixels for all of them
+    /// (UiScale.PlaceAgainst, 5.3-Stage3): never mirrored on a touch PC, and kept where it opened while the panes move.
     /// </summary>
-    private void PlaceHeaderFlyout(Popup popup, FrameworkElement host, double leftward)
-    {
-        if (_headerShape == Docking.PaneShape.Column)
-        {
-            var window = Window.GetWindow(host) ?? this;
-            var onRight = host.TranslatePoint(new Point(host.ActualWidth / 2, 0), window).X > window.ActualWidth / 2;
-            popup.Placement = onRight ? PlacementMode.Left : PlacementMode.Right;
-            (popup.HorizontalOffset, popup.VerticalOffset) = (onRight ? -6 : 6, 0);
-            return;
-        }
+    private void PlaceHeaderFlyout(Popup popup, FrameworkElement host, FrameworkElement? within = null, double inset = 0) =>
+        UiScale.PlaceAgainst(popup, host, HeaderFlyoutSide(host), HeaderFlyoutGap, within, inset);
 
-        popup.Placement = PlacementMode.Bottom;
-        (popup.HorizontalOffset, popup.VerticalOffset) = (host.ActualWidth - leftward, 6);
+    // How far from its button a header flyout opens, in DIPs.
+    private const double HeaderFlyoutGap = 6;
+
+    /// <summary>A header flyout's side of its button: under it, or beside it towards the window's middle while the header is a strip.</summary>
+    private UiScale.FlyoutSide HeaderFlyoutSide(FrameworkElement host)
+    {
+        if (_headerShape != Docking.PaneShape.Column)
+            return UiScale.FlyoutSide.BelowEnd;
+
+        var window = Window.GetWindow(host) ?? this;
+        var onRight = host.TranslatePoint(new Point(host.ActualWidth / 2, 0), window).X > window.ActualWidth / 2;
+        return onRight ? UiScale.FlyoutSide.Left : UiScale.FlyoutSide.Right;
     }
 
     // ----- The progress chip (bottom left) and its flyout -----
@@ -1749,12 +1753,12 @@ public partial class MainWindow : Window
         PlaceViewsPopup();
     }
 
-    /// <summary>Puts the Views menu beside the button that opens it, at the left of the transport row, over it.</summary>
-    private void PlaceViewsPopup()
-    {
-        if (!ReferenceEquals(ViewsPopup.PlacementTarget, ViewsButton))
-            (ViewsPopup.PlacementTarget, ViewsPopup.Placement, ViewsPopup.VerticalOffset) = (ViewsButton, PlacementMode.Top, -4);
-    }
+    /// <summary>
+    /// Puts the Views menu over the button that opens it, at the left of the transport row, their left edges level: placed by
+    /// UiScale.PlaceAgainst (5.3-Stage3), so a touch PC's mirrored menus never put it a menu's width to the left. Again at every
+    /// layout of the panes: measured from the window its button is in now (the playback row may be in the side window).
+    /// </summary>
+    private void PlaceViewsPopup() => UiScale.PlaceAgainst(ViewsPopup, ViewsButton, UiScale.FlyoutSide.AboveStart, 4);
 
     /// <summary>A side pane was shown or hidden: the panes are laid out again.</summary>
     private void UpdateSidePanes()

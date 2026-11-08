@@ -3,7 +3,6 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Shapes;
 using HandPegApp.Models;
 using HandPegApp.Services;
 using HandPegApp.Services.Gpu;
@@ -19,7 +18,7 @@ namespace HandPegApp;
 // panel and the layers' label badges, all in the window the video surface keeps above the video (ExplodedLayer, last in
 // PlayerOverlay, see-through and taking nothing while the view is flat).
 // - Picking: the pointer's ray meets each plane where the worker drew it (ExplodedCamera, from the scene it last drew);
-//   the layer selected wins wherever its box is under the pointer, even behind another (so the layer Ctrl + the wheel
+//   the layer selected wins wherever its box is under the pointer, even behind another (so the layer Alt + the wheel
 //   picked is the one a drag moves), else the nearest plane whose box it lands in. A press selects it, as a press on its
 //   box on the flat player does.
 // - The left button only ever selects and moves (the user's Q4 / bug 5, after drags of the empty space orbited and
@@ -33,10 +32,15 @@ namespace HandPegApp;
 //   (GpuScenePlan.PlaceLayers), so the planes keep theirs while layers come and go. The captions' plane (5.1-Polish, the
 //   user's Q2) is picked, moved and resized as their box is, and lifted past a track's plane they go over it or under it
 //   (MoveExplodedCaptions: the track's CaptionsUnder), drawn there by the preview and by every export.
-// - The right button (or the middle; Alt + middle from the flat player) orbits, from anywhere; the wheel moves the camera
-//   in and out; Ctrl + the wheel selects the layer in front of or behind the selected one, in the stack's order (its plane
-//   and badge in the accent); a double-click on the empty space puts the camera back; Esc, the panel's close button or the
-//   toggle leaves.
+// - The right button (or the middle; Alt + middle from the flat player) orbits, from anywhere; a mouse's wheel moves the
+//   camera in and out; Alt + the wheel, or [ and ], selects the layer in front of or behind the selected one, in the stack's
+//   order (its plane and badge in the accent); Shift + the wheel sets the spacing; a double-click on the empty space puts the
+//   camera back; Esc, the panel's close button or the toggle leaves.
+// - Touchpads and touch screens (5.3-Stage3, the user's ask): a pinch (a precision touchpad's is Ctrl + the wheel, which is
+//   kept for it: the layers moved to Alt) moves the camera in and out; a touchpad's two-finger scroll orbits (its wheel told
+//   from a mouse's by GetCurrentInputMessageSource); on a touch screen one finger on the empty space orbits, two pinch, and two
+//   dragged up or down set the spacing (ExplodedLayer's manipulation), while a finger on a plane, a handle or the panel is
+//   the mouse's (its touch promoted to the mouse: select, move, resize, the slider).
 public partial class MainWindow
 {
     private enum ExplodedDragKind { None, Orbit, Move, Depth, Resize, AlongX, AlongY }
@@ -56,9 +60,9 @@ public partial class MainWindow
     private int _explodedInfoCount;
     private GpuScenePlan? _explodedInfoPlan;
 
-    // The label badges (made as needed, kept), the flat picture's overlays hidden under the 3D view (with their opacity),
-    // and the player's own zoom matrix the 3D layer last cancelled.
-    private readonly List<(Border Badge, TextBlock Text)> _explodedBadges = [];
+    // The label badges (made as needed, kept; each placed by its own translation, 5.3-Stage3), the flat picture's overlays hidden
+    // under the 3D view (with their opacity), and the player's own zoom matrix the 3D layer last cancelled.
+    private readonly List<(Border Badge, TextBlock Text, TranslateTransform Place)> _explodedBadges = [];
     private readonly List<Rect> _explodedBadgeBoxes = [];
     private readonly List<(UIElement Element, double Opacity)> _explodedHidden = [];
     private Matrix _explodedUnder = Matrix.Identity;
@@ -93,9 +97,10 @@ public partial class MainWindow
     /// Into the 3D view (the camera swings out of the flat picture) or out of it (back into the flat picture, the overlays of
     /// the flat player coming back once it is there). Only on the GPU engine, with a video open.
     /// </summary>
-    // When the 3D view was left, and how long its layer may wait for a flat picture.
+    // When the 3D view was left, and how long its layer may wait for a flat picture (the way back is 240 ms of camera, each step at
+    // most a 60 Hz refresh: 15 frames, slow ones included).
     private long _explodedLeftAt;
-    private const long ExplodedWayBackMs = 900;
+    private const long ExplodedWayBackMs = 1500;
 
     private void SetExplodedView(bool on)
     {
@@ -137,7 +142,7 @@ public partial class MainWindow
             engine.SelectedClipKey = SelectedExplodedKey();
             engine.SetExploded(true);
             ShowExplodedLayer();
-            _viewModel.StatusText = "3D Exploded View: right-drag to orbit, the wheel to zoom, Ctrl + the wheel to pick the layer in front or behind; drag a layer to move it in its plane (its corner handle resizes it), Shift + drag to move it through the stack. Esc goes back.";
+            _viewModel.StatusText = "3D Exploded View: right-drag or two-finger scroll to orbit, the wheel or a pinch to zoom, Alt + the wheel or [ ] to pick the layer in front or behind; drag a layer to move it in its plane (its corner handle resizes it), Shift + drag to move it through the stack. Esc goes back.";
         }
         else
         {
@@ -194,6 +199,12 @@ public partial class MainWindow
         ExplodedLayer.IsHitTestVisible = false;
         ExplodedPanel.Visibility = Visibility.Collapsed;
         ExplodedBadges.Visibility = Visibility.Collapsed;
+
+        // Nothing of this view's last moment is left to show when it comes back: the badges and the marks wait for its first scene.
+        foreach (var (badge, _, _) in _explodedBadges)
+            badge.Visibility = Visibility.Collapsed;
+        if (_explodedMarks is { } marks)
+            marks.Open().Close();
         foreach (var (element, opacity) in _explodedHidden)
             element.Opacity = opacity;
         _explodedHidden.Clear();
@@ -334,7 +345,12 @@ public partial class MainWindow
         return null;
     }
 
-    /// <summary>A badge over each named plane, at its box's top left corner as drawn; masked layers in the outline's cyan, the selected in amber.</summary>
+    /// <summary>
+    /// A badge over each named plane, at its box's top left corner as drawn; masked layers in the outline's cyan, the selected in amber.
+    /// Every frame of a camera move (5.3-Stage3): a badge is moved by its translation and faded by its opacity, which WPF only draws
+    /// (its Measure and Arrange run when its name or weight changes, or it comes or goes), and the handle and the gizmo are drawn
+    /// anew into one drawing (ExplodedMarks), never laid out.
+    /// </summary>
     private void PlaceExplodedBadges()
     {
         var scene = _explodedScene;
@@ -361,7 +377,7 @@ public partial class MainWindow
             if (!float.IsFinite(at.X) || !float.IsFinite(at.Y))
                 continue;
 
-            var (badge, text) = ExplodedBadge(shown++);
+            var (badge, text, place) = ExplodedBadge(shown++);
             var selected = (plane.Flags & GpuLayerDescriptor.FlagSelected) != 0;
             var name = plane.BlurFillOnly ? ExplodedBlurName : info.Name;
             text.Text = selected ? "▲ " + name : name;
@@ -385,35 +401,31 @@ public partial class MainWindow
             }
 
             _explodedBadgeBoxes.Add(box);
-            Canvas.SetLeft(badge, box.X);
-            Canvas.SetTop(badge, box.Y);
+            (place.X, place.Y) = (box.X, box.Y);
             badge.Visibility = Visibility.Visible;
         }
 
         for (var k = shown; k < _explodedBadges.Count; k++)
             _explodedBadges[k].Badge.Visibility = Visibility.Collapsed;
 
-        // The selected plane's corner handle (the resize grip), where its box's far corner is drawn.
-        var handle = _explodedHandle ??= MakeExplodedHandle();
+        // The selected plane's corner handle (the resize grip), where its box's far corner is drawn, and the gizmo's arrows.
+        var marks = _explodedMarks ??= MakeExplodedMarks();
+        using var drawing = marks.Open();
+        drawing.PushOpacity(camera.Amount);
         if (_gpu is { } engine && SelectedExplodedHandle(engine, out _, out var grip) && grip.X >= 0 && grip.Y >= 0 && grip.X <= width && grip.Y <= height)
         {
-            Canvas.SetLeft(handle, grip.X - handle.Width / 2);
-            Canvas.SetTop(handle, grip.Y - handle.Height / 2);
-            handle.Opacity = camera.Amount;
-            handle.Visibility = Visibility.Visible;
-        }
-        else
-        {
-            handle.Visibility = Visibility.Collapsed;
+            // 10 DIPs across with its 1 DIP edge inside, as the Border it was.
+            const double inner = ExplodedHandleSide - 1;
+            drawing.DrawRoundedRectangle(ExplodedSelectedEdge, ExplodedHandlePen, new Rect(grip.X - inner / 2, grip.Y - inner / 2, inner, inner), 2, 2);
         }
 
-        PlaceExplodedGizmo(camera, toX, toY);
+        PlaceExplodedGizmo(camera, toX, toY, drawing);
+        drawing.Pop();
     }
 
     // ----- The 3D view's 3-axis gizmo (5.1-GpuFx; a tool, so shown whatever Extra Animations says since 5.2) -----
 
     // Across in red, down the picture in green, through the stack in blue. Drawn in vector (Section 1), on the selected plane; a press on an arrow moves along it alone.
-    private (Line Shaft, Polygon Head)[]? _gizmoAxes;
     private readonly Point[] _gizmoTips = new Point[3];
     private Point _gizmoMiddle;
     private bool _gizmoShown;
@@ -423,65 +435,48 @@ public partial class MainWindow
     private const double GizmoReach = 8;
 
     private static readonly SolidColorBrush[] GizmoColors = [FrozenBrush(Color.FromRgb(0xFF, 0x4D, 0x5E)), FrozenBrush(Color.FromRgb(0x45, 0xE0, 0x7A)), FrozenBrush(Color.FromRgb(0x4D, 0x9D, 0xFF))];
+    private static readonly Pen[] GizmoPens = [.. GizmoColors.Select(color => FrozenPen(color, 2))];
 
-    private (Line Shaft, Polygon Head)[] MakeExplodedGizmo()
+    /// <summary>The arrows at the selected plane's middle, from the scene drawn last, into the marks' drawing.</summary>
+    private void PlaceExplodedGizmo(in ExplodedCamera camera, double toX, double toY, DrawingContext drawing)
     {
-        var axes = new (Line Shaft, Polygon Head)[3];
+        _gizmoShown = false;
+        if (_gpu is not { } engine || !SelectedExplodedHandle(engine, out var plane, out _))
+            return;
+
+        var z = camera.DepthOf(plane.ZDepth);
+        var middle = ExplodedCamera.BoxPoint(plane.X, plane.Y, plane.Width, plane.Height, plane.Rotation, plane.AnchorX, plane.AnchorY, 0.5f, 0.5f);
+        var length = Math.Min(camera.CanvasWidth, camera.CanvasHeight) * GizmoLength;
+        var from = camera.Project(middle.X, middle.Y, z);
+        Span<Vector2> tips = [camera.Project(middle.X + length, middle.Y, z), camera.Project(middle.X, middle.Y - length, z), camera.Project(middle.X, middle.Y, z + length)];
+        if (!float.IsFinite(from.X) || !float.IsFinite(from.Y))
+            return;
+
+        _gizmoMiddle = new Point(from.X * toX, from.Y * toY);
+        _gizmoShown = true;
         for (var axis = 0; axis < 3; axis++)
         {
-            var shaft = new Line { Stroke = GizmoColors[axis], StrokeThickness = 2, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
-            var head = new Polygon { Fill = GizmoColors[axis], IsHitTestVisible = false, Visibility = Visibility.Collapsed, Points = [default, default, default] };
-            Panel.SetZIndex(shaft, 3);
-            Panel.SetZIndex(head, 3);
-            ExplodedBadges.Children.Add(shaft);
-            ExplodedBadges.Children.Add(head);
-            axes[axis] = (shaft, head);
-        }
+            var tip = float.IsFinite(tips[axis].X) && float.IsFinite(tips[axis].Y) ? new Point(tips[axis].X * toX, tips[axis].Y * toY) : _gizmoMiddle;
+            _gizmoTips[axis] = tip;
+            var way = tip - _gizmoMiddle;
+            if (way.Length < 6)
+                continue;
 
-        return axes;
-    }
-
-    /// <summary>The arrows at the selected plane's middle, from the scene drawn last.</summary>
-    private void PlaceExplodedGizmo(in ExplodedCamera camera, double toX, double toY)
-    {
-        var axes = _gizmoAxes ??= MakeExplodedGizmo();
-        _gizmoShown = false;
-        if (_gpu is { } engine && SelectedExplodedHandle(engine, out var plane, out _))
-        {
-            var z = camera.DepthOf(plane.ZDepth);
-            var middle = ExplodedCamera.BoxPoint(plane.X, plane.Y, plane.Width, plane.Height, plane.Rotation, plane.AnchorX, plane.AnchorY, 0.5f, 0.5f);
-            var length = Math.Min(camera.CanvasWidth, camera.CanvasHeight) * GizmoLength;
-            var from = camera.Project(middle.X, middle.Y, z);
-            Span<Vector2> tips = [camera.Project(middle.X + length, middle.Y, z), camera.Project(middle.X, middle.Y - length, z), camera.Project(middle.X, middle.Y, z + length)];
-            if (float.IsFinite(from.X) && float.IsFinite(from.Y))
+            way.Normalize();
+            var side = new Vector(-way.Y, way.X) * 4.5;
+            var back = tip - way * 11;
+            drawing.DrawLine(GizmoPens[axis], _gizmoMiddle, back);
+            var head = new StreamGeometry();
+            using (var path = head.Open())
             {
-                _gizmoMiddle = new Point(from.X * toX, from.Y * toY);
-                _gizmoShown = true;
-                for (var axis = 0; axis < 3; axis++)
-                {
-                    var (shaft, head) = axes[axis];
-                    var tip = float.IsFinite(tips[axis].X) && float.IsFinite(tips[axis].Y) ? new Point(tips[axis].X * toX, tips[axis].Y * toY) : _gizmoMiddle;
-                    _gizmoTips[axis] = tip;
-                    var way = tip - _gizmoMiddle;
-                    var shown = way.Length >= 6;
-                    shaft.Visibility = head.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
-                    if (!shown)
-                        continue;
-
-                    way.Normalize();
-                    var side = new Vector(-way.Y, way.X) * 4.5;
-                    var back = tip - way * 11;
-                    (shaft.X1, shaft.Y1, shaft.X2, shaft.Y2) = (_gizmoMiddle.X, _gizmoMiddle.Y, back.X, back.Y);
-                    (head.Points[0], head.Points[1], head.Points[2]) = (tip, back + side, back - side);
-                    shaft.Opacity = head.Opacity = camera.Amount;
-                }
-
-                return;
+                path.BeginFigure(tip, isFilled: true, isClosed: true);
+                path.LineTo(back + side, isStroked: false, isSmoothJoin: false);
+                path.LineTo(back - side, isStroked: false, isSmoothJoin: false);
             }
-        }
 
-        foreach (var (shaft, head) in axes)
-            shaft.Visibility = head.Visibility = Visibility.Collapsed;
+            head.Freeze();
+            drawing.DrawGeometry(GizmoColors[axis], null, head);
+        }
     }
 
     /// <summary>Which arrow a point is on (0 across, 1 down, 2 through the stack), the nearest within reach; -1 for none.</summary>
@@ -504,32 +499,57 @@ public partial class MainWindow
         return best;
     }
 
-    private Border? _explodedHandle;
+    // The selected plane's corner handle: its size, and its edge.
+    private const double ExplodedHandleSide = 10;
+    private static readonly Pen ExplodedHandlePen = FrozenPen(ExplodedSelectedText, 1);
 
-    private Border MakeExplodedHandle()
+    private static Pen FrozenPen(Brush brush, double thickness)
     {
-        var handle = new Border
-        {
-            Width = 10, Height = 10, Background = ExplodedSelectedEdge, BorderBrush = ExplodedSelectedText, BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(2), IsHitTestVisible = false, Visibility = Visibility.Collapsed,
-        };
-        Panel.SetZIndex(handle, 2);
-        ExplodedBadges.Children.Add(handle);
-        return handle;
+        var pen = new Pen(brush, thickness) { StartLineCap = PenLineCap.Flat, EndLineCap = PenLineCap.Flat };
+        pen.Freeze();
+        return pen;
     }
 
-    private (Border Badge, TextBlock Text) ExplodedBadge(int index)
+    /// <summary>
+    /// The handle and the gizmo of the selected plane (5.3-Stage3): one element over the badges whose picture is a drawing filled
+    /// again each frame (<see cref="Open"/>), which WPF draws without laying anything out. Its lines and shapes were elements
+    /// placed by Canvas.Left, Top and their points until then, every one of them measured and arranged again each frame of a move.
+    /// </summary>
+    private sealed class ExplodedMarks : FrameworkElement
+    {
+        private readonly DrawingGroup _drawing = new();
+
+        public ExplodedMarks() => IsHitTestVisible = false;
+
+        /// <summary>The drawing anew: what is drawn into the context until it is closed replaces what was there.</summary>
+        public DrawingContext Open() => _drawing.Open();
+
+        protected override void OnRender(DrawingContext drawingContext) => drawingContext.DrawDrawing(_drawing);
+    }
+
+    private ExplodedMarks? _explodedMarks;
+
+    private ExplodedMarks MakeExplodedMarks()
+    {
+        var marks = new ExplodedMarks();
+        Panel.SetZIndex(marks, 3);
+        ExplodedBadges.Children.Add(marks);
+        return marks;
+    }
+
+    private (Border Badge, TextBlock Text, TranslateTransform Place) ExplodedBadge(int index)
     {
         while (_explodedBadges.Count <= index)
         {
             var text = new TextBlock { FontSize = 11, Foreground = ExplodedBadgeText, MaxWidth = 220, TextTrimming = TextTrimming.CharacterEllipsis };
+            var place = new TranslateTransform();
             var badge = new Border
             {
                 Child = text, Background = ExplodedBadgeFill, BorderBrush = ExplodedBadgeEdge, BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(3), Padding = new Thickness(5, 1, 5, 2), IsHitTestVisible = false,
+                CornerRadius = new CornerRadius(3), Padding = new Thickness(5, 1, 5, 2), IsHitTestVisible = false, RenderTransform = place,
             };
             ExplodedBadges.Children.Add(badge);
-            _explodedBadges.Add((badge, text));
+            _explodedBadges.Add((badge, text, place));
         }
 
         return _explodedBadges[index];
@@ -554,6 +574,11 @@ public partial class MainWindow
         ExplodedLayer.MouseUp += ExplodedLayer_MouseUp;
         ExplodedLayer.MouseWheel += ExplodedLayer_MouseWheel;
         ExplodedLayer.LostMouseCapture += (_, _) => EndExplodedDrag(cancelled: true);
+        VideoView.OverlayMessageHook += ExplodedOverlayMessage;
+        ExplodedLayer.IsManipulationEnabled = true;
+        ExplodedLayer.ManipulationStarting += ExplodedLayer_ManipulationStarting;
+        ExplodedLayer.ManipulationDelta += ExplodedLayer_ManipulationDelta;
+        ExplodedLayer.ManipulationCompleted += ExplodedLayer_ManipulationCompleted;
 
         // After the window's own keys (an open dial or the tour take Esc first).
         AddHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(ExplodedWindow_PreviewKeyDown));
@@ -561,9 +586,12 @@ public partial class MainWindow
 
     private const int WmMiddleButtonDown = 0x0207;
 
-    // The video's native window: a press there is no WPF input, so Alt + middle is caught from its messages.
+    // The video's native window: a press there is no WPF input, so Alt + middle is caught from its messages; and in 3D, a wheel
+    // that lands on it (not on the window over it) is the 3D view's as well.
     private IntPtr ExplodedSurfaceMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg is WmMouseWheel or WmMouseHWheel)
+            return ExplodedOverlayMessage(hwnd, msg, wParam, lParam, ref handled);
         if (msg != WmMiddleButtonDown || _explodedUi || _gpu is null || !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
             return IntPtr.Zero;
 
@@ -596,8 +624,21 @@ public partial class MainWindow
 
     private void ExplodedWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Escape || !_explodedUi || Keyboard.FocusedElement is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem)
+        if (e.Key is not (Key.Escape or Key.OemOpenBrackets or Key.OemCloseBrackets) || !_explodedUi
+            || Keyboard.FocusedElement is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem)
             return;
+
+        // [ and ] with no modifier (5.3-Stage3): the layer behind the selected one, or in front of it, as Alt + the wheel picks them.
+        // The view's own keys while it is up, as Esc is (a key map that binds them to something else keeps them).
+        if (e.Key != Key.Escape)
+        {
+            if (Keyboard.Modifiers != ModifierKeys.None || _gpu is not { } engine)
+                return;
+            if (_explodedDrag == ExplodedDragKind.None)
+                RunGuarded("3D view", () => CycleExplodedSelection(engine, e.Key == Key.OemCloseBrackets ? 1 : -1));
+            e.Handled = true;
+            return;
+        }
 
         // A drag under way is let go first (a plane lifted through the stack goes back); then the view.
         if (_explodedDrag != ExplodedDragKind.None)
@@ -774,27 +815,203 @@ public partial class MainWindow
         RunGuarded("3D view", () => EndExplodedDrag(cancelled: false));
     }
 
+    // A wheel that reaches WPF over the 3D layer (the window over the video answers it first: ExplodedOverlayMessage).
     private void ExplodedLayer_MouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (!_explodedUi || _gpu is not { } engine)
-            return;
+        if (ExplodedWheel(e.Delta, horizontal: false, Keyboard.Modifiers, FromTouchpad()))
+            e.Handled = true;
+    }
 
-        e.Handled = true;
+    private const int WmMouseWheel = 0x020A, WmMouseHWheel = 0x020E, MkShift = 0x0004, MkControl = 0x0008;
 
-        // Ctrl: the layer in front of the selected one (a notch up) or behind it (down) becomes the selected one.
-        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+    /// <summary>
+    /// The wheel over the 3D view, from its own messages (the window over the video, and the video's native window): their modifier keys
+    /// as the message carries them (a precision touchpad's pinch is Ctrl + the wheel), the horizontal wheel too (a touchpad's sideways
+    /// scroll, a tilted wheel), which WPF raises nothing for.
+    /// </summary>
+    private IntPtr ExplodedOverlayMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg is not (WmMouseWheel or WmMouseHWheel) || !_explodedUi)
+            return IntPtr.Zero;
+
+        var word = wParam.ToInt64();
+        var keys = Keyboard.Modifiers & ModifierKeys.Alt;
+        if ((word & MkShift) != 0)
+            keys |= ModifierKeys.Shift;
+        if ((word & MkControl) != 0)
+            keys |= ModifierKeys.Control;
+        var delta = (short)((word >> 16) & 0xFFFF);
+        var horizontal = msg == WmMouseHWheel;
+        var touchpad = FromTouchpad();
+        if (ExplodedWheel(delta, horizontal, keys, touchpad))
         {
-            if (_explodedDrag == ExplodedDragKind.None)
-                RunGuarded("3D view", () => CycleExplodedSelection(engine, e.Delta > 0 ? 1 : -1));
+            handled = true;
+
+            // A horizontal wheel's message is answered TRUE, or Windows sends it on as clicks of an old tilt wheel.
+            return horizontal ? new IntPtr(1) : IntPtr.Zero;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    // Degrees a touchpad's scroll (or a tilted wheel) turns the camera per notch's worth (120); how far a notch of Shift + the
+    // wheel moves the spacing; what Alt + the wheel has turned towards the next layer and not yet taken.
+    private const double ExplodedScrollOrbit = 6, ExplodedSpacingPerNotch = 0.02;
+    private double _explodedCycleRest;
+
+    /// <summary>
+    /// The wheel over the 3D view (5.3-Stage3), <paramref name="delta"/> in Windows' 120 a notch: Ctrl (a mouse's, or a touchpad's
+    /// pinch) moves the camera in and out; Alt selects the layer in front or behind, a notch's worth at a time; Shift sets the
+    /// spacing; a touchpad's two-finger scroll (or a horizontal wheel) orbits; a mouse's wheel moves the camera in and out, as it
+    /// always has. False when the 3D view is not up.
+    /// </summary>
+    private bool ExplodedWheel(int delta, bool horizontal, ModifierKeys keys, bool fromTouchpad)
+    {
+        if (!_explodedUi || _gpu is not { } engine)
+            return false;
+
+        var notches = delta / 120.0;
+        switch (ExplodedWheelDoes(horizontal, keys, fromTouchpad))
+        {
+            case ExplodedWheelAction.Zoom:
+                // A notch up (a pinch spread apart) moves the camera in.
+                engine.Zoom(Math.Pow(ExplodedWheelStep, notches));
+                break;
+            case ExplodedWheelAction.Layers when _explodedDrag == ExplodedDragKind.None:
+                // A notch up the layer in front, down the one behind; a touchpad's little steps add up to a notch first.
+                _explodedCycleRest += delta;
+                while (Math.Abs(_explodedCycleRest) >= 120)
+                {
+                    var step = Math.Sign(_explodedCycleRest);
+                    _explodedCycleRest -= step * 120;
+                    RunGuarded("3D view", () => CycleExplodedSelection(engine, step));
+                }
+
+                break;
+            case ExplodedWheelAction.Spacing:
+                ExplodedSpacing.Value = Math.Clamp(ExplodedSpacing.Value + notches * ExplodedSpacingPerNotch, ExplodedSpacing.Minimum, ExplodedSpacing.Maximum);
+                break;
+            case ExplodedWheelAction.Turn:
+                // Fingers to the left scroll right: the stack turns as a drag to the left turns it.
+                engine.Orbit(notches * ExplodedScrollOrbit, 0);
+                break;
+            case ExplodedWheelAction.Tip:
+                // Two fingers down (Windows' natural direction: the wheel turned up) bring the stack's top forward, as a drag down does.
+                engine.Orbit(0, notches * ExplodedScrollOrbit);
+                break;
+        }
+
+        return true;
+    }
+
+    /// <summary>What a turn of the wheel does in the 3D view.</summary>
+    internal enum ExplodedWheelAction { None, Zoom, Layers, Spacing, Turn, Tip }
+
+    /// <summary>
+    /// What the wheel does in the 3D view (5.3-Stage3; pure, for exploded-3d-gestures): Ctrl (a mouse's, or a precision touchpad's
+    /// pinch) zooms; Alt picks the layer in front or behind; Shift sets the spacing; sideways (a touchpad, a tilted wheel) turns the
+    /// stack; a touchpad's two-finger scroll tips it; a mouse's own wheel zooms, as it always has. A sideways wheel with a key does nothing.
+    /// </summary>
+    internal static ExplodedWheelAction ExplodedWheelDoes(bool horizontal, ModifierKeys keys, bool fromTouchpad) =>
+        keys.HasFlag(ModifierKeys.Control) ? (horizontal ? ExplodedWheelAction.None : ExplodedWheelAction.Zoom)
+        : keys.HasFlag(ModifierKeys.Alt) ? (horizontal ? ExplodedWheelAction.None : ExplodedWheelAction.Layers)
+        : keys.HasFlag(ModifierKeys.Shift) ? (horizontal ? ExplodedWheelAction.None : ExplodedWheelAction.Spacing)
+        : horizontal ? ExplodedWheelAction.Turn
+        : fromTouchpad ? ExplodedWheelAction.Tip
+        : ExplodedWheelAction.Zoom;
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct InputMessageSource
+    {
+        public int DeviceType, OriginId;
+    }
+
+    private const int ImdtTouchpad = 0x10;
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static partial bool GetCurrentInputMessageSource(out InputMessageSource source);
+
+    /// <summary>Whether the input message being handled now came from a touchpad (Windows 8.1 and later say so; a mouse's never does).</summary>
+    private static bool FromTouchpad() => GetCurrentInputMessageSource(out var source) && (source.DeviceType & ImdtTouchpad) != 0;
+
+    // ----- Touch (5.3-Stage3) -----
+
+    // DIPs two fingers move up for the spacing to grow by one (its whole range is under 0.6); the least pinch counted as one.
+    private const double ExplodedTouchSpacingPerDip = 0.0015, ExplodedPinchFloor = 0.01;
+
+    /// <summary>
+    /// A touch on the 3D layer: on a plane, the selected plane's handle or an arrow of the gizmo, or the panel, it is the mouse's
+    /// (cancelled here, WPF promotes it to the mouse: select and move, resize, the slider and buttons); on the empty space, the
+    /// camera's (one finger orbits, two pinch and set the spacing).
+    /// </summary>
+    private void ExplodedLayer_ManipulationStarting(object? sender, ManipulationStartingEventArgs e)
+    {
+        if (!_explodedUi || _gpu is not { } engine || e.Manipulators.FirstOrDefault() is not { } finger)
+        {
+            e.Cancel();
             return;
         }
 
-        // A notch up moves the camera in.
-        engine.Zoom(Math.Pow(ExplodedWheelStep, e.Delta / 120.0));
+        var at = finger.GetPosition(ExplodedLayer);
+        var onPanel = ExplodedPanel.IsVisible && new Rect(ExplodedPanel.TranslatePoint(default, ExplodedLayer), ExplodedPanel.RenderSize).Contains(at);
+        if (onPanel || ExplodedAxisAt(at) >= 0 || ExplodedHandleHit(engine, at, out _, out _, out _) || PickExplodedPlane(engine, at, out _, out _, out _, out _))
+        {
+            e.Cancel();
+            return;
+        }
+
+        e.ManipulationContainer = ExplodedLayer;
+        e.Mode = ManipulationModes.Translate | ManipulationModes.Scale;
+        e.Handled = true;
+    }
+
+    private void ExplodedLayer_ManipulationDelta(object? sender, ManipulationDeltaEventArgs e)
+    {
+        if (!_explodedUi || _gpu is not { } engine || e.IsInertial)
+        {
+            e.Complete();
+            return;
+        }
+
+        e.Handled = true;
+        engine.SetOrbiting(true);
+        var change = e.DeltaManipulation;
+        var (yaw, pitch, zoom, spacing) = ExplodedTouchDoes(e.Manipulators.Count(), change.Translation, change.Scale);
+        if (yaw != 0 || pitch != 0)
+            engine.Orbit(yaw, pitch);
+        if (zoom != 1)
+            engine.Zoom(zoom);
+        if (spacing != 0)
+            ExplodedSpacing.Value = Math.Clamp(ExplodedSpacing.Value + spacing, ExplodedSpacing.Minimum, ExplodedSpacing.Maximum);
     }
 
     /// <summary>
-    /// Ctrl + the wheel: the next layer in the stack's order (towards the front, or towards the back) is selected, its plane
+    /// What a step of a touch on the 3D view's empty space does (pure, for exploded-3d-gestures): one finger orbits as the right button's
+    /// drag does; two spread apart bring the camera in (the factor <see cref="GpuPreviewEngine.Zoom"/> takes, under 1), and dragged up
+    /// or down with no more than a hair of a pinch part or close the planes. Degrees of turn and tip, the zoom factor, the spacing's change.
+    /// </summary>
+    internal static (double Yaw, double Pitch, double Zoom, double Spacing) ExplodedTouchDoes(int fingers, Vector moved, Vector scale)
+    {
+        if (fingers < 2)
+            return (-moved.X * ExplodedOrbitPerDip, moved.Y * ExplodedOrbitPerDip, 1, 0);
+
+        var pinch = (scale.X + scale.Y) / 2;
+        if (!double.IsFinite(pinch) || pinch <= 0)
+            pinch = 1;
+        var zoom = Math.Abs(pinch - 1) > 1e-4 ? 1 / pinch : 1;
+        var spacing = Math.Abs(pinch - 1) < ExplodedPinchFloor ? -moved.Y * ExplodedTouchSpacingPerDip : 0;
+        return (0, 0, zoom, spacing);
+    }
+
+    private void ExplodedLayer_ManipulationCompleted(object? sender, ManipulationCompletedEventArgs e)
+    {
+        _gpu?.SetOrbiting(false);
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Alt + the wheel, [ and ]: the next layer in the stack's order (towards the front, or towards the back) is selected, its plane
     /// and badge in the accent; from none, the front one (or the back one). Each clip once, however many planes it has.
     /// </summary>
     private void CycleExplodedSelection(GpuPreviewEngine engine, int step)
@@ -825,7 +1042,7 @@ public partial class MainWindow
         if (!ReferenceEquals(_selectedClip, chosen))
             SelectClip(chosen);
         engine.SelectedClipKey = key;
-        _viewModel.StatusText = $"Selected {chosen.Name} ({planes.Count - next} of {planes.Count} from the front): drag it, or Ctrl + the wheel for the next.";
+        _viewModel.StatusText = $"Selected {chosen.Name} ({planes.Count - next} of {planes.Count} from the front): drag it, or Alt + the wheel ([ or ]) for the next.";
     }
 
     /// <summary>The drag is over: a plane lifted through the stack moves its track (unless the drag was cancelled), and goes back to its place.</summary>

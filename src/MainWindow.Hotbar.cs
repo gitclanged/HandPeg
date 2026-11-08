@@ -107,9 +107,9 @@ public partial class MainWindow
         var reset = MenuAction($"Reset This Slot ({standard.Label})", () => SetHotbarSlot(index, standard), "Puts this slot back to what it holds in a new install.");
         reset.IsEnabled = current != standard;
         menu.Items.Add(reset);
-        menu.Items.Add(MenuAction("Reset Creator Hotbar", () => SaveHotbar(s => s.HotbarSlots = null),
+        menu.Items.Add(MenuAction("Reset Quick FX Slots", () => SaveHotbar(s => s.HotbarSlots = null),
             "Every slot back to Motion Blur, 3D Fly-In, Neon Rim, Whip Pan and Studio Voice."));
-        menu.Items.Add(MenuAction("Hide Creator Hotbar", () => SaveHotbar(s => s.ShowCreatorHotbar = false),
+        menu.Items.Add(MenuAction("Hide Quick FX Button", () => SaveHotbar(s => s.ShowCreatorHotbar = false),
             "Takes the Quick FX button off the Timeline's row of tools. Settings > Timeline, or Timeline Settings (the Timeline's tab menu, or the gear on its row of tools), brings it back."));
 
         // The slot's flyout stays open while this menu is (the pointer crossing into the menu leaves it).
@@ -123,7 +123,7 @@ public partial class MainWindow
         var kept = HotbarSlots.Select(s => s.ToString()).ToList();
         kept[index] = slot.ToString();
         SaveHotbar(s => s.HotbarSlots = kept.SequenceEqual(HotbarSlot.Defaults) ? null : kept);
-        _viewModel.StatusText = $"Creator Hotbar slot {index + 1}: {slot.Label}.";
+        _viewModel.StatusText = $"Quick FX slot {index + 1}: {slot.Label}.";
     }
 
     private void SaveHotbar(Action<AppSettings> set)

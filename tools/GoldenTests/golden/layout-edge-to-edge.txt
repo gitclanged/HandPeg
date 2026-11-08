@@ -12,7 +12,8 @@ ok: no band above the playback row
 ok: the Sequence Overview Scrubber is slim (3 above and below) and square
 ok: its lower edge's grip lies over its padding: the padding's left, right and bottom, negated
 ok: the Timeline's panel has no padding and square corners: the ruler right under the tab strip
-ok: the drop hint's dashed outline is 6 in from the player's edges (from 36)
+ok: the drop hint has no outline (5.3-Stage3: no dashed Rectangle, no border): its icon and words only
+ok: the title bar's middle (TitleStatus) starts collapsed: nothing there until the user does something, something loads or work begins (5.3-Stage3)
 ok: no 10 px band above the status bar or the destination bar
 ok: no band under the Preset Bar either (its Margin 0, from 0,0,0,10): the dock's seams part the panes
 ok: QuietSplitter's grip is the splitter itself, its line inside its Padding (no grip of its own reaching 3 px each way)

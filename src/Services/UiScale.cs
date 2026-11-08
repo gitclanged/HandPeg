@@ -56,9 +56,16 @@ public static partial class UiScale
     /// <summary>The smallest and largest UI Scale the settings allow, in percent.</summary>
     public const int LeastPercent = 75, MostPercent = 150;
 
+    private static bool _following;
+
     /// <summary>Scales every window as it is loaded, and again on a monitor of another DPI (App.OnStartup).</summary>
     public static void Follow()
     {
+        // Once: the goldens' window tests each ask for it, and a class handler registered twice runs twice.
+        if (_following)
+            return;
+
+        _following = true;
         EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler(static (sender, _) =>
         {
             if (sender is Window window)
@@ -119,6 +126,136 @@ public static partial class UiScale
             popup.VerticalOffset = 0.01;
             popup.VerticalOffset = 0;
         }
+    }
+
+    // ----- Flyouts against the button they open from (5.3-Stage3) -----
+
+    /// <summary>Which side of its button a flyout opens on, and which of its edges lines up with the button's.</summary>
+    public enum FlyoutSide
+    {
+        /// <summary>Under the button, its right edge at the button's (the header's flyouts: the header sits at the window's right).</summary>
+        BelowEnd,
+
+        /// <summary>Under the button, its left edge at the button's.</summary>
+        BelowStart,
+
+        /// <summary>Over the button, its left edge at the button's (the Views menu, at the transport row's left).</summary>
+        AboveStart,
+
+        /// <summary>At the button's left, their tops level (the header standing as a strip at the window's right).</summary>
+        Left,
+
+        /// <summary>At the button's right, their tops level (the header standing as a strip at the window's left).</summary>
+        Right,
+    }
+
+    // A flyout's place against its button: the button's rectangle and the room it is kept in, in the target's device pixels, taken
+    // at the first placement after it opened and kept until it closes; the device pixels a DIP of the button's.
+    private sealed class Anchored
+    {
+        public FrameworkElement Button = null!;
+        public UIElement Target = null!;
+        public FrameworkElement? Within;
+        public FlyoutSide Side;
+        public double Gap, Inset;
+        public (Rect Button, Rect? Room, double PerDip)? Taken;
+    }
+
+    private static readonly DependencyProperty AnchoredProperty =
+        DependencyProperty.RegisterAttached("Anchored", typeof(Anchored), typeof(UiScale), new PropertyMetadata(null));
+
+    /// <summary>
+    /// Places a flyout against the button it opens from, <paramref name="gap"/> of the button's DIPs away (5.3-Stage3, the user's bug:
+    /// the Layout Selector opened hundreds of pixels left of the Layout button, and jumped as layouts were previewed under it). One
+    /// custom placement in device pixels for every header flyout and the Views menu: never mirrored on a PC whose menus open to the
+    /// left of the hand (SystemParameters.MenuDropAlignment, which mirrors Relative, Bottom and Top placement: the user's touch-screen
+    /// laptop), and whatever the UI Scale. The button's rectangle is taken once, at the first placement after the flyout opened, and
+    /// kept until it closes, measured from a target that never moves with the panes (<paramref name="within"/>, else the button's
+    /// window's content): a dock laid out again under an open flyout (a layout previewed from the Layout Selector) moves or takes
+    /// away the button, never the flyout. With <paramref name="within"/> it is kept inside that element, at least
+    /// <paramref name="inset"/> DIPs from its left; Windows keeps it on the screen.
+    /// </summary>
+    public static void PlaceAgainst(Popup popup, FrameworkElement button, FlyoutSide side, double gap, FrameworkElement? within = null, double inset = 0)
+    {
+        if (popup.GetValue(AnchoredProperty) is not Anchored state)
+        {
+            state = new Anchored();
+            popup.SetValue(AnchoredProperty, state);
+            popup.Closed += static (sender, _) =>
+            {
+                if (sender is Popup closed && closed.GetValue(AnchoredProperty) is Anchored anchored)
+                    anchored.Taken = null;
+            };
+            popup.CustomPopupPlacementCallback = (popupSize, _, _) => [new CustomPopupPlacement(Placed(state, popupSize), PopupPrimaryAxis.None)];
+        }
+
+        var target = within ?? (Window.GetWindow(button)?.Content as UIElement) ?? button;
+        (state.Button, state.Target, state.Within, state.Side, state.Gap, state.Inset, state.Taken) = (button, target, within, side, gap, inset, null);
+        popup.PlacementTarget = target;
+        (popup.Placement, popup.HorizontalOffset, popup.VerticalOffset) = (PlacementMode.Custom, 0, 0);
+
+        // A new place alone does not move a popup that is open: a change of offset does.
+        if (popup.IsOpen)
+        {
+            popup.VerticalOffset = 0.01;
+            popup.VerticalOffset = 0;
+        }
+    }
+
+    // The flyout's top left in the target's device pixels: from the button's rectangle as it was taken when the flyout opened.
+    private static Point Placed(Anchored state, Size popupSize)
+    {
+        state.Taken ??= Take(state);
+        if (state.Taken is not { } taken)
+            return new Point(0, 0);
+
+        var room = taken.Room is { } within ? within with { X = within.X + state.Inset * taken.PerDip, Width = Math.Max(0, within.Width - state.Inset * taken.PerDip) } : (Rect?)null;
+        return FlyoutCorner(state.Side, taken.Button, popupSize, state.Gap * taken.PerDip, room);
+    }
+
+    // The button's rectangle (and the room's, when it is in the same window) on the screen, from the target's top left; null while
+    // either is in no window.
+    private static (Rect Button, Rect? Room, double PerDip)? Take(Anchored state)
+    {
+        var (button, target) = (state.Button, state.Target);
+        if (PresentationSource.FromVisual(button) is null || PresentationSource.FromVisual(target) is null || button.ActualWidth <= 0)
+            return null;
+
+        var origin = target.PointToScreen(new Point(0, 0));
+        Rect On(FrameworkElement element)
+        {
+            var from = element.PointToScreen(new Point(0, 0)) - origin;
+            var to = element.PointToScreen(new Point(element.ActualWidth, element.ActualHeight)) - origin;
+            return new Rect(new Point(from.X, from.Y), new Point(to.X, to.Y));
+        }
+
+        var rect = On(button);
+        var within = state.Within is { } room && PresentationSource.FromVisual(room) is { } source && ReferenceEquals(source, PresentationSource.FromVisual(button))
+            ? On(room) : (Rect?)null;
+        return (rect, within, rect.Width / button.ActualWidth);
+    }
+
+    /// <summary>
+    /// Where a flyout of <paramref name="popup"/>'s size goes against a button's rectangle (all in device pixels, from one origin),
+    /// <paramref name="gap"/> away, kept inside <paramref name="room"/> when there is one: its top left.
+    /// </summary>
+    internal static Point FlyoutCorner(FlyoutSide side, Rect button, Size popup, double gap, Rect? room)
+    {
+        var (x, y) = side switch
+        {
+            FlyoutSide.BelowEnd => (button.Right - popup.Width, button.Bottom + gap),
+            FlyoutSide.BelowStart => (button.Left, button.Bottom + gap),
+            FlyoutSide.AboveStart => (button.Left, button.Top - gap - popup.Height),
+            FlyoutSide.Left => (button.Left - gap - popup.Width, button.Top),
+            _ => (button.Right + gap, button.Top),
+        };
+        if (room is { } within)
+        {
+            x = Math.Max(within.Left, Math.Min(x, within.Right - popup.Width));
+            y = Math.Max(within.Top, Math.Min(y, within.Bottom - popup.Height));
+        }
+
+        return new Point(Math.Round(x), Math.Round(y));
     }
 
     /// <summary>

@@ -122,6 +122,12 @@ public sealed partial class VideoSurface : HwndHost
     /// </summary>
     public Window? OverlayWindow => _overlayWindow;
 
+    /// <summary>
+    /// The messages of the window over the video, whichever is made (5.3-Stage3: the 3D view's horizontal wheel, which WPF raises
+    /// no event for, and its wheel's own modifier keys), before WPF's input sees them.
+    /// </summary>
+    public event HwndSourceHook? OverlayMessageHook;
+
     /// <summary>The native window the player draws into; zero until it has been created.</summary>
     public IntPtr SurfaceHandle { get; private set; }
 
@@ -247,6 +253,7 @@ public sealed partial class VideoSurface : HwndHost
             {
                 var handle = new WindowInteropHelper(made).Handle;
                 SetWindowLongPtr(handle, GwlExStyle, new IntPtr(GetWindowLongPtr(handle, GwlExStyle).ToInt64() | WsExNoActivate | WsExToolWindow));
+                HwndSource.FromHwnd(handle)?.AddHook(OverlayMessage);
             };
 
             // Closed some other way than by this layer (with a window that owned it): the next one is made afresh.
@@ -269,6 +276,9 @@ public sealed partial class VideoSurface : HwndHost
         PlaceOverlay();
         KeepUnderSideWindow();
     }
+
+    private IntPtr OverlayMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) =>
+        OverlayMessageHook is { } hook ? hook(hwnd, msg, wParam, lParam, ref handled) : IntPtr.Zero;
 
     private void Owner_Moved(object? sender, EventArgs e) => PlaceOverlay();
 

@@ -440,7 +440,7 @@
                               ToolTip="On: a track's Solo button plays it alone, the others' solo going off. Off: several tracks can be soloed together and are mixed in the player; Alt-click plays one alone." />
                     <CheckBox Content="Show gain lines on clips with sound" IsChecked="{Binding ShowClipGainLines}" AutomationProperties.Name="Show Gain Lines"
                               ToolTip="Clips whose sound is drawn on their blocks show a line at their gain (drag it up or down), sloping down over the clip's fades. The fades themselves are the handles at every clip's top corners, whether this is on or not." />
-                    <CheckBox Content="Show the Creator Hotbar on the Timeline" IsChecked="{Binding ShowCreatorHotbar}" AutomationProperties.Name="Show Creator Hotbar"
+                    <CheckBox Content="Show the Quick FX button on the Timeline" IsChecked="{Binding ShowCreatorHotbar}" AutomationProperties.Name="Show Quick FX Button"
                               ToolTip="The Quick FX button on the Timeline's row of tools (on by default): rest the pointer on it, or click it, for five slots, each putting its Effect, Transition, Game Preset or one-click tool on the selected clips (else the video clip at the playhead) in one step of Undo. Right-click a slot to choose what it holds; they start with Motion Blur, 3D Fly-In, Neon Rim, Whip Pan and Studio Voice." />
                     <!-- The Timeline's own switches (5.3): the same values as its Timeline Settings menu (its tab's right-click, the gear on its row of tools). -->
                     <CheckBox Content="Show effect sub-lanes on expanded tracks" IsChecked="{Binding ShowTimelineEffectLanes}" AutomationProperties.Name="Show Effect Sub-Lanes"

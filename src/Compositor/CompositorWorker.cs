@@ -285,6 +285,7 @@ public static unsafe partial class CompositorWorker
             control.LastDrawMs = (float)Stopwatch.GetElapsedTime(acquired, drawn).TotalMilliseconds;
             control.LastFlushMs = (float)Stopwatch.GetElapsedTime(drawn).TotalMilliseconds;
             control.LastDrawDecodes = decoders.FramesDecoded - decodedBefore;
+            control.TexturesMade = gpu.TexturesMade;
         }
         finally
         {

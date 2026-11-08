@@ -346,7 +346,10 @@ public static class TimelineSettingsTests
         var bars = groups.Single(g => g.Header == "Bars & Sizing").Items;
         var undoRedo = all.Single(i => i.Setting == MainWindow.TimelineSetting.UndoRedoButtons);
         expect(bars.Contains(undoRedo) && bars.ToList().IndexOf(undoRedo) == bars.ToList().FindIndex(i => i.Setting == MainWindow.TimelineSetting.CreatorHotbar) + 1,
-            "Show Undo / Redo Buttons is in Bars & Sizing, right after Show Creator Hotbar");
+            "Show Undo / Redo Buttons is in Bars & Sizing, right after Show Quick FX Button");
+        var quickFx = all.Single(i => i.Setting == MainWindow.TimelineSetting.CreatorHotbar);
+        expect(quickFx is { Header: "Show Quick FX Button", Kept: nameof(AppSettings.ShowCreatorHotbar) },
+            "the Quick FX switch reads Show Quick FX Button (5.3-Stage3, the user's answer), still kept in ShowCreatorHotbar so saved settings carry over");
         expect(undoRedo is { Header: "Show Undo / Redo Buttons", Kept: nameof(AppSettings.ShowTimelineUndoRedo), KeyAction: null } && !fresh.ShowTimelineUndoRedo,
             "it is kept in AppSettings.ShowTimelineUndoRedo, off in a new install (Ctrl+Z and Ctrl+Y undo and redo as ever), with no key of its own");
 

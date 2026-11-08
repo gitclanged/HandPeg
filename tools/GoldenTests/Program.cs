@@ -136,9 +136,18 @@ public static class Program
         // dock-standard-layout, layout-edge-to-edge, lazy-settings-tabs (5.3-Stage2): Standard Editing's stacked middle column and its
         // upgrade, the window's edges with no dead space, and the Summary and Export tabs made only when shown.
         results.AddRange(LayoutTests.All());
+        // exploded-3d-transition-pacing (a compositor worker: the 3D view's way in and out make no texture after their first frame) and
+        // exploded-3d-gestures (5.3-Stage3): the 3D view's camera curve, its wheel, touchpad and touch.
+        if (filter is null || "exploded-3d-transition-pacing".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(ExplodedViewTests.Pacing());
+        results.Add(ExplodedViewTests.Gestures());
         // Last of all: its tour needs the WPF Application it makes, and a view model works otherwise once there is one (its command
         // and its undo steps go through the dispatcher, which nothing here pumps), so no test after it would see what it saw alone.
         results.AddRange(UiScaleTests.All());
+        // header-flyouts-placement (5.3-Stage3): the header's flyouts against their buttons, a real dock laying out the four built-in
+        // layouts under an open one; after the UI-scale tests, on the WPF Application they made.
+        if (filter is null || "header-flyouts-placement".Contains(filter, StringComparison.OrdinalIgnoreCase))
+            results.Add(HeaderFlyoutTests.Run());
         if (filter is not null)
             results = results.Where(r => r.Golden.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 

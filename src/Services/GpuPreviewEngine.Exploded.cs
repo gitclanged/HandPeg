@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using HandPegApp.Compositor;
+using HandPegApp.Models;
 using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.Services;
@@ -99,10 +100,14 @@ public sealed class ExplodedScene
 }
 
 // ----- The 3D exploded layer stack's camera (Pass 5.0-AudioAnd3D, 5.0D) -----
-// What the user asks for (on, the turn, the distance, the spacing) is the camera's target; the camera drawn chases it on
-// the pump's thread, frame by frame, exponentially (a quarter of a second to settle, interrupted by a new target at any
-// moment, the way in and the way out alike). While it moves, or while the user orbits it, the paused player is drawn every
-// refresh (CameraMoving). The flat picture and the 3D view meet at yaw 0, pitch 0, zoom 1 and no spread
+// What the user asks for (on, the turn, the distance, the spacing) is the camera's target; the camera drawn follows it on
+// the pump's thread, frame by frame. The way in, the way out and Reset are a transition of a fixed length (5.3-Stage3, the
+// user's bug: on the Snapdragon the way in leapt on its first frame and crawled through its second half): 240 ms along a
+// cubic ease in and out (EasingCurves.CubicInOut) from where the camera was to where the target is at each step, each step
+// advancing it at most one 60 Hz refresh, so a cold first frame (the card waking, the planes made) never leaps; it is
+// interrupted by another at any moment (out during the way in starts from where the camera is). The user's own moves (an
+// orbit, the wheel, the spacing) are chased exponentially. While it moves, or while the user orbits it, the paused player is
+// drawn every refresh (CameraMoving). The flat picture and the 3D view meet at yaw 0, pitch 0, zoom 1 and no spread
 // (ExplodedCamera): the way in starts there and the way out ends there, where the scenes become flat again. Each scene
 // drawn in 3D is kept (ExplodedScene) for the UI thread's picking and labels.
 public sealed partial class GpuPreviewEngine
@@ -113,8 +118,14 @@ public sealed partial class GpuPreviewEngine
     /// <summary>How far apart the planes may be set, as fractions of the canvas's larger side.</summary>
     public const double MinSpacing = 0.02, MaxSpacing = 0.6;
 
-    // The camera's time constant, seconds: 95 % of the way in three of them.
+    // The camera's time constant while it chases the user's own moves, seconds: 95 % of the way in three of them.
     private const double CameraSettle = 0.085;
+
+    /// <summary>How long the way in, the way out and Reset take, seconds (5.3-Stage3).</summary>
+    public const double CameraTransitionSeconds = 0.24;
+
+    /// <summary>The most one step of the camera advances it, seconds: one refresh at 60 Hz, so a slow frame never makes it leap.</summary>
+    public const double MaxCameraStep = 1 / 60.0;
 
     private readonly object _camera = new();
 
@@ -123,6 +134,64 @@ public sealed partial class GpuPreviewEngine
     private double _yaw = DefaultYaw, _pitch = DefaultPitch, _zoom = DefaultZoom, _spacing = DefaultSpacing;
     private double _drawnYaw, _drawnPitch, _drawnZoom = 1, _drawnSpacing;
     private long _cameraTicks;
+
+    // A transition under way (the way in, out, or Reset): the camera it left from, and how far through it the steps have taken
+    // it (seconds; null: none).
+    private CameraPose _transitionFrom;
+    private double? _transitionClock;
+
+    /// <summary>A pose of the 3D view's camera: its turn (degrees), its distance (times the fitted one) and the planes' spacing.</summary>
+    internal readonly record struct CameraPose(double Yaw, double Pitch, double Zoom, double Spacing)
+    {
+        /// <summary>The flat picture: where the way in starts and the way out ends.</summary>
+        public static CameraPose Flat => new(0, 0, 1, 0);
+
+        /// <summary>This pose <paramref name="share"/> of the way to <paramref name="to"/>.</summary>
+        public CameraPose Toward(CameraPose to, double share) =>
+            new(Yaw + (to.Yaw - Yaw) * share, Pitch + (to.Pitch - Pitch) * share, Zoom + (to.Zoom - Zoom) * share, Spacing + (to.Spacing - Spacing) * share);
+
+        /// <summary>Whether this pose is where <paramref name="to"/> is, near enough to land on it.</summary>
+        public bool Near(CameraPose to) => Math.Abs(to.Yaw - Yaw) < 0.02 && Math.Abs(to.Pitch - Pitch) < 0.02 && Math.Abs(to.Zoom - Zoom) < 2e-4
+            && Math.Abs(to.Spacing - Spacing) < 2e-5;
+    }
+
+    /// <summary>
+    /// One step of the camera (pure: the engine's, and the goldens' exploded-3d-transition-pacing): <paramref name="elapsed"/> seconds
+    /// since the last step, held to <see cref="MaxCameraStep"/>. In a transition, the cubic ease in and out from where it left to the
+    /// target as it is now, landing exactly on it once <see cref="CameraTransitionSeconds"/> of steps have passed (the clock then
+    /// null); otherwise an exponential chase of the target, landing on it once near.
+    /// </summary>
+    internal static CameraPose StepPose(CameraPose drawn, CameraPose target, double elapsed, CameraPose from, ref double? clock)
+    {
+        var step = double.IsFinite(elapsed) ? Math.Clamp(elapsed, 0, MaxCameraStep) : MaxCameraStep;
+        if (clock is { } run)
+        {
+            run += step;
+            if (run >= CameraTransitionSeconds)
+            {
+                clock = null;
+                return target;
+            }
+
+            clock = run;
+            return from.Toward(target, EasingCurves.CubicInOut(run / CameraTransitionSeconds));
+        }
+
+        var next = drawn.Toward(target, 1 - Math.Exp(-step / CameraSettle));
+        return next.Near(target) ? target : next;
+    }
+
+    // The camera drawn and the target as poses (under _camera).
+    private CameraPose Drawn
+    {
+        get => new(_drawnYaw, _drawnPitch, _drawnZoom, _drawnSpacing);
+        set => (_drawnYaw, _drawnPitch, _drawnZoom, _drawnSpacing) = (value.Yaw, value.Pitch, value.Zoom, value.Spacing);
+    }
+
+    private CameraPose Target => _wantExploded ? new(_yaw, _pitch, _zoom, _spacing) : CameraPose.Flat;
+
+    // A transition from where the camera is now (under _camera).
+    private void StartTransition() => (_transitionFrom, _transitionClock) = (Drawn, 0);
 
     // Whether the scenes are 3D now (from the toggle on until the way out has settled): the only thing a flat scene reads.
     private volatile bool _drawingExploded;
@@ -163,12 +232,14 @@ public sealed partial class GpuPreviewEngine
             if (on && !_drawingExploded)
             {
                 // From the flat picture: the drawn camera starts where the 2D view is, and the last time's scene is no one's.
-                (_drawnYaw, _drawnPitch, _drawnZoom, _drawnSpacing) = (0, 0, 1, 0);
+                Drawn = CameraPose.Flat;
                 _cameraTicks = 0;
                 _lastExploded.Reset();
                 _drawingExploded = true;
             }
 
+            // In or out, 240 ms from wherever the camera is now (the way in turned back halfway starts from there).
+            StartTransition();
             if (!on)
                 (_liftedKey, _liftedBy, _orbiting) = (0, 0, false);
         }
@@ -216,11 +287,16 @@ public sealed partial class GpuPreviewEngine
         }
     }
 
-    /// <summary>The camera's turn and distance as they start (the spacing is kept).</summary>
+    /// <summary>The camera's turn and distance as they start (the spacing is kept): 240 ms back there, as the way in.</summary>
     public void ResetCamera()
     {
         lock (_camera)
+        {
             (_yaw, _pitch, _zoom) = (DefaultYaw, DefaultPitch, DefaultZoom);
+            if (_wantExploded && _drawingExploded)
+                StartTransition();
+        }
+
         Invalidate();
     }
 
@@ -289,7 +365,7 @@ public sealed partial class GpuPreviewEngine
             if (width < 8 || height < 8)
             {
                 // Nothing to draw on (the player hidden): the camera is where it is going at once, the flat picture included.
-                (_drawnYaw, _drawnPitch, _drawnZoom, _drawnSpacing) = _wantExploded ? (_yaw, _pitch, _zoom, _spacing) : (0.0, 0.0, 1.0, 0.0);
+                (Drawn, _transitionClock) = (Target, null);
                 if (!_wantExploded)
                     (_drawingExploded, _flatSince) = (false, Stopwatch.GetTimestamp());
                 return;
@@ -358,33 +434,19 @@ public sealed partial class GpuPreviewEngine
         }
     }
 
-    /// <summary>The drawn camera one frame nearer its target: exponentially, by the time since the last step (under _camera).</summary>
+    /// <summary>
+    /// The drawn camera one frame on (under _camera): by the time since the last step, at most one 60 Hz refresh; the first step
+    /// after the camera stood still counts as one refresh, so a move never starts with a leap. Lands exactly on the target, so the
+    /// way out ends on the flat picture itself.
+    /// </summary>
     private void StepCamera()
     {
-        // A step after the camera stood still (or the first) counts as one refresh, so a new move never starts with a leap.
         var now = Stopwatch.GetTimestamp();
-        var elapsed = (now - _cameraTicks) / (double)Stopwatch.Frequency;
-        if (_cameraTicks == 0 || elapsed is <= 0 or > 0.1)
-            elapsed = 1 / 60.0;
+        var elapsed = _cameraTicks == 0 ? MaxCameraStep : (now - _cameraTicks) / (double)Stopwatch.Frequency;
         _cameraTicks = now;
-        var share = 1 - Math.Exp(-elapsed / CameraSettle);
-
-        var (yaw, pitch, zoom, spacing) = _wantExploded ? (_yaw, _pitch, _zoom, _spacing) : (0.0, 0.0, 1.0, 0.0);
-        _drawnYaw += (yaw - _drawnYaw) * share;
-        _drawnPitch += (pitch - _drawnPitch) * share;
-        _drawnZoom += (zoom - _drawnZoom) * share;
-        _drawnSpacing += (spacing - _drawnSpacing) * share;
-
-        // Close enough is there: the last step lands exactly, so the way out ends on the flat picture itself.
-        if (Settled())
-            (_drawnYaw, _drawnPitch, _drawnZoom, _drawnSpacing) = (yaw, pitch, zoom, spacing);
+        Drawn = StepPose(Drawn, Target, elapsed, _transitionFrom, ref _transitionClock);
     }
 
-    /// <summary>Whether the drawn camera has reached its target (under _camera).</summary>
-    private bool Settled()
-    {
-        var (yaw, pitch, zoom, spacing) = _wantExploded ? (_yaw, _pitch, _zoom, _spacing) : (0.0, 0.0, 1.0, 0.0);
-        return Math.Abs(yaw - _drawnYaw) < 0.02 && Math.Abs(pitch - _drawnPitch) < 0.02 && Math.Abs(zoom - _drawnZoom) < 2e-4
-            && Math.Abs(spacing - _drawnSpacing) < 2e-5;
-    }
+    /// <summary>Whether the drawn camera has reached its target, no transition under way (under _camera).</summary>
+    private bool Settled() => _transitionClock is null && Drawn.Near(Target);
 }

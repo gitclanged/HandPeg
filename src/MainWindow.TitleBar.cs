@@ -21,6 +21,7 @@ public partial class MainWindow
     /// <summary>The title bar and the status bar as the settings have them; before the first frame (Cold-Start rule 1), and on every change.</summary>
     private void InitializeTitleBar()
     {
+        _startStatus = _viewModel.StatusText;
         ApplyStatusBar();
         WorkScheduler.Summary.PropertyChanged += (_, e) =>
         {
@@ -30,10 +31,18 @@ public partial class MainWindow
         };
         _viewModel.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName is nameof(ViewModels.MainViewModel.StatusText))
-                UpdateTitleStatus();
+            if (e.PropertyName is not nameof(ViewModels.MainViewModel.StatusText))
+                return;
+            _startStatus = null;
+            UpdateTitleStatus();
         };
-        TitleBar.SizeChanged += (_, _) => UpdateTitleProgress();
+        TitleBar.SizeChanged += (_, _) =>
+        {
+            UpdateTitleProgress();
+            FitTitleStatus();
+        };
+        TitleText.SizeChanged += (_, _) => FitTitleStatus();
+        TitleRight.SizeChanged += (_, _) => FitTitleStatus();
         DependencyPropertyDescriptor.FromProperty(TitleProperty, typeof(Window)).AddValueChanged(this, (_, _) => TitleText.Text = Title);
         DependencyPropertyDescriptor.FromProperty(VisibilityProperty, typeof(UIElement)).AddValueChanged(UpdateNotice, (_, _) => ApplyStatusBar());
         // Inside WM_SIZE: a new place for the window waits until that message is done (WPF lays it out from that message's size).
@@ -88,7 +97,6 @@ public partial class MainWindow
         // update button moves between them.
         var shown = StatusBarShown;
         StatusBar.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
-        TitleStatus.Visibility = Visibility.Visible;
         TitleUpdateButton.Visibility = !shown && UpdateNotice.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
         TitleUpdateButton.Content = UpdateActionButton.Content;
         TitleUpdateButton.ToolTip = UpdateNoticeText.Text;
@@ -112,18 +120,36 @@ public partial class MainWindow
     /// </summary>
     internal static string TitleWorkText(WorkSummary work)
     {
-        var more = work.MoreText.Length > 0 ? "+" + work.MoreText : "";
+        // MoreText carries its own "+" ("+6"): the title said "++6" until 5.3-Stage3.
+        var more = work.MoreText.Length > 0 ? work.MoreText + " more" : "";
         return string.Join("  ", new[] { work.Title, work.PercentText, more }.Where(p => p.Length > 0));
     }
 
-    /// <summary>The middle of the title bar: the work under way ("Encoding clip.mp4 42%, 2 more"), or else the last status.</summary>
+    // The status the start itself said (a missing tool, from the view model's constructor), until anything else is said: never in the
+    // title bar's middle, which is empty at start (5.3-Stage3, the user's call); the status bar and the gear's badge keep saying it.
+    private string? _startStatus;
+
+    /// <summary>
+    /// The middle of the title bar: the work under way ("Encoding clip.mp4 42%, 2 more"), or else the last status; with neither
+    /// (at start, until the user does something, something is loaded or work begins: 5.3-Stage3, the user's call) nothing is there at all.
+    /// </summary>
     private void UpdateTitleStatus()
     {
         var work = WorkScheduler.Summary;
-        TitleStatusText.Text = work.IsVisible ? TitleWorkText(work) : _viewModel.StatusText;
-        TitleStatus.ToolTip = work.IsVisible ? "Work in progress: rest the pointer here to see it all, pause it or cancel it." : _viewModel.StatusText;
+        var status = _startStatus is null ? _viewModel.StatusText ?? "" : "";
+        TitleStatus.Visibility = work.IsVisible || status.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        TitleStatusText.Text = work.IsVisible ? TitleWorkText(work) : status;
+        TitleStatus.ToolTip = work.IsVisible ? "Work in progress: rest the pointer here to see it all, pause it or cancel it." : status.Length > 0 ? status : null;
         TitleProgress.Visibility = work.IsVisible ? Visibility.Visible : Visibility.Collapsed;
         UpdateTitleProgress();
+    }
+
+    // The status stays in the middle of the bar, between what is at its two ends, never under them (5.3-Stage3: a long one ran from
+    // the window's name to under the caption buttons; the Settings screen's FitTitleStatus already held it).
+    private void FitTitleStatus()
+    {
+        var left = TitleText.ActualWidth + TitleText.Margin.Left + TitleText.Margin.Right;
+        TitleStatus.MaxWidth = Math.Max(0, TitleBar.ActualWidth - 2 * Math.Max(left, TitleRight.ActualWidth));
     }
 
     /// <summary>The dim fill: as far across as the work has got, or (work that cannot say) the whole bar, fainter.</summary>

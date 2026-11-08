@@ -3,6 +3,54 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.3.0 — .NET 10, an Edge-to-Edge Editor & a Touch-Ready 3D View
+
+### User-Facing Highlights
+- **HandPeg runs on .NET 10**, and still needs nothing installed first: the installers and the portable zips ask the first
+  time, then download .NET 10 for HandPeg alone (no admin rights, checked against Microsoft's published SHA-512) or install
+  it for the whole PC with Microsoft's own installer. An installed copy keeps its own .NET in `%LOCALAPPDATA%\HandPeg\dotnet`
+  and runs on whichever is newer, its own or the PC's.
+- **Edge to edge.** The panes reach the window's sides and foot, with hairline seams between them (still easy to grab), a
+  slimmer 26-pixel title bar, and no bands round the playback row, the Sequence Overview Scrubber or the Timeline. The
+  empty player shows only its icon and "Drag & Drop Files or Links", with no dashed outline, and the middle of the title bar
+  stays empty until you do something, open something or start some work.
+- **One waveform for a clip's whole sound.** A video clip whose audio streams sit on Sub-Lanes draws all of them, at each
+  lane's own volume (muted lanes left out), as one see-through waveform across its whole block, over its frames.
+- **A tidier Timeline.** Effect lanes take no room until their track's stack is opened; a gear on the Timeline's row of
+  tools (and the Timeline tab's right-click) holds every view switch: effect lanes, filmstrips, waveforms, following the
+  playhead, snapping, Track Height (Compact, Medium, Large, Extra Large). The five Creator Hotbar slots now sit behind one
+  **Quick FX** button (rest the pointer on it); Settings > Timeline calls its switch **Show Quick FX Button**. Undo and Redo
+  are off the row (Ctrl+Z and Ctrl+Y as ever; Settings brings the buttons back).
+- **The Layout Selector opens under the Layout button**, and stays there while you hover layouts: on a touch-screen PC set
+  right-handed it opened far to the left, and could jump while a layout was previewed. Add Media, Settings, the Layout menu
+  and the Views menu open against their buttons the same way.
+- **A smooth 3D Exploded View.** Going into and out of the 3D view (and Reset) is one steady 240 ms move, even when the
+  graphics card is waking up on its first frame; on Snapdragon laptops it used to leap and then crawl.
+- **Touchpads and touch screens in the 3D view.** Pinch to zoom (touchpad or screen), scroll with two fingers on a touchpad
+  to orbit, one finger on the empty space of a touch screen to orbit, two fingers up or down to spread the layers. Picking the
+  layer in front or behind moved from Ctrl + the wheel to **Alt + the wheel** (or `[` and `]`), so Ctrl + the wheel and the
+  pinch zoom; Shift + the wheel sets the spacing. A mouse's wheel still zooms.
+- **No more classic title bar flashes.** Beside a taskbar that hides itself, Windows' old-style caption could be painted over
+  HandPeg (and its Settings screen) after Alt+Tab or a maximize; the window now keeps Windows' own frame drawing in every state.
+- **Explorer thumbnails without .NET in Explorer.** The `.hproj`/`.hpb` thumbnail handler is a small native DLL now.
+- **No icon of our own** until a designed one is ready: HandPeg shows Windows' default program icon.
+
+### Under the Hood & Fixes
+- .NET 10 LTS and C# 14 everywhere; the x64 builds turn off CET shadow stacks (about 16 ms of start-up on a desktop PC).
+- Measured SIMD and allocation work on .NET 10: the FFT and Noise Reduction 3.5-3.7x, Studio Voice 2.8x, the audio mixer
+  2.7x, true peak 2.5x, the export's loudness pass 3.1x, mask baking up to 2.5x, GIF encoding 2.1x (all bit-exact).
+- Summary and Export tabs are made when first shown, not with the window; the Quick FX flyout after the first frame.
+- One device-pixel placement for every header flyout (`UiScale.PlaceAgainst`): the button's rectangle taken as the flyout
+  opens and kept until it closes, measured from a part of the window no layout moves.
+- The 3D view's handle and gizmo are one drawing filled each frame and its badges move by a render transform: nothing in
+  the 3D view is laid out again while its camera moves.
+- The title bar's "more work" count read "++6"; it reads "+6 more". A long status in the title bar ran under the window's
+  name and the caption buttons; it now stays between them, cut short with an ellipsis.
+- The Live Preview switch is gone: the player always shows the sequence as the export draws it.
+- New golden tests: the header flyouts against a real dock previewing all four built-in layouts (0 px drift), the 3D view's
+  camera curve and a compositor worker making no texture after the 3D view's first frame, the wheel, touchpad and touch
+  mappings, combined stack waveforms, the edge-to-edge layout, the window frame's messages, the native thumbnail handler.
+
 ## HandPeg v5.2.1 — Script-Free Portable .NET, Social Cuts & the Creator Hotbar
 
 ### User-Facing Highlights

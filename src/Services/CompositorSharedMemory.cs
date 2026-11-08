@@ -261,7 +261,10 @@ public struct ControlBlock
     /// <summary>Frames the decode lanes finished while the last frame was drawn (diagnostics: a preview frame's draw holds them back).</summary>
     [FieldOffset(3112)] public int LastDrawDecodes;
 
-    // 3116..3479: free (protocol 2's hints).
+    /// <summary>Textures the worker's device has made since it started (GpuDevice.TexturesMade; diagnostics, the goldens: 5.3-Stage3).</summary>
+    [FieldOffset(3116)] public int TexturesMade;
+
+    // 3120..3479: free (protocol 2's hints).
 
     // 3480..: the cache's counters (diagnostics, tools\SeekBench): exact frames found, frames not there yet, presents
     // made with a stand-in, frames and bytes held, the budget in force, how long the last exact frame took after it was

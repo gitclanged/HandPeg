@@ -20,7 +20,7 @@ namespace HandPegGoldenTests;
 /// changes nothing;
 /// layout-edge-to-edge (the XAML as written, read with XDocument, then the real Timeline pane laid out at a size of its own with no
 /// window): the title bar 26 on both windows from one resource, the window's body with no margin but 6 under the title bar, no band round the playback row, the
-/// scrubber, the Timeline pane or the Preset Bar, the drop hint's outline 6 in, the scrubber's grip on its padding; the dock's seams a 7 px grip with
+/// scrubber, the Timeline pane or the Preset Bar, the drop hint with no outline (5.3-Stage3), the scrubber's grip on its padding; the dock's seams a 7 px grip with
 /// the line on the seam, wholly beside the floating player, never over it (DockManager.SeamGrip and FloatsAt); the transport row's checkboxes and
 /// both Live Preview switches gone; Undo and Redo named and hidden; Quick FX one button with its slots in the flyout, a pointer click on a
 /// slot handing the keyboard back to the button; and in the live
@@ -193,8 +193,11 @@ public static class LayoutTests
             "its lower edge's grip lies over its padding: the padding's left, right and bottom, negated");
         expect(Attr(Named(main, "UnifiedTimelinePanel"), "Padding") == "0" && Attr(Named(main, "UnifiedTimelinePanel"), "CornerRadius") == "0",
             "the Timeline's panel has no padding and square corners: the ruler right under the tab strip");
-        var hint = Named(main, "DropHint")?.Elements().FirstOrDefault(e => e.Name.LocalName == "Rectangle");
-        expect(Attr(hint, "Margin") == "6", "the drop hint's dashed outline is 6 in from the player's edges (from 36)");
+        var hint = Named(main, "DropHint");
+        expect(hint is not null && !hint.Descendants().Any(e => e.Name.LocalName is "Rectangle" or "Border" || e.Attribute("StrokeDashArray") is not null),
+            "the drop hint has no outline (5.3-Stage3: no dashed Rectangle, no border): its icon and words only");
+        expect(Attr(Named(main, "TitleStatus"), "Visibility") == "Collapsed",
+            "the title bar's middle (TitleStatus) starts collapsed: nothing there until the user does something, something loads or work begins (5.3-Stage3)");
         expect(Attr(Named(main, "StatusBar"), "Margin") is { } status && Sides(status)[1] <= 2 && Attr(Named(main, "DestinationBar"), "Margin") == "0,1,0,0",
             "no 10 px band above the status bar or the destination bar");
         expect(Attr(Named(main, "PresetBarPane"), "Margin") == "0", "no band under the Preset Bar either (its Margin 0, from 0,0,0,10): the dock's seams part the panes");

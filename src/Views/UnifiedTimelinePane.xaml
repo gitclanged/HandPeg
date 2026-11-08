@@ -319,7 +319,7 @@
                 -->
                 <Popup x:Name="QuickFxPopup" StaysOpen="True" AllowsTransparency="True" Placement="Top">
                     <local:ButtonChrome x:Name="QuickFxFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6" Margin="0,0,0,2" PreviewKeyDown="QuickFxFlyout_PreviewKeyDown">
-                        <StackPanel x:Name="HotbarSlotsPanel" TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="200" AutomationProperties.Name="Creator Hotbar">
+                        <StackPanel x:Name="HotbarSlotsPanel" TextElement.Foreground="{DynamicResource TextBrush}" MinWidth="200" AutomationProperties.Name="Quick FX Slots">
                             <StackPanel.Resources>
                                 <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
                                     <Setter Property="Background" Value="Transparent" />
@@ -486,7 +486,7 @@
                         -->
                         <Grid x:Name="QuickFxHost" local:OverflowStrip.Priority="50" Margin="6,0,3,0" Background="Transparent" VerticalAlignment="Center">
                             <Button x:Name="QuickFxButton" Padding="9,4" Click="QuickFx_Click" PreviewKeyDown="QuickFx_PreviewKeyDown" AutomationProperties.Name="Quick FX"
-                                    ToolTip="Quick FX (the Creator Hotbar): five slots, each putting an Effect, a Transition, a Game Preset or a one-click tool on the selected clips. Rest the pointer here, or click, for the slots; right-click a slot to choose what it holds.">
+                                    ToolTip="Quick FX: five slots, each putting an Effect, a Transition, a Game Preset or a one-click tool on the selected clips. Rest the pointer here, or click, for the slots; right-click a slot to choose what it holds.">
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
                                     <TextBlock Text="Quick FX" Margin="6,0,0,0" VerticalAlignment="Center" />

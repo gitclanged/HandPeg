@@ -267,8 +267,17 @@ internal sealed unsafe class GpuDevice : IDisposable
             throw new GpuException(reason, "The graphics device");
     }
 
+    /// <summary>
+    /// How many textures <see cref="CreateTexture"/> has made on this device (any thread: the decode lanes make theirs too). Published
+    /// as ControlBlock.TexturesMade: the proof that the 3D view's way in and out makes none after its first frame (5.3-Stage3).
+    /// </summary>
+    public int TexturesMade => Volatile.Read(ref _texturesMade);
+
+    private int _texturesMade;
+
     public GpuTexture CreateTexture(int width, int height, uint format, bool renderTarget, uint miscFlags = 0, SubresourceData* initial = null)
     {
+        Interlocked.Increment(ref _texturesMade);
         var desc = new Texture2DDesc
         {
             Width = (uint)Math.Max(width, 1),

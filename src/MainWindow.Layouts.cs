@@ -20,9 +20,9 @@ public partial class MainWindow
     private sealed record LayoutChoice(string Name, string About, DockLayoutState Layout, int? Slot);
 
     // The settings tabs as one group, in their order; the one shown first named.
-    private DockNode TabsGroup(string? active = null, params string[] without)
+    private static DockNode TabsGroup(IReadOnlyList<string> tabIds, string? active = null, params string[] without)
     {
-        var tabs = DockNode.Group([.. TabIds.Where(id => !without.Contains(id))]);
+        var tabs = DockNode.Group([.. tabIds.Where(id => !without.Contains(id))]);
         if (active is not null && tabs.Panes.Contains(active))
             tabs.Active = active;
         return tabs;
@@ -117,7 +117,7 @@ public partial class MainWindow
     /// effects and keyframes, and the header joined over the media browser with the Summary; under them the Sequence
     /// Overview Scrubber, and the timeline with the other settings tabs at its right.
     /// </summary>
-    private DockLayoutState InspectorLayout()
+    internal static DockLayoutState InspectorLayout(IReadOnlyList<string> tabIds)
     {
         var player = DockNode.Split(true, (DockNode.Split(false, (DockNode.Group("Player"), 72), (DockNode.Group("Layout"), 28)), 1), (DockNode.Group("Playback"), 1));
         var inspector = DockNode.Group("Effects", "Keyframes");
@@ -125,7 +125,7 @@ public partial class MainWindow
         var top = DockNode.Split(false, (player, 60), (inspector, 20), (media, 20));
         return new DockLayoutState
         {
-            Main = DockNode.Split(true, (top, 66), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineBeside(TabsGroup(null, "Tab:Summary")), 34)),
+            Main = DockNode.Split(true, (top, 66), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineBeside(TabsGroup(tabIds, null, "Tab:Summary")), 34)),
         };
     }
 
@@ -134,12 +134,12 @@ public partial class MainWindow
     /// the top right (as in the other layouts), the Canvas a tab beside the media; the Sequence Overview Scrubber across the whole
     /// window, and under it the timeline, the settings tabs (open on Export) and the effects and keyframes side by side.
     /// </summary>
-    private DockLayoutState AssemblyLayout()
+    internal static DockLayoutState AssemblyLayout(IReadOnlyList<string> tabIds)
     {
         var player = DockNode.Split(true, (DockNode.Group("Player"), 1), (DockNode.Group("Playback"), 1));
         var media = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media", "Layout"), 1));
         var top = DockNode.Split(false, (player, 66), (media, 34));
-        var bottom = DockNode.Split(false, (DockNode.Group(TimelinePaneId), 49), (TabsGroup(ExportId), 21), (DockNode.Group("Effects", "Keyframes"), 30));
+        var bottom = DockNode.Split(false, (DockNode.Group(TimelinePaneId), 49), (TabsGroup(tabIds, ExportId), 21), (DockNode.Group("Effects", "Keyframes"), 30));
         return new DockLayoutState
         {
             Main = DockNode.Split(true, (top, 54), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (bottom, 40)),
@@ -152,14 +152,14 @@ public partial class MainWindow
     /// keyframes at the top right; the Sequence Overview Scrubber across the whole window, and under it the timeline with the
     /// settings tabs at its right, Export and Audio first (the others after them).
     /// </summary>
-    private DockLayoutState ShortsLayout()
+    internal static DockLayoutState ShortsLayout(IReadOnlyList<string> tabIds)
     {
         var stage = DockNode.Split(false, (DockNode.Group("Player"), 50), (DockNode.Group("Layout"), 50));
         var player = DockNode.Split(true, (stage, 1), (DockNode.Group("Playback"), 1));
         var side = DockNode.Split(true, (DockNode.Group("Header"), 1), (DockNode.Group("Media", "Effects", "Keyframes"), 1));
         var top = DockNode.Split(false, (player, 64), (side, 36));
         string[] first = [ExportId, "Tab:Audio"];
-        var tabs = DockNode.Group([.. first, .. _tabPanes.Select(t => t.Id).Where(id => !first.Contains(id))]);
+        var tabs = DockNode.Group([.. first, .. tabIds.Where(id => !first.Contains(id))]);
         return new DockLayoutState
         {
             Main = DockNode.Split(true, (top, 60), (DockNode.Group("Timeline"), 1), (DockNode.Group("Presets"), 1), (TimelineBeside(tabs), 40)),
@@ -169,9 +169,16 @@ public partial class MainWindow
     private IEnumerable<LayoutChoice> BuiltInLayouts() =>
     [
         new("Standard Editing", "The player at the top left, the effects, keyframes and Canvas as tabs beside it, the media at the right; the Sequence Overview Scrubber, and the timeline below, the first of the settings tabs. Where HandPeg starts.", StandardLayout(), null),
-        new("Color & Effects", "A large player, tall effects and keyframes and media and Summary columns at the right; the timeline below, with the other tabs beside it.", InspectorLayout(), null),
-        new("Assembly & Media", "The player at the left, a wide media column with the Canvas at the right; the timeline, the settings tabs and the effects and keyframes side by side below.", AssemblyLayout(), null),
-        new("Vertical & Shorts Studio", "For 9:16 shorts: a tall player and Canvas side by side, media, effects and keyframes at the right; the timeline below, with the Export and Audio tabs beside it.", ShortsLayout(), null),
+        new("Color & Effects", "A large player, tall effects and keyframes and media and Summary columns at the right; the timeline below, with the other tabs beside it.", InspectorLayout(TabIds), null),
+        new("Assembly & Media", "The player at the left, a wide media column with the Canvas at the right; the timeline, the settings tabs and the effects and keyframes side by side below.", AssemblyLayout(TabIds), null),
+        new("Vertical & Shorts Studio", "For 9:16 shorts: a tall player and Canvas side by side, media, effects and keyframes at the right; the timeline below, with the Export and Audio tabs beside it.", ShortsLayout(TabIds), null),
+    ];
+
+    /// <summary>The four built-in layouts by name, for the settings tabs given: window-free, for the goldens (header-flyouts-placement).</summary>
+    internal static IReadOnlyList<(string Name, DockLayoutState Layout)> BuiltInLayoutStates(IReadOnlyList<string> tabIds) =>
+    [
+        ("Standard Editing", StandardLayout(tabIds)), ("Color & Effects", InspectorLayout(tabIds)),
+        ("Assembly & Media", AssemblyLayout(tabIds)), ("Vertical & Shorts Studio", ShortsLayout(tabIds)),
     ];
 
     /// <summary>
@@ -219,9 +226,7 @@ public partial class MainWindow
         FillLayoutRows(SavedLayoutRows, saved);
         SavedLayoutsTitle.Visibility = saved.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        LayoutFlyout.PlacementTarget = host;
-        LayoutFlyoutPanel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        PlaceHeaderFlyout(LayoutFlyout, LayoutButton, LayoutFlyoutPanel.DesiredSize.Width);
+        PlaceHeaderFlyout(LayoutFlyout, host);
         _layoutMenuFrom = host;
         LayoutFlyout.IsOpen = true;
     }
@@ -538,45 +543,19 @@ public partial class MainWindow
 
     /// <summary>
     /// Where the selector opens: under the button, its right edge at the button's (the header is at the right), or beside
-    /// the header while that is a strip; kept inside the panes' area. Placed once: it stays there while the window takes
-    /// layout after layout under it (the button itself may move), so the card under the pointer never changes by itself.
+    /// the header while that is a strip; kept inside the panes' area, 8 DIPs from its left. Placed once: it stays there while
+    /// the window takes layout after layout under it (the button itself moves, and is taken out and put back), so the card
+    /// under the pointer never changes by itself.
     /// </summary>
     /// <remarks>
-    /// All in DIPs of the panes' area (Pass 4.2B-2): the button's corners taken into <c>MainDockHost</c> (through the
-    /// screen when the button is in another window, the side window), and the popup's own content measured, so its right
-    /// edge is the button's at any DPI. At 150 % the selector flew left over the player.
+    /// 5.3-Stage3 (the user's bug): a placement of its own in DIPs of the panes' area, given to WPF as a Relative popup, was mirrored
+    /// on a touch PC set right-handed (SystemParameters.MenuDropAlignment), a whole selector's width to the left. Now the header's
+    /// one device-pixel placement (UiScale.PlaceAgainst), the button's rectangle taken as it opens and kept, measured from the panes'
+    /// area, which no layout moves: proof, header-flyouts-placement.
     /// </remarks>
-    private void PlaceLayoutSelector(FrameworkElement button)
-    {
-        var panel = (FrameworkElement)LayoutSelector.Child;
-        panel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        var (width, height) = (panel.DesiredSize.Width, panel.DesiredSize.Height);
-        var corner = InDockHost(button, new Point(0, 0));
-        var far = InDockHost(button, new Point(button.ActualWidth, button.ActualHeight));
-        var (roomWidth, roomHeight) = (MainDockHost.ActualWidth, MainDockHost.ActualHeight);
-        double x, y;
-        if (ReferenceEquals(button, LayoutButton) && _headerShape == PaneShape.Column)
-        {
-            var onRight = (corner.X + far.X) / 2 > roomWidth / 2;
-            (x, y) = (onRight ? corner.X - width - 6 : far.X + 6, corner.Y);
-        }
-        else
-        {
-            (x, y) = (far.X - width, far.Y + 6);
-        }
-
-        // Inside the panes' area, 8 DIPs from its left.
-        LayoutSelector.HorizontalOffset = Math.Max(SelectorEdge, Math.Min(x, roomWidth - width));
-        LayoutSelector.VerticalOffset = Math.Max(0, Math.Min(y, roomHeight - height));
-    }
+    private void PlaceLayoutSelector(FrameworkElement button) => PlaceHeaderFlyout(LayoutSelector, button, MainDockHost, SelectorEdge);
 
     private const double SelectorEdge = 8;
-
-    /// <summary>A point of an element in the panes' area's DIPs, whichever window the element is in.</summary>
-    private Point InDockHost(FrameworkElement element, Point point) =>
-        MainDockHost.IsAncestorOf(element) || ReferenceEquals(element, MainDockHost)
-            ? element.TranslatePoint(point, MainDockHost)
-            : MainDockHost.PointFromScreen(element.PointToScreen(point));
 
     /// <summary>The pointer came onto a card: the window takes its layout, nothing saved.</summary>
     private void PreviewLayout(int index)

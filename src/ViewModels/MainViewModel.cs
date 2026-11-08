@@ -496,7 +496,8 @@ public partial class MainViewModel : ObservableObject
 
     // ----- Status bar -----
 
-    [ObservableProperty] private string _statusText = "Ready";
+    // Empty until something happens (5.3-Stage3, the user's call): the title bar's middle shows nothing at start.
+    [ObservableProperty] private string _statusText = "";
 
     // The action log: what was just done, said in a few words in the status bar and flashed there, so that
     // every edit answers at once. The last few stay readable in the status bar's tooltip.

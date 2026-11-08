@@ -1,0 +1,20 @@
+# The 3D view's wheel, touchpad and touch (5.3-Stage3): a pinch zooms, two fingers orbit, Alt + the wheel picks the layers.
+the wheel (MainWindow.ExplodedWheelDoes), by its keys, its direction and its device:
+  a mouse's wheel: Zoom
+  a touchpad's two-finger scroll up or down: Tip
+  a touchpad's two-finger scroll sideways: Turn
+  a mouse's tilted wheel: Turn
+  a touchpad's pinch (Ctrl + the wheel): Zoom
+  Ctrl + a mouse's wheel: Zoom
+  Alt + the wheel: Layers
+  Alt + a touchpad's scroll: Layers
+  Shift + the wheel: Spacing
+  Ctrl + Alt + the wheel (Ctrl first): Zoom
+  Ctrl + a sideways wheel: None
+a touch on the empty space (MainWindow.ExplodedTouchDoes), a step of it:
+  one finger 10 right and 5 up: turn -3, tip -1.5, zoom factor 1, spacing 0
+  two fingers spread to 1.25 times: turn 0, tip 0, zoom factor 0.8, spacing 0
+  two fingers pinched to 0.8 times: turn 0, tip 0, zoom factor 1.25, spacing 0
+  two fingers dragged 40 up, no pinch: turn 0, tip 0, zoom factor 1, spacing +0.06
+  two fingers dragged 40 up while spreading to 1.1 times: turn 0, tip 0, zoom factor 0.909, spacing 0
+the 3D view's hints: Drag: move  ·  Shift + drag: through the stack  ·  Esc: back / Right-drag, two-finger scroll or a finger: orbit  ·  Wheel or pinch: zoom / Alt + wheel or [ ]: the layer in front or behind  ·  Shift + wheel: spacing

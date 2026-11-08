@@ -189,7 +189,7 @@ public partial class MainWindow
         ]),
         new("Bars & Sizing",
         [
-            new(TimelineSetting.CreatorHotbar, "Show Creator Hotbar",
+            new(TimelineSetting.CreatorHotbar, "Show Quick FX Button",
                 "The Quick FX button on the row of tools: rest the pointer on it, or click it, for five slots, each putting an Effect, a Transition, a Game Preset or a one-click tool on the selected clips. Right-click a slot to choose what it holds.",
                 nameof(AppSettings.ShowCreatorHotbar)),
             new(TimelineSetting.UndoRedoButtons, "Show Undo / Redo Buttons",

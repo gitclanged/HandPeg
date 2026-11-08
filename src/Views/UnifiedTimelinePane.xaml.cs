@@ -220,7 +220,7 @@ public partial class UnifiedTimelinePane : UserControl
         {
             button.Content = slot.Label;
             button.ToolTip = $"{slot.About} Right-click to choose what this slot holds.";
-            System.Windows.Automation.AutomationProperties.SetName(button, $"Creator Hotbar: {slot.Label}");
+            System.Windows.Automation.AutomationProperties.SetName(button, $"Quick FX: {slot.Label}");
         }
     }
 
